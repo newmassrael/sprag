@@ -101,14 +101,15 @@ pub use host::{
 };
 pub use job::JobWatch;
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};
-pub use notify::ChannelRegistry;
+pub use notify::{ChannelRegistry, OutputChannel, OutputQuery, OutputSignal};
 pub use options::{OPTIONS, OptionError, OptionKind, OptionSpec, Options};
 pub use pane::{CellFrame, SpragPaneExternal, focus, mouse, paste, send_key, send_text};
 pub use plugins::PluginsExternal;
 pub use project::{PROJECT_FILE, Project, ProjectAction, ProjectError};
 pub use rpc::{
-    BirthPin, FrameIngress, HostState, SUPPORTED_METHODS, bump_on_dirty, dispatch_frames,
-    handle_parsed, handle_request, pane_exit_hook, spawn_reaper, stdin_frames,
+    BirthPin, FrameIngress, HostState, IngressEvent, SUPPORTED_METHODS, bump_on_dirty,
+    dispatch_channel, dispatch_frames, handle_parsed, handle_request, pane_exit_hook, spawn_reaper,
+    stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};

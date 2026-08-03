@@ -36,18 +36,18 @@ use pinion_rpc::{
 };
 use sprag_terminal::{SessionRegistry, Workspace};
 
-use crate::PaneCells;
 use crate::attach::{AttachOutcome, AttachmentRegistry, ClientSize, SizeOutcome};
 use crate::external::lock;
 use crate::host::Host;
-use crate::notify::ChannelRegistry;
+use crate::notify::{ChannelRegistry, OutputQuery};
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    EVENTS_WAIT_METHOD, INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM,
-    WIRE_PROTOCOL,
+    EVENTS_WAIT_METHOD, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
+    PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
 };
+use crate::{PaneCells, PaneFind};
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
 /// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
@@ -717,6 +717,113 @@ fn handle_events_wait(
     );
 }
 
+/// `pane/waitForOutput` — park until the named pane's retained output matches, then answer with the
+/// same [`PaneFind`] the `find.<needle>` / `regex.<pattern>` slots serve.
+///
+/// ## Everything is refused BEFORE the park, because a park cannot report a mistake
+///
+/// A parked wait has no deadline (see [`crate::wire::PANE_WAIT_OUTPUT_METHOD`]), so a request that
+/// can never be satisfied does not fail — it hangs until the caller gives up, which reads exactly
+/// like "it has not happened yet". Three things are therefore decided here rather than in the pass:
+///
+/// * **exactly one of `needle` / `pattern`** — neither is a caller that forgot to say what it wants;
+///   both is a caller whose two languages disagree, and picking one for it would be inventing an
+///   answer.
+/// * **the pane exists IN THIS SESSION** — the park hangs off this session's revision, so a pane in
+///   another session moves a token this wait does not listen to. A wait on one could never wake, so
+///   it is refused rather than accepted and silently starved.
+/// * **an empty needle or pattern** — the query slots answer `Null` for one (a malformed member);
+///   here there is no answer to give, so it is the same refusal as a missing one.
+///
+/// An INVALID pattern is deliberately NOT refused here: it is answered by the first pass, carrying
+/// the engine's own message in [`PaneFind::error`], which is what the `regex.<pattern>` slot does
+/// with the identical mistake.
+///
+/// ## The first evaluation is the ordinary pass, not a special case
+///
+/// The park is followed by a direct [`evaluate_output_waits`] call rather than a signal, because
+/// this IS the dispatch owner — so a match already on the pane's screen is answered inside this
+/// call, through the one code path every later wake uses. There is no "check first, then park"
+/// fork, and so no gap between the two for a match to land in.
+fn handle_output_wait(
+    state: &HostState,
+    conn: ConnId,
+    scope: &SessionScope,
+    request: &Request,
+    reply: RpcReply,
+) {
+    let params = request.params.as_ref();
+    let text = |key: &str| {
+        params
+            .and_then(|params| params.get(key))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let query = match (text(NEEDLE_PARAM), text(PATTERN_PARAM)) {
+        (Some(needle), None) if !needle.is_empty() => OutputQuery::Literal(needle),
+        (None, Some(pattern)) if !pattern.is_empty() => OutputQuery::Pattern(pattern),
+        (Some(_), Some(_)) => {
+            refuse_wait(
+                request,
+                format!(
+                    "params must carry {NEEDLE_PARAM} (a literal) or {PATTERN_PARAM} (a regular \
+                     expression), never both — they are separate search languages"
+                ),
+                reply,
+            );
+            return;
+        }
+        _ => {
+            refuse_wait(
+                request,
+                format!(
+                    "params must carry a non-empty {NEEDLE_PARAM} (a literal) or {PATTERN_PARAM} \
+                     (a regular expression)"
+                ),
+                reply,
+            );
+            return;
+        }
+    };
+    let Some(pane) = params
+        .and_then(|params| params.get(PANE_PARAM))
+        .and_then(serde_json::Value::as_u64)
+        .map(sprag_terminal::PaneId)
+    else {
+        refuse_wait(
+            request,
+            format!("params.{PANE_PARAM} must be the id of the pane to watch (a whole number)"),
+            reply,
+        );
+        return;
+    };
+    if pane_handle_in(state, scope.session(), pane).is_none() {
+        refuse_wait(
+            request,
+            format!(
+                "session {:?} has no pane {pane} — a wait is parked on ONE session's output, so a \
+                 pane of another session could never wake it",
+                scope.session()
+            ),
+            reply,
+        );
+        return;
+    }
+    state
+        .channels()
+        .outputs(scope.session())
+        .park(conn, pane, query, request.id.clone(), reply);
+    evaluate_output_waits(state, scope.session());
+}
+
+/// Refuse a park with an INVALID_PARAMS fault carrying `why` — the shape
+/// [`handle_events_wait`]'s own refusals take, so both waits fail the same way.
+fn refuse_wait(request: &Request, why: String, reply: RpcReply) {
+    if let Some(response) = lifecycle_invalid(request, why) {
+        reply.send(response);
+    }
+}
+
 /// A client lifecycle event moved `session`'s window: re-derive every tiled pane's size, then wake
 /// the clients watching it.
 ///
@@ -915,6 +1022,19 @@ pub enum IngressEvent {
     Frame(RpcFrame),
     /// A connection closed (EOF / reset / crash) — release its per-client attachment.
     Disconnect(ConnId),
+    /// A session's panes produced output — evaluate the [`crate::notify::OutputChannel`] waits
+    /// parked on it.
+    ///
+    /// It rides THIS queue rather than a thread of its own because the evaluation reads panes, and
+    /// this owner is the one thread allowed to. Two consequences follow and both are wanted: the
+    /// pass is ordered against [`Disconnect`](Self::Disconnect), so a wait cannot be answered after
+    /// its connection was released; and it is ordered against the PARK, so "matched between the
+    /// check and the park" — the lost wakeup [`crate::notify::JournalChannel`] needs a spanning lock
+    /// to prevent — cannot be expressed here at all.
+    ///
+    /// Coalesced at the source ([`crate::notify::OutputChannel`]'s armed flag), so a flooding pane
+    /// puts at most ONE of these in flight per session however many batches it produces.
+    OutputMoved(String),
 }
 
 /// An [`RpcIngress`] that funnels frames — and connection-close signals — from any transport into
@@ -994,8 +1114,94 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
                     window_moved(state, &session);
                 }
             }
+            IngressEvent::OutputMoved(session) => evaluate_output_waits(state, &session),
         }
     }
+}
+
+/// Create the dispatch owner's channel with the OUTPUT-WAIT signal already wired into `state`.
+///
+/// The daemon's constructor, and the reason it exists rather than a bare `mpsc::channel()` at the
+/// boot site: a daemon that made the channel itself and forgot to install the signal would serve
+/// `pane/waitForOutput` that answers its first evaluation and then never wakes again — a silent
+/// degradation with nothing to fail. Handing out the pair only together makes that unrepresentable.
+///
+/// **The installed sink holds a clone of the sender**, so a channel made this way stays open until
+/// the process ends. That is already what the daemon has (the socket ingress holds senders in its
+/// accept threads for process lifetime), which is why this is the DAEMON's constructor; a caller
+/// that relies on [`dispatch_frames`] returning when its transports drop builds its own pair and
+/// installs the signal itself, as the tests here do.
+#[must_use]
+pub fn dispatch_channel(state: &HostState) -> (Sender<IngressEvent>, Receiver<IngressEvent>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sink = tx.clone();
+    state.channels().output_signal().install(move |session| {
+        // On the PTY READER thread. An unbounded channel's `send` never blocks, which is the whole
+        // requirement `OutputSignal` places on whatever is installed here. A closed channel means
+        // the dispatch owner has exited: drop it, exactly as `FrameIngress` does for a frame.
+        let _ = sink.send(IngressEvent::OutputMoved(session.to_owned()));
+    });
+    (tx, rx)
+}
+
+/// Evaluate every output wait parked on `session`, answering the ones whose pane now matches.
+///
+/// Runs on the dispatch owner, which is what makes the search safe to do at all: the wake arrives
+/// on the PTY reader thread, where a search over a pane's retained output would back-pressure the
+/// terminal itself.
+///
+/// ## The registry lock is NOT held across the search
+///
+/// The traversal takes the registry and workspace locks only long enough to CLONE the pane's
+/// [`PanePtyHandle`](sprag_terminal::PanePtyHandle), and the search then runs against the pane's
+/// own emulator lock with neither
+/// held. That is R291's fix shape — the one whose absence cost a concurrent pane-list reader +41.8
+/// ms at p99 — applied at the site rather than discovered at it.
+fn evaluate_output_waits(state: &HostState, session: &str) {
+    let channel = state.channels().outputs(session);
+    channel.evaluate(|pane, query| {
+        let handle = pane_handle_in(state, session, pane)?;
+        let found = match query {
+            OutputQuery::Literal(needle) => {
+                PaneFind::from_screen_result(&handle.with_screen(|screen| screen.find(needle)))
+            }
+            OutputQuery::Pattern(pattern) => {
+                match handle.with_screen(|screen| screen.find_regex(pattern)) {
+                    Ok(found) => PaneFind::from_screen_result(&found),
+                    Err(bad) => PaneFind::refused(&bad),
+                }
+            }
+        };
+        // A REFUSAL is an answer, not a reason to keep waiting: a pattern the engine will not
+        // compile cannot start matching later, so parking on one is a wait that can never end. It
+        // rides the normal result shape rather than a JSON-RPC error for the reason
+        // `crate::PaneFind::error` gives about the `regex.<pattern>` slot — an invalid pattern is a
+        // well-formed question whose VALUE was rejected.
+        (!found.matches.is_empty() || found.error.is_some()).then_some(found)
+    });
+}
+
+/// A cloneable handle to the live pane `id` of `session`, or `None` when that session holds no such
+/// pane (it closed, or it never existed).
+///
+/// Scoped to ONE session, unlike the daemon-wide pane walks in [`crate::workspace`], and that is
+/// load-bearing rather than incidental: an output wait is parked on a session's revision, so a pane
+/// in another session would move a token this wait is not listening to and the question could never
+/// be answered. Refusing it at the park is the only honest answer.
+fn pane_handle_in(
+    state: &HostState,
+    session: &str,
+    id: sprag_terminal::PaneId,
+) -> Option<sprag_terminal::PanePtyHandle> {
+    let registry = lock(state.registry());
+    let session = registry.session(session)?;
+    for window in session.windows() {
+        let workspace = lock(window.workspace());
+        if let Some(pane) = workspace.pane(id) {
+            return Some(pane.handle());
+        }
+    }
+    None
 }
 
 /// Dispatch one frame against `state` — the per-frame body of [`dispatch_frames`],
@@ -1091,6 +1297,14 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
             // machinery every other method uses.
             if parsed.method.as_str() == EVENTS_WAIT_METHOD {
                 handle_events_wait(state, conn, &scope, &parsed, reply);
+                return;
+            }
+            // `pane/waitForOutput` parks on the REVISION carrying a predicate — the third kind of
+            // park, beside pinion's revision waiters and the journal's filtered waits. Intercepted
+            // here for the same two reasons as the wait above: it parks its reply, and it must be
+            // scoped by the machinery every other method uses.
+            if parsed.method.as_str() == PANE_WAIT_OUTPUT_METHOD {
+                handle_output_wait(state, conn, &scope, &parsed, reply);
                 return;
             }
             // Parked against the SCOPED session's channel — the half `scene/waitFor` used to check
@@ -2572,6 +2786,315 @@ mod tests {
         assert!(
             sink.lock().unwrap().is_empty(),
             "and a gone connection is not written to: the release drops, it does not answer",
+        );
+    }
+
+    /// One `pane/waitForOutput` frame from `conn`, through the real per-frame dispatch body.
+    fn output_wait_recording(
+        state: &HostState,
+        conn: ConnId,
+        params: serde_json::Value,
+        sink: &Arc<Mutex<Vec<String>>>,
+    ) {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": PANE_WAIT_OUTPUT_METHOD,
+            "params": params,
+        });
+        dispatch_one(
+            state,
+            RpcFrame::new(
+                conn,
+                declaring_the_protocol(&request.to_string()),
+                recording_reply(sink),
+            ),
+        );
+    }
+
+    /// The one reply a recording sink holds, parsed.
+    fn only_reply(sink: &Arc<Mutex<Vec<String>>>) -> serde_json::Value {
+        let replies = sink.lock().unwrap();
+        assert_eq!(replies.len(), 1, "exactly one reply: {replies:?}");
+        serde_json::from_str(&replies[0]).expect("valid JSON-RPC")
+    }
+
+    /// Poll `ready` until it answers true, or give up after five seconds — the bounded wait every
+    /// live-PTY assertion here needs, since a child's output arrives on its own schedule.
+    fn settle(what: &str, ready: impl Fn() -> bool) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if ready() {
+                return;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[test]
+    fn an_output_wait_answers_a_match_the_pane_already_has() {
+        // The first evaluation is the ordinary pass, so a fact already true is answered inside the
+        // park call itself — a caller never has to ask "is it already done?" before waiting.
+        let state = host_with("printf 'the-build-is-done\\n'", 40, 6);
+        wait_for_pane0_eof(&state);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        output_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 0, NEEDLE_PARAM: "the-build-is-done" }),
+            &sink,
+        );
+
+        let reply = only_reply(&sink);
+        assert_eq!(reply["result"]["pane"], 0);
+        assert_eq!(
+            reply["result"]["find"]["lines"][0]["text"], "the-build-is-done",
+            "the answer carries the matching LINE, the same PaneFind the find.<needle> slot \
+             serves: {reply}",
+        );
+        assert_eq!(
+            state.channels().outputs(BOOT).parked_count(),
+            0,
+            "and nothing is left parked — an answered wait is not also a waiter",
+        );
+    }
+
+    #[test]
+    fn an_output_wait_matches_a_line_that_has_scrolled_off_the_screen() {
+        // ⚠ THE DISCRIMINATOR AGAINST THE RIVAL, and the reason this method searches the pane's
+        // RETAINED output rather than re-reading its screen. herdr's `pane.wait_for_output` polls a
+        // `PaneRead` of the last `lines` rows every 100 ms (`src/api/wait.rs:22`, read at
+        // `9a4ce5e1`), so a line printed and pushed past that window inside one tick is never
+        // matched — the match is simply not in the next read.
+        //
+        // Here the marker is line 0 of sixty, in a SIX-row pane, and it is found.
+        let state = host_with("printf 'the-build-is-done\\n'; seq 1 60", 40, 6);
+        wait_for_pane0_eof(&state);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        output_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 0, NEEDLE_PARAM: "the-build-is-done" }),
+            &sink,
+        );
+
+        let reply = only_reply(&sink);
+        let line = reply["result"]["find"]["lines"][0]["line"]
+            .as_u64()
+            .unwrap_or(u64::MAX);
+        // THE CONTROL, and it runs every time rather than living in a revert-proof somebody has to
+        // remember: the marker must be absent from the six rows the pane is SHOWING. Without it,
+        // "the wait matched" would be satisfied by a marker still on screen and would say nothing
+        // about where the search looked.
+        let (visible, scrollback) = lock(&state.host.workspace())
+            .pane(PaneId(0))
+            .expect("the pane")
+            .pty()
+            .with_screen(|screen| {
+                (
+                    (0..6).map(|row| screen.row_text(row)).collect::<String>(),
+                    screen.scrollback_len(),
+                )
+            });
+        assert!(
+            !visible.contains("the-build-is-done"),
+            "the marker has scrolled off the live view, so a screen-only search would find \
+             NOTHING: {visible:?}",
+        );
+        assert_eq!(line, 0, "the marker is the pane's oldest line: {reply}");
+        assert!(
+            scrollback > 6,
+            "and it is {scrollback} lines above a six-row view",
+        );
+    }
+
+    #[test]
+    fn the_dispatch_loop_answers_an_output_wait_when_the_pane_moves() {
+        // ⚠ THIS TEST DRIVES THE LOOP, not the method. R291 and R292 each shipped a green
+        // revert-proof because a unit test called the method directly and said nothing about
+        // whether `dispatch_frames` calls it — and this slice adds exactly the shape that rule
+        // names, a new registry the daemon holds.
+        //
+        // The ordering is deterministic rather than timed: the wait is proved PARKED (so the fact
+        // was false when it parked), the fact is then made true and proved STILL unanswered (so
+        // nothing but the signal can answer it), and only then does the signal go down the queue.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": PANE_WAIT_OUTPUT_METHOD,
+            "params": { PANE_PARAM: 0, NEEDLE_PARAM: "the-build-is-done" },
+        });
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| dispatch_frames(&state, rx));
+            tx.send(IngressEvent::Frame(RpcFrame::new(
+                ConnId::allocate(),
+                declaring_the_protocol(&request.to_string()),
+                recording_reply(&sink),
+            )))
+            .expect("queue the park");
+            settle("the wait to park", || {
+                state.channels().outputs(BOOT).parked_count() == 1
+            });
+
+            // `cat` echoes what it is given, so the fact becomes true on demand rather than on a
+            // timer — and the pane's own text is what proves it landed.
+            lock(&state.host.workspace())
+                .pane(PaneId(0))
+                .expect("the pane")
+                .handle()
+                .write(b"the-build-is-done\n")
+                .expect("write into the pane");
+            settle("the pane to show it", || {
+                lock(&state.host.workspace())
+                    .pane(PaneId(0))
+                    .expect("the pane")
+                    .pty()
+                    .with_screen(sprag_vt::Screen::full_text)
+                    .contains("the-build-is-done")
+            });
+            assert!(
+                sink.lock().unwrap().is_empty(),
+                "the fact is true and the wait is STILL unanswered — without this line the test \
+                 could not tell the signal from the park's own evaluation",
+            );
+
+            tx.send(IngressEvent::OutputMoved(BOOT.to_owned()))
+                .expect("queue the signal");
+            settle("the loop to answer", || !sink.lock().unwrap().is_empty());
+            drop(tx);
+        });
+
+        let reply = only_reply(&sink);
+        assert_eq!(
+            reply["result"]["find"]["lines"][0]["text"], "the-build-is-done",
+            "the loop's OutputMoved arm ran the pass and answered it: {reply}",
+        );
+    }
+
+    #[test]
+    fn the_dispatch_loop_releases_a_closed_connections_output_waits() {
+        // The companion of `the_dispatch_loop_releases_a_closed_connections_waits`, one registry
+        // over — and an output wait needs it MORE: its predicate may never match, so an entry the
+        // disconnect did not drop is retained for the daemon's remaining life.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let conn = ConnId::allocate();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": PANE_WAIT_OUTPUT_METHOD,
+            "params": { PANE_PARAM: 0, NEEDLE_PARAM: "never-printed-by-cat" },
+        });
+        tx.send(IngressEvent::Frame(RpcFrame::new(
+            conn,
+            declaring_the_protocol(&request.to_string()),
+            recording_reply(&sink),
+        )))
+        .expect("queue the park");
+        tx.send(IngressEvent::Disconnect(conn))
+            .expect("queue the close");
+        drop(tx);
+        dispatch_frames(&state, rx);
+
+        assert_eq!(
+            state.channels().outputs(BOOT).parked_count(),
+            0,
+            "the loop released the output wait of a connection that closed",
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "and a gone connection is not written to: the release drops, it does not answer",
+        );
+    }
+
+    #[test]
+    fn an_output_wait_on_a_pane_of_another_session_is_refused_rather_than_parked() {
+        // A park hangs off ONE session's revision, so a pane elsewhere moves a token this wait does
+        // not listen to. Accepting it would be a request that can never be answered and never
+        // fails — which reads exactly like "it has not happened yet".
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        output_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 4242, NEEDLE_PARAM: "anything" }),
+            &sink,
+        );
+
+        let reply = only_reply(&sink);
+        assert_eq!(
+            reply["error"]["code"], INVALID_PARAMS,
+            "refused by CODE, never by wording: {reply}",
+        );
+        assert_eq!(
+            state.channels().outputs(BOOT).parked_count(),
+            0,
+            "and nothing parked",
+        );
+    }
+
+    #[test]
+    fn an_output_wait_needs_exactly_one_search_language() {
+        // A needle and a pattern are separate languages (`crate::wire::REGEX_FIELD`), so neither is
+        // a caller that forgot to say what it wants and both is a caller whose two disagree.
+        // Choosing one for it would be inventing an answer.
+        let state = host_with("cat", 40, 6);
+        for (params, why) in [
+            (serde_json::json!({ PANE_PARAM: 0 }), "neither"),
+            (
+                serde_json::json!({ PANE_PARAM: 0, NEEDLE_PARAM: "a", PATTERN_PARAM: "b" }),
+                "both",
+            ),
+            (
+                serde_json::json!({ PANE_PARAM: 0, NEEDLE_PARAM: "" }),
+                "an empty needle",
+            ),
+        ] {
+            let sink = Arc::new(Mutex::new(Vec::new()));
+            output_wait_recording(&state, ConnId::allocate(), params, &sink);
+            let reply = only_reply(&sink);
+            assert_eq!(
+                reply["error"]["code"], INVALID_PARAMS,
+                "{why} is refused: {reply}",
+            );
+            assert_eq!(
+                state.channels().outputs(BOOT).parked_count(),
+                0,
+                "{why} parked nothing",
+            );
+        }
+    }
+
+    #[test]
+    fn an_invalid_pattern_is_answered_rather_than_parked_forever() {
+        // A pattern the engine will not compile cannot start matching later, so parking on one is a
+        // wait that can never end. It is answered in the RESULT carrying the engine's own message,
+        // never as a JSON-RPC error — the same taxonomy the `regex.<pattern>` slot uses, because an
+        // invalid pattern is a well-formed question whose VALUE was rejected.
+        let state = host_with("cat", 40, 6);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        output_wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!({ PANE_PARAM: 0, PATTERN_PARAM: "unclosed(" }),
+            &sink,
+        );
+
+        let reply = only_reply(&sink);
+        assert!(
+            reply["result"]["find"]["error"].is_string(),
+            "the engine's explanation reaches the caller: {reply}",
+        );
+        assert_eq!(
+            state.channels().outputs(BOOT).parked_count(),
+            0,
+            "and it did not park a wait nothing could ever satisfy",
         );
     }
 

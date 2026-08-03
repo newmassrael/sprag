@@ -64,7 +64,6 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -73,9 +72,9 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::{
     AgentClock, ChannelRegistry, FrameIngress, Host, HostState, JobWatch, RunRegistry,
-    SavedHistory, bump_on_dirty, dispatch_frames, history_dir, history_limits, load_pane_history,
-    load_snapshot, pane_exit_hook, save_histories_if_changed, save_if_changed, snapshot_path,
-    spawn_reaper, stdin_frames, sweep_once,
+    SavedHistory, bump_on_dirty, dispatch_channel, dispatch_frames, history_dir, history_limits,
+    load_pane_history, load_snapshot, pane_exit_hook, save_histories_if_changed, save_if_changed,
+    snapshot_path, spawn_reaper, stdin_frames, sweep_once,
 };
 use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
@@ -251,7 +250,10 @@ fn main() -> io::Result<()> {
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client
     // and a stdin line share one consistent HostState view.
-    let (tx, rx) = mpsc::channel();
+    // Made through `dispatch_channel` rather than `mpsc::channel` so the output-wait signal is
+    // wired into `state` by construction: a `pane/waitForOutput` parked on this daemon is woken by
+    // a pane's own output through this very sender.
+    let (tx, rx) = dispatch_channel(&state);
     // The always-on Unix socket (execution-independent; SIGUSR1/2 controllable).
     sprag_rpc::mount(Arc::new(FrameIngress::new(tx.clone())), HOST_SOCKET);
     // Graceful shutdown: SIGINT/SIGTERM cancels + joins in-flight plugin runs.

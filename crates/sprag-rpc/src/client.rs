@@ -175,6 +175,48 @@ pub const EVENTS_WAIT_METHOD: &str = "events/waitFor";
 /// `events.<since>` slot both use, so a number from any of the three can be handed to the others.
 pub const SINCE_PARAM: &str = "since";
 
+/// The JSON-RPC method a client sends to BLOCK until a named pane's retained output matches —
+/// `params: { "pane": <id>, "needle": <string> }` or `{ "pane": <id>, "pattern": <string> }`,
+/// answering `{ "pane": <id>, "find": {matches, lines, truncated} }`.
+///
+/// ## Why this is a THIRD wait and not either of the other two
+///
+/// [`EVENTS_WAIT_METHOD`] parks on the journal, which output deliberately never appends to — a
+/// record per PTY batch would evict the ring at output rate and destroy the delivery guarantee the
+/// ring exists to give. `scene/waitFor` is woken by output but answers every bump, so a caller
+/// would still be writing the search loop this method exists to remove.
+///
+/// So it parks on the revision (the only token output moves) carrying a PREDICATE, and the predicate
+/// is the search the pane's own `find.<needle>` / `regex.<pattern>` slots already run, over the same
+/// retained output — scrollback INCLUDED. That last word is the contract: a line printed and
+/// scrolled off the visible screen while the caller was not looking still matches, because the
+/// search reads what the pane kept rather than what it is showing.
+///
+/// ## Two params, never one plus a mode
+///
+/// `needle` is a literal (ASCII case folded); `pattern` is a regular expression (case-sensitive —
+/// `(?i)` is in the language itself). Exactly one is required. They are separate keys for the reason
+/// the two query slots are separate addresses: a needle and a pattern are separate languages, so one
+/// string must not mean both depending on a flag carried beside it.
+///
+/// ## Intercepted, like the other parked method
+///
+/// Handled in the host's per-frame dispatch before the generic core, because it PARKS its reply.
+/// It carries no deadline of its own, for the reason [`EVENTS_WAIT_METHOD`] gives: a caller's socket
+/// read deadline is exact where a daemon-side one would need a clock the daemon does not have, and
+/// the close that follows releases the park however the caller goes away.
+pub const PANE_WAIT_OUTPUT_METHOD: &str = "pane/waitForOutput";
+
+/// The [`PANE_WAIT_OUTPUT_METHOD`] params key naming the pane whose output is the subject — the
+/// host pane id, the same handle `sprag panes` prints and every other wire address takes.
+pub const PANE_PARAM: &str = "pane";
+
+/// The [`PANE_WAIT_OUTPUT_METHOD`] params key carrying a LITERAL needle to wait for.
+pub const NEEDLE_PARAM: &str = "needle";
+
+/// The [`PANE_WAIT_OUTPUT_METHOD`] params key carrying a REGULAR EXPRESSION to wait for.
+pub const PATTERN_PARAM: &str = "pattern";
+
 /// The [`CLIENT_SIZE_METHOD`] params key carrying the client's width in cells.
 pub const COLS_PARAM: &str = "cols";
 

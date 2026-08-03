@@ -303,6 +303,20 @@ pub use sprag_rpc::{
 /// PARKS its reply rather than returning one.
 pub use sprag_rpc::{EVENTS_WAIT_METHOD, SINCE_PARAM};
 
+/// The OUTPUT WAIT, re-exported for the same one-spelling reason: [`PANE_WAIT_OUTPUT_METHOD`] blocks
+/// until the pane named by [`PANE_PARAM`] has retained output matching [`NEEDLE_PARAM`] (a literal)
+/// or [`PATTERN_PARAM`] (a regular expression).
+///
+/// It completes the slot/method pair one axis over from the change wait: **[`FIND_FIELD`] and
+/// [`REGEX_FIELD`] are the read, this method is the wait** — and it answers [`crate::PaneFind`],
+/// the very type those slots answer, so "does it say X" and "wait until it says X" are one shape a
+/// caller can hand to one reader. A second answer shape here is the drift that pairing exists to
+/// prevent.
+///
+/// Intercepted before the generic dispatch core, like [`EVENTS_WAIT_METHOD`], because it PARKS its
+/// reply rather than returning one.
+pub use sprag_rpc::{NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM};
+
 /// The wire's SHAPE agreement, re-exported from the transport that defines it for the same reason
 /// the vocabulary above is: one spelling, both ends.
 ///
