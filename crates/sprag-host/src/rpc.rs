@@ -2431,6 +2431,105 @@ mod tests {
         );
     }
 
+    /// A RENAME is derived by the funnel and answers a wait parked on it.
+    ///
+    /// Driven through `dispatch_one` rather than through `SessionShape::diff`, which is the whole
+    /// point: `diff` is a pure function over two shapes a test can hand it, and a version of this
+    /// feature that never put the name INTO the shape would leave such a test green. R291 and R292
+    /// each shipped a revert-proof that passed for exactly this reason, one round apart.
+    ///
+    /// The parked wait is the second half of the same claim — a client asking for `pane_renamed` by
+    /// name is what makes the variant worth deriving at all, rather than a word in a table.
+    #[test]
+    fn a_rename_is_derived_by_the_funnel_and_answers_a_wait_parked_on_it() {
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+
+        wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!([{ "kind": "pane_renamed" }]),
+            &sink,
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "nothing has been renamed yet, so the reply is PARKED",
+        );
+
+        // A SPAWN first, and it must NOT answer the wait: a pane born already named is a creation,
+        // not a rename, which is the rule the derivation states and the one a naive "the name is
+        // different from nothing" comparison would break.
+        invoke_recording(
+            &state,
+            crate::wire::SPAWN_ACTION,
+            serde_json::json!({ "name": "build" }),
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "a pane born named is `pane_created` and nothing else: {:?}",
+            sink.lock().unwrap(),
+        );
+
+        invoke_recording(
+            &state,
+            crate::wire::RENAME_PANE_ACTION,
+            serde_json::json!({ "pane": 1, "name": "test" }),
+        );
+        let replies = sink.lock().unwrap();
+        let reply: serde_json::Value =
+            serde_json::from_str(replies.first().expect("the rename answered the wait"))
+                .expect("valid JSON-RPC");
+        assert_eq!(
+            reply["result"]["events"],
+            serde_json::json!([{ "type": "pane_renamed", "pane": 1 }]),
+            "the pane is named by its ID, which a rename by definition does not move: {reply}",
+        );
+    }
+
+    /// Taking a name AWAY is a rename too — the edge a one-directional comparison drops.
+    #[test]
+    fn clearing_a_name_is_a_rename_and_so_is_taking_one() {
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        invoke_recording(&state, crate::wire::SPAWN_ACTION, serde_json::json!({}));
+
+        wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!([{ "kind": "pane_renamed", "pane": 1 }]),
+            &sink,
+        );
+        invoke_recording(
+            &state,
+            crate::wire::RENAME_PANE_ACTION,
+            serde_json::json!({ "pane": 1, "name": "build" }),
+        );
+        assert_eq!(
+            sink.lock().unwrap().len(),
+            1,
+            "an unnamed pane GAINING a name is a rename",
+        );
+
+        let cleared = Arc::new(Mutex::new(Vec::new()));
+        wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!([{ "kind": "pane_renamed", "pane": 1 }]),
+            &cleared,
+        );
+        invoke_recording(
+            &state,
+            crate::wire::RENAME_PANE_ACTION,
+            serde_json::json!({ "pane": 1 }),
+        );
+        assert_eq!(
+            cleared.lock().unwrap().len(),
+            1,
+            "and a named pane LOSING its name is a rename — the address a client held stopped \
+             resolving, which is precisely what it needs to be told",
+        );
+    }
+
     #[test]
     fn the_dispatch_loop_releases_a_closed_connections_waits() {
         // ⚠ THIS TEST EXISTS BECAUSE A REVERT-PROOF PASSED GREEN. Deleting

@@ -52,6 +52,10 @@
 //! * There is no `WindowRenamed`. A window's public shape is its name and whether it is current, so
 //!   a rename is indistinguishable from a close plus a create by anything reading that shape. A
 //!   variant nothing can produce is a promise to a client that the daemon cannot keep.
+//!   **[`Event::PaneRenamed`] is the same argument coming out the other way**, which is why the two
+//!   sit here together: a PANE's public shape is its ID, and the id survives a rename, so a name
+//!   change beside an unchanged id is unambiguous rather than a close plus a create. The rule
+//!   pruned one variant and admitted the other, which is what a rule has to be able to do.
 //! * There is no `PaneOutput`. Output already advances the revision a client is parked on, and a
 //!   record per batch of PTY output would evict this ring at output rate — destroying, for the
 //!   panes a reader actually cares about, the delivery guarantee the ring exists to give. That is a
@@ -84,7 +88,9 @@
 //! are invokes, so **every keystroke is a mutating dispatch**. A shape that walked every pane here
 //! would run at typing rate over an N-lock walk — the cost R265 removed from a different reader.
 //! So the shape is deliberately CHEAP ([`SessionShape::read`]): ids and names under one registry
-//! lock plus one workspace lock per window, never a `PaneInfo` build. What it is not is gated — the
+//! lock plus one workspace lock per window, never a `PaneInfo` build. A pane's NAME joined that
+//! list and is the only allocating term in it — `None` for every pane nobody has named, so the cost
+//! is paid by the workspaces that use the feature and by no others. What it is not is gated — the
 //! first version gated the pane walk on each window's `layout_revision`, and that was wrong for a
 //! reason worth keeping: that number means a client's PROJECTION is stale, not that the pane set
 //! moved, and a spawn reconciles the tree lazily so a pane arrives with it unmoved. The test wrote
@@ -145,13 +151,27 @@ struct WindowShape {
     /// facts: the pane SET says what exists, this says where the user is. It costs one `Option<u64>`
     /// copy per window on a walk that is already taking that window's lock.
     active: Option<u64>,
-    /// The window's pane ids, sorted. Read every time, under the window's workspace lock.
+    /// The window's panes as `(id, name)`, sorted by id. Read every time, under the window's
+    /// workspace lock.
     ///
     /// No carry-forward: see [`layout`](Self::layout) for the one that was tried and was wrong. The
     /// cost this pays instead is bounded and is the reason the walk is affordable at typing rate —
-    /// it is O(panes) of `u64` under one uncontended lock per window, against a keystroke path
-    /// already measured in milliseconds (R246).
-    panes: Vec<u64>,
+    /// it is O(panes) under one uncontended lock per window, against a keystroke path already
+    /// measured in milliseconds (R246).
+    ///
+    /// # Why the NAME rides here, when nothing else about a pane does
+    ///
+    /// Because it is the only pane fact that is BOTH mutated through a dispatch and part of what a
+    /// client re-reads. A pane's title, notification, liveness and exit status all move when the
+    /// CHILD writes, which this site structurally cannot see (module docs); its size and place move
+    /// with the arrangement, which `layout` already covers. A name moves only when somebody asks,
+    /// and the ask is a dispatch — so [`Event::PaneRenamed`] is DERIVED here rather than emitted by
+    /// its handler, on exactly the terms every other variant is.
+    ///
+    /// It costs one `Option<String>` clone per pane per mutating dispatch, and every keystroke is a
+    /// mutating dispatch. An unnamed pane clones `None`, which allocates nothing — so the cost is
+    /// paid per NAMED pane, and only by workspaces that have named any.
+    panes: Vec<(u64, Option<String>)>,
 }
 
 /// The structural state of one session, as cheaply as the registry can state it.
@@ -194,8 +214,16 @@ impl SessionShape {
                             .workspace()
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let mut ids: Vec<u64> =
-                            guard.panes().iter().map(|pane| pane.id().0).collect();
+                        let mut ids: Vec<(u64, Option<String>)> = guard
+                            .panes()
+                            .iter()
+                            .map(|pane| {
+                                (
+                                    pane.id().0,
+                                    pane.name().map(std::string::ToString::to_string),
+                                )
+                            })
+                            .collect();
                         ids.sort_unstable();
                         ids
                     };
@@ -241,13 +269,27 @@ impl SessionShape {
             if window.current && !had.current {
                 events.push(Event::WindowSelected(window.name.clone()));
             }
-            for id in &window.panes {
-                if !had.panes.contains(id) {
-                    events.push(Event::PaneCreated(*id));
+            for (id, name) in &window.panes {
+                match had.panes.iter().find(|(had_id, _)| had_id == id) {
+                    None => events.push(Event::PaneCreated(*id)),
+                    // A pane present in BOTH shapes under a different name was renamed. This is
+                    // exactly the derivation the module docs refuse for a WINDOW, and it comes out
+                    // the other way here for the reason stated there: a window's public shape IS
+                    // its name, so a window rename is indistinguishable from a close plus a create.
+                    // A pane's public shape is its ID, which survives the rename — so a name change
+                    // beside an unchanged id is unambiguous, and a variant something can produce.
+                    //
+                    // A NEW pane born already named is `PaneCreated` and nothing else, on the same
+                    // rule a new window's panes follow: the birth is the change, and a reader
+                    // re-reading it gets the name with it.
+                    Some((_, had_name)) if had_name != name => {
+                        events.push(Event::PaneRenamed(*id));
+                    }
+                    Some(_) => {}
                 }
             }
-            for id in &had.panes {
-                if !window.panes.contains(id) {
+            for (id, _) in &had.panes {
+                if !window.panes.iter().any(|(next_id, _)| next_id == id) {
                     events.push(Event::PaneClosed(*id));
                 }
             }
@@ -296,6 +338,14 @@ pub enum Event {
     /// nothing. That is a sample and not a dispatch, which is why it took an observer with a clock
     /// and why this variant still must not be widened to mean it.
     PaneClosed(u64),
+    /// A pane's NAME changed — it was given one, given a different one, or had it taken away.
+    /// `id` is the pane, which is unchanged by definition: a rename that moved the id would be a
+    /// close plus a create, and is why there is no `WindowRenamed` (module docs).
+    ///
+    /// Named by its subject like every variant here, so a reader re-reads the pane list to learn
+    /// what the name now IS. That matters more here than elsewhere: a name is an ADDRESS, so a
+    /// client holding one needs to know the moment it stops resolving.
+    PaneRenamed(u64),
     /// A window (tmux's window, a tab) appeared under this name.
     WindowCreated(String),
     /// A window is gone from the session's window list.
@@ -368,6 +418,7 @@ impl Event {
         match self {
             Self::PaneCreated(_) => EventKind::PaneCreated,
             Self::PaneClosed(_) => EventKind::PaneClosed,
+            Self::PaneRenamed(_) => EventKind::PaneRenamed,
             Self::PaneSelected(_) => EventKind::PaneSelected,
             Self::AgentStateChanged(_) => EventKind::PaneAgentStateChanged,
             Self::PaneJobChanged(_) => EventKind::PaneJobChanged,
@@ -387,6 +438,7 @@ impl Event {
         match self {
             Self::PaneCreated(id)
             | Self::PaneClosed(id)
+            | Self::PaneRenamed(id)
             | Self::PaneSelected(id)
             | Self::AgentStateChanged(id)
             | Self::PaneJobChanged(id) => Some(Subject::Pane(*id)),
@@ -730,6 +782,8 @@ pub enum EventKind {
     PaneCreated,
     /// [`Event::PaneClosed`].
     PaneClosed,
+    /// [`Event::PaneRenamed`].
+    PaneRenamed,
     /// [`Event::PaneSelected`].
     PaneSelected,
     /// [`Event::AgentStateChanged`].
@@ -760,6 +814,7 @@ impl EventKind {
     pub const ALL: &'static [Self] = &[
         Self::PaneCreated,
         Self::PaneClosed,
+        Self::PaneRenamed,
         Self::PaneSelected,
         Self::PaneAgentStateChanged,
         Self::PaneJobChanged,
@@ -782,6 +837,7 @@ impl EventKind {
         match self {
             Self::PaneCreated => "pane_created",
             Self::PaneClosed => "pane_closed",
+            Self::PaneRenamed => "pane_renamed",
             Self::PaneSelected => "pane_selected",
             Self::PaneAgentStateChanged => "pane_agent_state_changed",
             Self::PaneJobChanged => "pane_job_changed",
@@ -823,6 +879,7 @@ impl EventKind {
         match self {
             Self::PaneCreated
             | Self::PaneClosed
+            | Self::PaneRenamed
             | Self::PaneSelected
             | Self::PaneAgentStateChanged
             | Self::PaneJobChanged => Some(Subject::PANE_KEY),
@@ -1356,6 +1413,7 @@ mod tests {
         match kind {
             EventKind::PaneCreated => Event::PaneCreated(7),
             EventKind::PaneClosed => Event::PaneClosed(7),
+            EventKind::PaneRenamed => Event::PaneRenamed(7),
             EventKind::PaneSelected => Event::PaneSelected(7),
             EventKind::PaneAgentStateChanged => Event::AgentStateChanged(7),
             EventKind::PaneJobChanged => Event::PaneJobChanged(7),
@@ -1375,7 +1433,7 @@ mod tests {
         // `ALL` would silently not cover it. R275 cost a round to exactly this shape of silence.
         assert_eq!(
             EventKind::ALL.len(),
-            11,
+            12,
             "a kind was added or removed — update `ALL` and this count together",
         );
         for kind in EventKind::ALL {
@@ -1432,6 +1490,10 @@ mod tests {
             (
                 EventKind::PaneClosed,
                 json!({ "type": "pane_closed", "pane": 7 }),
+            ),
+            (
+                EventKind::PaneRenamed,
+                json!({ "type": "pane_renamed", "pane": 7 }),
             ),
             (
                 EventKind::PaneSelected,
