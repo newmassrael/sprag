@@ -75,6 +75,11 @@
 //! applied to a variant this module had already shipped. It returns if and when an observer that
 //! can see it exists, the way [`Event::AgentStateChanged`] arrived with its own.
 //!
+//! That sentence has since been taken up twice rather than once: [`Event::PaneJobChanged`] is the
+//! second variant to arrive with the settle waker as its observer, and it is the one that reaches
+//! the liveness this paragraph lists as unreachable — a pane whose child exits loses its foreground
+//! job, and the waker samples that where no dispatch could.
+//!
 //! The corollary is the reason the funnel is affordable at all: `key`, `text`, `paste` and `mouse`
 //! are invokes, so **every keystroke is a mutating dispatch**. A shape that walked every pane here
 //! would run at typing rate over an N-lock walk — the cost R265 removed from a different reader.
@@ -283,8 +288,12 @@ pub enum Event {
     /// A pane was born — `id` is [`PaneInfo::id`](sprag_terminal::PaneInfo::id).
     PaneCreated(u64),
     /// A pane is gone from the session's pane set. NOT "its child exited": a dead pane keeps its
-    /// place and its final screen, so a child's death is not this event and not yet any event —
-    /// see the module docs on what the funnel structurally cannot see.
+    /// place and its final screen, so a child's death is not this event — see the module docs on
+    /// what the funnel structurally cannot see.
+    ///
+    /// A child's death IS reported, by [`Event::PaneJobChanged`]: the pane's foreground job becomes
+    /// nothing. That is a sample and not a dispatch, which is why it took an observer with a clock
+    /// and why this variant still must not be widened to mean it.
     PaneClosed(u64),
     /// A window (tmux's window, a tab) appeared under this name.
     WindowCreated(String),
@@ -322,6 +331,30 @@ pub enum Event {
     /// not its value: a reader re-reads the pane list, where the state, the agent and the rule are
     /// defined once.
     AgentStateChanged(u64),
+    /// The FOREGROUND JOB that owns this pane's terminal changed — the user started something, or
+    /// the thing they started ended.
+    ///
+    /// Like [`Event::AgentStateChanged`] this is not derivable at the dispatch funnel and could not
+    /// be: a shell handing its terminal to a job is a `tcsetpgrp` inside the pane's own process
+    /// tree, and what reaches the daemon is bytes. So it too is emitted by the settle waker, which
+    /// is the only observer with a clock — see [`crate::JobWatch`] for why watching it is
+    /// affordable when reading the ANSWER is 2751 us.
+    ///
+    /// **The pane is the subject and the process group is not on the wire.** A reader answers this
+    /// by re-reading `pane_processes`, where the terminal device, the child pid, and every member
+    /// of the job with its `comm` and `argv` are defined once. Carrying the group id here would be a
+    /// second encoding of a fact that slot already serves.
+    ///
+    /// **A pane whose CHILD EXITS reports it here**, and this is the only event that does: the job
+    /// becomes nothing, which is a change like any other. A dead pane keeps its place and its final
+    /// screen, so [`Event::PaneClosed`] does not fire for it — that variant's docs say a child's
+    /// death "is not yet any event", and this is the variant that makes that sentence out of date.
+    ///
+    /// **Not emitted for a pane's FIRST reading.** Going from *nobody has looked* to *this group*
+    /// is discovery, not a change, and announcing it would report a job change for every pane on
+    /// the first sweep after boot. Same rule [`Event::PaneSelected`] states for a window's first
+    /// active pane.
+    PaneJobChanged(u64),
 }
 
 /// One [`Event`] with the revision it was appended at — the log's stored unit.

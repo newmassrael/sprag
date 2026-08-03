@@ -1903,6 +1903,9 @@ fn events_value(channels: &ChannelRegistry, session: &str, since: u64) -> Intros
             Event::AgentStateChanged(id) => {
                 serde_json::json!({ "type": "pane_agent_state_changed", "pane": id })
             }
+            Event::PaneJobChanged(id) => {
+                serde_json::json!({ "type": "pane_job_changed", "pane": id })
+            }
         })
         .collect();
     IntrospectValue::Json(serde_json::json!({

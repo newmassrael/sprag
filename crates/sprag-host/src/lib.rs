@@ -56,6 +56,7 @@ mod external;
 pub mod history;
 pub mod hooks;
 pub mod host;
+pub mod job;
 pub mod keymap;
 pub mod notify;
 pub mod options;
@@ -98,6 +99,7 @@ pub use host::{
     Host, HostClient, PANE_ENV_VAR, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
     PaneMatch, PaneNotification, PaneScrollFacts, pane_env_source,
 };
+pub use job::JobWatch;
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};
 pub use notify::ChannelRegistry;
 pub use options::{OPTIONS, OptionError, OptionKind, OptionSpec, Options};

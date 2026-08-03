@@ -44,6 +44,7 @@ use sprag_terminal::{PaneId, SessionRegistry, Workspace};
 
 use crate::agent::AgentClock;
 use crate::events::Event;
+use crate::job::JobWatch;
 use crate::notify::ChannelRegistry;
 
 /// What one pass did — returned so a caller can act on it and a test can assert it, rather than
@@ -57,11 +58,41 @@ pub struct SweepReport {
     pub evaluated: usize,
     /// Sessions whose published answer MOVED, and so whose clients were woken. A subset of the
     /// sessions visited, and empty on a pass that changed nothing.
+    ///
+    /// "Answer" is either kind this pass can find — an agent verdict or a foreground job — because
+    /// a session is woken ONCE for a pass however many of its facts moved. Counting the two
+    /// separately here would be counting wakes that do not happen.
     pub moved: usize,
+    /// Panes whose FOREGROUND JOB moved, on a pass that sampled it.
+    ///
+    /// Reported beside [`moved`](Self::moved) rather than folded into it because the two answer
+    /// different questions: that one is how many client sets were woken, this one is how many panes
+    /// had news. A test asserting the job half must not have to infer it from a wake that an agent
+    /// transition could equally have caused.
+    pub jobs_changed: usize,
 }
 
-/// One pass of the sweep: visit every pane, evaluate the ones that owe it, prune the trackers of
-/// panes that are gone, and wake the clients of the sessions whose answer moved.
+/// One pass of the sweep: visit every pane, sample its foreground job, evaluate the ones that owe
+/// an agent look, prune the trackers of panes that are gone, and wake the clients of the sessions
+/// whose answer moved.
+///
+/// # The two facts, and why one pass carries both
+///
+/// This pass is the daemon's only observer with a CLOCK, and both facts it publishes need one: an
+/// agent verdict rests on a screen and on an absence holding for a settle window, and a foreground
+/// job changes when a user types at a shell — neither reaches a dispatch. The dispatch funnel
+/// ([`crate::events`]) derives everything it structurally can and says so; these two are what is
+/// left.
+///
+/// They are otherwise independent and are kept so. The job sample is NOT gated on
+/// [`AgentRegistry::owes_evaluation`](crate::AgentRegistry::owes_evaluation) — that gate belongs to
+/// the settle clock and the ruleset, which have nothing to say about what a shell is running. What
+/// they share is the WALK and the WAKE: one pass over the panes, and one
+/// [`ChannelRegistry::announce`](crate::ChannelRegistry) per session carrying whatever that pass
+/// found for it.
+///
+/// [`JobWatch`] holds why watching the job is affordable at all: the pass reads its IDENTITY (one
+/// `/proc/<pid>/stat` line), never the 2751 us walk that describes it.
 ///
 /// `now` is passed rather than read so a caller can drive the pass at a chosen instant — the tests
 /// depend on it and so does any harness that wants a deterministic pass. `discover` is the
@@ -109,6 +140,7 @@ pub struct SweepReport {
 pub fn sweep_once(
     registry: &Mutex<SessionRegistry>,
     agents: &AgentClock,
+    jobs: &JobWatch,
     channels: &ChannelRegistry,
     now: Instant,
     discover: bool,
@@ -132,16 +164,40 @@ pub fn sweep_once(
     // Phase 2 — registry lock released. Each pool under its own lock.
     let mut report = SweepReport::default();
     let mut live: HashSet<PaneId> = HashSet::new();
-    // Per SESSION, the panes whose published verdict moved — the wake and its reason, collected
-    // together so they cannot disagree. `seq` moving is the sweep's own definition of a published
-    // change and is now also the record's, rather than a second rule that could drift from it.
-    let mut moved: HashMap<String, Vec<u64>> = HashMap::new();
+    // Per SESSION, everything this pass found — the wake and its reasons, collected together so
+    // they cannot disagree, and so that a session with news of BOTH kinds is woken ONCE. Two
+    // `announce` calls for one pass would bump a session's revision twice and send its clients
+    // round twice for a single observation.
+    let mut woken: HashMap<String, Vec<Event>> = HashMap::new();
     for (session, pool) in &pools {
         let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
         for pane in pool.panes() {
             let id = pane.id();
             live.insert(id);
             report.visited += 1;
+            // THE FOREGROUND JOB, and it is deliberately ABOVE the agent gate's `continue`: a job
+            // change is a different fact on a different clock, and gating it on `owes_evaluation`
+            // would tie it to the settle window and the ruleset, which have nothing to say about
+            // what a shell is running.
+            //
+            // Only on a SWEEP. `discover` means "additionally look for what nobody has asked
+            // about", which a job change is by construction — nothing requests one and no dispatch
+            // produces one. That makes `SWEEP_INTERVAL` the latency bound, and the ceiling is not
+            // this line's to lower: the waker parks with `park_until_due(SWEEP_INTERVAL)`, so a
+            // faster job cadence means moving the park, not adding a constant here that would look
+            // independent and would not be.
+            //
+            // The read is one `/proc/<pid>/stat` line, taken under the workspace lock that is
+            // already held — the same lock the screen read below is taken under, and strictly less
+            // work than that. `JobWatch::observe` holds the establish rule: a pane's first reading
+            // is not news.
+            if discover && jobs.observe(id, pane.pty().foreground_pgid()) {
+                report.jobs_changed += 1;
+                woken
+                    .entry(session.clone())
+                    .or_default()
+                    .push(Event::PaneJobChanged(id.0));
+            }
             // A REPORT outlives the process that made it, and this is what bounds that. The thing
             // that expires is the REPORTER, and it can go in two ways the daemon can see:
             //
@@ -185,7 +241,10 @@ pub fn sweep_once(
                 );
             });
             if agents.with(|state| state.seq(id)) != before {
-                moved.entry(session.clone()).or_default().push(id.0);
+                woken
+                    .entry(session.clone())
+                    .or_default()
+                    .push(Event::AgentStateChanged(id.0));
             }
             // THE LOOP'S LIVENESS RESTS ON THIS. `park_until_due` returns immediately for a deadline
             // already past, so a due pane that an observation does not RESOLVE sends the waker round
@@ -207,21 +266,18 @@ pub fn sweep_once(
     // forget every other session's panes.
     if discover {
         agents.with(|state| state.retain_live(&live));
+        jobs.retain_live(&live);
     }
     // Wake the clients of the sessions whose published answer moved, and only those — and tell
-    // them WHICH panes moved, in the same call, so the wake and its reason land together
+    // them WHAT moved, in the same call, so the wake and its reasons land together
     // (`ChannelRegistry::announce` holds the journal lock across the bump for exactly that).
-    for (session, panes) in &moved {
-        channels.announce(
-            session,
-            panes
-                .iter()
-                .copied()
-                .map(Event::AgentStateChanged)
-                .collect(),
-        );
+    //
+    // ONE call per session, carrying every event this pass found for it, for the reason `woken` is
+    // built this way: the announce IS the wake, so a second one is a second wake.
+    report.moved = woken.len();
+    for (session, events) in woken {
+        channels.announce(&session, events);
     }
-    report.moved = moved.len();
     report
 }
 
@@ -269,6 +325,7 @@ mod tests {
         command.env("TERM", "dumb");
         let reg = registry_with(&[("a", command)]);
         let channels = Arc::new(ChannelRegistry::default());
+        let jobs = JobWatch::new();
         let agents = Arc::new(AgentClock::new(Ruleset::new(built_ins())));
         let id = PaneId(0);
 
@@ -311,6 +368,7 @@ mod tests {
         sweep_once(
             &reg,
             &agents,
+            &jobs,
             &channels,
             Instant::now() + DEFAULT_SETTLE * 2,
             true,
@@ -360,6 +418,7 @@ mod tests {
     fn a_bound_report_dies_with_a_process_the_pane_did_not_spawn() {
         let reg = registry_with(&[("a", claude_pane())]);
         let channels = Arc::new(ChannelRegistry::default());
+        let jobs = JobWatch::new();
         let agents = Arc::new(AgentClock::new(Ruleset::new(built_ins())));
         let id = PaneId(0);
 
@@ -378,7 +437,7 @@ mod tests {
         );
 
         let alive = Instant::now() + DEFAULT_SETTLE * 2;
-        sweep_once(&reg, &agents, &channels, alive, true);
+        sweep_once(&reg, &agents, &jobs, &channels, alive, true);
         assert!(
             agents.with(|state| state.reported(id)),
             "CONTROL: the agent is still running, so its report stands",
@@ -387,7 +446,14 @@ mod tests {
         agent.kill().expect("kill the stand-in agent");
         agent.wait().expect("reap it, so its group is really gone");
 
-        sweep_once(&reg, &agents, &channels, alive + DEFAULT_SETTLE, true);
+        sweep_once(
+            &reg,
+            &agents,
+            &jobs,
+            &channels,
+            alive + DEFAULT_SETTLE,
+            true,
+        );
         assert!(
             !agents.with(|state| state.reported(id)),
             "the agent is gone, so its authority is gone",
@@ -408,6 +474,7 @@ mod tests {
     fn an_unbound_report_is_nobody_elses_to_expire() {
         let reg = registry_with(&[("a", claude_pane())]);
         let channels = Arc::new(ChannelRegistry::default());
+        let jobs = JobWatch::new();
         let agents = Arc::new(AgentClock::new(Ruleset::new(built_ins())));
         let id = PaneId(0);
 
@@ -425,7 +492,7 @@ mod tests {
         let mut now = Instant::now();
         for _ in 0..3 {
             now += DEFAULT_SETTLE * 2;
-            sweep_once(&reg, &agents, &channels, now, true);
+            sweep_once(&reg, &agents, &jobs, &channels, now, true);
         }
         assert!(
             agents.with(|state| state.reported(id)),
@@ -500,9 +567,10 @@ mod tests {
         let reg = registry_with(&[("a", claude_pane()), ("b", painting("$ "))]);
         let agents = clock();
         let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
         let base = Instant::now();
 
-        let first = sweep_once(&reg, &agents, &channels, base, true);
+        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
         assert_eq!(first.visited, 2);
         assert_eq!(
             first.evaluated, 2,
@@ -510,7 +578,7 @@ mod tests {
              can give it a state",
         );
 
-        let second = sweep_once(&reg, &agents, &channels, base, true);
+        let second = sweep_once(&reg, &agents, &jobs, &channels, base, true);
         assert_eq!(second.visited, 2);
         assert_eq!(
             second.evaluated, 0,
@@ -525,17 +593,18 @@ mod tests {
         let reg = registry_with(&[("a", claude_pane())]);
         let agents = clock();
         let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, base, true);
         assert_eq!(
-            sweep_once(&reg, &agents, &channels, base, true).evaluated,
+            sweep_once(&reg, &agents, &jobs, &channels, base, true).evaluated,
             0
         );
 
         agents.with(|state| state.reload(Ruleset::new(built_ins())));
         assert_eq!(
-            sweep_once(&reg, &agents, &channels, base, true).evaluated,
+            sweep_once(&reg, &agents, &jobs, &channels, base, true).evaluated,
             1,
             "the input that moved was not on the pane's screen, so nothing else will bring it back",
         );
@@ -549,9 +618,10 @@ mod tests {
         let reg = registry_with(&[("a", claude_pane())]);
         let agents = clock();
         let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
         let base = Instant::now();
 
-        let due_only = sweep_once(&reg, &agents, &channels, base, false);
+        let due_only = sweep_once(&reg, &agents, &jobs, &channels, base, false);
         assert_eq!(due_only.visited, 1, "it still walks — it just does not ask");
         assert_eq!(
             due_only.evaluated, 0,
@@ -569,9 +639,10 @@ mod tests {
         let reg = registry_with(&[("a", claude_pane()), ("b", painting("$ "))]);
         let agents = clock();
         let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, base, true);
         assert_eq!(agents.with(|state| state.len()), 2);
 
         // Session `b`'s pane closes. Its tracker is now the only thing that remembers it.
@@ -585,7 +656,7 @@ mod tests {
             let _closed = guard.close(gone);
         }
 
-        sweep_once(&reg, &agents, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, base, true);
         assert_eq!(
             agents.with(|state| state.len()),
             1,
@@ -604,11 +675,12 @@ mod tests {
         let reg = registry_with(&[("a", claude_pane()), ("b", painting("$ "))]);
         let agents = clock();
         let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
         let base = Instant::now();
 
         // The first pass gives the claude pane a pending candidate; nothing is published yet,
         // because a verdict resting on an ABSENCE has to hold for the settle window.
-        let first = sweep_once(&reg, &agents, &channels, base, true);
+        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
         assert_eq!(first.moved, 0, "a candidate is not a publication");
         let (before_a, before_b) = (
             channels.revision("a").current(),
@@ -616,7 +688,7 @@ mod tests {
         );
 
         // The window closes. Only `a` has anything to say.
-        let settled = sweep_once(&reg, &agents, &channels, base + DEFAULT_SETTLE, true);
+        let settled = sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
         assert_eq!(settled.moved, 1);
         assert!(
             channels.revision("a").current() > before_a,
@@ -640,9 +712,10 @@ mod tests {
         let reg = registry_with(&[("a", claude_pane()), ("b", painting("$ "))]);
         let agents = clock();
         let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, base, true);
         let cursor_a = channels.revision("a").current();
         let cursor_b = channels.revision("b").current();
         assert!(
@@ -650,7 +723,7 @@ mod tests {
             "a candidate is not a publication, so it is not a record either",
         );
 
-        sweep_once(&reg, &agents, &channels, base + DEFAULT_SETTLE, true);
+        sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
 
         let recorded = journal_events(&channels, "a", cursor_a);
         assert_eq!(
@@ -678,13 +751,14 @@ mod tests {
         let reg = registry_with(&[("a", claude_pane())]);
         let agents = clock();
         let channels = ChannelRegistry::default();
+        let jobs = JobWatch::new();
         let base = Instant::now();
 
-        sweep_once(&reg, &agents, &channels, base, true);
+        sweep_once(&reg, &agents, &jobs, &channels, base, true);
         // What a parked client would be holding: the revision before the publishing pass.
         let parked_at = channels.revision("a").current();
 
-        sweep_once(&reg, &agents, &channels, base + DEFAULT_SETTLE, true);
+        sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
 
         // What the wake answers it with.
         let woken_at = channels.revision("a").current();
@@ -698,6 +772,186 @@ mod tests {
             journal_events(&channels, "a", woken_at).is_empty(),
             "and is delivered once — a reader level with the wake has already accounted for it",
         );
+    }
+
+    /// **THE R291 claim, driven rather than simulated.** A real shell on a real pty is given a real
+    /// job, and the pass that sees the foreground group move records it against that pane.
+    ///
+    /// The FIRST pass is the control and it is the half most easily got wrong: a pane nobody has
+    /// sampled must ESTABLISH silently. Without that assertion this test passes just as well on a
+    /// watch that announces every pane on every boot, which is the shape the bug takes.
+    ///
+    /// `bash -i` because job control is what is being observed: a non-interactive shell runs its
+    /// commands in its OWN process group and never hands the terminal over, so the number would
+    /// never move and the test would be measuring nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pane_whose_foreground_job_changes_is_announced() {
+        let reg = registry_with(&[("a", interactive_shell())]);
+        let agents = clock();
+        let jobs = JobWatch::new();
+        let channels = ChannelRegistry::default();
+        let base = Instant::now();
+        let id = PaneId(0);
+
+        // The shell at its prompt owns its own terminal. Waited for rather than assumed: job
+        // control settles on the child's schedule.
+        let at_rest =
+            wait_for_pgid(&reg, "a", id, |pgid| pgid.is_some()).expect("the shell owns its tty");
+        let cursor = channels.revision("a").current();
+
+        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        assert_eq!(
+            first.jobs_changed, 0,
+            "CONTROL: nobody had sampled this pane, so its first reading establishes and is not news",
+        );
+        assert!(
+            journal_events(&channels, "a", cursor).is_empty(),
+            "and nothing was recorded for it",
+        );
+
+        // A job the user starts takes the terminal from the shell.
+        write_to_pane(&reg, "a", id, b"sleep 300\n");
+        let running = wait_for_pgid(&reg, "a", id, |pgid| {
+            pgid.is_some_and(|pgid| pgid != at_rest)
+        })
+        .expect("a foreground job takes the terminal");
+        assert_ne!(running, at_rest, "the job owns the terminal while it runs");
+
+        let cursor = channels.revision("a").current();
+        let second = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        assert_eq!(
+            second.jobs_changed, 1,
+            "the pass that sees the group move is the pass that reports it",
+        );
+
+        let recorded = journal_events(&channels, "a", cursor);
+        assert_eq!(
+            recorded,
+            vec![Event::PaneJobChanged(id.0)],
+            "named by its SUBJECT — a reader answers it by re-reading pane_processes: {recorded:?}",
+        );
+    }
+
+    /// **ONE PASS, ONE WAKE.** A session whose agent verdict AND whose foreground job both move in
+    /// the same pass is woken ONCE, carrying both records.
+    ///
+    /// This is what the per-session accumulator holds `Vec<Event>` for. A second `announce` loop for
+    /// the job half would bump this session's revision twice and send its clients round twice for a
+    /// single observation — and every event would still be delivered, so nothing else in the tree
+    /// would go red. The revision delta is the only observable that discriminates, which is why it
+    /// is asserted as an exact number and not as "it moved".
+    ///
+    /// The shell's PROMPT is the `claude` footer the first built-in manifest claims, so the pane has
+    /// a verdict that can settle while it also has a job that can change.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn one_pass_wakes_a_session_once_however_many_facts_moved() {
+        let reg = registry_with(&[("a", interactive_shell_painting_an_agent())]);
+        let agents = AgentClock::new(Ruleset::new(built_ins()));
+        let jobs = JobWatch::new();
+        let channels = ChannelRegistry::default();
+        let base = Instant::now();
+        let id = PaneId(0);
+
+        let at_rest =
+            wait_for_pgid(&reg, "a", id, |pgid| pgid.is_some()).expect("the shell owns its tty");
+
+        // Pass one: the job is established and the agent gains a candidate. Neither is a publication.
+        let first = sweep_once(&reg, &agents, &jobs, &channels, base, true);
+        assert_eq!(
+            first.moved, 0,
+            "a candidate is not a publication, and a first reading is not news"
+        );
+
+        write_to_pane(&reg, "a", id, b"sleep 300\n");
+        wait_for_pgid(&reg, "a", id, |pgid| {
+            pgid.is_some_and(|pgid| pgid != at_rest)
+        })
+        .expect("a foreground job takes the terminal");
+
+        let before = channels.revision("a").current();
+        let second = sweep_once(&reg, &agents, &jobs, &channels, base + DEFAULT_SETTLE, true);
+        assert_eq!(second.jobs_changed, 1, "the job moved");
+        assert_eq!(second.moved, 1, "one session was woken");
+
+        let recorded = journal_events(&channels, "a", before);
+        assert!(
+            recorded.contains(&Event::PaneJobChanged(id.0))
+                && recorded.contains(&Event::AgentStateChanged(id.0)),
+            "both facts moved in this pass, so both are on the record: {recorded:?}",
+        );
+        assert_eq!(
+            channels.revision("a").current() - before,
+            1,
+            "and they arrived on ONE wake — two announces would bump twice for one observation",
+        );
+    }
+
+    /// A `bash` that runs jobs: `-i` for job control, `--norc` so the box's dotfiles cannot change
+    /// what it does, and a prompt with no escapes in it.
+    #[cfg(target_os = "linux")]
+    fn interactive_shell() -> CommandBuilder {
+        let mut command = CommandBuilder::new("/bin/bash");
+        command.arg("--norc");
+        command.arg("-i");
+        command.env("TERM", "dumb");
+        command.env("PS1", "$ ");
+        command
+    }
+
+    /// The same shell, prompting with the `claude` footer the first built-in manifest claims — so
+    /// one pane can have both a verdict that settles and a job that changes.
+    #[cfg(target_os = "linux")]
+    fn interactive_shell_painting_an_agent() -> CommandBuilder {
+        let mut command = interactive_shell();
+        command.env("PS1", "  \u{23f8} manual mode on \u{b7} ? for shortcuts");
+        command
+    }
+
+    /// Write bytes to a pane's child, reached the way the daemon reaches it.
+    #[cfg(target_os = "linux")]
+    fn write_to_pane(reg: &Arc<Mutex<SessionRegistry>>, session: &str, id: PaneId, bytes: &[u8]) {
+        let pool = {
+            let guard = reg.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.workspace_of(session).expect("the session")
+        };
+        let guard = pool.lock().unwrap_or_else(PoisonError::into_inner);
+        guard
+            .pane(id)
+            .expect("the pane")
+            .pty()
+            .write(bytes)
+            .expect("write to the pty");
+    }
+
+    /// Poll a pane's foreground job until `want` accepts it, or give up.
+    ///
+    /// Polled rather than slept on for `PanePty`'s own reason: job control settles on the child's
+    /// schedule, so a fixed wait is either flaky or slow.
+    #[cfg(target_os = "linux")]
+    fn wait_for_pgid(
+        reg: &Arc<Mutex<SessionRegistry>>,
+        session: &str,
+        id: PaneId,
+        want: impl Fn(Option<u32>) -> bool,
+    ) -> Option<u32> {
+        let pool = {
+            let guard = reg.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.workspace_of(session).expect("the session")
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let pgid = {
+                let guard = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                guard.pane(id).and_then(|pane| pane.pty().foreground_pgid())
+            };
+            if want(pgid) {
+                return pgid;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
     }
 
     /// Everything `session`'s journal has recorded above `cursor`.

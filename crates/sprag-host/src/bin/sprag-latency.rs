@@ -235,8 +235,8 @@ use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::config::AgentManifests;
 use sprag_host::wire::SESSION_ACTIVITY_DISPLAY_MAX_AGE;
 use sprag_host::{
-    AgentClock, CellFrame, ChannelRegistry, Host, HostState, PaneScrollFacts, handle_request,
-    mux_action_path, sweep_once,
+    AgentClock, CellFrame, ChannelRegistry, Host, HostState, JobWatch, PaneScrollFacts,
+    handle_request, mux_action_path, sweep_once,
 };
 use sprag_terminal::{CommandBuilder, PaneId};
 use sprag_vt::{Emulator, Palette, Screen, VtPort};
@@ -776,10 +776,15 @@ static PASSES: AtomicU64 = AtomicU64::new(0);
 static EVALUATED: AtomicU64 = AtomicU64::new(0);
 
 /// One sweep pass over `host`'s registry, at `now`, with discovery on — the daemon's own call.
-fn pass(host: &HostState, clock: &Arc<AgentClock>) {
+///
+/// `jobs` is the host's OWN foreground-job watch and must be the same one across calls: a watch
+/// handed a fresh map each pass would re-establish every pane every time and so would never report
+/// a change, which is the condition this instrument would then be measuring instead of the daemon's.
+fn pass(host: &HostState, clock: &Arc<AgentClock>, jobs: &JobWatch) {
     let report = sweep_once(
         host.registry(),
         clock,
+        jobs,
         host.channels(),
         Instant::now(),
         true,
@@ -1510,6 +1515,10 @@ fn main() -> ExitCode {
     // rate and touches no lock the reader wants.
     let other = live_host().with_agents(Arc::new(AgentClock::new(Ruleset::default())));
     let other_clock = other.agents().expect("the private host has one too");
+    // One job watch per HOST, for the reason `pass` states: the two registries hold different panes,
+    // and a watch shared between them would call every pane of each a change on every pass.
+    let jobs = JobWatch::new();
+    let other_jobs = JobWatch::new();
     // Two rulesets that say the SAME thing, alternated: every pass finds every pane's verdict reached
     // under a revision no longer in force, which is a manifest save sustained. Built once, because
     // `built_ins` compiles patterns and a sweeper in the regex compiler is not a sweeper holding a
@@ -1534,6 +1543,7 @@ fn main() -> ExitCode {
         let report = sweep_once(
             state.registry(),
             &clock,
+            &jobs,
             state.channels(),
             Instant::now(),
             true,
@@ -1547,6 +1557,7 @@ fn main() -> ExitCode {
         let report = sweep_once(
             state.registry(),
             &clock,
+            &jobs,
             state.channels(),
             Instant::now(),
             true,
@@ -1558,10 +1569,10 @@ fn main() -> ExitCode {
 
     let free = reader_latencies(&state);
     let mark = swept_now();
-    let quiet_private = under(&state, || pass(&other, &other_clock));
+    let quiet_private = under(&state, || pass(&other, &other_clock, &other_jobs));
     let quiet_private_work = swept_since(mark);
     let mark = swept_now();
-    let quiet_shared = under(&state, || pass(&state, &clock));
+    let quiet_shared = under(&state, || pass(&state, &clock, &jobs));
     let quiet_shared_work = swept_since(mark);
     // Staleness is forced on the READER's clock in every stale condition, including the controls --
     // that is what makes the reader re-evaluate, and it has to be held constant so the pair differs
@@ -1575,14 +1586,14 @@ fn main() -> ExitCode {
     let stale_private = under(&state, || {
         stale(0, &clock);
         stale(1, &other_clock);
-        pass(&other, &other_clock);
+        pass(&other, &other_clock, &other_jobs);
     });
     let stale_private_work = swept_since(mark);
     let mark = swept_now();
     let stale_shared = under(&state, || {
         stale(0, &clock);
         stale(1, &other_clock);
-        pass(&state, &clock);
+        pass(&state, &clock, &jobs);
     });
     let stale_shared_work = swept_since(mark);
 

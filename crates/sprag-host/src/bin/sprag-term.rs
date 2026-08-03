@@ -72,10 +72,10 @@ use std::time::{Duration, Instant};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::{
-    AgentClock, ChannelRegistry, FrameIngress, Host, HostState, RunRegistry, SavedHistory,
-    bump_on_dirty, dispatch_frames, history_dir, history_limits, load_pane_history, load_snapshot,
-    pane_exit_hook, save_histories_if_changed, save_if_changed, snapshot_path, spawn_reaper,
-    stdin_frames, sweep_once,
+    AgentClock, ChannelRegistry, FrameIngress, Host, HostState, JobWatch, RunRegistry,
+    SavedHistory, bump_on_dirty, dispatch_frames, history_dir, history_limits, load_pane_history,
+    load_snapshot, pane_exit_hook, save_histories_if_changed, save_if_changed, snapshot_path,
+    spawn_reaper, stdin_frames, sweep_once,
 };
 use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
@@ -450,6 +450,11 @@ fn spawn_agent_waker(
 ) {
     thread::spawn(move || {
         let mut last_sweep = Instant::now();
+        // The foreground-job watch is this thread's alone and outlives no pass but every one of
+        // them — which is the whole of what it is for: a change is only visible against a reading
+        // the daemon already had. Constructed here rather than passed in because nothing else in
+        // the process reads it; the day something does, it moves out to where the clock lives.
+        let jobs = JobWatch::new();
         loop {
             // Blocked until there is something to do. Returns early when a candidate APPEARS, which is
             // not itself work — the guard below sends that wake straight back to the park.
@@ -483,7 +488,7 @@ fn spawn_agent_waker(
             // so what is left here is the scheduling and nothing else. It also has to be callable:
             // R261 measured what its locks cost by running it against a live registry while another
             // thread served requests, which is not a thing a closure in this file can be asked to do.
-            sweep_once(&registry, &agents, &channels, now, sweep);
+            sweep_once(&registry, &agents, &jobs, &channels, now, sweep);
         }
     });
 }
