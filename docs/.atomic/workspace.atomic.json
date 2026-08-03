@@ -10170,6 +10170,64 @@
         "Still open in item 16: two samplers still take two full /proc passes, and nothing displays what a pane is running."
       ]
     },
+    "R292": {
+      "decision_summary": "A wait is for the change a caller NAMED, parked on the journal instead of on a revision that pane output bumps 22431 times a second",
+      "changes_bullets": [
+        "MEASURED FIRST, and the register's statement of the gap was too kind: the scene/waitFor + events.<since> pair returned 67293 times in 3 seconds against a build-rate pane (22431/s), every batch EMPTY, where a quiet pane returned 0 — the cursor cannot advance past the journal's head while output runs the revision away from it, so the tool did not block at all.",
+        "EventKind + Subject are DERIVED from Event by exhaustive match, and EventKind::wire_str is the one place an event's wire name is spelled — the eleven-arm JSON literal in the serializer is gone, so a filter cannot parse a second word.",
+        "EventFilter is any-of clauses over an optional kind and an optional subject: 'pane 3's job changed OR pane 3 closed' is ONE wait, 'any pane closed' is expressible, and every ACCEPTED filter is satisfiable because an unsatisfiable one is a wait that never returns.",
+        "JournalChannel holds the journal and its parked replies under ONE lock, so the park decision cannot race an append and no append site can forget the wake; replies are always sent outside it.",
+        "events/waitFor is intercepted in dispatch_one beside pinion's try_async_wait_for, parks its reply (the daemon dispatch is one thread for every client), and is released by RpcIngress::on_disconnect — the client's own socket deadline is the only timeout.",
+        "wait_for_change takes pane and kinds and makes ONE host call; sprag events -f parks on the journal, so following no longer spins; EventFilter::narrowing_wire is the single builder both surfaces send."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 45 targets / 1861 tests (+24 on 1837); clippy 0 with no suppression; doc gate 0/16; pixel smoke 136/0 unchanged.",
+        "WIRE_PROTOCOL stays 4 and it was RUN this time, both directions against a parent-commit (5eab1f5) worktree: an old client reads and follows the new daemon unchanged, and a new client meets a LOUD refusal from the old one naming the method and its whole supported set.",
+        "⚠ A REVERT-PROOF PASSED GREEN AGAIN, one round after R291's: deleting the on_disconnect release left all 507 unit and 40 wire tests passing, because notify's own test calls release DIRECTLY. the_dispatch_loop_releases_a_closed_connections_waits now drives dispatch_frames itself, and the proof then fails on exactly it.",
+        "Four other revert-proofs each discriminated first time: the lost term, the unfiltered park decision, the establish-the-shape observe, and the typing-rate gate (whose control is the instrument, not a test).",
+        "MEASURED with a control that moves it: with 8 waits parked and a full ring the derive site costs 0.163-0.221 us gated against 1.707-3.024 un-gated, three runs, minima — about 10x the site's own cost, at typing rate.",
+        "Live at every surface: a wire test where a filtered wait trips its deadline while scene/waitFor is released by the same daemon's output; a CLI test where -f prints nothing for 2 s then exactly the named change; and the MCP job wait collapsed from R291's re-call loop to ONE call.",
+        "Every rendered answer forced to fail and read, including the refusal an operator sees, which was reaching them behind 'host rpc error:' and now reads as the sentence itself."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "A FAILING TEST found the real hole: a park had to ESTABLISH the session's shape, or a client whose first host call is a wait sleeps through the very next change — and the live wire test passed either way because read_revision had already established it.",
+        "The MCP description was missing pane_selected while the daemon reported it: R291 registered that prose list as undrifted and it had drifted. It is derived from EventKind::ALL by a test now, which also holds the '5 seconds' sentence against SWEEP_INTERVAL.",
+        "I inherited R291's claim that herdr's events.wait does server-side matching and never opened the handler: 18 of its 19 declared EventMatch shapes are refused at runtime, and the mechanism is a 100 ms poll. Seven kinds their daemon emits cannot be named to that verb at all.",
+        "NOT built, on purpose: no streaming subscription (herdr's events.subscribe has no sprag counterpart), no regex/text wait, no agent-STATE filter, no cap on parked waits per session, and sprag events refuses a filter without -f rather than growing a second matcher client-side."
+      ],
+      "publishable_decision_summary": "A wait is for the change a caller NAMED, parked on the journal instead of on a revision that pane output bumps 22431 times a second",
+      "publishable_changes_bullets": [
+        "MEASURED FIRST, and the register's statement of the gap was too kind: the scene/waitFor + events.<since> pair returned 67293 times in 3 seconds against a build-rate pane (22431/s), every batch EMPTY, where a quiet pane returned 0 — the cursor cannot advance past the journal's head while output runs the revision away from it, so the tool did not block at all.",
+        "EventKind + Subject are DERIVED from Event by exhaustive match, and EventKind::wire_str is the one place an event's wire name is spelled — the eleven-arm JSON literal in the serializer is gone, so a filter cannot parse a second word.",
+        "EventFilter is any-of clauses over an optional kind and an optional subject: 'pane 3's job changed OR pane 3 closed' is ONE wait, 'any pane closed' is expressible, and every ACCEPTED filter is satisfiable because an unsatisfiable one is a wait that never returns.",
+        "JournalChannel holds the journal and its parked replies under ONE lock, so the park decision cannot race an append and no append site can forget the wake; replies are always sent outside it.",
+        "events/waitFor is intercepted in dispatch_one beside pinion's try_async_wait_for, parks its reply (the daemon dispatch is one thread for every client), and is released by RpcIngress::on_disconnect — the client's own socket deadline is the only timeout.",
+        "wait_for_change takes pane and kinds and makes ONE host call; sprag events -f parks on the journal, so following no longer spins; EventFilter::narrowing_wire is the single builder both surfaces send."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 45 targets / 1861 tests (+24 on 1837); clippy 0 with no suppression; doc gate 0/16; pixel smoke 136/0 unchanged.",
+        "WIRE_PROTOCOL stays 4 and it was RUN this time, both directions against a parent-commit (5eab1f5) worktree: an old client reads and follows the new daemon unchanged, and a new client meets a LOUD refusal from the old one naming the method and its whole supported set.",
+        "⚠ A REVERT-PROOF PASSED GREEN AGAIN, one round after R291's: deleting the on_disconnect release left all 507 unit and 40 wire tests passing, because notify's own test calls release DIRECTLY. the_dispatch_loop_releases_a_closed_connections_waits now drives dispatch_frames itself, and the proof then fails on exactly it.",
+        "Four other revert-proofs each discriminated first time: the lost term, the unfiltered park decision, the establish-the-shape observe, and the typing-rate gate (whose control is the instrument, not a test).",
+        "MEASURED with a control that moves it: with 8 waits parked and a full ring the derive site costs 0.163-0.221 us gated against 1.707-3.024 un-gated, three runs, minima — about 10x the site's own cost, at typing rate.",
+        "Live at every surface: a wire test where a filtered wait trips its deadline while scene/waitFor is released by the same daemon's output; a CLI test where -f prints nothing for 2 s then exactly the named change; and the MCP job wait collapsed from R291's re-call loop to ONE call.",
+        "Every rendered answer forced to fail and read, including the refusal an operator sees, which was reaching them behind 'host rpc error:' and now reads as the sentence itself."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "A FAILING TEST found the real hole: a park had to ESTABLISH the session's shape, or a client whose first host call is a wait sleeps through the very next change — and the live wire test passed either way because read_revision had already established it.",
+        "The MCP description was missing pane_selected while the daemon reported it: R291 registered that prose list as undrifted and it had drifted. It is derived from EventKind::ALL by a test now, which also holds the '5 seconds' sentence against SWEEP_INTERVAL.",
+        "I inherited R291's claim that herdr's events.wait does server-side matching and never opened the handler: 18 of its 19 declared EventMatch shapes are refused at runtime, and the mechanism is a 100 ms poll. Seven kinds their daemon emits cannot be named to that verb at all.",
+        "NOT built, on purpose: no streaming subscription (herdr's events.subscribe has no sprag counterpart), no regex/text wait, no agent-STATE filter, no cap on parked waits per session, and sprag events refuses a filter without -f rather than growing a second matcher client-side."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
