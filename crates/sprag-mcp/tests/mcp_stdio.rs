@@ -1756,6 +1756,15 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
         "and the pane that was 3 is now 2 — the number moved: {closed}",
     );
 
+    // The DRAWING carries it too, and that is where it matters most: `pane_layout` is where an
+    // agent CHOOSES a pane, so answering only in numbers would hand it the vocabulary that moves.
+    // It costs no extra read — the pane list is already in hand for the numbering.
+    let drawing = server.call_tool("pane_layout", json!({}));
+    assert!(
+        drawing.contains("pane 2 (id 2) name=\"build\""),
+        "the arrangement names the pane in the handle that survives a close: {drawing}",
+    );
+
     // The claim: the name did not.
     server.call_tool(
         "write_pane",

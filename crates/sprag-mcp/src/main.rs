@@ -1177,13 +1177,19 @@ fn render_arrangement_answer(
     panes: &[PaneInfo],
     here: Option<u64>,
 ) -> String {
-    let number_of = |pane: PaneId| panes.iter().find(|p| p.id == pane.0).map(|p| p.number);
+    let entry_of = |pane: PaneId| panes.iter().find(|p| p.id == pane.0);
+    let number_of = |pane: PaneId| entry_of(pane).map(|p| p.number);
     // The DRAWING's naming. Both integers, always: the number is what this surface's tools take, and
     // the id is what the same arrangement is called by `sprag layout`, the daemon's logs and the
     // user's own CLI — so an agent reporting to a human, and a human checking the agent, are not
     // holding two pictures that share no name.
+    //
+    // ...plus the pane's NAME when it has one, which costs no extra read (the pane list is already
+    // in hand for the numbering) and is the whole reason a name exists: this drawing is where an
+    // agent CHOOSES a pane, and a number chosen here goes stale the moment an earlier pane closes.
+    // Handing back only numbers would answer "which pane" in the one vocabulary that moves.
     let label = |pane: PaneId| {
-        let Some(number) = number_of(pane) else {
+        let Some(entry) = entry_of(pane) else {
             // The residual of the two reads, said rather than smoothed over. Numbering it anyway
             // would hand the caller a number that now belongs to a DIFFERENT pane.
             return format!("pane ? (id {pane}, gone since the pane list was read)");
@@ -1193,7 +1199,11 @@ fn render_arrangement_answer(
         } else {
             ""
         };
-        format!("pane {number} (id {pane}){mine}")
+        let named = match &entry.name {
+            Some(name) => format!(" name={name:?}"),
+            None => String::new(),
+        };
+        format!("pane {} (id {pane}){named}{mine}", entry.number)
     };
 
     let mut out = format!(
