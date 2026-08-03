@@ -1616,6 +1616,147 @@ fn a_pane_id_advertised_for_another_daemon_marks_nothing() {
     );
 }
 
+/// An agent opens a pane of its OWN, runs something in it, and closes it again — the whole loop
+/// against a real daemon and the shipped binary.
+///
+/// This is the round's claim end to end: every other tool on this surface works on a pane somebody
+/// else opened, and the four rounds before it built "run it over there and wait" on top of a first
+/// step the agent could not take. What is pinned here rather than in a unit test is the part a unit
+/// test cannot see — that the provenance the daemon recorded is the same fact the CLOSE gate reads
+/// back, through two separate processes and a socket.
+#[test]
+fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    let dir = std::env::temp_dir();
+    let opened = server.call_tool("open_pane", json!({ "cwd": dir.to_str().unwrap() }));
+    assert!(
+        opened.starts_with(&format!(
+            "Opened pane 2 in {}, running a shell.",
+            dir.display()
+        )),
+        "it names the pane's NUMBER and where it opened: {opened}",
+    );
+    assert!(
+        opened.contains("2 pane(s) in this sprag terminal:"),
+        "and re-lists every pane, so the caller's map of numbers is repaired in the same \
+         answer: {opened}",
+    );
+    assert!(
+        opened.contains("      opened by: you (yours to close)"),
+        "the listing marks the new pane as the agent's own: {opened}",
+    );
+
+    // The boot pane is the PERSON's, and no agent may close it. Checked before the happy path so a
+    // gate that refused nothing could not pass this test by having already closed everything.
+    let refused = server.call_tool_error("close_pane", json!({ "pane": 1 }));
+    assert!(
+        refused.contains("pane 1 was opened by a person, not by you"),
+        "a pane nobody claims is refused, in a sentence that says why: {refused}",
+    );
+    assert!(
+        server
+            .call_tool("list_panes", json!({}))
+            .contains("2 pane(s)"),
+        "and the refusal really refused — both panes are still here",
+    );
+
+    // A SECOND work pane, so closing the first one really does renumber something. Without it the
+    // renumbering sentence would be untested in the direction it exists for.
+    let second = server.call_tool("open_pane", json!({}));
+    assert!(
+        second.contains("Opened pane 3"),
+        "an open APPENDS, so the numbers already handed out do not move: {second}",
+    );
+
+    let closed = server.call_tool("close_pane", json!({ "pane": 2 }));
+    assert!(
+        closed.starts_with(
+            "Closed pane 2 (id 1), which you had opened. The panes after it have MOVED UP a number:"
+        ),
+        "the close names what it ended, in both vocabularies, and says the map moved: {closed}",
+    );
+    assert!(
+        closed.contains("  pane 2: id=2 ") && closed.contains("2 pane(s) in this sprag terminal:"),
+        "and the re-listing PROVES it moved — the pane that was 3 is now 2: {closed}",
+    );
+
+    // The last pane makes no claim about renumbering, because nothing followed it. A fixed sentence
+    // would be false here, which is what reading the rendered answer caught.
+    let last = server.call_tool("close_pane", json!({ "pane": 2 }));
+    assert!(
+        last.starts_with(
+            "Closed pane 2 (id 2), which you had opened. It was the last pane, so the others keep \
+             their numbers:"
+        ),
+        "closing the last pane says so instead: {last}",
+    );
+    assert!(
+        last.contains("1 pane(s) in this sprag terminal:"),
+        "and only the person's pane is left: {last}",
+    );
+}
+
+/// A pane opened by ANOTHER pane's agent is refused too, and the refusal names which pane to go
+/// and ask.
+///
+/// The distinct case from the one above: "nobody opened this" and "somebody else opened this" are
+/// different mistakes, and a gate that only compared against `None` would let one agent close
+/// another's work pane.
+#[test]
+fn an_agent_cannot_close_a_pane_another_pane_opened() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut theirs = McpServer::spawn_in_pane(&sock, 0);
+    theirs.call_tool("open_pane", json!({}));
+
+    // A second agent, in a pane of its own, sees the pane and is told whose it is.
+    let mine = add_pane(&sock, &["cat"]);
+    let mut server = McpServer::spawn_in_pane(&sock, mine);
+    let refused = server.call_tool_error("close_pane", json!({ "pane": 2 }));
+    assert!(
+        refused.contains("pane 2 was opened by pane 1, not by you"),
+        "the refusal names the pane that did open it, in this surface's numbers: {refused}",
+    );
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        listed.contains("      opened by: pane 1\n"),
+        "and the listing says the same thing, without claiming it as ours: {listed}",
+    );
+}
+
+/// A server that is not inside a pane refuses to open one at all.
+///
+/// There would be nobody to record as the opener, so the pane could never be closed by this tool —
+/// litter from birth. `own_pane` returning `None` is an ordinary situation (an agent outside a
+/// pane, or one that outlived it), so it is answered with a sentence rather than left to fail
+/// somewhere further in.
+#[test]
+fn open_pane_refuses_when_the_server_is_not_inside_a_pane() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn(&sock);
+    let refused = server.call_tool_error("open_pane", json!({}));
+    assert!(
+        refused.contains("not running inside a sprag pane"),
+        "it says what it could not learn: {refused}",
+    );
+    assert!(
+        server
+            .call_tool("list_panes", json!({}))
+            .contains("1 pane(s)"),
+        "and nothing was opened",
+    );
+
+    // The CONTROL: the same daemon, the same tool, from a server that IS in a pane.
+    let mut inside = McpServer::spawn_in_pane(&sock, 0);
+    assert!(
+        inside
+            .call_tool("open_pane", json!({}))
+            .contains("Opened pane 2"),
+        "THE CONTROL: only the pane half of the environment differs",
+    );
+}
+
 /// `pane_processes` against a REAL daemon: the job that owns a pane's terminal, which is the one
 /// fact about a sibling pane that no other tool on this surface can produce.
 ///

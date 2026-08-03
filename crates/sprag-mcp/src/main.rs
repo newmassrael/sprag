@@ -12,12 +12,30 @@
 //! JSON-RPC 2.0 on stdin/stdout. It advertises self-describing tools —
 //! `list_panes`, `pane_layout`, `pane_processes`, `read_pane`, `read_last_command`,
 //! `read_pane_links`, `read_pane_images`, `find_in_pane`, `regex_in_pane`, `agent_state`,
-//! `agent_explain`, `wait_for_change`, `write_pane`, `send_keys`, `select_pane` — so an agent *immediately*
+//! `agent_explain`, `wait_for_change`, `write_pane`, `send_keys`, `open_pane`, `close_pane`,
+//! `select_pane` — so an agent *immediately*
 //! understands "read/write a sibling pane" without reading any sprag source. (Named rather than
 //! counted, for the reason [`tools_list`] gives: a count kept in prose goes stale silently, and this
 //! one had.) The two `agent_*` tools are the surface for the one fact an agent cannot read off a
 //! sibling's screen without interpreting it: whether the AI in that pane is waiting for a human
 //! (H3). They report the daemon's own verdict, so two agents watching one pane agree.
+//!
+//! ## The agent's OWN pane, and why it is the only structural write here
+//!
+//! [`tool_open_pane`] and [`tool_close_pane`] are the one place this surface CHANGES the set of
+//! panes rather than reading or typing into it. Everything else here works on a pane a person
+//! opened, which left "run the build over there and wait for it" — the workflow `pane_processes`,
+//! `pane_job_changed` and `wait_for_change` were built for — with no first step an agent could take.
+//!
+//! There is deliberately no `move`, `swap` or `zoom` tool: those decide what a HUMAN looks at, and
+//! an agent has no basis for the decision. Opening a pane to work in is not that — it is the agent's
+//! own workbench, appended without an opinion about the arrangement.
+//!
+//! What makes the destructive half safe to hand an agent is that the daemon records WHO ASKED for
+//! each pane ([`sprag_terminal::Pane::opened_by`]), so `close_pane` can refuse every pane its caller
+//! did not open. That is an ergonomic guard rather than a boundary — an agent that can `write_pane`
+//! into a shell can run `sprag kill-pane` — and the mistake it prevents is the one that actually
+//! happens: a mis-resolved pane number ending a person's editor and taking its scrollback with it.
 //!
 //! `list_panes` answers WHO is in the terminal, [`tool_pane_layout`] answers WHERE they sit, and
 //! [`tool_pane_processes`] answers WHAT each one is RUNNING — the same three-way split the daemon
@@ -76,9 +94,9 @@ use serde_json::{Value, json};
 use sprag_host::events::EventFilter;
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT,
-    LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, SELECT_PANE_ACTION, SINCE_PARAM,
-    TEXT_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, CLOSE_ACTION, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
+    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, SELECT_PANE_ACTION,
+    SINCE_PARAM, SPAWN_ACTION, TEXT_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{CallError, HostConn, INVALID_PARAMS};
@@ -212,19 +230,31 @@ fn handle_initialize(message: &Value) -> Value {
         "protocolVersion": protocol_version,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "sprag-mcp", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "You are running inside a pane of a sprag terminal. These \
-            tools let you observe and drive the OTHER (sibling) panes as data: read a \
-            pane's on-screen text and scrollback, read just a pane's last command and \
-            its result, ask whether the AI AGENT in a sibling pane is working, waiting for \
-            a human, or at rest (`agent_state`, and `agent_explain` for why), type text \
-            into a pane, or send keys. \
-            Call `list_panes` first to see the pane numbers (1 = first pane). \
-            \"pane 2\" means the second pane in that list. \
-            Call `pane_layout` when position matters — it draws how the panes are \
-            arranged, marks the pane YOU are in, and says which pane is to the left, \
-            right, above and below each one, so \"the pane next to mine\" resolves to a \
-            number you can pass to the other tools. If a tool reports it is not \
-            inside a sprag terminal, these tools do not apply to this session."
+        "instructions": "You are running inside a pane of a sprag terminal. These tools let \
+            you observe and drive the terminal as data. \
+            Call `list_panes` FIRST to see the pane numbers (1 = the first pane); \"pane 2\" \
+            means the second pane in that list. \
+            READ a pane: `read_pane` (its screen and scrollback), `read_last_command` (just \
+            the last command and its result), `read_pane_links` and `read_pane_images` (what \
+            it shows that is not text), `find_in_pane` and `regex_in_pane` (search it). \
+            Ask WHERE the panes are with `pane_layout` — it draws the arrangement, marks the \
+            pane YOU are in, and says which pane is left, right, above and below each one, so \
+            \"the pane next to mine\" resolves to a number. Ask WHAT each one is running with \
+            `pane_processes`, which is the operating system's answer and not a guess from the \
+            pane's text. \
+            DRIVE a pane with `write_pane` (type a command) and `send_keys` (named keys and \
+            chords). \
+            Instead of polling, WAIT with `wait_for_change` for the one change you name — a \
+            job starting or finishing, a pane opening or closing, an agent's state moving. \
+            About a sibling AI: `agent_state` says whether it is working, waiting for a human, \
+            or at rest, and `agent_explain` says why. \
+            For your OWN work, `open_pane` gives you a new pane to run things in without taking \
+            over one a person is reading, and `close_pane` closes a pane you opened (only that \
+            — a person's pane is refused). \
+            `select_pane` moves where the USER is typing, so use it only when you have \
+            something for them to look at. \
+            If a tool reports it is not inside a sprag terminal, these tools do not apply to \
+            this session."
     })
 }
 
@@ -542,6 +572,45 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "open_pane",
+                "description": "Open a NEW pane in this terminal to do your own work in — a \
+                    place to run a build, a test suite or a long command WITHOUT taking over \
+                    the pane a person is reading. It runs a shell, so type commands into it \
+                    with write_pane and read them back with read_pane; the output stays there \
+                    after the command finishes. Every other tool here works on panes somebody \
+                    else opened; this is how you make your own. The pane is recorded as opened \
+                    BY YOUR PANE, which is what lets close_pane let you clean it up later (and \
+                    what stops you closing a person's). The answer re-lists every pane with its \
+                    number. It does NOT move the user's cursor — call select_pane if you want \
+                    them to look at it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "cwd": {
+                            "type": "string",
+                            "description": "Directory the new shell starts in. Defaults to \
+                                this server's own working directory."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "close_pane",
+                "description": "Close a pane YOU opened with open_pane, ending what runs in it \
+                    and discarding its scrollback. A pane you did not open is refused — a \
+                    person's pane may hold unsaved work, and a mis-typed pane number must not \
+                    destroy it. Read anything you still need with read_pane FIRST: closing is \
+                    not undoable. The answer re-lists every pane, because closing one RENUMBERS \
+                    the panes after it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "select_pane",
                 "description": "Make a pane the ACTIVE one for this terminal session — where \
                     the user's keystrokes go, what every attached window shows a focus ring \
@@ -586,6 +655,8 @@ fn handle_tools_call(message: &Value) -> Value {
         "wait_for_change" => tool_wait_for_change(&args),
         "write_pane" => tool_write_pane(&args),
         "send_keys" => tool_send_keys(&args),
+        "open_pane" => tool_open_pane(&args),
+        "close_pane" => tool_close_pane(&args),
         "select_pane" => tool_select_pane(&args),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -643,6 +714,10 @@ struct PaneInfo {
     /// which is every ordinary shell. The one fact here that is about a SIBLING AI rather than about
     /// a program: it is how an agent learns that the pane next to it is waiting for a human.
     agent: Option<AgentInfo>,
+    /// The HOST ID of the pane whose occupant asked for this one, `None` for a pane nobody claims —
+    /// which is every pane a person made. Carried as the id rather than as a number because it is
+    /// what the gate compares against ([`own_pane`] is an id too); it is rendered as a number.
+    opened_by: Option<u64>,
 }
 
 /// One pane's agent verdict as an agent reads it — the wire's own `agent` object, field for field.
@@ -715,22 +790,31 @@ fn parse_image_info(entry: &Value) -> Option<ImageInfo> {
 }
 
 fn tool_list_panes() -> Result<String, String> {
-    let panes = query_panes()?;
+    Ok(render_pane_list(&query_panes()?, own_pane()))
+}
+
+/// The whole numbered listing, as `list_panes` answers it.
+///
+/// Shared with the two tools that CHANGE the set ([`tool_open_pane`], [`tool_close_pane`]), because
+/// their answer is this listing: a caller whose map of numbers has just been invalidated should not
+/// have to make a second call to repair it, and it must be repaired with the same words it learned
+/// them in. One rendering, so the two can never come to describe the same panes differently.
+fn render_pane_list(panes: &[PaneInfo], here: Option<u64>) -> String {
     if panes.is_empty() {
-        return Ok("This sprag terminal has no panes.".to_owned());
+        return "This sprag terminal has no panes.".to_owned();
     }
     let mut out = format!("{} pane(s) in this sprag terminal:\n", panes.len());
-    for pane in &panes {
-        out.push_str(&pane_summary(pane));
+    for pane in panes {
+        out.push_str(&pane_summary(pane, panes, here));
     }
-    Ok(out)
+    out
 }
 
 /// Render ONE pane as its `list_panes` block — the header line plus an indented line per live
 /// signal the pane raised. Each sub-line is emitted ONLY when its signal is present, so a resting
 /// pane is just the header (mirrors the additive wire). Split out as a pure function so the
 /// invisible-state lines (mouse / focus) are unit-testable without a live host.
-fn pane_summary(pane: &PaneInfo) -> String {
+fn pane_summary(pane: &PaneInfo, panes: &[PaneInfo], here: Option<u64>) -> String {
     let title = if pane.title.is_empty() {
         "(none)".to_owned()
     } else {
@@ -778,6 +862,25 @@ fn pane_summary(pane: &PaneInfo) -> String {
     }
     if pane.focus_tracking {
         out.push_str("      focus: tracking focus in/out\n");
+    }
+    // WHO ASKED for the pane, absent for one nobody claims — which is every pane a person made.
+    // The reader is an agent deciding what it may close, so the line answers that question first:
+    // "you" is the only value `close_pane` accepts, and it is derived from the SAME comparison that
+    // gate makes rather than from a second rule that could come to disagree with it.
+    //
+    // Named by NUMBER when this window holds the opener and by id when it does not, because a
+    // number means nothing outside the listing it indexes — an opener in another window (or another
+    // session; ids are registry-unique) is perfectly alive and simply not here.
+    if let Some(opener) = pane.opened_by {
+        let who = if Some(opener) == here {
+            "you (yours to close)".to_owned()
+        } else {
+            match panes.iter().find(|p| p.id == opener) {
+                Some(p) => format!("pane {}", p.number),
+                None => format!("pane id {opener}, not in this window"),
+            }
+        };
+        out.push_str(&format!("      opened by: {who}\n"));
     }
     // The sibling AI, if the pane holds one (H3). Last because it is the only line here that is about
     // another agent rather than about a program: an agent scanning this list to find who needs a human
@@ -1293,6 +1396,159 @@ fn tool_write_pane(args: &Value) -> Result<String, String> {
 /// The answer names what actually happened rather than echoing the request: the daemon reports
 /// whether the pane MOVED, and a re-select of the pane the session is already on is a legitimate
 /// no-op an agent should not read as a failure.
+/// `open_pane` — a pane of this agent's own, recorded as opened BY the agent's pane.
+///
+/// # Why an agent gets a create verb when it does not get `move` / `swap` / `zoom`
+///
+/// Those three decide what a PERSON looks at, and an agent has no basis for the decision. This one
+/// is not about the person's arrangement at all: it is the agent's workbench. Everything this
+/// surface gained across the four rounds before it — read WHERE the panes are, read WHAT one is
+/// running, be told when a job changes, wait for exactly the change named — presupposes a pane a
+/// human happened to open, so "run the build over there and wait for it" had no first step.
+///
+/// # Why it APPENDS, and takes no placement
+///
+/// [`SPAWN_ACTION`] is the birth that states no opinion about the
+/// arrangement; a directional split would have the agent choosing how to divide somebody's screen,
+/// which is the decision declined above. The person can move it afterwards with the verbs written
+/// for them.
+///
+/// # Why the answer re-lists every pane
+///
+/// This surface addresses panes by their 1-based POSITION, so the agent's map of "which number is
+/// which pane" is only as good as its last `list_panes`. An open appends, so the existing numbers
+/// do NOT move — but the new pane's number is the one fact the caller needs and cannot derive, and
+/// re-listing is how [`tool_close_pane`] (where the numbers really do shift) answers too. One shape
+/// for both writes, so a caller never has to remember which of them invalidated what.
+fn tool_open_pane(args: &Value) -> Result<String, String> {
+    let opener = own_pane().ok_or(
+        "open_pane needs to know which pane to record as the opener, and this server is not \
+         running inside a sprag pane (no SPRAG_PANE published beside the socket it is talking \
+         to). A pane opened with nobody answerable for it could never be closed by this tool, so \
+         it is refused rather than left behind. The user can open one with `sprag split-window`.",
+    )?;
+    // The directory is resolved and CHECKED here, so the caller gets a sentence naming the path it
+    // asked for. The action checks it too — it must, since this is not its only client — but from
+    // there the refusal is a bare `Rejected` that cannot say which of its causes it was.
+    let cwd = match args.get("cwd") {
+        Some(Value::String(dir)) => Some(PathBuf::from(dir)),
+        Some(other) => return Err(format!("'cwd' must be a string path, not {other}")),
+        // This server is started by the agent's own client, so its working directory is the
+        // agent's — derived rather than asked for, which is one fewer thing to get wrong.
+        None => std::env::current_dir().ok(),
+    };
+    if let Some(dir) = &cwd
+        && !dir.is_dir()
+    {
+        return Err(format!(
+            "{} is not a directory this terminal can open a pane in",
+            dir.display()
+        ));
+    }
+    let mut spawn_args = json!({ "opened_by": opener });
+    if let Some(dir) = &cwd {
+        let Some(dir) = dir.to_str() else {
+            return Err(format!(
+                "{} is not valid UTF-8, so it cannot be sent to the terminal",
+                dir.display()
+            ));
+        };
+        spawn_args["cwd"] = json!(dir);
+    }
+    let id = host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SPAWN_ACTION), "args": spawn_args }),
+    )?
+    .as_u64()
+    .ok_or("the host did not answer with a new pane id")?;
+
+    let panes = query_panes()?;
+    let number = panes
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.number.to_string())
+        // The pane was born — the host answered with its id — so a listing that no longer holds it
+        // means it has ALREADY gone (a shell that exec'd and exited). Reported, never guessed at.
+        .unwrap_or_else(|| format!("? (id {id}, gone since it was opened)"));
+    let where_it_is = cwd.map_or_else(String::new, |dir| format!(" in {}", dir.display()));
+    Ok(format!(
+        "Opened pane {number}{where_it_is}, running a shell. It is recorded as opened by your \
+         pane, so close_pane will let you close it.\n\n{}",
+        render_pane_list(&panes, Some(opener))
+    ))
+}
+
+/// `close_pane` — end a pane THIS pane opened, refusing every other one.
+///
+/// # The gate is ergonomic, not a security boundary, and says so
+///
+/// There is no boundary to build here: the daemon's socket is local and its peers are all one
+/// user's own clients, and an agent that can `write_pane` into a shell can run `sprag kill-pane`
+/// itself. What the gate removes is the agent's own MISTAKE — a mis-resolved pane number ending a
+/// person's editor and taking its scrollback with it, which
+/// [`kill_pane`](sprag_host::HostClient::kill_pane) is explicit about being unconditional. That is
+/// the failure that actually happens, and the fact it reads
+/// ([`Pane::opened_by`](sprag_terminal::Pane::opened_by)) is fixed at birth, so the gate cannot be
+/// acting on something that moved under it.
+///
+/// # One read, not two
+///
+/// The number is resolved and the gate is evaluated from the SAME pane listing. Reading the
+/// provenance in a second query would mean the number named one pane at the first instant and the
+/// gate answered about another at the second — the torn read this surface's other joins are
+/// written to avoid. What can still change afterwards is whether the pane is there at all, and the
+/// daemon answers that.
+fn tool_close_pane(args: &Value) -> Result<String, String> {
+    let number = pane_number(args)?;
+    let panes = query_panes()?;
+    let pane = panes.iter().find(|p| p.number == number).ok_or_else(|| {
+        format!(
+            "no pane {number}; this terminal has {} pane(s). Call list_panes.",
+            panes.len()
+        )
+    })?;
+    let mine = own_pane();
+    match pane.opened_by {
+        Some(opener) if Some(opener) == mine => {}
+        Some(opener) => {
+            return Err(format!(
+                "pane {number} was opened by {}, not by you, so close_pane will not close it. \
+                 Only a pane you opened yourself is yours to close.",
+                short_name(PaneId(opener), &|id| panes
+                    .iter()
+                    .find(|p| p.id == id.0)
+                    .map(|p| p.number)),
+            ));
+        }
+        None => {
+            return Err(format!(
+                "pane {number} was opened by a person, not by you, so close_pane will not close \
+                 it — it may hold work nobody else can get back. Only a pane you opened yourself \
+                 with open_pane is yours to close.",
+            ));
+        }
+    }
+    // Whether anything was NUMBERED AFTER the pane being closed, read from the listing the gate
+    // just used. The renumbering sentence below is a claim about this run, so it is decided by what
+    // this run actually held: closing the last pane moves nothing, and telling a caller its map has
+    // shifted when it has not is the same defect as staying silent when it has.
+    let renumbered = pane.number < panes.len();
+    host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(CLOSE_ACTION), "args": { "id": pane.id } }),
+    )?;
+    Ok(format!(
+        "Closed pane {number} (id {}), which you had opened. {}\n\n{}",
+        pane.id,
+        if renumbered {
+            "The panes after it have MOVED UP a number:"
+        } else {
+            "It was the last pane, so the others keep their numbers:"
+        },
+        render_pane_list(&query_panes()?, mine)
+    ))
+}
+
 fn tool_select_pane(args: &Value) -> Result<String, String> {
     let number = pane_number(args)?;
     let id = pane_id_for(number)?;
@@ -1854,6 +2110,7 @@ fn parse_pane_info(index: usize, pane: &Value) -> PaneInfo {
             .unwrap_or_default(),
         active: pane.get("active").and_then(Value::as_bool).unwrap_or(false),
         agent: parse_agent_info(pane),
+        opened_by: pane.get("opened_by").and_then(Value::as_u64),
     }
 }
 
@@ -2023,6 +2280,8 @@ mod tests {
                 "agent_explain",
                 "write_pane",
                 "send_keys",
+                "open_pane",
+                "close_pane",
                 "select_pane"
             ]
         );
@@ -2051,6 +2310,11 @@ mod tests {
         assert_eq!(required("regex_in_pane"), json!(["pane", "pattern"]));
         // agent_explain requires the pane it is explaining...
         assert_eq!(required("agent_explain"), json!(["pane"]));
+        // close_pane requires the pane to close; open_pane requires NOTHING, because the one thing
+        // it must know — which pane is asking — is this server's own identity and never an argument
+        // a caller could get wrong.
+        assert_eq!(required("close_pane"), json!(["pane"]));
+        assert_eq!(required("open_pane"), json!(null));
         // ...and `agent_state` requires NOTHING, which is the one asymmetry in this roster and is
         // deliberate: "which pane needs a human" is a question about the SET, so the whole-terminal
         // form is the one an agent asks first. A `required: ["pane"]` here would force it to ask
@@ -2086,7 +2350,45 @@ mod tests {
         assert_eq!(result["protocolVersion"], "2030-01-01");
         assert_eq!(result["serverInfo"]["name"], "sprag-mcp");
         assert!(result["capabilities"]["tools"].is_object());
-        assert!(result["instructions"].as_str().unwrap().contains("sibling"));
+        assert!(
+            result["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("pane of a sprag terminal")
+        );
+    }
+
+    /// The primer an agent reads before anything else NAMES every tool this server advertises.
+    ///
+    /// Derived from the roster rather than checked against a written list, because a written list
+    /// is what had already gone wrong — TWICE, silently. The primer taught "read, ask about the AI,
+    /// type, send keys" long after `pane_processes` (what a pane is RUNNING) and `wait_for_change`
+    /// (do not poll) had shipped, so an agent's first and most-read description of this surface
+    /// omitted the two tools that most change how it should behave. Nothing failed, because nothing
+    /// compared the two.
+    ///
+    /// Exactly R292's fix for the same hazard one level down (the wait tool's change list, derived
+    /// from `EventKind::ALL` after it was found missing `pane_selected`). A search that finds one
+    /// instance of a hazard has found the hazard: this is the second instance, in the same file.
+    #[test]
+    fn the_primer_names_every_tool_the_server_advertises() {
+        let primer = handle_initialize(&json!({ "params": {} }))["instructions"]
+            .as_str()
+            .expect("the server hands the agent a primer")
+            .to_owned();
+        let tools = tools_list();
+        let missing: Vec<&str> = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .filter(|name| !primer.contains(&format!("`{name}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the primer never mentions {missing:?}, so an agent reading it would not know those \
+             tools exist: {primer}",
+        );
     }
 
     #[test]
@@ -2490,6 +2792,7 @@ mod tests {
             rows: 24,
             notification: None,
             bell: 0,
+            opened_by: None,
             active: false,
             shell: None,
             exit_status: None,
@@ -2522,6 +2825,7 @@ mod tests {
             rows: 24,
             notification: None,
             bell: 0,
+            opened_by: None,
             active: false,
             shell: None,
             exit_status: None,
@@ -2530,7 +2834,7 @@ mod tests {
             images: vec![],
             agent: None,
         };
-        let summary = pane_summary(&tracking);
+        let summary = pane_summary(&tracking, &[], None);
         assert!(
             summary.contains("mouse: tracking clicks + drag + motion"),
             "the mouse-tracking level must surface: {summary}"
@@ -2546,7 +2850,7 @@ mod tests {
             focus_tracking: false,
             ..tracking
         };
-        let resting = pane_summary(&resting);
+        let resting = pane_summary(&resting, &[], None);
         assert!(
             !resting.contains("mouse:"),
             "no mouse line when off: {resting}"
@@ -2617,6 +2921,7 @@ mod tests {
             rows: 24,
             notification: None,
             bell: 0,
+            opened_by: None,
             active: false,
             shell: None,
             exit_status: None,
@@ -2635,7 +2940,7 @@ mod tests {
             }),
             ..shell
         };
-        let summary = pane_summary(&claimed);
+        let summary = pane_summary(&claimed, &[], None);
         assert!(
             summary.contains("agent: state=blocked name=claude rule=dialog-choice-list seq=4"),
             "the verdict surfaces field for field: {summary}",
@@ -2654,15 +2959,19 @@ mod tests {
             }),
             ..claimed
         };
-        let summary = pane_summary(&reported);
+        let summary = pane_summary(&reported, &[], None);
         assert!(
             summary.contains("agent: state=working name=claude source=hook:claude seq=5"),
             "an authority is told from an inference: {summary}",
         );
-        let quiet = pane_summary(&PaneInfo {
-            agent: None,
-            ..reported
-        });
+        let quiet = pane_summary(
+            &PaneInfo {
+                agent: None,
+                ..reported
+            },
+            &[],
+            None,
+        );
         assert!(
             !quiet.contains("agent:"),
             "a pane no manifest claims says nothing about an agent: {quiet}",
