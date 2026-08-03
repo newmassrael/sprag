@@ -20,6 +20,12 @@ sprag-rpc = { workspace = true }
 # Depending on the host crate (heavy) is deliberate — duplicating the grammar is
 # exactly the desync this module exists to prevent (see sprag_host::wire).
 sprag-host = { workspace = true }
+# The layout slot's own type, the one drawing of an arrangement, and the adjacency
+# derivation `select-pane -L` uses — declared directly (rather than reached through
+# sprag-host) because this crate names all three itself, and for the same reason the
+# host dep is here: a second reading of a published arrangement is a second thing
+# that can come to disagree with the daemon about it.
+sprag-terminal = { workspace = true }
 # MCP is JSON-RPC 2.0; we build/parse messages as untyped values.
 serde_json = { workspace = true }
 # Production logging facade — events to STDERR only (stdout is the MCP wire).

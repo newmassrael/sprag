@@ -9,13 +9,21 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises thirteen self-describing tools —
-//! `list_panes`, `read_pane`, `read_last_command`, `read_pane_links`, `read_pane_images`,
-//! `find_in_pane`, `regex_in_pane`, `agent_state`, `agent_explain`, `wait_for_change`,
-//! `write_pane`, `send_keys`, `select_pane` — so an agent *immediately* understands "read/write a
-//! sibling pane" without reading any sprag source. The two `agent_*` tools are the surface for the one fact an agent cannot read off a
+//! JSON-RPC 2.0 on stdin/stdout. It advertises self-describing tools —
+//! `list_panes`, `pane_layout`, `read_pane`, `read_last_command`, `read_pane_links`,
+//! `read_pane_images`, `find_in_pane`, `regex_in_pane`, `agent_state`, `agent_explain`,
+//! `wait_for_change`, `write_pane`, `send_keys`, `select_pane` — so an agent *immediately*
+//! understands "read/write a sibling pane" without reading any sprag source. (Named rather than
+//! counted, for the reason [`tools_list`] gives: a count kept in prose goes stale silently, and this
+//! one had.) The two `agent_*` tools are the surface for the one fact an agent cannot read off a
 //! sibling's screen without interpreting it: whether the AI in that pane is waiting for a human
 //! (H3). They report the daemon's own verdict, so two agents watching one pane agree.
+//!
+//! `list_panes` answers WHO is in the terminal and [`tool_pane_layout`] answers WHERE they sit,
+//! which is the same slot split the daemon publishes. WHERE is what lets an agent choose a pane the
+//! way a person describes one — by position — and it carries the daemon's own adjacency plus a mark
+//! on the pane this server is itself running in, without which a direction has nothing to be
+//! relative to.
 //!
 //! `select_pane` is the one tool whose subject is the PERSON rather than a pane: it moves where the
 //! user's keystrokes go (H7's active pane), so an agent that has prepared something to look at can
@@ -63,11 +71,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, PANES_SLOT,
-    SELECT_PANE_ACTION, TEXT_ACTION, events_slot_since, find_slot_for, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT,
+    PANES_SLOT, SELECT_PANE_ACTION, TEXT_ACTION, events_slot_since, find_slot_for, regex_slot_for,
 };
-use sprag_host::{PaneFind, mux_action_path, pane_input_path};
+use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
+use sprag_terminal::{LayoutSnapshot, PaneDir, PaneId, arrangement};
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
 /// descendants) — [`sprag_host`]'s socket policy path key.
@@ -204,7 +213,11 @@ fn handle_initialize(message: &Value) -> Value {
             a human, or at rest (`agent_state`, and `agent_explain` for why), type text \
             into a pane, or send keys. \
             Call `list_panes` first to see the pane numbers (1 = first pane). \
-            \"pane 2\" means the second pane in that list. If a tool reports it is not \
+            \"pane 2\" means the second pane in that list. \
+            Call `pane_layout` when position matters — it draws how the panes are \
+            arranged, marks the pane YOU are in, and says which pane is to the left, \
+            right, above and below each one, so \"the pane next to mine\" resolves to a \
+            number you can pass to the other tools. If a tool reports it is not \
             inside a sprag terminal, these tools do not apply to this session."
     })
 }
@@ -235,6 +248,21 @@ fn tools_list() -> Value {
                     FOCUS (DECSET 1004 — focus in/out), which the pane's on-screen text \
                     does not show and tmux does not expose. Call this first to learn which \
                     number is which pane.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            },
+            {
+                "name": "pane_layout",
+                "description": "Draw WHERE the panes sit — the window's arrangement as a tree of \
+                    divisions, which pane (if any) is zoomed to fill the window, which panes are \
+                    floated out of the tiling, and WHICH PANE IS NEXT TO WHICH in each direction. \
+                    `list_panes` answers WHO is in this terminal; this answers WHERE, so it is what \
+                    to call before choosing a pane by position (\"the pane to the right of mine\", \
+                    \"the one below\"). It also marks the pane YOU are running in, which is what \
+                    makes a direction mean anything. The neighbour table is the daemon's own \
+                    adjacency — the same answer the user's own directional keybinding moves by — \
+                    so you never have to work it out from the shape. Which pane the USER is \
+                    currently typing into is NOT here: that changes on a keystroke and belongs to \
+                    `list_panes`, which marks it.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
             {
@@ -496,6 +524,7 @@ fn handle_tools_call(message: &Value) -> Value {
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
         "list_panes" => tool_list_panes(),
+        "pane_layout" => tool_pane_layout(),
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
         "read_pane_links" => tool_read_pane_links(&args),
@@ -741,6 +770,167 @@ fn mouse_phrase(token: &str) -> String {
         "any" => "clicks + drag + motion".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// `pane_layout` — WHERE the panes sit, in the vocabulary this surface's own tools take.
+///
+/// The gap it closes: an agent could already make a pane active, read it and type into it, but had
+/// no way to learn where any of them WERE — so it could not choose one by position, which is how a
+/// human describes panes ("the one on the right"). The daemon has always known: the arrangement is a
+/// published slot and adjacency is
+/// [`LayoutWire::neighbor`](sprag_terminal::LayoutWire::neighbor), the same walk the user's
+/// directional keybinding moves by. It was reachable over the wire only through the `select_pane`
+/// ACTION, so the only way to ask "what is to my left" was to MOVE THE USER THERE.
+///
+/// # Two reads, and why the pane list comes first
+///
+/// The numbering every tool here takes is the pane pool's order ([`query_panes`]); the arrangement
+/// is a different slot. A pane that exits between the two reads therefore holds a leaf this
+/// numbering cannot name — and that is reported, in place, rather than dropped. Read the other way
+/// round, the same pane would simply be missing from the drawing with nothing said, which is the
+/// worse failure: a silent one.
+///
+/// This is NOT the join `sprag panes` refuses. That one would state a FACT assembled from two
+/// instants (a zoom marked on a pane list), which can print a state that never existed. This one
+/// TRANSLATES an identity — a pane's id and its number name the same pane — and its only failure
+/// mode is a pane missing from one of the two sets, which is visible and said out loud. The moving
+/// fact, which pane the user is typing into, is deliberately NOT here: it is `list_panes`'s answer.
+fn tool_pane_layout() -> Result<String, String> {
+    let panes = query_panes()?;
+    let answer = host_call(
+        "scene/query",
+        json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+    )?;
+    // Through the SSOT type, never by walking the served arena by hand: it is a flat arena whose
+    // nodes name their children by index, and a second reader of that encoding is a second thing
+    // that can come to disagree with the daemon about what it means.
+    let snapshot: LayoutSnapshot = serde_json::from_value(answer)
+        .map_err(|error| format!("the host's arrangement did not parse: {error}"))?;
+    Ok(render_arrangement_answer(&snapshot, &panes, own_pane()))
+}
+
+/// The text [`tool_pane_layout`] returns, as a pure function of what was read — so every shape is
+/// testable without a live host, and the integration test can pin what an agent actually receives.
+///
+/// `here` is the pane this server runs in ([`own_pane`]), or `None` when it is not in one.
+fn render_arrangement_answer(
+    snapshot: &LayoutSnapshot,
+    panes: &[PaneInfo],
+    here: Option<u64>,
+) -> String {
+    let number_of = |pane: PaneId| panes.iter().find(|p| p.id == pane.0).map(|p| p.number);
+    // The DRAWING's naming. Both integers, always: the number is what this surface's tools take, and
+    // the id is what the same arrangement is called by `sprag layout`, the daemon's logs and the
+    // user's own CLI — so an agent reporting to a human, and a human checking the agent, are not
+    // holding two pictures that share no name.
+    let label = |pane: PaneId| {
+        let Some(number) = number_of(pane) else {
+            // The residual of the two reads, said rather than smoothed over. Numbering it anyway
+            // would hand the caller a number that now belongs to a DIFFERENT pane.
+            return format!("pane ? (id {pane}, gone since the pane list was read)");
+        };
+        let mine = if here == Some(pane.0) {
+            "  (you are here)"
+        } else {
+            ""
+        };
+        format!("pane {number} (id {pane}){mine}")
+    };
+
+    let mut out = format!(
+        "How this sprag terminal's panes are arranged (revision {}):\n\n",
+        snapshot.revision
+    );
+    out.push_str(&arrangement::render(snapshot, &label));
+
+    // Adjacency, from the arrangement just read — the SAME derivation `select-pane -L` moves by,
+    // rather than one worked out from the drawing above. A caller that re-derived it would answer
+    // differently on exactly the arrangements where the question is interesting (a column of panes
+    // facing one divider, where the choice is by overlap rather than by shape).
+    let tiled = snapshot.tree.panes();
+    if tiled.len() > 1 {
+        out.push_str(
+            "\nWhich pane is next to which (a direction not listed has no pane that way — that \
+             pane is at that edge of the window):\n",
+        );
+        for pane in &tiled {
+            let sides: Vec<String> = PaneDir::ALL
+                .iter()
+                .filter_map(|dir| {
+                    let found = snapshot.tree.neighbor(*pane, *dir)?;
+                    Some(format!(
+                        "{}={}",
+                        dir.wire_str(),
+                        short_name(found, &number_of)
+                    ))
+                })
+                .collect();
+            let sides = if sides.is_empty() {
+                // Unreachable while more than one pane is tiled, and stated anyway rather than
+                // printed as a bare colon: a pane with no neighbour at all is a real answer.
+                "at every edge".to_owned()
+            } else {
+                sides.join(", ")
+            };
+            out.push_str(&format!("  {}: {sides}\n", short_name(*pane, &number_of)));
+        }
+    }
+    out.push_str(
+        "\nPass a pane NUMBER (not an id) to read_pane, write_pane, send_keys or select_pane. \
+         Which pane the user is typing into right now is list_panes' answer, not this one.\n",
+    );
+    out
+}
+
+/// A pane named for the neighbour table: its 1-based number, or its host id when the pane list this
+/// answer was numbered from no longer holds it.
+///
+/// Shorter than the drawing's label on purpose — the table is read as a lookup, and the drawing
+/// directly above it has already given every pane both of its names.
+fn short_name(pane: PaneId, number_of: &impl Fn(PaneId) -> Option<usize>) -> String {
+    number_of(pane).map_or_else(|| format!("pane id {pane}"), |n| format!("pane {n}"))
+}
+
+/// The pane this server is RUNNING IN, or `None` when it is not inside one.
+///
+/// The anchor the whole layout read needs: "the pane to my right" is unanswerable without it, and no
+/// slot carries it — the fact is this PROCESS's, not the terminal's. That it is our own identity
+/// rather than a slot read is why marking it is not the two-instant join this tool otherwise
+/// refuses.
+///
+/// # It is the id published WITH the socket we are talking to, never merely the nearest one
+///
+/// The daemon publishes the pair together — `sprag_host::pane_env_source` writes a pane's id and its
+/// daemon's address into one environment — and only the pair identifies a pane. Ids are per-daemon
+/// and start at zero, so a box running two sprag terminals has two pane `1`s: a walk that took the
+/// first `SPRAG_PANE` in reach could mark a pane of ANOTHER terminal, and it would mark a real,
+/// plausible pane of this one rather than failing visibly. So a candidate environment is accepted
+/// only when its address half is the socket this process actually asked. That also makes the
+/// deliberate override honest — a client pointed at another daemon by `SPRAG_HOST_RPC_SOCK` gets no
+/// mark instead of a wrong one.
+///
+/// `None` is a fine answer, and several ordinary situations produce it: an agent not inside a pane
+/// at all, and a process that has OUTLIVED its pane (its id names a pane the pool no longer holds,
+/// so the mark lands nowhere — see [`render_arrangement_answer`]).
+fn own_pane() -> Option<u64> {
+    let sock = host_sock()?;
+    // The address half, compared as a PATH rather than as text, so the two spellings of one socket
+    // an environment can carry do not read as two daemons.
+    let published_with_sock = |pane: Option<String>, address: Option<String>| -> Option<u64> {
+        let (pane, address) = (pane?, address?);
+        (std::path::Path::new(&address) == sock).then_some(())?;
+        pane.parse().ok()
+    };
+    let own = |key: &str| std::env::var(key).ok();
+    if let Some(id) = published_with_sock(own(PANE_ENV_VAR), own(SOCK_ENV)) {
+        return Some(id);
+    }
+    ancestor_pids().into_iter().find_map(|pid| {
+        published_with_sock(
+            read_proc_env(pid, PANE_ENV_VAR),
+            read_proc_env(pid, SOCK_ENV),
+        )
+    })
 }
 
 fn tool_read_pane(args: &Value) -> Result<String, String> {
@@ -1377,25 +1567,31 @@ fn host_sock() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(SOCK_ENV) {
         return Some(PathBuf::from(path));
     }
-    ancestor_sock()
+    ancestor_pids()
+        .into_iter()
+        .find_map(|pid| read_proc_env(pid, SOCK_ENV))
+        .map(PathBuf::from)
 }
 
-/// Walk the parent-process chain from our own PID, returning the socket path from the
-/// first ancestor whose environment holds `SPRAG_HOST_RPC_SOCK`. Bounded so a broken
-/// `/proc` (or a PID cycle) can never loop forever.
-fn ancestor_sock() -> Option<PathBuf> {
+/// Our ancestors' process ids, NEAREST FIRST — bounded so a broken `/proc` (or a PID cycle) can
+/// never loop forever, and stopping at the first process `/proc` will not describe.
+///
+/// One walk with two readers ([`host_sock`] and [`own_pane`]), because the walk IS what makes this
+/// server self-configuring in any pane: a second copy could come to disagree about how far up to
+/// look, and the integration harness asserts this one's precedence as a SAFETY property — a
+/// resolver that reached the wrong daemon would type into the author's own panes.
+fn ancestor_pids() -> Vec<u32> {
+    let mut pids = Vec::new();
     let mut pid = std::process::id();
     for _ in 0..64 {
-        let ppid = read_ppid(pid)?;
+        let Some(ppid) = read_ppid(pid) else { break };
         if ppid == 0 || ppid == pid {
-            return None;
+            break;
         }
-        if let Some(path) = read_proc_env(ppid, SOCK_ENV) {
-            return Some(PathBuf::from(path));
-        }
+        pids.push(ppid);
         pid = ppid;
     }
-    None
+    pids
 }
 
 /// Read the parent PID of `pid` from `/proc/<pid>/status` (`PPid:` line).
@@ -1447,6 +1643,7 @@ mod tests {
             names,
             [
                 "list_panes",
+                "pane_layout",
                 "read_pane",
                 "read_last_command",
                 "read_pane_links",
@@ -1491,6 +1688,10 @@ mod tests {
         // form is the one an agent asks first. A `required: ["pane"]` here would force it to ask
         // once per pane and assemble the answer itself.
         assert_eq!(required("agent_state"), json!(null));
+        // `pane_layout` takes nothing either, and for its own reason: the arrangement is one thing
+        // and the whole of it is the answer. A `pane` argument would make a caller ask per pane and
+        // reassemble a shape the daemon already published in one piece.
+        assert_eq!(required("pane_layout"), json!(null));
     }
 
     #[test]
@@ -1545,6 +1746,166 @@ mod tests {
         let call = json!({ "params": { "name": "nope", "arguments": {} } });
         let result = handle_tools_call(&call);
         assert_eq!(result["isError"], true);
+    }
+
+    /// A pane list of `n` panes whose host ids are deliberately NOT their numbers — the mapping this
+    /// surface exists to keep straight, and one an off-by-anything would pass with ids of `1..=n`.
+    fn pool(ids: &[u64]) -> Vec<PaneInfo> {
+        ids.iter()
+            .enumerate()
+            .map(|(index, id)| parse_pane_info(index, &json!({ "id": id })))
+            .collect()
+    }
+
+    fn wire_leaf(pane: u64) -> sprag_terminal::LayoutNodeWire {
+        sprag_terminal::LayoutNodeWire::Leaf(PaneId(pane))
+    }
+
+    fn wire_split(
+        dir: sprag_terminal::SplitDir,
+        ratio: f32,
+        first: sprag_terminal::LayoutNodeWire,
+        second: sprag_terminal::LayoutNodeWire,
+    ) -> sprag_terminal::LayoutNodeWire {
+        sprag_terminal::LayoutNodeWire::Split {
+            id: None,
+            dir,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn wire_snapshot(root: sprag_terminal::LayoutNodeWire) -> LayoutSnapshot {
+        LayoutSnapshot {
+            revision: 5,
+            tree: sprag_terminal::LayoutWire { root: Some(root) },
+            floating: Vec::new(),
+            zoomed: None,
+        }
+    }
+
+    /// The whole answer, pinned — an agent reads this text, so the thing to assert is the text.
+    ///
+    /// Three properties at once, none of which survives alone: every pane carries BOTH names (the
+    /// number its tools take and the id the user's own CLI prints, which are different integers
+    /// here on purpose), the pane this server runs in is marked, and the zoom is named in the words
+    /// `zoom-pane` prints.
+    #[test]
+    fn the_arrangement_is_drawn_in_the_numbers_this_surfaces_tools_take() {
+        let mut snapshot = wire_snapshot(wire_split(
+            sprag_terminal::SplitDir::Horizontal,
+            0.5,
+            wire_leaf(40),
+            wire_split(
+                sprag_terminal::SplitDir::Vertical,
+                0.6,
+                wire_leaf(41),
+                wire_leaf(42),
+            ),
+        ));
+        snapshot.floating = vec![PaneId(43)];
+        snapshot.zoomed = Some(PaneId(42));
+
+        assert_eq!(
+            render_arrangement_answer(&snapshot, &pool(&[40, 41, 42, 43]), Some(41)),
+            "How this sprag terminal's panes are arranged (revision 5):\n\
+             \n\
+             50% left|right\n\
+             ├─ pane 1 (id 40)\n\
+             └─ 60% top|bottom\n\
+             \x20  ├─ pane 2 (id 41)  (you are here)\n\
+             \x20  └─ pane 3 (id 42)  (fills the window)\n\
+             floating: pane 4 (id 43)\n\
+             \n\
+             Which pane is next to which (a direction not listed has no pane that way — that pane \
+             is at that edge of the window):\n\
+             \x20 pane 1: right=pane 2\n\
+             \x20 pane 2: left=pane 1, down=pane 3\n\
+             \x20 pane 3: left=pane 1, up=pane 2\n\
+             \n\
+             Pass a pane NUMBER (not an id) to read_pane, write_pane, send_keys or select_pane. \
+             Which pane the user is typing into right now is list_panes' answer, not this one.\n",
+        );
+    }
+
+    /// **The neighbour table is the DAEMON's adjacency, not a reading of the drawing** — asserted
+    /// with the control that moves it.
+    ///
+    /// Two arrangements identical in shape and in every id, differing only in one divider's share.
+    /// The pane to the right of pane 1 changes, because adjacency there is settled by which
+    /// candidate overlaps it most. Anything derived from the drawing's ORDER — the obvious thing a
+    /// re-implementation does — answers the same pane both times and fails the second assertion.
+    #[test]
+    fn the_neighbour_table_moves_with_the_share_it_is_derived_from() {
+        let arrangement = |ratio: f32| {
+            wire_snapshot(wire_split(
+                sprag_terminal::SplitDir::Horizontal,
+                0.5,
+                wire_leaf(40),
+                wire_split(
+                    sprag_terminal::SplitDir::Vertical,
+                    ratio,
+                    wire_leaf(41),
+                    wire_leaf(42),
+                ),
+            ))
+        };
+        let neighbours = |ratio: f32| {
+            render_arrangement_answer(&arrangement(ratio), &pool(&[40, 41, 42]), None)
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("pane 1: ").map(str::to_owned))
+                .expect("pane 1 has a row in the table")
+        };
+
+        assert_eq!(neighbours(0.25), "right=pane 3");
+        assert_eq!(
+            neighbours(0.75),
+            "right=pane 2",
+            "THE CONTROL: only the share differs, so a table read off the drawing's order would \
+             answer the same pane twice",
+        );
+    }
+
+    /// A leaf whose pane has left the pool between the two reads is REPORTED, not numbered.
+    ///
+    /// The residual of reading two slots at two instants, and the whole reason the pane list is read
+    /// FIRST: numbering this leaf anyway would hand an agent a number that now belongs to a
+    /// different pane, and dropping it would make a pane the daemon is still tiling vanish in
+    /// silence.
+    #[test]
+    fn a_pane_that_left_the_pool_between_the_reads_is_named_as_such() {
+        let snapshot = wire_snapshot(wire_split(
+            sprag_terminal::SplitDir::Horizontal,
+            0.5,
+            wire_leaf(40),
+            wire_leaf(41),
+        ));
+        let answer = render_arrangement_answer(&snapshot, &pool(&[40]), None);
+        assert!(
+            answer.contains("pane ? (id 41, gone since the pane list was read)"),
+            "the leaf with no number says why it has none: {answer}",
+        );
+        assert!(
+            answer.contains("pane 1: right=pane id 41"),
+            "and the table names it by the one identity it still has: {answer}",
+        );
+    }
+
+    /// A window tiling ONE pane has no neighbourhood, so the table is absent rather than empty —
+    /// this surface's additive rule, the one `list_panes` follows for a resting pane.
+    #[test]
+    fn a_single_tiled_pane_gets_no_neighbour_table() {
+        let snapshot = wire_snapshot(wire_leaf(40));
+        let answer = render_arrangement_answer(&snapshot, &pool(&[40]), Some(40));
+        assert!(
+            answer.contains("pane 1 (id 40)  (you are here)"),
+            "the sole pane is still drawn and still marked: {answer}",
+        );
+        assert!(
+            !answer.contains("next to which"),
+            "and nothing claims a neighbourhood: {answer}",
+        );
     }
 
     #[test]

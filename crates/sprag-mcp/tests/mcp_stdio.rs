@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
-use sprag_host::wire::SPAWN_ACTION;
+use sprag_host::wire::{SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION, ZOOM_PANE_ACTION};
 use sprag_rpc::HostConn;
 
 /// How long any single condition may take before this file calls it a failure.
@@ -80,6 +80,10 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// The env var the daemon exports to its panes, and the one both resolve layers read.
 const SOCK_ENV: &str = "SPRAG_HOST_RPC_SOCK";
+
+/// The IDENTITY half of the same rendezvous — which pane a process is running in. Named from the
+/// host crate rather than respelled, so this file cannot drift from what the daemon publishes.
+const PANE_ENV_VAR: &str = sprag_host::PANE_ENV_VAR;
 
 /// The boot-pane size of the daemon a test normally gets — deliberately not a common default, so
 /// "the answer came from THIS daemon" is checkable off the pane list alone.
@@ -195,6 +199,31 @@ fn add_pane(sock: &Path, program: &[&str]) -> u64 {
     .expect("the spawn action answers with a pane id")
 }
 
+/// Invoke one mux action on the daemon at `sock` and return its answer.
+///
+/// The arrangement `pane_layout` reports can only be BUILT by acting on the daemon, and three of the
+/// actions used here (`split`, `set_floating`, `zoom_pane`) have no `sprag-mcp` tool — this crate
+/// drives them the way any other client would, over the same wire.
+fn mux_invoke(sock: &Path, action: &str, args: Value) -> Value {
+    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(action), "args": args }),
+    )
+    .unwrap_or_else(|error| panic!("{action}: {error}"))
+}
+
+/// Divide `pane` and spawn a new one into the half it opens, returning the new pane's id.
+fn split_pane(sock: &Path, pane: u64, dir: &str) -> u64 {
+    mux_invoke(
+        sock,
+        SPLIT_ACTION,
+        json!({ "pane": pane, "dir": dir, "cmd": ["cat"] }),
+    )
+    .as_u64()
+    .expect("the split action answers with a pane id")
+}
+
 // ----- the server, as a client sees it -----
 
 /// The shipped `sprag-mcp` process plus the two ends of its protocol pipe.
@@ -233,6 +262,36 @@ impl McpServer {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag-mcp"));
         cmd.env(SOCK_ENV, sock);
         Self::from_command(cmd)
+    }
+
+    /// A server that is RUNNING IN pane `pane` of the daemon at `sock` — the production shape for
+    /// `pane_layout`'s "you are here", where the daemon exported the id and its own address into one
+    /// environment and the MCP client forwarded both.
+    fn spawn_in_pane(sock: &Path, pane: u64) -> Self {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag-mcp"));
+        cmd.env(SOCK_ENV, sock).env(PANE_ENV_VAR, pane.to_string());
+        Self::from_command(cmd)
+    }
+
+    /// A server talking to `sock`, whose ANCESTOR advertises a pane of a DIFFERENT daemon.
+    ///
+    /// The case that must mark nothing. Pane ids are per-daemon and start at zero, so a box running
+    /// two sprag terminals has two pane `1`s: an id taken from the nearest environment that happens
+    /// to carry one names a real, plausible pane of the terminal being asked about, and the mark
+    /// would be wrong in the one way nobody can see. The child's own environment carries the socket
+    /// and no id, which is exactly what a client that forwards one variable and not the other leaves
+    /// behind.
+    fn spawn_behind_foreign_pane(own: &Path, ancestor: &Path, ancestor_pane: u64) -> Self {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("unset {PANE_ENV_VAR}; {SOCK_ENV}=\"$1\" \"$0\""))
+            .arg(env!("CARGO_BIN_EXE_sprag-mcp"))
+            .arg(own)
+            .env(SOCK_ENV, ancestor)
+            .env(PANE_ENV_VAR, ancestor_pane.to_string());
+        let server = Self::from_command(cmd);
+        server.assert_forked(ancestor);
+        server
     }
 
     /// A direct child with the given log level, for the stdout-purity claim.
@@ -1296,5 +1355,137 @@ fn a_missing_terminal_and_an_unreachable_one_are_different_answers() {
     assert!(
         !text.contains("not inside a sprag terminal"),
         "...and does not claim the session has no terminal: {text}"
+    );
+}
+
+/// Map each pane's host id to the 1-based number this surface's tools take, off `list_panes` itself.
+///
+/// Read rather than assumed, because the numbering is the pane POOL's order and nothing promises it
+/// matches the order panes were created in. It also makes the pinned drawing below immune to
+/// confusing the two integers: a boot pane is id `0` and number `1`, so no pane in this file has an
+/// id equal to its number, and a rendering that printed one where the other belongs cannot pass.
+fn pane_numbers(server: &mut McpServer) -> Vec<(u64, usize)> {
+    server
+        .call_tool("list_panes", json!({}))
+        .lines()
+        .filter_map(|line| {
+            let (head, rest) = line.trim().strip_prefix("pane ")?.split_once(": id=")?;
+            let id = rest.split_whitespace().next()?.parse().ok()?;
+            Some((id, head.parse().ok()?))
+        })
+        .collect()
+}
+
+/// **WHERE the panes are, as the agent that must choose one by position receives it** — the head of
+/// debt-register item 14.
+///
+/// Until this tool existed an agent could make a pane active, read it and type into it, but could
+/// not learn where any of them WERE: it could not resolve "the pane to the right of mine", which is
+/// how a person names a pane. The daemon knew all along — the arrangement is a published slot and
+/// adjacency is `LayoutWire::neighbor` — but the only way to ask over the wire was the `select_pane`
+/// ACTION, which answers by MOVING THE USER.
+///
+/// The shape driven here is one no unit test can produce and no other test in this file reaches: a
+/// nested split, a pane zoomed to fill the window, and a FLOAT. The float is worth its own mention —
+/// R287 could only unit-test that line because no CLI verb floats a pane, and this harness talks to
+/// the daemon directly.
+///
+/// REVERT-PROOF (each measured red, and each killing THIS test alone): read `PANES_SLOT` in place of
+/// `LAYOUT_SLOT`; print the host id where the pane number belongs; number a leaf whose pane is not
+/// in the list instead of saying so; drop the socket check from `own_pane`.
+#[test]
+fn the_layout_tool_answers_where_the_panes_are_and_which_one_is_next_to_which() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    // `0 | (right over below)`, then a fourth pane taken OUT of the tiling.
+    let right = split_pane(&sock, 0, "horizontal");
+    let below = split_pane(&sock, right, "vertical");
+    let floated = add_pane(&sock, &["cat"]);
+    mux_invoke(
+        &sock,
+        SET_FLOATING_ACTION,
+        json!({ "id": floated, "floating": true }),
+    );
+    mux_invoke(
+        &sock,
+        ZOOM_PANE_ACTION,
+        json!({ "pane": below, "on": true }),
+    );
+
+    // The server believes it is running IN the pane on the right, which is what gives a direction
+    // something to be relative to.
+    let mut server = McpServer::spawn_in_pane(&sock, right);
+    let numbers: Vec<(u64, usize)> = pane_numbers(&mut server);
+    let number = |id: u64| {
+        numbers
+            .iter()
+            .find(|(pane, _)| *pane == id)
+            .unwrap_or_else(|| panic!("pane {id} is in the list: {numbers:?}"))
+            .1
+    };
+    let drawing = server.call_tool("pane_layout", json!({}));
+    let revision = drawing
+        .lines()
+        .next()
+        .and_then(|line| line.rsplit_once("revision ")?.1.strip_suffix("):"))
+        .unwrap_or_else(|| panic!("the answer heads with the arrangement's revision: {drawing}"))
+        .to_owned();
+
+    assert_eq!(
+        drawing,
+        format!(
+            "How this sprag terminal's panes are arranged (revision {revision}):\n\
+             \n\
+             50% left|right\n\
+             ├─ pane {n0} (id 0)\n\
+             └─ 50% top|bottom\n\
+             \x20  ├─ pane {nr} (id {right})  (you are here)\n\
+             \x20  └─ pane {nb} (id {below})  (fills the window)\n\
+             floating: pane {nf} (id {floated})\n\
+             \n\
+             Which pane is next to which (a direction not listed has no pane that way — that pane \
+             is at that edge of the window):\n\
+             \x20 pane {n0}: right=pane {nr}\n\
+             \x20 pane {nr}: left=pane {n0}, down=pane {nb}\n\
+             \x20 pane {nb}: left=pane {n0}, up=pane {nr}\n\
+             \n\
+             Pass a pane NUMBER (not an id) to read_pane, write_pane, send_keys or select_pane. \
+             Which pane the user is typing into right now is list_panes' answer, not this one.\n",
+            n0 = number(0),
+            nr = number(right),
+            nb = number(below),
+            nf = number(floated),
+        ),
+        "the whole answer, from the daemon's own arrangement",
+    );
+}
+
+/// A pane id published by a DIFFERENT daemon marks nothing.
+///
+/// Ids are per-daemon and start at zero, so a box running two sprag terminals has two pane `1`s:
+/// taking the first `SPRAG_PANE` within reach would mark a real, plausible pane of the terminal
+/// being asked about — wrong in the one way a reader cannot see. The pair is only trusted from an
+/// environment whose ADDRESS half is the socket this process actually asked.
+///
+/// The companion of `the_child_env_socket_wins_over_an_ancestors`, on the identity half of the same
+/// rendezvous, and the reason the resolve is a pair rather than two independent lookups.
+#[test]
+fn a_pane_id_advertised_for_another_daemon_marks_nothing() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let (_other, other_sock) = spawn_daemon(&["cat"], OTHER_PANE);
+
+    // The ancestor advertises the OTHER daemon, and a pane id that exists in BOTH.
+    let mut server = McpServer::spawn_behind_foreign_pane(&sock, &other_sock, 0);
+    let drawing = server.call_tool("pane_layout", json!({}));
+    assert!(
+        drawing.contains("pane 1 (id 0)") && !drawing.contains("you are here"),
+        "the pane is drawn and NOT claimed as ours: {drawing}",
+    );
+
+    // The control: the same id, published with the socket actually in use, does mark.
+    let mut inside = McpServer::spawn_in_pane(&sock, 0);
+    let mine = inside.call_tool("pane_layout", json!({}));
+    assert!(
+        mine.contains("pane 1 (id 0)  (you are here)"),
+        "THE CONTROL: only the address half differs, so a resolver ignoring it marks both: {mine}",
     );
 }
