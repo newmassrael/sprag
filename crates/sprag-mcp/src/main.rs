@@ -1463,19 +1463,43 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     .ok_or("the host did not answer with a new pane id")?;
 
     let panes = query_panes()?;
-    let number = panes
-        .iter()
-        .find(|p| p.id == id)
+    let born = panes.iter().find(|p| p.id == id);
+    let number = born
         .map(|p| p.number.to_string())
         // The pane was born — the host answered with its id — so a listing that no longer holds it
         // means it has ALREADY gone (a shell that exec'd and exited). Reported, never guessed at.
         .unwrap_or_else(|| format!("? (id {id}, gone since it was opened)"));
     let where_it_is = cwd.map_or_else(String::new, |dir| format!(" in {}", dir.display()));
-    Ok(format!(
-        "Opened pane {number}{where_it_is}, running a shell. It is recorded as opened by your \
-         pane, so close_pane will let you close it.\n\n{}",
-        render_pane_list(&panes, Some(opener))
+    // WHETHER THE PROVENANCE ACTUALLY LANDED, read back off the pane rather than assumed from the
+    // request that was sent. Not defensive noise — the skew run that proved this key additive is
+    // what produced the case: a daemon at the SAME wire protocol that predates `opened_by` accepts
+    // the argument and records nothing, so it neither refuses the client nor honours it. Saying
+    // "close_pane will let you close it" from the request alone would be a promise this tool would
+    // then break, and the caller would find out only when its cleanup was refused.
+    let ours = born.is_some_and(|p| p.opened_by == Some(opener));
+    Ok(opened_answer(
+        &number,
+        &where_it_is,
+        ours,
+        &render_pane_list(&panes, Some(opener)),
     ))
+}
+
+/// [`tool_open_pane`]'s answer, as a pure function so BOTH of its branches can be read.
+///
+/// Split out for the reason [`pane_summary`] is: the `ours == false` branch cannot be reached
+/// against the daemon this suite builds, because a daemon that records the provenance always
+/// records it. It exists for a daemon at the SAME wire protocol that predates the field — which
+/// accepts the argument and drops it — and that case was found by RUNNING the skew proof rather
+/// than by reasoning about it. Unit-testable here; unreachable live, and recorded as such.
+fn opened_answer(number: &str, where_it_is: &str, ours: bool, listing: &str) -> String {
+    let answerable = if ours {
+        "It is recorded as opened by your pane, so close_pane will let you close it."
+    } else {
+        "WARNING: this terminal did not record it as opened by you, so close_pane will refuse it — \
+         the daemon is older than this tool. Ask the user to close it, or to restart the terminal."
+    };
+    format!("Opened pane {number}{where_it_is}, running a shell. {answerable}\n\n{listing}")
 }
 
 /// `close_pane` — end a pane THIS pane opened, refusing every other one.
@@ -2355,6 +2379,32 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("pane of a sprag terminal")
+        );
+    }
+
+    /// The open answer PROMISES the cleanup only when the terminal really recorded the provenance.
+    ///
+    /// The false branch is not defensive noise, and it is not hypothetical: the skew run for this
+    /// change (a parent-commit daemon, same wire protocol 4) accepted `opened_by` and recorded
+    /// nothing, because the field did not exist yet. Reading the fact BACK off the pane is what
+    /// turns that into a warning instead of a promise this tool would go on to break — and the
+    /// warning is here rather than live because the suite can only build one daemon.
+    #[test]
+    fn the_open_answer_only_promises_a_close_it_can_keep() {
+        let kept = opened_answer("2", " in /tmp", true, "LISTING");
+        assert_eq!(
+            kept,
+            "Opened pane 2 in /tmp, running a shell. It is recorded as opened by your pane, so \
+             close_pane will let you close it.\n\nLISTING",
+        );
+        let broken = opened_answer("2", "", false, "LISTING");
+        assert!(
+            broken.starts_with(
+                "Opened pane 2, running a shell. WARNING: this terminal did not record it as \
+                 opened by you, so close_pane will refuse it"
+            ),
+            "an older daemon dropped the fact, and the answer says so rather than promising: \
+             {broken}",
         );
     }
 
