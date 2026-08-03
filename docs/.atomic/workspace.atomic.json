@@ -10118,6 +10118,58 @@
         "The live half cannot become a standing test: the CLI suite spawns the CURRENT daemon, which serves every slot this binary knows. What is pinned is the pure mapping and its controls."
       ]
     },
+    "R291": {
+      "decision_summary": "A pane's foreground JOB CHANGE becomes an event, because its IDENTITY is 236x-292x cheaper to watch than the answer it names",
+      "changes_bullets": [
+        "Event::PaneJobChanged + JobWatch: the settle sweep samples each pane's foreground process group and announces a move, so a job change is an event rather than something every reader polls for.",
+        "A first reading ESTABLISHES and is not news; the census prunes with the agent tracker's, both asserted on one pane close.",
+        "One pass now makes ONE announce per session carrying every event it found, so a session with both an agent transition and a job change is woken once.",
+        "wait_for_change reports pane_job_changed and names pane_processes as the follow-up read; its subject now travels as the 1-based NUMBER its own tools take, which a comment had claimed and the code did not do.",
+        "sprag_terminal::foreground_pgid_of names the read a pid alone can make, so the pass performs no I/O under a workspace lock."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 45 targets / 1836 tests (+10 on 1826); clippy 0 with no suppression; doc gate 0/16; pixel smoke 136/0 unchanged.",
+        "Three revert-proofs, each shown to discriminate: the establish rule removed fails 4 unit and 4 sweep tests; a second announce loop fails exactly the merged-wake test; deleting the job census PASSED GREEN until a new assertion was added, then fails exactly that test.",
+        "MEASURED against control commit f7e8b24 built the same way: sampling under the workspace lock cost a concurrent reader +687 to +3000 us median and +41.8 to +51.3 ms p99; moving the reads out returns it to -10.6 to +0.8 us median against the control's +0.8 to +1.6.",
+        "Cost, four runs, minima: foreground_pgid over 3 panes 9.375-12.380 us against pane_processes 2737.59-3566.94 us in the same runs, 236x-292x, 0.00025 percent of one core at SWEEP_INTERVAL.",
+        "Live: an 8 second quiet park through the real MCP server against a real daemon proves the establishing sweep publishes nothing, then a real bash job is reported as pane_job_changed naming pane 1.",
+        "Every rendered answer forced to fail and read: the journal vector, the wire object, and the live MCP strings."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Running the control dated an inherited number: sweep.rs recorded a churning pass at 44-58 us and the control commit measures 158.2-185.5 us on the same instrument, stale before R291 and corrected in place.",
+        "The latency bound is SWEEP_INTERVAL and lowering it is NOT one constant away: park_until_due(SWEEP_INTERVAL) is the ceiling on any sweep-borne cadence.",
+        "Still open in item 16: two samplers still take two full /proc passes, and nothing displays what a pane is running."
+      ],
+      "publishable_decision_summary": "A pane's foreground JOB CHANGE becomes an event, because its IDENTITY is 236x-292x cheaper to watch than the answer it names",
+      "publishable_changes_bullets": [
+        "Event::PaneJobChanged + JobWatch: the settle sweep samples each pane's foreground process group and announces a move, so a job change is an event rather than something every reader polls for.",
+        "A first reading ESTABLISHES and is not news; the census prunes with the agent tracker's, both asserted on one pane close.",
+        "One pass now makes ONE announce per session carrying every event it found, so a session with both an agent transition and a job change is woken once.",
+        "wait_for_change reports pane_job_changed and names pane_processes as the follow-up read; its subject now travels as the 1-based NUMBER its own tools take, which a comment had claimed and the code did not do.",
+        "sprag_terminal::foreground_pgid_of names the read a pid alone can make, so the pass performs no I/O under a workspace lock."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 45 targets / 1836 tests (+10 on 1826); clippy 0 with no suppression; doc gate 0/16; pixel smoke 136/0 unchanged.",
+        "Three revert-proofs, each shown to discriminate: the establish rule removed fails 4 unit and 4 sweep tests; a second announce loop fails exactly the merged-wake test; deleting the job census PASSED GREEN until a new assertion was added, then fails exactly that test.",
+        "MEASURED against control commit f7e8b24 built the same way: sampling under the workspace lock cost a concurrent reader +687 to +3000 us median and +41.8 to +51.3 ms p99; moving the reads out returns it to -10.6 to +0.8 us median against the control's +0.8 to +1.6.",
+        "Cost, four runs, minima: foreground_pgid over 3 panes 9.375-12.380 us against pane_processes 2737.59-3566.94 us in the same runs, 236x-292x, 0.00025 percent of one core at SWEEP_INTERVAL.",
+        "Live: an 8 second quiet park through the real MCP server against a real daemon proves the establishing sweep publishes nothing, then a real bash job is reported as pane_job_changed naming pane 1.",
+        "Every rendered answer forced to fail and read: the journal vector, the wire object, and the live MCP strings."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Running the control dated an inherited number: sweep.rs recorded a churning pass at 44-58 us and the control commit measures 158.2-185.5 us on the same instrument, stale before R291 and corrected in place.",
+        "The latency bound is SWEEP_INTERVAL and lowering it is NOT one constant away: park_until_due(SWEEP_INTERVAL) is the ceiling on any sweep-borne cadence.",
+        "Still open in item 16: two samplers still take two full /proc passes, and nothing displays what a pane is running."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
