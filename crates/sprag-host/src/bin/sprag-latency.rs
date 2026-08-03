@@ -1439,6 +1439,69 @@ fn main() -> ExitCode {
         );
     }
 
+    // THE TERM R292 ADDED TO THAT SITE, measured rather than argued. A session may have filtered
+    // waits parked on its journal, and the derive site above now runs beside them — so the question
+    // is whether a keystroke pays for a waiter that cannot possibly have news.
+    //
+    // It must not, and `JournalChannel::take_satisfied` returns immediately when the append landed
+    // nothing (which is what a keystroke lands). Without that gate this row walks the ring once per
+    // waiter per keystroke, from the OLDEST record — and deleting the gate is the control that moves
+    // it, which is how the number below was checked rather than assumed.
+    {
+        let shaped = Host::new((COLS, ROWS));
+        shaped
+            .spawn(painted(), "q0".to_owned(), COLS, ROWS, None, None)
+            .expect("spawn a quiescent pane");
+        let shaped = HostState::new(shaped, Arc::new(ChannelRegistry::default()), None);
+        let channels = shaped.channels().clone();
+        let journal = channels.journal("0");
+        // A FULL ring, so an un-gated evaluation has the whole 256 records to skip past — the worst
+        // case, which is also the steady state of a workspace anyone has been using.
+        let revision = channels.revision("0");
+        for id in 0..u64::try_from(sprag_host::events::JOURNAL_CAPACITY).unwrap_or(u64::MAX) {
+            journal.announce(&revision, vec![sprag_host::events::Event::PaneCreated(id)]);
+        }
+        // Eight parked waits, each caught up, none of which any keystroke can satisfy.
+        for _ in 0..8 {
+            journal.park_or_answer(
+                pinion_rpc::ConnId::allocate(),
+                revision.current(),
+                sprag_host::events::EventFilter::AnyOf(vec![sprag_host::events::Clause {
+                    kind: Some(sprag_host::events::EventKind::PaneJobChanged),
+                    subject: Some(sprag_host::events::Subject::Pane(9_999)),
+                }]),
+                Some(pinion_rpc::RequestId::Num(1)),
+                pinion_rpc::RpcReply::new(|_| {}),
+            );
+        }
+        assert_eq!(
+            journal.parked_count(),
+            8,
+            "the row needs its waiters parked"
+        );
+        channels.observe(
+            &shaped
+                .registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            "0",
+        );
+        paired(
+            "events: observe, 1 pane, 8 waits parked, no change",
+            &mut controls,
+            None,
+            || {
+                channels.observe(
+                    &shaped
+                        .registry()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    "0",
+                );
+            },
+        );
+    }
+
     // THE OTHER AXIS, and R269 shipped without it. The rows above hold the pane count constant at
     // ONE WINDOW, and `SessionShape::read` takes a workspace lock PER WINDOW — so the term they do
     // not cover is the one that scales with locks rather than with `u64`s. A session with many

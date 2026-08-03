@@ -997,7 +997,14 @@ impl EventLog {
     /// If `revision` is below the last one recorded. The scene revision is monotonic and this log
     /// is ordered by it; a caller that went backwards has paired a change with the wrong token, and
     /// every cursor comparison below would quietly answer from the wrong place.
-    pub fn record(&mut self, revision: u64, events: impl IntoIterator<Item = Event>) {
+    /// Answers HOW MANY records landed, and that count is load-bearing rather than informational:
+    /// **no append means no reader can have become satisfied**, because the only two things that can
+    /// satisfy one are a new record and an eviction, and an eviction happens only inside an append. So
+    /// a caller holding parked readers may skip evaluating them entirely when this is zero — which it
+    /// is for most dispatches, and every keystroke is a dispatch ([`crate::notify::JournalChannel`]).
+    pub fn record(&mut self, revision: u64, events: impl IntoIterator<Item = Event>) -> usize {
+        let before = self.records.len();
+        let mut evicted = 0;
         for event in events {
             if let Some(last) = self.records.back() {
                 assert!(
@@ -1009,13 +1016,15 @@ impl EventLog {
             }
             self.records.push_back(Record { revision, event });
             while self.records.len() > self.capacity {
-                let evicted = self
+                let gone = self
                     .records
                     .pop_front()
                     .expect("a queue longer than a non-zero capacity has a front");
-                self.evicted_through = Some(evicted.revision);
+                self.evicted_through = Some(gone.revision);
+                evicted += 1;
             }
         }
+        self.records.len() + evicted - before
     }
 
     /// Everything recorded after `cursor`, and whether anything before it was already lost.
@@ -1137,16 +1146,21 @@ impl SessionJournal {
     }
 
     /// Read `session`'s shape, record what moved since the last observation at `revision`, and keep
-    /// the new shape.
+    /// the new shape. Answers HOW MANY records landed.
     ///
     /// Called after a mutating dispatch, with the revision that dispatch advanced the scene to — so
     /// a client woken by that very bump reads a record keyed at the number it was woken with.
-    pub fn observe(&mut self, registry: &SessionRegistry, session: &str, revision: u64) {
+    ///
+    /// The count is what lets a caller skip work that cannot matter — see [`EventLog::record`].
+    pub fn observe(&mut self, registry: &SessionRegistry, session: &str, revision: u64) -> usize {
         let next = SessionShape::read(registry, session);
         if let Some(previous) = self.shape.replace(next) {
             // `self.shape` now holds the new one, so diff against what it replaced.
             let events = previous.diff(self.shape.as_ref().expect("just replaced"));
-            self.log.record(revision, events);
+            self.log.record(revision, events)
+        } else {
+            // The first observation ESTABLISHES; it does not change. Nothing landed.
+            0
         }
     }
 
@@ -1158,9 +1172,10 @@ impl SessionJournal {
     /// producer knows. Folding them would put a discipline back — an emitter would have to be
     /// invoked from the derive site, which does not run on the thread that sees these.
     ///
-    /// A caller that has nothing to say passes an empty group and records nothing.
-    pub fn emit(&mut self, revision: u64, events: impl IntoIterator<Item = Event>) {
-        self.log.record(revision, events);
+    /// A caller that has nothing to say passes an empty group and records nothing. Answers how many
+    /// records landed, for the same reason [`observe`](Self::observe) does.
+    pub fn emit(&mut self, revision: u64, events: impl IntoIterator<Item = Event>) -> usize {
+        self.log.record(revision, events)
     }
 
     /// Everything recorded after `cursor`. See [`EventLog::since`].

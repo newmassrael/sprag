@@ -183,8 +183,8 @@ impl JournalChannel {
         let fire = {
             let mut journal = self.lock();
             let at = revision.current();
-            journal.log.observe(registry, session, at);
-            Self::take_satisfied(&mut journal)
+            let landed = journal.log.observe(registry, session, at);
+            Self::take_satisfied(&mut journal, landed)
         };
         Self::answer(fire);
     }
@@ -211,8 +211,8 @@ impl JournalChannel {
         let (at, fire) = {
             let mut journal = self.lock();
             let at = revision.bump();
-            journal.log.emit(at, events);
-            (at, Self::take_satisfied(&mut journal))
+            let landed = journal.log.emit(at, events);
+            (at, Self::take_satisfied(&mut journal, landed))
         };
         Self::answer(fire);
         at
@@ -304,7 +304,22 @@ impl JournalChannel {
     ///
     /// Runs under the caller's lock hold, immediately after an append, so a wait cannot be evaluated
     /// against a journal that has moved since the record landed.
-    fn take_satisfied(journal: &mut Journal) -> Vec<(ParkedWait, Batch)> {
+    ///
+    /// ## `landed == 0` returns at once, and that is a TYPING-RATE decision
+    ///
+    /// Every keystroke is a mutating dispatch ([`crate::events`]), so the derive site runs at typing
+    /// rate — and most of those dispatches change nothing structural, appending nothing. Evaluating
+    /// the parked waits anyway would call `since(cursor)` once per waiter per keystroke, and that scan
+    /// starts at the OLDEST record: a full ring is 256 comparisons a waiter, for an answer that cannot
+    /// have changed. R265's rule is that nothing at typing rate may walk.
+    ///
+    /// It is exact rather than a heuristic: the only two things that can satisfy a parked wait are a
+    /// new record and an eviction, and an eviction happens only inside an append
+    /// ([`crate::events::EventLog::record`]). No append, no possible satisfaction.
+    fn take_satisfied(journal: &mut Journal, landed: usize) -> Vec<(ParkedWait, Batch)> {
+        if landed == 0 {
+            return Vec::new();
+        }
         // Taken out first: the loop reads `journal.log` while deciding, which it could not do while
         // holding a mutable borrow of `journal.parked`.
         let parked = std::mem::take(&mut journal.parked);
