@@ -1647,6 +1647,13 @@ fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
         opened.contains("      opened by: you (yours to close)"),
         "the listing marks the new pane as the agent's own: {opened}",
     );
+    // The tool's own description promises this, and an agent believes the description: opening a
+    // work pane must not move where the USER is typing. It holds because the birth is a SPAWN —
+    // a `split` selects its new pane (tmux's rule) and would have taken the cursor with it.
+    assert!(
+        opened.contains("  pane 1: id=0 40x6 command=cat title=(none) (active)"),
+        "the person is still on the pane they were on: {opened}",
+    );
 
     // The boot pane is the PERSON's, and no agent may close it. Checked before the happy path so a
     // gate that refused nothing could not pass this test by having already closed everything.
