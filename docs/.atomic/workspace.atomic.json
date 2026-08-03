@@ -10006,6 +10006,76 @@
         "PANE RENAME / PROCESS_INFO / TAB MOVE / WORKSPACE MOVE remain the unclosed herdr cells, plus plugins (11) and worktree (4)."
       ]
     },
+    "R290": {
+      "decision_summary": "A pane can say WHAT IT IS RUNNING: the foreground job that owns its terminal, sampled through R282's machinery rather than published, indexed by process group so a reparented member is not lost, and served to the CLI and to an agent.",
+      "changes_bullets": [
+        "procfs::Stat is the crate's one parse of a /proc/<pid>/stat line; ports and pane_pty had two, and the second read the file as a String, so a child whose comm the kernel truncated mid-codepoint reported no foreground group at all.",
+        "PanePty::tty captures ttyname_r on the slave at openpty and keeps it, so the daemon states a pane's terminal device instead of a caller inferring it from the child's fd 0, which a child may redirect.",
+        "Sampled<T> holds the cache and the coalescing that R282 built for sessions; ActivitySampler and the new PaneProcessSampler are its two users, and what stays with each fact is its own sampling function.",
+        "PaneProcessSampler answers what every pane is running: its device, its child, and the foreground job that owns its terminal, indexed by process GROUP from one /proc pass, so a job member reparented away from the pane's child is still in the job.",
+        "JobProcess carries the kernel comm and the argument VECTOR, never a pre-joined line: joining argv with spaces makes an argument containing a space indistinguishable from two, and publishing both forms would let one fact be read two ways.",
+        "pane_processes.<max_age_ms> is a sampled address beside session_activity, registry-wide because /proc has no index by process group, so enumerating one pane's job is the same full pass that answers every other pane.",
+        "Samplers bundles the host's sampled facts, one set per host, so an arm cannot mint a sampler where a scene is assembled and silently lose the coalescing while every individual answer still looks right.",
+        "sprag processes [PANE] is the third pane verb: panes says WHO, layout says WHERE, this says what is running, and it quotes argv per argument so the one place that flattens the vector cannot claim a lie.",
+        "The MCP surface gained pane_processes, re-derived rather than inherited: an agent cannot get this fact another way, because list_panes carries the spawn label, read_pane carries text a build may have scrolled away, and a silent build looks like an idle prompt."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 over 45 targets, 1825 passing (1805 before), clippy 0 with no suppression, doc gate 0/16, rustfmt clean.",
+        "Headless GUI pixel smoke 136 passed / 0 failed, unchanged from the baseline this round started at.",
+        "Each of the eight commits was checked out into its own git worktree and cargo check --workspace --all-targets passed there, because the pre-commit hook checks the working tree and not the staged snapshot.",
+        "Discriminating revert-proof for the group index: a job whose member was reparented away (sh -c \"sleep 300 &\" inside a job that execs into sleep 400) has two members; the descendant walk herdr uses finds one, computed in the same test from the same /proc, and the reparented member's parent was measured as 2258 rather than the pane's shell.",
+        "Discriminating revert-proof for the tty: replacing the captured device with a plausible /dev/pts/0 fails the assertion against the child's own /proc/<pid>/fd/0, which read /dev/pts/13.",
+        "Discriminating revert-proof for the coalescing: releasing the sampler lock before sampling turns eight concurrent readers from one walk into eight.",
+        "Measured on the sprag-latency battery: a fresh pane_processes request is 2751.41 us for every pane at once, a re-read inside the tolerance is 2.66 us.",
+        "Every rendered answer was forced to fail and read: the CLI block, the MCP text byte for byte, the live MCP answer over stdio, and the sampled row itself.",
+        "The rival was read at 9a4ce5e1 rather than recalled: tty is assigned None at app/api/panes.rs:234 and nowhere else, argv0 is None at platform/linux.rs:151 and :318, cmdline is argv joined by spaces at :152, and members are enumerated through the CONFIG_PROC_CHILDREN-gated /proc/<pid>/task/<tid>/children at :281."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "No HostClient method and no GUI consumer were built for this fact, on R285's own argument: nothing draws it yet, and an abstraction justified by its future use is what R279's context() cost. The wire slot and two surfaces are what has callers.",
+        "The pane row's provenance is PanePty::pid's gate, and that gate has a narrow residue the crate already lives with: the reader thread publishes the exit after waiting, so a pid read a moment before that publication could in principle be recycled before the walk reaches it. Re-checking after the walk would narrow the window without closing it, so it is stated in the sample's own docs rather than papered over with a check that cannot make the claim it looks like it makes.",
+        "sprag pays a full /proc pass where herdr pays a walk of the pane child's subtree, so for ONE pane herdr's is cheaper; sprag buys completeness, kernel-config independence, an age on the answer and one pass for every pane and every concurrent reader. That is a trade and it is recorded as one, not as a win on cost.",
+        "Nothing in either frontend renders what a pane is running, and nothing polls the address, so the 2751 us pass is paid only when somebody asks. A status-bar or pane-header consumer is the additive follow-up, and it would be the first caller with a display tolerance rather than zero.",
+        "Item 6's remaining herdr cells after this round are pane.rename, tab.move and workspace.move; pane.process_info is closed."
+      ],
+      "publishable_decision_summary": "A pane can say WHAT IT IS RUNNING: the foreground job that owns its terminal, sampled through R282's machinery rather than published, indexed by process group so a reparented member is not lost, and served to the CLI and to an agent.",
+      "publishable_changes_bullets": [
+        "procfs::Stat is the crate's one parse of a /proc/<pid>/stat line; ports and pane_pty had two, and the second read the file as a String, so a child whose comm the kernel truncated mid-codepoint reported no foreground group at all.",
+        "PanePty::tty captures ttyname_r on the slave at openpty and keeps it, so the daemon states a pane's terminal device instead of a caller inferring it from the child's fd 0, which a child may redirect.",
+        "Sampled<T> holds the cache and the coalescing that R282 built for sessions; ActivitySampler and the new PaneProcessSampler are its two users, and what stays with each fact is its own sampling function.",
+        "PaneProcessSampler answers what every pane is running: its device, its child, and the foreground job that owns its terminal, indexed by process GROUP from one /proc pass, so a job member reparented away from the pane's child is still in the job.",
+        "JobProcess carries the kernel comm and the argument VECTOR, never a pre-joined line: joining argv with spaces makes an argument containing a space indistinguishable from two, and publishing both forms would let one fact be read two ways.",
+        "pane_processes.<max_age_ms> is a sampled address beside session_activity, registry-wide because /proc has no index by process group, so enumerating one pane's job is the same full pass that answers every other pane.",
+        "Samplers bundles the host's sampled facts, one set per host, so an arm cannot mint a sampler where a scene is assembled and silently lose the coalescing while every individual answer still looks right.",
+        "sprag processes [PANE] is the third pane verb: panes says WHO, layout says WHERE, this says what is running, and it quotes argv per argument so the one place that flattens the vector cannot claim a lie.",
+        "The MCP surface gained pane_processes, re-derived rather than inherited: an agent cannot get this fact another way, because list_panes carries the spawn label, read_pane carries text a build may have scrolled away, and a silent build looks like an idle prompt."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 over 45 targets, 1825 passing (1805 before), clippy 0 with no suppression, doc gate 0/16, rustfmt clean.",
+        "Headless GUI pixel smoke 136 passed / 0 failed, unchanged from the baseline this round started at.",
+        "Each of the eight commits was checked out into its own git worktree and cargo check --workspace --all-targets passed there, because the pre-commit hook checks the working tree and not the staged snapshot.",
+        "Discriminating revert-proof for the group index: a job whose member was reparented away (sh -c \"sleep 300 &\" inside a job that execs into sleep 400) has two members; the descendant walk herdr uses finds one, computed in the same test from the same /proc, and the reparented member's parent was measured as 2258 rather than the pane's shell.",
+        "Discriminating revert-proof for the tty: replacing the captured device with a plausible /dev/pts/0 fails the assertion against the child's own /proc/<pid>/fd/0, which read /dev/pts/13.",
+        "Discriminating revert-proof for the coalescing: releasing the sampler lock before sampling turns eight concurrent readers from one walk into eight.",
+        "Measured on the sprag-latency battery: a fresh pane_processes request is 2751.41 us for every pane at once, a re-read inside the tolerance is 2.66 us.",
+        "Every rendered answer was forced to fail and read: the CLI block, the MCP text byte for byte, the live MCP answer over stdio, and the sampled row itself.",
+        "The rival was read at 9a4ce5e1 rather than recalled: tty is assigned None at app/api/panes.rs:234 and nowhere else, argv0 is None at platform/linux.rs:151 and :318, cmdline is argv joined by spaces at :152, and members are enumerated through the CONFIG_PROC_CHILDREN-gated /proc/<pid>/task/<tid>/children at :281."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "No HostClient method and no GUI consumer were built for this fact, on R285's own argument: nothing draws it yet, and an abstraction justified by its future use is what R279's context() cost. The wire slot and two surfaces are what has callers.",
+        "The pane row's provenance is PanePty::pid's gate, and that gate has a narrow residue the crate already lives with: the reader thread publishes the exit after waiting, so a pid read a moment before that publication could in principle be recycled before the walk reaches it. Re-checking after the walk would narrow the window without closing it, so it is stated in the sample's own docs rather than papered over with a check that cannot make the claim it looks like it makes.",
+        "sprag pays a full /proc pass where herdr pays a walk of the pane child's subtree, so for ONE pane herdr's is cheaper; sprag buys completeness, kernel-config independence, an age on the answer and one pass for every pane and every concurrent reader. That is a trade and it is recorded as one, not as a win on cost.",
+        "Nothing in either frontend renders what a pane is running, and nothing polls the address, so the 2751 us pass is paid only when somebody asks. A status-bar or pane-header consumer is the additive follow-up, and it would be the first caller with a display tolerance rather than zero.",
+        "Item 6's remaining herdr cells after this round are pane.rename, tab.move and workspace.move; pane.process_info is closed."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
