@@ -91,8 +91,16 @@ pub struct Pane {
     /// Safe as an id because pane ids are monotonic and NEVER reused (see
     /// [`spawn_restored`](Workspace::spawn_restored), which reserves a restored id against reuse):
     /// a provenance that outlives its opener names a pane that is gone, never a DIFFERENT pane that
-    /// arrived later. It is deliberately not cleared when the opener closes — the true statement is
-    /// still "pane 3 asked for this", and clearing it would strand the pane beyond anyone's reach.
+    /// arrived later.
+    ///
+    /// It is deliberately not cleared when the opener closes, because "pane 3 asked for this" stays
+    /// TRUE and is what a person reading the pane list wants to know. **What that costs is worth
+    /// stating exactly, because the first version of this comment got it backwards**: clearing it
+    /// would NOT strand the pane, because a stranded pane is what happens EITHER WAY. An id is never
+    /// reissued, so once the opener is gone no live pane can ever match it — and a cleared `None`
+    /// reads as "a person made this", which the agent surface refuses just as firmly. So an
+    /// agent-opened pane whose opener has closed is closable by no agent under either rule, and only
+    /// a person's `sprag kill-pane` removes it. Keeping the id at least says WHO to ask.
     opened_by: Option<PaneId>,
 }
 
