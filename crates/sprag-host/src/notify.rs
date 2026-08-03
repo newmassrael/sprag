@@ -37,11 +37,14 @@
 //! it parks with always came from the session it parks on.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use pinion_core::SceneRevision;
 use pinion_rpc::{ConnId, RequestId, RpcReply, WaiterRegistry};
+use sprag_terminal::PaneId;
 
+use crate::PaneFind;
 use crate::events::{Batch, Event, EventFilter, SessionJournal};
 
 /// One session's change-notification channel: the scene-version token its changes advance, and the
@@ -56,11 +59,20 @@ struct SessionChannel {
     /// revision is its cursor vocabulary: a journal kept anywhere else would be keyed by a number
     /// this map owns, which is the fork [`crate::events`] refuses.
     ///
-    /// Two kinds of client park on one session, and the split between this and
-    /// [`waiters`](Self::waiters) is the point: a DISPLAY client parks on the revision, because
-    /// output makes its projection stale and it must re-read; a client waiting for a NAMED change
-    /// parks here, because output is not a change and must not wake it.
+    /// THREE kinds of client park on one session, and the split between this,
+    /// [`waiters`](Self::waiters) and [`outputs`](Self::outputs) is the point: a DISPLAY client
+    /// parks on the revision, because output makes its projection stale and it must re-read; a
+    /// client waiting for a NAMED change parks here, because output is not a change and must not
+    /// wake it; a client waiting for named OUTPUT parks in `outputs`, because output IS its
+    /// subject but only some of it is its answer.
     journal: Arc<JournalChannel>,
+    /// The waits whose subject is a pane's OUTPUT — woken by the revision like a display client,
+    /// answered by a predicate like a filtered wait.
+    ///
+    /// It hangs off the revision rather than off the journal because output is the one thing the
+    /// journal deliberately does not record ([`crate::events`]: a record per PTY batch would evict
+    /// the ring at output rate), and the revision is the only token output moves.
+    outputs: Arc<OutputChannel>,
 }
 
 impl SessionChannel {
@@ -70,13 +82,32 @@ impl SessionChannel {
     /// revision per channel makes the install always succeed here; the assert catches a future
     /// refactor that hands in an already-observed one, which would leave every wait on this session
     /// parked forever with nothing to report it.
-    fn new() -> Self {
+    ///
+    /// ## The observer runs on the PTY READER thread, so it does the least it can
+    ///
+    /// A pane's `on_dirty` bumps this token once per applied output batch
+    /// (`sprag_terminal::PanePty`), and `bump` fires this closure SYNCHRONOUSLY. So everything here
+    /// is on that reader thread, and anything expensive would back-pressure the terminal itself —
+    /// the R152 rule ("nothing that runs per batch of PTY output may take a shared lock") and the
+    /// same argument `crate::rpc::spawn_reaper` records for moving its scan off this thread.
+    ///
+    /// The output half is therefore two lock-free atomics and, on the false→true edge only, one
+    /// non-blocking send: [`OutputChannel::arm`] decides, [`OutputSignal::fire`] delivers, and the
+    /// PASS runs on the dispatch owner. See [`OutputChannel`] for why that is the right thread.
+    fn new(session: &str, signal: &Arc<OutputSignal>) -> Self {
         let revision = Arc::new(SceneRevision::default());
         let waiters = Arc::new(WaiterRegistry::new());
+        let outputs = Arc::new(OutputChannel::new());
         let wake = Arc::clone(&waiters);
+        let arm = Arc::clone(&outputs);
+        let signal = Arc::clone(signal);
+        let session = session.to_owned();
         assert!(
             revision.set_observer(move |n| {
                 wake.wake(n);
+                if arm.arm() {
+                    signal.fire(&session);
+                }
             }),
             "a session channel requires a fresh SceneRevision: its wake observer must install \
              (an already-observed revision would leave scene/waitFor parked forever)",
@@ -85,6 +116,7 @@ impl SessionChannel {
             revision,
             waiters,
             journal: Arc::new(JournalChannel::new()),
+            outputs,
         }
     }
 }
@@ -393,6 +425,261 @@ fn send(reply: RpcReply, id: Option<&RequestId>, batch: &Batch) {
     }
 }
 
+/// The daemon-wide "this session's panes produced output" sink, injected once at boot.
+///
+/// It exists so [`SessionChannel`]'s observer can hand the work to the dispatch owner without this
+/// module knowing what a dispatch owner is: the daemon installs a closure that sends its own
+/// ingress event, a test installs one that records. The alternative — this module owning the
+/// channel type — would put the transport's vocabulary inside the notification layer, and a GUI
+/// embedder that dispatches on its event loop has a different one.
+///
+/// `OnceLock` rather than a mutex because the read is on the PTY reader thread, once per output
+/// batch: install-once is the honest semantics (it is a boot wiring decision, not a setting) AND
+/// the only shape whose read is lock-free. A daemon that never installs one simply has no output
+/// waits — every park still answers its first evaluation, because the PARK signals through the
+/// dispatch path directly rather than through here.
+/// What [`OutputSignal`] holds: "tell the dispatch owner that this session moved".
+///
+/// Named rather than spelled inline because the name is the contract — it takes a SESSION and
+/// answers nothing, so there is no result for a caller to wait on and nothing for it to block for.
+type OutputSink = Box<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Default)]
+pub struct OutputSignal {
+    sink: OnceLock<OutputSink>,
+}
+
+impl std::fmt::Debug for OutputSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The boxed closure is not `Debug`; report whether one is installed, which is the only
+        // thing a reader of this type ever wants to know.
+        f.debug_struct("OutputSignal")
+            .field("installed", &self.sink.get().is_some())
+            .finish()
+    }
+}
+
+impl OutputSignal {
+    /// Install the sink. `true` if this call installed it, `false` if one already was — the same
+    /// install-once contract pinion's `set_observer` has, and for the same reason: two sinks would
+    /// mean one bump evaluating twice.
+    pub fn install(&self, sink: impl Fn(&str) + Send + Sync + 'static) -> bool {
+        self.sink.set(Box::new(sink)).is_ok()
+    }
+
+    /// Tell the dispatch owner that `session` has output to evaluate. **On the PTY reader thread**:
+    /// the installed sink must not block, which is why the daemon's is a send on an unbounded
+    /// channel and nothing else.
+    fn fire(&self, session: &str) {
+        if let Some(sink) = self.sink.get() {
+            sink(session);
+        }
+    }
+}
+
+/// What a parked output wait is looking for — the SAME two search languages the pane's
+/// `find.<needle>` and `regex.<pattern>` slots address, carried as an enum so one cannot silently
+/// become the other.
+///
+/// Two variants rather than a string and a `regex: bool`, for the reason
+/// [`crate::wire::REGEX_FIELD`] already gives about those slots: a needle and a pattern are
+/// separate languages, so one string must not mean both depending on a mode carried beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputQuery {
+    /// A literal needle, ASCII-case-folded — `find.<needle>`'s language.
+    Literal(String),
+    /// A regular expression, case-sensitive (`(?i)` is in the language itself) —
+    /// `regex.<pattern>`'s language.
+    Pattern(String),
+}
+
+/// One client's outstanding question: *wake me when this pane's retained output matches this*.
+#[derive(Debug)]
+struct ParkedOutputWait {
+    /// The connection that asked — the key [`OutputChannel::release`] drops by, and the reason a
+    /// crashed client leaks nothing.
+    conn: ConnId,
+    /// The pane whose output is the subject. Resolved to a live pane at PARK time; a pane that dies
+    /// while the wait is parked simply stops producing matches, and the client's own read deadline
+    /// is what ends the question — the same lifetime every other park here has.
+    pane: PaneId,
+    /// What would satisfy it.
+    query: OutputQuery,
+    /// The JSON-RPC id to answer under. `None` is a NOTIFICATION — parked and then deliberately not
+    /// answered, exactly as [`ParkedWait::id`] documents.
+    id: Option<RequestId>,
+    /// Where the answer goes. Opaque, so it is NEVER run under the lock below.
+    reply: RpcReply,
+}
+
+/// One session's parked OUTPUT waits, and the lock-free flag that bounds how often they are
+/// evaluated.
+///
+/// ## Why the evaluation is on the DISPATCH OWNER and not on the thread that wakes it
+///
+/// The wake comes from the revision observer, which runs on the PTY reader thread. Searching a
+/// pane's whole retained output there would make the terminal slower *because somebody is waiting on
+/// it*. So the observer only ARMS this channel, and the pass runs where every other request runs.
+///
+/// That thread choice buys a property rather than merely avoiding a cost. [`JournalChannel`] needs
+/// one lock spanning decide-and-park because a park on the dispatch thread races an append on
+/// another; here the park **and every evaluation** are on the one dispatch owner, so "matched
+/// between the check and the park" cannot be expressed. There is no initial-check code path either:
+/// a park signals, and the ordinary pass answers it.
+///
+/// ## The flag is what makes a flooding pane cheap
+///
+/// `arm` returns `true` only on the false→true edge, so at most ONE evaluation pass per
+/// session is ever in flight however fast a pane produces. [`evaluate`](Self::evaluate) clears the
+/// flag BEFORE it searches, so output arriving during a pass queues exactly one more pass and never
+/// zero — the ordering that makes a missed match unrepresentable.
+///
+/// `parked_any` is read by the observer to skip arming when nobody is waiting, and it is an ATOMIC
+/// rather than `parked.len()` because reading the length would take this type's mutex on the PTY
+/// reader thread — the one thing this whole arrangement exists to avoid.
+#[derive(Debug, Default)]
+pub struct OutputChannel {
+    parked: Mutex<Vec<ParkedOutputWait>>,
+    /// Whether an evaluation pass is already queued for this session.
+    queued: AtomicBool,
+    /// Whether anything at all is parked — the observer's lock-free "is this worth a message?".
+    parked_any: AtomicBool,
+}
+
+impl OutputChannel {
+    /// A channel with nobody waiting.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The observer's decision, taken with no lock: does this bump need an evaluation pass?
+    ///
+    /// `true` exactly on the false→true edge of [`queued`](Self::queued), and only when something is
+    /// parked — so a bump on a session nobody waits on costs two atomic loads and sends nothing.
+    fn arm(&self) -> bool {
+        self.parked_any.load(Ordering::Acquire) && !self.queued.swap(true, Ordering::AcqRel)
+    }
+
+    /// Park a question. The caller signals a pass afterwards, which is what answers it the first
+    /// time — see this type's docs for why there is deliberately no separate initial check.
+    pub fn park(
+        &self,
+        conn: ConnId,
+        pane: PaneId,
+        query: OutputQuery,
+        id: Option<RequestId>,
+        reply: RpcReply,
+    ) {
+        let mut parked = self.lock();
+        parked.push(ParkedOutputWait {
+            conn,
+            pane,
+            query,
+            id,
+            reply,
+        });
+        // Published while the lock is held, so an observer that sees the flag also sees a non-empty
+        // vector by the time its pass takes the lock.
+        self.parked_any.store(true, Ordering::Release);
+    }
+
+    /// Run `search` for every parked wait and answer the ones that matched, leaving the rest parked.
+    ///
+    /// `search` is injected rather than performed here because this module owns PARKING, not panes:
+    /// the caller (the dispatch owner) is the one that holds the registry and knows how to read a
+    /// pane. It answers `None` for "no match yet" and `Some(find)` for an answer — including a
+    /// REFUSED pattern, which is an answer (the caller decides that; see `crate::PaneFind::error`).
+    ///
+    /// The flag is cleared FIRST, so output that lands while this runs queues another pass.
+    /// The replies fire with **no lock held**: a reply sink is opaque, and running one under this
+    /// mutex is how a convoy starts.
+    pub fn evaluate(&self, search: impl Fn(PaneId, &OutputQuery) -> Option<PaneFind>) {
+        self.queued.store(false, Ordering::Release);
+        let fire = {
+            let mut parked = self.lock();
+            // Taken out first so `search` — which may take registry locks — is never called while
+            // this vector is borrowed mutably, and so a `park` from a re-entrant path cannot be lost.
+            let waits = std::mem::take(&mut *parked);
+            let mut fire = Vec::new();
+            let mut kept = Vec::with_capacity(waits.len());
+            for wait in waits {
+                match search(wait.pane, &wait.query) {
+                    Some(found) => fire.push((wait, found)),
+                    None => kept.push(wait),
+                }
+            }
+            *parked = kept;
+            self.parked_any.store(!parked.is_empty(), Ordering::Release);
+            fire
+        };
+        Self::answer(fire);
+    }
+
+    /// Drop every wait `conn` parked — it closed, or it crashed. Answers how many went.
+    ///
+    /// Dropping rather than answering, for the reason [`JournalChannel::release`] gives: a
+    /// connection that is gone has nobody to tell.
+    pub fn release(&self, conn: ConnId) -> usize {
+        let mut parked = self.lock();
+        let before = parked.len();
+        parked.retain(|wait| wait.conn != conn);
+        self.parked_any.store(!parked.is_empty(), Ordering::Release);
+        before - parked.len()
+    }
+
+    /// Forget every parked wait — the session is ENDING.
+    ///
+    /// Dropped rather than answered with an empty find: an output wait's answer shape is "here is
+    /// the match", and there is no match to report. The client's connection is about to meet the
+    /// scope refusal on its next call, which is the path [`ChannelRegistry::close`] puts every other
+    /// parked client on.
+    pub fn drain(&self) {
+        let mut parked = self.lock();
+        parked.clear();
+        self.parked_any.store(false, Ordering::Release);
+    }
+
+    /// How many waits are parked — for the tests that pin a park actually parking, and a release
+    /// actually releasing.
+    #[must_use]
+    pub fn parked_count(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Send each matched wait its answer. **Called with no lock held.**
+    fn answer(fire: Vec<(ParkedOutputWait, PaneFind)>) {
+        for (wait, found) in fire {
+            send_found(wait.reply, wait.id.as_ref(), wait.pane, &found);
+        }
+    }
+
+    /// The guarded state, recovering a poisoned lock the way the rest of the host does.
+    fn lock(&self) -> MutexGuard<'_, Vec<ParkedOutputWait>> {
+        self.parked.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The JSON-RPC success response a matched output wait returns: the pane it was watching and the
+/// search answer, serialised from the SAME [`PaneFind`] the `find.<needle>` slot serves.
+///
+/// Reusing that type is the point rather than a convenience: "wait until it says X" and "does it
+/// say X" answer one shape, so a caller can hand either to the same reader and the two cannot drift.
+///
+/// `None` for an id-less request, for the reason [`send`] gives.
+fn send_found(reply: RpcReply, id: Option<&RequestId>, pane: PaneId, found: &PaneFind) {
+    if let Some(id) = id {
+        reply.send(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "pane": pane.0, "find": found },
+            })
+            .to_string(),
+        );
+    }
+}
+
 /// Every session's change channel — its scene-version token and its parked `scene/waitFor`
 /// replies — keyed by session NAME.
 ///
@@ -408,6 +695,10 @@ pub struct ChannelRegistry {
     /// hot-path caller (a pane's `on_dirty`) holds an `Arc<SceneRevision>` captured at spawn and
     /// never comes back through this map at all.
     channels: Mutex<HashMap<String, SessionChannel>>,
+    /// Where a session's "my panes produced output" edge is delivered. Handed to every channel this
+    /// registry mints, so a sink installed before the first session is wired into all of them and
+    /// no mint site has to remember it.
+    signal: Arc<OutputSignal>,
 }
 
 impl ChannelRegistry {
@@ -433,6 +724,24 @@ impl ChannelRegistry {
     #[must_use]
     pub fn journal(&self, session: &str) -> Arc<JournalChannel> {
         Arc::clone(&self.entry(session).journal)
+    }
+
+    /// `session`'s parked OUTPUT waits — what a `pane/waitForOutput` parks into, and what an
+    /// evaluation pass runs over.
+    #[must_use]
+    pub fn outputs(&self, session: &str) -> Arc<OutputChannel> {
+        Arc::clone(&self.entry(session).outputs)
+    }
+
+    /// The sink every channel this registry mints signals through.
+    ///
+    /// Every channel captures THIS `Arc`, so installing into it reaches the channels already minted
+    /// as well as the ones to come — the ordering hazard a per-channel sink would have had does not
+    /// exist. What [`OutputSignal::install`]'s answer is for is the other half: two sinks would mean
+    /// one bump evaluating twice, so the second caller is told it did not win.
+    #[must_use]
+    pub fn output_signal(&self) -> Arc<OutputSignal> {
+        Arc::clone(&self.signal)
     }
 
     /// Record what moved in `session` since the last observation, at the revision it is now at, and
@@ -472,14 +781,21 @@ impl ChannelRegistry {
     /// the LIVE session set ([`close`](Self::close) forgets the rest), so this is a walk over sessions
     /// rather than over history.
     pub fn release(&self, conn: ConnId) -> usize {
-        let journals: Vec<Arc<JournalChannel>> = self
+        let parked: Vec<(Arc<JournalChannel>, Arc<OutputChannel>)> = self
             .lock()
             .values()
-            .map(|channel| Arc::clone(&channel.journal))
+            .map(|channel| (Arc::clone(&channel.journal), Arc::clone(&channel.outputs)))
             .collect();
         // The map lock is released before the channels are touched: two locks, never held at once,
         // and always in this order.
-        journals.iter().map(|journal| journal.release(conn)).sum()
+        //
+        // BOTH kinds of park are released here, and an output wait needs it at least as much: its
+        // predicate may never match, so an entry the disconnect did not drop would be retained for
+        // the daemon's remaining life — [`JournalChannel`]'s own argument, one registry over.
+        parked
+            .iter()
+            .map(|(journal, outputs)| journal.release(conn) + outputs.release(conn))
+            .sum()
     }
 
     /// A session ENDED: wake everything parked on it, then forget its channel.
@@ -499,10 +815,13 @@ impl ChannelRegistry {
         // Bump through the entry (so the observer fires and the waiters drain) BEFORE removing it:
         // a channel removed first is a channel whose parked replies nothing owns.
         self.bump(session);
-        // The same argument for the OTHER kind of parked client. A filtered wait is not released by
-        // the bump — that is the whole point of it — so a session ending has to release it here, or
-        // the one client that asked a precise question is the one left hanging.
-        self.entry(session).journal.drain();
+        // The same argument for the OTHER kinds of parked client. Neither a filtered wait nor an
+        // output wait is released by the bump — that is the whole point of both — so a session
+        // ending has to release them here, or the clients that asked a precise question are the
+        // ones left hanging.
+        let entry = self.entry(session);
+        entry.journal.drain();
+        entry.outputs.drain();
         self.lock().remove(session);
     }
 
@@ -522,14 +841,16 @@ impl ChannelRegistry {
     /// `session`'s channel, minting it on first use. Returns the pieces by clone because the map
     /// lock must not be held while a caller uses them.
     fn entry(&self, session: &str) -> SessionChannel {
+        let signal = &self.signal;
         let mut channels = self.lock();
         let channel = channels
             .entry(session.to_owned())
-            .or_insert_with(SessionChannel::new);
+            .or_insert_with(|| SessionChannel::new(session, signal));
         SessionChannel {
             revision: Arc::clone(&channel.revision),
             waiters: Arc::clone(&channel.waiters),
             journal: Arc::clone(&channel.journal),
+            outputs: Arc::clone(&channel.outputs),
         }
     }
 
@@ -890,6 +1211,170 @@ mod tests {
         channels.close("doomed");
 
         assert_eq!(answered(&replies), 1, "released by the close");
+        assert!(channels.is_empty(), "and the channel forgotten");
+    }
+
+    /// Park an OUTPUT wait on `session`'s pane 0, answering the replies it fires.
+    fn park_output(
+        channels: &ChannelRegistry,
+        session: &str,
+        conn: ConnId,
+    ) -> Arc<std::sync::Mutex<Vec<String>>> {
+        let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&replies);
+        channels.outputs(session).park(
+            conn,
+            PaneId(0),
+            OutputQuery::Literal("done".to_owned()),
+            Some(RequestId::Num(1)),
+            RpcReply::new(move |reply| {
+                sink.lock().expect("the reply sink").push(reply);
+            }),
+        );
+        replies
+    }
+
+    /// A recording output sink installed on `channels` — every session it was fired for, in order.
+    fn record_signal(channels: &ChannelRegistry) -> Arc<std::sync::Mutex<Vec<String>>> {
+        let fired = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&fired);
+        assert!(
+            channels.output_signal().install(move |session| sink
+                .lock()
+                .expect("the signal sink")
+                .push(session.to_owned())),
+            "the first install wins",
+        );
+        fired
+    }
+
+    #[test]
+    fn a_bump_signals_nothing_when_no_output_wait_is_parked() {
+        // The typing-rate decision, in the same shape `take_satisfied`'s early return has: a pane's
+        // output bumps this token constantly, and a session nobody is waiting on must not put a
+        // message on the dispatch queue for every batch.
+        let channels = ChannelRegistry::default();
+        let fired = record_signal(&channels);
+
+        for _ in 0..20 {
+            channels.revision("work").bump();
+        }
+
+        assert!(
+            fired.lock().unwrap().is_empty(),
+            "twenty bumps on a session with no output wait signalled nothing: {fired:?}",
+        );
+    }
+
+    #[test]
+    fn a_flood_of_output_signals_one_pass_and_the_pass_re_arms_it() {
+        // THE claim that bounds this feature's cost. herdr's rival surface pays a full pane read per
+        // waiter every 100 ms whatever the pane does; here a burst of output costs ONE evaluation in
+        // flight per session, and the next burst costs one more only after the pass has run.
+        let channels = ChannelRegistry::default();
+        let fired = record_signal(&channels);
+        let _parked = park_output(&channels, "work", ConnId::allocate());
+
+        for _ in 0..20 {
+            channels.revision("work").bump();
+        }
+        assert_eq!(
+            fired.lock().unwrap().as_slice(),
+            ["work"],
+            "twenty bumps, ONE pass queued — the armed flag is what a flooding pane meets",
+        );
+
+        // The pass clears the flag BEFORE it searches, so the next output arms it again. A pass that
+        // cleared it afterwards would swallow everything that landed while it ran.
+        channels.outputs("work").evaluate(|_, _| None);
+        channels.revision("work").bump();
+        assert_eq!(
+            fired.lock().unwrap().as_slice(),
+            ["work", "work"],
+            "and output after a pass queues the next one",
+        );
+    }
+
+    #[test]
+    fn output_that_lands_during_a_pass_queues_the_next_pass() {
+        // ⚠ THE ORDERING CLAIM, and it needed a test built for it: the two tests above pass whether
+        // the armed flag is cleared before or after the search, because they never overlap the two.
+        // The hazard only exists when a pane produces WHILE a pass is running — clearing the flag
+        // afterwards would swallow that output, and the wait would sleep through a match that had
+        // already landed with nothing left to wake it.
+        //
+        // So the search itself bumps the revision, which is exactly what a pane doing work looks
+        // like from here.
+        let channels = ChannelRegistry::default();
+        let fired = record_signal(&channels);
+        let _parked = park_output(&channels, "work", ConnId::allocate());
+
+        channels.revision("work").bump();
+        assert_eq!(fired.lock().unwrap().len(), 1, "the first pass is queued");
+
+        let revision = channels.revision("work");
+        channels.outputs("work").evaluate(|_, _| {
+            revision.bump();
+            None
+        });
+
+        assert_eq!(
+            fired.lock().unwrap().as_slice(),
+            ["work", "work"],
+            "output during the pass queued the NEXT pass — cleared before the search, never after",
+        );
+    }
+
+    #[test]
+    fn an_output_wait_is_answered_by_the_pass_and_only_by_a_match() {
+        // The predicate is the whole difference between this and `scene/waitFor`: a pass that finds
+        // nothing leaves the wait parked, and the caller is not woken to look for itself.
+        let channels = ChannelRegistry::default();
+        let replies = park_output(&channels, "work", ConnId::allocate());
+
+        channels.outputs("work").evaluate(|_, _| None);
+        assert_eq!(answered(&replies), 0, "no match, no answer");
+        assert_eq!(channels.outputs("work").parked_count(), 1, "still parked");
+
+        channels
+            .outputs("work")
+            .evaluate(|_, _| Some(PaneFind::default()));
+        assert_eq!(answered(&replies), 1, "a match answers it");
+        assert_eq!(
+            channels.outputs("work").parked_count(),
+            0,
+            "and an answered wait is not also a waiter",
+        );
+    }
+
+    #[test]
+    fn a_closed_connection_takes_its_output_wait_with_it() {
+        // An output wait needs this MORE than a filtered one: its predicate may never match, so an
+        // entry the disconnect did not drop is retained for the daemon's remaining life.
+        let channels = ChannelRegistry::default();
+        let gone = ConnId::allocate();
+        let staying = ConnId::allocate();
+        let _left = park_output(&channels, "work", gone);
+        let _kept = park_output(&channels, "work", staying);
+
+        assert_eq!(channels.release(gone), 1, "one wait released");
+        assert_eq!(
+            channels.outputs("work").parked_count(),
+            1,
+            "and the OTHER connection's wait is untouched — release is keyed by connection",
+        );
+    }
+
+    #[test]
+    fn closing_a_session_forgets_its_output_waits() {
+        // Dropped rather than answered with an empty find: an output wait's answer shape is "here is
+        // the match", and there is no match to report. The client meets the scope refusal next call.
+        let channels = ChannelRegistry::default();
+        let replies = park_output(&channels, "doomed", ConnId::allocate());
+
+        channels.close("doomed");
+
+        assert_eq!(answered(&replies), 0, "no invented answer");
         assert!(channels.is_empty(), "and the channel forgotten");
     }
 }
