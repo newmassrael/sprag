@@ -214,6 +214,27 @@ pub struct PaneSnapshot {
     /// is what the daemons that wrote it could express.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_by: Option<PaneId>,
+    /// The name a person gave this pane ([`Pane::name`](crate::Pane::name)), or `None` for a pane
+    /// nobody named.
+    ///
+    /// Durable for a stronger reason than the provenance above: a name is an ADDRESS. A script, a
+    /// keybinding or an agent's own notes that say `--pane build` keep working across a reboot
+    /// only if the name comes back with the pane, and a name silently dropped by a restart would
+    /// resolve to nothing exactly when the pane is still sitting there.
+    ///
+    /// Restoring it also restores the UNIQUENESS the live registry enforces, because the ids come
+    /// back exactly and each name came from one pane — the restore replays a set that was already
+    /// valid rather than re-deriving one.
+    ///
+    /// Deserialised through [`PaneName::parse`](crate::PaneName::parse) (see that type's `Deserialize`),
+    /// so a file an older daemon wrote — or one somebody edited — cannot smuggle in a name the live
+    /// surfaces refuse. A name this build rejects fails the whole snapshot load rather than loading
+    /// a pane that is addressable by something no caller can express.
+    ///
+    /// `#[serde(default)]` on the usual additive terms: a pre-R295 snapshot loads with `None`,
+    /// which is what the daemons that wrote it could express.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<crate::PaneName>,
     /// The pane's size, so the restored shell opens at the same dimensions.
     pub cols: u16,
     pub rows: u16,
@@ -483,6 +504,10 @@ pub struct PaneRestore {
     /// reason [`remote`](Self::remote) is: the host re-stamps it on the reborn pane, and a
     /// provenance the plan dropped could not be recovered from anywhere else.
     pub opened_by: Option<PaneId>,
+    /// The name a person gave this pane, or `None`. Carried through the plan on
+    /// [`opened_by`](Self::opened_by)'s terms — the host re-stamps it on the reborn pane, and a
+    /// name the plan dropped could not be recovered from anywhere else.
+    pub name: Option<crate::PaneName>,
     /// The size to open at.
     pub cols: u16,
     pub rows: u16,
@@ -499,6 +524,7 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
         argv: pane.argv().to_vec(),
         remote: pane.remote().cloned(),
         opened_by: pane.opened_by(),
+        name: pane.name().cloned(),
         cols,
         rows,
     }
@@ -736,6 +762,63 @@ mod tests {
         });
         let decoded: PaneSnapshot = serde_json::from_value(stored).expect("a pre-R294 pane loads");
         assert_eq!(decoded.opened_by, None);
+        assert_eq!(decoded.name, None, "and a pre-R295 one comes back unnamed");
+    }
+
+    /// A pane's NAME reaches the restore plan, on the provenance test's grounds and one stronger:
+    /// the name is an ADDRESS, so a script or an agent that says `--pane build` resolves to nothing
+    /// after a reboot unless it comes back with the pane.
+    #[test]
+    fn a_panes_name_reaches_the_restore_plan() {
+        let mut snap = snap_of("0", vec![win("0", vec![pane(0), pane(1)])]);
+        snap.sessions[0].windows[0].panes[1].name = Some(crate::PaneName::parse("build").unwrap());
+        let (_, plan) = SessionRegistry::from_snapshot(snap).unwrap();
+        assert_eq!(
+            plan.panes
+                .iter()
+                .map(|p| (p.id, p.name.as_ref().map(crate::PaneName::as_str)))
+                .collect::<Vec<_>>(),
+            vec![(PaneId(0), None), (PaneId(1), Some("build"))],
+            "the named pane comes back named and the unnamed one comes back unnamed",
+        );
+    }
+
+    /// The registry-wide uniqueness of a NAME is re-established by the load, exactly as an id's is
+    /// — a hand-edited file claiming one name twice would restore into a set where `--pane build`
+    /// has two answers, and the resolver would then have to guess.
+    #[test]
+    fn a_snapshot_naming_two_panes_the_same_is_malformed() {
+        let mut snap = snap_of("0", vec![win("0", vec![pane(0), pane(1)])]);
+        let name = crate::PaneName::parse("build").unwrap();
+        snap.sessions[0].windows[0].panes[0].name = Some(name.clone());
+        snap.sessions[0].windows[0].panes[1].name = Some(name);
+        let Err(error) = SessionRegistry::from_snapshot(snap) else {
+            panic!("a duplicate name is refused");
+        };
+        assert!(
+            matches!(&error, SnapshotError::Malformed(m) if m.contains("build")),
+            "and the refusal names the offending name, not just the rule: {error}",
+        );
+    }
+
+    /// A name the LIVE surfaces refuse cannot enter through the file either. The parse is on
+    /// `PaneName`'s own `Deserialize`, so this holds for every reader of a snapshot rather than for
+    /// whichever one remembered to check.
+    #[test]
+    fn a_snapshot_cannot_smuggle_in_a_name_the_front_door_refuses() {
+        let forged = serde_json::json!({
+            "id": 4,
+            "cwd": null,
+            "command_label": "sh",
+            "argv": ["sh"],
+            "name": "build\n9: 80x24  sh",
+            "cols": 80,
+            "rows": 24,
+        });
+        assert!(
+            serde_json::from_value::<PaneSnapshot>(forged).is_err(),
+            "a file is not a trusted input, however this daemon wrote it",
+        );
     }
 
     /// A snapshot whose version this build does not understand is REFUSED — the daemon boots
@@ -851,6 +934,7 @@ mod tests {
             argv: vec!["sh".to_owned()],
             remote: None,
             opened_by: None,
+            name: None,
             cols: 80,
             rows: 24,
         }

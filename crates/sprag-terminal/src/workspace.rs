@@ -102,6 +102,20 @@ pub struct Pane {
     /// agent-opened pane whose opener has closed is closable by no agent under either rule, and only
     /// a person's `sprag kill-pane` removes it. Keeping the id at least says WHO to ask.
     opened_by: Option<PaneId>,
+    /// The name a PERSON gave this pane (or the agent that opened it), `None` for a pane nobody
+    /// named — which is every pane until somebody says otherwise.
+    ///
+    /// Neither of the two name-shaped facts beside it: [`command_label`](Self::command_label) is
+    /// what was launched and is chosen by nobody, and [`title`](Self::title) is the child's own
+    /// `OSC 0`/`2`, rewritten on every prompt and chosen by the CHILD. This one changes only when
+    /// somebody says so, which is what lets it be an ADDRESS — see [`crate::PaneName`] for the
+    /// forms it refuses and why each refusal is load-bearing.
+    ///
+    /// **Uniqueness is not this type's to hold.** The pool is the membership authority for ONE
+    /// window while a name is unique across the whole REGISTRY (it stands in for the id, which is
+    /// registry-unique), so the check belongs to whoever accepts a name from a caller — exactly the
+    /// split [`set_pane_opened_by`](Workspace::set_pane_opened_by) already states for a provenance.
+    name: Option<crate::PaneName>,
 }
 
 impl Pane {
@@ -143,6 +157,13 @@ impl Pane {
     #[must_use]
     pub fn opened_by(&self) -> Option<PaneId> {
         self.opened_by
+    }
+
+    /// The name a person gave this pane, `None` for a pane nobody named. See the
+    /// [field](Self::name) for how it differs from the two name-shaped facts beside it.
+    #[must_use]
+    pub fn name(&self) -> Option<&crate::PaneName> {
+        self.name.as_ref()
     }
 
     /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
@@ -244,6 +265,13 @@ pub struct PaneInfo {
     pub cols: u16,
     pub rows: u16,
     pub command_label: String,
+    /// The name a PERSON gave this pane, `None` for a pane nobody named — [`Pane::name`],
+    /// republished verbatim.
+    ///
+    /// The only one of this struct's three name-shaped fields that is IDENTITY: it is unique
+    /// across the registry and a surface may resolve it to this pane. The other two are display
+    /// (`command_label` is what was launched, `title` is what the child calls itself).
+    pub name: Option<crate::PaneName>,
     /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
     /// one. Live and child-controlled, so it is a DISPLAY name only — never identity.
     pub title: Option<String>,
@@ -623,6 +651,7 @@ impl Workspace {
             argv,
             remote: None,
             opened_by: None,
+            name: None,
         });
         Ok(id)
     }
@@ -689,6 +718,7 @@ impl Workspace {
             argv,
             remote: None,
             opened_by: None,
+            name: None,
         });
         Ok(())
     }
@@ -793,6 +823,32 @@ impl Workspace {
         }
     }
 
+    /// Give the pane with `id` the name `name`, or take its name away with `None`
+    /// ([`Pane::name`]). Answers whether this pool held that pane at all.
+    ///
+    /// Set AFTER the spawn on the same terms as
+    /// [`set_pane_opened_by`](Self::set_pane_opened_by) — a name is metadata the pane PROCESS does
+    /// not need — by the birth path, by a rename and by a restore.
+    ///
+    /// **Takes no interest in whether the name is already taken**, for the reason that function
+    /// states about a provenance: this pool is the membership authority for ONE window, while a
+    /// name is unique across the whole REGISTRY, so the pool cannot see the set it would have to
+    /// check against. Whoever accepts a name from a caller is the one that must check it
+    /// daemon-wide, and the host's `rename_pane` / birth actions do, before ever reaching here.
+    ///
+    /// Answers `false` for an unknown id rather than silently doing nothing, because a rename that
+    /// found no pane and a rename that landed are different outcomes to a caller — where a
+    /// provenance stamp's caller has just spawned the pane it is stamping and cannot miss.
+    pub fn set_pane_name(&mut self, id: PaneId, name: Option<crate::PaneName>) -> bool {
+        match self.panes.iter_mut().find(|p| p.id == id) {
+            Some(pane) => {
+                pane.name = name;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// All panes, in spawn order.
     #[must_use]
     pub fn panes(&self) -> &[Pane] {
@@ -814,6 +870,7 @@ impl Workspace {
                     cols,
                     rows,
                     command_label: p.command_label.clone(),
+                    name: p.name.clone(),
                     title: p.title(),
                     notification,
                     notification_seq,
@@ -1083,6 +1140,67 @@ mod tests {
             "no pane was invented for the absent id"
         );
         assert_eq!(ws.pane(live).unwrap().opened_by(), None);
+    }
+
+    #[test]
+    fn a_pane_carries_no_name_until_somebody_gives_it_one() {
+        let mut ws = Workspace::new((80, 24));
+        let a = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        assert_eq!(
+            ws.list().iter().filter(|p| p.name.is_some()).count(),
+            0,
+            "a name is chosen, so no birth path may invent one",
+        );
+        assert!(
+            ws.set_pane_name(a, Some(crate::PaneName::parse("build").unwrap())),
+            "naming a pane this pool holds reports that it landed",
+        );
+        assert_eq!(
+            ws.pane(a).unwrap().name().map(crate::PaneName::as_str),
+            Some("build"),
+            "the pane itself carries the name",
+        );
+        assert_eq!(
+            ws.list().iter().find(|p| p.id == a.0).unwrap().name,
+            Some(crate::PaneName::parse("build").unwrap()),
+            "and it reaches the published view a client reads",
+        );
+        assert!(ws.set_pane_name(a, None), "and a name can be taken away");
+        assert_eq!(ws.pane(a).unwrap().name(), None);
+    }
+
+    #[test]
+    fn naming_a_pane_this_pool_does_not_hold_says_so_rather_than_doing_nothing() {
+        // The companion of `recording_an_opener_for_a_pane_this_pool_does_not_hold_changes_nothing`,
+        // and deliberately NOT the same shape: a provenance stamp's caller has just spawned the
+        // pane it is stamping and cannot miss, where a rename's caller named a pane that may have
+        // closed a moment ago — two different outcomes it has to be able to tell apart.
+        let mut ws = Workspace::new((80, 24));
+        let live = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        assert!(
+            !ws.set_pane_name(PaneId(999), Some(crate::PaneName::parse("build").unwrap())),
+            "an absent pane is reported, not silently ignored",
+        );
+        assert_eq!(ws.panes().len(), 1, "and no pane was invented for it");
+        assert_eq!(ws.pane(live).unwrap().name(), None);
+    }
+
+    #[test]
+    fn one_pool_will_take_a_name_twice_because_it_cannot_see_the_registry() {
+        // Documented behaviour, not an oversight: uniqueness is REGISTRY-wide, and this pool is one
+        // window's membership authority. The check belongs to whoever accepts a name from a caller.
+        // If this ever starts failing, somebody has moved the check to the wrong layer.
+        let mut ws = Workspace::new((80, 24));
+        let a = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let b = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let name = crate::PaneName::parse("build").unwrap();
+        assert!(ws.set_pane_name(a, Some(name.clone())));
+        assert!(ws.set_pane_name(b, Some(name)));
+        assert_eq!(
+            ws.list().iter().filter(|p| p.name.is_some()).count(),
+            2,
+            "the pool records both; the host is what refuses the second",
+        );
     }
 
     #[test]

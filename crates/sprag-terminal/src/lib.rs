@@ -19,6 +19,7 @@ pub mod command;
 /// Deriving a directory's current git branch — a session-sidebar display fact (crate-internal).
 mod git;
 pub mod layout;
+pub mod pane_name;
 pub mod pane_pty;
 /// Discovering the TCP ports a session's process subtree is listening on — a session-sidebar
 /// display fact (crate-internal).
@@ -41,6 +42,7 @@ pub use layout::{
     LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,
     MAX_LAYOUT_DEPTH, PaneDir, SplitDir, SplitId, SplitSide,
 };
+pub use pane_name::{PaneName, PaneNameError};
 pub use pane_pty::{
     CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput, foreground_pgid_of,
 };

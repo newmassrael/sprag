@@ -1656,6 +1656,11 @@ impl SessionRegistry {
         // id-addressed reads then resolve ambiguously. Reject it so the fail-safe holds: a corrupt
         // snapshot boots EMPTY, never into an id-colliding registry.
         let mut seen_panes = HashSet::new();
+        // And a pane NAME is unique registry-wide for the same reason (it stands in for the id), so
+        // the same fail-safe applies to it. Kept as a separate set rather than folded into the id
+        // check because the two say different things about a corrupt file, and an operator reading
+        // the refusal should learn which invariant the file broke.
+        let mut seen_names: HashSet<crate::PaneName> = HashSet::new();
         for s in snapshot.sessions {
             if !seen_sessions.insert(s.name.clone()) {
                 return Err(SnapshotError::Malformed(format!(
@@ -1686,6 +1691,17 @@ impl SessionRegistry {
                             p.id
                         )));
                     }
+                    // A NAME is registry-unique for the same reason an id is — it stands in for
+                    // one — so a file carrying the same name twice is malformed on exactly the
+                    // grounds above, and refused here rather than restored into a set where a
+                    // caller's `--pane build` can no longer be answered.
+                    if let Some(name) = &p.name
+                        && !seen_names.insert(name.clone())
+                    {
+                        return Err(SnapshotError::Malformed(format!(
+                            "pane name {name:?} appears twice"
+                        )));
+                    }
                     plan.push(PaneRestore {
                         session: s.name.clone(),
                         window: w.name.clone(),
@@ -1694,6 +1710,7 @@ impl SessionRegistry {
                         argv: p.argv.clone(),
                         remote: p.remote.clone(),
                         opened_by: p.opened_by,
+                        name: p.name.clone(),
                         cols: p.cols,
                         rows: p.rows,
                     });

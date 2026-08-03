@@ -1371,6 +1371,14 @@ impl Host {
                     if let Some(opener) = pane.opened_by {
                         lock(&pool).set_pane_opened_by(pane.id, opener);
                     }
+                    // And its NAME, which is the strongest of the three: it is an ADDRESS, so a
+                    // script or an agent that says `--pane build` resolves to nothing after a
+                    // reboot unless the name comes back with the pane. Its registry-wide
+                    // uniqueness needs no check here — `RestorePlan` refuses a snapshot carrying a
+                    // name twice, exactly as it refuses one carrying an id twice.
+                    if let Some(name) = pane.name {
+                        lock(&pool).set_pane_name(pane.id, Some(name));
+                    }
                     restored += 1;
                 }
                 Err(e) => tracing::warn!(
@@ -3071,6 +3079,7 @@ mod tests {
                             argv: vec!["sh".to_owned()],
                             remote: None,
                             opened_by: None,
+                            name: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -3081,6 +3090,7 @@ mod tests {
                             argv: vec!["sh".to_owned()],
                             remote: None,
                             opened_by: None,
+                            name: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -3144,6 +3154,7 @@ mod tests {
                         argv: vec!["cat".to_owned()], // allowlisted -> re-run exactly
                         remote: None,
                         opened_by: None,
+                        name: None,
                         cols: 80,
                         rows: 24,
                     }],
@@ -3203,6 +3214,7 @@ mod tests {
                                 port: None,
                             }),
                             opened_by: None,
+                            name: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -3214,6 +3226,7 @@ mod tests {
                             argv: vec!["ssh".to_owned(), "host".to_owned(), "danger".to_owned()],
                             remote: None,
                             opened_by: None,
+                            name: None,
                             cols: 80,
                             rows: 24,
                         },
