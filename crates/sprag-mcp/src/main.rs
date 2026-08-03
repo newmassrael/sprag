@@ -75,12 +75,12 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT,
-    PANES_SLOT, PaneProcessesWire, SELECT_PANE_ACTION, TEXT_ACTION, events_slot_since,
-    find_slot_for, pane_processes_at, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT,
+    LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, SELECT_PANE_ACTION, SINCE_PARAM,
+    TEXT_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
-use sprag_rpc::HostConn;
+use sprag_rpc::{CallError, HostConn, INVALID_PARAMS};
 use sprag_terminal::{LayoutSnapshot, PaneDir, PaneId, arrangement};
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
@@ -431,22 +431,26 @@ fn tools_list() -> Value {
                     changed. Use this instead of polling list_panes, agent_state or pane_processes \
                     in a loop: it costs nothing while nothing is happening and returns the moment \
                     it does. This is the tool for 'wait until the agent in pane 2 finishes', 'wait \
-                    until the build in pane 2 finishes', or coordinating several agents. Reports \
-                    typed changes — `pane_agent_state_changed` (an agent started working, became \
-                    blocked, or went idle), `pane_job_changed` (the COMMAND running in a pane \
-                    changed: the user or an agent started something, or the thing that was running \
-                    ended — this is also how a pane's program EXITING is reported, since a dead \
-                    pane keeps its place and so is never `pane_closed`), `pane_created`, \
-                    `pane_closed`, `window_created`, `window_closed`, `window_selected`, \
-                    `session_created`, `session_closed`, `layout_updated` — each naming its \
-                    SUBJECT, not its new value: follow up with agent_state, pane_processes or \
-                    list_panes to read the subject it names. To wait for a command to finish: call \
-                    this, and when it reports `pane_job_changed` for that pane, read \
-                    pane_processes to see what is running there now (back at the shell means the \
-                    command is done). `pane_job_changed` is SAMPLED, so it can arrive up to about \
-                    5 seconds after the fact; every other change above is immediate. Returns \
-                    immediately if something has already changed since the last call. Pane OUTPUT \
-                    is not a change here: read the pane for that.",
+                    until the build in pane 2 finishes', or coordinating several agents. \
+                    NARROW IT with `pane` and/or `kinds` and the daemon will not wake you for \
+                    anything else — waiting on pane 2 means pane 5's build does not return this \
+                    call. Reports typed changes — `pane_agent_state_changed` (an agent started \
+                    working, became blocked, or went idle), `pane_job_changed` (the COMMAND \
+                    running in a pane changed: the user or an agent started something, or the \
+                    thing that was running ended — this is also how a pane's program EXITING is \
+                    reported, since a dead pane keeps its place and so is never `pane_closed`), \
+                    `pane_created`, `pane_closed`, `pane_selected`, `window_created`, \
+                    `window_closed`, `window_selected`, `session_created`, `session_closed`, \
+                    `layout_updated` — each naming its SUBJECT, not its new value: follow up with \
+                    agent_state, pane_processes or list_panes to read the subject it names. To \
+                    wait for a command to finish: call this with pane N and kinds \
+                    ['pane_job_changed','pane_closed'], then read pane_processes to see what is \
+                    running there now (back at the shell means the command is done); the second \
+                    kind is there because a pane that dies is the other way the wait can end. \
+                    `pane_job_changed` is SAMPLED, so it can arrive up to about 5 seconds after \
+                    the fact; every other change above is immediate. Returns immediately if a \
+                    change you asked about has already happened since the last call. Pane OUTPUT \
+                    is not a change here — it will NOT return this call — read the pane for that.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -456,6 +460,20 @@ fn tools_list() -> Value {
                             "maximum": 600,
                             "description": "Give up and report nothing changed after this long \
                                 (default 60). A timeout is not an error."
+                        },
+                        "pane": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Only wake for changes about THIS pane (1 = the first \
+                                pane in list_panes). Omit to hear about every pane."
+                        },
+                        "kinds": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Only wake for these kinds of change, named exactly as \
+                                the report names them (e.g. ['pane_job_changed','pane_closed']). \
+                                Omit to hear about every kind. An unknown name is refused with the \
+                                full list."
                         }
                     },
                     "additionalProperties": false
@@ -1371,11 +1389,19 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
 /// coordinating on another pane meant a poll loop — and a poll loop is a sleep chosen by whoever
 /// wrote it, wrong in both directions at once.
 ///
-/// ## Built from two calls, neither of them new
+/// ## ONE call, and the pair it replaces did not work
 ///
-/// `scene/waitFor {since}` parks until the scene revision passes `since`; `events.<since>` says what
-/// happened after it. The cursor IS the revision, so the pair composes without a blocking method of
-/// its own (`sprag_host::events` has the reasoning, and pinion's `waiter` has the scar behind it).
+/// It used to park on `scene/waitFor {since}` and then read `events.<since>`. That pair is released
+/// by **pane OUTPUT**, which advances the scene revision and records nothing — so against a pane
+/// running a build it returned instantly with an empty batch, forever: measured on a real daemon at
+/// **22 431 returns a second** (build-rate pane, every answer empty) against **zero** for a quiet one.
+/// For an agent that meant *"wait until the build in pane 2 finishes"* — the use case this tool's own
+/// description names — could not be expressed at all, and each useless return cost a tool result and
+/// an LLM turn.
+///
+/// `events/waitFor {since, match}` parks on the JOURNAL instead, and the filter is applied by the
+/// daemon under the lock that appends. Output is not a record, so it cannot wake this; another pane's
+/// change does not either, when the caller named its own.
 ///
 /// ## The cursor is PROCESS state, and it has to be
 ///
@@ -1408,6 +1434,9 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
             Duration::from_secs(seconds)
         }
     };
+    // Resolved BEFORE the cursor lock is taken, because it needs a host read of its own: a pane
+    // NUMBER is this surface's vocabulary and the daemon's journal speaks ids.
+    let filter = wait_filter(args)?;
 
     let mut cursor = CURSOR.lock().unwrap_or_else(PoisonError::into_inner);
     let since = match *cursor {
@@ -1417,8 +1446,6 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
             .ok_or("the host did not report a scene revision")?,
     };
 
-    // ONE connection for both calls: the park and the read that follows it are one question, and a
-    // second connect between them would be a second chance to fail in the middle of it.
     let sock = host_sock().ok_or_else(|| {
         "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
          ancestor); these pane tools do not apply to this session"
@@ -1427,11 +1454,33 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
     let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
         .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
 
-    // The caller's timeout IS the read deadline — the one place a parked `waitFor` should carry one.
+    // The caller's timeout IS the read deadline, and it is the ONLY deadline: the daemon carries
+    // none, so closing this connection is what releases the park (`sprag_host::notify`).
     conn.set_read_deadline(Some(timeout))
         .map_err(|e| format!("cannot set the wait timeout: {e}"))?;
-    match conn.call("scene/waitFor", json!({ "since": since })) {
-        Ok(_) => {}
+    let mut params = json!({ SINCE_PARAM: since });
+    if let Some(filter) = filter {
+        params["match"] = filter;
+    }
+    let batch = match conn.try_call(EVENTS_WAIT_METHOD, params) {
+        Ok(batch) => batch,
+        // A filter this daemon cannot honour is the CALLER's mistake, and the daemon already wrote
+        // the sentence for it — naming the offending word and the whole vocabulary it does report. It
+        // reaches the agent as that sentence rather than behind `host rpc error:`, which is a
+        // transport's phrase for a fault nobody could anticipate: an agent that cannot tell a typo
+        // from a broken daemon retries the typo.
+        //
+        // Matched on the fault's CODE, never on its rendered line — the rule
+        // `sprag::unknown_slot` records, because a substring test against a rendering is a test
+        // against a presentation decision.
+        Err(CallError::Fault(fault)) if fault.code == INVALID_PARAMS => {
+            return Err(fault
+                .data
+                .as_ref()
+                .and_then(Value::as_str)
+                .unwrap_or(&fault.message)
+                .to_owned());
+        }
         // A connection that trips its deadline is finished, which is fine: nothing happened, and
         // the cursor has not moved, so the next call parks from the same place.
         //
@@ -1439,7 +1488,7 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
         // `set_read_timeout` — "WouldBlock or TimedOut" — and Linux is the `WouldBlock` half
         // (EAGAIN), which is what the live gate caught: matching only `TimedOut` turned every quiet
         // wait into a tool failure reading `Resource temporarily unavailable`.
-        Err(error)
+        Err(CallError::Transport(error))
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
@@ -1450,20 +1499,15 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
                 timeout.as_secs()
             ));
         }
-        Err(error) => return Err(error.to_string()),
-    }
-
-    // The wait's answer is a SIGNAL, not a cursor. Reading from `since` — not from the revision the
-    // wait reported — is what keeps a change recorded AT that revision from being skipped, and the
-    // agent transition is exactly that case: it is published with a single bump.
+        // A filter this daemon cannot honour is the CALLER's mistake, and the daemon already wrote
+        // the sentence for it — naming the offending word and the whole vocabulary it does report. It
+        // reaches the agent as that sentence rather than behind `host rpc error:`, which is a
+        // transport's phrase for a fault nobody could anticipate. An agent that cannot tell a typo
+        // from a broken daemon retries the typo.
+        Err(other) => return Err(std::io::Error::from(other).to_string()),
+    };
     conn.set_read_deadline(None)
         .map_err(|e| format!("cannot clear the wait timeout: {e}"))?;
-    let batch = conn
-        .call(
-            "scene/query",
-            json!({ "path": mux_action_path(&events_slot_since(since)) }),
-        )
-        .map_err(|e| e.to_string())?;
 
     *cursor = Some(batch["next"].as_u64().unwrap_or(since));
     drop(cursor);
@@ -1477,7 +1521,10 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
     }
     let events = batch["events"].as_array().map_or(&[][..], Vec::as_slice);
     if events.is_empty() {
-        out.push_str("The scene moved but nothing structural changed (a pane produced output).");
+        // Reachable only through `lost`: the wait does not return without a matching record
+        // otherwise. It used to be the ANSWER for a chatty terminal, which is the defect this
+        // rewrite removed.
+        out.push_str("Changes were dropped and none of the survivors matched what you asked for.");
         return Ok(out);
     }
     // The wire names a pane by the HOST's id; every tool on this surface addresses one by its
@@ -1508,6 +1555,60 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
 
     out.push_str(&render_events(events, &panes));
     Ok(out)
+}
+
+/// Build [`tool_wait_for_change`]'s `match` parameter from the tool's own arguments, or `None` for a
+/// caller that named nothing and wants every change.
+///
+/// ## The translation this exists for
+///
+/// Every tool on this surface addresses a pane by its 1-based NUMBER; the daemon's journal names one
+/// by its id. So a `pane` argument costs a pane-list read before the wait can be issued — the same
+/// join [`tool_wait_for_change`] already does on the way OUT, done on the way in. That read is what
+/// also makes a wrong number a refusal ("no pane 7; this terminal has 3") instead of a wait that can
+/// never return.
+///
+/// ## Why `kinds` is a LIST and pairs with `pane` as a product
+///
+/// `{pane: 2, kinds: [pane_job_changed, pane_closed]}` is *wake me when pane 2's job changes or pane
+/// 2 disappears* — the two ways the thing an agent waits for can end. One clause per kind, each
+/// carrying the pane, which is the daemon's any-of form. A caller naming only `kinds` gets those kinds
+/// for any subject; one naming only `pane` gets everything about that pane.
+///
+/// A kind is passed THROUGH rather than validated here: the daemon owns the vocabulary and refuses an
+/// unknown word with the whole list of what it does report, so validating here would be a second
+/// enumeration of the exact kind this round removed from the host.
+fn wait_filter(args: &Value) -> Result<Option<Value>, String> {
+    let kinds: Vec<&str> = match args.get("kinds") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|kind| {
+                kind.as_str()
+                    .ok_or_else(|| "each entry of kinds must be a string".to_owned())
+            })
+            .collect::<Result<Vec<&str>, String>>()?,
+        Some(_) => return Err("kinds must be a list of change names".to_owned()),
+    };
+    // Through the same resolver every other tool's `pane` argument uses, so a wrong number is
+    // refused in the one sentence this surface already says for it.
+    let pane = match args.get("pane") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(resolve_pane_id(args)?),
+    };
+    Ok(match (pane, kinds.as_slice()) {
+        (None, []) => None,
+        (Some(id), []) => Some(json!([{ "pane": id }])),
+        (None, kinds) => Some(Value::Array(
+            kinds.iter().map(|kind| json!({ "kind": kind })).collect(),
+        )),
+        (Some(id), kinds) => Some(Value::Array(
+            kinds
+                .iter()
+                .map(|kind| json!({ "kind": kind, "pane": id }))
+                .collect(),
+        )),
+    })
 }
 
 /// One line per change: `  <type>: <subject>`, with a pane named in BOTH vocabularies.

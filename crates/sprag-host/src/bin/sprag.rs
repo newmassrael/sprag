@@ -148,7 +148,8 @@ use sprag_host::wire::{
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
-    CallError, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, RpcFault, socket_path,
+    CallError, EVENTS_WAIT_METHOD, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, RpcFault,
+    SINCE_PARAM, socket_path,
 };
 use sprag_terminal::{LayoutSnapshot, arrangement};
 
@@ -2794,6 +2795,9 @@ fn events(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "events")?;
     let mut since: Option<u64> = None;
     let mut follow = false;
+    let mut pane: Option<u64> = None;
+    let mut kinds: Vec<String> = Vec::new();
+    let usage = "events [-t SESSION] [--since N] [-f [--pane ID] [--kind KIND]…]";
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -2807,13 +2811,40 @@ fn events(args: Vec<String>) -> io::Result<()> {
                         bad(format!("events: --since {value:?} is not a revision"))
                     })?);
             }
+            "--pane" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| bad("events: --pane needs a pane id".to_owned()))?;
+                pane = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| bad(format!("events: --pane {value:?} is not a pane id")))?,
+                );
+            }
+            "--kind" => {
+                kinds.push(
+                    it.next()
+                        .ok_or_else(|| bad("events: --kind needs a change name".to_owned()))?,
+                );
+            }
             other => {
                 return Err(bad(format!(
-                    "events: unexpected argument {other:?} (events [-t SESSION] [--since N] [-f])"
+                    "events: unexpected argument {other:?} ({usage})"
                 )));
             }
         }
     }
+    // A filter is a property of a WAIT, and refusing it without one is the honest consequence of
+    // having exactly ONE matcher: the daemon's. Filtering a non-blocking read would mean a second
+    // implementation of "does this event match", client-side, free to disagree with the first — the
+    // shape this round removed from the host's own serializer. `-f --since 0 --pane N` still prints
+    // that pane's backlog, because a wait whose cursor already has a match answers at once.
+    if !follow && (pane.is_some() || !kinds.is_empty()) {
+        return Err(bad(format!(
+            "events: --pane / --kind narrow what to WAIT for, so they need -f ({usage})"
+        )));
+    }
+    let filter = event_filter(pane, &kinds);
 
     let mut conn = connect_scoped(session.as_deref())?;
     // A cursor the caller did not give is NOW, not zero: `events -f` means "tell me what happens",
@@ -2827,7 +2858,11 @@ fn events(args: Vec<String>) -> io::Result<()> {
         }
     };
 
-    loop {
+    // The backlog, read WITHOUT blocking — the only thing the slot can do that the wait cannot, and
+    // the reason the slot stays. Skipped when a filter is in force: the wait below answers a cursor
+    // that already has a match immediately, so the backlog arrives through the one matcher instead of
+    // through a second one here.
+    if filter.is_none() {
         let batch: Value = conn.call(
             "scene/query",
             scoped_params(
@@ -2835,47 +2870,120 @@ fn events(args: Vec<String>) -> io::Result<()> {
                 mux_action_path(&events_slot_since(cursor)),
             ),
         )?;
-        if batch["lost"].as_bool().unwrap_or(false) {
-            eprintln!(
-                "sprag: events: fell behind the daemon's log — some changes were dropped before \
-                 this read. Re-read the world (`sprag panes`, `sprag windows`); what follows is \
-                 only what survived."
-            );
-        }
-        for event in batch["events"].as_array().into_iter().flatten() {
-            let kind = event["type"].as_str().unwrap_or("?");
-            // The subject key is named for WHAT it is, so a reader that has matched the type
-            // already knows which slot to re-read. Printed as `TYPE<TAB>SUBJECT` — the shape
-            // `sprag run`'s listing uses, which a script can cut.
-            let subject = ["pane", "window", "session"]
-                .iter()
-                .find_map(|key| match &event[*key] {
-                    Value::String(name) => Some(name.clone()),
-                    Value::Number(id) => Some(id.to_string()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            println!("{kind}\t{subject}");
-        }
-        cursor = batch["next"].as_u64().unwrap_or(cursor);
-        if !follow {
-            return Ok(());
-        }
-        // Park. No deadline: waiting is this call's contract, not a hazard (see the doc above).
+        cursor = print_events(&batch, cursor);
+    }
+    if !follow {
+        return Ok(());
+    }
+
+    loop {
+        // Park on the JOURNAL, not on the scene revision. `scene/waitFor` is released by pane
+        // OUTPUT — which records nothing — so this loop used to spin at socket speed against any
+        // pane running a build, printing nothing: measured at 22 431 returns a second where a quiet
+        // pane returns none. `events/waitFor` answers only when a record the caller asked for lands.
         //
-        // THE WAIT'S ANSWER IS A SIGNAL, NOT A CURSOR, and the first version of this loop took it
-        // for one. `waitFor` answers the revision it advanced TO, so adopting it as the cursor
-        // skips whatever was recorded AT that revision — and the read that follows is `> cursor`,
-        // so the skipped record is never offered again. It survived a manual drive because a spawn
-        // happens to bump twice (the record lands above the wait's answer), and it would have lost
-        // exactly the event this niche is about: `ChannelRegistry::announce` bumps ONCE and records
-        // at that very revision, so every agent transition would have vanished. The cursor stays
-        // where the last READ left it; the wait only says it is worth reading again.
+        // No deadline: waiting is this call's contract, not a hazard (see the doc above).
+        //
+        // The reply CARRIES the batch, so there is no second call and no cursor to reconcile between
+        // them — which also retires a hazard this loop used to have to remember. `scene/waitFor`
+        // answers the revision it advanced TO, and the first version of this loop adopted that as
+        // the cursor: it skipped whatever was recorded AT that revision, and since the read that
+        // follows is `> cursor`, the skipped record was never offered again. It survived a manual
+        // drive because a spawn happens to bump twice, and it would have lost exactly the event this
+        // niche is about — `ChannelRegistry::announce` bumps ONCE and records at that very revision.
+        // A wait that answers WITH the batch cannot have that bug at all.
         conn.set_read_deadline(None)?;
         let mut params = scoped_only(session.as_deref());
-        params["since"] = json!(cursor);
-        let _: Value = conn.call("scene/waitFor", params)?;
+        params[SINCE_PARAM] = json!(cursor);
+        if let Some(filter) = &filter {
+            params[sprag_host::events::EventFilter::WIRE_KEY] = filter.clone();
+        }
+        let batch: Value = match conn.try_call(EVENTS_WAIT_METHOD, params) {
+            Ok(batch) => batch,
+            // A filter this daemon cannot honour is the CALLER's mistake, and the daemon already
+            // wrote the sentence for it (naming the offending word and the whole vocabulary). Render
+            // it as that sentence rather than behind `host rpc error:`, which is a transport's phrase
+            // for a fault nobody could anticipate — R283's finding, on the one path this verb adds.
+            Err(CallError::Fault(fault)) if fault.code == INVALID_PARAMS => {
+                return Err(bad(format!("events: {}", fault_sentence(&fault))));
+            }
+            Err(other) => return Err(other.into()),
+        };
+        cursor = print_events(&batch, cursor);
     }
+}
+
+/// The operator-facing half of a fault: its `data` sentence when it has one, else its `message`.
+///
+/// The same precedence [`RpcFault`]'s own `Display` uses, read off the STRUCTURE rather than by
+/// re-parsing a rendered line — [`unknown_slot`]'s rule, for the same reason.
+fn fault_sentence(fault: &RpcFault) -> String {
+    fault
+        .data
+        .as_ref()
+        .and_then(Value::as_str)
+        .unwrap_or(&fault.message)
+        .to_owned()
+}
+
+/// The `match` parameter for a filtered `sprag events -f`, or `None` when the caller narrowed
+/// nothing.
+///
+/// One clause per `--kind`, each carrying `--pane` when it was given, which is the daemon's any-of
+/// form: `--pane 3 --kind pane_job_changed --kind pane_closed` is *pane 3's job changed, or pane 3
+/// went away* — the two ways the thing an operator is watching for can end.
+///
+/// A kind is passed THROUGH unvalidated: the vocabulary belongs to the daemon, which refuses an
+/// unknown word with the full list of what it does report. Checking it here would be a second
+/// enumeration of exactly the kind this round removed.
+fn event_filter(pane: Option<u64>, kinds: &[String]) -> Option<Value> {
+    match (pane, kinds) {
+        (None, []) => None,
+        (Some(id), []) => Some(json!([{ "pane": id }])),
+        (pane, kinds) => Some(Value::Array(
+            kinds
+                .iter()
+                .map(|kind| match pane {
+                    Some(id) => json!({ "kind": kind, "pane": id }),
+                    None => json!({ "kind": kind }),
+                })
+                .collect(),
+        )),
+    }
+}
+
+/// Print one change batch as `TYPE<TAB>SUBJECT` lines and answer the cursor to resume from.
+///
+/// Shared by the backlog read and the wait, because they answer the same shape
+/// ([`sprag_host::events::Batch::to_wire`]) — printing it twice would be two formats for one fact.
+///
+/// **`lost` is REPORTED, never swallowed**, on stderr so a script slicing stdout is unaffected. The
+/// honest response is to re-read the world, and saying so is the difference between a gap the caller
+/// can act on and one it cannot see.
+fn print_events(batch: &Value, cursor: u64) -> u64 {
+    if batch["lost"].as_bool().unwrap_or(false) {
+        eprintln!(
+            "sprag: events: fell behind the daemon's log — some changes were dropped before this \
+             read. Re-read the world (`sprag panes`, `sprag windows`); what follows is only what \
+             survived."
+        );
+    }
+    for event in batch["events"].as_array().into_iter().flatten() {
+        let kind = event["type"].as_str().unwrap_or("?");
+        // The subject key is named for WHAT it is, so a reader that has matched the type already
+        // knows which slot to re-read. Printed as `TYPE<TAB>SUBJECT` — the shape `sprag run`'s
+        // listing uses, which a script can cut.
+        let subject = ["pane", "window", "session"]
+            .iter()
+            .find_map(|key| match &event[*key] {
+                Value::String(name) => Some(name.clone()),
+                Value::Number(id) => Some(id.to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        println!("{kind}\t{subject}");
+    }
+    batch["next"].as_u64().unwrap_or(cursor)
 }
 
 /// `split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]`: add a pane to the scoped session's

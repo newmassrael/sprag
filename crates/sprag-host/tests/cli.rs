@@ -3707,6 +3707,103 @@ fn following_delivers_a_single_bump_change_the_wait_answers_with() {
     );
 }
 
+/// **R292, at the operator's surface**: `sprag events -f` sleeps through a pane that is producing
+/// output, and a `--pane`/`--kind` filter narrows what wakes it.
+///
+/// Two halves, and the first is the one that used to be broken. Against a pane writing continuously
+/// the follow loop parked on `scene/waitFor`, which OUTPUT releases — so it read the slot, printed
+/// nothing, and parked again, at socket speed (measured: 22 431 rounds a second). The verb looked
+/// idle to a human while spinning, and a `--pane` filter could not have helped, because there was no
+/// record to filter.
+///
+/// The second half is that it still delivers: the change the caller named arrives, from the same
+/// flooding daemon.
+#[test]
+fn following_sleeps_through_output_and_wakes_for_the_named_change() {
+    let (_host, sock) = spawn_host_running(&[
+        "bash",
+        "-c",
+        "while :; do echo building a thing; sleep 0.02; done",
+    ]);
+
+    // A filter needs -f, because the daemon is the only matcher and a non-blocking read cannot ask
+    // it anything. Refused with the sentence that says so, before any connection is made.
+    let refused = sprag(&sock, &["events", "--pane", "0"]);
+    assert!(!refused.ok, "a filter without -f is refused");
+    assert!(
+        refused
+            .stderr
+            .contains("narrow what to WAIT for, so they need -f"),
+        "and says why: {:?}",
+        refused.stderr,
+    );
+
+    // An unknown kind is refused BY THE DAEMON, whose vocabulary it is, and reaches the operator as a
+    // sentence rather than behind a transport's phrase for an unanticipated fault.
+    let unknown = sprag(&sock, &["events", "-f", "--kind", "pane_output"]);
+    assert!(!unknown.ok, "an unknown kind is refused");
+    assert!(
+        unknown
+            .stderr
+            .contains("is not a change this terminal reports"),
+        "with the daemon's own sentence: {:?}",
+        unknown.stderr,
+    );
+    assert!(
+        unknown.stderr.contains("pane_job_changed"),
+        "offering the vocabulary it could have asked for: {:?}",
+        unknown.stderr,
+    );
+    assert!(
+        !unknown.stderr.contains("host rpc error"),
+        "and not dressed as an unanticipated transport fault: {:?}",
+        unknown.stderr,
+    );
+
+    let mut follow = Command::new(env!("CARGO_BIN_EXE_sprag"))
+        .args(["events", "-f", "--kind", "pane_created"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start `sprag events -f --kind pane_created`");
+
+    let stdout = follow.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let read = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(read.map(|_| line));
+    });
+
+    // HALF ONE: the pane is writing the whole time, and nothing arrives. Under the old loop this
+    // window would have completed thousands of read-and-park rounds; a line here would mean output
+    // had become an event.
+    assert!(
+        rx.recv_timeout(Duration::from_secs(2)).is_err(),
+        "output must not reach a follower — it is not a change",
+    );
+
+    // HALF TWO: the change it asked for does.
+    let split = sprag(&sock, &["split-window", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let pane = split.stdout.trim().to_owned();
+
+    let line = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the named change reaches the follower")
+        .expect("reading the line succeeded");
+    let _ = follow.kill();
+    let _ = follow.wait();
+
+    assert_eq!(
+        line.trim(),
+        format!("pane_created\t{pane}"),
+        "exactly the change named, with the session's output nowhere in it",
+    );
+}
+
 /// `report-agent` / `release-agent` from a shell, with the pane taken from `$SPRAG_PANE` — the form a
 /// hook uses, and the whole point of publishing that variable at a pane's birth.
 ///

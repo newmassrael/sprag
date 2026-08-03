@@ -1195,6 +1195,47 @@ fn wait_for_change_blocks_and_reports_what_moved() {
         "and it names its subject in BOTH vocabularies — the 1-based number every other tool here \
          takes, and the host id a human sees in `sprag panes`: {moved}",
     );
+
+    // R292: the filter narrows the WAKE server-side, and its refusals reach the agent as sentences it
+    // can act on. Both are asserted here rather than in a test of their own, because they need the
+    // same live daemon and neither needs a second one.
+    let narrowed = server.call_tool(
+        "wait_for_change",
+        json!({ "timeout_seconds": 1, "pane": 2, "kinds": ["pane_closed"] }),
+    );
+    assert!(
+        narrowed.contains("Nothing changed"),
+        "a wait narrowed to a pane CLOSING is not answered by anything that has happened: \
+         {narrowed}",
+    );
+
+    let unknown = server.call_tool_error(
+        "wait_for_change",
+        json!({ "timeout_seconds": 1, "kinds": ["pane_output"] }),
+    );
+    assert!(
+        unknown.contains("is not a change this terminal reports"),
+        "an unknown kind is refused by the daemon that owns the vocabulary: {unknown}",
+    );
+    assert!(
+        unknown.contains("pane_job_changed"),
+        "and the refusal offers the whole vocabulary, so the fix is not a guess: {unknown}",
+    );
+    assert!(
+        !unknown.contains("host rpc error"),
+        "reaching the agent as the sentence itself, not behind a transport's phrase for a fault \
+         nobody anticipated: {unknown}",
+    );
+
+    let nonexistent = server.call_tool_error(
+        "wait_for_change",
+        json!({ "timeout_seconds": 1, "pane": 99 }),
+    );
+    assert!(
+        nonexistent.contains("no pane 99"),
+        "and a pane that does not exist is refused BEFORE the park, in this surface's own sentence, \
+         rather than waiting forever on a subject nothing can name: {nonexistent}",
+    );
 }
 
 /// **THE R291 claim, end to end through the surface an agent actually has**: "wait until the
@@ -1227,9 +1268,9 @@ fn an_agent_waits_for_a_job_to_start_without_polling() {
     server.wait_for_tool("pane_processes", json!({}), "bash  bash");
 
     // PROPERTY 1. Park for longer than the daemon's sweep interval on a terminal where nothing is
-    // happening. Re-called while the answer is "output happened", which a freshly painted prompt
-    // produces; what it must eventually reach is a full quiet window.
-    let quiet = wait_until_quiet(&mut server);
+    // happening. ONE call, not a loop: R292 made output stop returning this tool, so a freshly
+    // painted prompt no longer produces an answer to re-call past.
+    let quiet = server.call_tool("wait_for_change", json!({ "timeout_seconds": 8 }));
     assert!(
         quiet.contains("Nothing changed"),
         "sweeps ran through that window and published NOTHING — a first reading is not a change: \
@@ -1239,11 +1280,28 @@ fn an_agent_waits_for_a_job_to_start_without_polling() {
     // PROPERTY 2. A job the user starts takes the terminal from the shell.
     server.call_tool("write_pane", json!({ "pane": 1, "text": "sleep 300" }));
 
-    let moved = wait_until_reported(&mut server, "pane_job_changed");
+    // ⚠ ONE CALL, NARROWED — and this is R292's whole claim at the surface that pays for it. R291
+    // had to wrap this in a re-call loop, because the pane's own output returned the tool with "the
+    // scene moved but nothing structural changed" before the sample carrying the event ever landed.
+    // The loop was not a poll (each turn parked in the daemon) but every turn cost a tool result and
+    // an LLM turn. Now the caller names what it wants and is woken once.
+    let moved = server.call_tool(
+        "wait_for_change",
+        json!({
+            "timeout_seconds": 20,
+            "pane": 1,
+            "kinds": ["pane_job_changed", "pane_closed"],
+        }),
+    );
     assert!(
         moved.contains("pane_job_changed: pane 1 (id 0)"),
         "the change names the pane in the NUMBER pane_processes takes, so the follow-up read this \
          tool's description promises can actually be made: {moved}",
+    );
+    assert!(
+        !moved.contains("Nothing changed"),
+        "and it was ANSWERED, not timed out — the filter narrowed the wake without losing it: \
+         {moved}",
     );
 
     // PROPERTY 3, stated as its own read: the job really is the silent one, so nothing about this
@@ -1255,41 +1313,15 @@ fn an_agent_waits_for_a_job_to_start_without_polling() {
     );
 }
 
-/// Call `wait_for_change` until it reports a genuinely QUIET window, or give up.
+/// **R292 deleted the two re-call helpers that used to live here**, and their absence is the claim.
 ///
-/// The timeout is longer than `sprag_host::agent::SWEEP_INTERVAL` (5 s) on purpose: a park that
-/// returns "Nothing changed" over that long is proof that at least one sweep ran and published
-/// nothing, which is the only way to observe the establish rule from outside the daemon.
-fn wait_until_quiet(server: &mut McpServer) -> String {
-    let deadline = Instant::now() + DEADLINE;
-    let mut last = String::new();
-    while Instant::now() < deadline {
-        last = server.call_tool("wait_for_change", json!({ "timeout_seconds": 8 }));
-        if last.contains("Nothing changed") {
-            return last;
-        }
-    }
-    panic!("the terminal never went quiet; last answer was:\n{last}")
-}
-
-/// Call `wait_for_change` until an answer names `kind`, or give up.
-///
-/// Re-called rather than called once because a pane's OUTPUT moves the scene without being a typed
-/// change, and the tool answers that truthfully ("the scene moved but nothing structural changed")
-/// — so a single call can legitimately return before the sample that carries the event. This is the
-/// loop a real caller writes, and it is not a poll: every turn of it is parked in the daemon.
-fn wait_until_reported(server: &mut McpServer, kind: &str) -> String {
-    let deadline = Instant::now() + DEADLINE;
-    let mut last = String::new();
-    while Instant::now() < deadline {
-        last = server.call_tool("wait_for_change", json!({ "timeout_seconds": 10 }));
-        if last.contains(kind) {
-            return last;
-        }
-    }
-    panic!("no answer ever named {kind:?}; last was:\n{last}")
-}
-
+/// `wait_until_quiet` re-called the tool until an answer said the terminal was quiet, and
+/// `wait_until_reported` re-called it until an answer named a kind. Both existed for one reason: a
+/// pane's OUTPUT released the old park and the tool answered it truthfully ("the scene moved but
+/// nothing structural changed"), so a single call could return before the change the caller wanted.
+/// Output no longer returns this tool, so both loops collapsed into one call each in
+/// `an_agent_waits_for_a_job_to_start_without_polling` — which is the surface's own measure of the
+/// round: one tool result and one LLM turn where there used to be as many as the terminal was chatty.
 /// **THE live gate for `select_pane`**: the tool moves a fact that lives in the DAEMON and that
 /// another surface reports, so a wiring that answered plausibly while sending nothing — or that
 /// sent to the wrong pane — would satisfy every unit test of its wording.
