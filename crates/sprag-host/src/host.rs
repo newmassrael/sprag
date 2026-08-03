@@ -3074,6 +3074,58 @@ mod tests {
         );
     }
 
+    /// A pane's NAME survives a reboot, driven through the real `Host::restore` LOOP.
+    ///
+    /// Same shape as the provenance test above and for a sharper reason: a name is an ADDRESS, so a
+    /// script or an agent that says `--pane build` resolves to nothing after a restart unless the
+    /// name comes back with the pane. `sprag-terminal` already pins the snapshot half and the plan
+    /// half; **both would stay green while this loop dropped the fact**, which is exactly the hole
+    /// R291 and R292 each shipped a round apart — a unit test on a method is not a test that the
+    /// caller calls it.
+    #[test]
+    fn a_restore_brings_back_what_a_pane_is_called() {
+        let live = Host::new((80, 24));
+        let named = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        let anonymous = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        lock(&live.workspace()).set_pane_name(
+            named,
+            Some(sprag_terminal::PaneName::parse("build").unwrap()),
+        );
+
+        let restored = Host::new((80, 24));
+        restored
+            .restore(
+                sprag_terminal::snapshot(live.registry()),
+                &std::collections::HashSet::new(),
+                |_| None,
+                || None,
+                |_| Vec::new(),
+            )
+            .expect("a valid snapshot restores");
+
+        let pool = restored.workspace();
+        let pool = lock(&pool);
+        assert_eq!(
+            pool.pane(named)
+                .expect("the named pane came back")
+                .name()
+                .map(sprag_terminal::PaneName::as_str),
+            Some("build"),
+            "the reborn pane still answers to the name it was given",
+        );
+        assert_eq!(
+            pool.pane(anonymous)
+                .expect("the other pane came back")
+                .name(),
+            None,
+            "and a pane nobody named is not handed a name by the restore",
+        );
+    }
+
     /// Restore honors a FLOATED pane (comes back in the float set, not the tiling) and a pane with
     /// NO recorded cwd (re-spawns anyway, falling back to the daemon's cwd). Driven from a
     /// hand-authored snapshot so both are exercised through the real `restore` path — the
