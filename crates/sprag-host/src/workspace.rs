@@ -68,7 +68,6 @@ use sprag_terminal::{
 
 use crate::attach::ClientSize;
 use crate::bump_on_dirty;
-use crate::events::Event;
 use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
 use crate::notify::ChannelRegistry;
 use crate::scope::SessionScope;
@@ -1860,59 +1859,22 @@ fn agent_manifests_value(agents: Option<&crate::AgentClock>) -> IntrospectValue 
     }
 }
 
-/// Serialise a session's change batch: `{events, next, lost}`.
+/// Serialise a session's change batch: [`Batch::to_wire`](crate::events::Batch::to_wire).
 ///
-/// Each event is `{type, …}` — the discriminated shape a client parses with one match, the same
-/// vocabulary a rival's event stream uses, and the reason the subject key is named for what it IS
-/// (`pane`, `window`, `session`) rather than a generic `id`: a reader that has matched on `type`
-/// already knows which slot to re-read, and the key confirms it rather than making it guess.
+/// The mapping itself is NOT here. It used to be — an eleven-arm match writing each `type` name out
+/// as a literal — and that was the second spelling of the event vocabulary: correct while nothing
+/// else read those words, and free to drift the moment something did. They moved to
+/// [`EventKind::wire_str`](crate::events::EventKind::wire_str), the one place an event's wire name is
+/// spelled, and this function became the slot's half of the answer: pick
+/// the journal, take the batch, hand back its one wire shape.
 ///
-/// **`lost` travels even when it is false**, unlike the `skip_serializing_if` shapes elsewhere in
-/// this tree. Those omit a field to keep an addition wire-compatible with an older peer; this one is
-/// a SAFETY answer, and a peer that cannot see the key would read a hole as a clean read. Absent
-/// must not be able to mean "fine".
 fn events_value(channels: &ChannelRegistry, session: &str, since: u64) -> IntrospectValue {
     let batch = channels
         .journal(session)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .since(since);
-    let events: Vec<serde_json::Value> = batch
-        .events
-        .iter()
-        .map(|event| match event {
-            Event::PaneCreated(id) => serde_json::json!({ "type": "pane_created", "pane": id }),
-            Event::PaneClosed(id) => serde_json::json!({ "type": "pane_closed", "pane": id }),
-            Event::WindowCreated(name) => {
-                serde_json::json!({ "type": "window_created", "window": name })
-            }
-            Event::WindowClosed(name) => {
-                serde_json::json!({ "type": "window_closed", "window": name })
-            }
-            Event::WindowSelected(name) => {
-                serde_json::json!({ "type": "window_selected", "window": name })
-            }
-            Event::SessionCreated(name) => {
-                serde_json::json!({ "type": "session_created", "session": name })
-            }
-            Event::SessionClosed(name) => {
-                serde_json::json!({ "type": "session_closed", "session": name })
-            }
-            Event::LayoutUpdated => serde_json::json!({ "type": "layout_updated" }),
-            Event::PaneSelected(id) => serde_json::json!({ "type": "pane_selected", "pane": id }),
-            Event::AgentStateChanged(id) => {
-                serde_json::json!({ "type": "pane_agent_state_changed", "pane": id })
-            }
-            Event::PaneJobChanged(id) => {
-                serde_json::json!({ "type": "pane_job_changed", "pane": id })
-            }
-        })
-        .collect();
-    IntrospectValue::Json(serde_json::json!({
-        "events": events,
-        "next": batch.next,
-        "lost": batch.lost,
-    }))
+    IntrospectValue::Json(batch.to_wire())
 }
 
 /// Serialise one pane's neighbourhood: `{left, right, up, down}`, each a pane id or `null`.

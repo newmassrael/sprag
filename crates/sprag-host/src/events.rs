@@ -118,6 +118,7 @@
 
 use std::collections::VecDeque;
 
+use serde_json::Value;
 use sprag_terminal::SessionRegistry;
 
 /// One window's structural fingerprint, as [`SessionShape::read`] takes it under the registry lock.
@@ -357,6 +358,245 @@ pub enum Event {
     PaneJobChanged(u64),
 }
 
+impl Event {
+    /// What kind of change this is — the derivation [`EventKind`] exists for.
+    ///
+    /// Exhaustive on purpose and not by accident: this match is what makes a new variant impossible
+    /// to add without giving it a name a waiter can ask for.
+    #[must_use]
+    pub const fn kind(&self) -> EventKind {
+        match self {
+            Self::PaneCreated(_) => EventKind::PaneCreated,
+            Self::PaneClosed(_) => EventKind::PaneClosed,
+            Self::PaneSelected(_) => EventKind::PaneSelected,
+            Self::AgentStateChanged(_) => EventKind::PaneAgentStateChanged,
+            Self::PaneJobChanged(_) => EventKind::PaneJobChanged,
+            Self::WindowCreated(_) => EventKind::WindowCreated,
+            Self::WindowClosed(_) => EventKind::WindowClosed,
+            Self::WindowSelected(_) => EventKind::WindowSelected,
+            Self::SessionCreated(_) => EventKind::SessionCreated,
+            Self::SessionClosed(_) => EventKind::SessionClosed,
+            Self::LayoutUpdated => EventKind::LayoutUpdated,
+        }
+    }
+
+    /// Who this change is about, or `None` for [`Event::LayoutUpdated`] — the one variant whose
+    /// subject is the arrangement itself, which is one object and so has nothing to name.
+    #[must_use]
+    pub fn subject(&self) -> Option<Subject> {
+        match self {
+            Self::PaneCreated(id)
+            | Self::PaneClosed(id)
+            | Self::PaneSelected(id)
+            | Self::AgentStateChanged(id)
+            | Self::PaneJobChanged(id) => Some(Subject::Pane(*id)),
+            Self::WindowCreated(name) | Self::WindowClosed(name) | Self::WindowSelected(name) => {
+                Some(Subject::Window(name.clone()))
+            }
+            Self::SessionCreated(name) | Self::SessionClosed(name) => {
+                Some(Subject::Session(name.clone()))
+            }
+            Self::LayoutUpdated => None,
+        }
+    }
+
+    /// This event as the wire object a client parses: `{type, <subject key>?}`.
+    ///
+    /// **The ONE place an event becomes JSON**, read by the `events.<since>` slot and by the reply to
+    /// a filtered wait alike. It used to be an eleven-arm `match` in the serializer with the type
+    /// names written out as literals — which was correct and was also the second spelling of a
+    /// vocabulary, free to drift from any other reader of it the moment one existed. A filter is
+    /// exactly such a reader.
+    ///
+    /// The subject key comes from the KIND and the value from the SUBJECT, so the pairing is stated
+    /// once and asserted by `a_kinds_subject_key_agrees_with_the_event_that_produced_it`.
+    #[must_use]
+    pub fn to_wire(&self) -> Value {
+        let kind = self.kind();
+        let mut object = serde_json::Map::new();
+        object.insert("type".to_owned(), Value::from(kind.wire_str()));
+        if let (Some(key), Some(subject)) = (kind.subject_key(), self.subject()) {
+            object.insert(key.to_owned(), subject.wire_value());
+        }
+        Value::Object(object)
+    }
+}
+
+/// WHAT KIND of change an [`Event`] is, with no subject attached — the event's own name.
+///
+/// ## Why this exists, and why it is DERIVED rather than declared beside [`Event`]
+///
+/// A waiter says which changes it wants to be woken for, and the thing it names is
+/// a kind. So the kind has to be a value that can be parsed off the wire and compared, which a
+/// variant of an enum carrying subjects is not.
+///
+/// The load-bearing word is *derived*: [`Event::kind`] is an exhaustive match, so a new [`Event`]
+/// variant **does not compile** until it has a kind, and is therefore filterable by construction.
+/// That is the whole difference between this and a parallel match vocabulary. The rival at
+/// `9a4ce5e1` declares three enumerations of one vocabulary — 26 `EventKind`, 19 `EventMatch`, 27
+/// `Subscription` — with nothing forcing them to agree, and **seven kinds their daemon emits cannot
+/// be named to their `events.wait` at all** (`layout.updated` among them). Nothing here can drift
+/// that way, because there is only one list and the compiler owns it.
+///
+/// [`wire_str`](Self::wire_str) is also the ONE place an event's wire name is spelled. Before this
+/// type the names lived in the serializer, so the word a client read and the word a filter would
+/// have to parse were two independent literals; now [`Event::to_wire`] reads them from here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EventKind {
+    /// [`Event::PaneCreated`].
+    PaneCreated,
+    /// [`Event::PaneClosed`].
+    PaneClosed,
+    /// [`Event::PaneSelected`].
+    PaneSelected,
+    /// [`Event::AgentStateChanged`].
+    PaneAgentStateChanged,
+    /// [`Event::PaneJobChanged`].
+    PaneJobChanged,
+    /// [`Event::WindowCreated`].
+    WindowCreated,
+    /// [`Event::WindowClosed`].
+    WindowClosed,
+    /// [`Event::WindowSelected`].
+    WindowSelected,
+    /// [`Event::SessionCreated`].
+    SessionCreated,
+    /// [`Event::SessionClosed`].
+    SessionClosed,
+    /// [`Event::LayoutUpdated`].
+    LayoutUpdated,
+}
+
+impl EventKind {
+    /// Every kind, so a test can walk the whole vocabulary rather than the subset its author
+    /// remembered.
+    ///
+    /// Hand-listed, and kept honest by `all_lists_every_kind_and_each_round_trips`: that test
+    /// asserts this slice's LENGTH against a literal, so a new variant fails it until it is added
+    /// here — the same "assert the count, not just the exit code" discipline R275 cost a round.
+    pub const ALL: &'static [Self] = &[
+        Self::PaneCreated,
+        Self::PaneClosed,
+        Self::PaneSelected,
+        Self::PaneAgentStateChanged,
+        Self::PaneJobChanged,
+        Self::WindowCreated,
+        Self::WindowClosed,
+        Self::WindowSelected,
+        Self::SessionCreated,
+        Self::SessionClosed,
+        Self::LayoutUpdated,
+    ];
+
+    /// This kind's name on the wire — the `type` field of an event object, and the word a
+    /// a waiter's filter names.
+    ///
+    /// The SSOT for that word. `pane_agent_state_changed` is deliberately not the variant's own
+    /// name: the wire vocabulary prefixes a pane's facts with `pane_`, and the variant it comes from
+    /// is [`Event::AgentStateChanged`], which is named for the observer that emits it.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::PaneCreated => "pane_created",
+            Self::PaneClosed => "pane_closed",
+            Self::PaneSelected => "pane_selected",
+            Self::PaneAgentStateChanged => "pane_agent_state_changed",
+            Self::PaneJobChanged => "pane_job_changed",
+            Self::WindowCreated => "window_created",
+            Self::WindowClosed => "window_closed",
+            Self::WindowSelected => "window_selected",
+            Self::SessionCreated => "session_created",
+            Self::SessionClosed => "session_closed",
+            Self::LayoutUpdated => "layout_updated",
+        }
+    }
+
+    /// The kind a wire name denotes, or `None` for a word this build's vocabulary does not contain.
+    ///
+    /// `None` is what makes an unknown kind in a filter a REFUSAL rather than a clause that can
+    /// never match: a caller writing against a vocabulary this daemon does not have would otherwise
+    /// park forever and be told nothing, which is the silence this project treats as a bug.
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|kind| kind.wire_str() == name)
+    }
+
+    /// The wire KEY this kind's subject rides under (`pane` / `window` / `session`), or `None` for a
+    /// kind whose change has no subject to name.
+    ///
+    /// Keyed by what the subject IS rather than by a generic `id`, which is [`Event::to_wire`]'s own
+    /// contract: a reader that has matched on `type` already knows which slot to re-read, and the key
+    /// confirms it rather than making it guess.
+    ///
+    /// This is also what will let a filter clause be REFUSED at parse time instead of matching nothing
+    /// forever: `{kind: "pane_closed", window: "0"}` is a contradiction the parser can see, because
+    /// this says `pane_closed` names a pane. Pinned against [`Event::subject`] by
+    /// `a_kinds_subject_key_agrees_with_the_event_that_produced_it`.
+    #[must_use]
+    pub const fn subject_key(self) -> Option<&'static str> {
+        match self {
+            Self::PaneCreated
+            | Self::PaneClosed
+            | Self::PaneSelected
+            | Self::PaneAgentStateChanged
+            | Self::PaneJobChanged => Some(Subject::PANE_KEY),
+            Self::WindowCreated | Self::WindowClosed | Self::WindowSelected => {
+                Some(Subject::WINDOW_KEY)
+            }
+            Self::SessionCreated | Self::SessionClosed => Some(Subject::SESSION_KEY),
+            // The arrangement is ONE object: see `Event::LayoutUpdated`.
+            Self::LayoutUpdated => None,
+        }
+    }
+}
+
+/// WHO an [`Event`] is about — the thing a reader re-reads to learn the new value.
+///
+/// Owns its name rather than borrowing it, so that ONE type serves both sides of a match: an event's
+/// subject and the subject a filter constrains it to. Two types (a borrowed one for events, an
+/// owned one for filters) would be two definitions of "which pane" free to disagree about what
+/// equality means, for an allocation of a window name — `"0"`, in the workspaces this daemon builds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Subject {
+    /// A pane, by [`PaneInfo::id`](sprag_terminal::PaneInfo::id).
+    Pane(u64),
+    /// A window, by name — a window's name IS its address in a session.
+    Window(String),
+    /// A session, by name.
+    Session(String),
+}
+
+impl Subject {
+    /// The wire key a pane subject rides under. See [`EventKind::subject_key`].
+    pub const PANE_KEY: &'static str = "pane";
+    /// The wire key a window subject rides under.
+    pub const WINDOW_KEY: &'static str = "window";
+    /// The wire key a session subject rides under.
+    pub const SESSION_KEY: &'static str = "session";
+
+    /// This subject's value on the wire — an integer id, or a name.
+    #[must_use]
+    pub fn wire_value(&self) -> Value {
+        match self {
+            Self::Pane(id) => Value::from(*id),
+            Self::Window(name) | Self::Session(name) => Value::from(name.clone()),
+        }
+    }
+
+    /// The wire key this subject would ride under, for the parse that has a subject but no kind.
+    #[must_use]
+    pub const fn wire_key(&self) -> &'static str {
+        match self {
+            Self::Pane(_) => Self::PANE_KEY,
+            Self::Window(_) => Self::WINDOW_KEY,
+            Self::Session(_) => Self::SESSION_KEY,
+        }
+    }
+}
+
 /// One [`Event`] with the revision it was appended at — the log's stored unit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
@@ -388,6 +628,26 @@ pub struct Batch {
     /// the behaviour this log is an optimization over, which is why the log can be adopted before
     /// it is complete without a client ever being wrong.
     pub lost: bool,
+}
+
+impl Batch {
+    /// This batch as the wire object both readers of it answer with: `{events, next, lost}`.
+    ///
+    /// **`lost` travels even when it is false**, unlike the `skip_serializing_if` shapes elsewhere in
+    /// this tree. Those omit a field to keep an addition wire-compatible with an older peer; this one
+    /// is a SAFETY answer, and a peer that cannot see the key would read a hole as a clean read.
+    /// Absent must not be able to mean "fine".
+    ///
+    /// One shape for the `events.<since>` slot and for a filtered wait's reply, so the two cannot
+    /// answer one question differently — the rule that put [`Event::to_wire`] in this module.
+    #[must_use]
+    pub fn to_wire(&self) -> Value {
+        serde_json::json!({
+            "events": self.events.iter().map(Event::to_wire).collect::<Vec<Value>>(),
+            "next": self.next,
+            "lost": self.lost,
+        })
+    }
 }
 
 /// A bounded, revision-keyed ring of recent changes.
@@ -635,6 +895,8 @@ impl Default for SessionJournal {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     /// A log big enough that nothing in the test evicts unless the test means it to.
@@ -786,5 +1048,160 @@ mod tests {
     #[should_panic(expected = "retaining nothing")]
     fn a_log_that_could_retain_nothing_is_refused_at_construction() {
         let _ = EventLog::new(0);
+    }
+
+    /// One event of every kind — the RATCHET for the tests below.
+    ///
+    /// The match is on the KIND and is exhaustive, so a new [`EventKind`] does not compile until it
+    /// has a sample here, and every test that walks [`EventKind::ALL`] then covers it.
+    fn sample(kind: EventKind) -> Event {
+        match kind {
+            EventKind::PaneCreated => Event::PaneCreated(7),
+            EventKind::PaneClosed => Event::PaneClosed(7),
+            EventKind::PaneSelected => Event::PaneSelected(7),
+            EventKind::PaneAgentStateChanged => Event::AgentStateChanged(7),
+            EventKind::PaneJobChanged => Event::PaneJobChanged(7),
+            EventKind::WindowCreated => Event::WindowCreated("two".to_owned()),
+            EventKind::WindowClosed => Event::WindowClosed("two".to_owned()),
+            EventKind::WindowSelected => Event::WindowSelected("two".to_owned()),
+            EventKind::SessionCreated => Event::SessionCreated("work".to_owned()),
+            EventKind::SessionClosed => Event::SessionClosed("work".to_owned()),
+            EventKind::LayoutUpdated => Event::LayoutUpdated,
+        }
+    }
+
+    #[test]
+    fn all_lists_every_kind_and_each_round_trips_its_wire_name() {
+        // The COUNT is the ratchet on `ALL` itself: the exhaustive match in `sample` forces a new
+        // variant to be handled, but nothing forces it into a hand-written slice — so a walk over
+        // `ALL` would silently not cover it. R275 cost a round to exactly this shape of silence.
+        assert_eq!(
+            EventKind::ALL.len(),
+            11,
+            "a kind was added or removed — update `ALL` and this count together",
+        );
+        for kind in EventKind::ALL {
+            assert_eq!(
+                EventKind::from_wire(kind.wire_str()),
+                Some(*kind),
+                "{} must parse back to the kind it prints",
+                kind.wire_str(),
+            );
+        }
+        assert_eq!(
+            EventKind::from_wire("pane_output"),
+            None,
+            "a word this vocabulary does not contain is None, which is what makes a filter naming \
+             it a refusal rather than a wait that can never return",
+        );
+    }
+
+    #[test]
+    fn a_kinds_subject_key_agrees_with_the_event_that_produced_it() {
+        // The pairing `Event::to_wire` relies on: it takes the KEY from the kind and the VALUE from
+        // the event, so a kind that disagreed with its own events would emit a key with no value or
+        // a value with no key.
+        for kind in EventKind::ALL {
+            let event = sample(*kind);
+            match (kind.subject_key(), event.subject()) {
+                (Some(key), Some(subject)) => assert_eq!(
+                    key,
+                    subject.wire_key(),
+                    "{} says its subject rides under {key}, but its event carries a {}",
+                    kind.wire_str(),
+                    subject.wire_key(),
+                ),
+                (None, None) => {}
+                (key, subject) => panic!(
+                    "{} disagrees with its own event about having a subject: {key:?} vs {subject:?}",
+                    kind.wire_str(),
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_wire_form_of_every_event_is_exactly_what_the_serializer_used_to_write() {
+        // The whole point of the refactor is that the wire did NOT move. These eleven objects are
+        // the literals the eleven-arm match in `workspace::events_value` wrote, transcribed from it
+        // — so if `kind()`, `subject()` or `to_wire()` renames or re-keys anything, this fails
+        // rather than a client failing later.
+        let expected = [
+            (
+                EventKind::PaneCreated,
+                json!({ "type": "pane_created", "pane": 7 }),
+            ),
+            (
+                EventKind::PaneClosed,
+                json!({ "type": "pane_closed", "pane": 7 }),
+            ),
+            (
+                EventKind::PaneSelected,
+                json!({ "type": "pane_selected", "pane": 7 }),
+            ),
+            (
+                EventKind::PaneAgentStateChanged,
+                json!({ "type": "pane_agent_state_changed", "pane": 7 }),
+            ),
+            (
+                EventKind::PaneJobChanged,
+                json!({ "type": "pane_job_changed", "pane": 7 }),
+            ),
+            (
+                EventKind::WindowCreated,
+                json!({ "type": "window_created", "window": "two" }),
+            ),
+            (
+                EventKind::WindowClosed,
+                json!({ "type": "window_closed", "window": "two" }),
+            ),
+            (
+                EventKind::WindowSelected,
+                json!({ "type": "window_selected", "window": "two" }),
+            ),
+            (
+                EventKind::SessionCreated,
+                json!({ "type": "session_created", "session": "work" }),
+            ),
+            (
+                EventKind::SessionClosed,
+                json!({ "type": "session_closed", "session": "work" }),
+            ),
+            (
+                EventKind::LayoutUpdated,
+                json!({ "type": "layout_updated" }),
+            ),
+        ];
+        assert_eq!(
+            expected.len(),
+            EventKind::ALL.len(),
+            "every kind's wire form must be pinned, not most of them",
+        );
+        for (kind, want) in expected {
+            assert_eq!(
+                sample(kind).to_wire(),
+                want,
+                "the wire form of {} moved",
+                kind.wire_str(),
+            );
+        }
+    }
+
+    #[test]
+    fn a_batchs_wire_form_carries_lost_even_when_it_is_false() {
+        // Absent must not be able to mean "fine": a peer that cannot see the key would read a hole
+        // as a clean read. The rest of this tree omits absent fields for compatibility; this one is
+        // a safety answer and does not.
+        let mut log = log();
+        log.record(3, [Event::LayoutUpdated]);
+        let wire = log.since(0).to_wire();
+
+        assert_eq!(wire["events"], json!([{ "type": "layout_updated" }]));
+        assert_eq!(wire["next"], json!(3));
+        assert_eq!(wire["lost"], json!(false), "false TRAVELS");
+        assert!(
+            wire.get("lost").is_some(),
+            "and is present as a key, not merely falsy",
+        );
     }
 }
