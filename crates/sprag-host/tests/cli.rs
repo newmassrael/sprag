@@ -2060,6 +2060,86 @@ fn the_pane_listing_says_which_pane_asked_for_a_pane() {
     );
 }
 
+/// `sprag rename-pane` names a pane, the listing says so, and every refusal is read as a SENTENCE.
+///
+/// End to end against a real daemon, because the whole loop is CLI-reachable here — unlike the
+/// provenance above, which no CLI verb stamps. Every assertion is on the RENDERED line: a test that
+/// checked the wire would pass on a build whose listing prints nothing.
+#[test]
+fn a_pane_can_be_named_from_the_command_line_and_the_listing_says_so() {
+    let (_host, sock) = spawn_host();
+
+    // The name is sent with surrounding whitespace, so the echo below is a claim about what the
+    // DAEMON recorded rather than about the argument: the two differ, and a verb that echoed its
+    // own argument would name a pane something it is not called.
+    let named = sprag(&sock, &["rename-pane", "0", "  build  "]);
+    assert!(named.ok, "rename-pane succeeded: {}", named.stderr);
+    assert_eq!(
+        named.stdout.trim(),
+        "pane 0 is now \"build\"",
+        "the verb reports the TRIMMED name the daemon stored, quoted",
+    );
+    let listed = sprag(&sock, &["panes"]);
+    assert_eq!(
+        listed.stdout.trim(),
+        "0: 80x24  cat  name=\"build\"  (active)",
+        "the whole rendered line, not just the presence of the fact",
+    );
+
+    // A name with a SPACE round-trips through the listing readably, which is why it is quoted at
+    // all: `name=my build` could not be read back by anything, and this listing's fields are read
+    // positionally by whoever pipes it.
+    assert!(sprag(&sock, &["rename-pane", "0", "the build"]).ok);
+    assert!(
+        sprag(&sock, &["panes"])
+            .stdout
+            .contains("name=\"the build\""),
+        "a name holding a space is delimited: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+    assert!(sprag(&sock, &["rename-pane", "0", "build"]).ok);
+
+    // A SECOND pane cannot take it. The sentence is pinned whole (R279/R283's rule) because it is
+    // the only thing an operator gets: the daemon knows which of the five causes it was and cannot
+    // say so over the wire while PINION-PR82 is unlanded.
+    let second = sprag(&sock, &["split-window"]);
+    assert!(second.ok, "split-window: {}", second.stderr);
+    let taken = sprag(&sock, &["rename-pane", second.stdout.trim(), "build"]);
+    assert!(!taken.ok, "a name in use is refused: {:?}", taken.stdout);
+    assert_eq!(
+        taken.stderr.trim(),
+        format!(
+            "sprag: rename-pane: no pane {}, or \"build\" is already taken, blank, over 80 bytes, \
+             all digits, or contains a control character",
+            second.stdout.trim(),
+        ),
+        "and the refusal lists what the daemon could not tell it",
+    );
+
+    // A name that is all digits is refused too — the rule that keeps a name and a pane NUMBER from
+    // ever meaning each other where they share an argument.
+    assert!(
+        !sprag(&sock, &["rename-pane", "0", "42"]).ok,
+        "an all-digit name is refused",
+    );
+
+    let cleared = sprag(&sock, &["rename-pane", "0", "--clear"]);
+    assert!(cleared.ok, "--clear succeeded: {}", cleared.stderr);
+    assert_eq!(cleared.stdout.trim(), "pane 0 has no name");
+    assert!(
+        !sprag(&sock, &["panes"]).stdout.contains("name="),
+        "and the listing goes back to saying nothing about a name",
+    );
+
+    // A missing NAME is a local argument error, before any request goes out.
+    let bare = sprag(&sock, &["rename-pane", "0"]);
+    assert!(
+        !bare.ok && bare.stderr.contains("--clear"),
+        "and the arg error names the way to clear it: {}",
+        bare.stderr,
+    );
+}
+
 /// The ids `sprag panes` lists, in the order it lists them — the reading a placement verb leaves
 /// UNCHANGED, which is the gap `sprag layout` exists to fill.
 fn listed_pane_ids(sock: &Path) -> Vec<String> {

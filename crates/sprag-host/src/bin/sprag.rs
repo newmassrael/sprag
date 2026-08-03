@@ -51,6 +51,9 @@
 //! sprag split-window [-t SESSION] [-h|-v [-b] PANE] [-- command…]
 //!                                         divide PANE right (-h) / below (-v), or append with
 //!                                         neither; print the new pane's id (tmux split-window)
+//! sprag rename-pane [-t SESSION] PANE <NAME | --clear>  give a pane a NAME, or take it away.
+//!                                         A name is an ADDRESS an agent can hold where a pane
+//!                                         NUMBER goes stale; unique across the daemon
 //! sprag kill-pane [-t SESSION] PANE               close a pane (tmux kill-pane)
 //! sprag resize-pane [-t SESSION] PANE -x COLS -y ROWS  resize a pane's PTY + emulator
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
@@ -140,11 +143,11 @@ use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOVE_PANE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
-    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
-    session_activity_at,
+    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, TEXT_ACTION,
+    WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at,
+    project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -188,6 +191,7 @@ fn run() -> io::Result<()> {
         Some("move-pane") => move_pane(args.collect()),
         Some("swap-pane") => swap_pane(args.collect()),
         Some("zoom-pane") => zoom_pane(args.collect()),
+        Some("rename-pane") => rename_pane(args.collect()),
         Some("panes") => panes(args.collect()),
         Some("layout") => layout(args.collect()),
         Some("processes") => processes(args.collect()),
@@ -769,6 +773,7 @@ fn print_usage() {
          \x20             | kill-pane [PANE]\n\
          \x20             | resize-pane [PANE] -x COLS -y ROWS\n\
          \x20             | zoom-pane [PANE] [-u]\n\
+         \x20             | rename-pane PANE <NAME | --clear>\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
          \x20             | agent [PANE]> [-t SESSION]\n\
          \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane N]\n\
@@ -2429,8 +2434,9 @@ fn named_pane(it: &mut impl Iterator<Item = String>, command: &str) -> io::Resul
 }
 
 /// `panes [-t SESSION]`: one line per pane of the scoped session's CURRENT window — tmux
-/// `list-panes`. `ID: COLSxROWS  COMMAND`, plus the child's own window title in brackets when it
-/// has set one, and `opened by pane N` when some other pane's occupant asked for this one.
+/// `list-panes`. `ID: COLSxROWS  COMMAND`, plus `name=NAME` when somebody named it, the child's own
+/// window title in brackets when it has set one, and `opened by pane N` when some other pane's
+/// occupant asked for this one.
 ///
 /// The pane ID leads the line because it is what every other pane verb takes, so `sprag panes`
 /// is the discovery step that makes the rest usable from a shell — `cut -d: -f1` yields exactly the
@@ -2461,6 +2467,19 @@ fn panes(args: Vec<String>) -> io::Result<()> {
         let cols = pane["cols"].as_u64().unwrap_or(0);
         let rows = pane["rows"].as_u64().unwrap_or(0);
         let command = pane["command"].as_str().unwrap_or("?");
+        // The name a PERSON gave the pane, absent for one nobody named. It sits ahead of the title
+        // and is quoted differently on purpose: the two are the opposite kind of fact. This one is
+        // IDENTITY — unique across the daemon, and what an agent addresses the pane by — where the
+        // title is a display name the child rewrites on every prompt. A reader who cannot tell them
+        // apart at a glance would eventually type one where the other was meant.
+        // QUOTED, and that is not decoration. A name may contain spaces, so `name=my build` cannot
+        // be read back by anything — and this listing IS a machine-readable contract (its leading
+        // field feeds every other verb). `{:?}` is total here because a name can hold no control
+        // character, so the only escapes it can produce are `\"` and `\\`.
+        let name = match pane["name"].as_str() {
+            Some(name) => format!("  name={name:?}"),
+            None => String::new(),
+        };
         // The child's live OSC 0/2 title, absent until it sets one — a DISPLAY name, never
         // identity, so it trails the command rather than replacing it.
         let title = match pane["title"].as_str() {
@@ -2490,7 +2509,7 @@ fn panes(args: Vec<String>) -> io::Result<()> {
             Some(opener) => format!("  opened by pane {opener}"),
             None => String::new(),
         };
-        println!("{id}: {cols}x{rows}  {command}{title}{opened_by}{active}");
+        println!("{id}: {cols}x{rows}  {command}{name}{title}{opened_by}{active}");
     }
     Ok(())
 }
@@ -3898,6 +3917,84 @@ fn scoped_window_action(
             error
         }
     })
+}
+
+/// `rename-pane [-t SESSION] PANE <NAME | --clear>`: give the pane with id PANE the name NAME, or
+/// take its name away.
+///
+/// A pane's name is an ADDRESS, not a decoration — unique across the whole daemon, and the handle
+/// an agent holds where a pane NUMBER goes stale the moment an earlier pane closes. See
+/// [`RENAME_PANE_ACTION`] for the whole argument and every refusal.
+///
+/// PANE is an id, as it is for every pane verb here. The listing this reads back
+/// ([`panes`]) leads with that id for exactly that reason, and the CLI's id — unlike the agent
+/// surface's positional number — does not move when another pane closes, so there is nothing here
+/// for a name to repair.
+///
+/// `--clear` rather than an empty NAME: `sprag rename-pane 3 ""` and a shell that expanded an unset
+/// variable into nothing are the same command line, and only one of them meant it.
+fn rename_pane(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "rename-pane")?;
+    let mut rest = rest.into_iter();
+    let pane = parse_pane_id(rest.next(), "rename-pane")?;
+    let new = rest.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename-pane needs a NAME, or --clear to take the pane's name away",
+        )
+    })?;
+    if let Some(other) = rest.next() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("rename-pane: unexpected argument {other:?}"),
+        ));
+    }
+    let clearing = new == "--clear";
+    let action_args = if clearing {
+        json!({ "pane": pane })
+    } else {
+        json!({ "pane": pane, "name": new })
+    };
+    let mut conn = connect_scoped(session.as_deref())?;
+    let answer: Value = conn
+        .call(
+            "scene/invoke",
+            scoped_invoke(
+                session.as_deref(),
+                mux_action_path(RENAME_PANE_ACTION),
+                action_args,
+            ),
+        )
+        // The daemon knows WHICH of these it refused and cannot say so — `InvokeError::Rejected`
+        // carries no payload (upstream PINION-PR82) — so the sentence lists the causes rather than
+        // guessing one. It closes for every verb at once when that lands.
+        //
+        // CLEARING lists only one, because it can only fail one way: there is no name to be taken,
+        // too long or malformed. A disjunction that named causes the request cannot have is worse
+        // than no disjunction at all — it sends the reader looking for a mistake they did not make.
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::Other {
+                let why = if clearing {
+                    format!("rename-pane: no pane {pane}")
+                } else {
+                    format!(
+                        "rename-pane: no pane {pane}, or {new:?} is already taken, blank, over 80 \
+                         bytes, all digits, or contains a control character"
+                    )
+                };
+                io::Error::new(io::ErrorKind::NotFound, why)
+            } else {
+                error
+            }
+        })?;
+    // What the DAEMON recorded, never the argument that was sent: a name is trimmed on the way in,
+    // so `rename-pane 0 " build "` lands as `build`, and echoing the argument would report a name
+    // the pane does not have. Quoted for the listing's reason one function down.
+    match answer["name"].as_str() {
+        Some(recorded) => println!("pane {pane} is now {recorded:?}"),
+        None => println!("pane {pane} has no name"),
+    }
+    Ok(())
 }
 
 /// A required positional PANE id — a non-negative integer, how sprag addresses a pane on the wire

@@ -651,8 +651,13 @@ pub const CLOSE_ACTION: &str = "close";
 /// cell_width?, cell_height?}`). `id` absent ⇒ the current window's ACTIVE pane.
 pub const RESIZE_ACTION: &str = "resize";
 
-/// The mux control external invoke action that NAMES a pane (`{pane, name?}`), answering `null`.
-/// `name` absent (or `null`) takes the pane's name away.
+/// The mux control external invoke action that NAMES a pane (`{pane, name?}`). `name` absent (or
+/// `null`) takes the pane's name away.
+///
+/// Answers `{name}` — the name that was RECORDED, or `null` after a clear. Not the argument that
+/// was sent: a name is trimmed on the way in, so `" build "` lands as `"build"`, and a caller that
+/// echoed its own request would report a name the pane does not have. The write says what it wrote,
+/// so nobody re-reads and nobody re-implements the trimming rule.
 ///
 /// # Why a pane has a name at all, when it already has an id
 ///

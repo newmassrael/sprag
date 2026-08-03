@@ -563,13 +563,21 @@ impl WorkspaceExternal {
         // and then writing would be two traversals with a gap between them, and the pane could
         // close in that gap — so the answer to "does this pane exist" IS the write's own report
         // (`set_pane_name` says whether the pool held it), not a separate question asked earlier.
+        let recorded = Value::from(proposed.as_ref().map(sprag_terminal::PaneName::as_str));
         if self.with_pool_of(id, |pool| pool.set_pane_name(id, proposed)) != Some(true) {
             return Err(InvokeError::Rejected);
         }
         // A pane's published name moved: wake the session's parked clients, which is what turns
         // this into `Event::PaneRenamed` at the dispatch funnel.
         self.announce();
-        Ok(IntrospectValue::Json(Value::Null))
+        // Answer with the name that was RECORDED, not the one that was sent. A name is trimmed on
+        // the way in, so `" build "` lands as `"build"` — and a caller that echoed its own argument
+        // would tell a user the pane is called something it is not. It is the same lesson R294 paid
+        // for on the birth path (read the fact back) reached one call earlier: the write itself can
+        // say what it wrote, so nobody has to ask a second time or re-implement the rule.
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "name": recorded }),
+        ))
     }
 
     /// Run `write` against the POOL that holds the pane with `id`, or answer `None` when this
@@ -2626,11 +2634,16 @@ mod tests {
         let (mut ext, _revision) = control(&reg);
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
             .expect("a pane to name");
-        ext.invoke(
-            RENAME_PANE_ACTION,
-            IntrospectValue::Json(json!({"pane": 0, "name": "build"})),
-        )
-        .expect("a free name is taken");
+        assert_eq!(
+            ext.invoke(
+                RENAME_PANE_ACTION,
+                // Sent with whitespace: the ANSWER is the recorded name, not the argument, so a
+                // caller never has to re-implement the trimming rule to report what it did.
+                IntrospectValue::Json(json!({"pane": 0, "name": "  build  "})),
+            ),
+            Ok(IntrospectValue::Json(json!({"name": "build"}))),
+            "a free name is taken, and the write says what it wrote",
+        );
         assert_eq!(pane_entry(&mut ext, 0)["name"], json!("build"));
 
         // Re-naming to the name it ALREADY has is not a duplicate: the pane holding it is the one
@@ -2648,11 +2661,14 @@ mod tests {
         .expect("and it can be changed");
         assert_eq!(pane_entry(&mut ext, 0)["name"], json!("test"));
 
-        ext.invoke(
-            RENAME_PANE_ACTION,
-            IntrospectValue::Json(json!({"pane": 0})),
-        )
-        .expect("an absent name takes the name away");
+        assert_eq!(
+            ext.invoke(
+                RENAME_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0}))
+            ),
+            Ok(IntrospectValue::Json(json!({"name": null}))),
+            "an absent name takes the name away, and the answer says the pane now has none",
+        );
         assert_eq!(
             pane_entry(&mut ext, 0).get("name"),
             None,
