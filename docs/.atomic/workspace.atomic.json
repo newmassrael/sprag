@@ -10228,6 +10228,48 @@
         "NOT built, on purpose: no streaming subscription (herdr's events.subscribe has no sprag counterpart), no regex/text wait, no agent-STATE filter, no cap on parked waits per session, and sprag events refuses a filter without -f rather than growing a second matcher client-side."
       ]
     },
+    "R293": {
+      "decision_summary": "The debt audit R292 was asked for found three things worth FIXING rather than registering, one of them R292's own thesis violated inside R292",
+      "changes_bullets": [
+        "The MCP wait tool spelled the filter's wire key as the literal \"match\" while the CLI beside it used EventFilter::WIRE_KEY — a second spelling of a wire word, shipped inside the round whose whole argument is that a wire word is spelled once. Now the const.",
+        "A comment R292 itself falsified: the pane join claimed it read over the same connection 'for the reason the park and the batch already share one', and the batch call no longer exists. Corrected in place, with what the connection rule's actual subject is.",
+        "a_filtered_wait_sleeps_through_another_sessions_identical_change: nothing proved a filtered wait honours its SESSION SCOPE, which is exactly the property R279 caught scene/waitFor checking and then ignoring. Same kind, same pane id, another session: not woken; its own session's change: woken.",
+        "tool_wait_for_change's docs now state its real call count and connection use, because R291's register entry claimed 'three calls, all on ONE connection' and R292 made both halves wrong."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 45 targets / 1862 tests (+1 on 1861); clippy 0 with no suppression; doc gate 0/16.",
+        "The scope test was proved discriminating by collapsing ChannelRegistry's per-session keying, which fails it and four others — it passed first try, which this project treats as a warning rather than a result.",
+        "The register gained 11 more item-18 entries from the same audit, three of them these fixes and the rest verified at the tree."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "⚠ THE HEADLINE NUMBER OF R292 IS CITED SIX TIMES IN THE TREE AND NO INSTRUMENT REPRODUCES IT: the 22431 returns a second came from a probe that was deleted, so the DIRECTION is tested for ever and the RATE is a dated sentence. It is also round-trip bound rather than output-rate bound, which only the design doc says.",
+        "The owner's debt question has now found unregistered items in FIVE consecutive rounds, and this time one of them was the round's own thesis violated in its own code — the audit of the finished tree is not optional and reading the diff is not the same as reading the tree."
+      ],
+      "publishable_decision_summary": "The debt audit R292 was asked for found three things worth FIXING rather than registering, one of them R292's own thesis violated inside R292",
+      "publishable_changes_bullets": [
+        "The MCP wait tool spelled the filter's wire key as the literal \"match\" while the CLI beside it used EventFilter::WIRE_KEY — a second spelling of a wire word, shipped inside the round whose whole argument is that a wire word is spelled once. Now the const.",
+        "A comment R292 itself falsified: the pane join claimed it read over the same connection 'for the reason the park and the batch already share one', and the batch call no longer exists. Corrected in place, with what the connection rule's actual subject is.",
+        "a_filtered_wait_sleeps_through_another_sessions_identical_change: nothing proved a filtered wait honours its SESSION SCOPE, which is exactly the property R279 caught scene/waitFor checking and then ignoring. Same kind, same pane id, another session: not woken; its own session's change: woken.",
+        "tool_wait_for_change's docs now state its real call count and connection use, because R291's register entry claimed 'three calls, all on ONE connection' and R292 made both halves wrong."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 45 targets / 1862 tests (+1 on 1861); clippy 0 with no suppression; doc gate 0/16.",
+        "The scope test was proved discriminating by collapsing ChannelRegistry's per-session keying, which fails it and four others — it passed first try, which this project treats as a warning rather than a result.",
+        "The register gained 11 more item-18 entries from the same audit, three of them these fixes and the rest verified at the tree."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "⚠ THE HEADLINE NUMBER OF R292 IS CITED SIX TIMES IN THE TREE AND NO INSTRUMENT REPRODUCES IT: the 22431 returns a second came from a probe that was deleted, so the DIRECTION is tested for ever and the RATE is a dated sentence. It is also round-trip bound rather than output-rate bound, which only the design doc says.",
+        "The owner's debt question has now found unregistered items in FIVE consecutive rounds, and this time one of them was the round's own thesis violated in its own code — the audit of the finished tree is not optional and reading the diff is not the same as reading the tree."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
