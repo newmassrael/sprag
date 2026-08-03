@@ -11,6 +11,11 @@
 //!                          PANE:LINE: text. Literal + ASCII case-insensitive by default;
 //!                          --regex reads NEEDLE as a case-SENSITIVE regular expression (use
 //!                          (?i) to fold); --pane narrows the sweep to one pane
+//! sprag wait-for-output --pane N NEEDLE [-t SESSION] [--regex]  BLOCK until that pane's retained
+//!                          output matches, then print the matching lines like `find`. The same two
+//!                          search languages, in the other tense: `find` asks "does it say this
+//!                          now", this asks "tell me when it does". No timeout — wrap it in
+//!                          `timeout` if you want one
 //! sprag run [NAME] [-t SESSION] [--pane N]  list the commands the pane's project declares
 //!                          (its `.sprag.toml`), or, given NAME, TYPE that command at the pane's
 //!                          prompt without running it — the Enter is the user's
@@ -142,12 +147,13 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOVE_PANE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, TEXT_ACTION,
-    WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at,
-    project_slot_for, regex_slot_for, session_activity_at,
+    MOVE_PANE_ACTION, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM,
+    PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
+    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
+    session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -175,6 +181,7 @@ fn run() -> io::Result<()> {
         Some("new") => new(args.next()),
         Some("ssh") => ssh(args.collect()),
         Some("find") => find(args.collect()),
+        Some("wait-for-output") => wait_for_output(args.collect()),
         Some("run") => run_project(args.collect()),
         Some("attach") => attach(args.collect()),
         Some("kill-session") => kill_session(args.next()),
@@ -759,6 +766,7 @@ fn print_usage() {
          \x20             | attach NAME [--no-wait | --tui | --remote HOST]\n\
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
          \x20             | find NEEDLE [-t SESSION] [--pane N] [--regex]\n\
+         \x20             | wait-for-output --pane N NEEDLE [-t SESSION] [--regex]\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -1072,6 +1080,95 @@ fn find(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// `sprag wait-for-output --pane N NEEDLE [-t SESSION] [--regex]` — BLOCK until that pane's retained
+/// output matches, then print the matching lines exactly as `find` does.
+///
+/// ## The verb `find` could not be
+///
+/// `find` answers "does it say this NOW"; a caller that wants "tell me WHEN it says this" has, until
+/// now, had to run `find` in a loop — which is a poll, and a poll against a terminal is the thing
+/// this project keeps removing. The daemon already knows when a pane produced output, so it can
+/// answer the question the first time it becomes true rather than the first time somebody asks
+/// again.
+///
+/// The two verbs share their SEARCH and their OUTPUT FORMAT because they are one question asked in
+/// two tenses: the same `find.<needle>` / `regex.<pattern>` languages, the same `PaneFind`, the same
+/// `PANE:LINE: text` lines. A second spelling of either would be the drift the pairing exists to
+/// prevent.
+///
+/// ## `--pane` is REQUIRED here where `find` sweeps
+///
+/// A sweep answers "somewhere in this window"; a wait has to name its subject, because the answer is
+/// "this pane said it" and a park is on one pane's output. Sweeping would mean parking a wait per
+/// pane and racing them, which is a different feature with a different answer shape.
+///
+/// ## No read deadline, deliberately
+///
+/// Waiting indefinitely is this verb's contract, exactly as it is `events -f`'s: every other verb
+/// here is a request-response against a daemon answering from memory, so a reply that has not
+/// arrived in seconds is not coming — but a parked wait that has not answered has simply not
+/// happened yet. A caller that wants a bound uses its shell's (`timeout 60 sprag wait-for-output …`),
+/// which is exact where a daemon-side clock would not be.
+fn wait_for_output(args: Vec<String>) -> io::Result<()> {
+    let FindArgs {
+        needle,
+        session,
+        pane,
+        regex,
+    } = find_args_named(args, "wait-for-output")?;
+    let pane = pane.ok_or_else(|| {
+        bad_input("wait-for-output: --pane N is required (a wait names the pane it watches)")
+    })?;
+    let mut conn = connect(None)?;
+    if let Some(session) = &session {
+        require_session(&mut conn, session)?;
+    }
+    // Checked before the park for the reason the daemon checks it too: a wait on a pane that is not
+    // there cannot be answered and cannot fail, so it would read as "it has not happened yet".
+    require_pane(&mut conn, session.as_deref(), pane, "wait-for-output")?;
+    // The park's contract is to block; a deadline here would turn "not yet" into an error.
+    conn.set_read_deadline(None)?;
+    // The scope is spelled the one way this file spells it (`scoped_only`), then the wait's own two
+    // keys are added — so a request that names a session here names it the same as every other verb.
+    let mut params = scoped_only(session.as_deref());
+    params[PANE_PARAM] = Value::from(pane);
+    // Which LANGUAGE the needle is in decides which KEY carries it, exactly as it decides which
+    // ADDRESS `find` queries. One string cannot mean both.
+    params[if regex { PATTERN_PARAM } else { NEEDLE_PARAM }] = Value::from(needle);
+    // Through `try_call` so a REFUSAL reaches the operator as the daemon's own sentence rather than
+    // behind `host rpc error:`, which is a transport's phrase for a fault nobody could anticipate.
+    // The refusals this method produces are all things the caller can act on — a pane in another
+    // session, two search languages at once, or a daemon too old to speak this method at all (the
+    // skew case, where the answer names every method it DOES serve). Debt item 20's class, fixed at
+    // birth on this verb rather than joining the list of verbs that still leak.
+    let answer = match conn.try_call(PANE_WAIT_OUTPUT_METHOD, params) {
+        Ok(answer) => answer,
+        Err(CallError::Fault(fault)) => {
+            return Err(bad_input(&format!(
+                "wait-for-output: {}",
+                fault_sentence(&fault)
+            )));
+        }
+        Err(other) => return Err(other.into()),
+    };
+    let found: PaneFind = serde_json::from_value(answer["find"].clone()).unwrap_or_default();
+    // A refused pattern comes back as a RESULT carrying the engine's message, not as a fault — the
+    // taxonomy `regex.<pattern>` uses, because an invalid pattern is a well-formed question whose
+    // value the engine rejected. It is still an error to the OPERATOR, so it exits non-zero.
+    if let Some(error) = found.error {
+        return Err(bad_input(&format!(
+            "wait-for-output: invalid pattern: {error}"
+        )));
+    }
+    for line in &found.lines {
+        println!("{pane}:{}: {}", line.line, line.text);
+    }
+    if found.truncated {
+        eprintln!("sprag: wait-for-output: the answer was capped; later matches were not scanned");
+    }
+    Ok(())
+}
+
 /// `find`'s parsed arguments — the needle, which session to search, and which pane to narrow to.
 struct FindArgs {
     needle: String,
@@ -1089,6 +1186,17 @@ struct FindArgs {
 /// not a silent join, and a non-numeric `--pane` is rejected here rather than sent as a path that
 /// could not match anything.
 fn find_args(args: Vec<String>) -> io::Result<FindArgs> {
+    find_args_named(args, "find")
+}
+
+/// [`find_args`], with the VERB in every message — so `wait-for-output` shares one parser with the
+/// search it is the blocking tense of, rather than owning a second copy that can drift from it.
+///
+/// One parser is the point: the two verbs take the same needle in the same two languages, and a
+/// caller who learns `--regex` on one has learnt it on the other. What differs is only what each
+/// does with `pane` (optional for a sweep, required for a park), which is the CALLER's check
+/// because it is the caller's semantics.
+fn find_args_named(args: Vec<String>, verb: &str) -> io::Result<FindArgs> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let mut needle: Option<String> = None;
     let mut session = None;
@@ -1100,16 +1208,16 @@ fn find_args(args: Vec<String>) -> io::Result<FindArgs> {
             "-t" | "--target" => {
                 session = Some(
                     it.next()
-                        .ok_or_else(|| bad("find: -t needs a session name".to_owned()))?,
+                        .ok_or_else(|| bad(format!("{verb}: -t needs a session name")))?,
                 );
             }
             "--pane" => {
                 let value = it
                     .next()
-                    .ok_or_else(|| bad("find: --pane needs a pane id".to_owned()))?;
+                    .ok_or_else(|| bad(format!("{verb}: --pane needs a pane id")))?;
                 pane = Some(value.parse::<u64>().map_err(|_| {
                     bad(format!(
-                        "find: --pane {value:?} is not a pane id (a number)"
+                        "{verb}: --pane {value:?} is not a pane id (a number)"
                     ))
                 })?);
             }
@@ -1117,14 +1225,14 @@ fn find_args(args: Vec<String>) -> io::Result<FindArgs> {
             _ if needle.is_none() => needle = Some(arg),
             other => {
                 return Err(bad(format!(
-                    "find: unexpected argument {other:?} (quote a multi-word needle)"
+                    "{verb}: unexpected argument {other:?} (quote a multi-word needle)"
                 )));
             }
         }
     }
-    let needle = needle.ok_or_else(|| bad("find: a search needle is required".to_owned()))?;
+    let needle = needle.ok_or_else(|| bad(format!("{verb}: a search needle is required")))?;
     if needle.is_empty() {
-        return Err(bad("find: the search needle is empty".to_owned()));
+        return Err(bad(format!("{verb}: the search needle is empty")));
     }
     Ok(FindArgs {
         needle,
