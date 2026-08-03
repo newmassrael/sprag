@@ -1863,18 +1863,17 @@ fn agent_manifests_value(agents: Option<&crate::AgentClock>) -> IntrospectValue 
 ///
 /// The mapping itself is NOT here. It used to be — an eleven-arm match writing each `type` name out
 /// as a literal — and that was the second spelling of the event vocabulary: correct while nothing
-/// else read those words, and free to drift the moment something did. They moved to
-/// [`EventKind::wire_str`](crate::events::EventKind::wire_str), the one place an event's wire name is
-/// spelled, and this function became the slot's half of the answer: pick
+/// else read those words, and free to drift the moment something did.
+/// [`EventFilter`](crate::events::EventFilter) reads them, so they moved to
+/// [`EventKind::wire_str`](crate::events::EventKind::wire_str) and this function became the slot's
+/// half of the answer: pick
 /// the journal, take the batch, hand back its one wire shape.
 ///
+/// The read is UNFILTERED, deliberately. A filter belongs to a WAIT, where it decides whether a
+/// caller is woken at all; a slot read is a caller asking what happened, and answering that with a
+/// subset would make the cursor it advances past mean something different per caller.
 fn events_value(channels: &ChannelRegistry, session: &str, since: u64) -> IntrospectValue {
-    let batch = channels
-        .journal(session)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .since(since);
-    IntrospectValue::Json(batch.to_wire())
+    IntrospectValue::Json(channels.journal(session).since(since).to_wire())
 }
 
 /// Serialise one pane's neighbourhood: `{left, right, up, down}`, each a pane id or `null`.

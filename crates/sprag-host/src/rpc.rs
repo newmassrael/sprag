@@ -2259,13 +2259,7 @@ mod tests {
 
     /// Everything `BOOT`'s journal has recorded above `cursor`.
     fn journal_since(state: &HostState, cursor: u64) -> Vec<crate::events::Event> {
-        state
-            .channels()
-            .journal(BOOT)
-            .lock()
-            .expect("the journal")
-            .since(cursor)
-            .events
+        state.channels().journal(BOOT).since(cursor).events
     }
 
     /// **The measurement `JOURNAL_CAPACITY` is DERIVED from, pinned so the derivation cannot rot.**

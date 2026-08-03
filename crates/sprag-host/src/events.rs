@@ -422,11 +422,257 @@ impl Event {
     }
 }
 
+/// WHICH changes a waiter wants to be woken for — a disjunction of [`Clause`]s, or *everything*.
+///
+/// ## Any-of over clauses, all-of inside one
+///
+/// `[{kind: pane_job_changed, pane: 3}, {kind: pane_closed, pane: 3}]` is *wake me when pane 3's job
+/// changes OR pane 3 disappears* — one wait, one connection, one answer. That disjunction is the
+/// shape the job-change event needs and cannot get from a single match: a build finishing and the
+/// pane running it dying are the two ways the thing a caller is waiting for can end, and a caller
+/// forced to pick one waits forever on the other. The rival's `events.wait` takes exactly one
+/// `EventMatch` (`api/schema/events.rs:89` at `9a4ce5e1`), so there it is two waits — and
+/// `pane_closed` is one of the eighteen match shapes its handler refuses at runtime.
+///
+/// ## [`Everything`](Self::Everything) is the default, so the parameter is additive
+///
+/// A caller that passes no filter gets what it gets today: every change in its session. Nothing
+/// existing has to be rewritten to keep working, and the wait is still strictly better for it,
+/// because the thing this removes — waking on OUTPUT — was never a change at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventFilter {
+    /// No constraint: every recorded change matches.
+    Everything,
+    /// At least one clause must match. Never empty — see [`EventFilter::from_wire`], which refuses an
+    /// empty list rather than accepting a filter that can match nothing.
+    AnyOf(Vec<Clause>),
+}
+
+/// One term of an [`EventFilter`]: a kind, a subject, or both.
+///
+/// Both fields optional, and that is the expressiveness this has over a per-variant match enum:
+///
+/// * `{kind: pane_closed}` — *any* pane closing. The rival's `PaneClosed { pane_id: String }` makes
+///   the subject mandatory, so this question cannot be asked there at all.
+/// * `{pane: 3}` — anything about pane 3, whatever the vocabulary grows to.
+/// * both — the narrow case, and the common one.
+///
+/// **Every accepted clause is satisfiable.** A clause with neither field, or one naming a subject the
+/// kind cannot carry, is refused by [`EventFilter::from_wire`] rather than accepted as a predicate
+/// that is always false — a wait that can never return is the worst answer this surface could give,
+/// and it would arrive as silence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Clause {
+    /// The kind this clause admits, or `None` for any kind.
+    pub kind: Option<EventKind>,
+    /// The subject this clause admits, or `None` for any subject.
+    pub subject: Option<Subject>,
+}
+
+impl Clause {
+    /// Whether `event` satisfies every constraint this clause states.
+    fn matches(&self, event: &Event) -> bool {
+        if let Some(kind) = self.kind
+            && kind != event.kind()
+        {
+            return false;
+        }
+        if let Some(subject) = &self.subject
+            && Some(subject) != event.subject().as_ref()
+        {
+            return false;
+        }
+        true
+    }
+}
+
+impl EventFilter {
+    /// The wire key the filter rides under in a wait's params.
+    pub const WIRE_KEY: &'static str = "match";
+
+    /// Whether `event` is one this filter's holder asked to be woken for.
+    #[must_use]
+    pub fn matches(&self, event: &Event) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::AnyOf(clauses) => clauses.iter().any(|clause| clause.matches(event)),
+        }
+    }
+
+    /// Whether any of `events` matches — the question the park decision asks.
+    #[must_use]
+    pub fn matches_any<'a>(&self, events: impl IntoIterator<Item = &'a Event>) -> bool {
+        events.into_iter().any(|event| self.matches(event))
+    }
+
+    /// Keep only the events this filter admits.
+    #[must_use]
+    pub fn retain(&self, events: Vec<Event>) -> Vec<Event> {
+        match self {
+            // The common case pays nothing: no filter, no walk, no reallocation.
+            Self::Everything => events,
+            Self::AnyOf(_) => events
+                .into_iter()
+                .filter(|event| self.matches(event))
+                .collect(),
+        }
+    }
+
+    /// Parse the `match` parameter of a wait: absent or `null` is [`Everything`](Self::Everything);
+    /// otherwise a non-empty array of clause objects.
+    ///
+    /// ## Every refusal here is a caller mistake that would otherwise arrive as SILENCE
+    ///
+    /// This parser is deliberately strict, because the failure mode of a permissive one is a wait
+    /// that never returns and never says why:
+    ///
+    /// * An **unknown `kind`** — a client written against a newer or older vocabulary. Refused
+    ///   naming the vocabulary, so the reply says what this daemon can be asked for.
+    /// * An **unknown KEY** (`panes`, `pane_id`, `id`) — a typo, or a caller writing herdr's
+    ///   vocabulary. Accepting it as an unconstrained clause would turn a narrow wait into
+    ///   *everything* and look like it worked.
+    /// * An **empty clause** — `{}` means *everything*, which is what omitting the parameter means.
+    ///   Two spellings of one thing, and the likelier reading of `{}` is a caller whose intended
+    ///   constraint went missing.
+    /// * An **empty list** — a disjunction over no clauses is FALSE, so it would park forever.
+    /// * A **subject the kind cannot carry** — `{kind: layout_updated, pane: 3}`. Statically
+    ///   contradictory, so it is a mistake and not a question.
+    /// * **Two subjects in one clause** — a clause names one subject; two is the same contradiction.
+    ///
+    /// # Errors
+    ///
+    /// The sentence to show the caller, phrased for an operator or an agent rather than for a
+    /// decoder: it names the offending key or word and what would be accepted.
+    pub fn from_wire(value: Option<&Value>) -> Result<Self, String> {
+        let Some(value) = value.filter(|value| !value.is_null()) else {
+            return Ok(Self::Everything);
+        };
+        let Some(list) = value.as_array() else {
+            return Err(format!(
+                "{}: must be a list of clauses like [{{\"kind\":\"pane_job_changed\",\"pane\":2}}] \
+                 — omit it to be woken by any change",
+                Self::WIRE_KEY,
+            ));
+        };
+        if list.is_empty() {
+            return Err(format!(
+                "{}: is empty, so nothing could ever match it — omit it to be woken by any change",
+                Self::WIRE_KEY,
+            ));
+        }
+        let clauses = list
+            .iter()
+            .map(Self::clause_from_wire)
+            .collect::<Result<Vec<Clause>, String>>()?;
+        Ok(Self::AnyOf(clauses))
+    }
+
+    /// One clause of [`from_wire`](Self::from_wire)'s list.
+    fn clause_from_wire(value: &Value) -> Result<Clause, String> {
+        let Some(object) = value.as_object() else {
+            return Err(format!(
+                "{}: each clause must be an object with a \"kind\" and/or a subject \
+                 (\"{}\", \"{}\", \"{}\")",
+                Self::WIRE_KEY,
+                Subject::PANE_KEY,
+                Subject::WINDOW_KEY,
+                Subject::SESSION_KEY,
+            ));
+        };
+        let mut kind = None;
+        let mut subject: Option<Subject> = None;
+        for (key, value) in object {
+            let found = match key.as_str() {
+                "kind" => {
+                    let name = value
+                        .as_str()
+                        .ok_or_else(|| format!("{}: \"kind\" must be a string", Self::WIRE_KEY))?;
+                    kind = Some(EventKind::from_wire(name).ok_or_else(|| {
+                        format!(
+                            "{}: \"{name}\" is not a change this terminal reports — one of: {}",
+                            Self::WIRE_KEY,
+                            Self::vocabulary(),
+                        )
+                    })?);
+                    continue;
+                }
+                Subject::PANE_KEY => Subject::Pane(value.as_u64().ok_or_else(|| {
+                    format!(
+                        "{}: \"{}\" must be a pane id (a whole number)",
+                        Self::WIRE_KEY,
+                        Subject::PANE_KEY,
+                    )
+                })?),
+                Subject::WINDOW_KEY | Subject::SESSION_KEY => {
+                    let name = value.as_str().ok_or_else(|| {
+                        format!("{}: \"{key}\" must be a name (a string)", Self::WIRE_KEY)
+                    })?;
+                    if key == Subject::WINDOW_KEY {
+                        Subject::Window(name.to_owned())
+                    } else {
+                        Subject::Session(name.to_owned())
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "{}: \"{other}\" is not part of a clause — use \"kind\" and/or one of \
+                         \"{}\", \"{}\", \"{}\"",
+                        Self::WIRE_KEY,
+                        Subject::PANE_KEY,
+                        Subject::WINDOW_KEY,
+                        Subject::SESSION_KEY,
+                    ));
+                }
+            };
+            if let Some(had) = subject.replace(found) {
+                return Err(format!(
+                    "{}: a clause names ONE subject, and this one names both \"{}\" and \"{key}\"",
+                    Self::WIRE_KEY,
+                    had.wire_key(),
+                ));
+            }
+        }
+        match (kind, &subject) {
+            (None, None) => Err(format!(
+                "{}: an empty clause matches everything — omit the whole parameter to say that",
+                Self::WIRE_KEY,
+            )),
+            // The static contradiction: this kind's subject is not of the sort named.
+            (Some(kind), Some(subject)) if kind.subject_key() != Some(subject.wire_key()) => {
+                Err(match kind.subject_key() {
+                    Some(key) => format!(
+                        "{}: \"{}\" names a \"{key}\", so it cannot be constrained by \"{}\"",
+                        Self::WIRE_KEY,
+                        kind.wire_str(),
+                        subject.wire_key(),
+                    ),
+                    None => format!(
+                        "{}: \"{}\" is about the whole arrangement, so it names no \"{}\"",
+                        Self::WIRE_KEY,
+                        kind.wire_str(),
+                        subject.wire_key(),
+                    ),
+                })
+            }
+            _ => Ok(Clause { kind, subject }),
+        }
+    }
+
+    /// Every kind's wire name, comma-separated — for the refusal that has to say what IS accepted.
+    fn vocabulary() -> String {
+        EventKind::ALL
+            .iter()
+            .map(|kind| kind.wire_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// WHAT KIND of change an [`Event`] is, with no subject attached — the event's own name.
 ///
 /// ## Why this exists, and why it is DERIVED rather than declared beside [`Event`]
 ///
-/// A waiter says which changes it wants to be woken for, and the thing it names is
+/// A waiter says which changes it wants to be woken for ([`EventFilter`]), and the thing it names is
 /// a kind. So the kind has to be a value that can be parsed off the wire and compared, which a
 /// variant of an enum carrying subjects is not.
 ///
@@ -489,7 +735,7 @@ impl EventKind {
     ];
 
     /// This kind's name on the wire — the `type` field of an event object, and the word a
-    /// a waiter's filter names.
+    /// [`Clause`] names.
     ///
     /// The SSOT for that word. `pane_agent_state_changed` is deliberately not the variant's own
     /// name: the wire vocabulary prefixes a pane's facts with `pane_`, and the variant it comes from
@@ -531,7 +777,7 @@ impl EventKind {
     /// contract: a reader that has matched on `type` already knows which slot to re-read, and the key
     /// confirms it rather than making it guess.
     ///
-    /// This is also what will let a filter clause be REFUSED at parse time instead of matching nothing
+    /// This is also what lets a [`Clause`] be REFUSED at parse time instead of matching nothing
     /// forever: `{kind: "pane_closed", window: "0"}` is a contradiction the parser can see, because
     /// this says `pane_closed` names a pane. Pinned against [`Event::subject`] by
     /// `a_kinds_subject_key_agrees_with_the_event_that_produced_it`.
@@ -556,7 +802,7 @@ impl EventKind {
 /// WHO an [`Event`] is about — the thing a reader re-reads to learn the new value.
 ///
 /// Owns its name rather than borrowing it, so that ONE type serves both sides of a match: an event's
-/// subject and the subject a filter constrains it to. Two types (a borrowed one for events, an
+/// subject and the subject a [`Clause`] constrains it to. Two types (a borrowed one for events, an
 /// owned one for filters) would be two definitions of "which pane" free to disagree about what
 /// equality means, for an allocation of a window name — `"0"`, in the workspaces this daemon builds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1203,5 +1449,186 @@ mod tests {
             wire.get("lost").is_some(),
             "and is present as a key, not merely falsy",
         );
+    }
+
+    /// Parse a filter from the wire form a caller would send.
+    fn filter(value: Value) -> Result<EventFilter, String> {
+        EventFilter::from_wire(Some(&value))
+    }
+
+    #[test]
+    fn no_filter_at_all_is_everything_so_the_parameter_is_additive() {
+        // A caller that passes nothing keeps today's contract exactly, which is what lets the
+        // parameter be added without rewriting the callers that already wait.
+        assert_eq!(EventFilter::from_wire(None), Ok(EventFilter::Everything));
+        assert_eq!(
+            EventFilter::from_wire(Some(&Value::Null)),
+            Ok(EventFilter::Everything),
+            "an explicit null is the same statement as omitting it",
+        );
+        assert!(
+            EventFilter::Everything.matches(&Event::LayoutUpdated),
+            "and it admits every kind, including the one with no subject",
+        );
+    }
+
+    #[test]
+    fn a_clause_constrains_the_kind_the_subject_or_both() {
+        let job_of_three = filter(json!([{ "kind": "pane_job_changed", "pane": 3 }]))
+            .expect("a kind and a subject");
+        assert!(job_of_three.matches(&Event::PaneJobChanged(3)));
+        assert!(
+            !job_of_three.matches(&Event::PaneJobChanged(5)),
+            "another pane's job is not what this waiter asked about — THE case that was \
+             impossible before",
+        );
+        assert!(
+            !job_of_three.matches(&Event::PaneClosed(3)),
+            "nor another kind of news about the right pane",
+        );
+
+        let any_close = filter(json!([{ "kind": "pane_closed" }])).expect("a bare kind");
+        assert!(any_close.matches(&Event::PaneClosed(9)));
+        assert!(
+            any_close.matches(&Event::PaneClosed(1)),
+            "ANY pane closing — a question herdr's mandatory pane_id cannot ask at all",
+        );
+
+        let anything_about_three = filter(json!([{ "pane": 3 }])).expect("a bare subject");
+        assert!(anything_about_three.matches(&Event::AgentStateChanged(3)));
+        assert!(anything_about_three.matches(&Event::PaneClosed(3)));
+        assert!(!anything_about_three.matches(&Event::PaneClosed(4)));
+        assert!(
+            !anything_about_three.matches(&Event::LayoutUpdated),
+            "an event with no subject cannot satisfy a subject constraint",
+        );
+    }
+
+    #[test]
+    fn clauses_are_a_disjunction_so_one_wait_covers_two_endings() {
+        // The shape the job event needs: a build finishing and the pane running it dying are the two
+        // ways the thing a caller waits for can end, and a caller forced to name one waits forever
+        // on the other. The rival's `events.wait` takes ONE match, so this is two waits there.
+        let done_or_gone = filter(json!([
+            { "kind": "pane_job_changed", "pane": 2 },
+            { "kind": "pane_closed", "pane": 2 },
+        ]))
+        .expect("two clauses");
+
+        assert!(
+            done_or_gone.matches(&Event::PaneJobChanged(2)),
+            "the build ended"
+        );
+        assert!(
+            done_or_gone.matches(&Event::PaneClosed(2)),
+            "or the pane did"
+        );
+        assert!(
+            !done_or_gone.matches(&Event::PaneJobChanged(7)),
+            "and nothing else"
+        );
+    }
+
+    #[test]
+    fn a_filter_keeps_only_what_was_asked_for() {
+        let mine = filter(json!([{ "pane": 2 }])).expect("a subject clause");
+        let batch = vec![
+            Event::PaneJobChanged(2),
+            Event::PaneJobChanged(5),
+            Event::LayoutUpdated,
+            Event::PaneClosed(2),
+        ];
+
+        assert!(mine.matches_any(&batch), "the park decision sees a match");
+        assert_eq!(
+            mine.retain(batch.clone()),
+            vec![Event::PaneJobChanged(2), Event::PaneClosed(2)],
+            "and the answer carries the caller's two, in order, not the session's four",
+        );
+        assert_eq!(
+            EventFilter::Everything.retain(batch.clone()),
+            batch,
+            "while no filter is not a walk: the vector comes back as it went in",
+        );
+    }
+
+    #[test]
+    fn every_way_a_filter_can_be_a_mistake_is_refused_by_a_sentence() {
+        // Each of these would otherwise be a wait that never returns and never says why — the
+        // silence this project treats as a bug. The MESSAGE is asserted, not just the Err: a
+        // refusal an agent cannot act on is barely better than the silence.
+        let refusals = [
+            (
+                json!("pane_job_changed"),
+                "must be a list of clauses",
+                "a bare string instead of a list",
+            ),
+            (
+                json!([]),
+                "nothing could ever match",
+                "an empty list is FALSE, not everything",
+            ),
+            (
+                json!([{}]),
+                "an empty clause matches everything",
+                "an empty clause",
+            ),
+            (
+                json!([{ "kind": "pane_output" }]),
+                "is not a change this terminal reports",
+                "a kind from another vocabulary",
+            ),
+            (
+                json!([{ "pane_id": 3 }]),
+                "is not part of a clause",
+                "herdr's key name, which would otherwise widen the wait to everything",
+            ),
+            (
+                json!([{ "pane": "3" }]),
+                "must be a pane id (a whole number)",
+                "a pane id as a string",
+            ),
+            (
+                json!([{ "kind": "pane_closed", "window": "0" }]),
+                "cannot be constrained by",
+                "a subject of the wrong SORT for the kind",
+            ),
+            (
+                json!([{ "kind": "layout_updated", "pane": 1 }]),
+                "is about the whole arrangement",
+                "a subject on the kind that has none",
+            ),
+            (
+                json!([{ "pane": 1, "window": "0" }]),
+                "names ONE subject",
+                "two subjects in one clause",
+            ),
+        ];
+
+        for (wire, expected, why) in refusals {
+            let error = filter(wire.clone()).expect_err(&format!("{why} must be refused: {wire}"));
+            assert!(
+                error.contains(expected),
+                "{why}: expected a sentence containing {expected:?}, got {error:?}",
+            );
+            assert!(
+                error.starts_with(EventFilter::WIRE_KEY),
+                "and every refusal names the parameter it is about: {error:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_unknown_kind_refusal_names_the_whole_vocabulary_it_could_have_asked_for() {
+        // A client written against a newer or older daemon needs to be told what THIS one reports —
+        // otherwise the fix is a guess. Derived from `ALL`, so it cannot list a stale set.
+        let error = filter(json!([{ "kind": "pane_output_matched" }])).expect_err("unknown kind");
+        for kind in EventKind::ALL {
+            assert!(
+                error.contains(kind.wire_str()),
+                "the refusal must offer {}, and says: {error}",
+                kind.wire_str(),
+            );
+        }
     }
 }

@@ -1022,11 +1022,6 @@ mod tests {
 
     /// Everything `session`'s journal has recorded above `cursor`.
     fn journal_events(channels: &ChannelRegistry, session: &str, cursor: u64) -> Vec<Event> {
-        channels
-            .journal(session)
-            .lock()
-            .expect("the journal")
-            .since(cursor)
-            .events
+        channels.journal(session).since(cursor).events
     }
 }
