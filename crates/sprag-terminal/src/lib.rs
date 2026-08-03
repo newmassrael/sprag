@@ -23,6 +23,10 @@ pub mod pane_pty;
 /// Discovering the TCP ports a session's process subtree is listening on — a session-sidebar
 /// display fact (crate-internal).
 mod ports;
+/// The one parse of a process's `/proc/<pid>/stat` line, shared by every `/proc` reader in this
+/// crate (crate-internal, Linux-only).
+#[cfg(target_os = "linux")]
+mod procfs;
 pub mod registry;
 pub mod remote;
 pub mod snapshot;

@@ -922,23 +922,19 @@ fn read_cwd(_pid: u32) -> Option<PathBuf> {
 
 /// Read the foreground process group of a process's controlling terminal.
 ///
-/// Linux: `/proc/<pid>/stat` field 8, `tpgid`. The same number `tcgetpgrp` would return for that
-/// terminal — measured equal at a prompt, under a foreground job, and after that job was killed —
-/// and reachable without a master fd, which this crate hands to the resize coalescer thread.
+/// Linux: `/proc/<pid>/stat` field 8, `tpgid`, through the crate's one parse of that line
+/// ([`crate::procfs::Stat`]) — which is where the `comm`-in-parentheses hazard, the byte-rather-
+/// than-`&str` decision and the `-1`-is-an-absence rule are all stated. It is the same number
+/// `tcgetpgrp` would return for that terminal (measured equal at a prompt, under a foreground job,
+/// and after that job was killed) and it is reachable without a master fd, which this crate hands
+/// to the resize coalescer thread.
 ///
-/// **Field 2 is the executable name in parentheses and may itself contain spaces and parentheses**,
-/// so the split starts after the LAST `)` rather than at the first space. Splitting naively is the
-/// classic way to read this file wrong, and it would misparse for any child whose name has a space
-/// in it — a rename away from being somebody's bug.
-///
-/// `-1` is the kernel's "no foreground group" (no controlling terminal), and it is `None` here: a
-/// caller asking which process owns the pane deserves an absence, not a sentinel it must know about.
+/// **This used to be a second parser of that line, and it read the file as a `String`** — so a
+/// child whose `comm` the kernel truncated mid-codepoint reported no foreground group at all, while
+/// the sibling parser in [`crate::ports`] had been written on bytes precisely to survive that.
 #[cfg(target_os = "linux")]
 fn read_foreground_pgid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // After the last ')' the fields are 3..N, so tpgid (field 8) is the sixth of them.
-    let after_comm = &stat[stat.rfind(')')? + 1..];
-    u32::try_from(after_comm.split_whitespace().nth(5)?.parse::<i32>().ok()?).ok()
+    crate::procfs::stat(pid)?.tpgid
 }
 
 /// No `/proc` off Linux — the same honest `None` as [`read_cwd`], and with the same consequence:

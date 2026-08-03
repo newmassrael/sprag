@@ -113,45 +113,17 @@ fn parse_listen(contents: &str) -> Vec<(u64, u16)> {
         .collect()
 }
 
-/// Every process's parent, as `pid → children`, from one pass over `/proc/*/stat`. Robust by
-/// construction: `stat` always exists (unlike the `CONFIG_PROC_CHILDREN`-gated
-/// `/proc/<pid>/task/*/children`), so the subtree walk works on any kernel — the cost of that one
-/// full pass is the price of that robustness, per this module's cache-free choice.
+/// Every process's parent, as `pid → children`, INDEXED from the crate's one `/proc` pass
+/// ([`crate::procfs::walk`]) — which is also where the `stat` line's parse and the reason this
+/// walks `stat` rather than the `CONFIG_PROC_CHILDREN`-gated `/proc/<pid>/task/*/children` both
+/// live. This function is now only the index, which is the part that belongs to ports.
 #[cfg(target_os = "linux")]
 fn read_children_map() -> HashMap<u32, Vec<u32>> {
     let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return map;
-    };
-    for entry in entries.flatten() {
-        // Only numeric `/proc` entries are pids (`net`, `self`, `sys`, ... are not).
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read(entry.path().join("stat")) else {
-            continue;
-        };
-        if let Some(ppid) = parse_ppid(&stat) {
-            map.entry(ppid).or_default().push(pid);
-        }
+    for (pid, stat) in crate::procfs::walk() {
+        map.entry(stat.ppid).or_default().push(pid);
     }
     map
-}
-
-/// The ppid from a `/proc/<pid>/stat` line, as raw BYTES: `pid (comm) state ppid ...`. `comm` can
-/// contain spaces, parentheses, AND non-UTF-8 bytes — the kernel caps it at 15 bytes, which can
-/// truncate a multibyte name mid-codepoint — so the parse works on bytes and starts after the LAST
-/// `)`. The fields past it (`state ppid ...`) are plain ASCII, safe to decode; parsing the whole
-/// line as UTF-8 would instead drop a process with an odd `comm` out of the tree entirely.
-#[cfg(target_os = "linux")]
-fn parse_ppid(stat: &[u8]) -> Option<u32> {
-    let tail = &stat[stat.iter().rposition(|&b| b == b')')? + 1..];
-    std::str::from_utf8(tail)
-        .ok()?
-        .split_whitespace()
-        .nth(1)?
-        .parse()
-        .ok()
 }
 
 /// Every pid in the subtrees rooted at `roots` (the roots included), via BFS over the `pid →
@@ -234,17 +206,21 @@ mod tests {
         );
     }
 
-    /// The ppid is parsed from AFTER the last `)`, so a `comm` full of spaces and parentheses (a
-    /// real hazard — a process can name itself `(my proc)`) does not shift the field index.
+    /// The `pid → children` index is built from the shared walk, so a process whose `comm` is full
+    /// of spaces and parentheses — or is not valid UTF-8 — still lands under its real parent. The
+    /// PARSE those cases exercise is pinned in [`crate::procfs`]; this pins the INDEX, which is the
+    /// half that lives here.
     #[cfg(target_os = "linux")]
     #[test]
-    fn parse_ppid_survives_a_parenthesised_spacey_comm() {
-        assert_eq!(parse_ppid(b"1234 (odd (name) :)) S 42 42 0 0"), Some(42));
-        assert_eq!(parse_ppid(b"7 (bash) S 1 7 7"), Some(1));
-        assert_eq!(parse_ppid(b"garbage with no paren"), None);
-        // A `comm` truncated mid-codepoint (invalid UTF-8, before the last `)`) must not break the
-        // ppid parse — the bytes after `)` are ASCII regardless.
-        assert_eq!(parse_ppid(b"9 (odd\xff name) S 3 9 9"), Some(3));
+    fn the_children_index_places_this_process_under_its_real_parent() {
+        let map = read_children_map();
+        let own = std::process::id();
+        let stat = crate::procfs::stat(own).expect("this process has a /proc/<pid>/stat");
+        assert!(
+            map.get(&stat.ppid).is_some_and(|kids| kids.contains(&own)),
+            "this process ({own}) should be listed among its parent's ({}) children",
+            stat.ppid,
+        );
     }
 
     /// BFS collects the whole subtree — roots plus every transitive child — with no duplicates,
