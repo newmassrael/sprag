@@ -2377,7 +2377,12 @@ fn named_pane(it: &mut impl Iterator<Item = String>, command: &str) -> io::Resul
 /// The pane ID leads the line because it is what every other pane verb takes, so `sprag panes`
 /// is the discovery step that makes the rest usable from a shell — `cut -d: -f1` yields exactly the
 /// ids they accept. tmux prints a per-window INDEX and marks the active pane; sprag's id is
-/// registry-unique (so it needs no window prefix) and there is no active pane to mark.
+/// registry-unique, so it needs no window prefix, and the active pane IS marked — R276 gave the
+/// daemon one. (The sentence that used to end here said there was none to mark, five lines above
+/// the code that marks it: an inherited claim, false at HEAD.)
+///
+/// It answers WHO is in the window, and nothing about WHERE they sit — that is [`layout`], which
+/// reads a different slot. Neither verb joins the other's, on purpose: see [`layout`].
 fn panes(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "panes")?;
     if let Some(other) = rest.first() {
