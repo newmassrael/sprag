@@ -36,6 +36,7 @@ use pinion_rpc::{
 };
 use sprag_terminal::{SessionRegistry, Workspace};
 
+use crate::PaneCells;
 use crate::attach::{AttachOutcome, AttachmentRegistry, ClientSize, SizeOutcome};
 use crate::external::lock;
 use crate::host::Host;
@@ -47,7 +48,6 @@ use crate::wire::{
     EVENTS_WAIT_METHOD, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
 };
-use crate::{PaneCells, PaneFind};
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
 /// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
@@ -423,13 +423,20 @@ impl Drop for BirthPin {
 /// in the per-frame dispatch body). Anything else gets a JSON-RPC method-not-found error naming
 /// this list.
 ///
-/// **Four more are answered without appearing here**, because they are intercepted in
+/// **Five more are answered without appearing here**, because they are intercepted in
 /// the per-frame dispatch body before the allowlist is ever consulted: `client/hello`, `client/attach` and
-/// `client/size` (they carry a connection id, which no scene external sees) and
-/// [`EVENTS_WAIT_METHOD`] (it parks its reply). The list is what a REFUSAL offers, so it names the
-/// methods a caller can reach by the ordinary path; a client sending one of the four to a daemon too
+/// `client/size` (they carry a connection id, which no scene external sees), and
+/// [`EVENTS_WAIT_METHOD`] and [`PANE_WAIT_OUTPUT_METHOD`] (they PARK their replies, so the
+/// synchronous dispatcher has nothing to return). The list is what a REFUSAL offers, so it names the
+/// methods a caller can reach by the ordinary path; a client sending one of the five to a daemon too
 /// old to intercept it is refused by this same list, which is exactly the loud answer that case
-/// needs.
+/// needs — measured, in R296's skew run, as `'pane/waitForOutput' is unsupported; use one of: …`.
+///
+/// The cost of that scoping is that the sentence under-reports what a CURRENT daemon serves: a
+/// caller reaching for an unknown method is offered five names where the daemon answers ten. That is
+/// a known bound rather than an oversight, and it is the argument above — the five are not reachable
+/// "by the ordinary path" in the sense the list means, since each needs something the generic
+/// dispatcher cannot give it.
 pub const SUPPORTED_METHODS: &[&str] = &[
     "scene/snapshot",
     "scene/query",
@@ -718,7 +725,7 @@ fn handle_events_wait(
 }
 
 /// `pane/waitForOutput` — park until the named pane's retained output matches, then answer with the
-/// same [`PaneFind`] the `find.<needle>` / `regex.<pattern>` slots serve.
+/// same [`PaneFind`](crate::PaneFind) the `find.<needle>` / `regex.<pattern>` slots serve.
 ///
 /// ## Everything is refused BEFORE the park, because a park cannot report a mistake
 ///
@@ -736,7 +743,8 @@ fn handle_events_wait(
 ///   here there is no answer to give, so it is the same refusal as a missing one.
 ///
 /// An INVALID pattern is deliberately NOT refused here: it is answered by the first pass, carrying
-/// the engine's own message in [`PaneFind::error`], which is what the `regex.<pattern>` slot does
+/// the engine's own message in [`PaneFind::error`](crate::PaneFind::error), which is what the
+/// `regex.<pattern>` slot does
 /// with the identical mistake.
 ///
 /// ## The first evaluation is the ordinary pass, not a special case
@@ -1098,7 +1106,11 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
                         target: "sprag_host::notify",
                         conn = conn.get(),
                         waits,
-                        "released the change waits of a closed connection"
+                        // BOTH kinds, summed — the filtered change waits and the output waits.
+                        // Named as "parked waits" rather than "change waits" because R296 gave this
+                        // one number a second contributor, and a reader counting filtered waits off
+                        // it would be reading a total.
+                        "released the parked waits of a closed connection"
                     );
                 }
                 // Release the closed connection's attachment. If that dropped an ATTACHED client
@@ -1161,17 +1173,13 @@ fn evaluate_output_waits(state: &HostState, session: &str) {
     let channel = state.channels().outputs(session);
     channel.evaluate(|pane, query| {
         let handle = pane_handle_in(state, session, pane)?;
-        let found = match query {
-            OutputQuery::Literal(needle) => {
-                PaneFind::from_screen_result(&handle.with_screen(|screen| screen.find(needle)))
-            }
-            OutputQuery::Pattern(pattern) => {
-                match handle.with_screen(|screen| screen.find_regex(pattern)) {
-                    Ok(found) => PaneFind::from_screen_result(&found),
-                    Err(bad) => PaneFind::refused(&bad),
-                }
-            }
-        };
+        // Through the SAME two functions the `find.<needle>` / `regex.<pattern>` slots call, so the
+        // language a caller wrote reaches the engine the query slot would have reached. The answer
+        // shape was already shared; this is the question's half of that.
+        let found = handle.with_screen(|screen| match query {
+            OutputQuery::Literal(needle) => crate::pane::search_literal(screen, needle),
+            OutputQuery::Pattern(pattern) => crate::pane::search_pattern(screen, pattern),
+        });
         // A REFUSAL is an answer, not a reason to keep waiting: a pattern the engine will not
         // compile cannot start matching later, so parking on one is a wait that can never end. It
         // rides the normal result shape rather than a JSON-RPC error for the reason
@@ -2907,6 +2915,51 @@ mod tests {
             scrollback > 6,
             "and it is {scrollback} lines above a six-row view",
         );
+    }
+
+    #[test]
+    fn the_wait_and_the_search_slot_answer_the_same_thing() {
+        // ⚠ THE ROUND'S OWN THESIS, and the audit found nothing pinning it. "Does it say X" and
+        // "wait until it says X" are one semantics — so the two surfaces must agree on the ANSWER
+        // (one `PaneFind`) and on the QUESTION (one language-to-engine mapping). Sharing the type
+        // gives the first; sharing `pane::search_literal` / `search_pattern` gives the second, and
+        // nothing failed when they were two copies, because both copies were right on the day.
+        let state = host_with("printf 'alpha\\nbeta\\ngamma\\n'", 40, 6);
+        wait_for_pane0_eof(&state);
+
+        // ⚠ THE NEEDLE IS CHOSEN SO THE TWO LANGUAGES DISAGREE, and the first version of this test
+        // used "beta" for both — which is a valid regex matching itself, so swapping the literal
+        // search for the pattern one left the test GREEN. It pinned the answer SHAPE and said
+        // nothing about the mapping it was written for. `BETA` matches only because a literal search
+        // folds ASCII case, and `b.ta` matches only because a pattern's `.` is a wildcard: each
+        // FAILS under the other engine, so a crossed wire cannot pass.
+        for (needle, key) in [("BETA", NEEDLE_PARAM), ("b.ta", PATTERN_PARAM)] {
+            let slot = if key == NEEDLE_PARAM {
+                crate::wire::find_slot_for(needle)
+            } else {
+                crate::wire::regex_slot_for(needle)
+            };
+            // The helper answers the whole JSON-RPC envelope; the comparison is of the payload.
+            let queried = query_pane0(&state, &slot)["result"].clone();
+
+            let sink = Arc::new(Mutex::new(Vec::new()));
+            output_wait_recording(
+                &state,
+                ConnId::allocate(),
+                serde_json::json!({ PANE_PARAM: 0, key: needle }),
+                &sink,
+            );
+            let waited = only_reply(&sink)["result"]["find"].clone();
+
+            assert_eq!(
+                waited, queried,
+                "the {key} {needle:?} answers ONE shape whichever surface asked it",
+            );
+            assert_eq!(
+                waited["lines"][0]["text"], "beta",
+                "and it is the right line, so the comparison is not two matching emptinesses",
+            );
+        }
     }
 
     #[test]

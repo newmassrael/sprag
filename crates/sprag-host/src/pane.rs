@@ -64,6 +64,31 @@ use crate::wire::{
     TEXT_ACTION,
 };
 
+/// Search `screen`'s retained output for the LITERAL `needle` — the one place the
+/// `find.<needle>` language is bound to an engine call.
+///
+/// It is a function rather than two lines inlined at the slot because it has TWO callers with very
+/// different cadences: the query slot (a find bar's keystroke) and the output-wait pass
+/// (`crate::rpc`, once per coalesced burst of a watched pane's output). A round whose thesis is that
+/// "does it say X" and "wait until it says X" are one semantics cannot afford two places deciding
+/// which engine a language reaches — the shared [`crate::PaneFind`] makes the ANSWER one shape, and
+/// this makes the QUESTION one mapping.
+pub(crate) fn search_literal(screen: &Screen, needle: &str) -> crate::PaneFind {
+    crate::PaneFind::from_screen_result(&screen.find(needle))
+}
+
+/// The same search read as a REGULAR EXPRESSION — [`search_literal`]'s peer, and separate for the
+/// reason [`crate::wire::REGEX_FIELD`] gives: a needle and a pattern are separate languages.
+///
+/// A pattern the engine refuses answers the normal shape carrying its message rather than an
+/// absence, because an invalid pattern is a well-formed question whose VALUE was rejected.
+pub(crate) fn search_pattern(screen: &Screen, pattern: &str) -> crate::PaneFind {
+    match screen.find_regex(pattern) {
+        Ok(found) => crate::PaneFind::from_screen_result(&found),
+        Err(bad) => crate::PaneFind::refused(&bad),
+    }
+}
+
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
 /// [`sprag_input::encode`]) and write them to `pty`. `true` on success;
 /// `false` if the key is unencodable or the write failed.
@@ -391,9 +416,9 @@ impl ExternalIntrospect for SpragPaneExternal {
             if needle.is_empty() {
                 return Some(IntrospectValue::Null);
             }
-            let found = crate::PaneFind::from_screen_result(
-                &self.pty.with_screen(|screen| screen.find(needle)),
-            );
+            let found = self
+                .pty
+                .with_screen(|screen| search_literal(screen, needle));
             // Serialized from the SHARED wire type, not a hand-built object: the client
             // deserializes that same type, so the keys are symmetric by construction. Encoded
             // once and spliced, for the reason the `cells` arm above states.
@@ -409,10 +434,9 @@ impl ExternalIntrospect for SpragPaneExternal {
             if pattern.is_empty() {
                 return Some(IntrospectValue::Null);
             }
-            let found = match self.pty.with_screen(|screen| screen.find_regex(pattern)) {
-                Ok(found) => crate::PaneFind::from_screen_result(&found),
-                Err(bad) => crate::PaneFind::refused(&bad),
-            };
+            let found = self
+                .pty
+                .with_screen(|screen| search_pattern(screen, pattern));
             return Some(IntrospectValue::raw(&found));
         }
         // One inline image's RGBA as base64, fetched ON DEMAND (R1404 Stage 5) — the RGBA can be
