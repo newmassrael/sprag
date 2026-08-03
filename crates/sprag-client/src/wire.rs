@@ -3572,10 +3572,21 @@ fn spawn_poll(
                                 // a hiccup — the one moment a user most needs it to still be there.
                                 agent: pane.agent.clone(),
                                 dims: pane.dims,
-                                // Keep the token the held frame was taken under: the re-query
-                                // failed, so the host's current one is unknown, and inventing one
-                                // either way would either freeze the pane or force a full refetch.
-                                projection: pane.projection.clone(),
+                                // NO TOKEN, deliberately — the one field this fallback must NOT
+                                // carry forward. The re-query failed, so the host's current token
+                                // is unknown, and `stale_panes`' own rule for an unknown token is
+                                // that "I cannot tell" must never resolve to "assume unchanged".
+                                // Carrying the held one resolves it exactly that way: the compare
+                                // finds `held == held`, nothing is fetched, and the pane FREEZES —
+                                // not until a later wake, but until something else in the session
+                                // moves, because the wake this change had was consumed here. A
+                                // pane that has just printed and gone quiet has no later wake, so
+                                // the freeze is permanent and silent. Measured: the pixel smoke's
+                                // driven-line check failed ~1 in 8 with the daemon holding the
+                                // line and the client never fetching it. `None` costs one
+                                // redundant refresh of the live set on a hiccup, which is the
+                                // price this module already states for every other imprecision.
+                                projection: None,
                             })
                             .collect();
                         refresh_to_set(&mut conn, &cache, &seeds);
@@ -4991,6 +5002,43 @@ mod tests {
         assert_eq!(
             stale_panes(&PaneCache::new(merged), &seeds),
             vec![PaneId(10)]
+        );
+    }
+
+    /// **THE FREEZE, and the fallback that used to cause it.** When a wake's pane re-query fails,
+    /// the poll thread rebuilds its seeds from the cache and refreshes through this same gate. That
+    /// seed must carry NO token: the host's current one is unknown, and `stale_panes`' rule for an
+    /// unknown token is that "I cannot tell" must never resolve to "assume unchanged".
+    ///
+    /// Carrying the HELD token instead resolves it exactly that way — and the consequence is not a
+    /// delay but a permanent freeze, because the wake that would have caught the change was spent
+    /// on the failed query. A pane that printed once and went quiet has no later wake to be caught
+    /// on. Measured before the fix: the headless pixel smoke's driven-line check failed ~1 in 8
+    /// with the DAEMON's own pane holding the line and the client never fetching it, for sixty
+    /// seconds.
+    ///
+    /// Revert-proof: put `pane.projection.clone()` back in that fallback and the first assertion
+    /// here reads an empty fetch list.
+    #[test]
+    fn a_fallback_seed_carries_no_token_so_a_failed_wake_cannot_freeze_a_pane() {
+        // The client holds a frame taken at token 7. The host has moved to 8 (the driven line),
+        // and this wake's pane re-query failed, so the seed can only be rebuilt from the cache.
+        let cache = PaneCache::new(vec![cached(10, Some(token(7)))]);
+        let fallback = vec![seeded(10, None)];
+        assert_eq!(
+            stale_panes(&cache, &fallback),
+            vec![PaneId(10)],
+            "a seed that cannot state the host's token is fetched, never assumed unchanged",
+        );
+
+        // And the merge that follows keeps the pane fetchable rather than labelling the old frame
+        // with a token it does not have: an unfetched pane holds on to its own.
+        let merged = merge_panes(&cache, &fallback, &[]);
+        assert_eq!(merged[0].projection, Some(token(7)));
+        assert_eq!(
+            stale_panes(&PaneCache::new(merged), &fallback),
+            vec![PaneId(10)],
+            "so a second failed wake cannot settle into a skip either",
         );
     }
 
