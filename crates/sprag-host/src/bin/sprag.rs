@@ -2844,7 +2844,7 @@ fn events(args: Vec<String>) -> io::Result<()> {
             "events: --pane / --kind narrow what to WAIT for, so they need -f ({usage})"
         )));
     }
-    let filter = event_filter(pane, &kinds);
+    let filter = sprag_host::events::EventFilter::narrowing_wire(pane, &kinds);
 
     let mut conn = connect_scoped(session.as_deref())?;
     // A cursor the caller did not give is NOW, not zero: `events -f` means "tell me what happens",
@@ -2924,32 +2924,6 @@ fn fault_sentence(fault: &RpcFault) -> String {
         .and_then(Value::as_str)
         .unwrap_or(&fault.message)
         .to_owned()
-}
-
-/// The `match` parameter for a filtered `sprag events -f`, or `None` when the caller narrowed
-/// nothing.
-///
-/// One clause per `--kind`, each carrying `--pane` when it was given, which is the daemon's any-of
-/// form: `--pane 3 --kind pane_job_changed --kind pane_closed` is *pane 3's job changed, or pane 3
-/// went away* — the two ways the thing an operator is watching for can end.
-///
-/// A kind is passed THROUGH unvalidated: the vocabulary belongs to the daemon, which refuses an
-/// unknown word with the full list of what it does report. Checking it here would be a second
-/// enumeration of exactly the kind this round removed.
-fn event_filter(pane: Option<u64>, kinds: &[String]) -> Option<Value> {
-    match (pane, kinds) {
-        (None, []) => None,
-        (Some(id), []) => Some(json!([{ "pane": id }])),
-        (pane, kinds) => Some(Value::Array(
-            kinds
-                .iter()
-                .map(|kind| match pane {
-                    Some(id) => json!({ "kind": kind, "pane": id }),
-                    None => json!({ "kind": kind }),
-                })
-                .collect(),
-        )),
-    }
 }
 
 /// Print one change batch as `TYPE<TAB>SUBJECT` lines and answer the cursor to resume from.

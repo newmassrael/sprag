@@ -658,6 +658,43 @@ impl EventFilter {
         }
     }
 
+    /// The WIRE form of a filter narrowed to a pane and/or a set of kind NAMES, or `None` when
+    /// neither was given — the shape a client sends as the [`WIRE_KEY`](Self::WIRE_KEY) parameter.
+    ///
+    /// ## Why this lives here and not in each client
+    ///
+    /// Both `sprag events -f` and the MCP `wait_for_change` tool offer the same narrowing, and each
+    /// grew its own copy of this cross-product first: one clause per kind, each carrying the pane. Two
+    /// spellings of one wire shape, in a round whose whole thesis is that a vocabulary must be spelled
+    /// once. So it is spelled once, beside the parser that reads it back.
+    ///
+    /// ## Why the kinds are STRINGS and are not validated here
+    ///
+    /// The vocabulary belongs to the DAEMON. A client that checked a kind locally would be a second
+    /// enforcement point, and an older client would refuse a kind the daemon it is talking to knows
+    /// perfectly well. Passing the word through means the answer always comes from the end that
+    /// actually has the list — with the whole list in the refusal ([`from_wire`](Self::from_wire)).
+    ///
+    /// The output is what `from_wire` accepts, which
+    /// `the_narrowing_a_client_sends_is_what_the_daemon_parses_back` pins as a round trip rather than
+    /// as two shapes that happen to agree today.
+    #[must_use]
+    pub fn narrowing_wire(pane: Option<u64>, kinds: &[String]) -> Option<Value> {
+        match (pane, kinds) {
+            (None, []) => None,
+            (Some(id), []) => Some(serde_json::json!([{ Subject::PANE_KEY: id }])),
+            (pane, kinds) => Some(Value::Array(
+                kinds
+                    .iter()
+                    .map(|kind| match pane {
+                        Some(id) => serde_json::json!({ "kind": kind, Subject::PANE_KEY: id }),
+                        None => serde_json::json!({ "kind": kind }),
+                    })
+                    .collect(),
+            )),
+        }
+    }
+
     /// Every kind's wire name, comma-separated — for the refusal that has to say what IS accepted.
     fn vocabulary() -> String {
         EventKind::ALL
@@ -1616,6 +1653,57 @@ mod tests {
                 "and every refusal names the parameter it is about: {error:?}",
             );
         }
+    }
+
+    #[test]
+    fn the_narrowing_a_client_sends_is_what_the_daemon_parses_back() {
+        // The two ends of ONE shape: `narrowing_wire` is what `sprag events -f` and the MCP wait tool
+        // build, `from_wire` is what the daemon reads. Pinned as a round trip rather than as two
+        // shapes that happen to agree today — which is the whole failure mode this round is about.
+        let kinds = ["pane_job_changed".to_owned(), "pane_closed".to_owned()];
+
+        assert_eq!(
+            EventFilter::narrowing_wire(None, &[]),
+            None,
+            "a caller that narrowed nothing sends no parameter at all",
+        );
+
+        let pane_only = EventFilter::narrowing_wire(Some(3), &[]).expect("a pane clause");
+        assert_eq!(
+            EventFilter::from_wire(Some(&pane_only)),
+            Ok(EventFilter::AnyOf(vec![Clause {
+                kind: None,
+                subject: Some(Subject::Pane(3)),
+            }])),
+            "a pane alone is anything about that pane",
+        );
+
+        let both = EventFilter::narrowing_wire(Some(3), &kinds).expect("two clauses");
+        let parsed = EventFilter::from_wire(Some(&both)).expect("the daemon parses its own shape");
+        assert_eq!(
+            parsed,
+            EventFilter::AnyOf(vec![
+                Clause {
+                    kind: Some(EventKind::PaneJobChanged),
+                    subject: Some(Subject::Pane(3)),
+                },
+                Clause {
+                    kind: Some(EventKind::PaneClosed),
+                    subject: Some(Subject::Pane(3)),
+                },
+            ]),
+            "a pane and two kinds is the cross product, one clause each",
+        );
+        assert!(parsed.matches(&Event::PaneJobChanged(3)));
+        assert!(parsed.matches(&Event::PaneClosed(3)));
+        assert!(!parsed.matches(&Event::PaneJobChanged(4)));
+
+        let kinds_only = EventFilter::narrowing_wire(None, &kinds).expect("two bare kinds");
+        let parsed = EventFilter::from_wire(Some(&kinds_only)).expect("parses");
+        assert!(
+            parsed.matches(&Event::PaneClosed(99)),
+            "kinds without a pane are those kinds for any subject",
+        );
     }
 
     #[test]

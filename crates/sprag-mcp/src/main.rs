@@ -73,6 +73,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use sprag_host::events::EventFilter;
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT,
@@ -1579,15 +1580,16 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
 /// unknown word with the whole list of what it does report, so validating here would be a second
 /// enumeration of the exact kind this round removed from the host.
 fn wait_filter(args: &Value) -> Result<Option<Value>, String> {
-    let kinds: Vec<&str> = match args.get("kinds") {
+    let kinds: Vec<String> = match args.get("kinds") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(list)) => list
             .iter()
             .map(|kind| {
                 kind.as_str()
+                    .map(str::to_owned)
                     .ok_or_else(|| "each entry of kinds must be a string".to_owned())
             })
-            .collect::<Result<Vec<&str>, String>>()?,
+            .collect::<Result<Vec<String>, String>>()?,
         Some(_) => return Err("kinds must be a list of change names".to_owned()),
     };
     // Through the same resolver every other tool's `pane` argument uses, so a wrong number is
@@ -1596,19 +1598,7 @@ fn wait_filter(args: &Value) -> Result<Option<Value>, String> {
         None | Some(Value::Null) => None,
         Some(_) => Some(resolve_pane_id(args)?),
     };
-    Ok(match (pane, kinds.as_slice()) {
-        (None, []) => None,
-        (Some(id), []) => Some(json!([{ "pane": id }])),
-        (None, kinds) => Some(Value::Array(
-            kinds.iter().map(|kind| json!({ "kind": kind })).collect(),
-        )),
-        (Some(id), kinds) => Some(Value::Array(
-            kinds
-                .iter()
-                .map(|kind| json!({ "kind": kind, "pane": id }))
-                .collect(),
-        )),
-    })
+    Ok(EventFilter::narrowing_wire(pane, &kinds))
 }
 
 /// One line per change: `  <type>: <subject>`, with a pane named in BOTH vocabularies.
