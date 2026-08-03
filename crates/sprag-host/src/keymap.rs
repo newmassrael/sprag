@@ -117,8 +117,8 @@ impl fmt::Display for KeyError {
             ),
             Self::UnknownAction(verb) => write!(
                 f,
-                "{verb:?} is not an action (there are: detach-client, send-prefix, \
-                 split-window -h|-v [-b], select-pane -L|-R|-U|-D|-t :.+, zoom-pane [-Z|-u])"
+                "{verb:?} is not an action (there are: {})",
+                BoundAction::VOCABULARY.join(", ")
             ),
             Self::BadFlags { action, why } => write!(f, "{action:?}: {why}"),
             Self::BoundAndUnbound(key) => {
@@ -436,6 +436,27 @@ fn flag_of(dir: PaneDir) -> &'static str {
 }
 
 impl BoundAction {
+    /// Every form a binding may name, in the shell's own spelling.
+    ///
+    /// **The ONE enumeration of this vocabulary.** It is the only place a user learns what a
+    /// binding can say, and it is read from two surfaces — [`KeyError::UnknownAction`]'s report,
+    /// which a config file's typo reaches, and `sprag bind-key`'s, which an empty action reaches.
+    /// Those two each held their own copy until R297, and the CLI's had been stale since R289 added
+    /// `zoom-pane`: a verb that exists and is absent from the list nobody reads twice is a verb
+    /// nobody finds.
+    ///
+    /// Kept beside [`parse`](Self::parse) rather than derived from it because the two answer
+    /// different questions — this one names the FORMS, including the flag grammar a parser
+    /// expresses as control flow — and
+    /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
+    pub const VOCABULARY: [&'static str; 5] = [
+        "detach-client",
+        "send-prefix",
+        "split-window -h|-v [-b]",
+        "select-pane -L|-R|-U|-D|-t :.+",
+        "zoom-pane [-Z|-u]",
+    ];
+
     /// Parse an action as the shell spells it — `split-window -h`, `detach-client`.
     ///
     /// # Errors
@@ -1327,6 +1348,73 @@ mod tests {
             both.to_string().contains("give only one"),
             "and it says which mistake it was: {both}",
         );
+    }
+
+    /// **The vocabulary a user is shown is the vocabulary the parser has.**
+    ///
+    /// Two surfaces print [`BoundAction::VOCABULARY`] and neither re-spells it — the CLI's own copy
+    /// was stale for eight rounds before it became one const, and a second list is checked by
+    /// nothing. This is what checks the one that is left, in both directions: every listed form
+    /// names a verb `parse` accepts, and every action `parse` can PRODUCE prints back under a
+    /// listed verb.
+    ///
+    /// REVERT-PROOF: drop any entry from the const and the second loop fails on that variant; add
+    /// one for a verb nothing implements and the first loop fails on it.
+    #[test]
+    fn the_vocabulary_lists_every_verb_a_binding_takes() {
+        for form in BoundAction::VOCABULARY {
+            let verb = form.split_whitespace().next().expect("a form names a verb");
+            assert!(
+                !matches!(
+                    BoundAction::parse(verb),
+                    Err(KeyError::UnknownAction(_)) | Err(KeyError::UnknownKey(_))
+                ),
+                "{verb:?} is listed but is not a verb the parser has",
+            );
+        }
+        let every = [
+            BoundAction::DetachClient,
+            BoundAction::SendPrefix,
+            BoundAction::SplitWindow {
+                dir: SplitDir::Horizontal,
+                before: false,
+            },
+            BoundAction::SelectNextPane,
+            BoundAction::SelectPaneToward { dir: PaneDir::Left },
+            BoundAction::ZoomPane { on: None },
+        ];
+        for action in every {
+            let printed = action.to_string();
+            let verb = printed.split_whitespace().next().expect("an action prints");
+            assert!(
+                BoundAction::VOCABULARY
+                    .iter()
+                    .any(|form| form.split_whitespace().next() == Some(verb)),
+                "{printed:?} is a binding nobody is told about",
+            );
+        }
+    }
+
+    /// A verb no client has is named back to the user with the ones that exist.
+    #[test]
+    fn an_unknown_verb_is_refused_and_the_report_lists_what_exists() {
+        let error = BoundAction::parse("kill-server").expect_err("not a binding action");
+        assert_eq!(error, KeyError::UnknownAction("kill-server".to_owned()));
+        let message = error.to_string();
+        for known in [
+            "detach-client",
+            "send-prefix",
+            "split-window",
+            "select-pane",
+            // The list is the ONLY place a user learns what a binding can say, so a verb that
+            // exists and is absent from it is a verb nobody finds.
+            "zoom-pane",
+        ] {
+            assert!(
+                message.contains(known),
+                "{message:?} should mention {known}"
+            );
+        }
     }
 
     /// The defaults ARE tmux's table for the actions sprag's clients have.

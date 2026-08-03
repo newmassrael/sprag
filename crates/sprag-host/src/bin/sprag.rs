@@ -439,9 +439,12 @@ fn bind_key(args: Vec<String>) -> io::Result<()> {
     })?;
     let action = rest.collect::<Vec<String>>().join(" ");
     if action.is_empty() {
+        // The vocabulary is READ from the type that defines it, never re-spelled here: this
+        // message's own copy had been missing `zoom-pane` since R289 shipped it, and nothing could
+        // fail because a second list is not checked against anything.
         return Err(bad_input(&format!(
-            "bind-key: {key:?} needs an action (there are: detach-client, send-prefix, \
-             split-window -h|-v [-b], select-pane -t :.+)"
+            "bind-key: {key:?} needs an action (there are: {})",
+            BoundAction::VOCABULARY.join(", ")
         )));
     }
     // Parsed HERE, so a typo in an argument is reported as one. Rendering it through
