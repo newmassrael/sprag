@@ -80,10 +80,11 @@ use crate::wire::{
     DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, NEIGHBORS_FIELD,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD,
-    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_ACTIVITY_FIELD, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    SPLIT_ACTION, SWAP_PANE_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, WINDOW_SIZE_SLOT,
+    WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -285,6 +286,46 @@ impl WorkspaceExternal {
         Ok(Some(opener))
     }
 
+    /// Parse the OPTIONAL `name` — what to call the newborn pane
+    /// ([`sprag_terminal::Pane::name`]). Absent (or `null`) is a pane nobody names.
+    ///
+    /// A non-string is a `TypeMismatch` (a malformed request); a string that breaks one of
+    /// [`PaneName::parse`](sprag_terminal::PaneName::parse)'s rules, or that another pane of this
+    /// DAEMON already carries, is `Rejected` — a well-formed request the host cannot honour, which
+    /// is the split [`parse_cwd`](Self::parse_cwd) already keeps. Both checks run before anything
+    /// is built, so a refusal costs no pane.
+    ///
+    /// Checked daemon-wide for [`pane_named`](Self::pane_named)'s reason: a name stands in for a
+    /// registry-unique id, so the set it must be unique in is the registry's and not this request's
+    /// scope. That also means a caller can be refused by a pane it cannot see, which is the correct
+    /// answer — the alternative is two panes one address resolves to.
+    ///
+    /// **Deliberately NOT on [`SpawnSpec`]**, unlike `cwd`, so it reaches only the two PANE births
+    /// and never `new_window` / `new_session`. Their `name` argument is the WINDOW's or SESSION's
+    /// name, so putting a pane name behind the same key would give one word two meanings — the
+    /// exact ambiguity this whole feature exists to remove — and spelling it differently there
+    /// would give one fact two spellings. A birth that creates a container names the container;
+    /// naming the pane inside it is a second request, and one this surface can express.
+    fn parse_pane_name(
+        &self,
+        map: &Map<String, Value>,
+    ) -> Result<Option<sprag_terminal::PaneName>, InvokeError> {
+        let proposed = match map.get("name") {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::String(name)) => name,
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let name = sprag_terminal::PaneName::parse(proposed).map_err(|error| {
+            tracing::debug!(target: "sprag_host", %error, "refused a pane name");
+            InvokeError::Rejected
+        })?;
+        if self.pane_named(&name).is_some() {
+            tracing::debug!(target: "sprag_host", %name, "refused a pane name already in use");
+            return Err(InvokeError::Rejected);
+        }
+        Ok(Some(name))
+    }
+
     /// Parse the OPTIONAL `remote` object (`{host, user?, port?}`) a `sprag ssh` birth request
     /// carries — the structured endpoint that marks the pane a sanctioned remote workspace. Absent
     /// is `None` (an ordinary spawn); present-but-malformed (no string `host`, a non-string `user`,
@@ -334,6 +375,7 @@ impl WorkspaceExternal {
         pool: &Arc<Mutex<Workspace>>,
         spec: SpawnSpec,
         opener: Option<PaneId>,
+        name: Option<sprag_terminal::PaneName>,
     ) -> Result<PaneId, InvokeError> {
         let SpawnSpec {
             mut command,
@@ -371,12 +413,19 @@ impl WorkspaceExternal {
         if let Some(opener) = opener {
             workspace.set_pane_opened_by(id, opener);
         }
+        // And its NAME, on the same terms and at the same moment. Already validated and already
+        // checked unique against the whole daemon by `parse_pane_name`, which ran before the fork —
+        // the pool cannot see the set it would have to check against, and says so.
+        if let Some(name) = name {
+            workspace.set_pane_name(id, Some(name));
+        }
         Ok(id)
     }
 
     /// `spawn` action: create a pane in THIS request's session and return its id. `cmd` (an argv
     /// array) defaults to `$SHELL`; `cols`/`rows` default to the workspace's default size; `cwd`
-    /// defaults to the daemon's directory; `opened_by` names the pane whose occupant is asking.
+    /// defaults to the daemon's directory; `opened_by` names the pane whose occupant is asking;
+    /// `name` is what to call the pane.
     fn spawn(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let empty = Map::new();
         let map = match args {
@@ -384,11 +433,13 @@ impl WorkspaceExternal {
             IntrospectValue::Null => &empty,
             _ => return Err(InvokeError::TypeMismatch),
         };
-        // Both parses run BEFORE the birth, so a request that names an opener the daemon does not
-        // hold — or a directory that is not there — costs no forked child.
+        // All three parses run BEFORE the birth, so a request that names an opener the daemon does
+        // not hold — or a directory that is not there, or a name already taken — costs no forked
+        // child.
         let spec = Self::parse_spawn(map)?;
         let opener = self.parse_opener(map)?;
-        let id = self.spawn_parsed(self.workspace(), spec, opener)?;
+        let name = self.parse_pane_name(map)?;
+        let id = self.spawn_parsed(self.workspace(), spec, opener, name)?;
         // A NEW pane changed the set: wake parked waiters now, before its first output, so a
         // mirror learns the pane exists immediately (the pane-set change-notification, distinct
         // from the per-pane output bump the hook fires).
@@ -422,10 +473,11 @@ impl WorkspaceExternal {
         // malformed in two ways reports the malformed-request error rather than the refusal.
         let spec = Self::parse_spawn(map)?;
         let opener = self.parse_opener(map)?;
+        let name = self.parse_pane_name(map)?;
         if !crate::host::tiled_panes(&self.registry, &self.scope).contains(&target) {
             return Err(InvokeError::Rejected);
         }
-        let id = self.spawn_parsed(self.workspace(), spec, opener)?;
+        let id = self.spawn_parsed(self.workspace(), spec, opener, name)?;
         if !crate::host::split_pane(&self.registry, &self.scope, id, target, side, dir) {
             tracing::warn!(
                 target: "sprag_host",
@@ -470,6 +522,73 @@ impl WorkspaceExternal {
         } else {
             Err(InvokeError::Rejected) // no such pane
         }
+    }
+
+    /// `rename_pane {pane, name?}` action: name a pane, or take its name away — see
+    /// [`crate::wire::RENAME_PANE_ACTION`] for the vocabulary and every refusal.
+    ///
+    /// Acts DAEMON-WIDE, unlike every other pane action here, and that is the one thing worth
+    /// reading twice. The others reach a pane through the scoped session's current window because
+    /// what they do is about that window (splitting it, tiling it, selecting within it). A rename
+    /// is about the PANE, whose id and whose name are both registry-unique, so scoping it would
+    /// refuse a rename of a pane that plainly exists — the reason
+    /// [`report_agent`](Self::report_agent) is daemon-wide too.
+    ///
+    /// The order is: resolve the target, then validate the name against the daemon, then write.
+    /// Validating first would let a caller learn whether a name is free by renaming a pane that
+    /// does not exist, and — more to the point — a request wrong in two ways should report the one
+    /// the caller can act on first.
+    fn rename_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = require_pane_id(map, "pane")?;
+        // The proposed name, validated but NOT yet checked for uniqueness — a pane keeping its own
+        // name must not be refused by itself, and that is the one bearer this check has to forgive.
+        let proposed = match map.get("name") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) => {
+                Some(sprag_terminal::PaneName::parse(name).map_err(|error| {
+                    tracing::debug!(target: "sprag_host", %error, "refused a pane name");
+                    InvokeError::Rejected
+                })?)
+            }
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        if let Some(name) = &proposed
+            && self.pane_named(name).is_some_and(|holder| holder != id)
+        {
+            tracing::debug!(target: "sprag_host", %name, "refused a pane name already in use");
+            return Err(InvokeError::Rejected);
+        }
+        // ONE walk, which both finds the pane's own pool and writes into it. Resolving the target
+        // and then writing would be two traversals with a gap between them, and the pane could
+        // close in that gap — so the answer to "does this pane exist" IS the write's own report
+        // (`set_pane_name` says whether the pool held it), not a separate question asked earlier.
+        if self.with_pool_of(id, |pool| pool.set_pane_name(id, proposed)) != Some(true) {
+            return Err(InvokeError::Rejected);
+        }
+        // A pane's published name moved: wake the session's parked clients, which is what turns
+        // this into `Event::PaneRenamed` at the dispatch funnel.
+        self.announce();
+        Ok(IntrospectValue::Json(Value::Null))
+    }
+
+    /// Run `write` against the POOL that holds the pane with `id`, or answer `None` when this
+    /// daemon holds no such pane — [`scan_panes`](Self::scan_panes)'s mutating counterpart.
+    ///
+    /// Separate from `scan_panes` because a mutation needs the pool, not the pane: a `&mut Pane`
+    /// cannot leave the workspace guard, and handing out the guard itself would let a caller hold
+    /// the workspace lock while taking another.
+    fn with_pool_of<T>(&self, id: PaneId, write: impl FnOnce(&mut Workspace) -> T) -> Option<T> {
+        let registry = lock(&self.registry);
+        for session in registry.sessions() {
+            for window in session.windows() {
+                let mut workspace = lock(window.workspace());
+                if workspace.panes().iter().any(|pane| pane.id() == id) {
+                    return Some(write(&mut workspace));
+                }
+            }
+        }
+        None
     }
 
     /// `report_agent` action: take a report from a process inside the pane — see
@@ -587,12 +706,66 @@ impl WorkspaceExternal {
     /// asked for nothing, so a caller that needs the pane ITSELF cannot end up checking membership
     /// against a second traversal that might one day disagree with the first.
     fn with_pane<T>(&self, id: PaneId, read: impl FnOnce(&Pane) -> T) -> Option<T> {
+        let mut read = Some(read);
+        self.scan_panes(|pane| {
+            if pane.id() != id {
+                return None;
+            }
+            // `scan_panes` stops at the first `Some`, so this runs at most once and the `?` is
+            // unreachable rather than a silent skip.
+            Some(read.take()?(pane))
+        })
+    }
+
+    /// Answer which pane this daemon holds under the name `name`, refusing to guess if two do.
+    ///
+    /// **`None` is total over two different situations, and the caller must not distinguish them**:
+    /// no pane carries that name, or MORE than one does. The second cannot arise from a correct
+    /// sequence of requests — every surface that accepts a name checks it daemon-wide first — but
+    /// the check and the write are not one atomic step (closing that would mean holding the
+    /// registry lock across a `posix_spawn`, which is a convoy), so two births racing for one name
+    /// could in principle both land.
+    ///
+    /// Refusing an ambiguous name is what makes that residual SAFE rather than silent: the whole
+    /// reason a name exists is that a positional pane number can quietly resolve to the wrong pane,
+    /// and a resolver that returned "the first match" would reintroduce exactly that. A duplicate
+    /// is then a loud failure at USE time, never a wrong-pane write.
+    ///
+    /// Walks the whole daemon for [`holds_pane`](Self::holds_pane)'s reason: a name stands in for a
+    /// [`PaneId`], which is registry-unique, so its scope is the registry and not this request's
+    /// session.
+    fn pane_named(&self, name: &sprag_terminal::PaneName) -> Option<PaneId> {
+        let mut found = None;
+        self.scan_panes(|pane| {
+            if pane.name() != Some(name) {
+                return None;
+            }
+            match found {
+                // A second bearer: stop the walk and answer nothing at all.
+                Some(_) => Some(None),
+                None => {
+                    found = Some(pane.id());
+                    None
+                }
+            }
+        })
+        .unwrap_or(found)
+    }
+
+    /// The ONE traversal of every pane this daemon holds: registry lock, then each window's
+    /// workspace lock in turn, stopping at the first pane `pick` answers `Some` for.
+    ///
+    /// Every "does the daemon hold …" question goes through here rather than writing its own nested
+    /// loop, so [`holds_pane`](Self::holds_pane), [`with_pane`](Self::with_pane) and
+    /// [`pane_named`](Self::pane_named) are three questions with ONE answer to what the pane set is
+    /// — the property `with_pane`'s docs already asked for when it was the only asker.
+    fn scan_panes<T>(&self, mut pick: impl FnMut(&Pane) -> Option<T>) -> Option<T> {
         let registry = lock(&self.registry);
         for session in registry.sessions() {
             for window in session.windows() {
                 let workspace = lock(window.workspace());
-                if let Some(pane) = workspace.panes().iter().find(|pane| pane.id() == id) {
-                    return Some(read(pane));
+                if let Some(picked) = workspace.panes().iter().find_map(&mut pick) {
+                    return Some(picked);
                 }
             }
         }
@@ -752,10 +925,13 @@ impl WorkspaceExternal {
         // not fatal: the session still exists as a valid attach target, merely empty until a pane
         // is added, so "a well-formed create with a free name succeeds" stays total rather than
         // orphaning a half-created session behind an error.
-        // `None`: a session's BIRTH pane is nobody's work pane — the request that creates a
-        // session is about the session, and stamping the creator here would make every new
-        // session's first pane read as something an agent must clean up.
-        if let Err(error) = self.spawn_parsed(&pool, spec, None) {
+        // Two `None`s, each a decision rather than an omission. No OPENER: a session's BIRTH pane is
+        // nobody's work pane — the request that creates a session is about the session, and stamping
+        // the creator here would make every new session's first pane read as something an agent must
+        // clean up. No NAME: this request's own `name` argument is the SESSION's, so a pane name
+        // would need a second spelling of one fact, and giving one key two meanings is the ambiguity
+        // a pane name exists to remove (`parse_pane_name`).
+        if let Err(error) = self.spawn_parsed(&pool, spec, None, None) {
             tracing::warn!(
                 target: "sprag_host",
                 ?error,
@@ -880,10 +1056,10 @@ impl WorkspaceExternal {
                 .expect("the scoped session resolves; new_window just selected the new window");
             (created, pool)
         };
-        // `None`: a session's BIRTH pane is nobody's work pane — the request that creates a
-        // session is about the session, and stamping the creator here would make every new
-        // session's first pane read as something an agent must clean up.
-        if let Err(error) = self.spawn_parsed(&pool, spec, None) {
+        // Both `None` for `new_session`'s stated reasons one level down: a WINDOW's birth pane is
+        // nobody's work pane, and this request's `name` is the WINDOW's, so a pane name here would
+        // be one fact under two spellings.
+        if let Err(error) = self.spawn_parsed(&pool, spec, None, None) {
             tracing::warn!(
                 target: "sprag_host",
                 ?error,
@@ -1348,6 +1524,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SPLIT_ACTION, "action"),
                     SchemaField::new(CLOSE_ACTION, "action"),
                     SchemaField::new(RESIZE_ACTION, "action"),
+                    SchemaField::new(RENAME_PANE_ACTION, "action"),
                     SchemaField::new(SET_LAYOUT_ACTION, "action"),
                     SchemaField::new(SET_FLOATING_ACTION, "action"),
                     SchemaField::new(NEW_SESSION_ACTION, "action"),
@@ -1442,6 +1619,12 @@ impl ExternalIntrospect for WorkspaceExternal {
                             .panes()
                             .iter()
                             .filter_map(|pane| {
+                                // The CHILD's own title, never `pane.name()` beside it — a name is
+                                // chosen by whoever asked for the pane, and `claude`'s first
+                                // fingerprint is one condition on the title alone, so reading a
+                                // name here would let anyone who can name a pane forge an agent
+                                // identity. Pinned by
+                                // `a_name_that_looks_like_an_agents_title_claims_nothing`.
                                 let title = pane.title();
                                 let facts = pane.pty().with_screen(|screen| {
                                     agents.observe(pane.id(), screen, title.as_deref(), now, || {
@@ -1472,6 +1655,18 @@ impl ExternalIntrospect for WorkspaceExternal {
                             // label and falls back); never identity — the child sets it.
                             "title": p.title,
                         });
+                        // The name a PERSON gave the pane. ADDITIVE on the terms every key below
+                        // keeps: present only on a pane somebody named, so a workspace where
+                        // nobody has is byte-identical to the pre-name wire shape.
+                        //
+                        // Unlike `title` beside it this one IS identity — it is unique across the
+                        // registry and a surface may resolve it back to this pane — which is why a
+                        // display client prefers it OVER the title rather than the other way
+                        // round: a name a person chose outranks one the child rewrites on every
+                        // prompt.
+                        if let Some(name) = &p.name {
+                            entry["name"] = serde_json::json!(name);
+                        }
                         // The most recent attention notification (OSC 9 / 777;notify / 99),
                         // with its monotonic `seq`. ADDITIVE: the key is present only when the
                         // child has raised one, so a pane that never did is byte-identical to
@@ -1842,6 +2037,7 @@ impl WorkspaceExternal {
             SPLIT_ACTION => self.split(&args),
             CLOSE_ACTION => self.close(&args),
             RESIZE_ACTION => self.resize(&args),
+            RENAME_PANE_ACTION => self.rename_pane(&args),
             SET_LAYOUT_ACTION => self.set_layout(&args),
             SET_FLOATING_ACTION => self.set_floating(&args),
             NEW_SESSION_ACTION => self.new_session(&args),
@@ -2310,6 +2506,263 @@ mod tests {
         );
     }
 
+    /// A birth NAMES its pane, and the name reaches the slot a client reads.
+    ///
+    /// Driven through `invoke` for the reason `a_spawn_records_the_pane_that_asked_for_it` states:
+    /// the pool's own recording is pinned in `sprag-terminal` and would stay green through every
+    /// version of this that dropped the argument on the wire.
+    #[test]
+    fn a_birth_can_name_the_pane_it_opens() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("a pane nobody names");
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["cat"], "name": "build"})),
+        )
+        .expect("a birth carrying a free name is honoured");
+
+        assert_eq!(
+            pane_entry(&mut ext, 1)["name"],
+            json!("build"),
+            "the pane says what it is called",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 0).get("name"),
+            None,
+            "and the key is ABSENT — not null — for a pane nobody named, so a workspace nobody has \
+             named anything in is byte-identical to the pre-name wire shape",
+        );
+    }
+
+    /// A name already in use, or one broken by its own rules, is REFUSED and nothing is born.
+    ///
+    /// The second half is the load-bearing one, for
+    /// `a_spawn_naming_a_pane_that_is_gone_is_refused_and_births_nothing`'s reason: a birth refused
+    /// after forking leaves a live pane the caller was never told about.
+    #[test]
+    fn a_birth_naming_a_pane_something_already_taken_is_refused_and_births_nothing() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["cat"], "name": "build"})),
+        )
+        .expect("the first claimant gets the name");
+        assert!(
+            matches!(
+                ext.invoke(
+                    SPAWN_ACTION,
+                    IntrospectValue::Json(json!({"cmd": ["cat"], "name": "build"})),
+                ),
+                Err(InvokeError::Rejected),
+            ),
+            "a name is unique registry-wide, so the second claimant is refused",
+        );
+        assert!(
+            matches!(
+                ext.invoke(
+                    SPAWN_ACTION,
+                    IntrospectValue::Json(json!({"cmd": ["cat"], "name": "7"})),
+                ),
+                Err(InvokeError::Rejected),
+            ),
+            "and a name the type refuses is refused here too, rather than parsed by this surface",
+        );
+        assert!(
+            matches!(
+                ext.invoke(
+                    SPAWN_ACTION,
+                    IntrospectValue::Json(json!({"cmd": ["cat"], "name": 7})),
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "a non-string is the MALFORMED refusal, not the name-in-use one",
+        );
+        assert_eq!(
+            lock(&pool(&reg)).panes().len(),
+            1,
+            "none of the three refusals forked a child",
+        );
+    }
+
+    /// A CONTAINER birth takes no pane name, and its own `name` stays the container's.
+    ///
+    /// This is the decision `parse_pane_name` states, asserted out loud rather than left to a
+    /// reader of the parse site — the shape R294 had to add for `opened_by` after the fact.
+    #[test]
+    fn a_window_birth_names_the_window_and_never_the_pane_inside_it() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(
+            NEW_WINDOW_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["cat"], "name": "editors"})),
+        )
+        .expect("a window is born");
+
+        assert_eq!(
+            lock(&pool(&reg))
+                .panes()
+                .last()
+                .expect("the new window's birth pane")
+                .name(),
+            None,
+            "the request's `name` named the WINDOW; the pane inside it is unnamed",
+        );
+        let windows = answer_doc(ext.query(WINDOWS_SLOT));
+        assert!(
+            windows
+                .as_array()
+                .is_some_and(|ws| ws.iter().any(|w| w["name"] == json!("editors"))),
+            "and the window really took it: {windows}",
+        );
+    }
+
+    /// A rename lands on the pane, reaches the published listing, and can be taken back off.
+    #[test]
+    fn a_pane_can_be_named_and_unnamed_after_it_was_born() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("a pane to name");
+        ext.invoke(
+            RENAME_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0, "name": "build"})),
+        )
+        .expect("a free name is taken");
+        assert_eq!(pane_entry(&mut ext, 0)["name"], json!("build"));
+
+        // Re-naming to the name it ALREADY has is not a duplicate: the pane holding it is the one
+        // being renamed. Without that forgiveness a caller could not re-assert its own name.
+        ext.invoke(
+            RENAME_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0, "name": "build"})),
+        )
+        .expect("a pane keeping its own name is not refused by itself");
+
+        ext.invoke(
+            RENAME_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0, "name": "test"})),
+        )
+        .expect("and it can be changed");
+        assert_eq!(pane_entry(&mut ext, 0)["name"], json!("test"));
+
+        ext.invoke(
+            RENAME_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0})),
+        )
+        .expect("an absent name takes the name away");
+        assert_eq!(
+            pane_entry(&mut ext, 0).get("name"),
+            None,
+            "and the key goes back to absent, not null",
+        );
+    }
+
+    /// The four things a rename refuses, each with the pane left exactly as it was.
+    #[test]
+    fn a_rename_refuses_a_pane_it_cannot_reach_and_a_name_it_cannot_honour() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("one pane");
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["cat"], "name": "build"})),
+        )
+        .expect("and one already named");
+
+        for (args, why) in [
+            (
+                json!({"pane": 99, "name": "x"}),
+                "a pane the daemon does not hold",
+            ),
+            (
+                json!({"pane": 0, "name": "build"}),
+                "a name another pane already carries",
+            ),
+            (json!({"pane": 0, "name": "12"}), "a name that is a number"),
+            (
+                json!({"pane": 0, "name": "a\nb"}),
+                "a name that would forge a listing row",
+            ),
+        ] {
+            assert!(
+                matches!(
+                    ext.invoke(RENAME_PANE_ACTION, IntrospectValue::Json(args.clone())),
+                    Err(InvokeError::Rejected),
+                ),
+                "{why} is refused: {args}",
+            );
+        }
+        assert_eq!(
+            pane_entry(&mut ext, 0).get("name"),
+            None,
+            "and pane 0 was left exactly as it was by all four",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 1)["name"],
+            json!("build"),
+            "as was the pane holding the contested name",
+        );
+    }
+
+    /// A rename reaches a pane in ANOTHER session, which is the one place this action's scope
+    /// differs from every other pane action here.
+    ///
+    /// Pinned because it would otherwise be an argument in a doc comment: a name stands in for a
+    /// registry-unique id, so a scoped rename would refuse a pane that plainly exists.
+    #[test]
+    fn a_rename_reaches_a_pane_in_a_session_the_request_did_not_name() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(
+            NEW_SESSION_ACTION,
+            IntrospectValue::Json(json!({"name": "other", "cmd": ["cat"]})),
+        )
+        .expect("a second session with a pane of its own");
+        let elsewhere = lock(&pool_of(&reg, "other"))
+            .panes()
+            .first()
+            .expect("the other session's birth pane")
+            .id();
+
+        ext.invoke(
+            RENAME_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": elsewhere.0, "name": "build"})),
+        )
+        .expect("the default-scoped surface renames a pane of another session");
+        assert_eq!(
+            lock(&pool_of(&reg, "other"))
+                .panes()
+                .first()
+                .and_then(|pane| pane.name().map(sprag_terminal::PaneName::as_str)),
+            Some("build"),
+        );
+        // And the uniqueness that check rests on is registry-wide too: a pane HERE cannot take a
+        // name a pane THERE holds. The id is read back from the pool rather than assumed, because
+        // the other session's birth pane already drew from the same counter.
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("a pane in the default session");
+        let here = lock(&pool(&reg))
+            .panes()
+            .last()
+            .expect("the pane just born here")
+            .id();
+        assert_ne!(here, elsewhere, "the two panes are really different panes");
+        assert!(
+            matches!(
+                ext.invoke(
+                    RENAME_PANE_ACTION,
+                    IntrospectValue::Json(json!({"pane": here.0, "name": "build"})),
+                ),
+                Err(InvokeError::Rejected),
+            ),
+            "a name taken in another session is taken",
+        );
+    }
+
     /// A spawn opens its child in the directory it was given, and refuses one that is not there
     /// before anything is built.
     #[test]
@@ -2710,6 +3163,49 @@ mod tests {
         assert!(
             shell.get("agent").is_none(),
             "a pane no manifest claims carries no key at all: {shell:?}",
+        );
+    }
+
+    /// **A pane's NAME never reaches the agent detector**, however much it looks like a title.
+    ///
+    /// The sharpest thing a name could break. `claude`'s first fingerprint is ONE condition on the
+    /// title alone — it starts with `✳` — so if the panes-slot walk ever passed a name where it
+    /// passes `pane.title()`, anyone who can name a pane could forge an agent identity that every
+    /// other agent then reads back through `agent_state`. The two facts are adjacent on the same
+    /// struct and one line apart at the call site, which is exactly why this is asserted rather
+    /// than argued.
+    #[test]
+    fn a_name_that_looks_like_an_agents_title_claims_nothing() {
+        let reg = registry();
+        let (mut ext, agents) = control_with_agents(&reg);
+        ext.invoke(
+            SPAWN_ACTION,
+            // A plain `cat`: no agent screen, no agent title, nothing but the name.
+            IntrospectValue::Json(json!({"cmd": ["cat"], "name": "✳ Claude Code"})),
+        )
+        .expect("the name is legal — it is only the DETECTOR that must not read it");
+
+        let entry = pane_entry(&mut ext, 0);
+        assert_eq!(
+            entry["name"],
+            json!("✳ Claude Code"),
+            "the pane really carries the forgery-shaped name",
+        );
+        assert!(
+            entry.get("agent").is_none(),
+            "and it publishes no agent verdict: {entry:?}",
+        );
+        // The load-bearing half, and the reason this test is not the two lines above. A claim does
+        // not publish until it has SETTLED, so an absent `agent` key is what an unsettled forgery
+        // and a rejected one both look like — the first version of this test asserted only that and
+        // stayed GREEN with the leak deliberately wired in. What separates them is the CANDIDATE:
+        // a pane the fingerprint claimed is pending on the clock from the first look.
+        assert_eq!(
+            agents.with(|state| state.pending_deadline(PaneId(0))),
+            None,
+            "and it was never even a CANDIDATE: a name is chosen by whoever asked, so a verdict \
+             about what is RUNNING may only be derived from what the child itself put on its \
+             screen or in its own title",
         );
     }
 

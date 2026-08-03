@@ -573,7 +573,18 @@ pub const KILL_SESSION_ACTION: &str = "kill_session";
 pub const GRID_WORK_SLOT: &str = "grid_work";
 
 /// The mux control external invoke action that spawns a pane, returning its id
-/// (`{cmd?, cols?, rows?, remote?, cwd?, opened_by?}`).
+/// (`{cmd?, cols?, rows?, remote?, cwd?, opened_by?, name?}`).
+///
+/// # `name` — what to call the pane
+///
+/// The pane's operator-given name ([`sprag_terminal::PaneName`]), absent for a pane nobody names.
+/// Naming at BIRTH is what lets a caller never hold a pane NUMBER at all: the number is positional
+/// and moves when any earlier pane closes, where a name is the caller's own and does not.
+///
+/// Refused (`Rejected`) when the name breaks one of [`PaneName::parse`](sprag_terminal::PaneName::parse)'s
+/// rules, or when another pane of this DAEMON already carries it — a name is unique registry-wide
+/// because it stands in for a registry-unique id. Both are checked before anything is built, so a
+/// refusal costs no pane, exactly as `cwd`'s is.
 ///
 /// # `cwd` — where the child starts
 ///
@@ -601,11 +612,11 @@ pub const GRID_WORK_SLOT: &str = "grid_work";
 /// about the arrangement, which is why it is the one an agent's work pane is born through.
 pub const SPAWN_ACTION: &str = "spawn";
 /// The mux control external invoke action that DIVIDES a named pane and spawns the new one into
-/// the half it opens (`{pane, dir, before?, cmd?, cols?, rows?, remote?, cwd?, opened_by?}`),
+/// the half it opens (`{pane, dir, before?, cmd?, cols?, rows?, remote?, cwd?, opened_by?, name?}`),
 /// returning the new pane's id — tmux `split-window -h` / `-v`.
 ///
-/// `cwd` and `opened_by` are [`SPAWN_ACTION`]'s, verbatim — a split IS a spawn with a place, so the
-/// birth vocabulary is one vocabulary and is written down there.
+/// `cwd`, `opened_by` and `name` are [`SPAWN_ACTION`]'s, verbatim — a split IS a spawn with a place,
+/// so the birth vocabulary is one vocabulary and is written down there.
 ///
 /// [`SPAWN_ACTION`] with a PLACE. A spawn appends, which states where only by convention, so
 /// every directional split had to be expressed as a spawn plus a whole rewritten tree
@@ -639,6 +650,42 @@ pub const CLOSE_ACTION: &str = "close";
 /// The mux control external invoke action that resizes a pane's PTY + emulator (`{id?, cols, rows,
 /// cell_width?, cell_height?}`). `id` absent ⇒ the current window's ACTIVE pane.
 pub const RESIZE_ACTION: &str = "resize";
+
+/// The mux control external invoke action that NAMES a pane (`{pane, name?}`), answering `null`.
+/// `name` absent (or `null`) takes the pane's name away.
+///
+/// # Why a pane has a name at all, when it already has an id
+///
+/// Because the id is not what the callers hold. The agent surface addresses a pane by its 1-BASED
+/// NUMBER in the pane listing, and that number is positional — closing any earlier pane shifts it.
+/// So a caller's remembered number silently comes to name a DIFFERENT pane, and the write it then
+/// makes succeeds against the wrong subject, which is the worst answer a surface can give.
+///
+/// The stable handle could not be the id, because a number and an id are both integers and one
+/// argument cannot carry the two without a mode flag. **A name is a string, so JSON's own types
+/// discriminate it**: `pane: 3` is the third pane and `pane: "build"` is the pane called build.
+/// That is why the stable handle is a name — and why
+/// [`PaneName`](sprag_terminal::PaneName) refuses an all-digit one.
+///
+/// # What it refuses, and why the pane is named DAEMON-WIDE
+///
+/// * `pane` naming no pane THIS DAEMON holds ⇒ `Rejected`. Daemon-wide rather than scoped, because
+///   a pane id is registry-unique and so is a name; scoping it would refuse a rename of a pane that
+///   plainly exists.
+/// * A `name` breaking one of [`PaneName::parse`](sprag_terminal::PaneName::parse)'s rules
+///   (blank, over 80 bytes, containing a control character, all digits) ⇒ `Rejected`.
+/// * A `name` another pane already carries ⇒ `Rejected`. A name that resolved to two panes would
+///   reintroduce the very ambiguity it exists to remove. Renaming a pane to the name it already
+///   has is NOT refused: the pane carrying it is the one being renamed, so nothing is ambiguous.
+///
+/// The four are one `Rejected` on the wire, because `InvokeError::Rejected` carries no payload
+/// (upstream PINION-PR82). The daemon logs which; the in-process callers say which.
+///
+/// # Why this is an ACTION and not an `intervene` slot
+///
+/// [`NEW_SESSION_ACTION`]'s reason, verbatim: a name is an ADDRESS, so the assignment is refusable
+/// and a plain write would have nowhere to say so.
+pub const RENAME_PANE_ACTION: &str = "rename_pane";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
 
