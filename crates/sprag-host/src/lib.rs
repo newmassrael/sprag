@@ -154,17 +154,33 @@ pub struct DaemonShared {
     ///
     /// Whoever sets this must also drive the settle waker — see [`AgentClock`] and `sprag-term`.
     pub agents: Option<Arc<AgentClock>>,
-    /// The host's [session-activity sampler](sprag_terminal::ActivitySampler) (R282), read when the
-    /// `session_activity` slot is served.
+    /// The host's [samplers](Samplers), read when a sampled slot is served.
     ///
     /// NOT an `Option`, unlike its neighbours, and the difference is the point: those three are
     /// facts only a daemon HAS (a reaper, wire clients, a detector), so a host without one states
     /// `None` and the wire answers honestly that there is nothing to report. A sampler is not like
-    /// that — every host can answer where its sessions are working — so making it optional would be
-    /// inventing a mode in which the question has no answer. What a caller passes here decides only
-    /// WHO SHARES the sample: one taken from [`Host::activity`] is the whole host's, and a fresh one
-    /// is nobody else's.
+    /// that — every host can answer where its sessions are working and what its panes are running —
+    /// so making it optional would be inventing a mode in which the question has no answer. What a
+    /// caller passes here decides only WHO SHARES the samples: the set taken from
+    /// [`Host::samplers`] is the whole host's, and a fresh one is nobody else's.
+    pub samplers: Samplers,
+}
+
+/// The host's SAMPLED facts, one sampler each, shared by every arm that serves them.
+///
+/// A set rather than a field per fact, because they are the same KIND of thing and are always
+/// injected together: every one of them holds a reading between reads, and every one of them must
+/// be the HOST's rather than minted per request — a sampler built where a scene is assembled holds
+/// nothing at the moment it is asked, so each request would take its own walk and the coalescing
+/// this design exists for would be silently absent while every individual answer still looked right.
+///
+/// Cloning a `Samplers` shares the samplers (each is an `Arc`); it does not copy the held readings.
+#[derive(Clone, Default)]
+pub struct Samplers {
+    /// Where each session is working, on what, and what it is serving (R282).
     pub activity: Arc<sprag_terminal::ActivitySampler>,
+    /// What each pane is RUNNING — the job that owns its terminal (R290).
+    pub processes: Arc<sprag_terminal::PaneProcessSampler>,
 }
 
 impl DaemonShared {
@@ -497,7 +513,7 @@ pub fn workspace_scene(
         on_pane_exit,
         attachments,
         agents,
-        activity,
+        samplers,
     } = daemon;
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
@@ -521,7 +537,7 @@ pub fn workspace_scene(
             on_pane_exit.clone(),
             attachments,
             agents,
-            activity,
+            samplers,
         )))
         .with_tag(MUX_TAG),
     ));

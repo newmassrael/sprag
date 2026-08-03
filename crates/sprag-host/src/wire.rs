@@ -418,6 +418,80 @@ impl From<sprag_terminal::ActivityReading> for ActivityWire {
     }
 }
 
+/// The mux control external query slot: WHAT EACH PANE IS RUNNING — its terminal device, the child
+/// the daemon spawned, and the foreground job that owns its terminal, with every process in it.
+///
+/// A SAMPLED fact and therefore its own address, exactly like [`SESSION_ACTIVITY_FIELD`] and by the
+/// same rule: [`PANES_SLOT`] carries what changes when this daemon performs a change, and a user
+/// typing `cargo build` at a shell prompt is not one of those — the daemon sees bytes. Folding it
+/// into the pane list would make a `/proc` walk of the whole box the price of every poll wake of
+/// every attached client, which is the cost R282 measured at 3478 us and removed.
+///
+/// The address carries the caller's staleness TOLERANCE — `pane_processes.<max_age_ms>`, where
+/// `pane_processes.0` admits nothing and always samples afresh. The answer
+/// ([`PaneProcessesWire`]) carries the age it actually has.
+///
+/// REGISTRY-WIDE, not scoped: `/proc` has no index by process group, so enumerating one pane's job
+/// costs the same full pass that answers every other pane. Serving one session's panes would
+/// therefore cost the same and let two scopes each pay it. A reader takes the ids it cares about
+/// from [`PANES_SLOT`] and joins on them — pane ids are registry-unique and never reused, so that
+/// join cannot pair one read's row with another's pane.
+///
+/// A QUERY, not an invoke, for [`SESSION_ACTIVITY_FIELD`]'s reason: observing the world is not a
+/// mutation of the scene, and serving it as an action would bump the revision and wake the very
+/// `waitFor` it was answering.
+pub const PANE_PROCESSES_FIELD: SchemaField =
+    SchemaField::parametric("pane_processes.<max_age_ms>", "object", PANE_PROCESSES_ARGS);
+
+/// [`PANE_PROCESSES_FIELD`]'s argument: how stale an answer this caller will accept, in
+/// milliseconds. Open, because nothing on this surface bounds it.
+const PANE_PROCESSES_ARGS: &[SchemaArg] = &[SchemaArg::open("max_age_ms", "int")];
+
+/// [`PANE_PROCESSES_FIELD`]'s address with the tolerance filled in — `pane_processes_at(0)` is the
+/// always-fresh read.
+///
+/// Built from the declared field rather than by re-spelling the prefix, so the address a client
+/// sends and the prefix the host strips cannot drift ([`session_activity_at`]'s discipline).
+#[must_use]
+pub fn pane_processes_at(max_age_ms: u64) -> String {
+    format!("{}{max_age_ms}", PANE_PROCESSES_FIELD.literal_prefix())
+}
+
+/// What [`PANE_PROCESSES_FIELD`] answers: every pane's
+/// [processes](sprag_terminal::PaneProcesses), and how long ago the reading they all came from was
+/// taken.
+///
+/// The age is in the ENVELOPE rather than on each row, because one `/proc` pass produces them all —
+/// no row is fresher than another and a per-row age would invite a reader to believe otherwise.
+/// Milliseconds, not a `Duration`, for [`ActivityWire`]'s reason: this is the wire, and a
+/// `Duration`'s serialised form is a pair of integers whose meaning a non-Rust peer would have to be
+/// told.
+///
+/// Two fields of each row do NOT age with it — a pane's device is fixed at its birth and its child
+/// pid until the reap — and each says so in its own doc. They ride here because this is the question
+/// that wants them, and the pane list every client re-reads per wake should not grow a string per
+/// pane to carry them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneProcessesWire {
+    /// How long ago the [`panes`](Self::panes) below were sampled, in milliseconds. `0` for a sample
+    /// taken to answer this very request.
+    pub sampled_ms_ago: u64,
+    /// One row per pane in the registry, in the registry's own order — join on
+    /// [`id`](sprag_terminal::PaneProcesses::id), never on position.
+    pub panes: Vec<sprag_terminal::PaneProcesses>,
+}
+
+impl From<sprag_terminal::PaneProcessReading> for PaneProcessesWire {
+    /// The one conversion from the in-process reading to the wire's shape. Saturating for
+    /// [`ActivityWire`]'s reason.
+    fn from(reading: sprag_terminal::PaneProcessReading) -> Self {
+        Self {
+            sampled_ms_ago: u64::try_from(reading.age.as_millis()).unwrap_or(u64::MAX),
+            panes: reading.value,
+        }
+    }
+}
+
 /// The mux control external query slot: every currently-ATTACHED client and the session it is
 /// viewing (`[{client, session}]`) — tmux `list-clients`, behind the `sprag list-clients` CLI.
 ///

@@ -168,10 +168,10 @@ impl HostState {
             on_pane_exit: self.on_pane_exit(),
             attachments: Some(Arc::clone(self.attachments())),
             agents: self.agents(),
-            // The HOST's sampler, not a fresh one: a scene is assembled per request, so a sampler
+            // The HOST's samplers, not fresh ones: a scene is assembled per request, so a sampler
             // minted here would hold nothing at the moment it was asked and every request would take
-            // its own `/proc` walk. One per host is what makes the answer shared.
-            activity: Arc::clone(self.host.activity()),
+            // its own `/proc` walk. One set per host is what makes the answers shared.
+            samplers: self.host.samplers().clone(),
         }
     }
 

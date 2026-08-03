@@ -1080,15 +1080,15 @@ pub trait HostClient {
 /// `Arc<Mutex<Workspace>>` and never learn about the tree above them.
 pub struct Host {
     registry: Arc<Mutex<SessionRegistry>>,
-    /// The one place this host's [session activity](sprag_terminal::SessionActivity) is sampled and
-    /// held between reads (R282).
+    /// The one place this host's SAMPLED facts are sampled and held between reads — session
+    /// activity (R282) and each pane's processes (R290). See [`crate::Samplers`].
     ///
-    /// It belongs to the HOST rather than to the dispatch state because both arms that answer the
-    /// question reach it from here — the wire slot, through [`crate::DaemonShared`], and this type's
-    /// own [`HostClient`] arm — so one sample serves every reader and neither arm can drift from the
-    /// other about what a field means. A per-arm cache would have multiplied the `/proc` walk by the
+    /// They belong to the HOST rather than to the dispatch state because every arm that answers such
+    /// a question reaches them from here — the wire slots, through [`crate::DaemonShared`], and this
+    /// type's own [`HostClient`] arm — so one sample serves every reader and no two arms can drift
+    /// about what a field means. A per-arm cache would have multiplied the `/proc` walk by the
     /// number of readers, which is the cost the split exists to remove.
-    activity: Arc<sprag_terminal::ActivitySampler>,
+    samplers: crate::Samplers,
     /// How a pane born through [`HostClient::new_pane`] is wired to its client — see
     /// [`with_pane_hooks`](Self::with_pane_hooks). `None` leaves such a pane unwired.
     pane_hooks: Option<PaneHooks>,
@@ -1167,17 +1167,17 @@ impl Host {
         registry.set_history_limit_source(history_limit_source());
         Self {
             registry: Arc::new(Mutex::new(registry)),
-            activity: Arc::new(sprag_terminal::ActivitySampler::new()),
+            samplers: crate::Samplers::default(),
             pane_hooks: None,
             pane_env: None,
         }
     }
 
-    /// This host's [session-activity sampler](sprag_terminal::ActivitySampler), shared with whatever
-    /// else serves the question — see the field for why there is exactly one per host.
+    /// This host's [samplers](crate::Samplers), shared with whatever else serves those questions —
+    /// see the field for why there is exactly one set per host.
     #[must_use]
-    pub fn activity(&self) -> &Arc<sprag_terminal::ActivitySampler> {
-        &self.activity
+    pub fn samplers(&self) -> &crate::Samplers {
+        &self.samplers
     }
 
     /// Install the `on_dirty` factory every pane born through [`HostClient::new_pane`] is wired
@@ -2160,7 +2160,7 @@ impl HostClient for Host {
     }
 
     /// Read this host's own sampler — the SAME one the wire `session_activity` family serves from
-    /// ([`Host::activity`]), so the two arms share one sample and cannot drift about what a field
+    /// ([`Host::samplers`]), so the two arms share one sample and cannot drift about what a field
     /// means or pay twice for the walk that produced it.
     ///
     /// Unfiltered, unlike [`sessions`](HostClient::sessions): the listability rule is about which
@@ -2173,7 +2173,7 @@ impl HostClient for Host {
     /// same window a wire client's poll thread asks the daemon for, so a sidebar drawn over this
     /// host and one drawn over a daemon show facts of the same age.
     fn session_activity(&self) -> ActivityReading {
-        self.activity.read(
+        self.samplers.activity.read(
             &self.registry,
             crate::wire::SESSION_ACTIVITY_DISPLAY_MAX_AGE,
         )

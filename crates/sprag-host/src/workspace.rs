@@ -80,11 +80,11 @@ use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
     DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, NEIGHBORS_FIELD,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PROJECT_FIELD, RELEASE_AGENT_ACTION,
-    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD,
+    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    SESSION_ACTIVITY_FIELD, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    SPLIT_ACTION, SWAP_PANE_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -141,15 +141,15 @@ pub struct WorkspaceExternal {
     /// The lock is taken INSIDE the workspace lock (the screen is only reachable there) and never
     /// the other way round.
     agents: Option<Arc<crate::AgentClock>>,
-    /// The HOST's session-activity sampler ([`sprag_terminal::ActivitySampler`], R282), read when the
-    /// `session_activity` slot is served.
+    /// The HOST's [samplers](crate::Samplers), read when the `session_activity` (R282) or
+    /// `pane_processes` (R290) slot is served.
     ///
-    /// Like [`Self::agents`] it cannot be a plain value on this struct — a `WorkspaceExternal` is
+    /// Like [`Self::agents`] they cannot be plain values on this struct — a `WorkspaceExternal` is
     /// rebuilt for every JSON-RPC request, so a sampler owned here would hold nothing at the moment
     /// it was asked and every request would take its own `/proc` walk, which is exactly the cost the
-    /// split was made to remove. Unlike `agents` it is not `Option`: there is no host that cannot
-    /// answer where its sessions are working.
-    activity: Arc<sprag_terminal::ActivitySampler>,
+    /// split was made to remove. Unlike `agents` this is not `Option`: there is no host that cannot
+    /// answer where its sessions are working or what its panes are running.
+    samplers: crate::Samplers,
 }
 
 /// A VALIDATED pane-spawn request — the command, its label, and any explicit dims. Produced by
@@ -178,7 +178,7 @@ impl WorkspaceExternal {
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
         attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
         agents: Option<Arc<crate::AgentClock>>,
-        activity: Arc<sprag_terminal::ActivitySampler>,
+        samplers: crate::Samplers,
     ) -> Self {
         Self {
             registry,
@@ -187,7 +187,7 @@ impl WorkspaceExternal {
             on_pane_exit,
             attachments,
             agents,
-            activity,
+            samplers,
         }
     }
 
@@ -1303,6 +1303,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     NEIGHBORS_FIELD,
                     EVENTS_FIELD,
                     SESSION_ACTIVITY_FIELD,
+                    PANE_PROCESSES_FIELD,
                 ]
             },
         )
@@ -1316,9 +1317,20 @@ impl ExternalIntrospect for WorkspaceExternal {
         if let Some(arg) = path.strip_prefix(SESSION_ACTIVITY_FIELD.literal_prefix()) {
             return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
                 let reading = self
+                    .samplers
                     .activity
                     .read(&self.registry, Duration::from_millis(max_age));
                 encoded_answer(&ActivityWire::from(reading), "session activity")
+                    .unwrap_or(IntrospectValue::Null)
+            }));
+        }
+        if let Some(arg) = path.strip_prefix(PANE_PROCESSES_FIELD.literal_prefix()) {
+            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
+                let reading = self
+                    .samplers
+                    .processes
+                    .read(&self.registry, Duration::from_millis(max_age));
+                encoded_answer(&PaneProcessesWire::from(reading), "pane processes")
                     .unwrap_or(IntrospectValue::Null)
             }));
         }
@@ -2036,7 +2048,7 @@ fn opt_delta(map: &Map<String, Value>, key: &str) -> Result<Option<i32>, InvokeE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::session_activity_at;
+    use crate::wire::{pane_processes_at, session_activity_at};
     use pinion_core::SceneRevision;
     use serde_json::json;
     use sprag_terminal::PaneId;
@@ -2078,13 +2090,13 @@ mod tests {
         scoped_control(reg, scope)
     }
 
-    /// A sampler for a surface built one test at a time. Fresh per call, deliberately: a test builds
-    /// its surface after arranging its registry, so a sampler shared across tests could hand one of
-    /// them a reading taken before its own sessions existed. In production there is exactly one per
-    /// host ([`crate::Host::activity`]), which is what makes the sample shared; here the sharing is
-    /// what would leak.
-    fn sampler() -> Arc<sprag_terminal::ActivitySampler> {
-        Arc::new(sprag_terminal::ActivitySampler::new())
+    /// Samplers for a surface built one test at a time. Fresh per call, deliberately: a test builds
+    /// its surface after arranging its registry, so samplers shared across tests could hand one of
+    /// them a reading taken before its own sessions existed. In production there is exactly one set
+    /// per host ([`crate::Host::samplers`]), which is what makes the samples shared; here the
+    /// sharing is what would leak.
+    fn sampler() -> crate::Samplers {
+        crate::Samplers::default()
     }
 
     /// A control surface scoped to `scope` — what the assembly builds for a request that
@@ -3460,6 +3472,65 @@ mod tests {
         assert!(
             rows[0]["cwd"].is_string(),
             "a live pane's session reports where it is working: {reading}",
+        );
+    }
+
+    /// R290's SPLIT, asserted the same way R282's is: the pane LIST carries nothing sampled, and the
+    /// sampled address answers for every pane.
+    ///
+    /// Both halves, for the same reason as above — a pane list without process facts would also be
+    /// produced by a daemon that never had them, and a `pane_processes` row would also be produced
+    /// by one that served them in both places. The fact MOVING is the property.
+    #[test]
+    fn the_pane_list_carries_no_process_fact_and_the_processes_address_does() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
+
+        let Value::Array(listed) = answer_doc(ext.query(PANES_SLOT)) else {
+            panic!("the panes slot answers with a JSON array");
+        };
+        let row = listed.first().expect("the spawned pane lists");
+        for sampled in ["tty", "shell_pid", "foreground"] {
+            assert!(
+                row.get(sampled).is_none(),
+                "the pane list must not carry {sampled}: {row}",
+            );
+        }
+
+        // ZERO tolerance, so this read samples for itself and describes the pane just spawned.
+        let reading = answer_doc(ext.query(&pane_processes_at(0)));
+        assert!(
+            reading["sampled_ms_ago"].is_u64(),
+            "the reading states its own age: {reading}",
+        );
+        let rows = reading["panes"]
+            .as_array()
+            .expect("the reading carries a row per pane");
+        assert_eq!(
+            rows.iter().map(|r| r["id"].as_u64()).collect::<Vec<_>>(),
+            listed.iter().map(|r| r["id"].as_u64()).collect::<Vec<_>>(),
+            "a row per pane, addressed by the same id the pane list uses: {reading}",
+        );
+        assert!(
+            rows[0]["shell_pid"].is_u64(),
+            "and a live pane names the child the daemon spawned: {reading}",
+        );
+    }
+
+    /// A malformed tolerance on the PROCESSES family answers `Null` too — one taxonomy for every
+    /// parametric address on this surface, not one per family.
+    #[test]
+    fn a_malformed_process_tolerance_is_empty_not_absent() {
+        let reg = registry();
+        let (ext, _rev) = control(&reg);
+        assert!(
+            matches!(ext.query("pane_processes.zzz"), Some(IntrospectValue::Null)),
+            "a malformed tolerance is a malformed MEMBER, not an unknown path",
+        );
+        assert!(
+            ext.query("pane_processes").is_none(),
+            "and the family's bare name is not itself an address",
         );
     }
 
