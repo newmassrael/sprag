@@ -374,17 +374,26 @@ impl Window {
     /// Fill this window with `pane` alone, or end the zoom — tmux `resize-pane -Z`.
     ///
     /// `on` absent TOGGLES the target's own zoom, so a key bound to it is a switch whichever pane
-    /// it is aimed at. Answers whether this window is zoomed AFTER the call, or `None` — refused —
-    /// for a pane the pool does not hold, which is [`select_pane`](Self::select_pane)'s rule for
-    /// [`select_pane`](Self::select_pane)'s reason: a typo must not silently move the user.
+    /// it is aimed at. Answers what happened, or `None` — refused, with nothing moved — for a pane
+    /// this window does not TILE: one that is not in the pool at all, and one a client has floated
+    /// out.
+    ///
+    /// **A floating target is refused rather than answered**, and the two sibling verbs are why. A
+    /// zoom acts on the TILING, and `Window::place_pane`'s callers
+    /// (`sprag_host::wire::SPLIT_ACTION`) and
+    /// [`SessionRegistry::move_pane`](crate::SessionRegistry::move_pane) both already refuse a
+    /// target the tiling does not hold. Treating it as an EDGE instead — R284's "a direction with
+    /// no neighbour is not an error" — was the wrong analogy: an edge is a boundary a MOVEMENT ran
+    /// into, while a floated pane is a target that cannot be zoomed at all in the state it is in.
+    /// It also cost an ambiguity, which is how it was caught: accepted, a toggle aimed at a
+    /// floating pane answered exactly what toggling a zoom OFF answers, so no caller could tell
+    /// them apart. Membership is asked of the POOL MINUS THE FLOAT SET, never of the tree — R284's
+    /// rule, because the tree reconciles LAZILY and a question answered from it refuses a pane
+    /// spawned since anyone last read one.
     ///
     /// **Zooming SELECTS**, because the invariant [`zoomed`](Self::zoomed) states leaves no other
     /// coherent option: the pane filling the window is the pane the window is on. Turning a zoom
     /// OFF by naming a pane selects it too — the caller named where it wants to be.
-    ///
-    /// A FLOATING target is not an error and not a zoom: it has no leaf, so there is nothing to
-    /// fill the window with. It is selected and the answer is "not zoomed" — R284's rule that an
-    /// edge is not an error while a typo is.
     ///
     /// The window's own SIZE is nowhere in this: a zoom changes which pane the arrangement projects
     /// to, and how many cells that is remains `tile`'s answer over the session's arbitrated window.
@@ -394,7 +403,8 @@ impl Window {
         on: Option<bool>,
         panes: &[PaneId],
     ) -> Option<ZoomOutcome> {
-        if !panes.contains(&pane) {
+        let tiled = self.tiled(panes);
+        if !tiled.contains(&pane) {
             return None;
         }
         // Read BEFORE the select, which can clear it: `zoom-pane <other>` with no mode is a request
@@ -402,9 +412,8 @@ impl Window {
         let was = self.zoomed;
         let want = on.unwrap_or(was != Some(pane));
         self.bump_if_changed(|window| {
-            let tiled = window.tiled(panes);
             window.set_active(pane, &tiled);
-            window.zoomed = (want && tiled.contains(&pane)).then_some(pane);
+            window.zoomed = want.then_some(pane);
         });
         Some(ZoomOutcome {
             zoomed: self.zoomed.is_some(),
@@ -756,8 +765,14 @@ pub struct ZoomOutcome {
     /// Whether ONE pane is filling the window after the call.
     pub zoomed: bool,
     /// Whether that differs from what was in force before it — what decides whether the daemon
-    /// wakes every parked client. False for a re-assertion of the state already in force and for a
-    /// FLOATING target, which is the honest answer in both cases and needs no special arm.
+    /// wakes every parked client. False exactly for a re-assertion of the state already in force,
+    /// which is the one way a well-formed zoom request moves nothing.
+    ///
+    /// The pair is therefore TOTAL over four cases and every one of them is distinct, which is the
+    /// property that makes an operator-facing sentence exact rather than a list of causes: now
+    /// filling / already filling / arrangement back / arrangement already showing. A floating
+    /// target used to be a fifth reading of the third, and is a refusal now
+    /// ([`Window::zoom_pane`]).
     pub changed: bool,
 }
 
@@ -4282,13 +4297,11 @@ mod tests {
         );
     }
 
-    /// The two edges, told apart the way R284 tells them apart: a request that names nothing is a
-    /// TYPO and is refused; a request whose honest answer is "there is nothing to do" is answered.
-    ///
-    /// Zooming a FLOATING pane is the second kind. It is a real pane and the caller may well have
-    /// meant to go to it, so it is selected — and it is not zoomed, because it has no leaf.
+    /// Both refusals, and they are the SAME refusal: a zoom acts on the tiling, so its target has
+    /// to be a pane the window tiles. An id naming nothing fails that, and so does a pane a client
+    /// floated out — which is `SPLIT_ACTION`'s rule and `move_pane`'s, not `swap_pane`'s edge rule.
     #[test]
-    fn a_zoom_refuses_a_typo_and_answers_an_edge() {
+    fn a_zoom_refuses_a_pane_it_cannot_fill_a_window_with() {
         let mut reg = SessionRegistry::new((80, 24));
         let ids = spawn_into(&reg, "0", 2);
         let (a, b) = (ids[0], ids[1]);
@@ -4303,20 +4316,78 @@ mod tests {
         );
         assert_eq!(window.active_pane(), Some(a), "not even the active pane");
 
+        // A FLOATED pane is the second kind of typo, not an edge: it is a real pane, but it has no
+        // leaf, so it cannot fill a window any more than it can be split or placed beside. Refused
+        // for `SPLIT_ACTION`'s and `move_pane`'s reason, and nothing moves — not even the active
+        // pane, which an ACCEPTED-but-did-nothing reading would have moved as a side effect of a
+        // request that then declined to do the thing it was for.
         assert!(window.set_floating(b, true, &panes));
         window.reconcile_layout(&panes);
         assert_eq!(
             window.zoom_pane(b, Some(true), &panes),
-            Some(ZoomOutcome {
-                zoomed: false,
-                changed: false
-            }),
-            "a floating pane is not an error and is not a zoom",
+            None,
+            "a pane with no leaf is refused, like a split's target that is not tiled",
         );
         assert_eq!(
             window.active_pane(),
+            Some(a),
+            "and a refusal moves nothing, so the user is where they were",
+        );
+    }
+
+    /// The four answers a zoom can give are DISTINCT, which is what lets an operator-facing sentence
+    /// name each one instead of listing the causes it is consistent with (R283's shape).
+    ///
+    /// This is the property the floating-target refusal buys, and it is asserted rather than
+    /// argued: accepted, a toggle aimed at a floated pane while another was zoomed answered
+    /// `{zoomed: false, changed: true}` — byte for byte what toggling a zoom OFF answers.
+    #[test]
+    fn the_four_zoom_answers_are_distinct() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let ids = spawn_into(&reg, "0", 2);
+        let (a, b) = (ids[0], ids[1]);
+        let panes = pool_ids(&reg, "0");
+        let window = default_window(&mut reg);
+        window.reconcile_layout(&panes);
+
+        let seen = [
+            window.zoom_pane(b, Some(true), &panes),  // now filling
+            window.zoom_pane(b, Some(true), &panes),  // already filling
+            window.zoom_pane(b, Some(false), &panes), // arrangement back
+            window.zoom_pane(b, Some(false), &panes), // arrangement already showing
+        ];
+        assert_eq!(
+            seen,
+            [
+                Some(ZoomOutcome {
+                    zoomed: true,
+                    changed: true
+                }),
+                Some(ZoomOutcome {
+                    zoomed: true,
+                    changed: false
+                }),
+                Some(ZoomOutcome {
+                    zoomed: false,
+                    changed: true
+                }),
+                Some(ZoomOutcome {
+                    zoomed: false,
+                    changed: false
+                }),
+            ],
+        );
+
+        // The case that USED to collide with the third: a toggle at a pane with no leaf. It is a
+        // refusal now, so no answer above can be read two ways.
+        assert!(window.zoom_pane(b, Some(true), &panes).is_some());
+        assert!(window.set_floating(a, true, &panes));
+        window.reconcile_layout(&panes);
+        assert_eq!(window.zoom_pane(a, None, &panes), None);
+        assert_eq!(
+            window.zoomed(),
             Some(b),
-            "the caller named where it wanted to be, and got there",
+            "and a refused request left the zoom that was in force alone",
         );
     }
 

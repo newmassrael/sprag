@@ -960,10 +960,16 @@ pub const SWAP_PANE_ACTION: &str = "swap_pane";
 /// moment later — so failing on it would make one caller's result depend on another caller's
 /// timing, for no gain.
 ///
-/// A FLOATING target is not an error and not a zoom: it has no leaf, so there is nothing to fill
-/// the window with. It is selected and the answer is `{zoomed: false, changed: false}` — the rule
-/// [`SWAP_PANE_ACTION`] states for an edge. A pane id that names no pane of the SESSION is refused
-/// (`Rejected`), which is the same verb's rule for a typo.
+/// REFUSED (`Rejected`), with nothing moved: `pane` naming no pane of the scoped session, or
+/// naming one its window does not TILE because a client floated it out. That is
+/// [`SPLIT_ACTION`]'s rule and [`MOVE_PANE_ACTION`]'s, and a zoom belongs with them because all
+/// three act on the TILING — a floated pane has no leaf to divide, to place beside, or to fill a
+/// window with. It is deliberately NOT [`SWAP_PANE_ACTION`]'s edge rule: an edge is a boundary a
+/// MOVEMENT ran into, while a floated target cannot be zoomed at all in the state it is in.
+///
+/// So `{zoomed, changed}` is total over four DISTINCT cases — now filling / already filling /
+/// arrangement back / arrangement already showing — and an operator-facing sentence can name each
+/// one exactly instead of listing the causes an answer is consistent with.
 pub const ZOOM_PANE_ACTION: &str = "zoom_pane";
 
 /// The mux control external invoke action that delivers a DROPPED FILE to a pane (`{pane, path}`) —

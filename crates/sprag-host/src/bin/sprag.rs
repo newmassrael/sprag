@@ -3888,24 +3888,19 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
     match answer {
         Ok(answer) => {
             let pane = answer["pane"].as_u64().unwrap_or_default();
-            // Told apart by what THIS process asked for, not by listing the causes an answer is
-            // consistent with: a caller that requested a zoom and did not get one is owed the
-            // reason, and the request is a fact the CLI already holds. Only the TOGGLE has two
-            // readings at all, and its unchanged arm resolves to one of them — an unchanged toggle
-            // must have wanted the zoom ON, so the target has no leaf to fill the window from.
-            let floating = |pane| {
-                println!("pane {pane} is floating, so there is nothing to fill its window with");
-            };
+            // Four answers, four sentences, and no arm consults what this process ASKED for: the
+            // daemon REFUSES a target it cannot zoom rather than answering one of these about it,
+            // so each pair means exactly one thing. A verb whose success is ambiguous forces its
+            // caller to print the causes the answer is consistent with, which is the shape R283
+            // measured across fifteen failure paths and filed upstream.
             match (
-                on,
                 answer["zoomed"].as_bool().unwrap_or(false),
                 answer["changed"].as_bool().unwrap_or(false),
             ) {
-                (_, true, true) => println!("pane {pane} fills its window"),
-                (_, true, false) => println!("pane {pane} already fills its window"),
-                (Some(true), false, _) | (None, false, false) => floating(pane),
-                (_, false, true) => println!("pane {pane}'s window shows its arrangement again"),
-                (_, false, false) => {
+                (true, true) => println!("pane {pane} fills its window"),
+                (true, false) => println!("pane {pane} already fills its window"),
+                (false, true) => println!("pane {pane}'s window shows its arrangement again"),
+                (false, false) => {
                     println!("pane {pane}'s window already showed its arrangement");
                 }
             }
@@ -3914,7 +3909,7 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "zoom-pane refused: session {session:?} has no pane {}",
+                "zoom-pane refused: session {session:?} has no pane {}, or it is floating",
                 pane.map_or_else(|| "to be active on".to_owned(), |p| p.to_string())
             ),
         )),
