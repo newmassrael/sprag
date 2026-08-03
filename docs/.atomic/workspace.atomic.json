@@ -10326,6 +10326,62 @@
         "Nothing caps how many panes one opener may hold, on the same trust model already recorded for parked waits."
       ]
     },
+    "R295": {
+      "decision_summary": "A pane has a NAME, and the name is how you address it — the stable handle an agent holds where a pane NUMBER silently comes to mean a different pane.",
+      "changes_bullets": [
+        "PaneName parses a pane's operator-given name: trimmed, at most 80 bytes, no control character, never all ASCII digits — the last two are load-bearing, since the listing is a machine-readable contract and a name shares one argument with a pane NUMBER.",
+        "Pane::name is durable and registry-unique: on the snapshot, re-stamped by Host::restore, and a snapshot claiming one name twice is malformed exactly as a duplicate id is.",
+        "rename_pane {pane, name?} acts DAEMON-WIDE and answers with the name it RECORDED, so no caller re-implements the trimming rule; the two PANE births take a name and the window/session births do not, because their own `name` argument is the container's.",
+        "Event::PaneRenamed is DERIVED from the shape diff — a pane's public shape is its ID, which survives a rename, so the argument that struck WindowRenamed admits this one.",
+        "The MCP `pane` argument takes a NUMBER or a NAME, told apart by JSON's own types; open_pane names its work pane at birth, rename_pane is close_pane's authorship gate, and pane_layout draws the name beside the number it stands in for.",
+        "sprag rename-pane names a pane and sprag panes quotes it; pane_display_title prefers a name a person chose over the title the child rewrites on every prompt."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 45 targets / 1909 passed (from 1879), clippy 0 with no suppression, doc gate 0/16, pre-commit green on all 11 commits, pixel smoke 136/0.",
+        "SKEW RUN in BOTH directions against parent-commit (94102c9) RELEASE binaries: NEW daemon + OLD cli lists both panes and prints no name; OLD daemon + NEW cli lists both panes and REFUSES rename-pane with a sentence (exit 1, loud, never silent); CONTROL new+new renames and prints name=\"build\". The panes-slot answer is 611 bytes in BOTH skew rows and 626 once a pane is named — the additive claim MEASURED, with a control that moves the number.",
+        "THE ASYMMETRIC HALF DRIVEN LIVE: a NEW sprag-mcp sending `name` to an OLD daemon gets the argument silently dropped, and open_pane reads the fact BACK and WARNS instead of promising a handle that would never resolve — the branch R294's equivalent could only unit-test.",
+        "Seven revert-proofs each shown to DISCRIMINATE: the control-character rule, the snapshot duplicate-name refusal, the birth uniqueness check, the rename's own uniqueness gate, the restore's re-stamp, the display precedence, and the name in the event shape (which failed BOTH funnel tests, proving they drive the dispatch loop and not SessionShape::diff).",
+        "The detector-isolation test PASSED FIRST TRY AND WAS VACUOUS — wiring the leak in deliberately left it green, because a claim does not publish until it has settled. Rewritten to assert the CANDIDATE, it then failed with the leak in and passes without it.",
+        "Every rendered answer forced to fail and READ, which caught two defects: an unquoted name that could not be parsed back out of the listing, and an echo of the caller's own untrimmed argument.",
+        "The derive site is PRICED with the axis this round moved: 64 unnamed panes 2.013-2.157 us against 64 named 4.883-5.321 us over three runs — about 45 ns per named pane, paid only by workspaces that name any."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "NEW debt item 20 (R295): the CLI's --pane still takes an id and not a name (deliberate — the CLI handle is already stable; twelve pure parsers would have to resolve against the daemon); every OTHER invoking MCP tool still leaks `host rpc error: InvokeRejected` to an agent, one host_call_kinded away each; no chord, palette row or header affordance renames a pane, and the TUI shows no name at all (herdr HAS a rename modal and is ahead there); sprag panes lists ONE window while a name is registry-unique, so a collision can name a pane the operator cannot see; the uniqueness check and the write are not one atomic step and the resolver refuses an ambiguous name rather than guessing.",
+        "The audit FIXED two rather than registering them: the refusal helper matched pinion's WORDING where R292 had already recorded \"match the CODE, never the rendering\", and reading the rendered CLI output caught an unparseable unquoted name plus an echo of the untrimmed argument.",
+        "WIRE_PROTOCOL stays 4 and it was RUN, not asserted: a new action, a new event variant and a key present only on a named pane are additive on the established terms."
+      ],
+      "publishable_decision_summary": "A pane has a NAME, and the name is how you address it — the stable handle an agent holds where a pane NUMBER silently comes to mean a different pane.",
+      "publishable_changes_bullets": [
+        "PaneName parses a pane's operator-given name: trimmed, at most 80 bytes, no control character, never all ASCII digits — the last two are load-bearing, since the listing is a machine-readable contract and a name shares one argument with a pane NUMBER.",
+        "Pane::name is durable and registry-unique: on the snapshot, re-stamped by Host::restore, and a snapshot claiming one name twice is malformed exactly as a duplicate id is.",
+        "rename_pane {pane, name?} acts DAEMON-WIDE and answers with the name it RECORDED, so no caller re-implements the trimming rule; the two PANE births take a name and the window/session births do not, because their own `name` argument is the container's.",
+        "Event::PaneRenamed is DERIVED from the shape diff — a pane's public shape is its ID, which survives a rename, so the argument that struck WindowRenamed admits this one.",
+        "The MCP `pane` argument takes a NUMBER or a NAME, told apart by JSON's own types; open_pane names its work pane at birth, rename_pane is close_pane's authorship gate, and pane_layout draws the name beside the number it stands in for.",
+        "sprag rename-pane names a pane and sprag panes quotes it; pane_display_title prefers a name a person chose over the title the child rewrites on every prompt."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 45 targets / 1909 passed (from 1879), clippy 0 with no suppression, doc gate 0/16, pre-commit green on all 11 commits, pixel smoke 136/0.",
+        "SKEW RUN in BOTH directions against parent-commit (94102c9) RELEASE binaries: NEW daemon + OLD cli lists both panes and prints no name; OLD daemon + NEW cli lists both panes and REFUSES rename-pane with a sentence (exit 1, loud, never silent); CONTROL new+new renames and prints name=\"build\". The panes-slot answer is 611 bytes in BOTH skew rows and 626 once a pane is named — the additive claim MEASURED, with a control that moves the number.",
+        "THE ASYMMETRIC HALF DRIVEN LIVE: a NEW sprag-mcp sending `name` to an OLD daemon gets the argument silently dropped, and open_pane reads the fact BACK and WARNS instead of promising a handle that would never resolve — the branch R294's equivalent could only unit-test.",
+        "Seven revert-proofs each shown to DISCRIMINATE: the control-character rule, the snapshot duplicate-name refusal, the birth uniqueness check, the rename's own uniqueness gate, the restore's re-stamp, the display precedence, and the name in the event shape (which failed BOTH funnel tests, proving they drive the dispatch loop and not SessionShape::diff).",
+        "The detector-isolation test PASSED FIRST TRY AND WAS VACUOUS — wiring the leak in deliberately left it green, because a claim does not publish until it has settled. Rewritten to assert the CANDIDATE, it then failed with the leak in and passes without it.",
+        "Every rendered answer forced to fail and READ, which caught two defects: an unquoted name that could not be parsed back out of the listing, and an echo of the caller's own untrimmed argument.",
+        "The derive site is PRICED with the axis this round moved: 64 unnamed panes 2.013-2.157 us against 64 named 4.883-5.321 us over three runs — about 45 ns per named pane, paid only by workspaces that name any."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "NEW debt item 20 (R295): the CLI's --pane still takes an id and not a name (deliberate — the CLI handle is already stable; twelve pure parsers would have to resolve against the daemon); every OTHER invoking MCP tool still leaks `host rpc error: InvokeRejected` to an agent, one host_call_kinded away each; no chord, palette row or header affordance renames a pane, and the TUI shows no name at all (herdr HAS a rename modal and is ahead there); sprag panes lists ONE window while a name is registry-unique, so a collision can name a pane the operator cannot see; the uniqueness check and the write are not one atomic step and the resolver refuses an ambiguous name rather than guessing.",
+        "The audit FIXED two rather than registering them: the refusal helper matched pinion's WORDING where R292 had already recorded \"match the CODE, never the rendering\", and reading the rendered CLI output caught an unparseable unquoted name plus an echo of the untrimmed argument.",
+        "WIRE_PROTOCOL stays 4 and it was RUN, not asserted: a new action, a new event variant and a key present only on a named pane are additive on the established terms."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
