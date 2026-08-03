@@ -646,6 +646,12 @@ impl SlotView {
         self.id(slot).and_then(|id| self.host.pane_title(id))
     }
 
+    /// Slot `slot`'s operator-given NAME, `None` for a hole or a pane nobody named. Preferred OVER
+    /// the title by every display surface — see [`HostClient::pane_name`].
+    pub(crate) fn pane_name(&self, slot: usize) -> Option<String> {
+        self.id(slot).and_then(|id| self.host.pane_name(id))
+    }
+
     /// Slot `slot`'s most recent attention notification (`OSC 9` / `OSC 777;notify` / `OSC 99`),
     /// `None` for a hole or a pane that raised none. A DISPLAY signal — the GUI's per-pane
     /// attention marker reads its [`seq`](PaneNotification::seq) against the acked one (see

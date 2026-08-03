@@ -907,6 +907,21 @@ pub trait HostClient {
     /// changes — conflating the two would silently rewrite the a11y node name too.
     fn pane_title(&self, id: PaneId) -> Option<String>;
 
+    /// Pane `id`'s operator-given NAME ([`sprag_terminal::Pane::name`]), or `None` if nobody named
+    /// it (or `id` is absent).
+    ///
+    /// The OPPOSITE kind of fact from [`pane_title`](Self::pane_title), which is why they are two
+    /// methods and not one. A title is chosen by the CHILD, rewritten on every prompt, and is
+    /// display only. A name is chosen by a PERSON (or by the pane's opener), changes only when
+    /// somebody says so, and IS identity — unique across the registry and resolvable back to this
+    /// pane. So a display surface prefers this over the title, and a stable name over both.
+    ///
+    /// Defaulted to `None` so an older [`HostClient`] impl need not implement it.
+    fn pane_name(&self, id: PaneId) -> Option<String> {
+        let _ = id;
+        None
+    }
+
     /// The pane's most recent attention [`PaneNotification`] (`OSC 9` / `OSC 777;notify` /
     /// `OSC 99`), or `None` if it raised none. Like [`pane_title`](Self::pane_title) this is
     /// LIVE, CHILD-CONTROLLED display state — a display client surfaces it as "this pane wants
@@ -1850,6 +1865,13 @@ impl HostClient for Host {
     /// "no title to display", and a caller that must distinguish them has `pane_ids`.
     fn pane_title(&self, id: PaneId) -> Option<String> {
         self.with_pane_id(id, Pane::title).flatten()
+    }
+
+    /// The pane's operator-given name, read off the pane under the workspace lock. Flattens
+    /// "absent pane" and "nobody named it" to `None`, exactly as [`Self::pane_title`] does.
+    fn pane_name(&self, id: PaneId) -> Option<String> {
+        self.with_pane_id(id, |pane| pane.name().map(std::string::ToString::to_string))
+            .flatten()
     }
 
     /// The pane's live attention notification, read off the emulator under the workspace

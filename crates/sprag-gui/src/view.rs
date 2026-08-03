@@ -45,17 +45,25 @@ const THEME_TAG: &str = "app";
 /// OS title, and — for the focused pane — the main window's OS title (both via
 /// [`crate::dock`], R130/R132). All PR52/PR53 surfaces now consume it.
 ///
-/// Prefers the child's live `OSC 0` / `OSC 2` window title — what tmux / `gnome-terminal`
-/// show (`vim README`, `coin@host:~`, an ssh remote) — and falls back to the stable
-/// [`panel_id`] when the child has set none, or set a BLANK one (which must not blank the
+/// Prefers the NAME a person gave the pane; then the child's live `OSC 0` / `OSC 2` window title —
+/// what tmux / `gnome-terminal` show (`vim README`, `coin@host:~`, an ssh remote) — and falls back
+/// to the stable [`panel_id`] when neither is set, or is set BLANK (which must not blank the
 /// header).
 ///
-/// **Display only.** IDENTITY — the dock-leaf [`panel_id`], scene tags, focus, RPC paths —
-/// never derives from this: a child sets its title freely and rewrites it on every prompt,
-/// so deriving identity from it would let a pane rename its own address (R70).
+/// **The name outranks the title, and the order is the argument.** A title is what the CHILD calls
+/// itself and is rewritten on every prompt; a name is what a PERSON decided this pane is for. When
+/// somebody has said what a pane is, a shell's `PROMPT_COMMAND` must not talk over them — which is
+/// the same decision tmux makes when a manual `rename-window` turns `automatic-rename` off.
+///
+/// **Still display only, and the name does not change that.** IDENTITY here — the dock-leaf
+/// [`panel_id`], scene tags, focus, RPC paths — derives from NEITHER. A pane name is an address on
+/// the DAEMON's surfaces (it resolves to a pane id there), and this client's panel identity is its
+/// own; deriving one from the other would let a rename move a widget's address (R70's rule, which
+/// was written about the title and holds for anything a caller can change).
 pub(crate) fn pane_display_title(slots: &SlotView, i: usize) -> String {
     let title = slots
-        .pane_title(i)
+        .pane_name(i)
+        .or_else(|| slots.pane_title(i))
         .filter(|title| !title.trim().is_empty())
         .unwrap_or_else(|| panel_id(i));
     // Prefix the attention marker (R-PR67 follow-on) when the pane's child raised a notification
@@ -960,6 +968,72 @@ mod tests {
                 image.layout.absolute_position,
                 Some((3 * cell_w, cell_h)),
                 "positioned at the anchor CELL times the cell metric",
+            );
+        });
+    }
+
+    /// A NAME a person gave the pane outranks the title its CHILD sets, over a real pane.
+    ///
+    /// The child in this fixture really does set an `OSC 2` title, so both facts are present at
+    /// once — which is the only arrangement in which a precedence can be wrong. Asserted in three
+    /// states because each is a different claim: the child's title alone, the name winning over it,
+    /// and the fallback once the name is taken away (a cleared name must not blank the header, the
+    /// same rule the blank-title filter already keeps).
+    #[test]
+    fn a_name_a_person_gave_a_pane_outranks_the_title_its_child_sets() {
+        use crate::terminal::{seed_terminal, use_terminal};
+        use sprag_host::Host;
+        use sprag_terminal::{CommandBuilder, PaneName};
+        use std::time::{Duration, Instant};
+
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf '\\033]2;vim README\\007'; exec cat");
+        cmd.env("TERM", "dumb");
+
+        let host = Host::new((40, 6));
+        let named = host
+            .spawn(cmd, "sh".to_owned(), 40, 6, None, None)
+            .expect("a pane whose child titles itself");
+        // THE CONTROL, and the reason there are two panes: an identical child, titling itself
+        // identically, with no name. Without it a header showing "vim README" could mean either
+        // "the title won" or "the name never arrived", and one pane cannot tell those apart.
+        let mut twin = CommandBuilder::new("/bin/sh");
+        twin.arg("-c");
+        twin.arg("printf '\\033]2;vim README\\007'; exec cat");
+        twin.env("TERM", "dumb");
+        host.spawn(twin, "sh".to_owned(), 40, 6, None, None)
+            .expect("the unnamed twin");
+        let workspace = host.workspace();
+        assert!(
+            workspace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .set_pane_name(named, Some(PaneName::parse("build").unwrap())),
+            "the pane really took the name",
+        );
+
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(host);
+            let terminal = use_terminal();
+
+            // Wait on the CONDITION, not a timer: the child's OSC reaches the emulator async, and
+            // the TWIN is what is waited on — its header is the one the title has to reach.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while pane_display_title(&terminal.slots, 1) != "vim README" {
+                assert!(
+                    Instant::now() < deadline,
+                    "the child's own title never reached the header: {:?}",
+                    pane_display_title(&terminal.slots, 1),
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(
+                pane_display_title(&terminal.slots, 0),
+                "build",
+                "once somebody has said what the pane is FOR, the shell's own title must not talk \
+                 over them — and its child sets exactly the title the twin's does",
             );
         });
     }

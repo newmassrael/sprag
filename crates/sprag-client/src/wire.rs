@@ -181,6 +181,12 @@ struct WirePane {
     /// keeps this pane on the unconditional-fetch path.
     projection: Option<ProjectionToken>,
     label: String,
+    /// The name a PERSON gave the pane, `None` for one nobody named. Host-authoritative and
+    /// re-adopted each wake like [`Self::title`] — but the OPPOSITE kind of fact: a name is
+    /// chosen by a person and is IDENTITY (unique across the daemon, resolvable back to this
+    /// pane), where a title is chosen by the child and is display only. A display surface
+    /// therefore prefers this OVER the title.
+    name: Option<String>,
     /// The child's live `OSC 0`/`OSC 2` window title, `None` until it sets one.
     /// Host-authoritative like [`Self::label`] (re-read on every poll re-query, since a
     /// shell rewrites it each prompt). A DISPLAY name only — never identity.
@@ -2597,6 +2603,12 @@ impl HostClient for WireHost {
             .and_then(|pane| pane.title.clone())
     }
 
+    /// Served from the same poll-refreshed mirror as [`Self::pane_title`], re-adopted each wake, so
+    /// another client's `rename-pane` reaches this one's header without it asking.
+    fn pane_name(&self, id: PaneId) -> Option<String> {
+        self.lock_cache().get(id).and_then(|pane| pane.name.clone())
+    }
+
     /// Served from the same poll-refreshed mirror as [`Self::pane_title`], re-adopted each wake,
     /// so the `seq` reflects the host's latest.
     fn pane_notification(&self, id: PaneId) -> Option<PaneNotification> {
@@ -2891,6 +2903,9 @@ fn spawn_daemon(sock: &Path) -> io::Result<()> {
 struct PaneSeed {
     id: PaneId,
     label: String,
+    /// The name a person gave the pane, `None` when the wire omits the key (nobody named it, or
+    /// an older daemon).
+    name: Option<String>,
     /// The child's live OSC window title, `None` if it has set none (the wire sends
     /// `null`).
     title: Option<String>,
@@ -2949,6 +2964,9 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
                 .as_u64()
                 .ok_or_else(|| io::Error::other("pane entry missing a numeric id"))?;
             let label = pane["command"].as_str().unwrap_or_default().to_owned();
+            // ADDITIVE: present only on a pane somebody named, so absent means "unnamed" — and
+            // reads `None` for every row of a daemon that predates pane names.
+            let name = pane["name"].as_str().map(str::to_owned);
             // `null` (child set no title) and a missing key both mean "no title".
             let title = pane["title"].as_str().map(str::to_owned);
             let notification = parse_notification(&pane["notification"]);
@@ -2978,6 +2996,7 @@ fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
             Ok(PaneSeed {
                 id: PaneId(id),
                 label,
+                name,
                 title,
                 notification,
                 bell_seq,
@@ -3417,6 +3436,7 @@ fn merge_panes(
         rebuilt.push(WirePane {
             id: seed.id,
             label: seed.label.clone(), // host-authoritative — always the query's label
+            name: seed.name.clone(),   // host-authoritative + dynamic — a rename lands on a wake
             title: seed.title.clone(), // host-authoritative + dynamic — re-adopt every wake
             // host-authoritative + dynamic like the title: re-adopt the query's, so the seq
             // grows as the child raises more (and clears to None if the host ever drops it).
@@ -3600,6 +3620,10 @@ fn spawn_poll(
                             .map(|pane| PaneSeed {
                                 id: pane.id,
                                 label: pane.label.clone(),
+                                // Keep the last-known NAME as well. It matters more than the
+                                // title beside it: a display surface prefers the name, so
+                                // blanking it on a hiccup would visibly re-title the pane.
+                                name: pane.name.clone(),
                                 // Re-query failed, so the host's current title is unknown —
                                 // KEEP the last-known one rather than blanking the display.
                                 title: pane.title.clone(),
@@ -4781,6 +4805,7 @@ mod tests {
             id: PaneId(id),
             projection: held,
             label: "bash".to_owned(),
+            name: None,
             title: None,
             notification: None,
             bell_seq: 0,
@@ -4802,6 +4827,7 @@ mod tests {
         PaneSeed {
             id: PaneId(id),
             label: "bash".to_owned(),
+            name: None,
             title: None,
             notification: None,
             bell_seq: 0,
@@ -5136,6 +5162,7 @@ mod tests {
             WirePane {
                 id: PaneId(10),
                 label: "bash".to_owned(),
+                name: None,
                 title: None,
                 notification: None,
                 bell_seq: 0,
@@ -5154,6 +5181,7 @@ mod tests {
             WirePane {
                 id: PaneId(11),
                 label: "cat".to_owned(),
+                name: None,
                 title: None,
                 notification: None,
                 bell_seq: 0,
@@ -5177,6 +5205,7 @@ mod tests {
             PaneSeed {
                 id: PaneId(10),
                 label: "bash-relabeled".to_owned(),
+                name: None,
                 title: None,
                 notification: None,
                 bell_seq: 0,
@@ -5194,6 +5223,7 @@ mod tests {
             PaneSeed {
                 id: PaneId(12),
                 label: "vim".to_owned(),
+                name: None,
                 title: None,
                 notification: None,
                 bell_seq: 0,
@@ -5211,6 +5241,7 @@ mod tests {
             PaneSeed {
                 id: PaneId(13),
                 label: "top".to_owned(),
+                name: None,
                 title: None,
                 notification: None,
                 bell_seq: 0,
@@ -5263,6 +5294,7 @@ mod tests {
         let existing = vec![WirePane {
             id: PaneId(10),
             label: "bash".to_owned(),
+            name: None,
             title: None,
             notification: None,
             bell_seq: 0,
@@ -5281,6 +5313,7 @@ mod tests {
         let seeds = vec![PaneSeed {
             id: PaneId(10),
             label: "bash".to_owned(),
+            name: None,
             title: None,
             notification: None,
             bell_seq: 0,
@@ -5320,6 +5353,7 @@ mod tests {
         let existing = vec![WirePane {
             id: PaneId(10),
             label: "cargo".to_owned(),
+            name: None,
             title: None,
             notification: None,
             bell_seq: 0,
@@ -5338,6 +5372,7 @@ mod tests {
         let seeds = vec![PaneSeed {
             id: PaneId(10),
             label: "cargo".to_owned(),
+            name: None,
             title: None,
             notification: None,
             bell_seq: 0,
@@ -5378,6 +5413,7 @@ mod tests {
             WirePane {
                 id: PaneId(10),
                 label: "bash".to_owned(),
+                name: None,
                 title: Some("stale: vim README".to_owned()),
                 notification: None,
                 bell_seq: 0,
@@ -5396,6 +5432,7 @@ mod tests {
             WirePane {
                 id: PaneId(11),
                 label: "bash".to_owned(),
+                name: None,
                 title: Some("about to be cleared".to_owned()),
                 notification: None,
                 bell_seq: 0,
@@ -5416,6 +5453,7 @@ mod tests {
             PaneSeed {
                 id: PaneId(10),
                 label: "bash".to_owned(),
+                name: None,
                 title: Some("coin@host:~".to_owned()), // child retitled at the new prompt
                 notification: None,
                 bell_seq: 0,
@@ -5433,6 +5471,7 @@ mod tests {
             PaneSeed {
                 id: PaneId(11),
                 label: "bash".to_owned(),
+                name: None,
                 title: None, // child cleared its title
                 notification: None,
                 bell_seq: 0,
