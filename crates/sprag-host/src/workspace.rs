@@ -2356,6 +2356,50 @@ mod tests {
         );
     }
 
+    /// The birth spec is ONE spec, so `cwd` reaches every birth — and an OPENER reaches only the
+    /// two PANE births, even when a caller sends one.
+    ///
+    /// Both halves are behaviour, not documentation. `parse_spawn` is shared by four actions, so
+    /// adding `cwd` to it handed the argument to `new_session` and `new_window` as well; an
+    /// argument a caller can send and no test exercises is the shape this round's own skew run
+    /// caught being silently dropped elsewhere. And the opener's ABSENCE here is a decision — a
+    /// session's or window's birth pane is nobody's work pane — which was a comment until this
+    /// test, so a later reader could not tell it from an oversight.
+    #[test]
+    fn a_window_is_born_in_the_directory_it_was_given_and_claimed_by_nobody() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        let dir = std::env::temp_dir();
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("a pane that could be named as an opener");
+        ext.invoke(
+            NEW_WINDOW_ACTION,
+            IntrospectValue::Json(json!({
+                "cmd": ["cat"],
+                "cwd": dir.to_str().unwrap(),
+                // Sent and IGNORED: this action takes no opener, and the assertion below is what
+                // says so out loud rather than leaving it to a reader of the parse site.
+                "opened_by": 0,
+            })),
+        )
+        .expect("a window is born");
+
+        let born = lock(&pool(&reg))
+            .panes()
+            .last()
+            .map(|pane| (pane.opened_by(), pane.pty().cwd()))
+            .expect("the new window's birth pane");
+        assert_eq!(
+            born.0, None,
+            "a window's birth pane is claimed by nobody, however the request was spelled",
+        );
+        assert_eq!(
+            born.1.as_deref().and_then(|p| p.canonicalize().ok()),
+            dir.canonicalize().ok(),
+            "and the directory really reached the child, so the shared spec is not just parsed",
+        );
+    }
+
     /// Wait until pane `id` carries an `agent` key, then return its entry.
     ///
     /// Waits on the CONDITION the assertions read rather than on a timer: the child's `printf` reaches

@@ -530,10 +530,12 @@ pub const CLIENTS_SLOT: &str = "clients";
 pub const WINDOW_SIZE_SLOT: &str = "window_size";
 
 /// The mux control external invoke action that creates a session BORN WITH A SHELL
-/// (`{name?, cmd?, cols?, rows?}`), returning its name.
+/// (`{name?, cmd?, cols?, rows?, cwd?}`), returning its name.
 ///
 /// Creating one spawns its first pane, mirroring tmux's `new-session -x -y [command]`
-/// (`cmd`/`cols`/`rows` shape that pane; absent → `$SHELL` at the pool's default size), so on the
+/// (`cmd`/`cols`/`rows`/`cwd` shape that pane; absent → `$SHELL` at the pool's default size in the
+/// daemon's own directory — `cwd` is [`SPAWN_ACTION`]'s, because a birth is a birth and the spec is
+/// one spec; it is NOT an opener, which only the two PANE births take), so on the
 /// happy path a session is not empty (only a runtime fork/exec failure leaves it so). A malformed
 /// birth spec is rejected before the session is created, the same as a bad `name`. An ACTION, not
 /// an `intervene` slot: it is not a plain assignment — the
@@ -857,11 +859,12 @@ pub const SET_FLOATING_ACTION: &str = "set_floating";
 pub const WINDOWS_SLOT: &str = "windows";
 
 /// The mux control external invoke action that creates a window in the SCOPED session, born with
-/// a shell, selects it, and returns its name (`{name?, cmd?, cols?, rows?}`) — tmux `new-window`.
+/// a shell, selects it, and returns its name (`{name?, cmd?, cols?, rows?, cwd?}`) — tmux
+/// `new-window`.
 ///
 /// SCOPED (it acts on the request's session), unlike [`NEW_SESSION_ACTION`] which names a session
-/// directly. `name` absent ⇒ the lowest free integer; `cmd`/`cols`/`rows` shape the birth pane,
-/// exactly as [`NEW_SESSION_ACTION`]. Selecting the new window is session state — every attached
+/// directly. `name` absent ⇒ the lowest free integer; `cmd`/`cols`/`rows`/`cwd` shape the birth
+/// pane, exactly as [`NEW_SESSION_ACTION`] — and, like it, no opener. Selecting the new window is session state — every attached
 /// client follows it, as tmux does.
 pub const NEW_WINDOW_ACTION: &str = "new_window";
 
