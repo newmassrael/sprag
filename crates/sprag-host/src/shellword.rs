@@ -1,7 +1,7 @@
 //! Shell WORD quoting: turning a string into one inert word a POSIX shell cannot re-interpret.
 //!
-//! Lifted out of the file-drop delivery (`crate::upload`, its first consumer) when per-project
-//! commands (`crate::project`) became the second. The duplication this avoids is not stylistic:
+//! Lifted out of the file-drop delivery (`crate::upload`, its first consumer — private, so it is
+//! named rather than linked) when per-project commands ([`crate::project`]) became the second. The duplication this avoids is not stylistic:
 //! quoting is the boundary between "a path with a space in it" and "a path that runs `$(reboot)`",
 //! so two copies would be two chances to get a security-relevant transformation subtly different.
 //!
