@@ -10270,6 +10270,62 @@
         "The owner's debt question has now found unregistered items in FIVE consecutive rounds, and this time one of them was the round's own thesis violated in its own code — the audit of the finished tree is not optional and reading the diff is not the same as reading the tree."
       ]
     },
+    "R294": {
+      "decision_summary": "An agent may open a pane to work in and is ANSWERABLE for it: the daemon records WHO ASKED for each pane, so the agent surface can refuse to close a pane its caller did not open. Re-derives debt item 14's question and answers it with a different verb than the register assumed — no move/swap/zoom for an agent (those decide what a HUMAN looks at), but yes to opening and closing its own workbench, which is the first step the four rounds of read/wait tooling before it all presupposed. herdr at 9a4ce5e1 closes ANY pane by id with only a worktree-group confirmation, and records nothing about what created a pane, so it has nothing to gate on; honest trades stated: their split takes ratio and env, and their agent surface is their whole 76-method API.",
+      "changes_bullets": [
+        "A pane records the pane whose occupant asked for it: `Pane::opened_by`, published additively on the panes slot, durable across a reboot, and refused at birth when it names a pane the daemon does not hold.",
+        "The `spawn` and `split` actions take `opened_by` and `cwd`; the directory is validated as a directory before anything is built, because a spawn into a missing one produces a pane whose child died and reads on screen as a shell that exited for no reason.",
+        "`sprag panes` names the opener, so an operator can see which agent's pane opened the one that appeared; `sprag kill-pane` stays ungated, because the daemon publishes a FACT and the agent surface applies a POLICY.",
+        "MCP `open_pane` appends a work pane stamped with the asking pane's id, and `close_pane` refuses every pane its caller did not open, naming who did.",
+        "The `initialize` primer now names every advertised tool, derived from the roster by a test: it had silently dropped `pane_processes` and `wait_for_change` across two earlier rounds."
+      ],
+      "verification_bullets": [
+        "Suite exit 0, 45 targets, 1877 passed (1862 before); clippy 0 with no suppression; doc gate 0/16; headless pixel smoke 136 passed / 0 failed.",
+        "Seven revert-proofs, each shown to discriminate: the restore stamping, the snapshot capture, the opener existence check, the panes-slot key, the split path's own argument (which the spawn test does NOT cover), the MCP close gate driven through the real process, and the primer derivation against the exact drift that shipped twice.",
+        "WIRE_PROTOCOL stays 4 and it was RUN, not asserted: a parent-commit (5a5d584) release binary in both directions, with the new pair as the control. NEW daemon + OLD cli and OLD daemon + NEW cli both exit 0 and list both panes; only the new pair prints \"opened by pane 0\". The panes-slot answer is 1072 bytes in every case, which is the additive claim measured rather than argued.",
+        "That run FOUND A DEFECT: a same-protocol daemon that predates the field accepts `opened_by` and records nothing, so the open answer's promise of a later close would have been false. The answer now reads the fact BACK off the pane.",
+        "NO TIMING CLAIM IS MADE for the pane-list read. `sprag-latency`'s `request panes slot` row spans 11.1-24.2 us run to run at the PARENT commit alone, and a deliberately injected per-pane String allocation moved the byte count (1072 to 1138, so the probe was really in the path) without moving the time. The instrument cannot resolve a change of this size on this box."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "No display client shows the provenance: the GUI pane header and the TUI status line do not, so its only readers are `sprag panes` and `list_panes`.",
+        "`sprag split-window` cannot stamp an opener, so the CLI rendering has no CLI-reachable producer and its test puts the fact on the wire the way the agent surface does.",
+        "The \"opened by: pane id N, not in this window\" rendering is unit-reachable only; the live tests cover \"you\" and \"pane N\".",
+        "`parse_cwd`'s directory check narrows the window it cannot close: a directory removed between the check and the exec still produces a pane whose child died.",
+        "The open answer's degraded branch (an older daemon dropped the fact) is pinned pure and unreachable live, because the suite can only build one daemon.",
+        "Nothing caps how many panes one opener may hold, on the same trust model already recorded for parked waits."
+      ],
+      "publishable_decision_summary": "An agent may open a pane to work in and is ANSWERABLE for it: the daemon records WHO ASKED for each pane, so the agent surface can refuse to close a pane its caller did not open. Re-derives debt item 14's question and answers it with a different verb than the register assumed — no move/swap/zoom for an agent (those decide what a HUMAN looks at), but yes to opening and closing its own workbench, which is the first step the four rounds of read/wait tooling before it all presupposed. herdr at 9a4ce5e1 closes ANY pane by id with only a worktree-group confirmation, and records nothing about what created a pane, so it has nothing to gate on; honest trades stated: their split takes ratio and env, and their agent surface is their whole 76-method API.",
+      "publishable_changes_bullets": [
+        "A pane records the pane whose occupant asked for it: `Pane::opened_by`, published additively on the panes slot, durable across a reboot, and refused at birth when it names a pane the daemon does not hold.",
+        "The `spawn` and `split` actions take `opened_by` and `cwd`; the directory is validated as a directory before anything is built, because a spawn into a missing one produces a pane whose child died and reads on screen as a shell that exited for no reason.",
+        "`sprag panes` names the opener, so an operator can see which agent's pane opened the one that appeared; `sprag kill-pane` stays ungated, because the daemon publishes a FACT and the agent surface applies a POLICY.",
+        "MCP `open_pane` appends a work pane stamped with the asking pane's id, and `close_pane` refuses every pane its caller did not open, naming who did.",
+        "The `initialize` primer now names every advertised tool, derived from the roster by a test: it had silently dropped `pane_processes` and `wait_for_change` across two earlier rounds."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0, 45 targets, 1877 passed (1862 before); clippy 0 with no suppression; doc gate 0/16; headless pixel smoke 136 passed / 0 failed.",
+        "Seven revert-proofs, each shown to discriminate: the restore stamping, the snapshot capture, the opener existence check, the panes-slot key, the split path's own argument (which the spawn test does NOT cover), the MCP close gate driven through the real process, and the primer derivation against the exact drift that shipped twice.",
+        "WIRE_PROTOCOL stays 4 and it was RUN, not asserted: a parent-commit (5a5d584) release binary in both directions, with the new pair as the control. NEW daemon + OLD cli and OLD daemon + NEW cli both exit 0 and list both panes; only the new pair prints \"opened by pane 0\". The panes-slot answer is 1072 bytes in every case, which is the additive claim measured rather than argued.",
+        "That run FOUND A DEFECT: a same-protocol daemon that predates the field accepts `opened_by` and records nothing, so the open answer's promise of a later close would have been false. The answer now reads the fact BACK off the pane.",
+        "NO TIMING CLAIM IS MADE for the pane-list read. `sprag-latency`'s `request panes slot` row spans 11.1-24.2 us run to run at the PARENT commit alone, and a deliberately injected per-pane String allocation moved the byte count (1072 to 1138, so the probe was really in the path) without moving the time. The instrument cannot resolve a change of this size on this box."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "No display client shows the provenance: the GUI pane header and the TUI status line do not, so its only readers are `sprag panes` and `list_panes`.",
+        "`sprag split-window` cannot stamp an opener, so the CLI rendering has no CLI-reachable producer and its test puts the fact on the wire the way the agent surface does.",
+        "The \"opened by: pane id N, not in this window\" rendering is unit-reachable only; the live tests cover \"you\" and \"pane N\".",
+        "`parse_cwd`'s directory check narrows the window it cannot close: a directory removed between the check and the exec still produces a pane whose child died.",
+        "The open answer's degraded branch (an older daemon dropped the fact) is pinned pure and unreachable live, because the suite can only build one daemon.",
+        "Nothing caps how many panes one opener may hold, on the same trust model already recorded for parked waits."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
