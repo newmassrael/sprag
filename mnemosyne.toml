@@ -93,3 +93,15 @@ reason = "R281's atomic impact_refs named 39 and 41, section ids this workspace 
 applied_in = "R281"
 content_hash_before = "b378b0527bcac6e7d44891dd0c425ca4c29845a032b2deb5b54519e8939fcb1f"
 content_hash_after = "539a776d4d4707ac08912cd47f905be1e0d8791d2d0682288ea4ab42f9abe93f"
+
+# Audit row for R296's verification correction. The atomic half was appended after
+# five commits; the audit pass over the finished tree that follows every round then
+# found a defect, fixed it, and moved the counts.
+[[publishable_override_ledger]]
+kind = "redaction"
+target_id = "R296"
+fields = ["publishable_verification_bullets"]
+reason = "R296's atomic verification bullets were written after five commits and record 'exit 0 / 45 / 1923 passed' and 'all 5 commits'. The audit pass over the finished tree that this project requires ran AFTER the append, found the round violating its own one-semantics thesis, fixed it, and added a seventh commit plus one more test - so the frozen numbers became 1924 and 7. The audit half cannot be rewritten, so the publishable view carries the true final counts, says plainly that it is a correction, and records the two tests that passed their first revert-proof while being vacuous."
+applied_in = "R296"
+content_hash_before = "deb55476c512eca59782a2d7b41722d6b27e170ce6445d9287acb2a792d2de39"
+content_hash_after = "c0e5123651b08344d031df849adeff12c6d767fc3529c567f3a987eefc50f839"
