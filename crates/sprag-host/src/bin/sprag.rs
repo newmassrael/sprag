@@ -1840,6 +1840,59 @@ fn require_pane(
     ))
 }
 
+/// Read a scene SLOT, translating "this daemon has no such address" into a sentence about the
+/// daemon rather than a Rust variant name.
+///
+/// # The failure this exists for, measured rather than imagined
+///
+/// A slot is ADDITIVE: a daemon older than this binary simply does not serve one added since it was
+/// built, and pinion answers `UnknownIntrospectPath` — "not in its schema". That is the RIGHT
+/// failure (a loud refusal, never a wrong answer that parses, which is why adding a slot needs no
+/// `WIRE_PROTOCOL` bump), and R290 verified it with a control: the same `sprag` against a daemon
+/// built at the parent commit read `panes` cleanly and refused `pane_processes.0`.
+///
+/// What it printed, though, was `host rpc error: UnknownIntrospectPath` — a Rust enum variant, at an
+/// operator. That is exactly the class R283 measured and fixed for `report-agent` and
+/// `release-agent`, which had been leaking `InvokeRejected` the same way; those were INVOKE paths
+/// and this is the QUERY one. The remedy is the one the protocol-mismatch message already names, so
+/// the wording matches it deliberately: a person who hits either should not have to learn that they
+/// are two different mechanisms to know they want the same thing.
+///
+/// Every OTHER fault passes through untouched. This translates one refusal whose cause it can state;
+/// dressing up faults it cannot explain would be the guess-as-fact [`agent_refusal`] refuses to make.
+fn query_slot(conn: &mut HostConn, path: &str, command: &str) -> io::Result<Value> {
+    match conn.try_call("scene/query", json!({ "path": path })) {
+        Ok(value) => Ok(value),
+        Err(CallError::Fault(fault)) => {
+            Err(unknown_slot(command, path, &fault)
+                .unwrap_or_else(|| CallError::Fault(fault).into()))
+        }
+        Err(other) => Err(other.into()),
+    }
+}
+
+/// The refusal above as a pure function of the fault — `None` for anything else, which is what keeps
+/// [`query_slot`] from dressing up a fault it cannot explain.
+///
+/// Matched on the fault's structured `data`, never on its rendered line: `Display` prefers `data`
+/// and so the two agree today, but a substring test against a rendering is a test against a
+/// presentation decision, and it would also fire on a daemon that merely mentioned the word.
+/// Captured from a live daemon rather than invented — the reply is
+/// `{"code":-32602,"message":"Invalid params","data":"UnknownIntrospectPath"}`.
+fn unknown_slot(command: &str, path: &str, fault: &RpcFault) -> Option<io::Error> {
+    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownIntrospectPath" {
+        return None;
+    }
+    Some(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "{command}: this daemon does not serve {path} — it is older than this `sprag`. \
+             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
+             from the durability snapshot)",
+        ),
+    ))
+}
+
 /// Turn a refused agent invoke into a sentence about PANES — what [`report_agent`] and
 /// [`release_agent`] say instead of the raw refusal (R283).
 ///
@@ -2527,9 +2580,10 @@ fn processes(args: Vec<String>) -> io::Result<()> {
         );
     }
     let mut conn = connect(None)?;
-    let reading = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(&pane_processes_at(0)) }),
+    let reading = query_slot(
+        &mut conn,
+        &mux_action_path(&pane_processes_at(0)),
+        "processes",
     )?;
     let wire: PaneProcessesWire = serde_json::from_value(reading).map_err(|error| {
         bad_input(&format!(
@@ -4125,6 +4179,72 @@ mod tests {
         assert_eq!(
             child_sid, pid,
             "it LEADS its own session, which is what makes the hangup unreachable",
+        );
+    }
+
+    /// A slot the daemon does not serve reaches an operator as a SENTENCE with a remedy, not as a
+    /// Rust enum variant — R283's finding, on the query path this time.
+    ///
+    /// The fault is the one a live daemon actually sends, captured rather than invented: R290 asked
+    /// a running `sprag-term` for a path it has no slot for and read
+    /// `{"code":-32602,"message":"Invalid params","data":"UnknownIntrospectPath"}` off the socket.
+    /// The live half — that a daemon built at the PARENT commit refuses exactly this for
+    /// `pane_processes.0` while answering `panes` cleanly — was proven with a worktree build and a
+    /// control, and cannot be a standing test: this suite spawns the CURRENT daemon, which serves
+    /// every slot this binary knows.
+    #[test]
+    fn an_unserved_slot_is_reported_as_an_old_daemon_and_nothing_else_is() {
+        let fault = |data: Value| RpcFault {
+            code: -32602,
+            message: "Invalid params".to_owned(),
+            data: Some(data),
+        };
+        let error = unknown_slot(
+            "processes",
+            "/x/y.0",
+            &fault(json!("UnknownIntrospectPath")),
+        )
+        .expect("an unknown path is explained");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "processes: this daemon does not serve /x/y.0 — it is older than this `sprag`. \
+             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
+             from the durability snapshot)",
+        );
+
+        // THE CONTROL, and the reason this is a `data` match rather than a substring one: a
+        // different refusal is left alone, and so is a fault whose rendered line merely mentions it.
+        assert!(
+            unknown_slot(
+                "processes",
+                "/x/y.0",
+                &fault(json!("no session named \"x\""))
+            )
+            .is_none(),
+            "another refusal keeps its own words",
+        );
+        assert!(
+            unknown_slot(
+                "processes",
+                "/x/y.0",
+                &fault(json!("a pane named UnknownIntrospectPath")),
+            )
+            .is_none(),
+            "and a mention is not the refusal",
+        );
+        assert!(
+            unknown_slot(
+                "processes",
+                "/x/y.0",
+                &RpcFault {
+                    code: -32602,
+                    message: "Invalid params".to_owned(),
+                    data: None,
+                },
+            )
+            .is_none(),
+            "a fault with no detail says nothing about the daemon's age",
         );
     }
 
