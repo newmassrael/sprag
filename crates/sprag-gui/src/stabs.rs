@@ -884,7 +884,7 @@ mod tests {
         fn session_activity(&self) -> sprag_terminal::ActivityReading {
             sprag_terminal::ActivityReading {
                 age: std::time::Duration::ZERO,
-                sessions: Vec::new(),
+                value: Vec::new(),
             }
         }
         fn sessions(&self) -> Vec<SessionInfo> {

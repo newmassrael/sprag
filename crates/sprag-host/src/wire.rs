@@ -413,7 +413,7 @@ impl From<sprag_terminal::ActivityReading> for ActivityWire {
     fn from(reading: sprag_terminal::ActivityReading) -> Self {
         Self {
             sampled_ms_ago: u64::try_from(reading.age.as_millis()).unwrap_or(u64::MAX),
-            sessions: reading.sessions,
+            sessions: reading.value,
         }
     }
 }

@@ -2531,7 +2531,7 @@ mod tests {
             "session_infos_live counts the default session's one live pane",
         );
         let def_row = reading
-            .sessions
+            .value
             .iter()
             .find(|row| row.name == def_name)
             .expect("an activity row for the default session");
@@ -2550,7 +2550,7 @@ mod tests {
         );
 
         let plain_row = reading
-            .sessions
+            .value
             .iter()
             .find(|row| row.name == "plain")
             .expect("an activity row for the plain session");

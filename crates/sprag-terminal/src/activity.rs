@@ -25,21 +25,18 @@
 //! # The shape that fixes it
 //!
 //! A sample is [ASKED FOR](ActivitySampler::read) with the staleness the caller will accept, and
-//! answered with the age it actually has:
-//!
-//! * within the caller's tolerance, the held sample is cloned — no filesystem at all;
-//! * otherwise ONE fresh sample is taken while every other asker waits on it, so N concurrent
-//!   readers cost one `/proc` walk rather than N;
-//! * with nobody asking, nothing is sampled. The idle cost is zero, which no timer-driven refresher
-//!   can say.
+//! answered with the age it actually has. That machinery — hold, coalesce, report the age — is
+//! [`Sampled`], which this module is the first user of; what stays HERE is the part that is
+//! about sessions, which is this module's own `sample` and its locking order.
 //!
 //! The cadence therefore lives in exactly one place — the tolerance a caller declares — instead of
 //! being split between a client-side timer and a daemon-side cache that would have to agree.
 
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::registry::SessionRegistry;
+use crate::sampled::Sampled;
 
 /// One session's live ACTIVITY: where it is working, on what, and what it is serving.
 ///
@@ -81,28 +78,10 @@ pub struct SessionActivity {
 
 /// A whole [`ActivitySampler`] reading: every session's activity, and how old the reading is.
 ///
-/// The age travels WITH the rows rather than being left for the reader to assume. A sampled fact
-/// read without its age is a fact whose freshness the caller has to guess at, and the guess is
-/// wrong exactly when it matters — a `ports` list that predates the server somebody just started
-/// looks identical to one that does not.
-///
 /// One age for the whole reading, not one per row, because one pass produces them all: the `/proc`
 /// walk that attributes listening sockets is shared across every session, so no row is fresher than
-/// another.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActivityReading {
-    /// How long ago the [`sessions`](Self::sessions) below were sampled. Zero for a sample taken to
-    /// answer this very read.
-    pub age: Duration,
-    /// One row per session in the registry, in the registry's own order.
-    pub sessions: Vec<SessionActivity>,
-}
-
-/// The held sample and the instant it was taken — the sampler's whole state.
-struct Held {
-    taken: Instant,
-    sessions: Vec<SessionActivity>,
-}
+/// another. Why an age travels at all is [`Reading`](crate::Reading)'s own doc.
+pub type ActivityReading = crate::Reading<Vec<SessionActivity>>;
 
 /// The one place a session's [activity](SessionActivity) is sampled, and the one place a sample is
 /// held between reads.
@@ -110,20 +89,20 @@ struct Held {
 /// Shared (`Arc`) by every arm that serves the question — the wire slot and the in-process host —
 /// so two readers can neither disagree about what a field means nor pay twice for the same walk.
 ///
+/// A thin named wrapper over [`Sampled`], and the two halves are deliberately split there: the
+/// generic holds the CACHE and the coalescing, this owns the QUESTION. Binding the sampling
+/// function to the type is the point — a bare `Sampled<Vec<SessionActivity>>` would let two call
+/// sites hand it two different sampling functions and cache two different facts in one slot.
+///
 /// # Locking
 ///
 /// The sampler's own lock is taken FIRST and held across the sample, which acquires the registry
 /// lock and then each pool lock in turn (never nested — [`SessionRegistry::session_infos_live`]'s
 /// discipline, and this follows it for the same reason). So the order is sampler → registry → pool,
 /// and nothing anywhere takes them in the other direction.
-///
-/// Holding the lock across the walk is not an oversight to be optimised away later: it IS the
-/// coalescing. A second reader arriving mid-walk waits, then finds a sample fresh enough for any
-/// tolerance it could have declared, and pays nothing.
 #[derive(Default)]
 pub struct ActivitySampler {
-    /// `None` until the first read asks for one — nothing is sampled on a box nobody is looking at.
-    held: Mutex<Option<Held>>,
+    held: Sampled<Vec<SessionActivity>>,
 }
 
 impl ActivitySampler {
@@ -138,41 +117,13 @@ impl ActivitySampler {
     /// `max_age` is the caller's STALENESS TOLERANCE, and it is the only cadence control in the
     /// design: a one-shot human command (`sprag ls`) passes [`Duration::ZERO`] and waits for its own
     /// fresh walk, while a sidebar poll passes a window it can live with and is answered from the
-    /// held sample for free. A caller that asks for zero tolerance is asking to wait, which is why
-    /// this samples in place rather than scheduling and answering stale.
-    ///
-    /// Note what `max_age` does NOT do: it never makes an answer OLDER than it has to be. A sample
-    /// taken a moment ago for somebody else is handed to a `Duration::ZERO` caller only if it is
-    /// genuinely younger than the tolerance — and `ZERO` admits nothing, so that caller always
-    /// samples.
+    /// held sample for free. See [`Sampled::read`] for what that tolerance does and does not do.
     pub fn read(
         &self,
         registry: &Arc<Mutex<SessionRegistry>>,
         max_age: Duration,
     ) -> ActivityReading {
-        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        // Re-checked AFTER the lock, not before it: a reader that waited out somebody else's walk
-        // arrives here with a sample that did not exist when it started waiting. Checking before
-        // would make every concurrent reader take its own walk, which is the whole cost this exists
-        // to remove.
-        if let Some(current) = held.as_ref() {
-            let age = current.taken.elapsed();
-            if age < max_age {
-                return ActivityReading {
-                    age,
-                    sessions: current.sessions.clone(),
-                };
-            }
-        }
-        let sessions = sample(registry);
-        *held = Some(Held {
-            taken: Instant::now(),
-            sessions: sessions.clone(),
-        });
-        ActivityReading {
-            age: Duration::ZERO,
-            sessions,
-        }
+        self.held.read(max_age, || sample(registry))
     }
 }
 
@@ -247,7 +198,7 @@ mod tests {
             "nothing was held, so the tolerance cannot be met by anything but a fresh sample",
         );
         assert_eq!(
-            reading.sessions.len(),
+            reading.value.len(),
             1,
             "one row per session in the registry"
         );
@@ -269,7 +220,7 @@ mod tests {
             .expect("a free name");
         let second = sampler.read(&registry, Duration::from_secs(3600));
         assert_eq!(
-            second.sessions.len(),
+            second.value.len(),
             1,
             "the held sample predates the second session, so it cannot mention it",
         );
@@ -292,7 +243,7 @@ mod tests {
             "a caller admitting no staleness is answered by a sample taken for it",
         );
         assert_eq!(
-            second.sessions.len(),
+            second.value.len(),
             2,
             "and that fresh sample sees the session the held one could not",
         );
@@ -307,11 +258,7 @@ mod tests {
             .new_session(Some("work"))
             .expect("a free name");
         let reading = ActivitySampler::new().read(&registry, Duration::ZERO);
-        let names: Vec<&str> = reading
-            .sessions
-            .iter()
-            .map(|row| row.name.as_str())
-            .collect();
+        let names: Vec<&str> = reading.value.iter().map(|row| row.name.as_str()).collect();
         assert_eq!(names, ["0", "work"], "registry order, addressed by name");
     }
 }

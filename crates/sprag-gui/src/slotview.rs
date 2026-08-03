@@ -470,7 +470,7 @@ impl SlotView {
     /// that needs both joins them by NAME (a session's address) rather than by position, which the
     /// sidebar does.
     pub(crate) fn session_activity(&self) -> Vec<sprag_terminal::SessionActivity> {
-        self.host.session_activity().sessions
+        self.host.session_activity().value
     }
 
     /// The session this client is attached to — for the sidebar's current-row highlight.
@@ -1127,7 +1127,7 @@ mod tests {
         fn session_activity(&self) -> sprag_terminal::ActivityReading {
             sprag_terminal::ActivityReading {
                 age: std::time::Duration::ZERO,
-                sessions: Vec::new(),
+                value: Vec::new(),
             }
         }
         fn sessions(&self) -> Vec<SessionInfo> {

@@ -603,7 +603,7 @@ fn query_activity(conn: &mut HostConn) -> io::Result<sprag_terminal::ActivityRea
     let wire: ActivityWire = read_slot(conn, mux_action_path(&session_activity_at(max_age)))?;
     Ok(sprag_terminal::ActivityReading {
         age: Duration::from_millis(wire.sampled_ms_ago),
-        sessions: wire.sessions,
+        value: wire.sessions,
     })
 }
 
@@ -1006,7 +1006,7 @@ fn spawn_activity_refresh(
                     Ok(reading) => {
                         let moved = lock_activity(&activity)
                             .as_ref()
-                            .is_none_or(|held| held.reading.sessions != reading.sessions);
+                            .is_none_or(|held| held.reading.value != reading.value);
                         store_activity(&activity, reading);
                         if moved {
                             on_change();
@@ -2175,11 +2175,11 @@ impl HostClient for WireHost {
         lock_activity(&self.activity).as_ref().map_or_else(
             || sprag_terminal::ActivityReading {
                 age: Duration::ZERO,
-                sessions: Vec::new(),
+                value: Vec::new(),
             },
             |entry| sprag_terminal::ActivityReading {
                 age: entry.reading.age + entry.arrived.elapsed(),
-                sessions: entry.reading.sessions.clone(),
+                value: entry.reading.value.clone(),
             },
         )
     }
