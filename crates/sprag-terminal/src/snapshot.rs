@@ -202,6 +202,18 @@ pub struct PaneSnapshot {
     /// keeps the addition additive — a pre-Slice-5 snapshot loads with `None`, the old behaviour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<SshRemote>,
+    /// The pane whose occupant asked for this one ([`Pane::opened_by`](crate::Pane::opened_by)), or
+    /// `None` for a pane nobody claims.
+    ///
+    /// Durable because pane IDS are durable: the layout tree brings every pane back under its old
+    /// id, so an opener id still names the same pane after a reboot. A provenance dropped here would
+    /// come back as "nobody asked for this", turning every agent-opened pane into one its opener can
+    /// no longer close — the agent surface gates that verb on exactly this fact.
+    ///
+    /// `#[serde(default)]` on the usual additive terms: a pre-R294 snapshot loads with `None`, which
+    /// is what the daemons that wrote it could express.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by: Option<PaneId>,
     /// The pane's size, so the restored shell opens at the same dimensions.
     pub cols: u16,
     pub rows: u16,
@@ -467,6 +479,10 @@ pub struct PaneRestore {
     /// `Some` tells the host to RECONNECT (`ssh -t user@host`, allowlist bypassed) rather than run
     /// the recorded argv through the exact-command gate, and to re-mark the restored pane remote.
     pub remote: Option<SshRemote>,
+    /// The pane whose occupant asked for this one, or `None`. Carried through the plan for the same
+    /// reason [`remote`](Self::remote) is: the host re-stamps it on the reborn pane, and a
+    /// provenance the plan dropped could not be recovered from anywhere else.
+    pub opened_by: Option<PaneId>,
     /// The size to open at.
     pub cols: u16,
     pub rows: u16,
@@ -482,6 +498,7 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
         command_label: pane.command_label().to_owned(),
         argv: pane.argv().to_vec(),
         remote: pane.remote().cloned(),
+        opened_by: pane.opened_by(),
         cols,
         rows,
     }
@@ -685,6 +702,42 @@ mod tests {
         assert_eq!(snap.remote, Some(endpoint));
     }
 
+    /// A pane's PROVENANCE reaches the restore plan the host acts on, which is the claim that
+    /// matters — a snapshot field the plan dropped would restore every agent-opened pane as one
+    /// nobody asked for, and the agent surface's close gate reads exactly that fact.
+    #[test]
+    fn a_panes_opener_reaches_the_restore_plan() {
+        let mut snap = snap_of("0", vec![win("0", vec![pane(0), pane(1)])]);
+        snap.sessions[0].windows[0].panes[1].opened_by = Some(PaneId(0));
+        let (_, plan) = SessionRegistry::from_snapshot(snap).unwrap();
+        assert_eq!(
+            plan.panes
+                .iter()
+                .map(|p| (p.id, p.opened_by))
+                .collect::<Vec<_>>(),
+            vec![(PaneId(0), None), (PaneId(1), Some(PaneId(0)))],
+            "the pane that was asked for comes back knowing who asked, and the one that was not \
+             comes back claimed by nobody",
+        );
+    }
+
+    /// A snapshot written before provenance existed still loads, and every pane in it comes back
+    /// claimed by nobody — the additive half of the field, which is what keeps a user's saved
+    /// sessions readable across the upgrade.
+    #[test]
+    fn a_pre_provenance_snapshot_loads_with_no_opener() {
+        let stored = serde_json::json!({
+            "id": 4,
+            "cwd": null,
+            "command_label": "sh",
+            "argv": ["sh"],
+            "cols": 80,
+            "rows": 24,
+        });
+        let decoded: PaneSnapshot = serde_json::from_value(stored).expect("a pre-R294 pane loads");
+        assert_eq!(decoded.opened_by, None);
+    }
+
     /// A snapshot whose version this build does not understand is REFUSED — the daemon boots
     /// empty rather than parsing a format it cannot.
     #[test]
@@ -797,6 +850,7 @@ mod tests {
             command_label: "sh".to_owned(),
             argv: vec!["sh".to_owned()],
             remote: None,
+            opened_by: None,
             cols: 80,
             rows: 24,
         }

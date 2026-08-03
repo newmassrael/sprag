@@ -1363,6 +1363,14 @@ impl Host {
                     if let Some(remote) = pane.remote {
                         lock(&pool).set_pane_remote(pane.id, remote);
                     }
+                    // And keep its PROVENANCE, for a sharper reason than the chaining above: pane
+                    // ids come back exactly, so an agent that opened panes before the reboot still
+                    // names them correctly afterwards — and the agent surface's "you may close only
+                    // what you opened" gate reads this fact. Dropping it here would quietly convert
+                    // every agent-opened pane into one nothing can clean up.
+                    if let Some(opener) = pane.opened_by {
+                        lock(&pool).set_pane_opened_by(pane.id, opener);
+                    }
                     restored += 1;
                 }
                 Err(e) => tracing::warn!(
@@ -2990,6 +2998,52 @@ mod tests {
         );
     }
 
+    /// A pane's PROVENANCE survives a reboot, driven through the real `Host::restore` loop rather
+    /// than through the plan it consumes.
+    ///
+    /// The loop is what this pins, deliberately: the snapshot half and the plan half each have
+    /// their own test in `sprag-terminal`, and both stayed green while this path dropped the fact on
+    /// the floor. Ids come back exactly, so a provenance that did not would leave every
+    /// agent-opened pane claimed by nobody — closable by no agent, and invisible to the person
+    /// asking what opened it. See [`Pane::opened_by`](sprag_terminal::Pane::opened_by).
+    #[test]
+    fn a_restore_brings_back_who_asked_for_a_pane() {
+        let live = Host::new((80, 24));
+        let opener = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        let opened = live
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .unwrap();
+        lock(&live.workspace()).set_pane_opened_by(opened, opener);
+
+        let restored = Host::new((80, 24));
+        restored
+            .restore(
+                sprag_terminal::snapshot(live.registry()),
+                &std::collections::HashSet::new(),
+                |_| None,
+                || None,
+                |_| Vec::new(),
+            )
+            .expect("a valid snapshot restores");
+
+        let pool = restored.workspace();
+        let pool = lock(&pool);
+        assert_eq!(
+            pool.pane(opened)
+                .expect("the opened pane came back")
+                .opened_by(),
+            Some(opener),
+            "the reborn pane still knows which pane asked for it",
+        );
+        assert_eq!(
+            pool.pane(opener).expect("the opener came back").opened_by(),
+            None,
+            "and a pane nobody asked for is not handed an opener by the restore",
+        );
+    }
+
     /// Restore honors a FLOATED pane (comes back in the float set, not the tiling) and a pane with
     /// NO recorded cwd (re-spawns anyway, falling back to the daemon's cwd). Driven from a
     /// hand-authored snapshot so both are exercised through the real `restore` path — the
@@ -3016,6 +3070,7 @@ mod tests {
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
                             remote: None,
+                            opened_by: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -3025,6 +3080,7 @@ mod tests {
                             command_label: "sh".to_owned(),
                             argv: vec!["sh".to_owned()],
                             remote: None,
+                            opened_by: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -3087,6 +3143,7 @@ mod tests {
                         command_label: "cat".to_owned(),
                         argv: vec!["cat".to_owned()], // allowlisted -> re-run exactly
                         remote: None,
+                        opened_by: None,
                         cols: 80,
                         rows: 24,
                     }],
@@ -3145,6 +3202,7 @@ mod tests {
                                 host: "srv".to_owned(),
                                 port: None,
                             }),
+                            opened_by: None,
                             cols: 80,
                             rows: 24,
                         },
@@ -3155,6 +3213,7 @@ mod tests {
                             // A shell that merely had `ssh` in its argv — NOT a sanctioned workspace.
                             argv: vec!["ssh".to_owned(), "host".to_owned(), "danger".to_owned()],
                             remote: None,
+                            opened_by: None,
                             cols: 80,
                             rows: 24,
                         },

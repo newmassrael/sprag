@@ -80,6 +80,20 @@ pub struct Pane {
     /// ordinary local pane. Distinct from [`argv`](Self::argv), which merely happens to contain
     /// `ssh`: a shell with `ssh` in its history is not a remote workspace and is never reconnected.
     remote: Option<SshRemote>,
+    /// The pane whose OCCUPANT asked for this one, `None` for a pane nobody claims — a person's
+    /// split, a plain `sprag split-window`, the session's birth pane.
+    ///
+    /// A pane's PROVENANCE, and the only durable answer to "what did the agent in that pane open?".
+    /// It is what lets an agent surface refuse to close somebody else's pane while still letting it
+    /// clean up after itself across a context reset, a client restart or a reboot — a set the asking
+    /// process kept in memory would be lost at exactly the moment it is needed.
+    ///
+    /// Safe as an id because pane ids are monotonic and NEVER reused (see
+    /// [`spawn_restored`](Workspace::spawn_restored), which reserves a restored id against reuse):
+    /// a provenance that outlives its opener names a pane that is gone, never a DIFFERENT pane that
+    /// arrived later. It is deliberately not cleared when the opener closes — the true statement is
+    /// still "pane 3 asked for this", and clearing it would strand the pane beyond anyone's reach.
+    opened_by: Option<PaneId>,
 }
 
 impl Pane {
@@ -114,6 +128,13 @@ impl Pane {
     #[must_use]
     pub fn remote(&self) -> Option<&SshRemote> {
         self.remote.as_ref()
+    }
+
+    /// The pane whose occupant asked for this one — this pane's provenance, `None` for a pane
+    /// nobody claims. See the [field](Self::opened_by) for what rests on it.
+    #[must_use]
+    pub fn opened_by(&self) -> Option<PaneId> {
+        self.opened_by
     }
 
     /// The child's self-reported window title (`OSC 0` / `OSC 2`), `None` until it sets
@@ -284,6 +305,13 @@ pub struct PaneInfo {
     /// transmit-time cursor cell. Empty when the child transmitted none. A display client
     /// composites each over the grid; see [`Pane::images`].
     pub images: Vec<Image>,
+    /// The pane whose OCCUPANT asked for this one, `None` for a pane nobody claims — see
+    /// [`Pane::opened_by`], which this republishes verbatim.
+    ///
+    /// Unlike every DISPLAY fact above it, this is fixed at birth and never moves, which is what
+    /// makes it usable as the thing an agent surface gates a destructive verb on: a reader that
+    /// acts on it cannot be acting on a fact that changed under it.
+    pub opened_by: Option<u64>,
 }
 
 /// Everything a RESTORED pane is reborn from: the recorded identity the layout still references it
@@ -586,6 +614,7 @@ impl Workspace {
             command_label: label,
             argv,
             remote: None,
+            opened_by: None,
         });
         Ok(id)
     }
@@ -651,6 +680,7 @@ impl Workspace {
             command_label: label,
             argv,
             remote: None,
+            opened_by: None,
         });
         Ok(())
     }
@@ -740,6 +770,21 @@ impl Workspace {
         }
     }
 
+    /// Record that `opener`'s occupant is the one that asked for the pane with `id`
+    /// ([`Pane::opened_by`]). Set AFTER the spawn for [`set_pane_remote`](Self::set_pane_remote)'s
+    /// reason — provenance is metadata the pane process does not need — by the birth path and by a
+    /// restore. A no-op for an unknown id.
+    ///
+    /// Takes no interest in whether `opener` names a live pane: this pool is the membership
+    /// authority for ONE window, and an opener may legitimately sit in another. Whoever accepts a
+    /// provenance from a caller is the one that must check it against the whole session (the host's
+    /// `spawn`/`split` actions do, before ever reaching here).
+    pub fn set_pane_opened_by(&mut self, id: PaneId, opener: PaneId) {
+        if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
+            pane.opened_by = Some(opener);
+        }
+    }
+
     /// All panes, in spawn order.
     #[must_use]
     pub fn panes(&self) -> &[Pane] {
@@ -775,6 +820,7 @@ impl Workspace {
                     clipboard_query,
                     clipboard_query_seq,
                     images: p.images(),
+                    opened_by: p.opened_by.map(|opener| opener.0),
                 }
             })
             .collect()
@@ -980,6 +1026,55 @@ mod tests {
         assert_eq!(a, PaneId(0));
         assert_eq!(b, PaneId(1));
         assert_eq!(ws.panes().len(), 2);
+    }
+
+    #[test]
+    fn a_pane_claims_no_opener_until_one_is_recorded() {
+        let mut ws = Workspace::new((80, 24));
+        let opener = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let opened = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        assert_eq!(
+            ws.list().iter().filter_map(|p| p.opened_by).count(),
+            0,
+            "a plain spawn is a pane nobody claims — the default has to be the person's, not an \
+             agent's, or every GUI split would read as agent-opened",
+        );
+        ws.set_pane_opened_by(opened, opener);
+        assert_eq!(
+            ws.pane(opened).unwrap().opened_by(),
+            Some(opener),
+            "the pane itself carries the provenance",
+        );
+        assert_eq!(
+            ws.list()
+                .iter()
+                .find(|p| p.id == opened.0)
+                .unwrap()
+                .opened_by,
+            Some(opener.0),
+            "and it reaches the published view a client reads",
+        );
+        assert_eq!(
+            ws.pane(opener).unwrap().opened_by(),
+            None,
+            "recording it on one pane does not stamp the opener itself",
+        );
+    }
+
+    #[test]
+    fn recording_an_opener_for_a_pane_this_pool_does_not_hold_changes_nothing() {
+        // The pool is ONE window's membership authority, so it cannot answer whether a target is
+        // absent or merely elsewhere — it just records nothing. The check belongs to whoever
+        // accepts a provenance from a caller (the host's spawn/split actions).
+        let mut ws = Workspace::new((80, 24));
+        let live = ws.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        ws.set_pane_opened_by(PaneId(999), live);
+        assert_eq!(
+            ws.panes().len(),
+            1,
+            "no pane was invented for the absent id"
+        );
+        assert_eq!(ws.pane(live).unwrap().opened_by(), None);
     }
 
     #[test]

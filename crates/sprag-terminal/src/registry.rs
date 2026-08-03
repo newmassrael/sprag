@@ -1693,6 +1693,7 @@ impl SessionRegistry {
                         cwd: p.cwd.clone(),
                         argv: p.argv.clone(),
                         remote: p.remote.clone(),
+                        opened_by: p.opened_by,
                         cols: p.cols,
                         rows: p.rows,
                     });
