@@ -1940,6 +1940,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_wait_tool_names_every_change_the_daemon_can_report() {
+        // ⚠ TWO REGISTER ITEMS, CLOSED BY ONE ASSERTION — and the first was live when this was
+        // written: `pane_selected` was missing from the description while the daemon reported it, so
+        // an agent could be woken by a change the tool had never told it existed, and `kinds:
+        // ["pane_selected"]` looked like a word an agent had invented.
+        //
+        // R291 registered this as "the MCP tool description is the ONLY place the event vocabulary is
+        // written out" — prose, in another crate, where no compiler or test could notice it drifting.
+        // It is not prose-only any more: the list is derived from `EventKind::ALL` here, so a kind
+        // added to the daemon fails this test until the surface an agent reads mentions it.
+        let description = tools_list()["tools"]
+            .as_array()
+            .expect("a tool array")
+            .iter()
+            .find(|tool| tool["name"] == "wait_for_change")
+            .expect("the wait tool")["description"]
+            .as_str()
+            .expect("a description")
+            .to_owned();
+
+        for kind in sprag_host::events::EventKind::ALL {
+            assert!(
+                description.contains(kind.wire_str()),
+                "the wait tool must name `{}` — an agent cannot ask for, or make sense of, a change \
+                 this description does not mention",
+                kind.wire_str(),
+            );
+        }
+
+        // And the SECOND item: the sampling ceiling was spelled "about 5 seconds" in English, a third
+        // spelling of `SWEEP_INTERVAL` after the const and the sweep's own docs. The tool table is a
+        // `json!` literal so it cannot interpolate a const, but a test can hold the two together.
+        let seconds = sprag_host::agent::SWEEP_INTERVAL.as_secs();
+        assert!(
+            description.contains(&format!("{seconds} seconds")),
+            "the description states the sampling delay as `{seconds} seconds`, which is \
+             SWEEP_INTERVAL — if that constant moves, this sentence is the one nothing else would \
+             correct",
+        );
+    }
+
+    #[test]
     fn tools_list_advertises_every_tool_with_object_schemas() {
         let tools = tools_list();
         let names: Vec<&str> = tools["tools"]
