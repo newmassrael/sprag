@@ -95,8 +95,8 @@ use sprag_host::wire::{
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, cells_slot_at,
-    find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    cells_slot_at, find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -108,7 +108,7 @@ use sprag_rpc::{
     new_gui_client_id,
 };
 use sprag_terminal::{
-    LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
+    LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo, ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
@@ -2035,6 +2035,62 @@ impl HostClient for WireHost {
             self.refresh_view();
         }
         born
+    }
+
+    /// Fill the target's window with it alone, or give the arrangement back, over the wire.
+    ///
+    /// The pane is NAMED even though the action would default an absent one to the session's active
+    /// pane: this call serves a gesture that happened on a pane, and the daemon's active pane can
+    /// move between the gesture and the request.
+    ///
+    /// # Why the arrangement is re-read here, and only when something moved
+    ///
+    /// A zoom changes what this client draws — the projection is the arrangement filtered by the
+    /// zoomed pane — but `zoom_pane` answers `{pane, zoomed, changed}`, not a `LayoutSnapshot`, so
+    /// there is nothing to install the way `set_layout` and `set_floating` install their answers.
+    /// The mirror is therefore refreshed from the LAYOUT slot it already reads, rather than by
+    /// teaching a second answer to carry an arrangement — one reader of that encoding, which is what
+    /// keeps a client from coming to disagree with the daemon about it.
+    ///
+    /// The caller that NEEDS it is `sprag-tui`, not the GUI: its key arm calls this and then
+    /// reconciles and paints in the same breath, off `HostClient::layout` — this mirror. Without the
+    /// re-read it would paint the pre-zoom tiling and correct itself only on the next poll wake, a
+    /// visible lag on the user's own keystroke. The GUI converges either way, through the wake the
+    /// daemon sends when `changed`.
+    ///
+    /// **And that is why NO TEST PINS THIS.** Both frontends end up correct, so every assertion
+    /// available — the pixel smoke's included, measured by removing this block and watching it stay
+    /// green — is satisfied with or without it. It is kept because the TUI's synchronous reconcile
+    /// is a design already in force, not because anything here proves it; recorded rather than
+    /// claimed.
+    ///
+    /// A re-assertion that moved nothing skips the read entirely: `changed` is exactly the fact that
+    /// says whether there is anything to re-read.
+    fn zoom_pane(&self, target: PaneId, on: Option<bool>) -> Option<ZoomOutcome> {
+        let mut args = json!({ "pane": target.0 });
+        if let Some(on) = on {
+            args["on"] = json!(on);
+        }
+        let answer = self.request(
+            "scene/invoke",
+            invoke(&mux_action_path(ZOOM_PANE_ACTION), args),
+            "zoom_pane",
+        )?;
+        let outcome = ZoomOutcome {
+            zoomed: answer.get("zoomed")?.as_bool()?,
+            changed: answer.get("changed")?.as_bool()?,
+        };
+        if outcome.changed {
+            let current = lock_layout(&self.layout).window.clone();
+            let mut conn = self.conn.borrow_mut();
+            match query_layout(&mut conn) {
+                Ok(snapshot) => store_layout(&self.layout, &current, snapshot),
+                Err(error) => {
+                    tracing::debug!(target: "sprag_gui::wire", %error, "zoom_pane: layout re-read failed");
+                }
+            }
+        }
+        Some(outcome)
     }
 
     /// Close pane `id` over the wire. The daemon answers `Rejected` for an absent pane, which

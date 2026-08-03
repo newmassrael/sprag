@@ -52,7 +52,7 @@ use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneDir,
     PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, SessionInfo, SessionRegistry,
-    Snapshot, SnapshotError, SplitDir, SplitSide, WindowInfo, Workspace,
+    Snapshot, SnapshotError, SplitDir, SplitSide, WindowInfo, Workspace, ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -625,6 +625,35 @@ pub trait HostClient {
     /// Defaulted to `None`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
     fn split(&self, target: PaneId, dir: SplitDir, before: bool) -> Option<PaneId> {
         let (_, _, _) = (target, dir, before);
+        None
+    }
+
+    /// Fill `target`'s window with `target` alone, or give the arrangement back — tmux
+    /// `resize-pane -Z`, and the gesture half of [`crate::wire::ZOOM_PANE_ACTION`].
+    ///
+    /// `on` absent TOGGLES, so one binding is a switch whichever pane it is aimed at; `Some(true)` /
+    /// `Some(false)` are the explicit forms. The whole tri-state travels rather than being collapsed
+    /// here, because it is one vocabulary from the CLI flag (`-Z` / `-u`) through the bound action to
+    /// the wire argument, and a method that only toggled would make an explicit binding
+    /// unexpressible.
+    ///
+    /// `target` is stated explicitly for [`split`](Self::split)'s reason and one more: a gesture
+    /// happened ON a pane. The wire action would resolve an absent `pane` to the session's active
+    /// one, and a client that leaned on that could zoom somewhere else entirely if the active pane
+    /// moved between the click and the call — the tear
+    /// [`select_pane`](Self::select_pane) sends an id rather than a direction to avoid.
+    ///
+    /// [`ZoomOutcome`] rather than a bool, because `{zoomed, changed}` is total over four distinct
+    /// cases (now filling / already filling / arrangement back / arrangement already showing) and a
+    /// caller handed one flag would have to guess which it had.
+    ///
+    /// **`None` means the zoom did not happen**: `target` names no pane of the scoped session, or
+    /// one its window does not TILE because a client floated it out. Both are refusals rather than
+    /// quiet no-ops, which is the rule the whole placement family shares.
+    ///
+    /// Defaulted to `None`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    fn zoom_pane(&self, target: PaneId, on: Option<bool>) -> Option<ZoomOutcome> {
+        let (_, _) = (target, on);
         None
     }
 
@@ -2039,6 +2068,22 @@ impl HostClient for Host {
         Some(id)
     }
 
+    /// Fill the target's window with it alone, or give the arrangement back.
+    ///
+    /// One registry call: the window is DERIVED from the pane, so this needs no scope beyond the id
+    /// — and the registry's own `zoom_pane` reconciles that window before it decides, which is what
+    /// makes a freshly split pane zoomable before any client has re-read the arrangement.
+    ///
+    /// The scope IS consulted first, and only to refuse a pane of another session: this trait's
+    /// caller is a client acting on the session it is showing, and a `PaneId` is registry-unique, so
+    /// without the check a stale id from a session this client has left would zoom a window nobody
+    /// here is looking at.
+    fn zoom_pane(&self, target: PaneId, on: Option<bool>) -> Option<ZoomOutcome> {
+        let scope = self.scope();
+        let session = scope.session();
+        lock(&self.registry).zoom_pane(session, target, on)
+    }
+
     /// Remove the pane, bound so the pool guard drops FIRST and the reaped `Pane`'s blocking `Drop`
     /// (kill / wait / join the reader) runs outside the lock — the discipline the `close` wire
     /// action keeps for the same reason.
@@ -2476,6 +2521,62 @@ mod tests {
         assert!(
             host.pane_ids().is_empty(),
             "leaving an empty window rather than refusing"
+        );
+    }
+
+    /// The trait's zoom fills a window with one pane, gives it back, and REFUSES a pane this
+    /// session does not hold — the three outcomes a client's binding meets.
+    ///
+    /// The tri-state is asserted as a tri-state rather than as a toggle used twice: `on` absent has
+    /// to flip whatever is in force, and `Some(false)` on an unzoomed window has to be the
+    /// distinguishable "arrangement already showing" rather than a second toggle. Those two are the
+    /// pair a caller cannot tell apart if `changed` is dropped.
+    ///
+    /// **REVERT-PROOF: return `Some(ZoomOutcome{..})` for an unknown pane and the last assertion
+    /// fails** — a client would report a zoom that never happened, and its own layout mirror would
+    /// then be re-read for nothing.
+    #[test]
+    fn the_trait_zoom_fills_a_window_gives_it_back_and_refuses_a_foreign_pane() {
+        let host = Host::new((40, 6));
+        let first = host.new_pane().expect("a shell is born");
+        let second = host
+            .split(first, SplitDir::Vertical, false)
+            .expect("splits");
+
+        let filled = host.zoom_pane(second, None).expect("a tiled pane zooms");
+        assert_eq!(
+            (filled.zoomed, filled.changed),
+            (true, true),
+            "the toggle filled the window with the pane it named",
+        );
+        assert_eq!(
+            host.layout().zoomed,
+            Some(second),
+            "and the arrangement NAMES that pane, which is what every client projects through",
+        );
+
+        assert_eq!(
+            host.zoom_pane(second, Some(true)).map(|o| o.changed),
+            Some(false),
+            "re-asserting the state in force moves nothing, and says so",
+        );
+        assert_eq!(
+            host.zoom_pane(second, None).map(|o| (o.zoomed, o.changed)),
+            Some((false, true)),
+            "the same toggle gives the arrangement back",
+        );
+        assert_eq!(
+            host.zoom_pane(second, Some(false))
+                .map(|o| (o.zoomed, o.changed)),
+            Some((false, false)),
+            "...and asking for that again is the FOURTH case, not a second toggle",
+        );
+        assert_eq!(host.layout().zoomed, None);
+
+        assert_eq!(
+            host.zoom_pane(PaneId(999), None),
+            None,
+            "a pane this session does not hold is refused, not toggled",
         );
     }
 
