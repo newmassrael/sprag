@@ -1066,11 +1066,18 @@ fn tool_pane_layout() -> Result<String, String> {
 /// different pane. This translates an IDENTITY (a pane's id and its number name the same pane); it
 /// does not assemble one fact from two instants.
 fn tool_pane_processes(args: &Value) -> Result<String, String> {
-    let wanted = match args.get("pane") {
+    // The target is PARSED here and RESOLVED against the listing below — never resolved by a helper
+    // that reads its own. This function's whole discipline is that its two reads are ordered and
+    // their residual is said out loud; a third read hidden inside the argument parse would break it
+    // silently, resolving the caller's `pane` at an instant neither of the two below describes.
+    let target = match args.get("pane") {
         None | Some(Value::Null) => None,
-        Some(_) => Some(pane_number(args)?),
+        Some(_) => Some(pane_target(args)?),
     };
     let panes = query_panes()?;
+    let wanted = target
+        .map(|target| resolve_in(&panes, &target).map(|pane| pane.number))
+        .transpose()?;
     let answer = host_call(
         "scene/query",
         json!({ "path": mux_action_path(&pane_processes_at(0)) }),
@@ -1378,11 +1385,13 @@ fn tool_read_pane_links(args: &Value) -> Result<String, String> {
 /// size, and anchor cell. An agent can't OCR an image, but CAN learn one is present and where; tmux
 /// shows no inline images at all, let alone as data.
 fn tool_read_pane_images(args: &Value) -> Result<String, String> {
-    let number = pane_number(args)?;
+    // The target is parsed, then resolved against the listing THIS call reads — never through a
+    // helper that queries on its own. Two queries here would resolve the caller's `pane` against
+    // one instant and read the pane at another, which is the torn read a NAME exists to prevent.
+    let target = pane_target(args)?;
     let panes = query_panes()?;
-    let pane = panes
-        .get(number - 1)
-        .ok_or_else(|| format!("no pane number {number} (there are {})", panes.len()))?;
+    let pane = resolve_in(&panes, &target)?;
+    let number = pane.number;
     if pane.images.is_empty() {
         return Ok("This pane shows no inline images.".to_owned());
     }
@@ -1894,13 +1903,10 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
     }
     let selected: Vec<&PaneInfo> = match args.get("pane") {
         Some(_) => {
-            let number = pane_number(args)?;
-            vec![panes.iter().find(|p| p.number == number).ok_or_else(|| {
-                format!(
-                    "no pane {number}; this terminal has {} pane(s). Call list_panes.",
-                    panes.len()
-                )
-            })?]
+            // Resolved against the listing ALREADY READ above, for [`tool_read_pane_images`]'
+            // reason — a resolver with a query of its own would name one instant's pane and answer
+            // about another's.
+            vec![resolve_in(&panes, &pane_target(args)?)?]
         }
         None => panes.iter().collect(),
     };
@@ -2224,14 +2230,11 @@ fn render_events(events: &[Value], panes: &[PaneInfo]) -> String {
 /// every answer here is prefixed by [`manifest_caveat`] when there is one. The `sprag agent` verb
 /// does the same thing for a person; this is the same fact reaching the reader that acts on it.
 fn tool_agent_explain(args: &Value) -> Result<String, String> {
-    let number = pane_number(args)?;
+    // ONE reading of the listing, for [`tool_read_pane_images`]' reason.
+    let target = pane_target(args)?;
     let panes = query_panes()?;
-    let pane = panes.iter().find(|p| p.number == number).ok_or_else(|| {
-        format!(
-            "no pane {number}; this terminal has {} pane(s). Call list_panes.",
-            panes.len()
-        )
-    })?;
+    let pane = resolve_in(&panes, &target)?;
+    let number = pane.number;
     // In front of EVERY branch below, and most of all the one that says no manifest claims this
     // pane: that sentence is also what an unparsed claim looks like from here, and sending a reader
     // off to write an `[[agent]]` block they have already written is the trap this closes.
@@ -2335,17 +2338,18 @@ fn resolve_in<'a>(panes: &'a [PaneInfo], target: &PaneTarget) -> Result<&'a Pane
 
 /// Resolve a tool's `pane` argument against one reading of the live listing, answering the pane's
 /// 1-based NUMBER (what an answer says back to the caller) and its host ID (what the wire takes).
+///
+/// **The only resolver here that reads.** A tool that needs the listing for anything else parses
+/// with [`pane_target`] and resolves with [`resolve_in`] against the listing it already has — never
+/// through a helper with a query of its own, which would name the caller's pane at one instant and
+/// answer about it at another. That hazard is not hypothetical: a first version of the name lookup
+/// put a query behind the argument parse and quietly gave four tools two readings each, which is
+/// the torn read a NAME exists to prevent, reintroduced by the feature that prevents it.
 fn resolve_pane(args: &Value) -> Result<(usize, u64), String> {
     let target = pane_target(args)?;
     let panes = query_panes()?;
     let pane = resolve_in(&panes, &target)?;
     Ok((pane.number, pane.id))
-}
-
-/// The requested 1-based pane number from a tool's arguments, for the callers whose answer IS a
-/// number rather than a pane.
-fn pane_number(args: &Value) -> Result<usize, String> {
-    resolve_pane(args).map(|(number, _)| number)
 }
 
 /// Resolve a tool's `pane` argument to a host pane id (one list query).

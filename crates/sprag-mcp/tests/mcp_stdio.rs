@@ -1756,6 +1756,27 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
         "and the pane that was 3 is now 2 — the number moved: {closed}",
     );
 
+    // EVERY tool that takes a `pane` takes the name — not just the ones this test drives for their
+    // own sake. The sweep is the point: the first version of the resolver gave four of these two
+    // separate readings of the pane list (a query hidden behind the argument parse, then the
+    // listing the tool reads for itself), which is the torn read a name exists to prevent
+    // reintroduced by the feature that prevents it. Nothing failed; the tools still worked.
+    for tool in [
+        "read_pane",
+        "read_pane_links",
+        "read_pane_images",
+        "read_last_command",
+        "agent_state",
+        "agent_explain",
+        "pane_processes",
+    ] {
+        let answer = server.call_tool(tool, json!({ "pane": "build" }));
+        assert!(
+            !answer.starts_with("Error:"),
+            "{tool} must take a NAME where it takes a number: {answer}",
+        );
+    }
+
     // The DRAWING carries it too, and that is where it matters most: `pane_layout` is where an
     // agent CHOOSES a pane, so answering only in numbers would hand it the vocabulary that moves.
     // It costs no extra read — the pane list is already in hand for the numbering.
