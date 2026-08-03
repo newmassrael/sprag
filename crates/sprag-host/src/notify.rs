@@ -37,11 +37,11 @@
 //! it parks with always came from the session it parks on.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use pinion_core::SceneRevision;
-use pinion_rpc::{ConnId, RequestId, RpcReply, WaiterRegistry};
+use pinion_rpc::{ConnId, RequestId, RpcEgress, RpcReply, WaiterRegistry};
 use sprag_terminal::PaneId;
 
 use crate::PaneFind;
@@ -163,6 +163,13 @@ struct Journal {
     /// clients that ask are orchestrating agents rather than display clients (which park on the scene
     /// revision instead, and should).
     parked: Vec<ParkedWait>,
+    /// The SUBSCRIPTIONS following it — the same question asked once instead of once per batch.
+    ///
+    /// A second vector rather than a flag on [`ParkedWait`], because the two differ in the one thing
+    /// that matters at the derive site: a wait is CONSUMED when it fires (its
+    /// [`RpcReply`] is a `FnOnce`) and a subscription ADVANCES. One vector holding both would need a
+    /// branch at every touch to decide whether the entry survives, which is the shape a type is for.
+    streams: Vec<Subscription>,
 }
 
 /// One client's outstanding question: *wake me when something matching this lands after `cursor`*.
@@ -187,11 +194,137 @@ struct ParkedWait {
     reply: RpcReply,
 }
 
+/// One client's standing interest: *keep telling me what matches this, and remember where I got to*.
+///
+/// The streaming half of [`ParkedWait`], and the two differ in exactly two fields — which is the
+/// whole of what pinion R1552 (PINION-PR83) bought. Where a wait holds an [`RpcReply`] that fires
+/// once and a fixed `cursor`, a subscription holds the connection's EGRESS, which fires as often as
+/// there is something to say, and a cursor it ADVANCES as it delivers.
+struct Subscription {
+    /// The opaque, process-unique id every notification carries and `events/unsubscribe` takes.
+    id: u64,
+    /// The connection that asked — the key [`JournalChannel::release`] drops by, so a client that
+    /// crashes without unsubscribing leaks nothing.
+    conn: ConnId,
+    /// How far this subscriber has been told about. Exclusive, like every other cursor here, and
+    /// ADVANCED under the append's own lock — which is what makes a record deliverable exactly once.
+    cursor: u64,
+    /// Which changes it wants. The same [`EventFilter`] a wait carries, evaluated the same way.
+    filter: EventFilter,
+    /// Where notifications go. Cloned from the frame that opened the subscription, so a response and
+    /// a notification to this client are written through ONE writer and therefore cannot interleave
+    /// mid-frame — pinion's own ordering guarantee, inherited rather than re-established.
+    egress: Arc<dyn RpcEgress>,
+    /// Whether the opening frame's RESPONSE has gone out yet.
+    ///
+    /// **Registered disarmed, armed by the dispatch site afterwards** — pinion's own shape for the
+    /// same hazard: a change landing between the register and the reply would write a notification
+    /// naming a subscription id the client has not been told, which it can only discard. The window
+    /// is sub-microsecond and closing it with a flag is structural where "register last" would be a
+    /// rule to remember at every future call site.
+    armed: bool,
+    /// How many notifications this subscription has written — answered by `events/unsubscribe` so a
+    /// client can reconcile its own count against the daemon's without a second method.
+    delivered: u64,
+}
+
+impl std::fmt::Debug for Subscription {
+    /// Hand-written for pinion's own reason on [`pinion_rpc::RpcFrame`]: [`RpcEgress`] is a trait
+    /// object, and deriving would force every transport's writer to be [`Debug`] for the sake of a
+    /// diagnostic line. The egress is named by WHAT IT IS instead — a writer's contents are not a
+    /// fact about this subscription, but whether it can still reach a peer is.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subscription")
+            .field("id", &self.id)
+            .field("conn", &self.conn)
+            .field("cursor", &self.cursor)
+            .field("filter", &self.filter)
+            .field("armed", &self.armed)
+            .field("delivered", &self.delivered)
+            .field("reaches_a_peer", &self.egress.reaches_a_peer())
+            .finish()
+    }
+}
+
+/// The next subscription id. Process-wide rather than per-session, so an id is unique across the
+/// daemon and a client holding several cannot confuse two sessions' streams.
+static NEXT_SUBSCRIPTION: AtomicU64 = AtomicU64::new(1);
+
 impl JournalChannel {
     /// A channel that has observed nothing and has nobody waiting.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register a subscription for `conn`, DISARMED, and answer its id and the cursor it starts from.
+    ///
+    /// Disarmed is not an optimisation — a change landing before the client has read its own
+    /// subscription id could only be discarded. The caller sends the opening
+    /// response and then calls [`Self::arm`], which is the only order that cannot write a
+    /// notification for an id the client has not learned.
+    ///
+    /// The cursor is the caller's `since` verbatim, so nothing between its last read and this call is
+    /// skipped — the exact-resume half of [`crate::wire::EVENTS_SUBSCRIBE_METHOD`]'s contract.
+    pub fn subscribe(
+        &self,
+        conn: ConnId,
+        cursor: u64,
+        filter: EventFilter,
+        egress: Arc<dyn RpcEgress>,
+    ) -> u64 {
+        let id = NEXT_SUBSCRIPTION.fetch_add(1, Ordering::Relaxed);
+        self.lock().streams.push(Subscription {
+            id,
+            conn,
+            cursor,
+            filter,
+            egress,
+            armed: false,
+            delivered: 0,
+        });
+        id
+    }
+
+    /// Arm the subscription `id` and deliver anything that has landed since it was registered.
+    ///
+    /// Called after the opening response has gone out. The catch-up is not a special case: the
+    /// ordinary delivery pass runs here, so a record that landed inside that sub-microsecond window
+    /// is written by the same code every later one is — there is no "check first, then stream" fork
+    /// and so no gap between the two for a record to fall into.
+    pub fn arm(&self, id: u64) {
+        let writes = {
+            let mut journal = self.lock();
+            if let Some(stream) = journal.streams.iter_mut().find(|s| s.id == id) {
+                stream.armed = true;
+            }
+            Self::take_streamable(&mut journal)
+        };
+        Self::write_all(writes);
+    }
+
+    /// End the subscription `id` if `conn` holds it, answering how many notifications it delivered.
+    ///
+    /// SCOPED TO THE CONNECTION, and that is the access rule rather than a courtesy: an id is opaque
+    /// but it is also guessable (a small integer), so a client that could close another's stream
+    /// would be able to silence a peer it cannot otherwise address. [`None`] for an id this
+    /// connection does not hold, which is one answer for "already closed", "never opened" and
+    /// "somebody else's" — a caller learns only that it has no such stream, which is all any of the
+    /// three entitles it to.
+    pub fn unsubscribe(&self, conn: ConnId, id: u64) -> Option<u64> {
+        let mut journal = self.lock();
+        let at = journal
+            .streams
+            .iter()
+            .position(|s| s.id == id && s.conn == conn)?;
+        Some(journal.streams.remove(at).delivered)
+    }
+
+    /// How many subscriptions are live — for the tests that pin a subscribe subscribing and a
+    /// release releasing.
+    #[must_use]
+    pub fn stream_count(&self) -> usize {
+        self.lock().streams.len()
     }
 
     /// Everything recorded after `cursor` — the `events.<since>` slot's answer. Unfiltered: see
@@ -212,13 +345,23 @@ impl JournalChannel {
         registry: &sprag_terminal::SessionRegistry,
         session: &str,
     ) {
-        let fire = {
+        let (fire, writes) = {
             let mut journal = self.lock();
             let at = revision.current();
             let landed = journal.log.observe(registry, session, at);
-            Self::take_satisfied(&mut journal, landed)
+            let fire = Self::take_satisfied(&mut journal, landed);
+            // Gated on `landed` for `take_satisfied`'s own typing-rate reason, and gated a second
+            // time on there BEING a stream: a daemon nobody is following must not walk a vector to
+            // learn that, and the overwhelmingly common case is an empty one.
+            let writes = if landed == 0 || journal.streams.is_empty() {
+                Vec::new()
+            } else {
+                Self::take_streamable(&mut journal)
+            };
+            (fire, writes)
         };
         Self::answer(fire);
+        Self::write_all(writes);
     }
 
     /// Announce a change, record what it was, and wake whoever asked for it — answering the revision
@@ -240,13 +383,23 @@ impl JournalChannel {
     /// woken client gets its reply during the bump, spends a socket round trip coming back, and then
     /// blocks on this lock for as long as it takes to append — after which the answer is complete.
     pub fn announce(&self, revision: &SceneRevision, events: Vec<Event>) -> u64 {
-        let (at, fire) = {
+        let (at, fire, writes) = {
             let mut journal = self.lock();
             let at = revision.bump();
             let landed = journal.log.emit(at, events);
-            (at, Self::take_satisfied(&mut journal, landed))
+            let fire = Self::take_satisfied(&mut journal, landed);
+            // Both gates, for [`Self::observe`]'s reasons. This site is not typing-rate, but the
+            // empty-stream check is what keeps a subscription's cost proportional to the number of
+            // subscribers rather than to the number of announcements.
+            let writes = if landed == 0 || journal.streams.is_empty() {
+                Vec::new()
+            } else {
+                Self::take_streamable(&mut journal)
+            };
+            (at, fire, writes)
         };
         Self::answer(fire);
+        Self::write_all(writes);
         at
     }
 
@@ -297,11 +450,16 @@ impl JournalChannel {
     /// its sink is the one thing that could still fail. The client's own read deadline is what turned
     /// its wait into an answer ("nothing changed in the time you gave me"); this is only the daemon
     /// forgetting.
+    /// Both registries, because a connection going away ends both kinds of interest and the caller
+    /// has no reason to know there are two. A subscription needs no farewell for
+    /// [`Self::unsubscribe`]'s reason inverted: there is nobody left to tell, and its `delivered`
+    /// count was only ever for a client that asked.
     pub fn release(&self, conn: ConnId) -> usize {
         let mut journal = self.lock();
-        let before = journal.parked.len();
+        let before = journal.parked.len() + journal.streams.len();
         journal.parked.retain(|wait| wait.conn != conn);
-        before - journal.parked.len()
+        journal.streams.retain(|stream| stream.conn != conn);
+        before - (journal.parked.len() + journal.streams.len())
     }
 
     /// Fire every parked wait with whatever its cursor can see — the session is ENDING.
@@ -311,18 +469,27 @@ impl JournalChannel {
     /// ever append to again. Released, it re-reads, meets the scope refusal, and applies its
     /// detach-on-destroy policy — the path any other client's kill puts it on.
     pub fn drain(&self) {
-        let fire = {
+        let (fire, writes) = {
             let mut journal = self.lock();
             let parked = std::mem::take(&mut journal.parked);
-            parked
+            let fire = parked
                 .into_iter()
                 .map(|wait| {
                     let batch = journal.log.since(wait.cursor);
                     (wait, batch)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            // The subscriptions get their LAST batch and are then dropped, which is the same
+            // reasoning one line up applied to a stream: a follower of a session that has just been
+            // killed is following a journal nothing will append to again, and it is entitled to
+            // whatever landed before the end. It learns the session is gone the way every other
+            // client does — its next request meets the scope refusal.
+            let writes = Self::take_streamable(&mut journal);
+            journal.streams.clear();
+            (fire, writes)
         };
         Self::answer(fire);
+        Self::write_all(writes);
     }
 
     /// How many waits are parked — for the tests that pin a park actually parking, and a release
@@ -378,6 +545,65 @@ impl JournalChannel {
         }
     }
 
+    /// Collect one notification per ARMED subscription that has something to say, ADVANCING each
+    /// one's cursor as it goes.
+    ///
+    /// ## The cursor advances here, under the caller's lock, and that is the delivery guarantee
+    ///
+    /// A subscription is not consumed by firing, so "have I already sent this?" is a question this
+    /// type has to answer — and the only place it can answer it exactly is where the append happens.
+    /// Advancing under the lock makes a record deliverable **exactly once**: a second append cannot
+    /// observe the old cursor, because it cannot take the lock until this pass has released it with
+    /// the new one written back.
+    ///
+    /// Advancing BEFORE the write is deliberate, and it is the safer of the two orders. If the write
+    /// fails (the peer went away between the append and the flush) the record is not re-offered — but
+    /// a peer that cannot be written to has no reader to re-offer it to, and the subscription is
+    /// dropped on the same pass. The other order — write, then advance — would re-send every batch to
+    /// a client whose socket buffer was merely full, which is a live client being told the same thing
+    /// twice.
+    ///
+    /// **The frames are built here and written by [`Self::write_all`] with no lock held**, which is
+    /// the same split [`Self::answer`] makes and for R291's reason: an egress is opaque, and pinion's
+    /// own `send_frame` contract only promises not to block on the CLIENT.
+    fn take_streamable(journal: &mut Journal) -> Vec<(Arc<dyn RpcEgress>, String)> {
+        // Taken out for `take_satisfied`'s reason: the loop reads `journal.log` while deciding, which
+        // it cannot do while holding a mutable borrow of `journal.streams`.
+        let streams = std::mem::take(&mut journal.streams);
+        let mut writes = Vec::new();
+        let mut kept = Vec::with_capacity(streams.len());
+        for mut stream in streams {
+            if !stream.armed {
+                kept.push(stream);
+                continue;
+            }
+            let batch = journal.log.since(stream.cursor);
+            if satisfied(&batch, &stream.filter) {
+                let batch = filter_batch(&batch, &stream.filter);
+                stream.cursor = batch.next;
+                stream.delivered += 1;
+                writes.push((Arc::clone(&stream.egress), notification(stream.id, &batch)));
+            }
+            kept.push(stream);
+        }
+        journal.streams = kept;
+        writes
+    }
+
+    /// Write every collected notification. **Called with no lock held**, for [`Self::answer`]'s
+    /// reason.
+    ///
+    /// A write that fails is not reported anywhere and not retried: `send_frame` answers `false` for
+    /// a peer that is gone, and the connection's own disconnect arm is what drops the subscription
+    /// ([`Self::release`]). Pruning here as well would be a second authority on when a stream ends,
+    /// racing the first — and the honest one is the transport's, because only it knows whether the
+    /// connection is closed or merely slow.
+    fn write_all(writes: Vec<(Arc<dyn RpcEgress>, String)>) {
+        for (egress, frame) in writes {
+            let _ = egress.send_frame(frame);
+        }
+    }
+
     /// The guarded state, recovering a poisoned lock the way the rest of the host does: a panic
     /// elsewhere must not make change notification unavailable for the daemon's remaining life.
     fn lock(&self) -> MutexGuard<'_, Journal> {
@@ -412,6 +638,28 @@ fn filter_batch(batch: &Batch, filter: &EventFilter) -> Batch {
 ///
 /// `None` for an id-less request: a NOTIFICATION has nobody to answer, and inventing a reply for one
 /// would break JSON-RPC. pinion's own waiter makes the identical choice at the identical point.
+/// The JSON-RPC NOTIFICATION one delivery is written as — no `id`, so a client tells it apart from
+/// an answer to something it asked ([`crate::wire::EVENTS_CHANGED_METHOD`] argues why).
+///
+/// The subscription's id first and the batch's own keys flattened beside it, so a client reading
+/// `params` has exactly the shape [`EVENTS_WAIT_METHOD`](crate::wire::EVENTS_WAIT_METHOD) answers
+/// with plus the one field that says which stream it belongs to — one batch reader for both.
+fn notification(subscription: u64, batch: &Batch) -> String {
+    let mut params = batch.to_wire();
+    if let Some(map) = params.as_object_mut() {
+        map.insert(
+            crate::wire::SUBSCRIPTION_PARAM.to_owned(),
+            serde_json::json!(subscription),
+        );
+    }
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": crate::wire::EVENTS_CHANGED_METHOD,
+        "params": params,
+    })
+    .to_string()
+}
+
 fn send(reply: RpcReply, id: Option<&RequestId>, batch: &Batch) {
     if let Some(id) = id {
         reply.send(
@@ -1041,6 +1289,109 @@ mod tests {
             answered(&replies),
             1,
             "the change it DID ask about reaches it"
+        );
+    }
+
+    /// Subscribe on `session` from cursor 0, ARM it, and answer the notifications it writes.
+    ///
+    /// Armed here rather than left to the caller because a disarmed subscription is deliberately
+    /// silent, so a test that forgot would measure nothing and read as a stream that never fired —
+    /// the same trap [`park`]'s own doc records about a wait with no id.
+    fn subscribe(
+        channels: &ChannelRegistry,
+        session: &str,
+        filter: EventFilter,
+    ) -> Arc<std::sync::Mutex<Vec<String>>> {
+        let written = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&written);
+        let journal = channels.journal(session);
+        let id = journal.subscribe(
+            ConnId::allocate(),
+            0,
+            filter,
+            pinion_rpc::FnEgress::new(move |frame: String| {
+                sink.lock().expect("the frame sink").push(frame);
+                true
+            }),
+        );
+        journal.arm(id);
+        written
+    }
+
+    /// **THE SECOND DERIVE SITE.** `announce` pushes to a subscription, and a test that only drove
+    /// the OTHER site would not say so.
+    ///
+    /// ⚠ This test exists because a revert-proof PASSED: deleting the streaming call from `announce`
+    /// left `rpc`'s own subscription test green, because a spawn reaches a subscriber through
+    /// `observe` (the shape diff) and never through here. `announce` is the sweeper's path — a job
+    /// change is recorded when nobody performed anything — so a subscription following
+    /// `pane_job_changed` would have been silent for ever with nothing failing.
+    ///
+    /// **Fifth round running that the largest gap in a round's own tests was found by breaking the
+    /// code rather than by reading it.**
+    ///
+    /// REVERT-PROOF: drop `take_streamable` from `announce` and this fails while `rpc`'s test passes,
+    /// which is the whole reason both exist.
+    #[test]
+    fn the_announce_site_writes_to_a_subscription_too() {
+        let channels = ChannelRegistry::default();
+        let written = subscribe(&channels, "work", EventFilter::Everything);
+
+        channels.announce("work", vec![Event::PaneJobChanged(2)]);
+
+        let frames = written.lock().expect("the frame sink");
+        assert_eq!(
+            frames.len(),
+            1,
+            "the sweeper's own derive site reaches a follower: {frames:?}",
+        );
+        let frame: serde_json::Value =
+            serde_json::from_str(&frames[0]).expect("a written frame is JSON-RPC");
+        assert_eq!(frame["method"], crate::wire::EVENTS_CHANGED_METHOD);
+        assert!(frame.get("id").is_none(), "a notification carries no id");
+        assert_eq!(
+            frame["params"]["events"],
+            serde_json::json!([{ "type": "pane_job_changed", "pane": 2 }]),
+        );
+    }
+
+    /// A subscription is SILENT until it is armed, and then catches up.
+    ///
+    /// The window is sub-microsecond in the daemon and the hazard is exact: a change landing between
+    /// the register and the opening response would name a subscription id the client has not read,
+    /// which it can only discard — so the record would be lost with the cursor already past it.
+    ///
+    /// REVERT-PROOF: register armed (`armed: true`) and the first assertion fails; drop the delivery
+    /// from `arm` and the second does, because the change made during the window is never told.
+    #[test]
+    fn a_subscription_says_nothing_before_it_is_armed_and_then_catches_up() {
+        let channels = ChannelRegistry::default();
+        let written = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&written);
+        let journal = channels.journal("work");
+        let id = journal.subscribe(
+            ConnId::allocate(),
+            0,
+            EventFilter::Everything,
+            pinion_rpc::FnEgress::new(move |frame: String| {
+                sink.lock().expect("the frame sink").push(frame);
+                true
+            }),
+        );
+
+        // The window: a change between the register and the response.
+        channels.announce("work", vec![Event::PaneJobChanged(2)]);
+        assert!(
+            written.lock().expect("the frame sink").is_empty(),
+            "a client that has not been told its subscription id must not be written to",
+        );
+
+        journal.arm(id);
+        let frames = written.lock().expect("the frame sink");
+        assert_eq!(
+            frames.len(),
+            1,
+            "and arming DELIVERS what landed in the window rather than losing it: {frames:?}",
         );
     }
 

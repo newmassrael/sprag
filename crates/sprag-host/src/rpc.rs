@@ -45,8 +45,9 @@ use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    EVENTS_WAIT_METHOD, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
-    PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
+    EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, INVALID_PARAMS,
+    NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD,
+    PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, SUBSCRIPTION_PARAM, WIRE_PROTOCOL,
 };
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
@@ -674,7 +675,6 @@ fn handle_events_wait(
     request: &Request,
     reply: RpcReply,
 ) {
-    let params = request.params.as_ref();
     // ⚠ ESTABLISH THE SHAPE BEFORE PARKING, and a failing test is what put this line here.
     //
     // A journal records nothing on its FIRST observation — there is no predecessor to have changed
@@ -690,24 +690,10 @@ fn handle_events_wait(
     state
         .channels()
         .observe(&lock(state.registry()), scope.session());
-    let Some(since) = params
-        .and_then(|params| params.get(SINCE_PARAM))
-        .and_then(serde_json::Value::as_u64)
-    else {
-        if let Some(response) = lifecycle_invalid(
-            request,
-            format!(
-                "params.{SINCE_PARAM} must be the revision you have already read (a whole number)"
-            ),
-        ) {
-            reply.send(response);
-        }
-        return;
-    };
-    let filter = match crate::events::EventFilter::from_wire(
-        params.and_then(|params| params.get(crate::events::EventFilter::WIRE_KEY)),
-    ) {
-        Ok(filter) => filter,
+    // Through the SHARED parser, so the wait and the subscription refuse a malformed `since` or
+    // `match` with one sentence rather than two that can drift.
+    let (since, filter) = match events_wait_params(request) {
+        Ok(pair) => pair,
         Err(message) => {
             if let Some(response) = lifecycle_invalid(request, message) {
                 reply.send(response);
@@ -722,6 +708,161 @@ fn handle_events_wait(
         request.id.clone(),
         reply,
     );
+}
+
+/// `events/subscribe` — register a standing interest in the scoped session's changes and answer it
+/// ONCE; every batch after that is written as an `events/changed` notification.
+///
+/// ## Everything the wait refuses, refused here too, and one more
+///
+/// The `since` and `match` checks are the wait's, spelled through the same helper, because a
+/// subscription that could not be satisfied is worse than a wait that could not: a wait hangs and the
+/// caller's deadline ends it, where a subscription is silent for as long as the connection lives.
+///
+/// The extra refusal is the EGRESS. A transport that cannot be written to unprompted is refused **by
+/// name** rather than registered, because a client that believes it is subscribed and hears nothing
+/// cannot tell that from a session where nothing changed — pinion's own `NotStreamable` reasoning,
+/// reached through sprag's own registry because the subject is sprag's journal.
+///
+/// ## The response goes out BEFORE the subscription is armed
+///
+/// [`JournalChannel::subscribe`](crate::notify::JournalChannel::subscribe) registers it disarmed and
+/// [`arm`](crate::notify::JournalChannel::arm) is called after `reply.send`, so a change landing in
+/// between cannot write a notification naming an id the client has not yet read. The arm then
+/// delivers whatever landed in that window through the ordinary pass — there is no catch-up branch.
+fn handle_events_subscribe(
+    state: &HostState,
+    conn: ConnId,
+    scope: &SessionScope,
+    request: &Request,
+    reply: RpcReply,
+    egress: &Arc<dyn RpcEgress>,
+) {
+    // The wait's own reason, verbatim: a journal records nothing on its FIRST observation, so a
+    // client whose first host call is a follow would have the next structural change swallowed as the
+    // establishing observation.
+    state
+        .channels()
+        .observe(&lock(state.registry()), scope.session());
+    if !egress.reaches_a_peer() {
+        if let Some(response) = lifecycle_invalid(
+            request,
+            format!(
+                "this connection cannot be written to unprompted, so a subscription would never \
+                 say anything; use {EVENTS_WAIT_METHOD} instead"
+            ),
+        ) {
+            reply.send(response);
+        }
+        return;
+    }
+    let (since, filter) = match events_wait_params(request) {
+        Ok(pair) => pair,
+        Err(message) => {
+            if let Some(response) = lifecycle_invalid(request, message) {
+                reply.send(response);
+            }
+            return;
+        }
+    };
+    let journal = state.channels().journal(scope.session());
+    let id = journal.subscribe(conn, since, filter, Arc::clone(egress));
+    // A NOTIFICATION cannot be told its own subscription id, so it cannot be armed either: it would
+    // be a stream nobody could match a frame to and nobody could close. Dropped rather than left
+    // registered, which is the same reading the waits give an id-less park — except that a wait is
+    // harmlessly forgotten where a stream would write forever.
+    let Some(id_json) = request.id.as_ref() else {
+        journal.unsubscribe(conn, id);
+        return;
+    };
+    reply.send(
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id_json,
+            "result": { SUBSCRIPTION_PARAM: id, "next": since },
+        })
+        .to_string(),
+    );
+    journal.arm(id);
+}
+
+/// `events/unsubscribe` — end a subscription this connection holds, answering how many notifications
+/// it delivered.
+///
+/// An id this connection does not hold is `-32602 Invalid params` rather than a silent success,
+/// because the two mistakes it covers (a stale id, somebody else's id) are both worth telling a
+/// caller about, and a success would let a client believe it had closed a stream still writing to it.
+fn handle_events_unsubscribe(
+    state: &HostState,
+    conn: ConnId,
+    scope: &SessionScope,
+    request: &Request,
+    reply: RpcReply,
+) {
+    let id = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get(SUBSCRIPTION_PARAM))
+        .and_then(serde_json::Value::as_u64);
+    let Some(id) = id else {
+        if let Some(response) = lifecycle_invalid(
+            request,
+            format!("params.{SUBSCRIPTION_PARAM} must be a subscription id (a whole number)"),
+        ) {
+            reply.send(response);
+        }
+        return;
+    };
+    let Some(delivered) = state
+        .channels()
+        .journal(scope.session())
+        .unsubscribe(conn, id)
+    else {
+        if let Some(response) = lifecycle_invalid(
+            request,
+            format!(
+                "this connection holds no subscription {id} on session {:?}",
+                scope.session()
+            ),
+        ) {
+            reply.send(response);
+        }
+        return;
+    };
+    if let Some(id_json) = request.id.as_ref() {
+        reply.send(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id_json,
+                "result": { SUBSCRIPTION_PARAM: id, "delivered": delivered },
+            })
+            .to_string(),
+        );
+    }
+}
+
+/// The `{since, match?}` pair both the wait and the subscription take, or the caller's mistake as the
+/// sentence to report it with.
+///
+/// ONE parser for the two methods, because they take one grammar: two would be two chances for the
+/// refusal sentences to drift apart, which is exactly what R296's audit found copy-pasted between a
+/// search slot and a wait. It answers the message rather than sending it, because an [`RpcReply`]
+/// fires once by construction — a helper handed one could not give it back unused, and both callers
+/// have a second thing to do with theirs.
+fn events_wait_params(request: &Request) -> Result<(u64, crate::events::EventFilter), String> {
+    let params = request.params.as_ref();
+    let since = params
+        .and_then(|params| params.get(SINCE_PARAM))
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            format!(
+                "params.{SINCE_PARAM} must be the revision you have already read (a whole number)"
+            )
+        })?;
+    let filter = crate::events::EventFilter::from_wire(
+        params.and_then(|params| params.get(crate::events::EventFilter::WIRE_KEY)),
+    )?;
+    Ok((since, filter))
 }
 
 /// `pane/waitForOutput` — park until the named pane's retained output matches, then answer with the
@@ -1252,11 +1393,11 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
         conn,
         request,
         reply,
-        // The connection's WRITER (pinion R1552, PINION-PR83) — how a handler speaks a frame
-        // nobody asked for. Every method this daemon serves answers exactly once, through `reply`,
-        // so nothing here reads it; it is named rather than elided so the next reader can see that
-        // the capability arrived and is unused rather than wonder whether the pattern is stale.
-        egress: _,
+        // The connection's WRITER (pinion R1552, PINION-PR83) — how a handler speaks a frame nobody
+        // asked for. `events/subscribe` is its one consumer: it CLONES this into the subscription so
+        // later batches reach the same client, and because `reply` is derived from it a response and
+        // a notification provably go to the same place.
+        egress,
     } = frame;
     match parse_request(&request) {
         Ok(parsed) => {
@@ -1310,6 +1451,18 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
             // machinery every other method uses.
             if parsed.method.as_str() == EVENTS_WAIT_METHOD {
                 handle_events_wait(state, conn, &scope, &parsed, reply);
+                return;
+            }
+            // ...and the STREAMING form of the same question, intercepted for the wait's two reasons
+            // and a third: its notifications go to the connection's EGRESS, which only the frame
+            // carries. That is why the two subscription methods take `egress` where nothing else in
+            // this dispatch has ever needed it.
+            if parsed.method.as_str() == EVENTS_SUBSCRIBE_METHOD {
+                handle_events_subscribe(state, conn, &scope, &parsed, reply, &egress);
+                return;
+            }
+            if parsed.method.as_str() == EVENTS_UNSUBSCRIBE_METHOD {
+                handle_events_unsubscribe(state, conn, &scope, &parsed, reply);
                 return;
             }
             // `pane/waitForOutput` parks on the REVISION carrying a predicate — the third kind of
@@ -1403,7 +1556,11 @@ pub fn stdin_frames(input: impl BufRead, tx: &Sender<IngressEvent>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The notification's method name is a TEST's business here: the daemon spells it inside
+    // `notify::notification`, which is where a frame is built, so the dispatch module itself has no
+    // use for it.
     use crate::external::lock;
+    use crate::wire::EVENTS_CHANGED_METHOD;
     use sprag_terminal::{CommandBuilder, PaneId};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
@@ -2816,6 +2973,257 @@ mod tests {
             sink.lock().unwrap().is_empty(),
             "and a gone connection is not written to: the release drops, it does not answer",
         );
+    }
+
+    /// One `events/subscribe` frame from `conn`, through the real per-frame dispatch body — the same
+    /// route [`wait_recording`] takes, so what these tests pin is the shipped path.
+    fn subscribe_recording(
+        state: &HostState,
+        conn: ConnId,
+        filter: serde_json::Value,
+        sink: &Arc<Mutex<Vec<String>>>,
+    ) {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": EVENTS_SUBSCRIBE_METHOD,
+            "params": { SINCE_PARAM: 0, "match": filter },
+        });
+        dispatch_one(
+            state,
+            RpcFrame::new(
+                conn,
+                declaring_the_protocol(&request.to_string()),
+                recording_egress(sink),
+            ),
+        );
+    }
+
+    /// Every frame `sink` has collected, parsed.
+    fn frames(sink: &Arc<Mutex<Vec<String>>>) -> Vec<serde_json::Value> {
+        sink.lock()
+            .unwrap()
+            .iter()
+            .map(|frame| serde_json::from_str(frame).expect("a written frame is JSON-RPC"))
+            .collect()
+    }
+
+    /// **THE SLICE: one request, MANY answers** — which was inexpressible on this transport until
+    /// pinion R1552 delivered PINION-PR83.
+    ///
+    /// The subscribe answers once with an id, and then TWO separate mutations each produce a
+    /// NOTIFICATION on the same connection with no further request. That count is the whole claim: a
+    /// wait would have needed a second request to see the second change, and the second change would
+    /// never have arrived at all.
+    ///
+    /// The notifications are checked to be notifications — a `method` and NO `id` — because a second
+    /// RESPONSE carrying the opening id is unreadable by a client that keys a pending map by id, which
+    /// is every conforming client including sprag's own [`HostConn`](sprag_rpc::HostConn).
+    ///
+    /// REVERT-PROOF: drop the `take_streamable` call from `announce` and only the opening response
+    /// arrives; make the notification carry the request's `id` and the discriminator assertion fails.
+    #[test]
+    fn one_subscribe_request_is_answered_by_every_later_change() {
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+
+        subscribe_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!([{ "kind": "pane_created" }]),
+            &sink,
+        );
+        let opened = frames(&sink);
+        assert_eq!(opened.len(), 1, "the subscribe answers exactly once");
+        let id = opened[0]["result"][SUBSCRIPTION_PARAM]
+            .as_u64()
+            .unwrap_or_else(|| panic!("the answer names a subscription: {}", opened[0]));
+        assert_eq!(
+            state.channels().journal(BOOT).stream_count(),
+            1,
+            "and the stream is registered",
+        );
+
+        invoke_recording(&state, crate::wire::SPAWN_ACTION, serde_json::json!({}));
+        invoke_recording(&state, crate::wire::SPAWN_ACTION, serde_json::json!({}));
+
+        let written = frames(&sink);
+        assert_eq!(
+            written.len(),
+            3,
+            "ONE request, THREE frames: the answer and one notification per change — {written:#?}",
+        );
+        for (n, frame) in written[1..].iter().enumerate() {
+            assert_eq!(
+                frame["method"],
+                EVENTS_CHANGED_METHOD,
+                "frame {} is the change notification",
+                n + 1,
+            );
+            assert!(
+                frame.get("id").is_none(),
+                "a NOTIFICATION carries no id, or a client keying on id cannot tell it from its own \
+                 answer: {frame}",
+            );
+            assert_eq!(frame["params"][SUBSCRIPTION_PARAM], serde_json::json!(id));
+        }
+        // The CURSOR advanced, so the two notifications carry DIFFERENT panes rather than the second
+        // re-reporting the first. This is the delivery-exactly-once claim, and it is the one thing a
+        // stream can get wrong that a one-shot wait cannot.
+        assert_eq!(
+            written[1]["params"]["events"],
+            serde_json::json!([{ "type": "pane_created", "pane": 1 }]),
+        );
+        assert_eq!(
+            written[2]["params"]["events"],
+            serde_json::json!([{ "type": "pane_created", "pane": 2 }]),
+            "the second delivery starts where the first ended — a cursor that did not advance would \
+             repeat pane 1 here",
+        );
+    }
+
+    /// A transport that cannot be written to unprompted is refused BY NAME, not registered.
+    ///
+    /// The refusal is the honest one: a client that believes it is subscribed and hears nothing
+    /// cannot tell that from a session where nothing changed. `RpcFrame::answered_by` is exactly that
+    /// transport — it stamps the frame with pinion's `NullEgress`, which answers `reaches_a_peer()`
+    /// false — and it is the shape a synthetic frame really has.
+    #[test]
+    fn a_subscription_over_a_transport_that_cannot_be_written_to_is_refused() {
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": EVENTS_SUBSCRIBE_METHOD,
+            "params": { SINCE_PARAM: 0 },
+        });
+        let recorder = Arc::clone(&sink);
+        dispatch_one(
+            &state,
+            RpcFrame::answered_by(
+                ConnId::allocate(),
+                declaring_the_protocol(&request.to_string()),
+                RpcReply::new(move |response| recorder.lock().unwrap().push(response)),
+            ),
+        );
+
+        let written = frames(&sink);
+        assert_eq!(written.len(), 1, "refused, with a sentence: {written:#?}");
+        assert_eq!(
+            written[0]["error"]["code"],
+            serde_json::json!(INVALID_PARAMS)
+        );
+        let sentence = written[0]["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            sentence.contains("never say anything") && sentence.contains(EVENTS_WAIT_METHOD),
+            "and it names the alternative that DOES work here: {sentence:?}",
+        );
+        assert_eq!(
+            state.channels().journal(BOOT).stream_count(),
+            0,
+            "nothing is registered — a silent stream is worse than a refusal",
+        );
+    }
+
+    /// The DISPATCH LOOP releases a closed connection's subscriptions, not just its waits.
+    ///
+    /// Driven through `dispatch_frames` itself for the reason
+    /// [`the_dispatch_loop_releases_a_closed_connections_waits`] records: R291 and R292 each shipped
+    /// a tracker whose unit test called `release` directly, so the suite stayed green over a loop
+    /// that never called it. **This is the third registry the daemon holds, and the rule is the
+    /// rule** — the test that matters drives the loop.
+    #[test]
+    fn the_dispatch_loop_releases_a_closed_connections_subscriptions() {
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let conn = ConnId::allocate();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": EVENTS_SUBSCRIBE_METHOD,
+            "params": { SINCE_PARAM: 0 },
+        });
+        tx.send(IngressEvent::Frame(RpcFrame::new(
+            conn,
+            declaring_the_protocol(&request.to_string()),
+            recording_egress(&sink),
+        )))
+        .expect("queue the subscribe");
+        tx.send(IngressEvent::Disconnect(conn))
+            .expect("queue the close");
+        drop(tx);
+        dispatch_frames(&state, rx);
+
+        assert_eq!(
+            state.channels().journal(BOOT).stream_count(),
+            0,
+            "a subscription outlives its frame, so only the disconnect can end it — without this \
+             release the daemon writes to a dead socket for the rest of its life",
+        );
+    }
+
+    /// `events/unsubscribe` ends a stream this connection holds, and REFUSES one it does not.
+    ///
+    /// The refusal is an access rule rather than tidiness: an id is a small integer, so a client able
+    /// to close another's stream could silence a peer it cannot otherwise address.
+    #[test]
+    fn a_subscription_is_closed_by_its_own_connection_and_by_no_other() {
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let mine = ConnId::allocate();
+        // `match` omitted (a JSON null), because an EMPTY clause list is deliberately refused by
+        // the shared parser — nothing could ever match it. Reading that refusal is what said so.
+        subscribe_recording(&state, mine, serde_json::Value::Null, &sink);
+        let id = frames(&sink)[0]["result"][SUBSCRIPTION_PARAM]
+            .as_u64()
+            .expect("an id");
+
+        // A STRANGER's attempt first, so the success below cannot be mistaken for one that would
+        // have happened anyway.
+        let other = Arc::new(Mutex::new(Vec::new()));
+        let close = serde_json::json!({
+            "jsonrpc": "2.0", "id": 9,
+            "method": EVENTS_UNSUBSCRIBE_METHOD,
+            "params": { SUBSCRIPTION_PARAM: id },
+        });
+        dispatch_one(
+            &state,
+            RpcFrame::new(
+                ConnId::allocate(),
+                declaring_the_protocol(&close.to_string()),
+                recording_egress(&other),
+            ),
+        );
+        assert_eq!(
+            frames(&other)[0]["error"]["code"],
+            serde_json::json!(INVALID_PARAMS),
+            "another connection cannot close this one's stream",
+        );
+        assert_eq!(state.channels().journal(BOOT).stream_count(), 1);
+
+        dispatch_one(
+            &state,
+            RpcFrame::new(
+                mine,
+                declaring_the_protocol(&close.to_string()),
+                recording_egress(&sink),
+            ),
+        );
+        let written = frames(&sink);
+        let answer = written.last().expect("the close answered");
+        assert_eq!(answer["result"][SUBSCRIPTION_PARAM], serde_json::json!(id));
+        assert_eq!(
+            answer["result"]["delivered"],
+            serde_json::json!(0),
+            "and it reports the count, so a client can reconcile against its own",
+        );
+        assert_eq!(state.channels().journal(BOOT).stream_count(), 0);
     }
 
     /// One `pane/waitForOutput` frame from `conn`, through the real per-frame dispatch body.

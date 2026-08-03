@@ -303,6 +303,20 @@ pub use sprag_rpc::{
 /// PARKS its reply rather than returning one.
 pub use sprag_rpc::{EVENTS_WAIT_METHOD, SINCE_PARAM};
 
+/// The STREAMING form of that wait, re-exported for the same one-spelling reason:
+/// [`EVENTS_SUBSCRIBE_METHOD`] takes the identical `{since, match?}` and answers ONCE, then writes an
+/// [`EVENTS_CHANGED_METHOD`] notification per batch until [`EVENTS_UNSUBSCRIBE_METHOD`] or the
+/// connection ends it.
+///
+/// **The trio completes a surface that was already three-quarters built.** The slot is the read, the
+/// wait is the one-shot, and this is the follow — and all three take one cursor vocabulary and answer
+/// one batch shape, so a caller moves between them without re-writing its reader. Until pinion R1552
+/// (PINION-PR83) the third was not a design gap but a transport impossibility: a frame could be
+/// answered at most once.
+pub use sprag_rpc::{
+    EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD, SUBSCRIPTION_PARAM,
+};
+
 /// The OUTPUT WAIT, re-exported for the same one-spelling reason: [`PANE_WAIT_OUTPUT_METHOD`] blocks
 /// until the pane named by [`PANE_PARAM`] has retained output matching [`NEEDLE_PARAM`] (a literal)
 /// or [`PATTERN_PARAM`] (a regular expression).
