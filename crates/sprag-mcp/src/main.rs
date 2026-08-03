@@ -428,17 +428,25 @@ fn tools_list() -> Value {
             {
                 "name": "wait_for_change",
                 "description": "BLOCK until something changes in this terminal, then report what \
-                    changed. Use this instead of polling list_panes or agent_state in a loop: it \
-                    costs nothing while nothing is happening and returns the moment it does. This \
-                    is the tool for 'wait until the agent in pane 2 finishes', 'tell me when a \
-                    pane exits', or coordinating several agents. Reports typed changes — \
-                    `pane_agent_state_changed` (an agent started working, became blocked, or went \
-                    idle), `pane_created`, `pane_closed`, `window_created`, `window_closed`, \
-                    `window_selected`, `session_created`, `session_closed`, `layout_updated` — \
-                    each naming its SUBJECT, not its new value: follow up with agent_state or \
-                    list_panes to read the subject it names. Returns immediately if something has \
-                    already changed since the last call. Pane OUTPUT is not a change here: read \
-                    the pane for that.",
+                    changed. Use this instead of polling list_panes, agent_state or pane_processes \
+                    in a loop: it costs nothing while nothing is happening and returns the moment \
+                    it does. This is the tool for 'wait until the agent in pane 2 finishes', 'wait \
+                    until the build in pane 2 finishes', or coordinating several agents. Reports \
+                    typed changes — `pane_agent_state_changed` (an agent started working, became \
+                    blocked, or went idle), `pane_job_changed` (the COMMAND running in a pane \
+                    changed: the user or an agent started something, or the thing that was running \
+                    ended — this is also how a pane's program EXITING is reported, since a dead \
+                    pane keeps its place and so is never `pane_closed`), `pane_created`, \
+                    `pane_closed`, `window_created`, `window_closed`, `window_selected`, \
+                    `session_created`, `session_closed`, `layout_updated` — each naming its \
+                    SUBJECT, not its new value: follow up with agent_state, pane_processes or \
+                    list_panes to read the subject it names. To wait for a command to finish: call \
+                    this, and when it reports `pane_job_changed` for that pane, read \
+                    pane_processes to see what is running there now (back at the shell means the \
+                    command is done). `pane_job_changed` is SAMPLED, so it can arrive up to about \
+                    5 seconds after the fact; every other change above is immediate. Returns \
+                    immediately if something has already changed since the last call. Pane OUTPUT \
+                    is not a change here: read the pane for that.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1472,6 +1480,32 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
         out.push_str("The scene moved but nothing structural changed (a pane produced output).");
         return Ok(out);
     }
+    // The wire names a pane by the HOST's id; every tool on this surface addresses one by its
+    // 1-based NUMBER. So the ids are joined against the pane list before they are printed — over
+    // the SAME connection, for the reason the park and the batch already share one.
+    //
+    // **The comment below used to claim this and the code did not do it**, which made the answer
+    // name a pane in a vocabulary no other tool here accepts: an agent told `pane id=0` cannot pass
+    // `0` to `pane_processes`, whose pane numbers start at 1. Found by reading what the tool
+    // actually printed.
+    //
+    // Read only when a pane subject is present: a window or session change pays nothing for it.
+    let panes: Vec<PaneInfo> = if events.iter().any(|event| event["pane"].is_u64()) {
+        conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .map_err(|e| e.to_string())?
+        .as_array()
+        .ok_or("the host pane list was not an array")?
+        .iter()
+        .enumerate()
+        .map(|(index, pane)| parse_pane_info(index, pane))
+        .collect()
+    } else {
+        Vec::new()
+    };
+
     for event in events {
         let kind = event["type"].as_str().unwrap_or("?");
         match (
@@ -1480,10 +1514,23 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
             event["session"].as_str(),
         ) {
             (Some(id), _, _) => {
-                // The wire carries the host's pane ID; a caller of these tools addresses panes by
-                // their 1-based NUMBER, so both travel. Reporting only the id would name a pane in
-                // a vocabulary no other tool here accepts.
-                out.push_str(&format!("  {kind}: pane id={id}\n"));
+                // Both integers travel: the number is what this surface's tools take, and the id is
+                // what `sprag panes`, the daemon's logs and the user's own CLI call the same pane,
+                // so an agent reporting to a human and a human checking the agent hold one picture.
+                match panes
+                    .iter()
+                    .find(|pane| pane.id == id)
+                    .map(|pane| pane.number)
+                {
+                    Some(number) => out.push_str(&format!("  {kind}: pane {number} (id {id})\n")),
+                    // The residual of the two reads, said rather than smoothed over — and
+                    // `pane_closed` is the one event that reaches it every time, correctly:
+                    // numbering a pane that is gone would hand the caller a number that now belongs
+                    // to a DIFFERENT pane.
+                    None => out.push_str(&format!(
+                        "  {kind}: pane ? (id {id}, gone since the pane list was read)\n"
+                    )),
+                }
             }
             (_, Some(name), _) => out.push_str(&format!("  {kind}: window {name}\n")),
             (_, _, Some(name)) => out.push_str(&format!("  {kind}: session {name}\n")),

@@ -1191,9 +1191,103 @@ fn wait_for_change_blocks_and_reports_what_moved() {
         "the change that happened DURING the wait is what comes back: {moved}",
     );
     assert!(
-        moved.contains("pane id="),
-        "and it names its subject, so the caller knows what to re-read: {moved}",
+        moved.contains("pane_created: pane 2 (id 1)"),
+        "and it names its subject in BOTH vocabularies — the 1-based number every other tool here \
+         takes, and the host id a human sees in `sprag panes`: {moved}",
     );
+}
+
+/// **THE R291 claim, end to end through the surface an agent actually has**: "wait until the
+/// command in that pane finishes" is answerable without polling.
+///
+/// Before this, the only tool that could answer it was `pane_processes`, and calling it in a loop is
+/// what `wait_for_change`'s own description tells a caller not to do — each turn of that loop is a
+/// full `/proc` pass. `agent_state`'s wait is about an AI reading a screen and says nothing about a
+/// build.
+///
+/// Three properties, and the first is the one most easily got wrong:
+///
+/// 1. **the establishing sweep is SILENT.** The quiet park below is longer than the daemon's sweep
+///    interval, so sweeps certainly ran inside it — and they reported nothing. A watch that
+///    announced a pane's first reading would fail here, and would otherwise look identical.
+/// 2. a job started AFTER that is reported, naming the pane;
+/// 3. the report is a `pane_job_changed`, not an inference from output — the pane is running `sleep`,
+///    which prints nothing at all, so no output-matching wait could see it.
+///
+/// `bash -i` because job control is the mechanism under test: a non-interactive shell runs its
+/// commands in its OWN process group and never hands the terminal over, so the fact would never
+/// move.
+#[test]
+fn an_agent_waits_for_a_job_to_start_without_polling() {
+    let (_daemon, sock) = spawn_daemon(&["bash", "--norc", "-i"], (80, 24));
+    let mut server = McpServer::spawn(&sock);
+
+    // The shell has reached its prompt and owns its own terminal. Read through this surface's own
+    // answer rather than slept for, so the state the test starts from is one the daemon published.
+    server.wait_for_tool("pane_processes", json!({}), "bash  bash");
+
+    // PROPERTY 1. Park for longer than the daemon's sweep interval on a terminal where nothing is
+    // happening. Re-called while the answer is "output happened", which a freshly painted prompt
+    // produces; what it must eventually reach is a full quiet window.
+    let quiet = wait_until_quiet(&mut server);
+    assert!(
+        quiet.contains("Nothing changed"),
+        "sweeps ran through that window and published NOTHING — a first reading is not a change: \
+         {quiet}",
+    );
+
+    // PROPERTY 2. A job the user starts takes the terminal from the shell.
+    server.call_tool("write_pane", json!({ "pane": 1, "text": "sleep 300" }));
+
+    let moved = wait_until_reported(&mut server, "pane_job_changed");
+    assert!(
+        moved.contains("pane_job_changed: pane 1 (id 0)"),
+        "the change names the pane in the NUMBER pane_processes takes, so the follow-up read this \
+         tool's description promises can actually be made: {moved}",
+    );
+
+    // PROPERTY 3, stated as its own read: the job really is the silent one, so nothing about this
+    // could have come from watching output.
+    let running = server.wait_for_tool("pane_processes", json!({}), "sleep 300");
+    assert!(
+        running.contains("sleep  sleep 300\n"),
+        "and the pane is running exactly the command that produced no output: {running}",
+    );
+}
+
+/// Call `wait_for_change` until it reports a genuinely QUIET window, or give up.
+///
+/// The timeout is longer than `sprag_host::agent::SWEEP_INTERVAL` (5 s) on purpose: a park that
+/// returns "Nothing changed" over that long is proof that at least one sweep ran and published
+/// nothing, which is the only way to observe the establish rule from outside the daemon.
+fn wait_until_quiet(server: &mut McpServer) -> String {
+    let deadline = Instant::now() + DEADLINE;
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        last = server.call_tool("wait_for_change", json!({ "timeout_seconds": 8 }));
+        if last.contains("Nothing changed") {
+            return last;
+        }
+    }
+    panic!("the terminal never went quiet; last answer was:\n{last}")
+}
+
+/// Call `wait_for_change` until an answer names `kind`, or give up.
+///
+/// Re-called rather than called once because a pane's OUTPUT moves the scene without being a typed
+/// change, and the tool answers that truthfully ("the scene moved but nothing structural changed")
+/// — so a single call can legitimately return before the sample that carries the event. This is the
+/// loop a real caller writes, and it is not a poll: every turn of it is parked in the daemon.
+fn wait_until_reported(server: &mut McpServer, kind: &str) -> String {
+    let deadline = Instant::now() + DEADLINE;
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        last = server.call_tool("wait_for_change", json!({ "timeout_seconds": 10 }));
+        if last.contains(kind) {
+            return last;
+        }
+    }
+    panic!("no answer ever named {kind:?}; last was:\n{last}")
 }
 
 /// **THE live gate for `select_pane`**: the tool moves a fact that lives in the DAEMON and that

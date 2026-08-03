@@ -2301,6 +2301,41 @@ mod tests {
         );
     }
 
+    /// A job change crosses the wire as `pane_job_changed`, naming the PANE and nothing else.
+    ///
+    /// The whole object is pinned rather than probed with `.any(…)`, because the claim has two
+    /// halves and a containment check only tests the first: the type string a client matches on,
+    /// and the ABSENCE of the process group. Publishing the pgid here would be a second encoding of
+    /// a fact `pane_processes` already serves — the defect R290 found in the rival's own answer
+    /// (`cmdline` beside `argv`), and an extra key is exactly what a containment assertion cannot
+    /// see.
+    #[test]
+    fn a_job_change_crosses_the_wire_naming_only_its_pane() {
+        let reg = registry();
+        let channels = Arc::new(ChannelRegistry::default());
+        let ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            SessionScope::unscoped(&reg),
+            Arc::clone(&channels),
+            None,
+            None,
+            None,
+            sampler(),
+        );
+
+        channels.announce("0", vec![crate::events::Event::PaneJobChanged(7)]);
+
+        let Some(IntrospectValue::Json(batch)) = ext.query(&crate::wire::events_slot_since(0))
+        else {
+            panic!("the events family answers");
+        };
+        assert_eq!(
+            batch["events"],
+            json!([{ "type": "pane_job_changed", "pane": 7 }]),
+            "the subject is the pane, and the process group is NOT on the wire: {batch}",
+        );
+    }
+
     /// A DUPLICATE report is accepted and records nothing — the same condition the settle waker uses,
     /// so the two publishers of an agent verdict cannot come to disagree about what a change is.
     #[test]
