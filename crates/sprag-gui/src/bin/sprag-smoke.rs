@@ -1865,16 +1865,62 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
             "session": session,
         }),
     );
+    // CAUGHT UP, not "shows the needle" — and the difference is a whole class of false failure.
+    // The pane is 152 cells; a shell that echoes a line and then prints its prompt can push that
+    // line off its OWN screen before any client can paint it, and then no client is behind, there
+    // is simply nothing left to show. Measured: this check hunted the bare string and failed about
+    // one run in eight, always with the daemon's screen no longer holding it either — which a
+    // parent-commit control reproduced exactly, because it was never about the code under test.
+    //
+    // So the condition is a fact that cannot expire: the client shows the line, OR the pane has
+    // already scrolled it away. Both mean "not behind". The claim this check is really about — that
+    // driving ONE pane costs that pane's area and nothing else — is priced below and is untouched.
     let painted = smoke
         .wait_for(|s| {
-            (0..s.pane_count().ok()?)
-                .any(|pane| {
-                    s.pane_rows(pane)
-                        .is_ok_and(|rows| rows.iter().any(|row| row.contains(needle)))
-                })
-                .then_some(())
+            let shown = (0..s.pane_count().ok()?).any(|pane| {
+                s.pane_rows(pane)
+                    .is_ok_and(|rows| rows.iter().any(|row| row.contains(needle)))
+            });
+            // Unknown (the daemon would not answer) counts as STILL SHOWABLE, so an unreadable
+            // daemon can never be the reason this check passes.
+            let showable = pane_holds(&mut daemon, &session, named, needle)
+                .1
+                .unwrap_or(true);
+            (shown || !showable).then_some(())
         })
         .is_ok();
+    // WHY it is behind, on the failing path only, asked of the DAEMON in the two ways that tell the
+    // causes apart: a shell that never ran the line leaves the daemon's own text without it, while
+    // a client that never fetched leaves the daemon's SCREEN holding it. Both reads are needed —
+    // the scrollback-inclusive one alone cannot tell "lost" from "expired", which is the confusion
+    // that hid this for two rounds.
+    let reached_the_daemon = (!painted).then(|| pane_holds(&mut daemon, &session, named, needle));
+    // And the last fork: drive a SECOND line and see whether THAT one lands. The client stays
+    // responsive either way — it answers `pane_rows` throughout the timeout above — so "responsive"
+    // says nothing about its poll thread. A second line that paints proves the thread is alive and
+    // looping, which makes the first miss a FETCH DECISION; a second line that also never lands
+    // proves the thread has stopped delivering, which is a different bug in a different place.
+    let second_line_landed = (!painted).then(|| {
+        let again = "l3-damage-again";
+        let _ = daemon.call(
+            "scene/invoke",
+            json!({
+                "path": format!("/pane_{named}/sprag_input/external/text"),
+                "args": { "text": format!("echo {again}\n") },
+                "session": session,
+            }),
+        );
+        smoke
+            .wait_for(|s| {
+                (0..s.pane_count().ok()?)
+                    .any(|pane| {
+                        s.pane_rows(pane)
+                            .is_ok_and(|rows| rows.iter().any(|row| row.contains(again)))
+                    })
+                    .then_some(())
+            })
+            .is_ok()
+    });
     let Some(after) = grid_work(&mut daemon, &session) else {
         report.check("the host reports its meter after the drive", false);
         return;
@@ -1891,7 +1937,29 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     report.check(
         &format!(
             "the driven line reached the client's painted grid \
-             (invoke {driven:?}, painted {painted}, {cells} cells)"
+             (invoke {driven:?}, painted {painted}, {cells} cells{})",
+            match (reached_the_daemon, second_line_landed) {
+                (None, _) => String::new(),
+                (Some((Some(false), _)), _) => {
+                    ", and the DAEMON's own pane does NOT — the shell never ran it".to_owned()
+                }
+                (Some((_, Some(false))), _) => ", and the DAEMON's own SCREEN does not hold it \
+                     either — it scrolled out of this pane, so no client could have painted it"
+                    .to_owned(),
+                (Some((None, _) | (_, None)), _) => {
+                    ", and the daemon would not say what its pane holds".to_owned()
+                }
+                (Some((Some(true), Some(true))), Some(true)) => {
+                    ", and the DAEMON's screen holds it while a LATER line painted — the poll \
+                     thread is alive, so this was a fetch decision"
+                        .to_owned()
+                }
+                (Some((Some(true), Some(true))), _) => {
+                    ", and the DAEMON's screen holds it and a LATER line did not paint either — \
+                     the poll thread has stopped delivering"
+                        .to_owned()
+                }
+            }
         ),
         painted && cells > 0,
     );
@@ -2390,6 +2458,38 @@ fn pane_line(i: impl std::fmt::Display) -> String {
 /// Asked of the daemon's own scene rather than derived from the client's tile indices: the ids are
 /// minted host-side and the client never paints them, so any mapping computed out here would be a
 /// guess dressed as an address.
+/// Whether the DAEMON's own view of pane `pane` contains `needle` — the read that tells a client's
+/// silence apart from a shell's.
+///
+/// Asked TWICE, and the pair is the point. `full_text` includes SCROLLBACK, so it answers "did the
+/// program ever say this"; the live cell frame answers "can anything looking at this pane still see
+/// it". A line in the first and not the second has scrolled out of a small pane, and no client can
+/// be blamed for not painting it — that is a check hunting a transient string, not a product that
+/// lost one.
+///
+/// `None` from either read when the daemon would not answer at all, which is a third thing again
+/// and must not read as "no".
+fn pane_holds(
+    daemon: &mut HostConn,
+    session: &str,
+    pane: u64,
+    needle: &str,
+) -> (Option<bool>, Option<bool>) {
+    let mut ask = |slot: String| {
+        daemon
+            .call(
+                "scene/query",
+                json!({
+                    "path": format!("/pane_{pane}/sprag_input/external/{slot}"),
+                    "session": session,
+                }),
+            )
+            .ok()
+            .map(|value| value.to_string().contains(needle))
+    };
+    (ask("full_text".to_owned()), ask("cells.0".to_owned()))
+}
+
 fn daemon_panes(daemon: &mut HostConn, session: &str) -> Vec<u32> {
     let Ok(tree) = daemon.call("scene/snapshot", json!({ "path": "", "session": session })) else {
         return Vec::new();
