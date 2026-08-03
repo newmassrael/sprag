@@ -10,20 +10,23 @@
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
 //! JSON-RPC 2.0 on stdin/stdout. It advertises self-describing tools —
-//! `list_panes`, `pane_layout`, `read_pane`, `read_last_command`, `read_pane_links`,
-//! `read_pane_images`, `find_in_pane`, `regex_in_pane`, `agent_state`, `agent_explain`,
-//! `wait_for_change`, `write_pane`, `send_keys`, `select_pane` — so an agent *immediately*
+//! `list_panes`, `pane_layout`, `pane_processes`, `read_pane`, `read_last_command`,
+//! `read_pane_links`, `read_pane_images`, `find_in_pane`, `regex_in_pane`, `agent_state`,
+//! `agent_explain`, `wait_for_change`, `write_pane`, `send_keys`, `select_pane` — so an agent *immediately*
 //! understands "read/write a sibling pane" without reading any sprag source. (Named rather than
 //! counted, for the reason [`tools_list`] gives: a count kept in prose goes stale silently, and this
 //! one had.) The two `agent_*` tools are the surface for the one fact an agent cannot read off a
 //! sibling's screen without interpreting it: whether the AI in that pane is waiting for a human
 //! (H3). They report the daemon's own verdict, so two agents watching one pane agree.
 //!
-//! `list_panes` answers WHO is in the terminal and [`tool_pane_layout`] answers WHERE they sit,
-//! which is the same slot split the daemon publishes. WHERE is what lets an agent choose a pane the
-//! way a person describes one — by position — and it carries the daemon's own adjacency plus a mark
-//! on the pane this server is itself running in, without which a direction has nothing to be
-//! relative to.
+//! `list_panes` answers WHO is in the terminal, [`tool_pane_layout`] answers WHERE they sit, and
+//! [`tool_pane_processes`] answers WHAT each one is RUNNING — the same three-way split the daemon
+//! publishes and the `sprag` CLI exposes. WHERE is what lets an agent choose a pane the way a person
+//! describes one — by position — and it carries the daemon's own adjacency plus a mark on the pane
+//! this server is itself running in, without which a direction has nothing to be relative to. WHAT
+//! is the one thing a pane's TEXT cannot be read for: `list_panes` carries the label a pane was
+//! spawned with and never revisits, output that mattered may have scrolled away, and a silent build
+//! looks exactly like an idle prompt.
 //!
 //! `select_pane` is the one tool whose subject is the PERSON rather than a pane: it moves where the
 //! user's keystrokes go (H7's active pane), so an agent that has prepared something to look at can
@@ -70,9 +73,11 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, FULL_TEXT_SLOT, KEY_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT,
-    PANES_SLOT, SELECT_PANE_ACTION, TEXT_ACTION, events_slot_since, find_slot_for, regex_slot_for,
+    PANES_SLOT, PaneProcessesWire, SELECT_PANE_ACTION, TEXT_ACTION, events_slot_since,
+    find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -264,6 +269,23 @@ fn tools_list() -> Value {
                     currently typing into is NOT here: that changes on a keystroke and belongs to \
                     `list_panes`, which marks it.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            },
+            {
+                "name": "pane_processes",
+                "description": "Say WHAT IS RUNNING in each pane right now — the job that owns \
+                    the pane's terminal, with every process in it, its arguments, and the pane's \
+                    terminal device. `list_panes` reports the command a pane was SPAWNED with, \
+                    which is frozen at its birth: a pane opened as a shell and now running a long \
+                    build still lists as that shell. This is the operating system's own answer, so \
+                    it is how to tell a pane that is busy from one sitting at a prompt WITHOUT \
+                    guessing from its text — a silent build and an idle prompt look identical on \
+                    screen, and output that mattered may have scrolled away. Every answer says how \
+                    many milliseconds ago it was sampled.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg },
+                    "additionalProperties": false
+                }
             },
             {
                 "name": "read_pane",
@@ -525,6 +547,7 @@ fn handle_tools_call(message: &Value) -> Value {
     let outcome = match name {
         "list_panes" => tool_list_panes(),
         "pane_layout" => tool_pane_layout(),
+        "pane_processes" => tool_pane_processes(&args),
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
         "read_pane_links" => tool_read_pane_links(&args),
@@ -807,6 +830,131 @@ fn tool_pane_layout() -> Result<String, String> {
     let snapshot: LayoutSnapshot = serde_json::from_value(answer)
         .map_err(|error| format!("the host's arrangement did not parse: {error}"))?;
     Ok(render_arrangement_answer(&snapshot, &panes, own_pane()))
+}
+
+/// `pane_processes`: WHAT EACH PANE IS RUNNING — the job that owns its terminal, every process in
+/// that job with its arguments, and the pane's terminal device. `pane` narrows to one pane.
+///
+/// # Why an agent gets this at all, re-derived rather than inherited
+///
+/// R285 declined an MCP tool for the zoom on the argument that *an agent reads and types; a zoom is
+/// a thing you do FOR a human to look at*. R288 recorded that this argument INVERTS for a read, and
+/// this is a read — but the inversion is not the reason, because "it is a read" would admit any
+/// read at all. The reason is that an agent cannot get this fact another way. `list_panes` carries
+/// the SPAWN label, frozen at the pane's birth. `read_pane` carries text, which a long build may
+/// have scrolled away and which is identical between a silent build and an idle prompt. `agent_state`
+/// answers about an AI agent, not about a compiler. The one thing that separates a busy pane from a
+/// resting one is which process group owns its terminal, and until this tool existed nothing outside
+/// the daemon could ask.
+///
+/// # Two reads, the pane list FIRST — [`tool_pane_layout`]'s discipline, for its reason
+///
+/// The numbering every tool here takes is the pane pool's order; the processes are a different slot.
+/// A pane that exits between the two reads holds a row this numbering cannot name, and that is said
+/// in place rather than dropped — numbering it anyway would hand back a number that now belongs to a
+/// different pane. This translates an IDENTITY (a pane's id and its number name the same pane); it
+/// does not assemble one fact from two instants.
+fn tool_pane_processes(args: &Value) -> Result<String, String> {
+    let wanted = match args.get("pane") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(pane_number(args)?),
+    };
+    let panes = query_panes()?;
+    let answer = host_call(
+        "scene/query",
+        json!({ "path": mux_action_path(&pane_processes_at(0)) }),
+    )?;
+    // Through the SSOT type: a second reader of the served shape is a second thing that can come to
+    // disagree with the daemon about what a field means.
+    let wire: PaneProcessesWire = serde_json::from_value(answer)
+        .map_err(|error| format!("the host's process reading did not parse: {error}"))?;
+    if let Some(number) = wanted
+        && !panes.iter().any(|pane| pane.number == number)
+    {
+        return Err(format!(
+            "no pane {number} (this terminal has {} pane(s); call list_panes)",
+            panes.len()
+        ));
+    }
+    Ok(render_processes_answer(&wire, &panes, wanted))
+}
+
+/// The text [`tool_pane_processes`] returns, as a pure function of what was read — so every shape is
+/// testable without a live host, and the integration test can pin what an agent actually receives.
+///
+/// `wanted` is the 1-based pane number the caller asked about, or `None` for all of them.
+fn render_processes_answer(
+    wire: &PaneProcessesWire,
+    panes: &[PaneInfo],
+    wanted: Option<usize>,
+) -> String {
+    let number_of = |id: u64| panes.iter().find(|p| p.id == id).map(|p| p.number);
+    let rows: Vec<_> = wire
+        .panes
+        .iter()
+        .filter(|row| match wanted {
+            // A row whose pane the list no longer holds cannot match a NUMBER, so a narrowed answer
+            // simply does not include it; the unnarrowed answer says it is there and unnameable.
+            Some(number) => number_of(row.id) == Some(number),
+            None => true,
+        })
+        .collect();
+    let mut out = format!(
+        "What each pane is running, sampled {} ms ago:\n\n",
+        wire.sampled_ms_ago
+    );
+    if rows.is_empty() {
+        out.push_str("No pane in this terminal has a row in the reading.\n");
+        return out;
+    }
+    for row in rows {
+        let name = number_of(row.id).map_or_else(
+            // The residual of the two reads, said rather than smoothed over.
+            || format!("pane ? (id {}, gone since the pane list was read)", row.id),
+            |number| format!("pane {number} (id {})", row.id),
+        );
+        let device = row
+            .tty
+            .as_deref()
+            .map_or_else(String::new, |tty| format!(" on {tty}"));
+        // A pane whose child has been reaped keeps its place and its final screen, so it is listed
+        // rather than dropped, and it says it has no child instead of naming a pid it lost.
+        let child = row.shell_pid.map_or_else(
+            || " — no child process".to_owned(),
+            |pid| format!(", child process {pid}"),
+        );
+        out.push_str(&format!("{name}{device}{child}\n"));
+        let Some(job) = &row.foreground else {
+            // Distinct from "no child": a live child whose terminal nobody owns is a real state,
+            // and calling it the same thing would hide it.
+            out.push_str("  nothing owns this pane's terminal\n");
+            continue;
+        };
+        out.push_str(&format!("  running (job {}):\n", job.pgid));
+        for process in &job.processes {
+            // Quoted PER ARGUMENT: the wire carries the argument vector precisely because joining
+            // it with bare spaces makes an argument containing a space indistinguishable from two,
+            // so the one place that flattens it must not reintroduce that.
+            let argv = process
+                .argv
+                .iter()
+                .map(|arg| shell_quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ");
+            // Empty argv is a FACT the wire keeps (a zombie, a kernel thread), so it is said.
+            let argv = if argv.is_empty() {
+                "(no command line)".to_owned()
+            } else {
+                argv
+            };
+            out.push_str(&format!("    {} {}  {argv}\n", process.pid, process.name));
+        }
+    }
+    out.push_str(
+        "\nThe command in list_panes is what a pane was SPAWNED with and never changes; this is \
+         what it is running now. A pane whose job is its own child process is sitting at a prompt.\n",
+    );
+    out
 }
 
 /// The text [`tool_pane_layout`] returns, as a pure function of what was read — so every shape is
@@ -1644,6 +1792,7 @@ mod tests {
             [
                 "list_panes",
                 "pane_layout",
+                "pane_processes",
                 "read_pane",
                 "read_last_command",
                 "read_pane_links",
@@ -1746,6 +1895,130 @@ mod tests {
         let call = json!({ "params": { "name": "nope", "arguments": {} } });
         let result = handle_tools_call(&call);
         assert_eq!(result["isError"], true);
+    }
+
+    /// A reading of one pane, built the way the daemon serves it.
+    fn reading(rows: Vec<sprag_terminal::PaneProcesses>) -> PaneProcessesWire {
+        PaneProcessesWire {
+            sampled_ms_ago: 7,
+            panes: rows,
+        }
+    }
+
+    fn row(
+        id: u64,
+        tty: Option<&str>,
+        shell_pid: Option<u32>,
+        foreground: Option<sprag_terminal::ForegroundJob>,
+    ) -> sprag_terminal::PaneProcesses {
+        sprag_terminal::PaneProcesses {
+            id,
+            tty: tty.map(str::to_owned),
+            shell_pid,
+            foreground,
+        }
+    }
+
+    fn job(pgid: u32, processes: Vec<sprag_terminal::JobProcess>) -> sprag_terminal::ForegroundJob {
+        sprag_terminal::ForegroundJob { pgid, processes }
+    }
+
+    fn process(pid: u32, name: &str, argv: &[&str]) -> sprag_terminal::JobProcess {
+        sprag_terminal::JobProcess {
+            pid,
+            name: name.to_owned(),
+            argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
+    }
+
+    /// The whole answer an agent receives, pinned as TEXT — the numbering, the device, the job, and
+    /// the argv quoting.
+    ///
+    /// The quoting is the load-bearing part: the wire carries an argument VECTOR precisely so that
+    /// `git commit -m 'two words'` cannot be confused with a four-argument command, and this is the
+    /// one place that has to flatten it. A renderer that joined with bare spaces would print the two
+    /// commands below identically, so both are here.
+    #[test]
+    fn the_process_answer_names_each_pane_and_quotes_every_argument() {
+        let wire = reading(vec![
+            row(
+                40,
+                Some("/dev/pts/3"),
+                Some(900),
+                Some(job(900, vec![process(900, "bash", &["/bin/bash"])])),
+            ),
+            row(
+                41,
+                Some("/dev/pts/4"),
+                Some(901),
+                Some(job(
+                    950,
+                    vec![
+                        process(950, "git", &["git", "commit", "-m", "two words"]),
+                        process(951, "less", &[]),
+                    ],
+                )),
+            ),
+        ]);
+
+        assert_eq!(
+            render_processes_answer(&wire, &pool(&[40, 41]), None),
+            "What each pane is running, sampled 7 ms ago:\n\
+             \n\
+             pane 1 (id 40) on /dev/pts/3, child process 900\n\
+             \x20 running (job 900):\n\
+             \x20   900 bash  /bin/bash\n\
+             pane 2 (id 41) on /dev/pts/4, child process 901\n\
+             \x20 running (job 950):\n\
+             \x20   950 git  git commit -m 'two words'\n\
+             \x20   951 less  (no command line)\n\
+             \n\
+             The command in list_panes is what a pane was SPAWNED with and never changes; this is \
+             what it is running now. A pane whose job is its own child process is sitting at a \
+             prompt.\n",
+        );
+    }
+
+    /// The three states a pane can be in that are NOT "running something", each said distinctly:
+    /// a reaped child, a live child whose terminal nobody owns, and a row the pane list no longer
+    /// names. Collapsing any pair of them would hide a real difference.
+    #[test]
+    fn a_pane_with_no_job_says_which_kind_of_nothing_it_is() {
+        let wire = reading(vec![
+            row(40, Some("/dev/pts/3"), None, None),
+            row(41, Some("/dev/pts/4"), Some(901), None),
+            row(99, None, Some(902), None),
+        ]);
+        let answer = render_processes_answer(&wire, &pool(&[40, 41]), None);
+
+        assert!(
+            answer.contains("pane 1 (id 40) on /dev/pts/3 — no child process\n"),
+            "a reaped child is named as one: {answer}",
+        );
+        assert!(
+            answer.contains(
+                "pane 2 (id 41) on /dev/pts/4, child process 901\n  nothing owns this pane's \
+                 terminal\n"
+            ),
+            "a live child with an unowned terminal is a different state: {answer}",
+        );
+        assert!(
+            answer.contains("pane ? (id 99, gone since the pane list was read), child process 902"),
+            "and a row the numbering cannot name says so rather than borrowing a number: {answer}",
+        );
+    }
+
+    /// Narrowing to one pane answers about that pane and no other — and it narrows by NUMBER
+    /// against the pane list, so an unnameable row cannot be selected by accident.
+    #[test]
+    fn a_narrowed_process_answer_holds_one_pane() {
+        let wire = reading(vec![
+            row(40, None, Some(900), None),
+            row(41, None, Some(901), None),
+        ]);
+        let answer = render_processes_answer(&wire, &pool(&[40, 41]), Some(2));
+        assert!(answer.contains("pane 2 (id 41)"), "{answer}");
+        assert!(!answer.contains("pane 1 (id 40)"), "{answer}");
     }
 
     /// A pane list of `n` panes whose host ids are deliberately NOT their numbers — the mapping this

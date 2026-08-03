@@ -1489,3 +1489,69 @@ fn a_pane_id_advertised_for_another_daemon_marks_nothing() {
         "THE CONTROL: only the address half differs, so a resolver ignoring it marks both: {mine}",
     );
 }
+
+/// `pane_processes` against a REAL daemon: the job that owns a pane's terminal, which is the one
+/// fact about a sibling pane that no other tool on this surface can produce.
+///
+/// The daemon's boot pane runs `cat` and a second pane runs `sleep`, so the two rows differ in the
+/// way the whole tool exists for — and both are compared against `list_panes`, which reports what
+/// each pane was SPAWNED with. A tool that merely re-read the spawn label would agree with
+/// `list_panes` everywhere and this is what would catch it: the process row carries the ARGUMENTS
+/// (`sleep 600`), which the label does not have at all.
+///
+/// The `pane` argument narrows to one pane, and an out-of-range number is refused rather than
+/// answered empty — the caller asked about that pane.
+#[test]
+fn an_agent_reads_what_each_pane_is_running() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], (80, 24));
+    let sleeper = add_pane(&sock, &["sleep", "600"]);
+    let mut server = McpServer::spawn(&sock);
+    let numbers = pane_numbers(&mut server);
+    let number = |id: u64| {
+        numbers
+            .iter()
+            .find(|(pane, _)| *pane == id)
+            .unwrap_or_else(|| panic!("pane {id} is in the list: {numbers:?}"))
+            .1
+    };
+
+    // Polled: a freshly spawned child takes a moment to become its terminal's foreground group.
+    let all = server.wait_for_tool("pane_processes", json!({}), "sleep 600");
+    assert!(
+        all.starts_with("What each pane is running, sampled "),
+        "the answer leads with how old it is: {all}",
+    );
+    assert!(
+        all.contains(&format!("pane {} (id 0) on /dev/pts/", number(0))),
+        "each pane is named in this surface's numbers AND the host's ids, with its device: {all}",
+    );
+    assert!(
+        all.contains("cat  cat\n"),
+        "the boot pane's job is the cat it runs: {all}",
+    );
+
+    // ONE pane, and the argv is the part `list_panes` cannot carry.
+    let one = server.call_tool("pane_processes", json!({ "pane": number(sleeper) }));
+    assert!(
+        one.contains(&format!("pane {} (id {sleeper})", number(sleeper)))
+            && one.contains("sleep  sleep 600\n"),
+        "the named pane's job carries the arguments it is running: {one}",
+    );
+    assert!(
+        !one.contains(&format!("pane {} (id 0)", number(0))),
+        "and narrowing means only that pane: {one}",
+    );
+
+    // The pane LIST, from the same server: the label stops at the program name.
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        listed.contains("sleep") && !listed.contains("sleep 600"),
+        "list_panes carries the spawn label, not the command line: {listed}",
+    );
+
+    let refused = server.call_tool_error("pane_processes", json!({ "pane": 99 }));
+    assert!(
+        refused.contains("no pane 99"),
+        "a pane this terminal does not have is refused, not answered empty: {refused}",
+    );
+}
