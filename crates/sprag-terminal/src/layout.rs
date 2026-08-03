@@ -542,18 +542,90 @@ impl Span {
     }
 }
 
+/// What deriving adjacency needs of an arrangement's node, and ALL it needs: whether the node holds
+/// a pane, or divides two sub-trees at a ratio.
+///
+/// A trait rather than a walk over [`LayoutNode`] for one reason. The arrangement the host WORKS in
+/// and the arrangement it PUBLISHES ([`LayoutNodeWire`]) are two spellings of one shape, and a
+/// client holding the published one has to be able to ask the question the host can answer — else
+/// every reader that needs "which pane is to the left of this one" writes its own walk, and a second
+/// derivation of adjacency is a second thing that can come to disagree with `select-pane -L`. There
+/// is one derivation ([`neighbor_in`]); both forms are its input.
+///
+/// A node's split IDENTITY is deliberately absent: it is the one field the two forms genuinely
+/// differ on (the wire's is optional, for a divider a client minted), and adjacency does not depend
+/// on it. A trait that exposed it could not be implemented for both.
+trait Arranged: Sized {
+    /// This node as the adjacency walk reads it.
+    fn shape(&self) -> Shape<'_, Self>;
+}
+
+/// One node of an arrangement as [`Arranged`] exposes it — the shape both the owned tree and its
+/// wire twin have in common.
+enum Shape<'a, N> {
+    /// A pane occupies this cell.
+    Leaf(PaneId),
+    /// A division of two sub-trees at `ratio`, the `first` child's share.
+    Split {
+        dir: SplitDir,
+        ratio: f32,
+        first: &'a N,
+        second: &'a N,
+    },
+}
+
+impl Arranged for LayoutNode {
+    fn shape(&self) -> Shape<'_, Self> {
+        match self {
+            Self::Leaf(pane) => Shape::Leaf(*pane),
+            Self::Split {
+                dir,
+                ratio,
+                first,
+                second,
+                ..
+            } => Shape::Split {
+                dir: *dir,
+                ratio: *ratio,
+                first,
+                second,
+            },
+        }
+    }
+}
+
+impl Arranged for LayoutNodeWire {
+    fn shape(&self) -> Shape<'_, Self> {
+        match self {
+            Self::Leaf(pane) => Shape::Leaf(*pane),
+            Self::Split {
+                dir,
+                ratio,
+                first,
+                second,
+                ..
+            } => Shape::Split {
+                dir: *dir,
+                ratio: *ratio,
+                first,
+                second,
+            },
+        }
+    }
+}
+
 /// The ancestors of `pane`'s leaf, outermost first: each split and the side the descent took.
 ///
 /// `false` — with `out` left exactly as it was found — when this sub-tree holds no such leaf, so a
 /// caller can try siblings without clearing up after it.
-fn leaf_path<'a>(
-    node: &'a LayoutNode,
+fn leaf_path<'a, N: Arranged>(
+    node: &'a N,
     pane: PaneId,
-    out: &mut Vec<(&'a LayoutNode, SplitSide)>,
+    out: &mut Vec<(&'a N, SplitSide)>,
 ) -> bool {
-    match node {
-        LayoutNode::Leaf(held) => *held == pane,
-        LayoutNode::Split { first, second, .. } => {
+    match node.shape() {
+        Shape::Leaf(held) => held == pane,
+        Shape::Split { first, second, .. } => {
             out.push((node, SplitSide::First));
             if leaf_path(first, pane, out) {
                 return true;
@@ -577,22 +649,21 @@ fn leaf_path<'a>(
 /// * a division ACROSS the move puts both halves against the source, so both descend;
 /// * a division ALONG it puts only the NEARER half against the source — looking left, the
 ///   sibling's own right-hand child — so the far half cannot be anyone's neighbour.
-fn facing_leaves(node: &LayoutNode, dir: PaneDir, span: Span, out: &mut Vec<(PaneId, Span)>) {
-    match node {
-        LayoutNode::Leaf(pane) => out.push((*pane, span)),
-        LayoutNode::Split {
+fn facing_leaves<N: Arranged>(node: &N, dir: PaneDir, span: Span, out: &mut Vec<(PaneId, Span)>) {
+    match node.shape() {
+        Shape::Leaf(pane) => out.push((pane, span)),
+        Shape::Split {
             dir: node_dir,
             ratio,
             first,
             second,
-            ..
         } => {
             // Derived here rather than passed in: the axis a span is measured across is a function
             // of `dir`, and a parameter carrying it would be a second copy of one fact that a
             // caller could contradict.
-            if *node_dir == dir.axis().across() {
-                facing_leaves(first, dir, span.divide(*ratio, SplitSide::First), out);
-                facing_leaves(second, dir, span.divide(*ratio, SplitSide::Second), out);
+            if node_dir == dir.axis().across() {
+                facing_leaves(first, dir, span.divide(ratio, SplitSide::First), out);
+                facing_leaves(second, dir, span.divide(ratio, SplitSide::Second), out);
             } else {
                 let near = match dir.side() {
                     SplitSide::First => second,
@@ -602,6 +673,73 @@ fn facing_leaves(node: &LayoutNode, dir: PaneDir, span: Span, out: &mut Vec<(Pan
             }
         }
     }
+}
+
+/// The pane adjacent to `pane` in `dir` within the arrangement rooted at `root`, or `None` when
+/// there is none — the ONE derivation of adjacency in this project.
+///
+/// Its statement, its guarantees and the reason it is structural rather than geometric are on
+/// [`LayoutTree::neighbor`], which is one of its two callers; the other is [`LayoutWire::neighbor`],
+/// so a client reading a published arrangement gets the daemon's own answer rather than its own.
+fn neighbor_in<N: Arranged>(root: &N, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+    let mut path = Vec::new();
+    if !leaf_path(root, pane, &mut path) {
+        return None;
+    }
+    // The span of each ancestor ACROSS the move, and — after the loop — of the pane's own
+    // leaf. Recorded before the node's own division is applied, which is what makes
+    // `spans[depth]` the span of the sub-tree that hangs off `path[depth]`.
+    let across = dir.axis().across();
+    let mut span = Span::FULL;
+    let mut spans = Vec::with_capacity(path.len());
+    for (node, side) in &path {
+        spans.push(span);
+        if let Shape::Split {
+            dir: node_dir,
+            ratio,
+            ..
+        } = node.shape()
+            && node_dir == across
+        {
+            span = span.divide(ratio, *side);
+        }
+    }
+    let source = span;
+    // INNERMOST first: the nearest division on this axis is the one whose other half is
+    // actually adjacent. An outer one is only reached when every inner division runs the
+    // other way, which is precisely when the whole inner sub-tree faces that boundary.
+    for (depth, (node, side)) in path.iter().enumerate().rev() {
+        let Shape::Split {
+            dir: node_dir,
+            first,
+            second,
+            ..
+        } = node.shape()
+        else {
+            continue;
+        };
+        if node_dir != dir.axis() || *side == dir.side() {
+            continue;
+        }
+        let sibling = match dir.side() {
+            SplitSide::First => first,
+            SplitSide::Second => second,
+        };
+        let mut candidates = Vec::new();
+        facing_leaves(sibling, dir, spans[depth], &mut candidates);
+        return candidates
+            .into_iter()
+            .reduce(|best, next| {
+                // Strictly greater, so a tie keeps the earlier one in paint order.
+                if next.1.overlap(source) > best.1.overlap(source) {
+                    next
+                } else {
+                    best
+                }
+            })
+            .map(|(pane, _)| pane);
+    }
+    None
 }
 
 /// A window's logical layout tree: how its DOCKED panes are arranged, and nothing about
@@ -661,67 +799,13 @@ impl LayoutTree {
     /// `None` for a pane this tree holds no leaf for — one that exited, or that a client has
     /// FLOATED out of the tiling. A floating pane is still a pane and can still be the active one;
     /// it is simply not in the arrangement adjacency is a property of.
+    ///
+    /// The derivation is shared with [`LayoutWire::neighbor`], so a client reading the arrangement
+    /// this host PUBLISHES gets THIS answer rather than one of its own: the two are one walk over
+    /// one shape, not two implementations that agree today.
     #[must_use]
     pub fn neighbor(&self, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
-        let root = self.root.as_ref()?;
-        let mut path = Vec::new();
-        if !leaf_path(root, pane, &mut path) {
-            return None;
-        }
-        // The span of each ancestor ACROSS the move, and — after the loop — of the pane's own
-        // leaf. Recorded before the node's own division is applied, which is what makes
-        // `spans[depth]` the span of the sub-tree that hangs off `path[depth]`.
-        let across = dir.axis().across();
-        let mut span = Span::FULL;
-        let mut spans = Vec::with_capacity(path.len());
-        for (node, side) in &path {
-            spans.push(span);
-            if let LayoutNode::Split {
-                dir: node_dir,
-                ratio,
-                ..
-            } = node
-                && *node_dir == across
-            {
-                span = span.divide(*ratio, *side);
-            }
-        }
-        let source = span;
-        // INNERMOST first: the nearest division on this axis is the one whose other half is
-        // actually adjacent. An outer one is only reached when every inner division runs the
-        // other way, which is precisely when the whole inner sub-tree faces that boundary.
-        for (depth, (node, side)) in path.iter().enumerate().rev() {
-            let LayoutNode::Split {
-                dir: node_dir,
-                first,
-                second,
-                ..
-            } = node
-            else {
-                continue;
-            };
-            if *node_dir != dir.axis() || *side == dir.side() {
-                continue;
-            }
-            let sibling = match dir.side() {
-                SplitSide::First => first,
-                SplitSide::Second => second,
-            };
-            let mut candidates = Vec::new();
-            facing_leaves(sibling, dir, spans[depth], &mut candidates);
-            return candidates
-                .into_iter()
-                .reduce(|best, next| {
-                    // Strictly greater, so a tie keeps the earlier one in paint order.
-                    if next.1.overlap(source) > best.1.overlap(source) {
-                        next
-                    } else {
-                        best
-                    }
-                })
-                .map(|(pane, _)| pane);
-        }
-        None
+        neighbor_in(self.root.as_ref()?, pane, dir)
     }
 
     /// Mint the next never-reused split id.
@@ -1104,6 +1188,23 @@ impl LayoutWire {
             walk(root, &mut out);
         }
         out
+    }
+
+    /// The pane ADJACENT to `pane` in `dir`, or `None` when there is none — [`LayoutTree::neighbor`]
+    /// asked of a PUBLISHED arrangement, by the same walk over the same shape.
+    ///
+    /// This is what a client that draws nothing needs and could not have. Adjacency is a function of
+    /// the arrangement, so every reader of a [`LayoutSnapshot`] could in principle re-derive it —
+    /// and a re-derivation is a SECOND definition of "the pane to the left", which would answer
+    /// differently from the `select_pane` a keybinding invokes on the very arrangements that make
+    /// the question interesting (a column facing one divider, where the choice is by overlap). One
+    /// derivation, two forms.
+    ///
+    /// `None` for a pane with no leaf here — one that exited, or that a client has FLOATED out of
+    /// the tiling — exactly as on the owned tree.
+    #[must_use]
+    pub fn neighbor(&self, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+        neighbor_in(self.root.as_ref()?, pane, dir)
     }
 }
 
@@ -2734,6 +2835,99 @@ mod tests {
                 ("down", Some(2))
             ],
         );
+    }
+
+    /// **The arrangement a client is HANDED answers adjacency exactly as the tree it came from.**
+    ///
+    /// The property the shared derivation exists for. A reader holding a [`LayoutSnapshot`] — the
+    /// MCP layout tool, any client that draws nothing — asks [`LayoutWire::neighbor`] and gets the
+    /// answer `select-pane -L` would give, because it IS that answer rather than a second one that
+    /// agrees today.
+    ///
+    /// Checked over every pane and all four directions of four shapes, including the pair whose
+    /// answer only the RATIO decides — which is exactly where a re-derivation drifts, since the
+    /// tree's shape alone does not settle it. The two explicit tables are what stop this from
+    /// passing vacuously: an equality assertion holds when both sides answer nothing.
+    ///
+    /// REVERT-PROOF: `LayoutWire::neighbor` returning `None` fails this test and no other.
+    #[test]
+    fn the_published_arrangement_answers_adjacency_exactly_as_its_tree_does() {
+        /// `pane`'s four neighbours as a client reads them off the PUBLISHED form.
+        fn around_wire(wire: &LayoutWire, pane: u64) -> Vec<(&'static str, Option<u64>)> {
+            PaneDir::ALL
+                .iter()
+                .map(|dir| {
+                    (
+                        dir.wire_str(),
+                        wire.neighbor(PaneId(pane), *dir).map(|id| id.0),
+                    )
+                })
+                .collect()
+        }
+
+        // `0 | (1 over 2)`, the column's divider a quarter of the way down, and the SAME shape with
+        // the share moved. Only the ratio differs, so a walk that ignored it would answer alike.
+        let low = tree_of(split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(0),
+            split(SplitDir::Vertical, 0.25, leaf(1), leaf(2)),
+        ));
+        let high = tree_of(split(
+            SplitDir::Horizontal,
+            0.5,
+            leaf(0),
+            split(SplitDir::Vertical, 0.75, leaf(1), leaf(2)),
+        ));
+
+        assert_eq!(
+            around_wire(&LayoutWire::from(&low), 0),
+            vec![
+                ("left", None),
+                ("right", Some(2)),
+                ("up", None),
+                ("down", None)
+            ],
+            "the published form ranks by the share it carries",
+        );
+        assert_eq!(
+            around_wire(&LayoutWire::from(&high), 0),
+            vec![
+                ("left", None),
+                ("right", Some(1)),
+                ("up", None),
+                ("down", None)
+            ],
+            "THE CONTROL: the same shape with the share moved answers a different pane",
+        );
+
+        let shapes = [
+            low,
+            high,
+            // Looking INTO a sub-tree, and a column of rows on the other axis.
+            tree_of(split(
+                SplitDir::Horizontal,
+                0.5,
+                split(SplitDir::Horizontal, 0.5, leaf(0), leaf(1)),
+                leaf(2),
+            )),
+            tree_of(split(
+                SplitDir::Vertical,
+                0.5,
+                split(SplitDir::Horizontal, 0.33, leaf(0), leaf(1)),
+                split(SplitDir::Horizontal, 0.33, leaf(2), leaf(3)),
+            )),
+        ];
+        for (shape, tree) in shapes.iter().enumerate() {
+            let wire = LayoutWire::from(tree);
+            for pane in tree.panes() {
+                assert_eq!(
+                    around_wire(&wire, pane.0),
+                    around(tree, pane.0),
+                    "shape {shape}, pane {pane:?}: the two forms are one derivation",
+                );
+            }
+        }
     }
 
     /// The two panes with no answer at all: the SOLE tiled pane (no division to cross) and one the
