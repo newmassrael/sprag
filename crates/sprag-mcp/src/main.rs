@@ -2886,6 +2886,58 @@ mod tests {
         );
     }
 
+    /// The provenance line names its opener THREE ways, and only two of them are reachable live.
+    ///
+    /// "you" and "pane N" are pinned end to end by `mcp_stdio`. The third — an opener this window
+    /// does not hold — is not: it needs a pane in ANOTHER window to have opened one in this one, and
+    /// building that live would test the harness rather than the rendering. Pinned here instead of
+    /// registered as a gap, because the sentence is the whole point: a number means nothing outside
+    /// the listing that indexes it, so an absent opener must NOT be rendered as one.
+    #[test]
+    fn the_provenance_line_names_an_opener_this_window_does_not_hold_by_id() {
+        let opened = |opener: u64| PaneInfo {
+            number: 2,
+            id: 7,
+            title: String::new(),
+            command: "bash".to_owned(),
+            cols: 80,
+            rows: 24,
+            notification: None,
+            bell: 0,
+            opened_by: Some(opener),
+            shell: None,
+            exit_status: None,
+            mouse: None,
+            focus_tracking: false,
+            images: Vec::new(),
+            active: false,
+            agent: None,
+        };
+        // The listing this rendering indexes into: pane 1 is host id 3, the opener.
+        let listing = [PaneInfo {
+            number: 1,
+            id: 3,
+            ..opened(0)
+        }];
+        assert!(
+            pane_summary(&opened(3), &listing, None).contains("      opened by: pane 1\n"),
+            "an opener this window holds is named by its NUMBER",
+        );
+        assert!(
+            pane_summary(&opened(99), &listing, None)
+                .contains("      opened by: pane id 99, not in this window\n"),
+            "and one it does not hold is named by the id that still addresses it, with the reason \
+             it has no number here — never by a number this listing would make up",
+        );
+        assert!(
+            pane_summary(&opened(3), &listing, Some(3)).contains(
+                "      opened by: you (yours to \
+             close)\n"
+            ),
+            "and the caller's own panes say so, which is the only value close_pane accepts",
+        );
+    }
+
     #[test]
     fn pane_summary_surfaces_mouse_and_focus_tracking() {
         let tracking = PaneInfo {
