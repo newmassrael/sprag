@@ -2018,6 +2018,131 @@ fn the_cli_splits_lists_and_kills_panes_over_the_socket() {
     );
 }
 
+/// The ids `sprag panes` lists, in the order it lists them — the reading a placement verb leaves
+/// UNCHANGED, which is the gap `sprag layout` exists to fill.
+fn listed_pane_ids(sock: &Path) -> Vec<String> {
+    sprag(sock, &["panes"])
+        .stdout
+        .lines()
+        .filter_map(|line| line.split(':').next().map(str::to_owned))
+        .collect()
+}
+
+/// `sprag layout`'s drawing, minus its `revision` header — the part a test can pin, since the
+/// revision counts every change the daemon has ever made to this window.
+fn drawn_layout(sock: &Path) -> String {
+    let run = sprag(sock, &["layout"]);
+    assert!(run.ok, "layout succeeded: {}", run.stderr);
+    let (head, rest) = run.stdout.split_once('\n').expect("a header and a body");
+    assert!(
+        head.starts_with("revision "),
+        "the arrangement's own version leads: {head:?}",
+    );
+    rest.to_owned()
+}
+
+/// What the three placement verbs DID, as the CLI can now show it — debt-register item 11.
+///
+/// The point of the test is the pair of readings taken at every step: `sprag panes` lists the same
+/// ids in the same order across a swap and a zoom (it answers WHO, and pool order is not position),
+/// while `sprag layout` shows both. Before this verb existed the first column was the only one the
+/// CLI had, so a caller running the verbs written for the draws-nothing audience had to open raw
+/// JSON-RPC to see whether they had worked.
+///
+/// It drives the real daemon, so the arrangement here is the one the daemon serves — a rendering
+/// test over a hand-built snapshot cannot catch a slot read that addresses the wrong path.
+#[test]
+fn the_cli_shows_where_the_placement_verbs_put_a_pane() {
+    let (_host, sock) = spawn_host();
+
+    // A one-pane window roots at a leaf, so it draws with no guides at all.
+    assert_eq!(drawn_layout(&sock), "pane 0\n");
+
+    let split = sprag(&sock, &["split-window", "-h", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let new_pane = split.stdout.trim().to_owned();
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane 0\n└─ pane {new_pane}\n"),
+        "the division, its ratio, and which pane is on which side",
+    );
+
+    // The SWAP: invisible in the pane listing, which is the whole complaint, and plain here.
+    let before = listed_pane_ids(&sock);
+    let swapped = sprag(&sock, &["swap-pane", "-t", "0", "0", &new_pane]);
+    assert!(swapped.ok, "swap-pane succeeded: {}", swapped.stderr);
+    assert_eq!(
+        listed_pane_ids(&sock),
+        before,
+        "`panes` answers WHO, and a swap changes nobody — this is the reading that could not \
+         observe the verb",
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane {new_pane}\n└─ pane 0\n"),
+        "and the two panes have exchanged sides",
+    );
+
+    // The ZOOM: the arrangement stays READABLE while one pane fills the window, on purpose — a
+    // filtered tree would blind exactly the callers these verbs exist for.
+    let zoomed = sprag(&sock, &["zoom-pane", "-t", "0", "0"]);
+    assert!(zoomed.ok, "zoom-pane succeeded: {}", zoomed.stderr);
+    assert_eq!(
+        listed_pane_ids(&sock),
+        before,
+        "`panes` cannot observe a zoom either",
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane {new_pane}\n└─ pane 0  (fills the window)\n"),
+        "both panes still placed, and the one covering them named",
+    );
+
+    // Un-zooming takes the mark away rather than leaving a reading nothing can clear.
+    let unzoomed = sprag(&sock, &["zoom-pane", "-t", "0", "0", "-u"]);
+    assert!(unzoomed.ok, "zoom-pane -u succeeded: {}", unzoomed.stderr);
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane {new_pane}\n└─ pane 0\n"),
+    );
+
+    // The window this verb reports is the session's CURRENT one, which `break-pane` moves (tmux's
+    // behaviour) — so the reading follows the session rather than the window it was last asked about.
+    let broken = sprag(&sock, &["break-pane", "-t", "0", &new_pane]);
+    assert!(broken.ok, "break-pane succeeded: {}", broken.stderr);
+    let born = broken.stdout.trim().to_owned();
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("pane {new_pane}\n"),
+        "the new window holds the broken-out pane alone",
+    );
+    let back = sprag(&sock, &["select-window", "-t", "0", "0"]);
+    assert!(back.ok, "select-window succeeded: {}", back.stderr);
+    assert_ne!(
+        born, "0",
+        "break-pane made a window that is not the boot one"
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        "pane 0\n",
+        "and the source window's division collapsed into its survivor",
+    );
+
+    // The scope is OPTIONAL here exactly as it is for `panes`, and means the same thing.
+    assert_eq!(
+        sprag(&sock, &["layout", "-t", "0"]).stdout,
+        sprag(&sock, &["layout"]).stdout,
+    );
+
+    // An argument this verb does not take is refused locally, naming what it does take.
+    let junk = sprag(&sock, &["layout", "0"]);
+    assert!(
+        !junk.ok && junk.stderr.contains("-t SESSION"),
+        "arg error: {}",
+        junk.stderr,
+    );
+}
+
 /// `split-window -h` / `-v` divide the pane the caller names, from the shell.
 ///
 /// The verb's FOUR forms are exercised because they are four different requests and only running
