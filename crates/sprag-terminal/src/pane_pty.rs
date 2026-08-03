@@ -13,7 +13,7 @@
 //! escape across batches).
 
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -185,6 +185,8 @@ pub struct PanePty {
     /// been reaped — a reaped pid may be recycled onto an unrelated process, and the `/proc` walks
     /// that consume it must never stray there.
     pid: Option<u32>,
+    /// The pane's terminal DEVICE (`/dev/pts/7`), captured at spawn — see [`tty`](PanePty::tty).
+    tty: Option<PathBuf>,
     exit: SharedExit,
     writer: SharedWriter,
     emulator: Arc<Mutex<Emulator>>,
@@ -285,6 +287,15 @@ impl PanePty {
         let pair = pty_system
             .openpty(size)
             .map_err(|e| PanePtyError::new("open pty", &e))?;
+        // The pane's terminal DEVICE, taken here because this is the only moment it is reachable:
+        // the master moves to the resize coalescer thread below and the slave is dropped before
+        // that. It is `ttyname_r` on the slave fd, resolved by the PTY backend at `openpty` — so
+        // this daemon does not have to DISCOVER what a caller could only guess at from the child's
+        // fd 0 (which the child is free to redirect).
+        #[cfg(unix)]
+        let tty = pair.master.tty_name();
+        #[cfg(not(unix))]
+        let tty = None;
         let child = pair
             .slave
             .spawn_command(command)
@@ -447,6 +458,7 @@ impl PanePty {
         Ok(Self {
             killer,
             pid,
+            tty,
             exit,
             writer,
             emulator,
@@ -649,6 +661,24 @@ impl PanePty {
     #[must_use]
     pub fn exit_status(&self) -> Option<PaneExit> {
         lock(&self.exit).clone()
+    }
+
+    /// The TERMINAL DEVICE this pane is — `/dev/pts/7` — or `None` on a platform whose PTY backend
+    /// does not name one.
+    ///
+    /// Fixed at the pane's BIRTH and never changing, which is what separates it from every other
+    /// fact about what is running here: it survives the child exiting, and it is the daemon's OWN
+    /// (the backend resolves it from the slave fd at `openpty`) rather than something inferred from
+    /// the child afterwards. That matters because the obvious inference — read the child's
+    /// `/proc/<pid>/fd/0` — is a guess: a process may redirect its own standard input and go on
+    /// owning the terminal.
+    ///
+    /// It is the name a person and every OS tool outside sprag call this pane by: `ps -t pts/7`,
+    /// `who`, `write`, a debugger's `--tty`. A pane list gives an id nothing outside this daemon
+    /// knows; this is the address the rest of the machine agrees on.
+    #[must_use]
+    pub fn tty(&self) -> Option<&Path> {
+        self.tty.as_deref()
     }
 
     /// The child's current working directory, read LIVE from the OS.
@@ -1391,6 +1421,41 @@ mod tests {
         assert!(
             !pty.is_eof(),
             "and the child is alive throughout — this is exactly the case `is_eof` cannot see",
+        );
+    }
+
+    /// `tty()` names the REAL device, checked against a source that has nothing to do with how it
+    /// was obtained: the child's own `/proc/<pid>/fd/0`.
+    ///
+    /// Two independent answers are what make this an assertion rather than a restatement — the
+    /// accessor reads a `ttyname_r` the PTY backend took on the SLAVE fd at `openpty`, and the
+    /// control reads a symlink the KERNEL maintains for the child. Asserting the shape (`/dev/pts/`
+    /// and a number) alone would pass for any pty on the box, including one belonging to somebody
+    /// else's pane.
+    ///
+    /// It is deliberately not the other way round: `/proc/<pid>/fd/0` is the CONTROL here and not
+    /// the implementation, because a child may redirect its own standard input and go on owning the
+    /// terminal — which is exactly why the accessor does not read it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_pane_names_the_terminal_device_the_kernel_gave_its_child() {
+        let mut command = CommandBuilder::new("/bin/sleep");
+        command.arg("300");
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        let child = pty.pid().expect("a live child");
+
+        let named = pty.tty().expect("a unix pty names its device").to_owned();
+        let kernels = std::fs::read_link(format!("/proc/{child}/fd/0"))
+            .expect("the child's stdin is its terminal");
+        assert_eq!(
+            named, kernels,
+            "the device the pane reports and the one the kernel gave the child are one device",
+        );
+        assert!(
+            named.starts_with("/dev/pts/"),
+            "and it is an addressable path, not a label: {}",
+            named.display(),
         );
     }
 
