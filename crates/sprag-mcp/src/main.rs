@@ -11,7 +11,8 @@
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
 //! JSON-RPC 2.0 on stdin/stdout. It advertises self-describing tools —
 //! `list_panes`, `pane_layout`, `pane_processes`, `read_pane`, `read_last_command`,
-//! `read_pane_links`, `read_pane_images`, `find_in_pane`, `regex_in_pane`, `agent_state`,
+//! `read_pane_links`, `read_pane_images`, `find_in_pane`, `regex_in_pane`, `wait_for_output`,
+//! `agent_state`,
 //! `agent_explain`, `wait_for_change`, `write_pane`, `send_keys`, `open_pane`, `close_pane`,
 //! `select_pane` — so an agent *immediately*
 //! understands "read/write a sibling pane" without reading any sprag source. (Named rather than
@@ -115,7 +116,10 @@ use sprag_host::wire::{
     regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
-use sprag_rpc::{CallError, HostConn, INVALID_PARAMS};
+use sprag_rpc::{
+    CallError, HostConn, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
+    PATTERN_PARAM,
+};
 use sprag_terminal::{LayoutSnapshot, PaneDir, PaneId, arrangement};
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
@@ -262,8 +266,10 @@ fn handle_initialize(message: &Value) -> Value {
             pane's text. \
             DRIVE a pane with `write_pane` (type a command) and `send_keys` (named keys and \
             chords). \
-            Instead of polling, WAIT with `wait_for_change` for the one change you name — a \
-            job starting or finishing, a pane opening or closing, an agent's state moving. \
+            Instead of polling, WAIT: `wait_for_change` for the one change you name — a \
+            job starting or finishing, a pane opening or closing, an agent's state moving — and \
+            `wait_for_output` for a pane PRINTING text you name, which is how you run something \
+            over there and are told the moment it says what you were waiting for. \
             About a sibling AI: `agent_state` says whether it is working, waiting for a human, \
             or at rest, and `agent_explain` says why. \
             For your OWN work, `open_pane` gives you a new pane to run things in without taking \
@@ -457,6 +463,54 @@ fn tools_list() -> Value {
                         }
                     },
                     "required": ["pane", "pattern"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "wait_for_output",
+                "description": "BLOCK until a pane's output contains what you name, then return the \
+                    matching lines. This is 'start the build over there and tell me when it says \
+                    DONE' in ONE call — use it instead of calling find_in_pane or read_pane in a \
+                    loop. It costs nothing while the pane is quiet and returns as soon as the pane \
+                    itself produces the match; there is no polling interval to lose time to. \
+                    It searches what the pane has KEPT (its scrollback as well as the visible \
+                    screen), so a line that was printed and then scrolled away while you were \
+                    waiting still matches — you cannot miss it by looking too late. This is the \
+                    right tool when you know the TEXT you are waiting for. If instead you want to \
+                    know when a COMMAND finishes (whatever it prints), use wait_for_change with \
+                    kinds ['pane_job_changed','pane_closed']; if you want to know when an AGENT in \
+                    another pane stops, use wait_for_change with 'pane_agent_state_changed'. \
+                    Returns without the match, and WITHOUT failing, if the timeout expires — that \
+                    means it has not happened yet, so call again or read the pane to see what it is \
+                    actually doing. An invalid `pattern` is reported as an error with the reason, \
+                    which is different from 'no match yet'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg,
+                        "needle": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Literal text to wait for, ASCII case-insensitive. Give \
+                                this OR `pattern`, never both."
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "A REGULAR EXPRESSION to wait for (Rust regex syntax), \
+                                case-SENSITIVE — write (?i) to fold. Give this OR `needle`, never \
+                                both; they are different languages, so 'a.b' means three literal \
+                                characters as a needle and 'a, any character, b' as a pattern."
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 600,
+                            "description": "Give up and report that it has not happened after this \
+                                long (default 60). A timeout is not an error."
+                        }
+                    },
+                    "required": ["pane"],
                     "additionalProperties": false
                 }
             },
@@ -715,6 +769,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "read_pane_links" => tool_read_pane_links(&args),
         "read_pane_images" => tool_read_pane_images(&args),
         "find_in_pane" => tool_find_in_pane(&args),
+        "wait_for_output" => tool_wait_for_output(&args),
         "regex_in_pane" => tool_regex_in_pane(&args),
         "agent_state" => tool_agent_state(&args),
         "agent_explain" => tool_agent_explain(&args),
@@ -1457,6 +1512,151 @@ fn search_pane(id: u64, slot: &str, wanted: &str) -> Result<String, String> {
         return Ok(format!("no matches for {wanted:?} in pane {id}"));
     }
     let mut out = String::new();
+    for line in &found.lines {
+        out.push_str(&format!("{}: {}\n", line.line, line.text));
+    }
+    if found.truncated {
+        out.push_str("(the search hit its cap; later matches were not scanned)\n");
+    }
+    Ok(out)
+}
+
+/// `wait_for_output` — BLOCK until a pane's retained output matches, then answer with the matching
+/// lines.
+///
+/// ## The tool `find_in_pane` could not be, and the loop it removes
+///
+/// `find_in_pane` answers "does it say this NOW". An agent that wants "tell me WHEN it says this"
+/// has had to call it in a loop — a poll, against a terminal, from the surface whose other wait
+/// tool's description opens by telling an agent not to poll. `wait_for_change` does not cover it
+/// either, and deliberately: output is not a change there (a record per PTY batch would evict the
+/// journal's ring at output rate), so it will never return for a line appearing on a screen.
+///
+/// So this is the third wait, and it is the one that completes the workflow the others were built
+/// for: `open_pane` to get a workbench, `write_pane` to start something, and this to be told the
+/// moment it says what you were waiting for.
+///
+/// ## It searches what the pane KEPT, not what it is showing
+///
+/// The daemon's search reads scrollback plus visible, so a line printed and scrolled away while the
+/// agent was not looking still matches. That is the property a re-reading poll cannot have — it can
+/// only ever see the screen as it is when it looks — and it is why "wait for the build to print
+/// DONE" is answerable at all on a pane that goes on producing afterwards.
+///
+/// ## One reading of the listing, and one search language per call
+///
+/// The pane is parsed with [`pane_target`] and resolved with [`resolve_in`] against the ONE listing
+/// this call reads — never through a resolver with a query of its own, which is the torn read R295
+/// paid for. `needle` and `pattern` are separate arguments because they are separate languages,
+/// exactly as `find_in_pane` and `regex_in_pane` are separate tools.
+fn tool_wait_for_output(args: &Value) -> Result<String, String> {
+    let timeout = match args.get("timeout_seconds") {
+        None => Duration::from_secs(60),
+        Some(value) => {
+            let seconds = value
+                .as_u64()
+                .ok_or("timeout_seconds must be a whole number of seconds")?;
+            if !(1..=600).contains(&seconds) {
+                return Err("timeout_seconds must be between 1 and 600".to_owned());
+            }
+            Duration::from_secs(seconds)
+        }
+    };
+    let wanted = args.get("needle").and_then(Value::as_str);
+    let pattern = args.get("pattern").and_then(Value::as_str);
+    let (key, wanted) = match (wanted, pattern) {
+        (Some(needle), None) if !needle.is_empty() => (NEEDLE_PARAM, needle),
+        (None, Some(pattern)) if !pattern.is_empty() => (PATTERN_PARAM, pattern),
+        (Some(_), Some(_)) => {
+            return Err(
+                "give `needle` (literal text) or `pattern` (a regular expression), never \
+                        both — they are different search languages"
+                    .to_owned(),
+            );
+        }
+        _ => {
+            return Err(
+                "wait_for_output needs a non-empty `needle` (literal text) or `pattern` \
+                        (a regular expression)"
+                    .to_owned(),
+            );
+        }
+    };
+    // Parsed first, resolved against the one listing below — the R295 rule.
+    let target = pane_target(args)?;
+    let panes = query_panes()?;
+    let pane = resolve_in(&panes, &target)?;
+    let (number, id) = (pane.number, pane.id);
+
+    let sock = host_sock().ok_or_else(|| {
+        "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
+         ancestor); these pane tools do not apply to this session"
+            .to_owned()
+    })?;
+    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
+        .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
+    // The caller's timeout IS the read deadline, and it is the ONLY deadline: the daemon carries
+    // none, so closing this connection is what releases the park (`sprag_host::notify`).
+    conn.set_read_deadline(Some(timeout))
+        .map_err(|e| format!("cannot set the wait timeout: {e}"))?;
+
+    let params = json!({ PANE_PARAM: id, key: wanted });
+    let answer = match conn.try_call(PANE_WAIT_OUTPUT_METHOD, params) {
+        Ok(answer) => answer,
+        // The caller's own mistake, in the daemon's own words — reaching the agent as that sentence
+        // rather than behind `host rpc error:`. Matched on the fault's CODE, never its rendering:
+        // a substring test against a rendering is a test against a presentation decision, which is
+        // the rule R292 wrote down and R295 broke.
+        Err(CallError::Fault(fault)) if fault.code == INVALID_PARAMS => {
+            return Err(fault
+                .data
+                .as_ref()
+                .and_then(Value::as_str)
+                .unwrap_or(&fault.message)
+                .to_owned());
+        }
+        // A connection that trips its deadline is finished, and nothing having happened is not an
+        // error: it is the answer "not within the time you gave me", which is what the agent asked.
+        //
+        // ⚠ THE DEADLINE IS TOLD APART FROM A REAL FAILURE, and reading the rendered answer is what
+        // put this here. Reporting every transport error as "not yet" would tell an agent whose
+        // daemon had died that its build is still running — the most expensive lie this surface can
+        // tell, because the agent's correct response is to wait longer. A read deadline surfaces as
+        // `WouldBlock` or `TimedOut` (both spellings the platforms use); anything else is a
+        // failure and says so.
+        //
+        // The error itself is NOT rendered into the timeout sentence. It is a Rust-shaped
+        // `Transport(Custom { .. })` line that says nothing an agent can act on, beside a sentence
+        // that already says nothing failed — debt item 20's class, on this surface, avoided at
+        // birth rather than registered.
+        Err(CallError::Transport(error))
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            return Ok(format!(
+                "pane {number} has not printed {wanted:?} yet (waited {}s; nothing failed). Call \
+                 again to keep waiting, or read the pane to see what it IS doing.",
+                timeout.as_secs()
+            ));
+        }
+        Err(CallError::Transport(error)) => {
+            return Err(format!(
+                "the wait on pane {number} did not complete: {error}. This is NOT 'it has not \
+                 happened yet' — the terminal could not be reached."
+            ));
+        }
+        Err(CallError::Fault(fault)) => return Err(fault.to_string()),
+    };
+    let found: PaneFind = serde_json::from_value(answer["find"].clone())
+        .map_err(|error| format!("malformed find answer: {error}"))?;
+    // A refused pattern is an ERROR, not an empty result — `search_pane`'s own rule: an agent that
+    // cannot tell "your pattern is wrong" from "nothing matched yet" will wait forever on a typo.
+    if let Some(error) = found.error {
+        return Err(format!("invalid pattern {wanted:?}: {error}"));
+    }
+    let mut out = format!("pane {number} printed {wanted:?}:\n");
     for line in &found.lines {
         out.push_str(&format!("{}: {}\n", line.line, line.text));
     }
@@ -2694,6 +2894,7 @@ mod tests {
                 "read_pane_images",
                 "find_in_pane",
                 "regex_in_pane",
+                "wait_for_output",
                 "agent_state",
                 "wait_for_change",
                 "agent_explain",

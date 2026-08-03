@@ -1313,6 +1313,97 @@ fn an_agent_waits_for_a_job_to_start_without_polling() {
     );
 }
 
+/// **THE live gate for `wait_for_output`** — a real daemon, a real PTY, and the three answers this
+/// tool can give, each driven rather than asserted about.
+///
+/// It is a live test rather than a unit one because every interesting property of this tool is a
+/// property of the PATH: that the park is released by the pane's OWN output (not by a poll), that
+/// the search reads what the pane KEPT (not what it is showing), and — the one reading the rendered
+/// answers caught — that a deadline is told apart from a terminal that cannot be reached. None of
+/// those survives being mocked.
+#[test]
+fn an_agent_waits_for_the_output_it_named_and_a_timeout_is_not_a_failure() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], (80, 6));
+    let mut server = McpServer::spawn(&sock);
+
+    // PROPERTY 1. A timeout is an ANSWER, not an error: the pane is quiet and stays quiet.
+    let quiet = server.call_tool(
+        "wait_for_output",
+        json!({ "pane": 1, "needle": "never-printed-by-cat", "timeout_seconds": 2 }),
+    );
+    assert!(
+        quiet.contains("has not printed") && quiet.contains("nothing failed"),
+        "a quiet pane answers 'not yet' and says plainly that nothing broke — an agent that read \
+         this as a failure would stop waiting for a build that is still running: {quiet}",
+    );
+    assert!(
+        !quiet.contains("Transport(") && !quiet.contains("os error"),
+        "and it carries no Rust-shaped internals, which is what the first version of this \
+         rendering leaked to an agent beside a sentence saying nothing had failed: {quiet}",
+    );
+
+    // PROPERTY 2. The pane produces, and the park is released BY THAT OUTPUT. `cat` echoes, so the
+    // fact becomes true on demand — and the marker is followed by enough lines to push it off a
+    // six-row screen, which is PROPERTY 3 in the same breath.
+    server.call_tool(
+        "write_pane",
+        json!({ "pane": 1, "text": "the-build-is-done" }),
+    );
+    let matched = server.call_tool(
+        "wait_for_output",
+        json!({ "pane": 1, "needle": "the-build-is-done", "timeout_seconds": 20 }),
+    );
+    assert!(
+        matched.contains("printed \"the-build-is-done\""),
+        "the wait was answered by the pane's own output: {matched}",
+    );
+
+    // PROPERTY 3. THE DISCRIMINATOR AGAINST A RE-READING POLL. Push the marker far past any recent
+    // window, then wait for it again: a tool that re-read the pane's last N lines — which is
+    // exactly what the rival surface's 100 ms poll does — would find nothing and time out.
+    for filler in 0..40 {
+        server.call_tool(
+            "write_pane",
+            json!({ "pane": 1, "text": format!("filler-{filler}") }),
+        );
+    }
+    // Waited for rather than slept past: `cat`'s echo is asynchronous, and a first version of this
+    // control read the screen before a single filler had landed and "passed" for the wrong reason.
+    // Twice, because on a `cat` pane the first sighting is the PTY's echo of the keystrokes and the
+    // second is the child writing the line back.
+    let tail = server.wait_for_tool_count(
+        "read_pane",
+        json!({ "pane": 1, "tail_lines": 6 }),
+        "filler-39",
+        2,
+    );
+    assert!(
+        !tail.contains("the-build-is-done"),
+        "the control: the marker is outside the recent window a polling reader would look at: \
+         {tail}",
+    );
+    let scrolled = server.call_tool(
+        "wait_for_output",
+        json!({ "pane": 1, "needle": "the-build-is-done", "timeout_seconds": 20 }),
+    );
+    assert!(
+        scrolled.contains("printed \"the-build-is-done\""),
+        "and it is STILL matched, from the pane's retained output — the property a poll that \
+         re-reads the screen structurally cannot have: {scrolled}",
+    );
+
+    // PROPERTY 4. A pattern the engine refuses is an ERROR, never 'no match yet' — an agent that
+    // could not tell those apart would wait out its whole timeout on a typo and then retry it.
+    let refused = server.call_tool_error(
+        "wait_for_output",
+        json!({ "pane": 1, "pattern": "unclosed(", "timeout_seconds": 5 }),
+    );
+    assert!(
+        refused.contains("invalid pattern") && refused.contains("unclosed group"),
+        "the engine's own explanation reaches the agent: {refused}",
+    );
+}
+
 /// **R292 deleted the two re-call helpers that used to live here**, and their absence is the claim.
 ///
 /// `wait_until_quiet` re-called the tool until an answer said the terminal was quiet, and
