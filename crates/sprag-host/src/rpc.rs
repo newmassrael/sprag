@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use pinion_core::SceneRevision;
 use pinion_rpc::preview::PreviewLedger;
 use pinion_rpc::{
-    ConnId, DispatchContext, Request, RpcError, RpcFrame, RpcIngress, RpcReply, WaiterRegistry,
-    dispatch, dispatch_parsed, parse_request, try_async_wait_for,
+    ConnId, DispatchContext, FnEgress, Request, RpcEgress, RpcError, RpcFrame, RpcIngress,
+    RpcReply, WaiterRegistry, dispatch, dispatch_parsed, parse_request, try_async_wait_for,
 };
 use sprag_terminal::{SessionRegistry, Workspace};
 
@@ -1252,6 +1252,11 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
         conn,
         request,
         reply,
+        // The connection's WRITER (pinion R1552, PINION-PR83) — how a handler speaks a frame
+        // nobody asked for. Every method this daemon serves answers exactly once, through `reply`,
+        // so nothing here reads it; it is named rather than elided so the next reader can see that
+        // the capability arrived and is unused rather than wonder whether the pattern is stale.
+        egress: _,
     } = frame;
     match parse_request(&request) {
         Ok(parsed) => {
@@ -1363,6 +1368,17 @@ pub fn stdin_frames(input: impl BufRead, tx: &Sender<IngressEvent>) {
     // carries the same, stable id (R-PR67) -- mirroring pinion's built-in
     // stdin transport, which stamps its frames with its own single id.
     let conn = ConnId::allocate();
+    // Stdout is this transport's EGRESS, not merely its reply sink (pinion R1552,
+    // PINION-PR83). One writer built once and shared by every frame the reader
+    // produces, because it is the same stream for all of them -- and because
+    // `RpcFrame::new` DERIVES the reply from it, which is what makes a response
+    // and an unasked frame provably go to the same place. The alternative
+    // (`RpcFrame::answered_by`) would stamp these frames with a `NullEgress` and
+    // so make this transport refuse a subscription it can perfectly well serve.
+    let stdout: Arc<dyn RpcEgress> = FnEgress::new(|frame: String| {
+        let mut out = io::stdout().lock();
+        writeln!(out, "{frame}").is_ok() && out.flush().is_ok()
+    });
     for line in input.lines() {
         let Ok(text) = line else {
             break;
@@ -1371,17 +1387,11 @@ pub fn stdin_frames(input: impl BufRead, tx: &Sender<IngressEvent>) {
         if request.is_empty() {
             continue;
         }
-        let reply = RpcReply::new(|response| {
-            let mut out = io::stdout().lock();
-            if writeln!(out, "{response}").is_ok() {
-                let _ = out.flush();
-            }
-        });
         if tx
             .send(IngressEvent::Frame(RpcFrame::new(
                 conn,
                 request.to_owned(),
-                reply,
+                Arc::clone(&stdout),
             )))
             .is_err()
         {
@@ -2529,11 +2539,22 @@ mod tests {
 
     // ─── R115a: async change-notification (scene/revision + scene/waitFor) ───
 
-    /// A recording reply sink: collects whatever the reply is sent, so a test can
-    /// assert what (if anything) a parked / immediate `scene/waitFor` fired.
-    fn recording_reply(sink: &Arc<Mutex<Vec<String>>>) -> RpcReply {
+    /// A recording EGRESS: collects every frame written to this connection, so a test can assert
+    /// what (if anything) a parked / immediate `scene/waitFor` fired.
+    ///
+    /// An egress rather than the bare [`RpcReply`] it was until the pinion R1552 bump, because
+    /// [`RpcFrame::new`] now DERIVES the reply from the connection's writer — which is that seam's
+    /// whole point: a frame cannot be built whose answer goes somewhere its unasked frames do not.
+    /// A test that supplied only a reply would be describing a connection that no longer exists.
+    ///
+    /// The sink answers `true`, because this stand-in peer is always reachable; a test that wants a
+    /// DEAD peer says so with an egress of its own rather than by weakening this one.
+    fn recording_egress(sink: &Arc<Mutex<Vec<String>>>) -> Arc<dyn RpcEgress> {
         let sink = Arc::clone(sink);
-        RpcReply::new(move |response| sink.lock().unwrap().push(response))
+        FnEgress::new(move |frame: String| {
+            sink.lock().unwrap().push(frame);
+            true
+        })
     }
 
     /// One frame through the real per-frame dispatch body (`dispatch_one`) with a
@@ -2550,7 +2571,7 @@ mod tests {
             RpcFrame::new(
                 ConnId::allocate(),
                 declaring_the_protocol(request),
-                recording_reply(sink),
+                recording_egress(sink),
             ),
         );
     }
@@ -2610,7 +2631,7 @@ mod tests {
             RpcFrame::new(
                 conn,
                 declaring_the_protocol(&request.to_string()),
-                recording_reply(sink),
+                recording_egress(sink),
             ),
         );
     }
@@ -2776,7 +2797,7 @@ mod tests {
         tx.send(IngressEvent::Frame(RpcFrame::new(
             conn,
             declaring_the_protocol(&request.to_string()),
-            recording_reply(&sink),
+            recording_egress(&sink),
         )))
         .expect("queue the park");
         tx.send(IngressEvent::Disconnect(conn))
@@ -2815,7 +2836,7 @@ mod tests {
             RpcFrame::new(
                 conn,
                 declaring_the_protocol(&request.to_string()),
-                recording_reply(sink),
+                recording_egress(sink),
             ),
         );
     }
@@ -2987,7 +3008,7 @@ mod tests {
             tx.send(IngressEvent::Frame(RpcFrame::new(
                 ConnId::allocate(),
                 declaring_the_protocol(&request.to_string()),
-                recording_reply(&sink),
+                recording_egress(&sink),
             )))
             .expect("queue the park");
             settle("the wait to park", || {
@@ -3047,7 +3068,7 @@ mod tests {
         tx.send(IngressEvent::Frame(RpcFrame::new(
             conn,
             declaring_the_protocol(&request.to_string()),
-            recording_reply(&sink),
+            recording_egress(&sink),
         )))
         .expect("queue the park");
         tx.send(IngressEvent::Disconnect(conn))
