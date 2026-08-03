@@ -52,7 +52,7 @@
 //! client projects it (see [`sprag_terminal::layout`]).
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -163,6 +163,14 @@ struct SpawnSpec {
     /// The structured remote endpoint for a `sprag ssh` birth pane, stamped onto the pane after the
     /// spawn so the host can reconnect it on restore and `scp` to it. `None` for an ordinary spawn.
     remote: Option<SshRemote>,
+    /// The directory the child starts in, `None` to inherit the DAEMON's — which is where every
+    /// pane started before this existed, and where a person's split still starts.
+    ///
+    /// Validated as an existing directory when the request is parsed rather than left to the exec:
+    /// a `posix_spawn` into a directory that is not there does not fail loudly on this path, it
+    /// produces a pane whose child died, and on screen that is indistinguishable from a shell that
+    /// exited for no reason.
+    cwd: Option<PathBuf>,
 }
 
 impl WorkspaceExternal {
@@ -231,7 +239,50 @@ impl WorkspaceExternal {
             cols: opt_dim(map, "cols")?,
             rows: opt_dim(map, "rows")?,
             remote: Self::parse_remote(map)?,
+            cwd: Self::parse_cwd(map)?,
         })
+    }
+
+    /// Parse the OPTIONAL `cwd` — the directory the newborn child starts in. Absent (or `null`) is
+    /// `None`, the daemon's own directory.
+    ///
+    /// A non-string is a `TypeMismatch` (a malformed request); a string that does not name an
+    /// existing DIRECTORY is `Rejected` (a well-formed request the host cannot honour), which is the
+    /// same split every other argument here keeps. The stat happens with no lock held and before
+    /// anything is built, so the refusal costs no pane.
+    ///
+    /// This is a birth fact, so it lives on [`SpawnSpec`] and every action that builds one gets it
+    /// — see [`crate::wire::SPAWN_ACTION`], which is where the vocabulary is written down.
+    fn parse_cwd(map: &Map<String, Value>) -> Result<Option<PathBuf>, InvokeError> {
+        let dir = match map.get("cwd") {
+            None | Some(Value::Null) => return Ok(None),
+            Some(Value::String(dir)) => PathBuf::from(dir),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        if !dir.is_dir() {
+            return Err(InvokeError::Rejected);
+        }
+        Ok(Some(dir))
+    }
+
+    /// Parse the OPTIONAL `opened_by` — the pane whose occupant is asking for this one
+    /// ([`sprag_terminal::Pane::opened_by`]). Absent is a pane nobody claims.
+    ///
+    /// A pane this DAEMON does not hold is `Rejected`, on
+    /// [`report_agent`](Self::report_agent)'s stated reason: a caller with a stale `SPRAG_PANE` —
+    /// a process that outlived its own pane — would otherwise stamp a provenance naming a pane that
+    /// does not exist, and nothing would ever prune it. Checked daemon-wide rather than against this
+    /// request's scope for [`holds_pane`](Self::holds_pane)'s reason: pane ids are registry-unique,
+    /// and an asking pane may legitimately sit in a session other than the connection's default.
+    fn parse_opener(&self, map: &Map<String, Value>) -> Result<Option<PaneId>, InvokeError> {
+        let opener = match map.get("opened_by") {
+            None | Some(Value::Null) => return Ok(None),
+            Some(value) => PaneId(value.as_u64().ok_or(InvokeError::TypeMismatch)?),
+        };
+        if !self.holds_pane(opener) {
+            return Err(InvokeError::Rejected);
+        }
+        Ok(Some(opener))
     }
 
     /// Parse the OPTIONAL `remote` object (`{host, user?, port?}`) a `sprag ssh` birth request
@@ -282,14 +333,19 @@ impl WorkspaceExternal {
         &self,
         pool: &Arc<Mutex<Workspace>>,
         spec: SpawnSpec,
+        opener: Option<PaneId>,
     ) -> Result<PaneId, InvokeError> {
         let SpawnSpec {
-            command,
+            mut command,
             label,
             cols,
             rows,
             remote,
+            cwd,
         } = spec;
+        if let Some(cwd) = cwd {
+            command.cwd(cwd);
+        }
         let on_exit = self.on_pane_exit.as_ref().map(crate::pane_exit_hook);
         let mut workspace = lock(pool);
         let (default_cols, default_rows) = workspace.default_size();
@@ -308,11 +364,19 @@ impl WorkspaceExternal {
         if let Some(remote) = remote {
             workspace.set_pane_remote(id, remote);
         }
+        // And its PROVENANCE, on the same terms and at the same moment. Stamped HERE — the one
+        // runtime half every birth goes through — rather than at each action, so a birth path that
+        // takes an opener cannot forget to record it; the actions that have no opener to name pass
+        // `None` visibly, which is the decision stated at the call site rather than by omission.
+        if let Some(opener) = opener {
+            workspace.set_pane_opened_by(id, opener);
+        }
         Ok(id)
     }
 
     /// `spawn` action: create a pane in THIS request's session and return its id. `cmd` (an argv
-    /// array) defaults to `$SHELL`; `cols`/`rows` default to the workspace's default size.
+    /// array) defaults to `$SHELL`; `cols`/`rows` default to the workspace's default size; `cwd`
+    /// defaults to the daemon's directory; `opened_by` names the pane whose occupant is asking.
     fn spawn(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let empty = Map::new();
         let map = match args {
@@ -320,7 +384,11 @@ impl WorkspaceExternal {
             IntrospectValue::Null => &empty,
             _ => return Err(InvokeError::TypeMismatch),
         };
-        let id = self.spawn_parsed(self.workspace(), Self::parse_spawn(map)?)?;
+        // Both parses run BEFORE the birth, so a request that names an opener the daemon does not
+        // hold — or a directory that is not there — costs no forked child.
+        let spec = Self::parse_spawn(map)?;
+        let opener = self.parse_opener(map)?;
+        let id = self.spawn_parsed(self.workspace(), spec, opener)?;
         // A NEW pane changed the set: wake parked waiters now, before its first output, so a
         // mirror learns the pane exists immediately (the pane-set change-notification, distinct
         // from the per-pane output bump the hook fires).
@@ -353,10 +421,11 @@ impl WorkspaceExternal {
         // The birth spec is validated BEFORE the target is looked up, so a request that is
         // malformed in two ways reports the malformed-request error rather than the refusal.
         let spec = Self::parse_spawn(map)?;
+        let opener = self.parse_opener(map)?;
         if !crate::host::tiled_panes(&self.registry, &self.scope).contains(&target) {
             return Err(InvokeError::Rejected);
         }
-        let id = self.spawn_parsed(self.workspace(), spec)?;
+        let id = self.spawn_parsed(self.workspace(), spec, opener)?;
         if !crate::host::split_pane(&self.registry, &self.scope, id, target, side, dir) {
             tracing::warn!(
                 target: "sprag_host",
@@ -683,7 +752,10 @@ impl WorkspaceExternal {
         // not fatal: the session still exists as a valid attach target, merely empty until a pane
         // is added, so "a well-formed create with a free name succeeds" stays total rather than
         // orphaning a half-created session behind an error.
-        if let Err(error) = self.spawn_parsed(&pool, spec) {
+        // `None`: a session's BIRTH pane is nobody's work pane — the request that creates a
+        // session is about the session, and stamping the creator here would make every new
+        // session's first pane read as something an agent must clean up.
+        if let Err(error) = self.spawn_parsed(&pool, spec, None) {
             tracing::warn!(
                 target: "sprag_host",
                 ?error,
@@ -808,7 +880,10 @@ impl WorkspaceExternal {
                 .expect("the scoped session resolves; new_window just selected the new window");
             (created, pool)
         };
-        if let Err(error) = self.spawn_parsed(&pool, spec) {
+        // `None`: a session's BIRTH pane is nobody's work pane — the request that creates a
+        // session is about the session, and stamping the creator here would make every new
+        // session's first pane read as something an agent must clean up.
+        if let Err(error) = self.spawn_parsed(&pool, spec, None) {
             tracing::warn!(
                 target: "sprag_host",
                 ?error,
@@ -1431,6 +1506,15 @@ impl ExternalIntrospect for WorkspaceExternal {
                         // client that has seen it needs no re-check.
                         if p.dead {
                             entry["dead"] = serde_json::json!(true);
+                        }
+                        // The pane whose OCCUPANT asked for this one. ADDITIVE: present only for a
+                        // pane somebody claims, so a workspace no agent has touched is
+                        // byte-identical to the pre-provenance wire shape. Unlike every key around
+                        // it this one is fixed at BIRTH and never moves again, which is what makes
+                        // it safe to gate a destructive verb on: a reader acting on it cannot be
+                        // acting on a fact that changed under it.
+                        if let Some(opener) = p.opened_by {
+                            entry["opened_by"] = serde_json::json!(opener);
                         }
                         // ...and HOW it exited, once the child has been reaped. A SECOND key rather
                         // than a richer `dead`, because it is a second fact that arrives later and
@@ -2159,6 +2243,117 @@ mod tests {
             .into_iter()
             .find(|p| p["id"].as_u64() == Some(id))
             .expect("the pane is listed")
+    }
+
+    /// A spawn NAMES its opener, and the fact reaches the slot a client reads.
+    ///
+    /// Driven through `invoke` rather than through the pool, because the claim is that the ACTION
+    /// carries the argument the whole way: the pool's own recording is pinned in `sprag-terminal`
+    /// and stayed green through every version of this that dropped the argument on the wire.
+    #[test]
+    fn a_spawn_records_the_pane_that_asked_for_it() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("the opener is born first");
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["cat"], "opened_by": 0})),
+        )
+        .expect("a spawn naming a live pane is honoured");
+
+        assert_eq!(
+            pane_entry(&mut ext, 1)["opened_by"],
+            json!(0),
+            "the pane says which pane asked for it",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 0).get("opened_by"),
+            None,
+            "and the key is ABSENT — not null — for a pane nobody claims, so a workspace no agent \
+             touched is byte-identical to the pre-provenance wire shape",
+        );
+    }
+
+    /// An opener the daemon does not hold is REFUSED, and nothing is born.
+    ///
+    /// The second half is the load-bearing one: a request refused AFTER forking would leave a live
+    /// pane the caller was never told about, which is the "a split that cannot reach its target must
+    /// not quietly become an append" rule applied to a birth.
+    #[test]
+    fn a_spawn_naming_a_pane_that_is_gone_is_refused_and_births_nothing() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("one live pane");
+        assert!(matches!(
+            ext.invoke(
+                SPAWN_ACTION,
+                IntrospectValue::Json(json!({"cmd": ["cat"], "opened_by": 99})),
+            ),
+            Err(InvokeError::Rejected),
+        ));
+        assert!(
+            matches!(
+                ext.invoke(
+                    SPAWN_ACTION,
+                    IntrospectValue::Json(json!({"cmd": ["cat"], "opened_by": "one"})),
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "and a non-number is the MALFORMED refusal, not the unreachable-pane one"
+        );
+        assert_eq!(
+            lock(&pool(&reg)).panes().len(),
+            1,
+            "neither refusal forked a child",
+        );
+    }
+
+    /// A spawn opens its child in the directory it was given, and refuses one that is not there
+    /// before anything is built.
+    #[test]
+    fn a_spawn_opens_in_the_directory_it_was_given() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        let dir = std::env::temp_dir();
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["cat"], "cwd": dir.to_str().unwrap()})),
+        )
+        .expect("an existing directory is honoured");
+        assert!(
+            matches!(
+                ext.invoke(
+                    SPAWN_ACTION,
+                    IntrospectValue::Json(
+                        json!({"cmd": ["cat"], "cwd": "/no/such/directory/here"})
+                    ),
+                ),
+                Err(InvokeError::Rejected),
+            ),
+            "a directory that is not there is a well-formed request the host cannot honour"
+        );
+        assert!(matches!(
+            ext.invoke(
+                SPAWN_ACTION,
+                IntrospectValue::Json(json!({"cmd": ["cat"], "cwd": 7})),
+            ),
+            Err(InvokeError::TypeMismatch),
+        ));
+        assert_eq!(
+            lock(&pool(&reg)).panes().len(),
+            1,
+            "only the honoured spawn forked a child",
+        );
+        // The child's OWN view of where it is, read from the pane rather than from the argument —
+        // an action that parsed the directory and never applied it would pass every assertion above.
+        let cwd = lock(&pool(&reg)).panes()[0].pty().cwd();
+        assert_eq!(
+            cwd.as_deref().and_then(|p| p.canonicalize().ok()),
+            dir.canonicalize().ok(),
+            "the child really started there",
+        );
     }
 
     /// Wait until pane `id` carries an `agent` key, then return its entry.
@@ -4635,6 +4830,45 @@ mod tests {
             IntrospectValue::Json(json!({"pane": 1, "dir": "vertical", "cmd": ["cat"]})),
         )
         .unwrap();
+    }
+
+    /// A SPLIT carries the birth vocabulary too, and refuses an opener that is gone with the
+    /// arrangement untouched.
+    ///
+    /// Pinned because the fact has to be TOTAL over births: a provenance available on one of the two
+    /// birth actions and not the other would mean what a pane can say about itself depends on which
+    /// action happened to make it, and the two are the same birth with and without a place.
+    #[test]
+    fn a_split_records_the_pane_that_asked_and_refuses_an_opener_that_is_gone() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        three_pane_window(&mut ext); // 0 | (1 / 2)
+
+        ext.invoke(
+            SPLIT_ACTION,
+            IntrospectValue::Json(
+                json!({"pane": 0, "dir": "horizontal", "cmd": ["cat"], "opened_by": 2}),
+            ),
+        )
+        .expect("a split naming a live pane is honoured");
+        assert_eq!(pane_entry(&mut ext, 3)["opened_by"], json!(2));
+
+        let before = tiled_order(&mut ext);
+        assert!(matches!(
+            ext.invoke(
+                SPLIT_ACTION,
+                IntrospectValue::Json(
+                    json!({"pane": 0, "dir": "horizontal", "cmd": ["cat"], "opened_by": 99}),
+                ),
+            ),
+            Err(InvokeError::Rejected),
+        ));
+        assert_eq!(
+            tiled_order(&mut ext),
+            before,
+            "the refused split divided nothing — the check runs before the birth, so there is no \
+             half-placed pane to find afterwards",
+        );
     }
 
     /// The arrangement the `layout` slot serves, in paint order — decoded through

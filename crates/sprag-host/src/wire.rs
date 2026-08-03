@@ -570,11 +570,40 @@ pub const KILL_SESSION_ACTION: &str = "kill_session";
 /// Both totals are monotonic since boot, so a reader takes a DELTA across whatever it is pricing.
 pub const GRID_WORK_SLOT: &str = "grid_work";
 
-/// The mux control external invoke action that spawns a pane, returning its id.
+/// The mux control external invoke action that spawns a pane, returning its id
+/// (`{cmd?, cols?, rows?, remote?, cwd?, opened_by?}`).
+///
+/// # `cwd` — where the child starts
+///
+/// Absent is the DAEMON's own directory, which is where every pane started before this argument
+/// existed. A string that does not name an existing directory is `Rejected` before anything is
+/// built, rather than left to the exec: a spawn into a missing directory produces a pane whose
+/// child died, and on screen that is indistinguishable from a shell that exited for no reason.
+///
+/// # `opened_by` — who asked for the pane
+///
+/// The pane whose OCCUPANT is asking ([`sprag_terminal::Pane::opened_by`]), absent for a pane
+/// nobody claims — a person's split, a plain `sprag split-window`, a session's birth pane. It is
+/// the caller's own identity, so it is a CLAIM the daemon records rather than derives: a connection
+/// carries no pane, and the peers of this socket are all one user's own clients (the trust model
+/// [`crate::events`]' parked waits already state). What it is checked for is EXISTENCE — a pane this
+/// daemon does not hold is `Rejected`, so a caller with a stale `SPRAG_PANE` cannot stamp a
+/// provenance naming a pane that is gone.
+///
+/// What rests on it is an agent surface that refuses to close a pane its caller did not open. That
+/// gate is ergonomic, not a security boundary: an agent that can type into a shell can run
+/// `sprag kill-pane` regardless. It exists because the mistake it prevents — a mis-resolved pane
+/// number destroying a person's work — is the one that actually happens.
+///
+/// [`SPLIT_ACTION`] takes both arguments identically; a spawn is the one that states no opinion
+/// about the arrangement, which is why it is the one an agent's work pane is born through.
 pub const SPAWN_ACTION: &str = "spawn";
 /// The mux control external invoke action that DIVIDES a named pane and spawns the new one into
-/// the half it opens (`{pane, dir, before?, cmd?, cols?, rows?, remote?}`), returning the new
-/// pane's id — tmux `split-window -h` / `-v`.
+/// the half it opens (`{pane, dir, before?, cmd?, cols?, rows?, remote?, cwd?, opened_by?}`),
+/// returning the new pane's id — tmux `split-window -h` / `-v`.
+///
+/// `cwd` and `opened_by` are [`SPAWN_ACTION`]'s, verbatim — a split IS a spawn with a place, so the
+/// birth vocabulary is one vocabulary and is written down there.
 ///
 /// [`SPAWN_ACTION`] with a PLACE. A spawn appends, which states where only by convention, so
 /// every directional split had to be expressed as a spawn plus a whole rewritten tree
