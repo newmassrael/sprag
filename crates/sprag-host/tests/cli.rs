@@ -2018,6 +2018,48 @@ fn the_cli_splits_lists_and_kills_panes_over_the_socket() {
     );
 }
 
+/// `sprag panes` says WHO ASKED for a pane, so an operator can see what an agent opened.
+///
+/// The provenance is put on the wire the way the agent surface puts it there — an invoke carrying
+/// `opened_by` — because no CLI verb stamps one (a decision, recorded in the design: the CLI has no
+/// pane identity of its own to claim). That makes this the reading half's only end-to-end coverage,
+/// so it pins the RENDERED LINE rather than the presence of the fact.
+#[test]
+fn the_pane_listing_says_which_pane_asked_for_a_pane() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+    let opened = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(SPAWN_ACTION),
+                "args": { "cmd": ["cat"], "opened_by": 0 },
+            }),
+        )
+        .expect("a spawn naming the boot pane")
+        .as_u64()
+        .expect("the new pane's id");
+
+    let listed = sprag(&sock, &["panes"]);
+    assert!(listed.ok, "panes succeeded: {}", listed.stderr);
+    let lines: Vec<&str> = listed.stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "two panes: {:?}", listed.stdout);
+    let opened_line = lines
+        .iter()
+        .find(|line| line.starts_with(&format!("{opened}: ")))
+        .expect("the opened pane is listed");
+    assert!(
+        opened_line.contains("opened by pane 0"),
+        "the listing names the pane that asked: {opened_line:?}",
+    );
+    assert!(
+        !lines[0].contains("opened by"),
+        "and says nothing about a pane nobody claims — the boot pane is the person's: {:?}",
+        lines[0],
+    );
+}
+
 /// The ids `sprag panes` lists, in the order it lists them — the reading a placement verb leaves
 /// UNCHANGED, which is the gap `sprag layout` exists to fill.
 fn listed_pane_ids(sock: &Path) -> Vec<String> {

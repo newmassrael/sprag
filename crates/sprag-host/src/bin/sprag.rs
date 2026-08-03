@@ -2430,7 +2430,7 @@ fn named_pane(it: &mut impl Iterator<Item = String>, command: &str) -> io::Resul
 
 /// `panes [-t SESSION]`: one line per pane of the scoped session's CURRENT window — tmux
 /// `list-panes`. `ID: COLSxROWS  COMMAND`, plus the child's own window title in brackets when it
-/// has set one.
+/// has set one, and `opened by pane N` when some other pane's occupant asked for this one.
 ///
 /// The pane ID leads the line because it is what every other pane verb takes, so `sprag panes`
 /// is the discovery step that makes the rest usable from a shell — `cut -d: -f1` yields exactly the
@@ -2476,7 +2476,21 @@ fn panes(args: Vec<String>) -> io::Result<()> {
         } else {
             ""
         };
-        println!("{id}: {cols}x{rows}  {command}{title}{active}");
+        // WHO ASKED for this pane, absent for one nobody claims — which is every pane a person made.
+        // It is what tells an operator that a pane appeared because an agent asked for it, and which
+        // agent's pane to go and read; without it an agent-opened pane is indistinguishable from one
+        // the operator made and forgot.
+        //
+        // The opener is named by ID and carries no liveness note, deliberately: this listing is ONE
+        // window's panes, so an opener sitting in another window (or another session — ids are
+        // registry-unique) is absent here while being perfectly alive, and a "(gone)" derived from
+        // this list would be a confident lie. Saying whether it still exists needs a second read at a
+        // different scope, which is the two-instant join `layout` is a separate verb to avoid.
+        let opened_by = match pane["opened_by"].as_u64() {
+            Some(opener) => format!("  opened by pane {opener}"),
+            None => String::new(),
+        };
+        println!("{id}: {cols}x{rows}  {command}{title}{opened_by}{active}");
     }
     Ok(())
 }
