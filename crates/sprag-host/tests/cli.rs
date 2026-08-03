@@ -3919,6 +3919,72 @@ fn following_delivers_a_single_bump_change_the_wait_answers_with() {
     );
 }
 
+/// **R298, at the operator's surface: ONE request, many answers.** `sprag events -f` keeps printing
+/// across SEVERAL separate changes, and it sends no request between them.
+///
+/// The test before this one reads a single line, so it would pass over either mechanism. This one
+/// reads THREE lines produced by TWO later mutations, which is what a stream has to do and is where
+/// a follow that lost its place after the first batch would stop.
+///
+/// The request COUNT is not observable from here — it was measured with `strace` against a
+/// parent-commit control (4 requests for 1 change, 9 for 6; flat at 3 after) and that number lives in
+/// the ledger. What is standing coverage is the delivery: `events/subscribe` answers once and the
+/// daemon then speaks unprompted, twice, on a connection this process never writes to again.
+#[test]
+fn following_keeps_delivering_across_several_changes_on_one_request() {
+    let (_host, sock) = spawn_host_running(&["cat"]);
+
+    let mut follow = Command::new(env!("CARGO_BIN_EXE_sprag"))
+        .args(["events", "-f", "--kind", "pane_created"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start `sprag events -f --kind pane_created`");
+
+    // Filtered to ONE kind, so the lines are countable: a spawn also records a selection and a
+    // layout change, and a test that counted those would be asserting the daemon's whole vocabulary
+    // rather than the stream's continuity.
+    let stdout = follow.stdout.take().expect("piped stdout");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+
+    // A bare `events -f` starts at NOW rather than at zero, so there is no backlog line to wait on —
+    // and READING THAT SILENCE is how this test knows the subscription is open before it makes a
+    // change. Without it the first split could land before the subscribe and the cursor would start
+    // past it, which reads as "the stream lost a record".
+    assert!(
+        rx.recv_timeout(Duration::from_secs(2)).is_err(),
+        "nothing has happened yet, so a follower says nothing",
+    );
+
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        assert!(sprag(&sock, &["split-window", "-h"]).ok, "the split landed",);
+        let line = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("a notification arrived for this change")
+            .expect("reading it succeeded");
+        seen.push(line.trim().to_owned());
+    }
+    let _ = follow.kill();
+    let _ = follow.wait();
+
+    assert_eq!(
+        seen,
+        vec!["pane_created\t1", "pane_created\t2"],
+        "two changes after the one request, each delivered once and in order — a stream whose \
+         cursor did not advance would repeat pane 1 here",
+    );
+}
+
 /// **R292, at the operator's surface**: `sprag events -f` sleeps through a pane that is producing
 /// output, and a `--pane`/`--kind` filter narrows what wakes it.
 ///

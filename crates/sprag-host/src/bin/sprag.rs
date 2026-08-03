@@ -157,8 +157,8 @@ use sprag_host::wire::{
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
-    CallError, EVENTS_WAIT_METHOD, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, RpcFault,
-    SINCE_PARAM, socket_path,
+    CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, HOST_SOCKET, HostConn, HostEndpoint,
+    INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
 use sprag_terminal::{LayoutSnapshot, arrangement};
 
@@ -3020,39 +3020,42 @@ fn events(args: Vec<String>) -> io::Result<()> {
         return Ok(());
     }
 
-    loop {
-        // Park on the JOURNAL, not on the scene revision. `scene/waitFor` is released by pane
-        // OUTPUT — which records nothing — so this loop used to spin at socket speed against any
-        // pane running a build, printing nothing: measured at 22 431 returns a second where a quiet
-        // pane returns none. `events/waitFor` answers only when a record the caller asked for lands.
-        //
-        // No deadline: waiting is this call's contract, not a hazard (see the doc above).
-        //
-        // The reply CARRIES the batch, so there is no second call and no cursor to reconcile between
-        // them — which also retires a hazard this loop used to have to remember. `scene/waitFor`
-        // answers the revision it advanced TO, and the first version of this loop adopted that as
-        // the cursor: it skipped whatever was recorded AT that revision, and since the read that
-        // follows is `> cursor`, the skipped record was never offered again. It survived a manual
-        // drive because a spawn happens to bump twice, and it would have lost exactly the event this
-        // niche is about — `ChannelRegistry::announce` bumps ONCE and records at that very revision.
-        // A wait that answers WITH the batch cannot have that bug at all.
-        conn.set_read_deadline(None)?;
-        let mut params = scoped_only(session.as_deref());
-        params[SINCE_PARAM] = json!(cursor);
-        if let Some(filter) = &filter {
-            params[sprag_host::events::EventFilter::WIRE_KEY] = filter.clone();
+    // SUBSCRIBE, then read. One request for the whole follow, where this loop paid a round trip per
+    // change until R298 — see [`EVENTS_SUBSCRIBE_METHOD`]. It parks on the JOURNAL for the same
+    // reason the wait did: `scene/waitFor` is released by pane OUTPUT, which records nothing, so a
+    // follow built on it spun at socket speed against any pane running a build (measured: 22 431
+    // returns a second, every one empty).
+    //
+    // No deadline: waiting is this call's contract, not a hazard (see the doc above).
+    conn.set_read_deadline(None)?;
+    let mut params = scoped_only(session.as_deref());
+    params[SINCE_PARAM] = json!(cursor);
+    if let Some(filter) = &filter {
+        params[sprag_host::events::EventFilter::WIRE_KEY] = filter.clone();
+    }
+    match conn.try_call(EVENTS_SUBSCRIBE_METHOD, params) {
+        Ok(_) => {}
+        // EVERY fault, not only `Invalid params`, and reading the skew run's output is what widened
+        // this arm: a daemon too old to speak this method answers method-not-found, and the narrow
+        // form rendered that as `host rpc error: sprag-term host: 'events/subscribe' is
+        // unsupported; use one of: …` — the daemon's own perfectly good sentence behind a
+        // transport's phrase for a fault nobody could anticipate. Every refusal this call can produce
+        // is one the caller can act on (a filter it mistyped, a daemon it should restart), so every
+        // one is rendered as the daemon wrote it. Debt item 20's class, and R296's fix shape on the
+        // verb beside this one.
+        Err(CallError::Fault(fault)) => {
+            return Err(bad(format!("events: {}", fault_sentence(&fault))));
         }
-        let batch: Value = match conn.try_call(EVENTS_WAIT_METHOD, params) {
-            Ok(batch) => batch,
-            // A filter this daemon cannot honour is the CALLER's mistake, and the daemon already
-            // wrote the sentence for it (naming the offending word and the whole vocabulary). Render
-            // it as that sentence rather than behind `host rpc error:`, which is a transport's phrase
-            // for a fault nobody could anticipate — R283's finding, on the one path this verb adds.
-            Err(CallError::Fault(fault)) if fault.code == INVALID_PARAMS => {
-                return Err(bad(format!("events: {}", fault_sentence(&fault))));
-            }
-            Err(other) => return Err(other.into()),
-        };
+        Err(other) => return Err(other.into()),
+    }
+    // The subscription's own `next` is deliberately NOT adopted here: it echoes the `since` just
+    // sent, and this loop already holds that. Reading it back would be a second author of a number
+    // it has, which is how the FIRST version of this loop acquired a real bug — it adopted
+    // `scene/waitFor`'s revision as the cursor and so skipped whatever was recorded AT that
+    // revision, unrecoverably, since the read that follows is `> cursor`. Every cursor here now
+    // comes from a BATCH, and a batch's `next` is the last record it actually carried.
+    loop {
+        let batch = conn.next_notification(EVENTS_CHANGED_METHOD)?;
         cursor = print_events(&batch, cursor);
     }
 }
