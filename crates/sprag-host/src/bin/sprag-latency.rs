@@ -307,6 +307,15 @@ fn activity_read(max_age_ms: u64) -> String {
     )
 }
 
+/// A read of every pane's SAMPLED processes at tolerance `max_age_ms` — R290's address, and the
+/// subject of the pair of rows that says what a full `/proc` pass costs when it is asked for.
+fn processes_read(max_age_ms: u64) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":12,"method":"scene/query","params":{{"path":"/sprag_mux/external/{}"}}}}"#,
+        sprag_host::wire::pane_processes_at(max_age_ms),
+    )
+}
+
 /// One pane's cells: the client's steady-state fetch, and the unit R220 skips.
 const CELLS_READ: &str = r#"{"jsonrpc":"2.0","id":3,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/cells.0"}}"#;
 
@@ -1265,6 +1274,39 @@ fn main() -> ExitCode {
         activity_held.min,
     );
     budget("what asking for a FRESH sample costs", activity_fresh.min);
+
+    // R290's sample, at the same two tolerances and for the same reason: the pair is what makes the
+    // trade legible. The fresh row is a full `/proc` pass — every process on the box, indexed by
+    // group — and it answers for EVERY pane at once, so it is also what N panes cost together. The
+    // held row is what a second reader inside the tolerance pays, which is the coalescing as a
+    // number rather than as a claim.
+    let processes_fresh = paired(
+        "request pane_processes (max_age 0)",
+        &mut controls,
+        Some(reply_bytes(&state, &processes_read(0))),
+        || {
+            black_box(handle_request(black_box(&state), &processes_read(0)));
+        },
+    );
+    let processes_held = paired(
+        "request pane_processes (display tolerance)",
+        &mut controls,
+        Some(reply_bytes(&state, &processes_read(tolerated))),
+        || {
+            black_box(handle_request(
+                black_box(&state),
+                &processes_read(tolerated),
+            ));
+        },
+    );
+    budget(
+        "what one /proc pass buys for every pane at once",
+        processes_fresh.min,
+    );
+    budget(
+        "what a second reader inside the tolerance pays",
+        processes_held.min,
+    );
 
     // THE DERIVE SITE, at the two ends of a realistic span. It runs after EVERY mutating dispatch,
     // and a keystroke is one (`key`/`text`/`paste`/`mouse` are all invokes) — so this is paid at
