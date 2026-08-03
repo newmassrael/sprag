@@ -1705,6 +1705,97 @@ fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
     );
 }
 
+/// An agent NAMES its work pane and then addresses it by that name while its NUMBER moves under it.
+///
+/// This is the round's claim end to end, and the middle step is the whole of it: a pane is opened,
+/// a pane BEFORE it closes, and the same name still reaches the same pane. A test that named a pane
+/// and read it back without moving anything would pass on a build where the name was a decoration.
+#[test]
+fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    // Two work panes: the first exists only to be closed, so the second one's number really shifts.
+    let doomed = server.call_tool("open_pane", json!({ "name": "scratch" }));
+    assert!(
+        doomed.contains("Opened pane 2")
+            && doomed.contains(
+                "It is called \"scratch\" — pass that as `pane` instead of the number, which will \
+                 shift if an earlier pane closes."
+            ),
+        "the answer offers the name AND says why to use it: {doomed}",
+    );
+    let build = server.call_tool("open_pane", json!({ "name": "build" }));
+    assert!(build.contains("Opened pane 3"), "{build}");
+    assert!(
+        build.contains("  pane 3: name=\"build\" id=2 "),
+        "the listing carries the name beside the number it stands in for: {build}",
+    );
+
+    // A name already taken is refused, and the sentence says what to do about it.
+    let taken = server.call_tool_error("open_pane", json!({ "name": "build" }));
+    assert_eq!(
+        taken,
+        "Error: could not open a pane called \"build\": the name may already be taken by another \
+         pane, or be blank, over 80 bytes, all digits, or contain a control character. Call \
+         list_panes to see which names are in use.",
+        "the WHOLE sentence: the daemon's refusal is a bare `InvokeRejected` with no payload, so \
+         what an agent reads must be written here — and must REPLACE that variant name, not \
+         trail it",
+    );
+
+    // THE MOVE. Closing pane 2 renumbers pane 3 to pane 2 — the exact failure this feature exists
+    // for, since an agent holding "3" would now be typing into a different pane.
+    let closed = server.call_tool("close_pane", json!({ "pane": "scratch" }));
+    assert!(
+        closed.starts_with("Closed pane 2 (id 1), which you had opened."),
+        "a NAME reaches the close gate too, resolved against the same listing: {closed}",
+    );
+    assert!(
+        closed.contains("  pane 2: name=\"build\" id=2 "),
+        "and the pane that was 3 is now 2 — the number moved: {closed}",
+    );
+
+    // The claim: the name did not.
+    server.call_tool(
+        "write_pane",
+        json!({ "pane": "build", "text": "echo alive" }),
+    );
+    let read = server.call_tool("read_pane", json!({ "pane": "build" }));
+    assert!(
+        read.contains("echo alive"),
+        "the name reached the pane it was given to, at a number it no longer has: {read}",
+    );
+
+    // Renaming is the same gate as closing: the person's pane is refused.
+    let refused = server.call_tool_error("rename_pane", json!({ "pane": 1, "name": "theirs" }));
+    assert!(
+        refused.contains("pane 1 was opened by a person, not by you"),
+        "a pane's name is what a PERSON reads on it: {refused}",
+    );
+
+    let renamed = server.call_tool("rename_pane", json!({ "pane": "build", "name": "tests" }));
+    assert!(
+        renamed.starts_with("Pane 2 is now called \"tests\"."),
+        "a rename reports the name that was RECORDED: {renamed}",
+    );
+    let gone = server.call_tool_error("read_pane", json!({ "pane": "build" }));
+    assert!(
+        gone.contains("no pane is called \"build\"") && gone.contains("\"tests\""),
+        "the old name stops resolving and the refusal lists the names in use: {gone}",
+    );
+
+    let cleared = server.call_tool("rename_pane", json!({ "pane": "tests" }));
+    assert!(
+        cleared.starts_with("Pane 2 has no name now;"),
+        "and a rename with no name takes it away: {cleared}",
+    );
+    assert!(
+        !server.call_tool("list_panes", json!({})).contains("name="),
+        "the listing says nothing about a name once no pane has one",
+    );
+}
+
 /// A pane opened by ANOTHER pane's agent is refused too, and the refusal names which pane to go
 /// and ask.
 ///

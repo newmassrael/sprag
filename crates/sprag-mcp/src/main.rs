@@ -95,8 +95,9 @@ use sprag_host::events::EventFilter;
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
-    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, SELECT_PANE_ACTION,
-    SINCE_PARAM, SPAWN_ACTION, TEXT_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
+    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
+    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, TEXT_ACTION, find_slot_for, pane_processes_at,
+    regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{CallError, HostConn, INVALID_PARAMS};
@@ -233,7 +234,9 @@ fn handle_initialize(message: &Value) -> Value {
         "instructions": "You are running inside a pane of a sprag terminal. These tools let \
             you observe and drive the terminal as data. \
             Call `list_panes` FIRST to see the pane numbers (1 = the first pane); \"pane 2\" \
-            means the second pane in that list. \
+            means the second pane in that list. A number is POSITIONAL — closing an earlier pane \
+            shifts every number after it — so for any pane you will come back to, use its NAME \
+            instead: every `pane` argument here takes a name as well as a number. \
             READ a pane: `read_pane` (its screen and scrollback), `read_last_command` (just \
             the last command and its result), `read_pane_links` and `read_pane_images` (what \
             it shows that is not text), `find_in_pane` and `regex_in_pane` (search it). \
@@ -249,8 +252,9 @@ fn handle_initialize(message: &Value) -> Value {
             About a sibling AI: `agent_state` says whether it is working, waiting for a human, \
             or at rest, and `agent_explain` says why. \
             For your OWN work, `open_pane` gives you a new pane to run things in without taking \
-            over one a person is reading, and `close_pane` closes a pane you opened (only that \
-            — a person's pane is refused). \
+            over one a person is reading — name it there, and address it by that name afterwards \
+            — `rename_pane` changes that name later, and `close_pane` closes a pane you opened \
+            (only those two act on a pane you opened; a person's pane is refused). \
             `select_pane` moves where the USER is typing, so use it only when you have \
             something for them to look at. \
             If a tool reports it is not inside a sprag terminal, these tools do not apply to \
@@ -266,10 +270,18 @@ fn handle_initialize(message: &Value) -> Value {
 /// which is what a number maintained in prose does. The roster itself is below and the crate-root doc
 /// names the tools rather than counting them.
 fn tools_list() -> Value {
+    // A NUMBER or a NAME, and the JSON type is what tells them apart — see `pane_target`. The
+    // description leads with the hazard rather than with the syntax, because the hazard is what a
+    // caller cannot discover: a number that worked a moment ago can silently name a different pane.
     let pane_arg = json!({
-        "type": "integer",
+        "type": ["integer", "string"],
         "minimum": 1,
-        "description": "1-based pane number as shown by list_panes (1 = the first pane)."
+        "description": "Which pane. A NUMBER is the 1-based position in list_panes (1 = the \
+            first pane) — convenient, but POSITIONAL: closing any earlier pane shifts every \
+            number after it, so a number you remembered can come to mean a different pane and \
+            the write will succeed against the wrong one. A STRING is the pane's NAME, which \
+            never moves. Name a pane you will come back to (open_pane's `name`, or \
+            rename_pane) and address it by that."
     });
     json!({
         "tools": [
@@ -470,7 +482,9 @@ fn tools_list() -> Value {
                     running in a pane changed: the user or an agent started something, or the \
                     thing that was running ended — this is also how a pane's program EXITING is \
                     reported, since a dead pane keeps its place and so is never `pane_closed`), \
-                    `pane_created`, `pane_closed`, `pane_selected`, `window_created`, \
+                    `pane_created`, `pane_closed`, `pane_renamed` (a pane was given a name, given \
+                    a different one, or had it taken away — so an address you were holding may \
+                    have stopped resolving), `pane_selected`, `window_created`, \
                     `window_closed`, `window_selected`, `session_created`, `session_closed`, \
                     `layout_updated` — each naming its SUBJECT, not its new value: follow up with \
                     agent_state, pane_processes or list_panes to read the subject it names. To \
@@ -493,10 +507,13 @@ fn tools_list() -> Value {
                                 (default 60). A timeout is not an error."
                         },
                         "pane": {
-                            "type": "integer",
+                            "type": ["integer", "string"],
                             "minimum": 1,
-                            "description": "Only wake for changes about THIS pane (1 = the first \
-                                pane in list_panes). Omit to hear about every pane."
+                            "description": "Only wake for changes about THIS pane — a NUMBER (1 = \
+                                the first pane in list_panes) or the pane's NAME. Prefer the name \
+                                for a long wait: a number can come to mean a different pane if an \
+                                earlier one closes while you are parked. Omit to hear about every \
+                                pane."
                         },
                         "kinds": {
                             "type": "array",
@@ -580,12 +597,21 @@ fn tools_list() -> Value {
                     after the command finishes. Every other tool here works on panes somebody \
                     else opened; this is how you make your own. The pane is recorded as opened \
                     BY YOUR PANE, which is what lets close_pane let you clean it up later (and \
-                    what stops you closing a person's). The answer re-lists every pane with its \
-                    number. It does NOT move the user's cursor — call select_pane if you want \
-                    them to look at it.",
+                    what stops you closing a person's). GIVE IT A NAME: a pane number is \
+                    positional and shifts when an earlier pane closes, so a name is the only \
+                    handle you can still trust later — every tool here takes it wherever it \
+                    takes a number. The answer re-lists every pane with its number. It does NOT \
+                    move the user's cursor — call select_pane if you want them to look at it.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "What to call the pane, e.g. \"build\" or \"tests\". \
+                                Use it in place of a number in any tool's `pane` argument. Must \
+                                be unique in this terminal, at most 80 bytes, and not all \
+                                digits (a number means the position)."
+                        },
                         "cwd": {
                             "type": "string",
                             "description": "Directory the new shell starts in. Defaults to \
@@ -606,6 +632,29 @@ fn tools_list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "rename_pane",
+                "description": "Give a pane YOU opened a NAME, or change the one it has. A name \
+                    is a stable handle: pass it as `pane` to any tool here instead of the \
+                    number, which is positional and shifts whenever an earlier pane closes. Use \
+                    it when a pane's job changes (\"build\" becomes \"tests\") — you can \
+                    normally name a pane when you open it. A pane you did not open is refused: \
+                    its name is what a PERSON sees on it, and renaming somebody's pane is not \
+                    yours to do. Names are unique in this terminal, at most 80 bytes, and never \
+                    all digits (a number means the position).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg,
+                        "name": {
+                            "type": "string",
+                            "description": "The new name. Omit it to take the pane's name away."
+                        }
+                    },
                     "required": ["pane"],
                     "additionalProperties": false
                 }
@@ -657,6 +706,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "send_keys" => tool_send_keys(&args),
         "open_pane" => tool_open_pane(&args),
         "close_pane" => tool_close_pane(&args),
+        "rename_pane" => tool_rename_pane(&args),
         "select_pane" => tool_select_pane(&args),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -675,6 +725,13 @@ fn handle_tools_call(message: &Value) -> Value {
 struct PaneInfo {
     number: usize,
     id: u64,
+    /// The name a PERSON (or this pane's opener) gave it, `None` for a pane nobody named.
+    ///
+    /// The one STABLE handle on this surface. [`number`](Self::number) is positional and moves
+    /// when an earlier pane closes; the [`id`](Self::id) never moves but is an integer, so it
+    /// cannot share the `pane` argument with a number. A name is a string, so it can — see
+    /// [`pane_target`].
+    name: Option<String>,
     title: String,
     command: String,
     cols: u64,
@@ -823,8 +880,15 @@ fn pane_summary(pane: &PaneInfo, panes: &[PaneInfo], here: Option<u64>) -> Strin
     // The ACTIVE marker rides the header line rather than an indented one: it is a property OF the
     // pane's identity in the window, like its number, not a signal the pane raised.
     let active = if pane.active { " (active)" } else { "" };
+    // The NAME rides the header too, and directly after the number it is the stable alternative to
+    // — a reader meeting the two together is the point. Quoted like the title because a name may
+    // hold a space, and so that `name="3rd"` cannot be misread as the number 3.
+    let name = match &pane.name {
+        Some(name) => format!(" name={name:?}"),
+        None => String::new(),
+    };
     let mut out = format!(
-        "  pane {}: id={} {}x{} command={} title={}{active}\n",
+        "  pane {}:{name} id={} {}x{} command={} title={}{active}\n",
         pane.number, pane.id, pane.cols, pane.rows, pane.command, title
     );
     // Surface an attention notification on its own indented line, so an agent scanning the
@@ -1367,8 +1431,7 @@ fn search_pane(id: u64, slot: &str, wanted: &str) -> Result<String, String> {
 }
 
 fn tool_write_pane(args: &Value) -> Result<String, String> {
-    let number = pane_number(args)?;
-    let id = pane_id_for(number)?;
+    let (number, id) = resolve_pane(args)?;
     let text = args
         .get("text")
         .and_then(Value::as_str)
@@ -1445,7 +1508,18 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
             dir.display()
         ));
     }
+    // The name is passed THROUGH rather than validated here: the daemon owns the rules, and a
+    // second copy of them in this crate would be a second answer that can drift. What this does own
+    // is the sentence — the daemon's refusal is a bare `Rejected` that cannot say which rule it was.
+    let name = match args.get("name") {
+        Some(Value::String(name)) => Some(name.clone()),
+        Some(other) => return Err(format!("'name' must be a string, not {other}")),
+        None => None,
+    };
     let mut spawn_args = json!({ "opened_by": opener });
+    if let Some(name) = &name {
+        spawn_args["name"] = json!(name);
+    }
     if let Some(dir) = &cwd {
         let Some(dir) = dir.to_str() else {
             return Err(format!(
@@ -1458,7 +1532,23 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     let id = host_call(
         "scene/invoke",
         json!({ "path": mux_action_path(SPAWN_ACTION), "args": spawn_args }),
-    )?
+    )
+    // A birth that carries a name has a second way to be refused, and the daemon cannot say which
+    // (`InvokeError::Rejected` has no payload — upstream PINION-PR82). So the sentence names the
+    // causes the caller can act on, and REPLACES the daemon's rather than appending to it: what it
+    // would otherwise append to is `host rpc error: InvokeRejected`, a Rust variant name — the
+    // exact leak R283 measured and fixed on the CLI, reaching an AGENT here.
+    .map_err(|why| match &name {
+        Some(name) => refusal_sentence(
+            &why,
+            &format!(
+                "could not open a pane called {name:?}: the name may already be taken by another \
+                 pane, or be blank, over 80 bytes, all digits, or contain a control character. \
+                 Call list_panes to see which names are in use."
+            ),
+        ),
+        None => why,
+    })?
     .as_u64()
     .ok_or("the host did not answer with a new pane id")?;
 
@@ -1481,29 +1571,65 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     // "close_pane will let you close it" from the request alone would be a promise this tool would
     // then break, and the caller would find out only when its cleanup was refused.
     let ours = born.is_some_and(|p| p.opened_by == Some(opener));
+    // And whether the NAME landed, read back off the pane for the same reason and with the same
+    // hazard: an additive ARGUMENT an old daemon drops is a silent no-op, where an additive FIELD an
+    // old client ignores is harmless. The two are not symmetric, which is the general shape R294's
+    // skew run produced — so every argument this tool sends is checked in the answer, not assumed.
+    // Compared against the TRIMMED name the daemon would have stored, since that is what it records.
+    let named = name.as_ref().map(|asked| {
+        let landed = born.and_then(|p| p.name.as_deref()) == Some(asked.trim());
+        (asked.trim().to_owned(), landed)
+    });
     Ok(opened_answer(
         &number,
         &where_it_is,
         ours,
+        named
+            .as_ref()
+            .map(|(name, landed)| (name.as_str(), *landed)),
         &render_pane_list(&panes, Some(opener)),
     ))
 }
 
-/// [`tool_open_pane`]'s answer, as a pure function so BOTH of its branches can be read.
+/// [`tool_open_pane`]'s answer, as a pure function so EVERY one of its branches can be read.
 ///
-/// Split out for the reason [`pane_summary`] is: the `ours == false` branch cannot be reached
-/// against the daemon this suite builds, because a daemon that records the provenance always
-/// records it. It exists for a daemon at the SAME wire protocol that predates the field — which
-/// accepts the argument and drops it — and that case was found by RUNNING the skew proof rather
-/// than by reasoning about it. Unit-testable here; unreachable live, and recorded as such.
-fn opened_answer(number: &str, where_it_is: &str, ours: bool, listing: &str) -> String {
+/// Split out for the reason [`pane_summary`] is: the `ours == false` and `named = Some((_, false))`
+/// branches cannot be reached against the daemon this suite builds, because a daemon that records
+/// these facts always records them. They exist for a daemon at the SAME wire protocol that predates
+/// the field — which accepts the argument and drops it — and that case was found by RUNNING the
+/// skew proof rather than by reasoning about it. Unit-testable here; unreachable live, and recorded
+/// as such.
+///
+/// `named` is `Some((name, landed))` when the caller asked for one: `landed` says whether the pane
+/// really came back carrying it.
+fn opened_answer(
+    number: &str,
+    where_it_is: &str,
+    ours: bool,
+    named: Option<(&str, bool)>,
+    listing: &str,
+) -> String {
     let answerable = if ours {
         "It is recorded as opened by your pane, so close_pane will let you close it."
     } else {
         "WARNING: this terminal did not record it as opened by you, so close_pane will refuse it — \
          the daemon is older than this tool. Ask the user to close it, or to restart the terminal."
     };
-    format!("Opened pane {number}{where_it_is}, running a shell. {answerable}\n\n{listing}")
+    // The name sentence leads with what the caller should DO with it, because a name is only worth
+    // anything if it is used in place of the number — and says so ONLY when the name really landed.
+    let called = match named {
+        Some((name, true)) => format!(
+            " It is called {name:?} — pass that as `pane` instead of the number, which will shift \
+             if an earlier pane closes."
+        ),
+        Some((name, false)) => format!(
+            " WARNING: this terminal did not record the name {name:?}, so addressing the pane by \
+             it will fail — the daemon is older than this tool. Use the number, and expect it to \
+             shift if an earlier pane closes."
+        ),
+        None => String::new(),
+    };
+    format!("Opened pane {number}{where_it_is}, running a shell. {answerable}{called}\n\n{listing}")
 }
 
 /// `close_pane` — end a pane THIS pane opened, refusing every other one.
@@ -1527,14 +1653,14 @@ fn opened_answer(number: &str, where_it_is: &str, ours: bool, listing: &str) -> 
 /// written to avoid. What can still change afterwards is whether the pane is there at all, and the
 /// daemon answers that.
 fn tool_close_pane(args: &Value) -> Result<String, String> {
-    let number = pane_number(args)?;
+    // The TARGET is parsed before the listing and resolved against it, rather than resolved by a
+    // helper that would read its own: a `pane` given as a NAME has to be looked up, and looking it
+    // up separately would make the gate below answer about the listing's second reading while the
+    // caller named the pane in its first. `resolve_in` is that lookup with no read of its own.
+    let target = pane_target(args)?;
     let panes = query_panes()?;
-    let pane = panes.iter().find(|p| p.number == number).ok_or_else(|| {
-        format!(
-            "no pane {number}; this terminal has {} pane(s). Call list_panes.",
-            panes.len()
-        )
-    })?;
+    let pane = resolve_in(&panes, &target)?;
+    let number = pane.number;
     let mine = own_pane();
     match pane.opened_by {
         Some(opener) if Some(opener) == mine => {}
@@ -1581,6 +1707,92 @@ fn tool_close_pane(args: &Value) -> Result<String, String> {
     ))
 }
 
+/// `rename_pane` — name a pane THIS pane opened, refusing every other one.
+///
+/// # The same gate as [`tool_close_pane`], on the same argument
+///
+/// A pane's name is what a PERSON reads on it (`sprag panes`, and every display surface that
+/// prefers it over the child's title), so renaming somebody's pane changes what they see — which is
+/// R294's own reason for gating the close, applied unchanged. No new policy is derived here, and
+/// the gate is ergonomic rather than a boundary for that same entry's reason: an agent that can
+/// `write_pane` into a shell can run `sprag rename-pane` itself.
+///
+/// It is deliberately NOT gated on the daemon side. `rename_pane` on the wire renames any pane,
+/// because the CLI is an operator's and an operator means it — the daemon publishes the fact, this
+/// surface applies the policy, which is the split R294 established.
+///
+/// # One read, not two
+///
+/// [`tool_close_pane`]'s rule, for its reason: the target is resolved and the gate evaluated from
+/// ONE listing, so the pane the caller named and the pane the gate answered about are the same pane
+/// at the same instant.
+fn tool_rename_pane(args: &Value) -> Result<String, String> {
+    let target = pane_target(args)?;
+    let new = match args.get("name") {
+        Some(Value::String(name)) => Some(name.clone()),
+        Some(Value::Null) | None => None,
+        Some(other) => return Err(format!("'name' must be a string, not {other}")),
+    };
+    let panes = query_panes()?;
+    let pane = resolve_in(&panes, &target)?;
+    let number = pane.number;
+    let mine = own_pane();
+    match pane.opened_by {
+        Some(opener) if Some(opener) == mine => {}
+        Some(opener) => {
+            return Err(format!(
+                "pane {number} was opened by {}, not by you, so rename_pane will not rename it. \
+                 Its name is what a person reads on that pane.",
+                short_name(PaneId(opener), &|id| panes
+                    .iter()
+                    .find(|p| p.id == id.0)
+                    .map(|p| p.number)),
+            ));
+        }
+        None => {
+            return Err(format!(
+                "pane {number} was opened by a person, not by you, so rename_pane will not \
+                 rename it — its name is what THEY read on it. Only a pane you opened yourself \
+                 with open_pane is yours to name.",
+            ));
+        }
+    }
+    let mut action_args = json!({ "pane": pane.id });
+    if let Some(new) = &new {
+        action_args["name"] = json!(new);
+    }
+    // The daemon's answer carries the name it RECORDED, so this reports what landed rather than
+    // what was asked for — a name is trimmed on the way in, and echoing the request would tell the
+    // caller to address the pane by a string that does not resolve.
+    let answer = host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(RENAME_PANE_ACTION), "args": action_args }),
+    )
+    .map_err(|why| match &new {
+        Some(new) => refusal_sentence(
+            &why,
+            &format!(
+                "could not name pane {number} {new:?}: the name may already be taken by another \
+                 pane, or be blank, over 80 bytes, all digits, or contain a control character. \
+                 Call list_panes to see which names are in use."
+            ),
+        ),
+        None => why,
+    })?;
+    match answer.get("name").and_then(Value::as_str) {
+        Some(recorded) => Ok(format!(
+            "Pane {number} is now called {recorded:?}. Pass that as `pane` instead of the number, \
+             which will shift if an earlier pane closes."
+        )),
+        // Total over the clear AND over a daemon older than the recorded-name answer: either way
+        // the pane has no name this tool can promise, which is the honest thing to say.
+        None => Ok(format!(
+            "Pane {number} has no name now; address it by its number ({number}), which will shift \
+             if an earlier pane closes."
+        )),
+    }
+}
+
 /// The pane listing for an answer whose ACTION has already happened, degrading to a sentence rather
 /// than to an error.
 ///
@@ -1596,8 +1808,7 @@ fn relisted(here: Option<u64>) -> String {
 }
 
 fn tool_select_pane(args: &Value) -> Result<String, String> {
-    let number = pane_number(args)?;
-    let id = pane_id_for(number)?;
+    let (number, id) = resolve_pane(args)?;
     let answer = host_call(
         "scene/invoke",
         json!({ "path": mux_action_path(SELECT_PANE_ACTION), "args": { "pane": id } }),
@@ -1614,8 +1825,7 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
 }
 
 fn tool_send_keys(args: &Value) -> Result<String, String> {
-    let number = pane_number(args)?;
-    let id = pane_id_for(number)?;
+    let (number, id) = resolve_pane(args)?;
     let keys: Vec<String> = match args.get("keys") {
         Some(Value::Array(items)) => items
             .iter()
@@ -2041,33 +2251,114 @@ fn tool_agent_explain(args: &Value) -> Result<String, String> {
 
 // ---- Pane resolution + host bridge ---------------------------------------------
 
-/// The requested 1-based pane number from a tool's arguments.
-fn pane_number(args: &Value) -> Result<usize, String> {
-    let n = args
-        .get("pane")
-        .and_then(Value::as_u64)
-        .ok_or("missing required integer argument 'pane' (1-based, see list_panes)")?;
-    usize::try_from(n).map_err(|_| "pane number out of range".to_owned())
+/// How a tool's caller named the pane it means.
+///
+/// **Two spellings, discriminated by JSON's own types**, and that is the whole reason a pane has a
+/// name at all. A NUMBER and a host ID are both integers, so one argument could never carry both
+/// without a mode flag on the most-used argument of this surface. A name is a string, so it can.
+#[derive(Debug, PartialEq, Eq)]
+enum PaneTarget {
+    /// The 1-based position in the listing — convenient and POSITIONAL: closing an earlier pane
+    /// shifts it, so a remembered number can come to mean a different pane.
+    Number(usize),
+    /// The pane's own name, which never moves.
+    Name(String),
 }
 
-/// Resolve a tool's `pane` argument to a host pane id (one list query).
-fn resolve_pane_id(args: &Value) -> Result<u64, String> {
-    pane_id_for(pane_number(args)?)
+/// The pane a tool's arguments name.
+fn pane_target(args: &Value) -> Result<PaneTarget, String> {
+    match args.get("pane") {
+        Some(Value::Number(n)) => {
+            let n = n
+                .as_u64()
+                .ok_or("the 'pane' number must be a positive whole number")?;
+            usize::try_from(n)
+                .map(PaneTarget::Number)
+                .map_err(|_| "pane number out of range".to_owned())
+        }
+        // A name is trimmed here as well as in the daemon, so `pane: " build "` resolves rather
+        // than reporting that no pane is called that. This is the RESOLVER, not a second parse: it
+        // applies no rule the daemon does not, and a name that breaks one simply matches nothing.
+        Some(Value::String(name)) => Ok(PaneTarget::Name(name.trim().to_owned())),
+        _ => Err(
+            "missing required argument 'pane': a NUMBER (1-based, see list_panes) or a pane's NAME"
+                .to_owned(),
+        ),
+    }
 }
 
-/// Map a 1-based pane number to its host id against the live pane list.
-fn pane_id_for(number: usize) -> Result<u64, String> {
-    let panes = query_panes()?;
-    panes
-        .iter()
-        .find(|p| p.number == number)
-        .map(|p| p.id)
-        .ok_or_else(|| {
+/// Find the pane a caller named in ONE reading of the listing.
+///
+/// Every resolution goes through here so a number and a name are looked up against the same
+/// instant, and so a caller that needs both the pane's number and its id gets them from one read.
+/// Before names existed the two were separate lookups (`pane_number` then `pane_id_for`), which was
+/// harmless while both were pure arithmetic on one listing and stops being harmless the moment one
+/// of them has to query.
+fn resolve_in<'a>(panes: &'a [PaneInfo], target: &PaneTarget) -> Result<&'a PaneInfo, String> {
+    match target {
+        PaneTarget::Number(number) => panes.iter().find(|p| p.number == *number).ok_or_else(|| {
             format!(
                 "no pane {number}; this terminal has {} pane(s). Call list_panes.",
                 panes.len()
             )
-        })
+        }),
+        PaneTarget::Name(name) => pane_by_name(panes, name),
+    }
+}
+
+/// Resolve a tool's `pane` argument against one reading of the live listing, answering the pane's
+/// 1-based NUMBER (what an answer says back to the caller) and its host ID (what the wire takes).
+fn resolve_pane(args: &Value) -> Result<(usize, u64), String> {
+    let target = pane_target(args)?;
+    let panes = query_panes()?;
+    let pane = resolve_in(&panes, &target)?;
+    Ok((pane.number, pane.id))
+}
+
+/// The requested 1-based pane number from a tool's arguments, for the callers whose answer IS a
+/// number rather than a pane.
+fn pane_number(args: &Value) -> Result<usize, String> {
+    resolve_pane(args).map(|(number, _)| number)
+}
+
+/// Resolve a tool's `pane` argument to a host pane id (one list query).
+fn resolve_pane_id(args: &Value) -> Result<u64, String> {
+    resolve_pane(args).map(|(_, id)| id)
+}
+
+/// Find the pane called `name` in `panes`, refusing to guess when more than one answers to it.
+///
+/// The daemon holds names unique across itself, so a second bearer cannot arise from a correct
+/// sequence of requests — but the uniqueness check and the write are not one atomic step there, so
+/// this refuses rather than taking the first. Silently resolving an ambiguous name would rebuild
+/// the very failure a name exists to remove: a plausible answer against the wrong pane.
+fn pane_by_name<'a>(panes: &'a [PaneInfo], name: &str) -> Result<&'a PaneInfo, String> {
+    let mut matching = panes
+        .iter()
+        .filter(|p| p.name.as_deref() == Some(name))
+        .fuse();
+    let first = matching.next().ok_or_else(|| {
+        let known: Vec<&str> = panes.iter().filter_map(|p| p.name.as_deref()).collect();
+        if known.is_empty() {
+            format!("no pane is called {name:?}; no pane in this terminal has a name yet.")
+        } else {
+            format!(
+                "no pane is called {name:?}; the named panes are {}. Call list_panes.",
+                known
+                    .iter()
+                    .map(|n| format!("{n:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        }
+    })?;
+    if matching.next().is_some() {
+        return Err(format!(
+            "more than one pane is called {name:?}, so it does not name one pane. Rename one \
+             (rename_pane) and try again."
+        ));
+    }
+    Ok(first)
 }
 
 /// Query the host's live pane list, numbered 1-based in host order.
@@ -2128,6 +2419,7 @@ fn parse_pane_info(index: usize, pane: &Value) -> PaneInfo {
     PaneInfo {
         number: index + 1,
         id: pane.get("id").and_then(Value::as_u64).unwrap_or(0),
+        name: pane.get("name").and_then(Value::as_str).map(str::to_owned),
         title: pane
             .get("title")
             .and_then(Value::as_str)
@@ -2178,6 +2470,25 @@ fn notification_line(note: &Value) -> String {
 
 /// One request to the host over a fresh connection, mapping every failure to a
 /// human-readable tool error (including "not inside a sprag terminal").
+/// Replace a daemon REFUSAL with a sentence this tool can write, and pass anything else through.
+///
+/// A refused action arrives as `host rpc error: InvokeRejected` — a Rust variant name, because
+/// `InvokeError::Rejected` carries no payload and pinion's fault has no `data` to prefer (upstream
+/// PINION-PR82, the class R283 measured across fifteen CLI paths). Appending an explanation to that
+/// leaves the variant name in front of it, which is the leak R283 removed from the CLI; this
+/// replaces it.
+///
+/// A transport failure is NOT replaced. "The socket went away" and "the daemon said no" are
+/// different things to be told, and a caller that could not reach the daemon at all must not be
+/// handed a sentence about pane names.
+fn refusal_sentence(raw: &str, instead: &str) -> String {
+    if raw.contains("InvokeRejected") {
+        instead.to_owned()
+    } else {
+        format!("{raw} — {instead}")
+    }
+}
+
 fn host_call(method: &str, params: Value) -> Result<Value, String> {
     let sock = host_sock().ok_or_else(|| {
         "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
@@ -2328,6 +2639,7 @@ mod tests {
                 "send_keys",
                 "open_pane",
                 "close_pane",
+                "rename_pane",
                 "select_pane"
             ]
         );
@@ -2413,13 +2725,13 @@ mod tests {
     /// warning is here rather than live because the suite can only build one daemon.
     #[test]
     fn the_open_answer_only_promises_a_close_it_can_keep() {
-        let kept = opened_answer("2", " in /tmp", true, "LISTING");
+        let kept = opened_answer("2", " in /tmp", true, None, "LISTING");
         assert_eq!(
             kept,
             "Opened pane 2 in /tmp, running a shell. It is recorded as opened by your pane, so \
              close_pane will let you close it.\n\nLISTING",
         );
-        let broken = opened_answer("2", "", false, "LISTING");
+        let broken = opened_answer("2", "", false, None, "LISTING");
         assert!(
             broken.starts_with(
                 "Opened pane 2, running a shell. WARNING: this terminal did not record it as \
@@ -2427,6 +2739,37 @@ mod tests {
             ),
             "an older daemon dropped the fact, and the answer says so rather than promising: \
              {broken}",
+        );
+    }
+
+    /// And the answer only tells a caller to USE a name the terminal really recorded.
+    ///
+    /// The same shape one field over, and it is here rather than live for the same reason. The
+    /// asymmetry it guards is the one R294's skew run established: an additive FIELD an old client
+    /// ignores is harmless, while an additive ARGUMENT an old DAEMON ignores is a silent no-op —
+    /// so a tool that told the caller "address it as \"build\"" from its own request would hand out
+    /// a handle that resolves to nothing.
+    #[test]
+    fn the_open_answer_only_offers_a_name_the_terminal_recorded() {
+        let landed = opened_answer("2", "", true, Some(("build", true)), "LISTING");
+        assert!(
+            landed.contains(
+                "It is called \"build\" — pass that as `pane` instead of the number, which will \
+                 shift if an earlier pane closes."
+            ),
+            "the name is offered WITH the reason to use it: {landed}",
+        );
+        let dropped = opened_answer("2", "", true, Some(("build", false)), "LISTING");
+        assert!(
+            dropped.contains(
+                "WARNING: this terminal did not record the name \"build\", so addressing the pane \
+                 by it will fail"
+            ),
+            "an older daemon dropped the argument, and the answer says so: {dropped}",
+        );
+        assert!(
+            !opened_answer("2", "", true, None, "LISTING").contains("called"),
+            "and a caller that asked for no name is told nothing about one",
         );
     }
 
@@ -2774,11 +3117,89 @@ mod tests {
         );
     }
 
+    /// A `pane` argument is read as a POSITION or as a NAME by its JSON TYPE, and by nothing else.
+    ///
+    /// That discrimination is the whole reason the stable handle is a name rather than the host id
+    /// this surface already prints: a number and an id are both integers, so one argument could
+    /// carry them only behind a mode flag. This test is on the pure parse — resolving either
+    /// against a live listing is `resolve_in`'s job, and there is no host here.
     #[test]
-    fn pane_number_requires_a_positive_integer() {
-        assert_eq!(pane_number(&json!({ "pane": 2 })).unwrap(), 2);
-        assert!(pane_number(&json!({})).is_err());
-        assert!(pane_number(&json!({ "pane": "x" })).is_err());
+    fn a_pane_argument_is_a_position_or_a_name_by_its_json_type() {
+        assert_eq!(
+            pane_target(&json!({ "pane": 2 })).unwrap(),
+            PaneTarget::Number(2),
+        );
+        assert_eq!(
+            pane_target(&json!({ "pane": "build" })).unwrap(),
+            PaneTarget::Name("build".to_owned()),
+        );
+        assert_eq!(
+            pane_target(&json!({ "pane": "  build  " })).unwrap(),
+            PaneTarget::Name("build".to_owned()),
+            "trimmed, so a name resolves the way the daemon stored it",
+        );
+        // A QUOTED digit string is a name, not a position — which is exactly why the daemon
+        // refuses to store an all-digit name: nothing could then be called \"3\", so this can
+        // only ever fail to match, never match the wrong pane.
+        assert_eq!(
+            pane_target(&json!({ "pane": "3" })).unwrap(),
+            PaneTarget::Name("3".to_owned()),
+        );
+        assert!(pane_target(&json!({})).is_err(), "a pane must be named");
+        assert!(pane_target(&json!({ "pane": null })).is_err());
+        assert!(pane_target(&json!({ "pane": 1.5 })).is_err());
+        assert!(pane_target(&json!({ "pane": -1 })).is_err());
+    }
+
+    /// A name that answers for two panes resolves to NEITHER.
+    ///
+    /// The daemon holds names unique, so this is unreachable through correct requests — and it is
+    /// the residual of the one gap that design leaves (the uniqueness check and the write are not
+    /// one atomic step, because making them so would hold the registry lock across a fork). Taking
+    /// the first match would rebuild the very failure a name exists to remove.
+    #[test]
+    fn a_name_two_panes_answer_to_resolves_to_neither() {
+        let pane = |number: usize, id: u64, name: &str| PaneInfo {
+            number,
+            id,
+            name: Some(name.to_owned()),
+            title: String::new(),
+            command: "bash".to_owned(),
+            cols: 80,
+            rows: 24,
+            notification: None,
+            bell: 0,
+            shell: None,
+            exit_status: None,
+            mouse: None,
+            focus_tracking: false,
+            images: vec![],
+            active: false,
+            agent: None,
+            opened_by: None,
+        };
+        let panes = vec![
+            pane(1, 10, "build"),
+            pane(2, 11, "build"),
+            pane(3, 12, "test"),
+        ];
+        assert_eq!(pane_by_name(&panes, "test").unwrap().id, 12);
+        let Err(ambiguous) = pane_by_name(&panes, "build") else {
+            panic!("two bearers is not one pane");
+        };
+        assert!(
+            ambiguous.contains("more than one pane is called \"build\""),
+            "and it says so rather than picking: {ambiguous}",
+        );
+        // A name nobody carries lists the ones that exist, so the caller can fix it in one step
+        // instead of calling list_panes to find out it guessed.
+        let Err(missing) = pane_by_name(&panes, "docs") else {
+            panic!("no pane is called docs");
+        };
+        assert!(
+            missing.contains("\"build\"") && missing.contains("\"test\""),
+            "the refusal names the names in use: {missing}",
+        );
     }
 
     #[test]
@@ -2858,6 +3279,7 @@ mod tests {
         let live = PaneInfo {
             number: 3,
             id: 11,
+            name: None,
             title: String::new(),
             command: "bash".to_owned(),
             cols: 80,
@@ -2898,6 +3320,7 @@ mod tests {
         let opened = |opener: u64| PaneInfo {
             number: 2,
             id: 7,
+            name: None,
             title: String::new(),
             command: "bash".to_owned(),
             cols: 80,
@@ -2917,6 +3340,7 @@ mod tests {
         let listing = [PaneInfo {
             number: 1,
             id: 3,
+            name: None,
             ..opened(0)
         }];
         assert!(
@@ -2943,6 +3367,7 @@ mod tests {
         let tracking = PaneInfo {
             number: 2,
             id: 7,
+            name: None,
             title: String::new(),
             command: "vim".to_owned(),
             cols: 80,
@@ -3039,6 +3464,7 @@ mod tests {
         let shell = PaneInfo {
             number: 1,
             id: 3,
+            name: None,
             title: String::new(),
             command: "bash".to_owned(),
             cols: 80,
