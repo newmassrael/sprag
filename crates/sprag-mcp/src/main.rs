@@ -1462,13 +1462,17 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     .as_u64()
     .ok_or("the host did not answer with a new pane id")?;
 
-    let panes = query_panes()?;
+    // NOT `?`, for [`relisted`]'s reason: the pane EXISTS from here on, so a failed re-read must
+    // still tell the caller that — a call that answered "error" would leave a pane running that its
+    // opener does not know it has, which is the litter this whole design exists to prevent.
+    let panes = query_panes().unwrap_or_default();
     let born = panes.iter().find(|p| p.id == id);
     let number = born
         .map(|p| p.number.to_string())
         // The pane was born — the host answered with its id — so a listing that no longer holds it
-        // means it has ALREADY gone (a shell that exec'd and exited). Reported, never guessed at.
-        .unwrap_or_else(|| format!("? (id {id}, gone since it was opened)"));
+        // means it has ALREADY gone (a shell that exec'd and exited), or could not be re-read.
+        // Reported with the id that always addresses it, never guessed at.
+        .unwrap_or_else(|| format!("? (id {id}, not in the pane list just read)"));
     let where_it_is = cwd.map_or_else(String::new, |dir| format!(" in {}", dir.display()));
     // WHETHER THE PROVENANCE ACTUALLY LANDED, read back off the pane rather than assumed from the
     // request that was sent. Not defensive noise — the skew run that proved this key additive is
@@ -1569,8 +1573,26 @@ fn tool_close_pane(args: &Value) -> Result<String, String> {
         } else {
             "It was the last pane, so the others keep their numbers:"
         },
-        render_pane_list(&query_panes()?, mine)
+        // NOT `?`: the destructive part already happened. A re-read that fails here is a broken
+        // connection, not a failed close, and returning an error for it would tell the caller its
+        // pane is still there when it is gone — the one report that would make it act wrongly.
+        // The listing is a convenience on top of the outcome; the outcome is reported either way.
+        relisted(mine)
     ))
+}
+
+/// The pane listing for an answer whose ACTION has already happened, degrading to a sentence rather
+/// than to an error.
+///
+/// The two structural writes both re-read to repair the caller's map of numbers. That read comes
+/// AFTER the thing being reported, so its failure must not be reported as the write's failure: a
+/// close that says "error" about a pane that really is closed sends the caller off to close it
+/// again, or to believe a person's work survived when it did not.
+fn relisted(here: Option<u64>) -> String {
+    match query_panes() {
+        Ok(panes) => render_pane_list(&panes, here),
+        Err(why) => format!("(could not re-list the panes: {why} — call list_panes)"),
+    }
 }
 
 fn tool_select_pane(args: &Value) -> Result<String, String> {
