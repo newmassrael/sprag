@@ -1406,37 +1406,57 @@ fn main() -> ExitCode {
     // and a keystroke is one (`key`/`text`/`paste`/`mouse` are all invokes) — so this is paid at
     // TYPING rate, which is the cost the H6 design argued about and did not measure. Measured with
     // no change to find: the steady state, and the only one that recurs.
+    // The `named` axis is R295's OWN cost, and it is the control this row needed rather than an
+    // extra: a pane's name joined the shape, so an unnamed pane clones a `None` (no allocation) and
+    // a named one clones a `String`. Measuring only unnamed panes would price the feature at zero by
+    // construction — the shape R294 was caught by when its instrument could not move.
     for panes in [1_usize, 64] {
-        let shaped = Host::new((COLS, ROWS));
-        for index in 0..panes {
-            shaped
-                .spawn(painted(), format!("q{index}"), COLS, ROWS, None, None)
-                .expect("spawn a quiescent pane");
-        }
-        let shaped = HostState::new(shaped, Arc::new(ChannelRegistry::default()), None);
-        let channels = shaped.channels().clone();
-        // Seed the shape, so the row measures the STEADY diff and not the first observation.
-        channels.observe(
-            &shaped
-                .registry()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            "0",
-        );
-        paired(
-            &format!("events: observe, {panes} panes, no change"),
-            &mut controls,
-            None,
-            || {
-                channels.observe(
-                    &shaped
-                        .registry()
+        for named in [false, true] {
+            let shaped = Host::new((COLS, ROWS));
+            for index in 0..panes {
+                let id = shaped
+                    .spawn(painted(), format!("q{index}"), COLS, ROWS, None, None)
+                    .expect("spawn a quiescent pane");
+                if named {
+                    shaped
+                        .workspace()
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                    "0",
-                );
-            },
-        );
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .set_pane_name(
+                            id,
+                            Some(
+                                sprag_terminal::PaneName::parse(&format!("work-pane-{index}"))
+                                    .expect("a legal name"),
+                            ),
+                        );
+                }
+            }
+            let shaped = HostState::new(shaped, Arc::new(ChannelRegistry::default()), None);
+            let channels = shaped.channels().clone();
+            // Seed the shape, so the row measures the STEADY diff and not the first observation.
+            channels.observe(
+                &shaped
+                    .registry()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                "0",
+            );
+            let which = if named { "all named" } else { "unnamed" };
+            paired(
+                &format!("events: observe, {panes} panes {which}, no change"),
+                &mut controls,
+                None,
+                || {
+                    channels.observe(
+                        &shaped
+                            .registry()
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        "0",
+                    );
+                },
+            );
+        }
     }
 
     // THE TERM R292 ADDED TO THAT SITE, measured rather than argued. A session may have filtered
