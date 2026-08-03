@@ -1404,6 +1404,23 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
 /// daemon under the lock that appends. Output is not a record, so it cannot wake this; another pane's
 /// change does not either, when the caller named its own.
 ///
+/// ## What this costs the host, stated because a register entry claimed otherwise
+///
+/// R291 recorded that this tool made "three host calls, all on ONE connection, which is that
+/// function's own stated rule". **That is no longer true and the rule is not restored here**, so it is
+/// written down rather than quietly broken:
+///
+/// * `scene/revision` — FIRST CALL ONLY, on its own connection, to start the cursor at the present.
+/// * a `panes` read — only when the caller passed `pane`, on its own connection, to turn this
+///   surface's 1-based NUMBER into the host id the journal names. It happens BEFORE the park, so the
+///   "no second connect in the middle of one question" rule is untouched: there is no question open
+///   yet, and a wrong number is refused here rather than parked forever.
+/// * the park itself, and — when a pane subject comes back — a `panes` read on that same connection.
+///
+/// The park and the read that follows it are still one connection, which was the rule's actual
+/// subject. What went away is the second call that used to fetch the batch: the wait's reply carries
+/// it.
+///
 /// ## The cursor is PROCESS state, and it has to be
 ///
 /// Every other tool here reconnects per call and holds nothing. This one cannot: "what changed" is
@@ -1461,7 +1478,10 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
         .map_err(|e| format!("cannot set the wait timeout: {e}"))?;
     let mut params = json!({ SINCE_PARAM: since });
     if let Some(filter) = filter {
-        params["match"] = filter;
+        // Through the host's own const, not the literal `"match"`. The literal was here first, which
+        // in a round whose whole thesis is that a wire word gets spelled once was this round's own
+        // defect — and the CLI beside it was already using the const.
+        params[EventFilter::WIRE_KEY] = filter;
     }
     let batch = match conn.try_call(EVENTS_WAIT_METHOD, params) {
         Ok(batch) => batch,
@@ -1529,8 +1549,14 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
         return Ok(out);
     }
     // The wire names a pane by the HOST's id; every tool on this surface addresses one by its
-    // 1-based NUMBER. So the ids are joined against the pane list before they are printed — over
-    // the SAME connection, for the reason the park and the batch already share one.
+    // 1-based NUMBER. So the ids are joined against the pane list before they are printed — over the
+    // connection the wait was parked on, because the list must be read AFTER the change rather than
+    // before it (a `pane_closed` names a pane the earlier list still had).
+    //
+    // The reason this comment used to give — "for the reason the park and the batch already share one
+    // connection" — named a pairing that no longer exists: the wait's reply CARRIES the batch, so
+    // there is no second call to share anything with. Corrected rather than left standing, on this
+    // project's own rule that the owed item is often the comment.
     //
     // **The comment below used to claim this and the code did not do it**, which made the answer
     // name a pane in a vocabulary no other tool here accepts: an agent told `pane id=0` cannot pass

@@ -746,6 +746,32 @@ mod tests {
     }
 
     #[test]
+    fn a_filtered_wait_sleeps_through_another_sessions_identical_change() {
+        // The scope half, which nothing else asserted — and this is the property R279 caught
+        // `scene/waitFor` checking and then IGNORING for as long as the daemon had one registry-wide
+        // revision. A filtered wait parks on the SCOPED session's channel, so a change in another
+        // session cannot reach it even when it is the SAME kind about the SAME pane id: pane ids are
+        // registry-unique today, and a wait must not depend on that staying true.
+        let channels = ChannelRegistry::default();
+        let mine = park_filtered(&channels, "play", ConnId::allocate(), job_of(2));
+
+        channels.announce("work", vec![Event::PaneJobChanged(2)]);
+        assert_eq!(
+            answered(&mine),
+            0,
+            "an identical change in another session is not this waiter's business",
+        );
+        assert_eq!(
+            channels.journal("play").parked_count(),
+            1,
+            "and it is still asleep, not woken-and-re-parked",
+        );
+
+        channels.announce("play", vec![Event::PaneJobChanged(2)]);
+        assert_eq!(answered(&mine), 1, "its own session's change reaches it");
+    }
+
+    #[test]
     fn a_woken_wait_carries_what_it_asked_for_and_not_the_rest() {
         // `next` advances past everything, so handing over events outside the filter would be noise
         // now AND no way to re-read it later. A caller that wants the whole history reads the
