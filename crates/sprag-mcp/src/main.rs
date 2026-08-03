@@ -1506,6 +1506,19 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
         Vec::new()
     };
 
+    out.push_str(&render_events(events, &panes));
+    Ok(out)
+}
+
+/// One line per change: `  <type>: <subject>`, with a pane named in BOTH vocabularies.
+///
+/// A pure function of the two reads, for the reason its neighbours are
+/// ([`pane_processes`](tool_pane_processes) and the layout drawing both render this way): the
+/// interesting case is the RESIDUAL between them — a pane in the batch that is no longer in the
+/// list — and that is not reachable through a live daemon on demand. Inline in the caller it was
+/// testable by nothing at all.
+fn render_events(events: &[Value], panes: &[PaneInfo]) -> String {
+    let mut out = String::new();
     for event in events {
         let kind = event["type"].as_str().unwrap_or("?");
         match (
@@ -1537,7 +1550,7 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
             _ => out.push_str(&format!("  {kind}\n")),
         }
     }
-    Ok(out)
+    out
 }
 
 /// `agent_explain`: which RULE produced a pane's state, and what to edit when it is wrong.
@@ -2294,6 +2307,49 @@ mod tests {
         let resting = parse_pane_info(0, &json!({ "id": 1, "command": "bash", "title": null }));
         assert_eq!(resting.mouse, None);
         assert!(!resting.focus_tracking);
+    }
+
+    /// A pane in the batch is named in BOTH vocabularies, and one that is no longer in the list
+    /// says so rather than being numbered.
+    ///
+    /// The residual is the half no live test can drive on demand — a pane closing between the
+    /// events read and the pane read — and it is the half that matters: numbering a pane that is
+    /// gone would hand the caller a number that now belongs to a DIFFERENT pane. `pane_closed`
+    /// reaches it on every occurrence, which is correct and is asserted here so the wording is a
+    /// decision rather than an accident.
+    ///
+    /// A window subject is carried through unchanged, as the control that this joins PANES and not
+    /// every subject it meets.
+    #[test]
+    fn a_change_names_its_pane_in_both_vocabularies_or_says_it_is_gone() {
+        let live = PaneInfo {
+            number: 3,
+            id: 11,
+            title: String::new(),
+            command: "bash".to_owned(),
+            cols: 80,
+            rows: 24,
+            notification: None,
+            bell: 0,
+            active: false,
+            shell: None,
+            exit_status: None,
+            mouse: None,
+            focus_tracking: false,
+            images: vec![],
+            agent: None,
+        };
+        let events = vec![
+            json!({ "type": "pane_job_changed", "pane": 11 }),
+            json!({ "type": "pane_closed", "pane": 4 }),
+            json!({ "type": "window_selected", "window": "build" }),
+        ];
+
+        assert_eq!(
+            render_events(&events, std::slice::from_ref(&live)),
+            "  pane_job_changed: pane 3 (id 11)\n  pane_closed: pane ? (id 4, gone since the pane \
+             list was read)\n  window_selected: window build\n",
+        );
     }
 
     #[test]
