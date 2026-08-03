@@ -325,12 +325,15 @@ fn action_label(action: BoundAction) -> &'static str {
         BoundAction::SendPrefix => "send-prefix",
         BoundAction::SplitWindow { .. } => "split-window",
         BoundAction::SelectNextPane => "select-pane",
+        BoundAction::ZoomPane { .. } => "zoom-pane",
     }
 }
 
-/// Carry out one of the user's bound commands on the focused pane — the four actions a
+/// Carry out one of the user's bound commands on the focused pane — every action a
 /// [`Keymap`](sprag_host::keymap::Keymap) can name, each through the mechanism this client already
 /// had for it.
+///
+/// Counted in prose until R289 added the fifth, which is what a number kept in a comment does.
 ///
 /// `detach-client` is the quit sink and not a session teardown: closing this window leaves the daemon
 /// and the session running, which is what detaching MEANS in topology B (`sprag attach` connect-or-
@@ -358,6 +361,12 @@ fn perform(action: BoundAction, active: usize) {
             use_terminal().slots.split(active, dir, before);
         }
         BoundAction::SelectNextPane => cycle_focus(active, true),
+        // The wire client re-reads the arrangement when the zoom moved anything, and the layout
+        // mirror is what the dock topology is projected from — so this repaints through the channel
+        // that already carries an arrangement change, exactly as the split above does.
+        BoundAction::ZoomPane { on } => {
+            use_terminal().slots.zoom_pane(active, on);
+        }
     }
 }
 

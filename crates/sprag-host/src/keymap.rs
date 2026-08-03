@@ -65,7 +65,7 @@
 //!
 //! [`Keymap::default`] IS tmux's table (verified against `tmux 3.2a`'s own `list-keys -T prefix`).
 //! A config file LAYERS over it — [`Keymap::bind`] then, where asked, [`Keymap::unbind`] — so a user
-//! who wants one extra binding does not have to re-declare the four they already had.
+//! who wants one extra binding does not have to re-declare the ones they already had.
 
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -118,7 +118,7 @@ impl fmt::Display for KeyError {
             Self::UnknownAction(verb) => write!(
                 f,
                 "{verb:?} is not an action (there are: detach-client, send-prefix, \
-                 split-window -h|-v [-b], select-pane -t :.+)"
+                 split-window -h|-v [-b], select-pane -t :.+, zoom-pane [-Z|-u])"
             ),
             Self::BadFlags { action, why } => write!(f, "{action:?}: {why}"),
             Self::BoundAndUnbound(key) => {
@@ -366,6 +366,18 @@ pub enum BoundAction {
     },
     /// `select-pane -t :.+` — move focus to the next pane in paint order.
     SelectNextPane,
+    /// `zoom-pane [-Z|-u]` — fill the window with the focused pane alone, or give the arrangement
+    /// back (tmux's `resize-pane -Z`, bound to `prefix z`).
+    ZoomPane {
+        /// `None` TOGGLES, which is what makes one key a switch; `Some(true)` is `-Z` and
+        /// `Some(false)` is `-u`.
+        ///
+        /// The tri-state is carried rather than collapsed to a toggle because the CLI verb has both
+        /// explicit flags, and a binding vocabulary that accepted the verb while refusing its flags
+        /// would promise half a grammar — the thing `select-pane`'s own arm exists to avoid. Here
+        /// the whole grammar is built, so the whole grammar is taken.
+        on: Option<bool>,
+    },
 }
 
 /// tmux's spelling of "the next pane", which is the only target form a binding may carry today.
@@ -438,6 +450,31 @@ impl BoundAction {
                 })?;
                 Ok(Self::SplitWindow { dir, before })
             }
+            "zoom-pane" => {
+                let mut on = None;
+                for flag in flags {
+                    match flag {
+                        "-Z" | "-u" => {
+                            if on.is_some() {
+                                return Err(bad("-Z and -u name one state; give only one"));
+                            }
+                            on = Some(flag == "-Z");
+                        }
+                        // `split-window`'s rule, and for the same reason: a keystroke acts where
+                        // the user is, so the CLI verb's pane argument is the one thing a binding
+                        // must not carry.
+                        other => {
+                            return Err(bad(&format!(
+                                "{other:?} is not a flag a binding takes (a binding zooms the \
+                                 FOCUSED pane, so it names none)"
+                            )));
+                        }
+                    }
+                }
+                // Bare `zoom-pane` is the TOGGLE, unlike bare `split-window` which is refused: the
+                // CLI verb reads it the same way, so one string means one thing at both surfaces.
+                Ok(Self::ZoomPane { on })
+            }
             "select-pane" => {
                 if flags == NEXT_PANE_TARGET {
                     Ok(Self::SelectNextPane)
@@ -474,6 +511,11 @@ impl fmt::Display for BoundAction {
                 "select-pane {} {}",
                 NEXT_PANE_TARGET[0], NEXT_PANE_TARGET[1]
             ),
+            Self::ZoomPane { on } => f.write_str(match on {
+                None => "zoom-pane",
+                Some(true) => "zoom-pane -Z",
+                Some(false) => "zoom-pane -u",
+            }),
         }
     }
 }
@@ -584,6 +626,10 @@ impl Default for Keymap {
                 ),
                 bind("d", BoundAction::DetachClient),
                 bind("o", BoundAction::SelectNextPane),
+                // tmux's `prefix z`, and herdr's `prefix+z` — the one key every multiplexer user
+                // already has in their fingers. The TOGGLE form, so the same key both fills the
+                // window and gives the arrangement back.
+                bind("z", BoundAction::ZoomPane { on: None }),
             ],
         }
     }
@@ -1079,6 +1125,12 @@ mod tests {
                 },
             ),
             ("select-pane -t :.+", BoundAction::SelectNextPane),
+            // All three states of the zoom, because the bare form is the TOGGLE here — the one
+            // place this vocabulary reads a bare verb as a meaning rather than refusing it, and the
+            // round trip is what pins that the three do not collapse into one another.
+            ("zoom-pane", BoundAction::ZoomPane { on: None }),
+            ("zoom-pane -Z", BoundAction::ZoomPane { on: Some(true) }),
+            ("zoom-pane -u", BoundAction::ZoomPane { on: Some(false) }),
         ];
         for (text, action) in cases {
             assert_eq!(BoundAction::parse(text), Ok(action), "{text:?}");
@@ -1128,6 +1180,19 @@ mod tests {
             BoundAction::parse("split-window -h -v"),
             Err(KeyError::BadFlags { .. })
         ));
+        // The zoom takes the same two refusals: a pane a keystroke cannot mean, and two flags that
+        // name one state. Its BARE form is deliberately NOT among them — see the round-trip test.
+        for action in ["zoom-pane 3", "zoom-pane -Z -u", "zoom-pane -x"] {
+            assert!(
+                matches!(BoundAction::parse(action), Err(KeyError::BadFlags { .. })),
+                "{action:?} should be refused",
+            );
+        }
+        let named = BoundAction::parse("zoom-pane 3").expect_err("a binding names no pane");
+        assert!(
+            named.to_string().contains("FOCUSED pane"),
+            "and it says where a binding acts: {named}",
+        );
     }
 
     /// An unbuilt target form is refused with what IS built, rather than promising a grammar sprag
@@ -1157,6 +1222,9 @@ mod tests {
             "send-prefix",
             "split-window",
             "select-pane",
+            // The list is the ONLY place a user learns what a binding can say, so a verb that
+            // exists and is absent from it is a verb nobody finds.
+            "zoom-pane",
         ] {
             assert!(
                 message.contains(known),
@@ -1182,6 +1250,9 @@ mod tests {
                 "% split-window -h",
                 "d detach-client",
                 "o select-pane -t :.+",
+                // tmux's KEY, spelled with sprag's own verb: tmux says `resize-pane -Z` and sprag's
+                // shell says `zoom-pane`, and this table is parsed from the string the shell takes.
+                "z zoom-pane",
             ],
         );
     }
@@ -1385,8 +1456,10 @@ mod tests {
     #[test]
     fn an_unbound_command_key_is_swallowed() {
         let keymap = Keymap::default();
+        // `k` because the default table does not bind it — which this assertion IS: bind it later
+        // and this fails here, naming the reason, rather than quietly testing a bound key.
         assert_eq!(
-            keymap.route(PrefixMode::AfterPrefix, now(), "z", Modifiers::default()),
+            keymap.route(PrefixMode::AfterPrefix, now(), "k", Modifiers::default()),
             Routed::Swallow,
         );
         // ...and a MODIFIED command key is a different key, so `prefix Ctrl-D` is not a detach.
@@ -1627,12 +1700,15 @@ mod tests {
         let armed = PrefixMode::Repeating {
             until: base + DEFAULT_REPEAT_TIME,
         };
+        // `K` rather than a bound letter, and the second assertion is what keeps that honest — a
+        // lone ASCII letter matches case-insensitively on purpose (`same_key`), so `Z` is `z`, which
+        // the default table now binds to the zoom.
         assert_eq!(
-            keymap.route(armed, base, "Z", Modifiers::default()),
+            keymap.route(armed, base, "K", Modifiers::default()),
             Routed::ToPane,
         );
         assert_eq!(
-            keymap.route(PrefixMode::AfterPrefix, base, "Z", Modifiers::default()),
+            keymap.route(PrefixMode::AfterPrefix, base, "K", Modifiers::default()),
             Routed::Swallow,
             "where the SAME key after the prefix is swallowed",
         );

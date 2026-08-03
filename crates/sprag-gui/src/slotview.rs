@@ -361,6 +361,18 @@ impl SlotView {
             .is_some()
     }
 
+    /// Fill the window with slot `slot`'s pane alone, or give the arrangement back (tmux
+    /// `resize-pane -Z`) — `on` absent toggles. Returns whether ONE pane fills the window
+    /// afterwards, and `None` for a hole or a pane the daemon refused (one it has floated out).
+    ///
+    /// The answer is carried rather than discarded because `{zoomed, changed}` is total over four
+    /// distinct cases; a caller that only wanted "did it work" would have to guess between two of
+    /// them.
+    pub(crate) fn zoom_pane(&self, slot: usize, on: Option<bool>) -> Option<bool> {
+        let outcome = self.host.zoom_pane(self.id(slot)?, on)?;
+        Some(outcome.zoomed)
+    }
+
     /// Close slot `slot`'s pane (tmux `kill-pane`), returning whether one was removed — `false` for
     /// a hole. DESTRUCTIVE: the pane's child is killed and its scrollback goes with it. The asking
     /// happens above, in [`confirm`](crate::confirm); this is the performer.

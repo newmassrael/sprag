@@ -9,8 +9,9 @@
 //! key from a pane's child. It works, and it is not a keymap: the keys are written into the binary
 //! and name surfaces (a find bar, a palette) that the binding vocabulary has no word for.
 //!
-//! What the user's [`Keymap`](sprag_host::keymap::Keymap) names is the four things BOTH frontends can do — detach, send the
-//! prefix, split the focused pane, move focus on. So this is the table the GUI adopts, whole: the
+//! What the user's [`Keymap`](sprag_host::keymap::Keymap) names is what BOTH frontends can do — detach, send the
+//! prefix, split the focused pane, move focus on, fill the window with one pane. So this is the
+//! table the GUI adopts, whole: the
 //! same file, the same defaults, the same modes, and the same live re-read. A rebind typed
 //! into a shell reaches this window on the next keystroke, exactly as it reaches an attached
 //! `sprag-tui`.

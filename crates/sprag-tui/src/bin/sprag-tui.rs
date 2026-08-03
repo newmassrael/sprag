@@ -300,6 +300,29 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
+                    // A zoom changes what this client DRAWS without changing the pane set, so it
+                    // needs the same on-the-spot reconcile a split does: the projection the next
+                    // paint tiles is the arrangement filtered by the zoomed pane, and waiting for a
+                    // host notification would leave the user's own keystroke unanswered until
+                    // something else moved. `Clear::No` for the standing reason — a projection
+                    // partitions the screen exactly as an arrangement does, so every cell still has
+                    // an author.
+                    Command::Act(BoundAction::ZoomPane { on }) => {
+                        if let Some(pane) = focus {
+                            host.zoom_pane(pane, on);
+                        }
+                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        mouse.follow(&host, &tiling);
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            focus,
+                            Clear::No,
+                            &mut held,
+                        )?;
+                    }
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
                         select_pane(&host, &mut focus, next.or_else(|| tiling.first_pane()));
@@ -1288,7 +1311,10 @@ mod tests {
     fn an_unbound_command_key_is_swallowed() {
         let mut keys = PrefixMode::ToPane;
         assert_eq!(acted(&mut keys, CTRL_B), Command::Swallow);
-        assert_eq!(acted(&mut keys, b"z"), Command::Swallow);
+        // `k` because the default table does not bind it — and this assertion IS that claim, so
+        // binding it later fails here with a reason instead of quietly testing a bound key. It used
+        // to be `z`, which R289 gave to the zoom.
+        assert_eq!(acted(&mut keys, b"k"), Command::Swallow);
         assert_eq!(keys, PrefixMode::ToPane, "and the mode still ends");
     }
 
