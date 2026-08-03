@@ -323,6 +323,27 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
+                    // A DIRECTIONAL move is the daemon's to resolve, so this arm publishes nothing
+                    // and adopts nothing: it asks, and then re-reads through the same [`reconcile`]
+                    // that already follows the session's active pane. That is what keeps the one
+                    // case where this client's ring is NOT the session's pane — the active pane is
+                    // floating, which a terminal cannot show — from being yanked by an answer that
+                    // did not move. `SelectNextPane` below cannot share this shape: its target is
+                    // this client's own paint order, so the client is the one that knows it.
+                    Command::Act(BoundAction::SelectPaneToward { dir }) => {
+                        host.select_toward(dir);
+                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        mouse.follow(&host, &tiling);
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            focus,
+                            Clear::No,
+                            &mut held,
+                        )?;
+                    }
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
                         select_pane(&host, &mut focus, next.or_else(|| tiling.first_pane()));

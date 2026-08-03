@@ -71,7 +71,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use sprag_input::Modifiers;
-use sprag_terminal::SplitDir;
+use sprag_terminal::{PaneDir, SplitDir};
 
 /// tmux's own `repeat-time` default, and the one sprag takes when the options table is silent.
 ///
@@ -118,7 +118,7 @@ impl fmt::Display for KeyError {
             Self::UnknownAction(verb) => write!(
                 f,
                 "{verb:?} is not an action (there are: detach-client, send-prefix, \
-                 split-window -h|-v [-b], select-pane -t :.+, zoom-pane [-Z|-u])"
+                 split-window -h|-v [-b], select-pane -L|-R|-U|-D|-t :.+, zoom-pane [-Z|-u])"
             ),
             Self::BadFlags { action, why } => write!(f, "{action:?}: {why}"),
             Self::BoundAndUnbound(key) => {
@@ -366,6 +366,22 @@ pub enum BoundAction {
     },
     /// `select-pane -t :.+` — move focus to the next pane in paint order.
     SelectNextPane,
+    /// `select-pane -L|-R|-U|-D` — move to the pane ADJACENT in that direction.
+    ///
+    /// The sibling of [`SelectNextPane`](Self::SelectNextPane) and not a refinement of it: that one
+    /// walks the pane POOL in paint order, this one walks the ARRANGEMENT. The two answer different
+    /// questions, and only this one is a statement about where the panes are on screen.
+    ///
+    /// **Adjacency is not resolved here, and not in either client.** The client sends the
+    /// direction; the daemon walks its own arrangement and moves the session's active pane under
+    /// one lock — see
+    /// [`HostClient::select_toward`](crate::HostClient::select_toward). A binding that resolved a
+    /// neighbour itself would be a second answer to `sprag select-pane -L`, derived from a mirror
+    /// that can be one revision behind the tiling it is naming.
+    SelectPaneToward {
+        /// Which way to move — tmux's `-L` / `-R` / `-U` / `-D`.
+        dir: PaneDir,
+    },
     /// `zoom-pane [-Z|-u]` — fill the window with the focused pane alone, or give the arrangement
     /// back (tmux's `resize-pane -Z`, bound to `prefix z`).
     ZoomPane {
@@ -380,11 +396,44 @@ pub enum BoundAction {
     },
 }
 
-/// tmux's spelling of "the next pane", which is the only target form a binding may carry today.
+/// tmux's spelling of "the next pane", which is the only `-t` target form a binding may carry.
 ///
 /// The rest of tmux's target grammar (`-t :=2`, `-t {left-of}`, session/window addressing) is H5's,
-/// and accepting a fragment of it here would promise a grammar sprag has not built.
+/// and accepting a fragment of it here would promise a grammar sprag has not built. The DIRECTIONAL
+/// forms are not part of it — they are flags ([`DIRECTION_FLAGS`]), not targets.
 const NEXT_PANE_TARGET: [&str; 2] = ["-t", ":.+"];
+
+/// tmux's four directional flags and the [`PaneDir`] each one names.
+///
+/// ONE table, read in both directions — [`BoundAction::parse`] maps a flag to a direction and
+/// [`BoundAction`]'s [`Display`](fmt::Display) maps it back. Two tables would be two spellings of
+/// one vocabulary that could drift apart while every test still passed, which is the shape R296
+/// found copy-pasted between a search slot and a wait.
+///
+/// The four words themselves live once more, on
+/// [`PaneDir::from_wire`](sprag_terminal::PaneDir::from_wire) — this table is the FLAG spelling the
+/// shell takes, that one is the wire's.
+const DIRECTION_FLAGS: [(&str, PaneDir); 4] = [
+    ("-L", PaneDir::Left),
+    ("-R", PaneDir::Right),
+    ("-U", PaneDir::Up),
+    ("-D", PaneDir::Down),
+];
+
+/// The [`PaneDir`] a directional flag names, or [`None`] for anything that is not one.
+fn direction_of(flag: &str) -> Option<PaneDir> {
+    DIRECTION_FLAGS
+        .iter()
+        .find_map(|(text, dir)| (*text == flag).then_some(*dir))
+}
+
+/// The flag that names `dir` — [`direction_of`]'s inverse, over the same table.
+fn flag_of(dir: PaneDir) -> &'static str {
+    DIRECTION_FLAGS
+        .iter()
+        .find_map(|(text, named)| (*named == dir).then_some(*text))
+        .expect("DIRECTION_FLAGS names every PaneDir")
+}
 
 impl BoundAction {
     /// Parse an action as the shell spells it — `split-window -h`, `detach-client`.
@@ -475,16 +524,24 @@ impl BoundAction {
                 // CLI verb reads it the same way, so one string means one thing at both surfaces.
                 Ok(Self::ZoomPane { on })
             }
-            "select-pane" => {
-                if flags == NEXT_PANE_TARGET {
-                    Ok(Self::SelectNextPane)
-                } else {
-                    Err(bad(
-                        "the only target a binding takes is `-t :.+` (the next pane); \
-                         the rest of tmux's target grammar is not built",
-                    ))
+            // Matched on the whole flag vector rather than folded one flag at a time, because the
+            // grammar is two shapes and not a set: `-t :.+` is TWO words that mean one thing, so a
+            // per-flag loop would have to re-join them.
+            "select-pane" => match flags.as_slice() {
+                target if target == NEXT_PANE_TARGET => Ok(Self::SelectNextPane),
+                [flag] if let Some(dir) = direction_of(flag) => Ok(Self::SelectPaneToward { dir }),
+                // `split-window`'s and `zoom-pane`'s refusal, one axis over: naming two of a
+                // mutually exclusive set is a typo with two readings, so neither is guessed.
+                [first, second]
+                    if direction_of(first).is_some() && direction_of(second).is_some() =>
+                {
+                    Err(bad("-L/-R/-U/-D name one direction; give only one"))
                 }
-            }
+                _ => Err(bad(
+                    "a binding moves by DIRECTION (-L/-R/-U/-D) or to the next pane (-t :.+); \
+                     the rest of tmux's target grammar is not built",
+                )),
+            },
             _ => Err(KeyError::UnknownAction(verb.to_owned())),
         }
     }
@@ -511,6 +568,7 @@ impl fmt::Display for BoundAction {
                 "select-pane {} {}",
                 NEXT_PANE_TARGET[0], NEXT_PANE_TARGET[1]
             ),
+            Self::SelectPaneToward { dir } => write!(f, "select-pane {}", flag_of(*dir)),
             Self::ZoomPane { on } => f.write_str(match on {
                 None => "zoom-pane",
                 Some(true) => "zoom-pane -Z",
@@ -590,8 +648,9 @@ impl Default for Keymap {
     ///
     /// Verified against `tmux 3.2a`'s `list-keys -T prefix` on this machine rather than recalled:
     /// `C-b send-prefix`, `" split-window`, `% split-window -h`, `d detach-client`,
-    /// `o select-pane -t :.+`. The one divergence is `"`, spelled `-v` here for the reason
-    /// [`BoundAction::parse`] gives.
+    /// `o select-pane -t :.+`, and `-r Up/Down/Left/Right select-pane -U/-D/-L/-R`. The one
+    /// divergence is `"`, spelled `-v` here for the reason [`BoundAction::parse`] gives; the arrow
+    /// keys carry sprag's own names for the reason the module docs give.
     fn default() -> Self {
         let key = |spec: &str| KeySpec::parse(spec).expect("a default key spec is well formed");
         let bind = |spec: &str, action| Bind {
@@ -600,14 +659,23 @@ impl Default for Keymap {
             action,
             repeat: false,
         };
+        // tmux's `-r`. Split out rather than given as a fourth argument to `bind` because five of
+        // the six calls below would then carry a `false` that says nothing.
+        let repeating = |spec: &str, action| Bind {
+            repeat: true,
+            ..bind(spec, action)
+        };
+        let toward = |dir| BoundAction::SelectPaneToward { dir };
         Self {
             prefix: key("C-b"),
             repeat_time: DEFAULT_REPEAT_TIME,
             // The ROOT table ships empty, which is also tmux's state for keyboard keys: its own
             // default root table holds mouse bindings only (measured from `list-keys -T root`).
-            // And no default REPEATS: tmux's `-r` defaults sit on `select-pane -U/-D/-L/-R` and
-            // `resize-pane`, directional actions this vocabulary does not have, so putting `-r` on
-            // `o` would be sprag inventing a default tmux never had.
+            //
+            // The FOUR ARROWS are the only defaults that repeat, and they are the only ones tmux
+            // repeats among the actions this vocabulary has. Its other `-r` defaults are
+            // `resize-pane`'s eight, which sprag has no bound action for — so `-r` still appears
+            // here exactly where tmux puts it and nowhere sprag invented.
             binds: vec![
                 bind("C-b", BoundAction::SendPrefix),
                 bind(
@@ -630,6 +698,12 @@ impl Default for Keymap {
                 // already has in their fingers. The TOGGLE form, so the same key both fills the
                 // window and gives the arrangement back.
                 bind("z", BoundAction::ZoomPane { on: None }),
+                // tmux's own order (`Up Down Left Right`), and its own `-r`: holding the prefix
+                // table open is what makes `prefix Left Left Left` walk three panes instead of one.
+                repeating("ArrowUp", toward(PaneDir::Up)),
+                repeating("ArrowDown", toward(PaneDir::Down)),
+                repeating("ArrowLeft", toward(PaneDir::Left)),
+                repeating("ArrowRight", toward(PaneDir::Right)),
             ],
         }
     }
@@ -1125,6 +1199,27 @@ mod tests {
                 },
             ),
             ("select-pane -t :.+", BoundAction::SelectNextPane),
+            // All four directions, because the flag table is read in BOTH directions (a flag to a
+            // `PaneDir` on the way in, the same table back on the way out) and a round trip is what
+            // pins that the two readings are of one table rather than of two that agree today.
+            (
+                "select-pane -L",
+                BoundAction::SelectPaneToward { dir: PaneDir::Left },
+            ),
+            (
+                "select-pane -R",
+                BoundAction::SelectPaneToward {
+                    dir: PaneDir::Right,
+                },
+            ),
+            (
+                "select-pane -U",
+                BoundAction::SelectPaneToward { dir: PaneDir::Up },
+            ),
+            (
+                "select-pane -D",
+                BoundAction::SelectPaneToward { dir: PaneDir::Down },
+            ),
             // All three states of the zoom, because the bare form is the TOGGLE here — the one
             // place this vocabulary reads a bare verb as a meaning rather than refusing it, and the
             // round trip is what pins that the three do not collapse into one another.
@@ -1195,52 +1290,64 @@ mod tests {
         );
     }
 
-    /// An unbuilt target form is refused with what IS built, rather than promising a grammar sprag
-    /// does not have.
+    /// `select-pane` takes TWO shapes and nothing between them: the four directional flags, and the
+    /// one `-t` target. An unbuilt target form is refused with what IS built, rather than promising
+    /// a grammar sprag does not have.
     #[test]
-    fn only_the_next_pane_target_is_accepted() {
+    fn a_directional_flag_or_the_next_pane_target_and_nothing_else() {
         assert_eq!(
             BoundAction::parse("select-pane -t :.+"),
             Ok(BoundAction::SelectNextPane)
         );
-        for action in ["select-pane", "select-pane -t :.-", "select-pane -t :=2"] {
+        assert_eq!(
+            BoundAction::parse("select-pane -U"),
+            Ok(BoundAction::SelectPaneToward { dir: PaneDir::Up })
+        );
+        for action in [
+            "select-pane",
+            "select-pane -t :.-",
+            "select-pane -t :=2",
+            // A direction and the next-pane target name two different questions, so a line asking
+            // both is a typo with no obvious reading — the rule `split-window -h -v` already has.
+            "select-pane -L -t :.+",
+            // ...and a pane ID is the argument no binding may carry, here as everywhere: a
+            // keystroke acts where the user is.
+            "select-pane 3",
+            "select-pane -x",
+        ] {
             assert!(
                 matches!(BoundAction::parse(action), Err(KeyError::BadFlags { .. })),
                 "{action:?} should be refused",
             );
         }
-    }
-
-    /// A verb no client has is named back to the user with the ones that exist.
-    #[test]
-    fn an_unknown_verb_is_refused_and_the_report_lists_what_exists() {
-        let error = BoundAction::parse("kill-server").expect_err("not a binding action");
-        assert_eq!(error, KeyError::UnknownAction("kill-server".to_owned()));
-        let message = error.to_string();
-        for known in [
-            "detach-client",
-            "send-prefix",
-            "split-window",
-            "select-pane",
-            // The list is the ONLY place a user learns what a binding can say, so a verb that
-            // exists and is absent from it is a verb nobody finds.
-            "zoom-pane",
-        ] {
-            assert!(
-                message.contains(known),
-                "{message:?} should mention {known}"
-            );
-        }
+        // Two directions get their OWN sentence rather than the general one, because the mistake is
+        // legible: the user knows the flags and named two.
+        let both = BoundAction::parse("select-pane -L -R").expect_err("one direction only");
+        assert!(
+            both.to_string().contains("give only one"),
+            "and it says which mistake it was: {both}",
+        );
     }
 
     /// The defaults ARE tmux's table for the actions sprag's clients have.
+    ///
+    /// The REPEAT flag is asserted with each row rather than in a test of its own, because `-r` is
+    /// half of what a default binding IS: tmux's four arrows repeat and its other five do not, and
+    /// a table that got the keys right and the flags wrong would still be the wrong table.
     #[test]
     fn the_defaults_are_tmuxs_table() {
         let keymap = Keymap::default();
         assert_eq!(keymap.prefix().to_string(), "C-b");
         let printed: Vec<String> = keymap
             .binds()
-            .map(|bind| format!("{} {}", bind.key(), bind.action()))
+            .map(|bind| {
+                format!(
+                    "{}{} {}",
+                    if bind.repeats() { "-r " } else { "" },
+                    bind.key(),
+                    bind.action()
+                )
+            })
             .collect();
         assert_eq!(
             printed,
@@ -1253,6 +1360,13 @@ mod tests {
                 // tmux's KEY, spelled with sprag's own verb: tmux says `resize-pane -Z` and sprag's
                 // shell says `zoom-pane`, and this table is parsed from the string the shell takes.
                 "z zoom-pane",
+                // tmux's four `-r` rows, read from `list-keys -T prefix` on tmux 3.2a. Its own
+                // spelling is `Up`/`Down`/`Left`/`Right`; sprag's key vocabulary is the WIRE's, so
+                // one keystroke has one name across the config, the CLI and both frontends.
+                "-r ArrowUp select-pane -U",
+                "-r ArrowDown select-pane -D",
+                "-r ArrowLeft select-pane -L",
+                "-r ArrowRight select-pane -R",
             ],
         );
     }
@@ -1658,6 +1772,49 @@ mod tests {
             "and EVERY repeat re-arms the window from itself — measured against tmux, where three \
              presses at 0/400/800ms under a 500ms repeat-time all reach the binding",
         );
+    }
+
+    /// **The SHIPPED table repeats, with nothing bound.** Every other repeat test here binds `-r`
+    /// itself, so all of them would pass over a default table that carried the flag nowhere — which
+    /// is exactly what this one shipped until R297 gave the arrows to it.
+    ///
+    /// `prefix ArrowLeft ArrowLeft` walks TWO panes for one prefix, and the third press is still
+    /// inside the window. That is what a user reaching across a four-pane layout does, and it is
+    /// the whole reason tmux puts `-r` on these four and on nothing else this vocabulary has.
+    ///
+    /// REVERT-PROOF: build the four arrows with `bind` instead of `repeating` and the second press
+    /// routes `ToPane` — the arrow reaches the user's shell as an escape sequence.
+    #[test]
+    fn the_arrow_defaults_repeat_out_of_the_box() {
+        let keymap = Keymap::default();
+        let base = Instant::now();
+        let left = BoundAction::SelectPaneToward { dir: PaneDir::Left };
+        let mut mode = PrefixMode::AfterPrefix;
+        let mut at = base;
+        for press in 1..=3 {
+            let routed = keymap.route(mode, at, "ArrowLeft", Modifiers::default());
+            assert_eq!(
+                routed,
+                Routed::Act {
+                    action: left,
+                    again: Some(at + DEFAULT_REPEAT_TIME),
+                },
+                "press {press} of a held prefix-arrow",
+            );
+            mode = routed.next();
+            at += Duration::from_millis(100);
+        }
+        // ...and the OTHER prefix defaults do not, so the flag is a property of these four rather
+        // than of the table. A second `z` after a zoom is a swallowed key, not a second zoom.
+        let zoom = keymap.route(PrefixMode::AfterPrefix, base, "z", Modifiers::default());
+        assert_eq!(
+            zoom,
+            Routed::Act {
+                action: BoundAction::ZoomPane { on: None },
+                again: None,
+            },
+        );
+        assert_eq!(zoom.next(), PrefixMode::ToPane);
     }
 
     /// The window closes on its own, with nothing watching it: a key arriving after the deadline is

@@ -324,7 +324,10 @@ fn action_label(action: BoundAction) -> &'static str {
         BoundAction::DetachClient => "detach-client",
         BoundAction::SendPrefix => "send-prefix",
         BoundAction::SplitWindow { .. } => "split-window",
-        BoundAction::SelectNextPane => "select-pane",
+        // Both `select-pane` forms label as the VERB: the flags say which pane, and the pane the
+        // action landed on is in the next frame's layout — the same reason the split's flags are
+        // left out.
+        BoundAction::SelectNextPane | BoundAction::SelectPaneToward { .. } => "select-pane",
         BoundAction::ZoomPane { .. } => "zoom-pane",
     }
 }
@@ -361,6 +364,11 @@ fn perform(action: BoundAction, active: usize) {
             use_terminal().slots.split(active, dir, before);
         }
         BoundAction::SelectNextPane => cycle_focus(active, true),
+        // Unlike the cycle above, this one does NOT move the ring: it asks the daemon to move the
+        // session's active pane, and `crate::active_pane`'s reconcile follows that onto a focus
+        // request on the next pass. One path to "which pane the session is on" rather than two,
+        // which is the same discipline the zoom below leans on.
+        BoundAction::SelectPaneToward { dir } => use_terminal().slots.select_toward(dir),
         // The wire client re-reads the arrangement when the zoom moved anything, and the layout
         // mirror is what the dock topology is projected from — so this repaints through the channel
         // that already carries an arrangement change, exactly as the split above does.
@@ -1061,6 +1069,68 @@ mod tests {
                 pinion_core::focus_request::drain().as_deref(),
                 Some(pane_tag(1)),
                 "focus was requested for the next pane",
+            );
+        });
+    }
+
+    /// **A directional key moves the SESSION's pane and requests no focus of its own** — the arm's
+    /// whole difference from the cycle above, asserted as both halves.
+    ///
+    /// `select-pane -t :.+` is resolved by this client and lands as a `focus_request`;
+    /// `select-pane -L` is resolved by the HOST, and the ring follows through
+    /// [`crate::active_pane`]'s reconcile on the next frame. A client that answered a direction with
+    /// `cycle_focus` would drain a request here and move nothing on the host — which is exactly what
+    /// the two assertions below are, one each.
+    ///
+    /// The EDGES are what make the middle mean something: two lefts settle on the leftmost pane and
+    /// stay, so a direction is not a cycle. Pane 0 is the leftmost because
+    /// [`LayoutTree::append_pane`](sprag_terminal::LayoutTree::append_pane) puts each birth at the
+    /// rightmost position, so spawn order IS left-to-right here.
+    #[test]
+    fn a_directional_key_moves_the_hosts_pane_and_requests_no_focus() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("");
+            seed_terminal(host);
+            let _ = pinion_core::focus_request::drain();
+            let _ = panes();
+            let slots = &use_terminal().slots;
+            let (left, right) = (slots.id(0), slots.id(1));
+            assert!(
+                left.is_some() && left != right,
+                "the fixture needs two distinct panes: {left:?} / {right:?}",
+            );
+
+            // The fixture's start, ASSERTED rather than assumed — and the reason the moves below
+            // run right-then-left rather than the other way round. A first press that confirmed a
+            // state already in force would be vacuous, which is what the first draft of this test
+            // was: two lefts against a session already on the leftmost pane pass over an arm that
+            // does nothing at all. The revert-proof said so.
+            assert_eq!(
+                slots.active_pane(),
+                left,
+                "two spawns leave the session on the first pane",
+            );
+
+            // Each press either MOVES a state the one before it established, or holds an EDGE the
+            // one before it reached. No assertion here is true of the state that preceded it.
+            let steps = [
+                ("ArrowRight", right, "right crosses to the second pane"),
+                ("ArrowRight", right, "the right edge is quiet, not a wrap"),
+                ("ArrowLeft", left, "left crosses back"),
+                ("ArrowLeft", left, "and the left edge is quiet too"),
+            ];
+            for (key, want, why) in steps {
+                assert!(press(0, "b", ctrl()));
+                assert!(press(0, key, Modifiers::default()));
+                assert_eq!(slots.active_pane(), want, "{why}");
+            }
+
+            assert_eq!(
+                pinion_core::focus_request::drain(),
+                None,
+                "a directional key asks the HOST and lets the reconcile move the ring",
             );
         });
     }
