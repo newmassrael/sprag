@@ -11,12 +11,28 @@
 //! head-of-line blocking — each connection is an independent request/response
 //! stream.
 //!
-//! A [`HostConn`] is single-threaded (one outstanding request at a time): the
-//! transport is strictly request→response (no server push — an async
-//! `scene/waitFor` is a *deferred response* to the client's own request, still one
-//! reply per request), so a connection never desyncs its read stream. A caller
-//! that needs concurrency uses more connections, not shared mutable access.
+//! A [`HostConn`] is single-threaded (one outstanding request at a time), so a connection never
+//! desyncs its read stream. A caller that needs concurrency uses more connections, not shared
+//! mutable access.
+//!
+//! ## ⚠ "No server push" was true until R298 and is not true any more
+//!
+//! This doc said the transport was *strictly* request→response, and that an async `scene/waitFor` is
+//! a deferred RESPONSE rather than a push — one reply per request, always. That was accurate and it
+//! described a limitation sprag had filed upstream as PINION-PR83: a reply sink was `FnOnce`, so one
+//! request producing many answers was inexpressible at any price.
+//!
+//! pinion R1552 delivered a per-connection writer, and [`EVENTS_SUBSCRIBE_METHOD`] is sprag's
+//! consumer of it: **the daemon now writes NOTIFICATIONS on this connection that nobody asked for.**
+//! The consequence for this module is inside [`HostConn::call`] — the reader can no longer take the
+//! next line as its answer, so it discriminates by `id` (JSON-RPC 2.0, section 4.1) and sets aside what is
+//! not its own. A frame set aside is delivered by
+//! [`next_notification`](HostConn::next_notification), never dropped.
+//!
+//! One request at a time still holds, and it is now a rule about REQUESTS rather than a property of
+//! the stream.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -175,6 +191,83 @@ pub const EVENTS_WAIT_METHOD: &str = "events/waitFor";
 /// `events.<since>` slot both use, so a number from any of the three can be handed to the others.
 pub const SINCE_PARAM: &str = "since";
 
+/// The JSON-RPC method a client sends to follow a session's changes over ONE request —
+/// `params: { "since": <cursor>, "match"?: <filter> }`, answering
+/// `{ "subscription": <id>, "next": <cursor> }` once and thereafter writing one
+/// [`EVENTS_CHANGED_METHOD`] NOTIFICATION per batch, unprompted.
+///
+/// ## Why this exists beside [`EVENTS_WAIT_METHOD`] rather than replacing it
+///
+/// The wait is correct and costs a **round trip per change**: its reply is a `FnOnce`, so a client
+/// following a session re-issues the request after every batch. That was not a design choice —
+/// until pinion R1552 a frame could be answered at most once, so "one request, many answers" was
+/// *inexpressible on this transport at any price*. sprag filed it as PINION-PR83 and recorded the
+/// consequence rather than working around it.
+///
+/// R1552 delivered a per-connection writer, and this is sprag's consumer of it. The WAIT stays,
+/// because a one-shot question is a different question: an agent asking *"tell me when the build
+/// finishes"* wants one answer and then to get on with it, and a tool call cannot hold a stream.
+///
+/// ## What a subscriber is promised, and what it is not
+///
+/// * **Exact resume.** `since` is the cursor the caller has already accounted for, the same
+///   half-open [`SINCE_PARAM`] every other reader takes — so a client that reconnects passes the
+///   last `next` it saw and continues **precisely** there. Nothing is skipped and nothing is
+///   replayed. This is the contract the cursor vocabulary was already carrying; the subscription
+///   simply stops paying a round trip for it.
+/// * **The filter is the wait's filter**, evaluated server-side under the append's own lock. One
+///   grammar for both, so a caller that has written a wait's `match` can follow with it unchanged.
+/// * **Eviction is reported, never silent.** A batch whose `lost` is set says the ring overwrote
+///   records this cursor had not read, which sends the caller to a full re-read — the same flag the
+///   wait and the slot carry.
+/// * **NOT an every-state feed.** Records are delivered in cursor order with none skipped, but a
+///   subscription is not a promise about *timing*: several records landing between two writes
+///   arrive as one batch. A caller wanting each record separately is asking for a different
+///   transport, not a different parameter.
+///
+/// ## Intercepted, like the two waits, and for one more reason
+///
+/// It parks — a subscription outlives the frame that opened it — so it is handled in the host's
+/// per-frame dispatch before the generic core, as the waits are. The additional reason is the
+/// EGRESS: notifications go to the connection's writer, which only the frame carries, and a
+/// transport that cannot be written to unprompted is refused **by name** at subscribe time rather
+/// than registered as a stream that would be silent forever.
+pub const EVENTS_SUBSCRIBE_METHOD: &str = "events/subscribe";
+
+/// The JSON-RPC method a client sends to end a subscription —
+/// `params: { "subscription": <id> }`, answering `{ "subscription": <id>, "delivered": <count> }`.
+///
+/// Ending it explicitly is the polite form; the connection CLOSING ends it too, however it closes,
+/// because a subscription is per-connection state and the disconnect arm releases it exactly as it
+/// releases a parked wait. So a crashed client leaks nothing and there is no cleanup to remember.
+///
+/// `delivered` is answered so a client can reconcile its own count against the daemon's without a
+/// second method — the honest way to learn whether it missed a write.
+pub const EVENTS_UNSUBSCRIBE_METHOD: &str = "events/unsubscribe";
+
+/// The method name of the NOTIFICATION a subscription delivers — no `id`, so a client tells it
+/// apart from an answer to something it asked.
+///
+/// A notification and not a second response, and the reason is JSON-RPC 2.0, section 5: one Response pairs
+/// with one Request, and every client built on that pairing keys a pending map by `id` and REMOVES
+/// the entry when the first answer lands. A second response carrying a live `id` is unreadable by
+/// such a client. A notification (section 4.1 — a `method`, no `id`) is the one form that is separable
+/// from a client's own answers on a channel they share, which is what LSP's `$/progress`, DAP and
+/// `eth_subscription` all settled on. pinion's own `scene/changed` reaches the same conclusion from
+/// its own harness.
+///
+/// `params` carries `{ "subscription": <id>, "events": [...], "next": <cursor>, "lost": <bool> }` —
+/// the subscription's id first, then the same batch shape [`EVENTS_WAIT_METHOD`] answers with, so a
+/// client's batch reader is one function for both.
+pub const EVENTS_CHANGED_METHOD: &str = "events/changed";
+
+/// The params key naming a subscription — answered by [`EVENTS_SUBSCRIBE_METHOD`], carried by every
+/// [`EVENTS_CHANGED_METHOD`] notification, and taken by [`EVENTS_UNSUBSCRIBE_METHOD`].
+///
+/// Opaque and process-unique: a client compares it for equality and never derives anything from it,
+/// so a daemon is free to change how one is minted.
+pub const SUBSCRIPTION_PARAM: &str = "subscription";
+
 /// The JSON-RPC method a client sends to BLOCK until a named pane's retained output matches —
 /// `params: { "pane": <id>, "needle": <string> }` or `{ "pane": <id>, "pattern": <string> }`,
 /// answering `{ "pane": <id>, "find": {matches, lines, truncated} }`.
@@ -323,6 +416,17 @@ pub struct HostConn {
     /// Set once a read deadline expired mid-reply. See [`set_read_deadline`](Self::set_read_deadline)
     /// for why a timed-out connection can never be used again.
     timed_out: bool,
+    /// NOTIFICATIONS read while waiting for a response, in arrival order.
+    ///
+    /// A subscription's batches share this connection with request/response
+    /// ([`EVENTS_SUBSCRIBE_METHOD`]), so a call can read one before its own answer. Set aside rather
+    /// than dropped, because a batch exists nowhere else: the daemon has advanced this
+    /// subscription's cursor past it, so a discarded frame is data lost for good.
+    ///
+    /// Bounded in practice by how many batches land during one round trip, which is a handful; a
+    /// client that opens a subscription and then never reads it is choosing to buffer, exactly as one
+    /// that never reads its socket is.
+    pending: VecDeque<Value>,
 }
 
 impl HostConn {
@@ -358,6 +462,7 @@ impl HostConn {
             next_id: 1,
             session: None,
             timed_out: false,
+            pending: VecDeque::new(),
         })
     }
 
@@ -555,36 +660,99 @@ impl HostConn {
         });
         write_request(&mut self.writer, &request_line(&request))?;
 
-        // Read the next non-blank response line (the server terminates each reply
-        // with a newline; blank lines, if any, are skipped).
+        // Read until THIS request's response, setting aside anything else.
+        //
+        // ## Why this is a loop over frames and not a read of the next line
+        //
+        // It was a single read until R298, and that was correct for exactly as long as the daemon
+        // could only ever answer: one frame arrived per request, so the next line WAS the reply. With
+        // `events/subscribe` the daemon also writes NOTIFICATIONS unprompted, on this same
+        // connection — so a client that took the next line would read somebody's change batch as its
+        // own answer, decode a `result` that is not there, and hand its caller `Null`.
+        //
+        // JSON-RPC 2.0 gives the discriminator and this is the whole of it: a response carries an
+        // `id`, a notification (section 4.1) carries a `method` and no `id`. So a notification is SET ASIDE
+        // for [`next_notification`](Self::next_notification) rather than dropped — it is somebody's
+        // data, and this connection is the only place it exists — and a response whose `id` is not
+        // the one just sent is dropped, because a client with one outstanding request can only be
+        // looking at a duplicate.
+        loop {
+            let frame = self.read_frame()?;
+            if frame.get("id").is_none() && frame.get("method").is_some() {
+                self.pending.push_back(frame);
+                continue;
+            }
+            if frame.get("id").and_then(Value::as_u64) != Some(id) {
+                continue;
+            }
+            if let Some(error) = frame.get("error") {
+                return Err(CallFailure::Fault(RpcFault::from_wire(error)));
+            }
+            return Ok(frame.get("result").cloned().unwrap_or(Value::Null));
+        }
+    }
+
+    /// The next NOTIFICATION this connection has been sent, blocking until one arrives.
+    ///
+    /// The reading half of a subscription ([`EVENTS_SUBSCRIBE_METHOD`]): one request opens the
+    /// stream and this reads each batch, with no further request and so no round trip per change.
+    ///
+    /// Notifications set aside by an in-flight [`call`](Self::call) are answered FIRST, in arrival
+    /// order — which is what makes it safe to interleave calls with a follow. A client that opened a
+    /// subscription and then asked something else has not lost the batches that landed in between.
+    ///
+    /// `method` is the notification this caller is following. A notification naming anything else is
+    /// skipped rather than answered, because a caller reading one stream must not be handed
+    /// another's; a RESPONSE arriving with nothing outstanding is skipped for
+    /// [`call`](Self::call)'s reason.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the read fails with, including the read deadline this connection carries — so a
+    /// caller that wants to give up says so with [`set_read_deadline`](Self::set_read_deadline)
+    /// rather than needing a second method.
+    pub fn next_notification(&mut self, method: &str) -> io::Result<Value> {
+        loop {
+            while let Some(frame) = self.pending.pop_front() {
+                if frame.get("method").and_then(Value::as_str) == Some(method) {
+                    return Ok(frame.get("params").cloned().unwrap_or(Value::Null));
+                }
+            }
+            let frame = self.read_frame()?;
+            if frame.get("id").is_none() && frame.get("method").is_some() {
+                self.pending.push_back(frame);
+            }
+        }
+    }
+
+    /// One non-blank line off the connection, parsed.
+    ///
+    /// Split out of [`call_inner`](Self::call_inner) when a second reader appeared, so the deadline
+    /// bookkeeping below has ONE home: a deadline that expires mid-line leaves the stream at an
+    /// unknown offset, and a connection in that state is retired rather than retried. Two copies of
+    /// that rule is one copy that can forget it.
+    fn read_frame(&mut self) -> io::Result<Value> {
         let mut line = String::new();
         loop {
             line.clear();
             let read = self.reader.read_line(&mut line).inspect_err(|error| {
-                // A deadline that expires here has left the reply stream at an unknown offset (the
-                // partial line is already consumed), so the connection is retired rather than
-                // retried — see `set_read_deadline`. Both spellings the platforms use for "the
-                // timeout elapsed" mean the same thing to this loop.
+                // Both spellings the platforms use for "the timeout elapsed" mean the same thing
+                // here — see `set_read_deadline`.
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
                     self.timed_out = true;
                 }
             })?;
             if read == 0 {
-                return Err(
-                    io::Error::new(ErrorKind::UnexpectedEof, "host closed the connection").into(),
-                );
+                return Err(io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "host closed the connection",
+                ));
             }
             if !line.trim().is_empty() {
-                break;
+                return serde_json::from_str(line.trim())
+                    .map_err(|error| io::Error::new(ErrorKind::InvalidData, error));
             }
         }
-
-        let response: Value = serde_json::from_str(line.trim())
-            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
-        if let Some(error) = response.get("error") {
-            return Err(CallFailure::Fault(RpcFault::from_wire(error)));
-        }
-        Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 }
 
@@ -899,6 +1067,75 @@ mod tests {
             json!({"hello": "world", PROTOCOL_PARAM: WIRE_PROTOCOL}),
         );
         assert_eq!(conn.call("scene/echo", json!(42)).unwrap(), json!(42));
+
+        drop(control);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **The reader tells a NOTIFICATION from its own answer, and loses neither.**
+    ///
+    /// This is the correctness pinion R1552 made necessary: until a daemon could speak unprompted,
+    /// the next line WAS the reply, and [`HostConn::call_inner`] read exactly one. Now a subscription
+    /// writes on the same connection, so a client that took the next line would read somebody's
+    /// change batch as its own `result` — and, worse, would then never see the batch again, because
+    /// the daemon has advanced that subscription's cursor past it.
+    ///
+    /// The dispatch here writes a notification BEFORE the response, which is the ordering that
+    /// breaks a single-read client. Both halves are asserted: the call gets its OWN result, and the
+    /// notification set aside during it is delivered afterwards rather than dropped.
+    ///
+    /// REVERT-PROOF (both measured): read one line and return it and the call answers `Null` — the
+    /// notification's params have no `result`; drop the frame instead of queueing it and
+    /// `next_notification` blocks until the deadline.
+    #[test]
+    fn a_notification_arriving_first_is_set_aside_and_not_read_as_the_answer() {
+        let path =
+            std::env::temp_dir().join(format!("sprag-rpc-notify-test-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (tx, rx) = channel::<RpcFrame>();
+        thread::spawn(move || {
+            for frame in rx {
+                let request: Value = serde_json::from_str(&frame.request).unwrap();
+                // UNPROMPTED, and FIRST — the order a single-read client cannot survive.
+                frame.egress.send_frame(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "events/changed",
+                        "params": { "subscription": 7, "events": ["landed"] },
+                    })
+                    .to_string(),
+                );
+                frame.reply.send(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": { "mine": true },
+                    })
+                    .to_string(),
+                );
+            }
+        });
+        let control = UnixSocketTransport::serve(&path, Arc::new(ChannelIngress { tx }))
+            .expect("bind the test socket");
+        control.set_enabled(true);
+
+        let mut conn =
+            HostConn::connect(&path, Duration::from_secs(2)).expect("connect to the socket");
+        assert_eq!(
+            conn.call("scene/echo", json!({})).unwrap(),
+            json!({ "mine": true }),
+            "the call reads ITS OWN response, not the notification that arrived first",
+        );
+        // A deadline, so a reader that DROPPED the frame fails here in seconds instead of hanging.
+        conn.set_read_deadline(Some(Duration::from_secs(5)))
+            .expect("set a deadline");
+        assert_eq!(
+            conn.next_notification("events/changed")
+                .expect("the notification was set aside, not discarded"),
+            json!({ "subscription": 7, "events": ["landed"] }),
+            "and it is delivered afterwards — a dropped frame is data lost for good, because the \
+             daemon's cursor has moved past it",
+        );
 
         drop(control);
         let _ = std::fs::remove_file(&path);
