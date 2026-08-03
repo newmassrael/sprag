@@ -143,6 +143,38 @@ pub const CLIENT_PARAM: &str = "client";
 /// every resize look like a `switch-client`.
 pub const CLIENT_SIZE_METHOD: &str = "client/size";
 
+/// The JSON-RPC method a client sends to BLOCK until a change it named actually happens —
+/// `params: { "since": <cursor>, "match": [<clause>…]? }`, answering the same
+/// `{events, next, lost}` batch the `events.<since>` slot serves.
+///
+/// ## Why this is not `scene/waitFor`
+///
+/// `scene/waitFor` is a DISPLAY client's wake: it parks on the scene revision, which a pane's output
+/// bumps, because output is exactly what makes a projection stale. A client waiting for a NAMED
+/// change is asking a different question, and answering it with that wake does not work — measured
+/// on a real daemon, the pair `scene/waitFor` + `events.<since>` returns **22 431 times a second**
+/// against a pane producing build-rate output, every answer empty, where a quiet pane returns none.
+/// The cursor cannot even advance past it: a batch's `next` is the last RECORD's revision, so the
+/// scene runs away from the reader and every subsequent park is already stale.
+///
+/// So this method parks on the JOURNAL instead. Output appends no record, so it does not wake this;
+/// a change does, and only if it matches what the caller asked for. The filter is evaluated
+/// server-side, under the lock the append takes.
+///
+/// ## Intercepted, like the client-lifecycle methods
+///
+/// Handled in the host's per-frame dispatch before the generic core, because it PARKS its reply
+/// rather than answering it — the same shape pinion's own async `scene/waitFor` takes, and for the
+/// same reason: the host's dispatch is one thread for every client, so a handler that blocked would
+/// freeze the daemon. It carries no deadline of its own; a caller's socket read deadline is its
+/// timeout, and the close that follows releases the park.
+pub const EVENTS_WAIT_METHOD: &str = "events/waitFor";
+
+/// The [`EVENTS_WAIT_METHOD`] params key carrying the cursor to wait FROM — a revision the caller has
+/// already accounted for, exclusive, the same half-open convention `scene/waitFor {since}` and the
+/// `events.<since>` slot both use, so a number from any of the three can be handed to the others.
+pub const SINCE_PARAM: &str = "since";
+
 /// The [`CLIENT_SIZE_METHOD`] params key carrying the client's width in cells.
 pub const COLS_PARAM: &str = "cols";
 

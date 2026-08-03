@@ -289,6 +289,20 @@ pub use sprag_rpc::{
     ROWS_PARAM,
 };
 
+/// The filtered CHANGE WAIT, re-exported from the client that writes it for the same one-spelling
+/// reason as the vocabulary above: [`EVENTS_WAIT_METHOD`] blocks until a change matching the caller's
+/// [`EventFilter`](crate::events::EventFilter) lands after [`SINCE_PARAM`], answering the same
+/// `{events, next, lost}` batch [`EVENTS_FIELD`] serves.
+///
+/// The pair with [`EVENTS_FIELD`] is deliberate and is the whole surface: **the slot is the read, the
+/// method is the wait**. A caller that already knows something happened reads the slot; a caller that
+/// wants to be told parks on the method. Neither is expressible as the other — a slot cannot block,
+/// and a blocking read cannot be answered from a snapshot.
+///
+/// Intercepted before the generic dispatch core, like the three client-lifecycle methods, because it
+/// PARKS its reply rather than returning one.
+pub use sprag_rpc::{EVENTS_WAIT_METHOD, SINCE_PARAM};
+
 /// The wire's SHAPE agreement, re-exported from the transport that defines it for the same reason
 /// the vocabulary above is: one spelling, both ends.
 ///

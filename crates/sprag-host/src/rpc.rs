@@ -45,7 +45,8 @@ use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, WIRE_PROTOCOL,
+    EVENTS_WAIT_METHOD, INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM,
+    WIRE_PROTOCOL,
 };
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
@@ -415,12 +416,20 @@ impl Drop for BirthPin {
     }
 }
 
-/// The methods the headless host answers: pure reads over the pane scene
-/// (`scene/snapshot`, `scene/query`), the `scene/invoke` input + plugin channels,
-/// and the async change-notification pair (`scene/revision` reads the current
-/// scene-version token; `scene/waitFor {since}` blocks until it advances — the
-/// async form is intercepted before dispatch, in the per-frame `dispatch_one`).
-/// Anything else gets a JSON-RPC method-not-found error.
+/// The methods the headless host answers THROUGH THE GENERIC DISPATCH CORE: pure reads over the pane
+/// scene (`scene/snapshot`, `scene/query`), the `scene/invoke` input + plugin channels, and the async
+/// change-notification pair (`scene/revision` reads the current scene-version token;
+/// `scene/waitFor {since}` blocks until it advances — the async form is intercepted before dispatch,
+/// in the per-frame dispatch body). Anything else gets a JSON-RPC method-not-found error naming
+/// this list.
+///
+/// **Four more are answered without appearing here**, because they are intercepted in
+/// the per-frame dispatch body before the allowlist is ever consulted: `client/hello`, `client/attach` and
+/// `client/size` (they carry a connection id, which no scene external sees) and
+/// [`EVENTS_WAIT_METHOD`] (it parks its reply). The list is what a REFUSAL offers, so it names the
+/// methods a caller can reach by the ordinary path; a client sending one of the four to a daemon too
+/// old to intercept it is refused by this same list, which is exactly the loud answer that case
+/// needs.
 pub const SUPPORTED_METHODS: &[&str] = &[
     "scene/snapshot",
     "scene/query",
@@ -629,6 +638,83 @@ fn lifecycle_invalid(request: &Request, message: String) -> Option<String> {
         })
         .to_string(),
     )
+}
+
+/// `events/waitFor` — park this connection's reply until a change it NAMED lands in the scoped
+/// session's journal, or answer it now if one already has.
+///
+/// ## Why it is intercepted here rather than served as a slot or an action
+///
+/// * **It cannot block.** [`dispatch_frames`] is one thread for every client of the daemon, so a
+///   handler that waited would freeze all of them. It parks its reply and returns — pinion's own
+///   shape for `scene/waitFor`, reached through sprag's own registry because the condition is
+///   sprag's ([`crate::notify::JournalChannel`]).
+/// * **It cannot be an action.** An argument-bearing read served as an invoke is a
+///   `MethodOcc::Mutate`, so it BUMPS ([`crate::wire::EVENTS_FIELD`] records the episode) — a wait
+///   that bumped would wake every other parked client on the session, and waiting for events would
+///   generate events.
+/// * **It must be scoped by the machinery every other method uses.** The scope is resolved before
+///   this point in [`dispatch_one`], which is why `session` cannot be accepted-and-ignored here the
+///   way it once was for `scene/waitFor`.
+///
+/// A malformed `since` or `match` is a `-32602 Invalid params` carrying the sentence
+/// [`EventFilter::from_wire`](crate::events::EventFilter::from_wire) wrote — a caller whose filter is
+/// a mistake is told so immediately rather than parked forever on a predicate that can never hold.
+fn handle_events_wait(
+    state: &HostState,
+    conn: ConnId,
+    scope: &SessionScope,
+    request: &Request,
+    reply: RpcReply,
+) {
+    let params = request.params.as_ref();
+    // ⚠ ESTABLISH THE SHAPE BEFORE PARKING, and a failing test is what put this line here.
+    //
+    // A journal records nothing on its FIRST observation — there is no predecessor to have changed
+    // from ([`crate::events::SessionJournal`]). Every other method observes on its way out of
+    // `dispatch_one`, so by the time a client's second call arrives the shape exists; this method
+    // returns EARLY and so used to skip it. The consequence was a real hole and not a test artifact:
+    // a client whose FIRST host call is a wait parks against an unestablished shape, and the next
+    // structural change would then be swallowed as the establishing observation — the caller sleeping
+    // through exactly the change it asked about.
+    //
+    // Observing here also states the semantics honestly. "Tell me what changes from now" requires
+    // knowing what *now* is, so taking that reading is part of the question rather than a courtesy.
+    state
+        .channels()
+        .observe(&lock(state.registry()), scope.session());
+    let Some(since) = params
+        .and_then(|params| params.get(SINCE_PARAM))
+        .and_then(serde_json::Value::as_u64)
+    else {
+        if let Some(response) = lifecycle_invalid(
+            request,
+            format!(
+                "params.{SINCE_PARAM} must be the revision you have already read (a whole number)"
+            ),
+        ) {
+            reply.send(response);
+        }
+        return;
+    };
+    let filter = match crate::events::EventFilter::from_wire(
+        params.and_then(|params| params.get(crate::events::EventFilter::WIRE_KEY)),
+    ) {
+        Ok(filter) => filter,
+        Err(message) => {
+            if let Some(response) = lifecycle_invalid(request, message) {
+                reply.send(response);
+            }
+            return;
+        }
+    };
+    state.channels().journal(scope.session()).park_or_answer(
+        conn,
+        since,
+        filter,
+        request.id.clone(),
+        reply,
+    );
 }
 
 /// A client lifecycle event moved `session`'s window: re-derive every tiled pane's size, then wake
@@ -881,6 +967,20 @@ pub fn dispatch_frames(state: &HostState, rx: Receiver<IngressEvent>) {
         match event {
             IngressEvent::Frame(frame) => dispatch_one(state, frame),
             IngressEvent::Disconnect(conn) => {
+                // Forget anything this connection was waiting for. THE lifecycle answer for a
+                // filtered wait: it carries no deadline, so a client that gives up (or crashes)
+                // leaves an entry whose filter may never match again, and this is the hook that
+                // fires however the client goes away. Done before the attachment release below
+                // because it cannot fail and needs nothing from it.
+                let waits = state.channels().release(conn);
+                if waits > 0 {
+                    tracing::debug!(
+                        target: "sprag_host::notify",
+                        conn = conn.get(),
+                        waits,
+                        "released the change waits of a closed connection"
+                    );
+                }
                 // Release the closed connection's attachment. If that dropped an ATTACHED client
                 // (its last connection), a per-session count fell, so the scene changed — bump the
                 // revision to wake every parked `scene/waitFor` to re-read the badge.
@@ -983,6 +1083,14 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
                 if let Some(response) = handle_attach(state, conn, &scope, &parsed) {
                     reply.send(response);
                 }
+                return;
+            }
+            // `events/waitFor` parks on the JOURNAL rather than on the revision, so output cannot
+            // wake it. Beside pinion's intercept and not inside `handle_scoped`, for the two reasons
+            // [`handle_events_wait`] gives: it parks its reply, and it must be scoped by the same
+            // machinery every other method uses.
+            if parsed.method.as_str() == EVENTS_WAIT_METHOD {
+                handle_events_wait(state, conn, &scope, &parsed, reply);
                 return;
             }
             // Parked against the SCOPED session's channel — the half `scene/waitFor` used to check
@@ -2260,6 +2368,112 @@ mod tests {
     /// Everything `BOOT`'s journal has recorded above `cursor`.
     fn journal_since(state: &HostState, cursor: u64) -> Vec<crate::events::Event> {
         state.channels().journal(BOOT).since(cursor).events
+    }
+
+    /// One `events/waitFor` frame from `conn`, through the real per-frame dispatch body.
+    fn wait_recording(
+        state: &HostState,
+        conn: ConnId,
+        filter: serde_json::Value,
+        sink: &Arc<Mutex<Vec<String>>>,
+    ) {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": EVENTS_WAIT_METHOD,
+            "params": { SINCE_PARAM: state.revision(BOOT).current(), "match": filter },
+        });
+        dispatch_one(
+            state,
+            RpcFrame::new(
+                conn,
+                declaring_the_protocol(&request.to_string()),
+                recording_reply(sink),
+            ),
+        );
+    }
+
+    #[test]
+    fn a_filtered_wait_parks_through_the_real_dispatch_and_the_change_answers_it() {
+        // The method is intercepted BEFORE the generic core and before the allowlist, like the three
+        // client-lifecycle methods — so what this pins is that `dispatch_one` routes it at all, and
+        // that the scope it parks against is the one the frame resolved.
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+
+        wait_recording(
+            &state,
+            ConnId::allocate(),
+            serde_json::json!([{ "kind": "pane_created" }]),
+            &sink,
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "nothing matching has happened, so the reply is PARKED, not sent",
+        );
+        assert_eq!(state.channels().journal(BOOT).parked_count(), 1);
+
+        invoke_recording(&state, crate::wire::SPAWN_ACTION, serde_json::json!({}));
+
+        let replies = sink.lock().unwrap();
+        let reply: serde_json::Value =
+            serde_json::from_str(replies.first().expect("the spawn answered the wait"))
+                .expect("valid JSON-RPC");
+        assert_eq!(
+            reply["result"]["events"],
+            serde_json::json!([{ "type": "pane_created", "pane": 1 }]),
+            "answered with the change it named, in the vocabulary the slot serves: {reply}",
+        );
+        assert_eq!(
+            state.channels().journal(BOOT).parked_count(),
+            0,
+            "and it is no longer parked — a reply fires at most once",
+        );
+    }
+
+    #[test]
+    fn the_dispatch_loop_releases_a_closed_connections_waits() {
+        // ⚠ THIS TEST EXISTS BECAUSE A REVERT-PROOF PASSED GREEN. Deleting
+        // `state.channels().release(conn)` from `dispatch_frames`'s disconnect arm left the WHOLE
+        // suite green — 504 unit tests and 40 wire tests — because `notify`'s own unit test calls
+        // `release` DIRECTLY. That pinned the method and said nothing about whether the loop calls
+        // it, which is R291's finding repeating one round later on a different tracker.
+        //
+        // So this drives `dispatch_frames` itself: a park frame and a disconnect down the same
+        // channel, in that order, which is the ordering the transport guarantees.
+        let state = host_with("cat", 20, 4);
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let conn = ConnId::allocate();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": EVENTS_WAIT_METHOD,
+            "params": { SINCE_PARAM: 0, "match": [{ "kind": "pane_created" }] },
+        });
+        tx.send(IngressEvent::Frame(RpcFrame::new(
+            conn,
+            declaring_the_protocol(&request.to_string()),
+            recording_reply(&sink),
+        )))
+        .expect("queue the park");
+        tx.send(IngressEvent::Disconnect(conn))
+            .expect("queue the close");
+        // Dropping the sender is what ends the loop, so this runs to completion on this thread.
+        drop(tx);
+        dispatch_frames(&state, rx);
+
+        assert_eq!(
+            state.channels().journal(BOOT).parked_count(),
+            0,
+            "the loop released the wait of a connection that closed — without this, a filter that \
+             never matches retains its entry for the daemon's remaining life",
+        );
+        assert!(
+            sink.lock().unwrap().is_empty(),
+            "and a gone connection is not written to: the release drops, it does not answer",
+        );
     }
 
     /// **The measurement `JOURNAL_CAPACITY` is DERIVED from, pinned so the derivation cannot rot.**

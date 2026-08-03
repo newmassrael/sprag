@@ -27,8 +27,8 @@ use sprag_host::wire::{
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, PROTOCOL_FIELD,
-    PROTOCOL_PARAM, WIRE_PROTOCOL,
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, EVENTS_WAIT_METHOD, HostConn,
+    PROTOCOL_FIELD, PROTOCOL_PARAM, SINCE_PARAM, WIRE_PROTOCOL,
 };
 
 /// Kills + reaps the spawned host on scope exit (including a test panic), so a failed
@@ -2712,6 +2712,162 @@ fn the_events_family_reads_a_change_by_cursor_and_reading_does_not_bump() {
     assert!(
         malformed.is_null() || malformed["value"].is_null(),
         "`events.zzz` belongs to a declared family and is malformed, not unknown: {malformed}",
+    );
+}
+
+/// **THE R292 proof, over a real socket against the shipped daemon: a filtered wait sleeps through
+/// OUTPUT, and the old pair does not.**
+///
+/// The control is what makes this a measurement rather than an assertion. Both waits are issued
+/// against the SAME daemon with the SAME chatty pane running, on their own connections, with the same
+/// deadline:
+///
+/// * `scene/waitFor {since}` returns almost immediately, and the batch that follows it is EMPTY —
+///   the defect, which cost the agent surface a tool call and an LLM turn per output batch. Measured
+///   at 22 431 returns a second against a build-rate pane, all empty.
+/// * `events/waitFor {since, match}` trips its deadline instead, because output appends no record
+///   and this wait's condition is a record.
+///
+/// Then the change the caller DID ask about is made, and the same wait returns it — so the deadline
+/// above is a wait that works rather than a wait that is broken in the other direction.
+#[test]
+fn a_filtered_wait_sleeps_through_output_where_the_scene_wait_does_not() {
+    // A pane that writes forever, which is what a build looks like to the daemon.
+    let (_host, sock) = spawn_host_running(&[
+        "bash",
+        "-c",
+        "while :; do echo building a thing; sleep 0.02; done",
+    ]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+    // Let the pane actually start writing, so the control below is measuring output and not a race
+    // with the boot.
+    std::thread::sleep(Duration::from_millis(500));
+
+    // THE CONTROL: the pair the MCP tool used to be built from. It returns at once, and says nothing.
+    let since = read_revision(&mut conn);
+    conn.set_read_deadline(Some(Duration::from_secs(2)))
+        .expect("a deadline for the control");
+    let woken: Value = conn
+        .call("scene/waitFor", json!({ "since": since }))
+        .expect("output releases a scene wait");
+    assert_eq!(
+        woken["changed"], true,
+        "the control: OUTPUT alone releases a scene wait: {woken}",
+    );
+    conn.set_read_deadline(None).expect("clear the deadline");
+    let empty: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(&events_slot_since(since)) }),
+        )
+        .expect("the events slot answers");
+    assert_eq!(
+        empty["events"].as_array().map(Vec::len),
+        Some(0),
+        "and the batch behind that wake is EMPTY — the whole defect in one assertion: {empty}",
+    );
+
+    // THE SUBJECT: the same daemon, the same output, a wait that named what it cares about.
+    let mut waiter = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("a second connection for the filtered wait");
+    let since = read_revision(&mut waiter);
+    waiter
+        .set_read_deadline(Some(Duration::from_secs(2)))
+        .expect("the same deadline the control had");
+    let timed_out = waiter.call(
+        EVENTS_WAIT_METHOD,
+        json!({ SINCE_PARAM: since, "match": [{ "kind": "pane_created" }] }),
+    );
+    let error = timed_out.expect_err("a filtered wait must NOT be woken by output");
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ),
+        "it must sleep until ITS deadline, not fail some other way: {error}",
+    );
+
+    // And it is not merely broken: the change it asked for wakes it. A fresh connection, because the
+    // one above tripped its deadline and is finished — which is also what releases the parked wait.
+    let mut waiter = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("a third connection for the wait that gets its answer");
+    let since = read_revision(&mut waiter);
+    waiter
+        .set_read_deadline(Some(Duration::from_secs(10)))
+        .expect("a deadline generous enough to be an answer, not a race");
+    let waiting = std::thread::spawn(move || {
+        waiter.call(
+            EVENTS_WAIT_METHOD,
+            json!({ SINCE_PARAM: since, "match": [{ "kind": "pane_created" }] }),
+        )
+    });
+    // Give the park time to be registered, then make the change on ANOTHER connection.
+    std::thread::sleep(Duration::from_millis(300));
+    let _: Value = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
+        )
+        .expect("spawn a pane over the wire");
+
+    let batch = waiting
+        .join()
+        .expect("the waiting thread")
+        .expect("the filtered wait is answered by the change it named");
+    let events = batch["events"].as_array().expect("an events array");
+    assert_eq!(
+        events.len(),
+        1,
+        "exactly the change asked for, with the session's output nowhere in it: {batch}",
+    );
+    assert_eq!(events[0]["type"], "pane_created");
+    assert!(events[0]["pane"].is_u64(), "naming its subject: {batch}");
+    assert_eq!(batch["lost"], false, "and nothing was dropped: {batch}");
+    assert!(
+        batch["next"].as_u64().is_some_and(|next| next > since),
+        "with a cursor to resume from: {batch}",
+    );
+}
+
+/// A filter that cannot ever match is a caller MISTAKE, and the daemon says so at once rather than
+/// parking it forever. The sentence is asserted, not just the failure: a refusal an agent cannot act
+/// on is barely better than the silence it replaces.
+#[test]
+fn a_filter_a_daemon_cannot_honour_is_refused_with_a_sentence() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    let error = conn
+        .call(
+            EVENTS_WAIT_METHOD,
+            json!({ SINCE_PARAM: 0, "match": [{ "kind": "pane_output_matched" }] }),
+        )
+        .expect_err("a kind this daemon does not report is refused");
+    let sentence = error.to_string();
+    assert!(
+        sentence.contains("is not a change this terminal reports"),
+        "the refusal must say what is wrong: {sentence}",
+    );
+    assert!(
+        sentence.contains("pane_job_changed"),
+        "and offer the vocabulary it could have asked for: {sentence}",
+    );
+
+    let error = conn
+        .call(EVENTS_WAIT_METHOD, json!({ "match": [{ "pane": 1 }] }))
+        .expect_err("a wait with no cursor is refused");
+    assert!(
+        error.to_string().contains("since"),
+        "naming the missing parameter: {error}",
+    );
+
+    // The connection still works afterwards: a refusal is an answer, not a broken pipe.
+    let revision = read_revision(&mut conn);
+    assert!(
+        revision < u64::MAX,
+        "the connection survived both refusals and still answers reads",
     );
 }
 
