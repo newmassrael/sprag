@@ -99,6 +99,9 @@ pub(crate) enum Command {
     SelectAll,
     /// Float the target pane out of the dock, or dock it back (`Ctrl+Shift+Enter`).
     ToggleFloat,
+    /// Fill the window with the target pane alone, or give the arrangement back (tmux
+    /// `resize-pane -Z`, `prefix z` off the user's keymap).
+    ZoomPane,
     /// Move the target pane into a new window of its own (tmux `break-pane`).
     BreakOut,
     /// Move the target pane into the named window (tmux `join-pane`) — `BreakOut`'s inverse.
@@ -152,6 +155,11 @@ impl Command {
             Self::Paste => "Paste into pane".to_owned(),
             Self::SelectAll => "Select all in pane".to_owned(),
             Self::ToggleFloat => "Toggle floating pane".to_owned(),
+            // Both words on purpose, `NewPane`'s rule: "zoom" is what a tmux or herdr user types
+            // and what every rival calls this, while "fill the window" is the phrase `sprag layout`
+            // and the agent-facing layout read already print for the state. A title that chose one
+            // would be unfindable by half the users, or a second vocabulary for one fact.
+            Self::ZoomPane => "Zoom pane to fill the window".to_owned(),
             Self::BreakOut => "Break pane out to a new window".to_owned(),
             Self::JoinInto(name) => format!("Move pane to window {name}"),
             // "Split" is the word every terminal multiplexer uses for this and the one a user will
@@ -198,6 +206,11 @@ impl Command {
             Self::LastSession => Some("Ctrl+Shift+L".to_owned()),
             Self::Declared(action) => Some(action.command_line()),
             Self::SelectAll
+            // No chord, for `NewPane`'s reason rather than for want of one: this row's key is a
+            // keymap PREFIX binding (`prefix z`, rebindable in `config.toml`) and so is the split's
+            // (`prefix %`). This column shows the client's own chords; that the keymap's bindings
+            // are absent from it is a standing shape, not one this row invents.
+            | Self::ZoomPane
             | Self::BreakOut
             | Self::JoinInto(_)
             | Self::NewPane
@@ -288,6 +301,9 @@ impl Command {
             | Self::Paste
             | Self::SelectAll
             | Self::ToggleFloat
+            // A zoom destroys nothing: the ARRANGEMENT is untouched and every pane keeps running,
+            // which is exactly why the daemon models it as a projection rather than an edit.
+            | Self::ZoomPane
             | Self::BreakOut
             | Self::JoinInto(_)
             | Self::NewPane
@@ -327,6 +343,7 @@ impl Command {
             | Self::Paste
             | Self::SelectAll
             | Self::ToggleFloat
+            | Self::ZoomPane
             | Self::BreakOut
             | Self::JoinInto(_)
             | Self::NewPane
@@ -360,6 +377,9 @@ impl Command {
             | Self::Paste
             | Self::SelectAll
             | Self::ToggleFloat
+            // The zoom needs one for the same reason the float does: the window is DERIVED from
+            // the pane, so without a target there is nothing to fill it with.
+            | Self::ZoomPane
             | Self::BreakOut
             // A join needs the pane it MOVES, exactly as the break it inverts does.
             | Self::JoinInto(_)
@@ -435,6 +455,13 @@ impl Command {
             Self::ToggleFloat => {
                 if let Some(pane) = target {
                     crate::dock::toggle_pane_floating(pane);
+                }
+            }
+            // The TOGGLE form (`on` absent), which is what a row activated twice has to mean: this
+            // surface offers one row rather than a fill/restore pair, so the row is a switch.
+            Self::ZoomPane => {
+                if let Some(pane) = target {
+                    slots.zoom_pane(pane, None);
                 }
             }
             Self::BreakOut => {
@@ -609,6 +636,7 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         Command::Paste,
         Command::SelectAll,
         Command::ToggleFloat,
+        Command::ZoomPane,
         Command::BreakOut,
         // Between the pane rows and the window ones because that is what it is: a pane command that
         // needs no pane. It sits AFTER the rows that act on the pane you are looking at and BEFORE
@@ -804,6 +832,10 @@ mod tests {
         switched_sessions: Vec<String>,
         new_sessions: usize,
         broken_panes: Vec<PaneId>,
+        /// `(pane, requested state)` per zoom — the state is recorded because a row that sent
+        /// `Some(true)` would fill the window and never give it back, which a pane-only log
+        /// could not tell from the toggle.
+        zoomed: Vec<(PaneId, Option<bool>)>,
         /// `(pane, destination window)` per join — `broken_panes`' inverse.
         joined: Vec<(PaneId, String)>,
         /// How many panes were created (tmux `split-window`).
@@ -862,6 +894,13 @@ mod tests {
         fn break_pane(&self, id: PaneId, _name: Option<&str>) -> Option<String> {
             self.log.borrow_mut().broken_panes.push(id);
             Some("w".to_owned())
+        }
+        fn zoom_pane(&self, id: PaneId, on: Option<bool>) -> Option<sprag_terminal::ZoomOutcome> {
+            self.log.borrow_mut().zoomed.push((id, on));
+            Some(sprag_terminal::ZoomOutcome {
+                zoomed: true,
+                changed: true,
+            })
         }
         fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
             self.log.borrow_mut().joined.push((id, dst.to_owned()));
@@ -1488,6 +1527,7 @@ mod tests {
         Command::SelectWindow("build".to_owned()).run(Some(0), &slots);
         Command::NewWindow.run(Some(0), &slots);
         Command::BreakOut.run(Some(0), &slots);
+        Command::ZoomPane.run(Some(0), &slots);
         Command::JoinInto("build".to_owned()).run(Some(0), &slots);
         Command::SwitchSession("work".to_owned()).run(None, &slots);
         Command::NewSession.run(None, &slots);
@@ -1506,6 +1546,12 @@ mod tests {
             vec![(PaneId(7), "build".to_owned())],
             "a join carries BOTH the captured pane and the window it names"
         );
+        assert_eq!(
+            log.zoomed,
+            vec![(PaneId(7), None)],
+            "the zoom reaches the captured pane's host id, and asks for the TOGGLE — a row \
+             activated twice has to give the arrangement back"
+        );
         assert_eq!(log.switched_sessions, vec!["work".to_owned()]);
         assert_eq!(log.new_sessions, 1);
         assert_eq!(log.last_session, 1);
@@ -1518,7 +1564,9 @@ mod tests {
         // is reached with whatever id the fallback picked.
         let (slots, log) = slots_with(&[("main", true)], &["0"], "0");
         Command::BreakOut.run(None, &slots);
+        Command::ZoomPane.run(None, &slots);
         assert!(log.borrow().broken_panes.is_empty());
+        assert!(log.borrow().zoomed.is_empty());
     }
 
     /// The palette offers `Move pane to window <name>` per other window — but only where a pane was
@@ -1609,6 +1657,43 @@ mod tests {
             break_out.command.title(),
             "Break pane out to a new window",
             "a palette row is read out of context, so it names the whole gesture"
+        );
+    }
+
+    /// The zoom is OFFERED where a pane was captured, titled so both vocabularies find it, and
+    /// asks no question.
+    ///
+    /// Three separate claims about one row, and each has its own way of going wrong: a row missing
+    /// from the catalog is a feature a user cannot reach (the whole gap this closes — the daemon has
+    /// had a zoom since R285 and the GUI could only HONOUR one); a row that offered itself with no
+    /// pane would be guaranteed to do nothing; and a row that asked for confirmation would treat a
+    /// projection as destruction.
+    ///
+    /// REVERT-PROOF: drop `Command::ZoomPane` from `catalog` and the first assertion fails; put it
+    /// in `needs_pane`'s `false` arm and the second does; give it a `confirmation` and the last one.
+    #[test]
+    fn the_zoom_row_is_offered_with_a_pane_named_for_both_vocabularies_and_asks_nothing() {
+        let (slots, _log) = slots_with(&[("main", true)], &["0"], "0");
+
+        let offered = catalog(Some(0), &slots).commands;
+        assert!(
+            offered.contains(&Command::ZoomPane),
+            "the palette is where a user finds this at all: {offered:?}",
+        );
+        assert!(
+            !catalog(None, &slots).commands.contains(&Command::ZoomPane),
+            "and it is not offered with no pane to fill the window with",
+        );
+
+        let title = Command::ZoomPane.title();
+        assert!(
+            title.contains("Zoom") && title.contains("fill the window"),
+            "the word a tmux user types AND the phrase every other sprag surface prints: {title:?}",
+        );
+        assert_eq!(
+            Command::ZoomPane.confirmation(Some(0), &slots),
+            None,
+            "a zoom destroys nothing — the arrangement is untouched and every pane keeps running",
         );
     }
 

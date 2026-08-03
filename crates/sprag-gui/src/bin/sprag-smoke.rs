@@ -104,6 +104,10 @@ fn main() -> ExitCode {
             // The keymap gate, HERE because it splits: after the check above, which needs exactly one
             // pane, and before the one below, which leaves several standing.
             check_the_gui_follows_the_users_keymap(&mut smoke, &mut report);
+            // Straight after the keymap gate, which leaves SEVERAL panes standing and has just put
+            // the shipped default prefix back — so `C-b z` here is the table sprag ships. It
+            // restores the pane set it found, for the check below that needs exactly one.
+            check_a_pane_fills_the_window_from_a_row_and_a_key(&mut smoke, &mut report);
             // HERE for the same reason as the keymap gate above: it needs exactly ONE pane, so the
             // pane the daemon reports and the grid this window paints are unambiguously the same
             // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
@@ -287,6 +291,151 @@ fn check_a_command_runs_from_a_palette_row(smoke: &mut Smoke, report: &mut Repor
             &format!("the find bar the command opens paints: {error}"),
             false,
         ),
+    }
+}
+
+/// **A HUMAN can fill the window with one pane, and get the arrangement back** — with a real key,
+/// against real pixels.
+///
+/// The gap this closes is a whole feature's worth: the daemon has had a zoom since R285 and every
+/// client HONOURED one, while nothing a person could press or click SET one. The only caller was
+/// `sprag zoom-pane` — a shell command, for a feature whose entire subject is what the window looks
+/// like.
+///
+/// Placed here because it needs SEVERAL panes standing and the keymap gate above leaves them, and
+/// because that gate has just re-written the user's config back to the default prefix — so `C-b z`
+/// is the shipped default table, not a fixture this check installed for itself.
+///
+/// # What makes it discriminating
+///
+/// The target is the LAST painted tile, never the first: a zoom that filled the window with
+/// whichever pane came first would pass on a target of `0` and fail here. The assertion is then that
+/// exactly ONE tile paints and it is THAT one — the pane the user was on — and that its rect GREW,
+/// which is the difference between "the client redrew" and "the client fullscreened the pane".
+///
+/// The un-zoom is asserted with the same key, because that is the whole claim of a toggle: one
+/// binding, both directions. A check that only zoomed would leave the window filled for every check
+/// below it, which is also why this one restores what it found.
+fn check_a_pane_fills_the_window_from_a_row_and_a_key(smoke: &mut Smoke, report: &mut Report) {
+    // THE TABLE IN FORCE HERE IS NOT THE SHIPPED ONE, and this line is the whole reason this check
+    // has a config write at all. The keymap gate above deliberately ENDS on a config the client
+    // cannot use, so what is in force is the last file that parsed — which moved the prefix to
+    // `C-a`. A check that pressed `C-b` on that inheritance would fail while the product worked,
+    // which is exactly what the first run of this one did. Writing a usable file naming the default
+    // prefix makes the binding under test the SHIPPED `z` and nothing about it inherited. Safe to
+    // leave behind: the next check that reads this file writes its own.
+    if smoke
+        .write_user_config("[options]\nprefix = \"C-b\"\n")
+        .is_err()
+    {
+        report.check("a usable config can be written to zoom under", false);
+        return;
+    }
+    let Ok(before) = smoke.docked_panes() else {
+        report.check("the painted tree answers a pane list to zoom within", false);
+        return;
+    };
+    let Some(&target) = before.last() else {
+        report.check("the window paints a pane to zoom", false);
+        return;
+    };
+    if before.len() < 2 {
+        report.check(
+            &format!(
+                "a zoom needs a window of more than one pane (found {})",
+                before.len()
+            ),
+            false,
+        );
+        return;
+    }
+    // A keystroke goes to the FOCUSED pane, and the target is deliberately not the first one.
+    if !smoke.focus_pane(target) {
+        report.check("a pane can be focused to zoom", false);
+        return;
+    }
+    let was = smoke
+        .tags()
+        .ok()
+        .and_then(|tags| tags.get(&format!("sprag_gui.pane.{target}"))?.rect);
+
+    // THE PALETTE first, because the two affordances are each other's control: a failure in only
+    // one of them names the surface, while a failure in both names the client's host call.
+    if !smoke.run_palette_row("Zoom pane to fill the window", report) {
+        return;
+    }
+    let filled = smoke.wait_for(|s| {
+        let panes = s.docked_panes().ok()?;
+        (panes == vec![target]).then_some(panes)
+    });
+    report.check(
+        &format!("the palette row left ONE pane painted, and it is the focused one ({filled:?})"),
+        filled.is_ok(),
+    );
+    if filled.is_err() {
+        // The DISCRIMINATOR the bare timeout lacks: ask the DAEMON, over the CLI verb written for
+        // exactly this question, whether a pane fills the window. "The key never arrived" and "the
+        // key arrived and this client did not redraw" are opposite defects in different crates, and
+        // a timeout alone cannot tell them apart — which is a whole diagnosis, next time.
+        let daemon = smoke
+            .attached_session()
+            .map(|session| smoke.cli(&["layout", "-t", &session]));
+        report.check(
+            &format!("...and the DAEMON's own reading says which half failed: {daemon:?}"),
+            false,
+        );
+        return;
+    }
+    let now = smoke
+        .tags()
+        .ok()
+        .and_then(|tags| tags.get(&format!("sprag_gui.pane.{target}"))?.rect);
+    report.check(
+        &format!("...and that pane GREW to fill the window ({was:?} -> {now:?})"),
+        match (was, now) {
+            (Some((was_w, was_h)), Some((now_w, now_h))) => {
+                now_w * now_h > was_w * was_h && now_w >= was_w && now_h >= was_h
+            }
+            _ => false,
+        },
+    );
+
+    // ...and the BOUND KEY back, which is both halves of the claim at once: the toggle gives the
+    // arrangement back, and the key reaches the same command the row does.
+    report.check(
+        "the default prefix is accepted",
+        smoke.press(target, "b", true).is_ok(),
+    );
+    report.check(
+        "and `z` after it is too",
+        smoke.press(target, "z", false).is_ok(),
+    );
+    let restored = smoke.wait_for(|s| {
+        let panes = s.docked_panes().ok()?;
+        (panes == before).then_some(panes)
+    });
+    report.check(
+        &format!("`prefix z` gave the arrangement back ({restored:?})"),
+        restored.is_ok(),
+    );
+    if restored.is_err() {
+        // Both forks at once, because a key that does nothing has two of them and they live in
+        // different crates: WHERE the client thinks the focus is (a keystroke reaches the keymap
+        // only from a pane's own focus), and whether the DAEMON was asked at all.
+        let focused = smoke.focused();
+        let log = smoke.gui_log();
+        let chords = log.lines().filter(|l| l.contains("chord")).count();
+        let zooms = log.lines().filter(|l| l.contains("zoom-pane")).count();
+        let daemon = smoke
+            .attached_session()
+            .map(|session| smoke.cli(&["layout", "-t", &session]));
+        report.check(
+            &format!(
+                "...focus was {focused:?}, the client traced {chords} chord(s) of which {zooms} \
+                 zoom, and the daemon reads {daemon:?}"
+            ),
+            false,
+        );
     }
 }
 
