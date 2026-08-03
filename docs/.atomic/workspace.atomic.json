@@ -10076,6 +10076,48 @@
         "Item 6's remaining herdr cells after this round are pane.rename, tab.move and workspace.move; pane.process_info is closed."
       ]
     },
+    "R290.1": {
+      "decision_summary": "Verifying R290's own claim that a new slot needs no protocol bump found the message it produces: a loud refusal that named a Rust enum variant at an operator, which is R283's finding on the query path rather than the invoke one.",
+      "changes_bullets": [
+        "sprag processes reads its slot through query_slot, which turns pinion's UnknownIntrospectPath into a sentence naming the cause and the remedy instead of the Rust variant name an operator was being shown.",
+        "The match is on the fault's structured data field, never on its rendered line: Display prefers data so the two agree today, but a substring test against a rendering is a test against a presentation decision and would also fire on a daemon that merely mentioned the word."
+      ],
+      "verification_bullets": [
+        "Found by verifying R290's own no-protocol-bump claim rather than by reading: a daemon built at the parent commit bf2bcf0 in a git worktree answered sprag panes cleanly at exit 0 and refused sprag processes at exit 1, and what it printed was host rpc error: UnknownIntrospectPath.",
+        "Re-run after the fix with the same control: panes still exit 0, processes exits 1 with the sentence and the kill-server remedy.",
+        "The fault fixture is the one a live daemon actually sends, captured off the socket rather than invented: code -32602, message Invalid params, data UnknownIntrospectPath.",
+        "Three controls in the unit test: another refusal keeps its own words, a fault that merely mentions the variant name is left alone, and a fault with no data says nothing about the daemon's age.",
+        "Suite exit 0 over 45 targets, 1826 passing, clippy 0 with no suppression, doc gate 0/16."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Only the processes verb reads its slot through this helper. Every other slot-reading verb in the CLI still prints the raw variant if it meets a daemon that does not serve its address, which is the same leak on the same path; routing them through query_slot is the follow-up and it is one line each.",
+        "The live half cannot become a standing test: the CLI suite spawns the CURRENT daemon, which serves every slot this binary knows. What is pinned is the pure mapping and its controls."
+      ],
+      "publishable_decision_summary": "Verifying R290's own claim that a new slot needs no protocol bump found the message it produces: a loud refusal that named a Rust enum variant at an operator, which is R283's finding on the query path rather than the invoke one.",
+      "publishable_changes_bullets": [
+        "sprag processes reads its slot through query_slot, which turns pinion's UnknownIntrospectPath into a sentence naming the cause and the remedy instead of the Rust variant name an operator was being shown.",
+        "The match is on the fault's structured data field, never on its rendered line: Display prefers data so the two agree today, but a substring test against a rendering is a test against a presentation decision and would also fire on a daemon that merely mentioned the word."
+      ],
+      "publishable_verification_bullets": [
+        "Found by verifying R290's own no-protocol-bump claim rather than by reading: a daemon built at the parent commit bf2bcf0 in a git worktree answered sprag panes cleanly at exit 0 and refused sprag processes at exit 1, and what it printed was host rpc error: UnknownIntrospectPath.",
+        "Re-run after the fix with the same control: panes still exit 0, processes exits 1 with the sentence and the kill-server remedy.",
+        "The fault fixture is the one a live daemon actually sends, captured off the socket rather than invented: code -32602, message Invalid params, data UnknownIntrospectPath.",
+        "Three controls in the unit test: another refusal keeps its own words, a fault that merely mentions the variant name is left alone, and a fault with no data says nothing about the daemon's age.",
+        "Suite exit 0 over 45 targets, 1826 passing, clippy 0 with no suppression, doc gate 0/16."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Only the processes verb reads its slot through this helper. Every other slot-reading verb in the CLI still prints the raw variant if it meets a daemon that does not serve its address, which is the same leak on the same path; routing them through query_slot is the follow-up and it is one line each.",
+        "The live half cannot become a standing test: the CLI suite spawns the CURRENT daemon, which serves every slot this binary knows. What is pinned is the pure mapping and its controls."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
