@@ -480,6 +480,23 @@ fn filled(fill: &str) -> Screen {
     emulator.screen().clone()
 }
 
+/// A screen that has SCROLLED: `history` lines pushed through a `COLS` x `ROWS` view, so all but the
+/// last `ROWS` of them live in the scrollback.
+///
+/// The control for the output-wait rows. A wait's search reads the pane's RETAINED output — which is
+/// the whole point of it, and the reason a match that scrolled away is still found — so the number
+/// that moves its cost is how much a pane has kept, not how big its screen is. A row measured only
+/// against `filled` would report a constant and hide exactly the term that grows.
+fn scrolled(history: usize) -> Screen {
+    let mut emulator = Emulator::new(COLS, ROWS);
+    for line in 0..history {
+        // Distinct per line so the search cannot short-circuit on a repeated prefix, and long enough
+        // to fill the view — a scrollback of blank lines is not a scrollback anybody searches.
+        emulator.advance(format!("line {line} of the retained output\r\n").as_bytes());
+    }
+    emulator.screen().clone()
+}
+
 /// A screen with `lines` painted into it top-down — the shape the detector's own fixtures use, so a
 /// row measured here is measured against the same screens its tests assert on.
 fn painted_screen(lines: &[&str]) -> Screen {
@@ -1395,6 +1412,80 @@ fn main() -> ExitCode {
     budget(
         "what watching every pane's job costs one sweep",
         job_sample.min + job_observe.min * PANE_COUNT as u32,
+    );
+
+    // R296 — what ONE parked output wait costs the dispatch owner per evaluation pass.
+    //
+    // The pass is coalesced to at most one in flight per session, so this row times the whole term
+    // that scales: (parked waits) x (one search). It is measured against the pane's RETAINED output
+    // because that is what the wait searches — and the row is paired with a control that MOVES it,
+    // a pane that has kept 2000 lines against one that has kept none, so the number cannot be read
+    // as a constant. A literal and a pattern are timed separately because they are separate engines,
+    // not one with a flag.
+    let unscrolled = scrolled(0);
+    let deep = scrolled(2 * sprag_vt::DEFAULT_SCROLLBACK_LINES);
+    // A pane retains `DEFAULT_SCROLLBACK_LINES` and no more, so twice that fills the cap and this
+    // row prices the WORST case a default pane can present rather than an arbitrary depth. The
+    // assertion is what caught the first version of this control: it pushed 2000 lines and expected
+    // 2000 kept, which the cap makes impossible — and a control that had not moved would have made
+    // both rows measure the same view and report a constant.
+    assert_eq!(
+        deep.scrollback_len(),
+        sprag_vt::DEFAULT_SCROLLBACK_LINES,
+        "the control has to have SCROLLED to the cap, or both rows measure the same view",
+    );
+    assert_eq!(
+        unscrolled.scrollback_len(),
+        0,
+        "and the baseline has to have kept nothing, or the pair is not a pair",
+    );
+    let miss = "no-pane-ever-prints-this";
+    assert!(
+        deep.find(miss).matches.is_empty(),
+        "a wait's steady state is the search that finds NOTHING — a hit would time the answer path \
+         and report the rarer case as the cost",
+    );
+    let wait_shallow = paired(
+        "output wait: search, no scrollback",
+        &mut controls,
+        None,
+        || {
+            black_box(black_box(&unscrolled).find(black_box(miss)));
+        },
+    );
+    let wait_deep = paired(
+        "output wait: search, a full scrollback",
+        &mut controls,
+        None,
+        || {
+            black_box(black_box(&deep).find(black_box(miss)));
+        },
+    );
+    let wait_regex = paired(
+        "output wait: regex search, full scrollback",
+        &mut controls,
+        None,
+        || {
+            black_box(
+                black_box(&deep)
+                    .find_regex(black_box(miss))
+                    .expect("a valid pattern"),
+            );
+        },
+    );
+    budget(
+        "one parked output wait, one pass, a pane at its scrollback cap",
+        wait_deep.min,
+    );
+    println!(
+        "  {:<46} {:>9.2}x  the same search with nothing kept",
+        "what the retained output costs",
+        wait_deep.min.as_secs_f64() / wait_shallow.min.as_secs_f64(),
+    );
+    println!(
+        "  {:<46} {:>9.2}x  the literal search on the same pane",
+        "what a pattern costs over a literal",
+        wait_regex.min.as_secs_f64() / wait_deep.min.as_secs_f64(),
     );
     println!(
         "  {:<46} {:>9.2}x  cheaper than one /proc pass",
