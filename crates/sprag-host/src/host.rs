@@ -525,6 +525,49 @@ pub trait HostClient {
         false
     }
 
+    /// Move the session's active pane to its NEIGHBOUR in `dir` — tmux `select-pane -L/-R/-U/-D`,
+    /// and the wire's `{dir}` form of [`crate::wire::SELECT_PANE_ACTION`].
+    ///
+    /// Answers the pane the window is on AFTER the call, which a caller adopts whether or not it
+    /// moved; [`None`] is a refusal (no such window, or a window holding no panes). **Reaching the
+    /// edge is not a refusal**: it answers the unmoved active pane, because a key bound to
+    /// `select-pane -L` pressed at the left edge is a well-formed request whose honest answer is
+    /// "nothing that way".
+    ///
+    /// # The one write on this trait that names no pane, and why
+    ///
+    /// Every other write here states its target ([`split`](Self::split), [`zoom_pane`](Self::zoom_pane),
+    /// [`kill_pane`](Self::kill_pane), [`select_pane`](Self::select_pane)) because a gesture happened
+    /// ON a pane the user picked out. A directional move is the other kind of request: it names no
+    /// pane at either end, and both ends are facts the daemon already holds — the ORIGIN is the
+    /// active pane, which this client only [projects](Self::active_pane), and the DESTINATION is a
+    /// property of the arrangement, which this client only mirrors.
+    ///
+    /// So the direction travels and the daemon resolves it, for two reasons that a client-side
+    /// resolve gives up:
+    ///
+    /// * **Atomicity.** `crate::host::select_pane` walks the arrangement and selects under ONE
+    ///   registry lock. A client that read the neighbour and then selected it by id would be
+    ///   reading a MIRROR — staler than a released lock — and could land the user on a pane that had
+    ///   exited in between.
+    /// * **One authority.** `sprag select-pane -L` from a shell already sends the direction. A
+    ///   client that resolved its own would be a second answer to the same question, which is the
+    ///   fork [`LayoutWire::neighbor`](sprag_terminal::LayoutWire::neighbor) exists to prevent one
+    ///   level down — and the rival's is exactly that fork, computed from its last composed frame's
+    ///   rectangles rather than from the arrangement.
+    ///
+    /// **The honest cost**: a client showing a focus ring that is NOT the session's active pane —
+    /// a terminal client while the active pane is floating, the one case
+    /// [`active_pane`](Self::active_pane) documents — moves from the session's pane rather than
+    /// from its ring. A floating pane is in no arrangement, so that call answers unmoved and the
+    /// ring stays where it was.
+    ///
+    /// Defaulted to [`None`], like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
+        let _ = dir;
+        None
+    }
+
     /// Install `tree` as the current window's arrangement, returning the CANONICAL result
     /// — the write half of the arc (see [`sprag_terminal::layout`]).
     ///
@@ -1983,6 +2026,33 @@ impl HostClient for Host {
 
     fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot {
         set_floating(&self.registry, &self.scope(), id, floating).expect(DEFAULT_ALWAYS_RESOLVES)
+    }
+
+    /// Straight to the resolve-and-select the wire action calls, so the in-process arm and a wire
+    /// client walk ONE arrangement with one lock — not two implementations that agree today.
+    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
+        select_pane(&self.registry, &self.scope(), PaneTarget::Toward(dir)).map(|(pane, _)| pane)
+    }
+
+    /// The pane THIS registry's current window is on.
+    ///
+    /// The trait's default answers [`None`] for "an impl with no daemon behind it", which is the
+    /// wrong reading for this one: an in-process host IS the registry, so it holds the fact a wire
+    /// client has to mirror. Left defaulted until R297, where a directional move made it the only
+    /// way to observe where a select had LANDED — and a client that cannot read the active pane
+    /// cannot follow it either.
+    fn active_pane(&self) -> Option<PaneId> {
+        active_pane(&self.registry, &self.scope())
+    }
+
+    /// ...and the PUBLISH half, taken in the same breath and for the same reason.
+    ///
+    /// The two are one fact read and written, so implementing either alone leaves this arm able to
+    /// follow a pane it can never move — which is a client whose focus is a projection of something
+    /// it cannot address. `false` for a pane this registry's current window does not hold, exactly
+    /// as the wire client reports a refused invoke.
+    fn select_pane(&self, id: PaneId) -> bool {
+        select_pane(&self.registry, &self.scope(), PaneTarget::Named(id)).is_some()
     }
 
     /// The DEFAULT session's windows (this arm scopes there; see [`Host::workspace`]). Total: the

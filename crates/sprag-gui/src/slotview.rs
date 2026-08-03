@@ -36,7 +36,7 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
+    LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
 };
 use sprag_vt::{ClipboardTarget, MouseProtocol};
 
@@ -178,6 +178,17 @@ impl SlotView {
     /// read reports what IS rather than what this client hoped.
     pub(crate) fn select_pane(&self, pane: PaneId) {
         let _ = self.host.select_pane(pane);
+    }
+
+    /// Ask the daemon to move the session's active pane one step in `dir` — the DIRECTIONAL half of
+    /// the same wire action, resolved against the arrangement rather than against this client's
+    /// tiles (see [`HostClient::select_toward`]).
+    ///
+    /// The answer is dropped for [`Self::select_pane`]'s reason and one more: which pane the session
+    /// is on is exactly what [`crate::active_pane`] already follows, so adopting it here would be a
+    /// second path to a fact this client has one path to.
+    pub(crate) fn select_toward(&self, dir: PaneDir) {
+        let _ = self.host.select_toward(dir);
     }
 
     /// The display slot holding `pane` — the inverse of [`Self::id`], for PROJECTING

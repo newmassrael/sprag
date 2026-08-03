@@ -108,7 +108,8 @@ use sprag_rpc::{
     new_gui_client_id,
 };
 use sprag_terminal::{
-    LayoutSnapshot, LayoutWire, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo, ZoomOutcome,
+    LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
+    ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
@@ -1879,9 +1880,10 @@ impl HostClient for WireHost {
     /// Publish the user's move to the daemon (`select_pane`), so every attached client follows and a
     /// pane verb given no target acts where the user is.
     ///
-    /// Sends the pane by ID rather than a direction even when the user pressed a direction key: the
-    /// client resolved the direction against the arrangement it is SHOWING, and re-resolving it at
-    /// the daemon could land somewhere else if the tiling moved in between.
+    /// Sends the pane by ID because the caller PICKED THAT PANE OUT — a click, a focus ring the
+    /// user cycled, the pane a split just opened. A DIRECTION is the other kind of request and
+    /// takes the other arm of the same action: see [`Self::select_toward`], which names no pane at
+    /// either end.
     fn select_pane(&self, id: PaneId) -> bool {
         self.request(
             "scene/invoke",
@@ -1892,6 +1894,24 @@ impl HostClient for WireHost {
             "select_pane",
         )
         .is_some()
+    }
+
+    /// Send the DIRECTION and let the daemon walk its own arrangement — the same action
+    /// `sprag select-pane -L` invokes, so a keystroke and a shell command are one code path.
+    ///
+    /// The reply carries the pane the window is on afterwards, which is what a caller adopts; a
+    /// direction with no neighbour answers the unmoved pane rather than a fault, so an arrow key
+    /// held against the edge of a layout is quiet.
+    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
+        let answer = self.request(
+            "scene/invoke",
+            invoke(
+                &mux_action_path(SELECT_PANE_ACTION),
+                json!({ "dir": dir.wire_str() }),
+            ),
+            "select_toward",
+        )?;
+        answer["pane"].as_u64().map(PaneId)
     }
 
     /// The session's arbitrated window, read from the same mirror as the arrangement — a lock, no
