@@ -271,6 +271,26 @@ fn pane_sizes(conn: &mut HostConn, session: &str) -> Vec<(u16, u16)> {
         .unwrap_or_default()
 }
 
+/// The pane the DAEMON says `session`'s current window is on — the fact a directional key moves,
+/// and the one no client is the author of.
+///
+/// Read from the `panes` slot rather than from the client's screen on purpose: the claim a
+/// `select-pane -L` test has to make is that SESSION state moved, and a painted focus ring is this
+/// client's projection of that. [`None`] while no row carries the flag.
+fn active_pane(conn: &mut HostConn, session: &str) -> Option<u64> {
+    let panes = conn
+        .call(
+            "scene/query",
+            json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+        )
+        .ok()?;
+    panes
+        .as_array()?
+        .iter()
+        .find(|pane| pane["active"] == json!(true))
+        .and_then(|pane| pane["id"].as_u64())
+}
+
 /// The ids of `session`'s panes, in the daemon's own order — what a caller naming a split's target
 /// needs, and a fact only the host has.
 fn pane_ids(conn: &mut HostConn, session: &str) -> Vec<u64> {
@@ -890,6 +910,14 @@ fn the_cli_launches_a_client_a_window_change_still_reaches() {
 /// The prefix key, as the byte a terminal sends for `Ctrl-B`.
 const PREFIX: &[u8] = &[0x02];
 
+/// The bytes a terminal sends for the LEFT arrow in the normal cursor-key mode — `CSI D`, which is
+/// what the client's own decoder has to turn back into the name `ArrowLeft` its keymap is spelled
+/// in. Written in ONE call so the three bytes reach the parser together.
+const ARROW_LEFT: &[u8] = b"\x1b[D";
+
+/// ...and the RIGHT arrow, `CSI C`.
+const ARROW_RIGHT: &[u8] = b"\x1b[C";
+
 /// What an 80x24 terminal divides into, computed the way the layouter computes it so the numbers in
 /// the tests below are derived rather than copied: one cell for the divider, the remainder split
 /// with the odd cell on the far side.
@@ -1039,6 +1067,120 @@ fn keys_follow_the_focus_the_prefix_moves() {
     assert!(
         !held.contains("elsewhere"),
         "what was typed while the new pane had focus must not reach pane 0: {held:?}",
+    );
+}
+
+/// **The arrow keys walk the ARRANGEMENT, and the edge of it is quiet** — `prefix Left` / `prefix
+/// Right` in the shipped binary, against a real daemon, with nothing bound by this test.
+///
+/// This is the first live coverage of a keymap action reaching the DAEMON rather than being carried
+/// out inside the client: `%`, `"` and `o` are all resolved by `sprag-tui` itself, so every one of
+/// them would still pass over a client that never sent a `select_pane` at all. Here the client
+/// sends a DIRECTION and adopts whatever comes back, so what is asserted is the daemon's walk over
+/// its own arrangement.
+///
+/// Three claims, and the third is the one that makes the first two mean something:
+///
+/// * **`prefix Left` from the right half lands on pane 0**, whose `cat` echoes what is typed next;
+/// * **`prefix Right` goes back**, so the two flags are not one direction spelled twice — the
+///   inversion `the_other_split_key_divides_rows_instead_of_columns` guards one layer down;
+/// * **`prefix Left` AT THE LEFT EDGE moves nothing.** A client that read these as a CYCLE would
+///   wrap here and land on the right pane, and both assertions above would still have passed. The
+///   edge is also not an ERROR — the daemon answers the unmoved pane — so nothing is expected to
+///   fail, only to stay.
+///
+/// The daemon's `active` flag is read alongside the typing, because the typing alone would also be
+/// satisfied by a client that moved its own ring and told nobody.
+#[test]
+fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    tui.type_bytes(b"before");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "before")
+    });
+
+    // `-h` puts the panes side by SIDE, so pane 0 is the LEFT one and focus lands on the right.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for("the split to settle", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        )
+    });
+    let ids = pane_ids(&mut conn, &session);
+    let (left, right) = (ids[0], ids[1]);
+    wait_for("the split to leave the session on the NEW pane", || {
+        settled(active_pane(&mut conn, &session), &Some(right))
+    });
+
+    // LEFT: onto pane 0, where `cat` echoes.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(ARROW_LEFT);
+    wait_for("the left arrow to move the session onto pane 0", || {
+        settled(active_pane(&mut conn, &session), &Some(left))
+    });
+    tui.type_bytes(b"reached");
+    wait_for("what was typed after the move to reach pane 0", || {
+        let held = pane_text(&mut conn, &session);
+        if held.contains("reached") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {held:?}"))
+        }
+    });
+
+    // ...AT THE EDGE: nothing moves, and nothing fails.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(ARROW_LEFT);
+    tui.type_bytes(b"stayed");
+    wait_for("what was typed at the edge to reach pane 0 as well", || {
+        let held = pane_text(&mut conn, &session);
+        if held.contains("stayed") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {held:?}"))
+        }
+    });
+    assert_eq!(
+        active_pane(&mut conn, &session),
+        Some(left),
+        "the left arrow at the left edge must leave the session where it was",
+    );
+
+    // RIGHT: back off pane 0, so the two flags are two directions.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(ARROW_RIGHT);
+    wait_for("the right arrow to move the session back", || {
+        settled(active_pane(&mut conn, &session), &Some(right))
+    });
+    tui.type_bytes(b"elsewhere");
+
+    // ...and LEFT once more, whose echo is what dates the negative assertion below. The far pane is
+    // never READ: its width is one half of the terminal minus a shell prompt of whatever length
+    // this machine's `$USER@$HOST` makes, so a marker typed there may come back wrapped. Ordering
+    // is what makes the absence mean something instead — `landed` arriving in pane 0 proves
+    // everything typed before it was delivered somewhere.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(ARROW_LEFT);
+    wait_for("the left arrow to bring the session back to pane 0", || {
+        settled(active_pane(&mut conn, &session), &Some(left))
+    });
+    tui.type_bytes(b"landed");
+    wait_for("the last marker to reach pane 0", || {
+        let held = pane_text(&mut conn, &session);
+        if held.contains("landed") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {held:?}"))
+        }
+    });
+    let held = pane_text(&mut conn, &session);
+    assert!(
+        !held.contains("elsewhere"),
+        "what was typed after moving right must not reach pane 0: {held:?}",
     );
 }
 
