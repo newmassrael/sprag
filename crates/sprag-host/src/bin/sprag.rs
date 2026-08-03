@@ -135,14 +135,16 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_host::hooks::{self, HookError, Target};
 use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
+use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOVE_PANE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
-    RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION,
-    SPLIT_ACTION, SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since,
-    find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
+    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
+    session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -187,6 +189,7 @@ fn run() -> io::Result<()> {
         Some("zoom-pane") => zoom_pane(args.collect()),
         Some("panes") => panes(args.collect()),
         Some("layout") => layout(args.collect()),
+        Some("processes") => processes(args.collect()),
         Some("agent") => agent(args.collect()),
         Some("report-agent") => report_agent(args.collect()),
         Some("release-agent") => release_agent(args.collect()),
@@ -759,7 +762,8 @@ fn print_usage() {
          \x20             | break-pane PANE [name] | join-pane PANE WINDOW\n\
          \x20             | move-pane PANE -h|-v [-b] TARGET\n\
          \x20             | swap-pane [PANE] <WITH | -L|-R|-U|-D>> -t SESSION\n\
-         \x20      sprag <panes | layout | select-pane <PANE | -L|-R|-U|-D>\n\
+         \x20      sprag <panes | layout | processes [PANE]\n\
+         \x20             | select-pane <PANE | -L|-R|-U|-D>\n\
          \x20             | split-window [-h|-v [-b] [PANE]] [-- command…]\n\
          \x20             | kill-pane [PANE]\n\
          \x20             | resize-pane [PANE] -x COLS -y ROWS\n\
@@ -2474,6 +2478,114 @@ fn layout(args: Vec<String>) -> io::Result<()> {
         snapshot.revision,
         arrangement::render(&snapshot, &|pane| format!("pane {pane}")),
     );
+    Ok(())
+}
+
+/// `processes [PANE]`: WHAT EACH PANE IS RUNNING — its terminal device, the child the daemon
+/// spawned, and the job that currently owns its terminal, with every process in that job.
+///
+/// The third of the pane verbs and the one the other two cannot answer: [`panes`] says WHO (and its
+/// `command` is the label a pane was SPAWNED with, frozen at birth — a pane opened as `bash` and now
+/// three hours into a `cargo build` still lists as `bash`), [`layout`] says WHERE, and this says what
+/// is actually running. A shell hands its terminal to the job it starts and takes it back when that
+/// job ends, so the foreground group is the OS's own answer to "what did the user set going", and
+/// until this verb existed nothing outside the daemon could ask for it.
+///
+/// # Why it takes no `-t`
+///
+/// Because the daemon's answer is registry-wide by construction and pretending otherwise would cost
+/// something: `/proc` carries no index by process group, so enumerating ONE pane's job is the same
+/// full pass that answers every other pane. Narrowing here would mean either a second slot read to
+/// learn which ids are in scope, or two scopes each paying the same walk. A row names its pane by
+/// the id every other verb takes, so `sprag processes 7` narrows client-side without either cost —
+/// which is also strictly more than a rival that can ask about one pane at a time.
+///
+/// # The rendering, and the one thing it must not do
+///
+/// A pane's block is `ID: DEVICE  child PID` and then one line per process of its job. A process
+/// line is `PID NAME  ARGV`, and **the argv is quoted per argument** ([`shell_quote`]): the wire
+/// deliberately carries the argument VECTOR and never a pre-joined string, because joining with
+/// spaces makes an argument containing a space indistinguishable from two arguments — so the one
+/// place that has to render it flat must not undo that. `sleep '4 00'` and `sleep 4 00` are
+/// different commands and this prints them differently.
+///
+/// The reading's AGE heads the output, because a sampled fact read without it is one whose freshness
+/// the reader has to guess at: a job list that predates the build somebody just started looks
+/// identical to one that does not. Tolerance zero, so a one-shot human command waits for its own
+/// fresh walk rather than printing something held for a display poll.
+fn processes(args: Vec<String>) -> io::Result<()> {
+    let mut wanted: Option<u64> = None;
+    for arg in args {
+        if wanted.is_some() {
+            return Err(bad_input(&format!(
+                "processes: unexpected argument {arg:?} (processes [PANE])"
+            )));
+        }
+        wanted = Some(
+            arg.parse::<u64>()
+                .map_err(|_| bad_input(&format!("processes: {arg:?} is not a pane id")))?,
+        );
+    }
+    let mut conn = connect(None)?;
+    let reading = conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(&pane_processes_at(0)) }),
+    )?;
+    let wire: PaneProcessesWire = serde_json::from_value(reading).map_err(|error| {
+        bad_input(&format!(
+            "processes: the host's answer did not parse: {error}"
+        ))
+    })?;
+    let rows: Vec<_> = wire
+        .panes
+        .iter()
+        .filter(|row| wanted.is_none_or(|id| row.id == id))
+        .collect();
+    if let Some(id) = wanted
+        && rows.is_empty()
+    {
+        // The caller ASKED about that pane, so silence would be the wrong answer — the same rule
+        // `require_pane` follows for every verb that takes a target.
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "processes: no pane {id} (panes: {:?})",
+                wire.panes.iter().map(|row| row.id).collect::<Vec<_>>()
+            ),
+        ));
+    }
+    println!("sampled {} ms ago", wire.sampled_ms_ago);
+    for row in rows {
+        let device = row.tty.as_deref().unwrap_or("(no device)");
+        // A pane whose child has been reaped keeps its place and its final screen, so it is listed
+        // rather than dropped — and it says it has no child instead of printing a pid it lost.
+        let child = row
+            .shell_pid
+            .map_or_else(|| "no child".to_owned(), |pid| format!("child {pid}"));
+        println!("{}: {device}  {child}", row.id);
+        let Some(job) = &row.foreground else {
+            // Distinct from "no child": a live child whose terminal nobody owns is a real state
+            // (nothing has called `tcsetpgrp`), and calling it the same thing would hide it.
+            println!("     (no job owns the terminal)");
+            continue;
+        };
+        for process in &job.processes {
+            let argv = process
+                .argv
+                .iter()
+                .map(|arg| shell_quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ");
+            // An empty argv is a FACT the wire keeps (a zombie, a kernel thread), so it is said
+            // rather than rendered as a blank column.
+            let argv = if argv.is_empty() {
+                "(no command line)".to_owned()
+            } else {
+                argv
+            };
+            println!("     {} {}  {argv}", process.pid, process.name);
+        }
+    }
     Ok(())
 }
 

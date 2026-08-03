@@ -4192,3 +4192,90 @@ fn list_hooks_says_broken_when_the_binary_its_hooks_run_is_gone() {
         run.stdout,
     );
 }
+
+/// `sprag processes` end to end against the real daemon: WHAT each pane is running, which the pane
+/// listing cannot say.
+///
+/// The pair of readings IS the test, the way `sprag layout`'s is. The boot pane is spawned as `cat`
+/// and `sprag panes` prints that label forever; this verb has to name what actually owns the
+/// terminal, and here that is the same `cat` — so a second pane is opened running `sleep` and the
+/// two rows are compared. A verb that simply re-printed the spawn label would pass on the first
+/// pane and fail on nothing, which is why the assertions are about the DIFFERENCE.
+///
+/// Every line is pinned as text rather than probed by `contains`, because the rendering is the
+/// product here: the id column feeds every other verb, and the argv column is the one place a
+/// vector becomes a line.
+#[test]
+fn the_cli_says_what_each_pane_is_running() {
+    let (_host, sock) = spawn_host();
+
+    let split = sprag(&sock, &["split-window", "-h", "--", "sleep", "600"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let second = split.stdout.trim().to_owned();
+
+    // A real shell takes a moment to become its own foreground job, so the reading is polled.
+    let ran = |args: &[&str]| {
+        let run = sprag(&sock, args);
+        assert!(run.ok, "processes succeeded: {}", run.stderr);
+        let (head, body) = run
+            .stdout
+            .split_once('\n')
+            .expect("an age header and a body");
+        assert!(
+            head.starts_with("sampled ") && head.ends_with(" ms ago"),
+            "the reading states its own age first: {head:?}",
+        );
+        body.to_owned()
+    };
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            ran(&["processes"]).contains(" sleep  sleep 600")
+        }),
+        "the second pane's job reaches the reading: {}",
+        ran(&["processes"]),
+    );
+
+    // ONE pane, named — herdr's whole `pane process-info` surface, and here it is the narrow case
+    // of a verb that answers about all of them at once.
+    let one = ran(&["processes", &second]);
+    let mut lines = one.lines();
+    let head = lines.next().expect("the pane's own line");
+    assert!(
+        head.starts_with(&format!("{second}: /dev/pts/")) && head.contains("  child "),
+        "the pane names its id, its terminal DEVICE and the child the daemon spawned: {head:?}",
+    );
+    let job = lines.next().expect("the job's line");
+    let (pid, rest) = job
+        .trim_start()
+        .split_once(' ')
+        .expect("a pid then the process");
+    assert!(pid.parse::<u32>().is_ok(), "a real pid leads: {job:?}");
+    assert_eq!(
+        rest, "sleep  sleep 600",
+        "then the kernel's name for it and its argv, quoted per argument",
+    );
+    assert_eq!(lines.next(), None, "and a one-process job is one line");
+
+    // The pane listing, taken at the same daemon, carries the pane's spawn LABEL — and the label is
+    // not the command line. Written from the failure this assertion produced when it was first
+    // guessed at: `sprag panes` prints `sleep`, this verb prints `sleep 600`. The two verbs answer
+    // different questions, and the arguments a process is actually running are only here.
+    let listed = sprag(&sock, &["panes"]);
+    let row = listed
+        .stdout
+        .lines()
+        .find(|line| line.starts_with(&format!("{second}:")))
+        .expect("the split pane lists");
+    assert!(
+        row.contains("  sleep") && !row.contains("600"),
+        "the pane list stops at the program name: {row:?}",
+    );
+
+    // A pane id nobody has is an ERROR, not silence: the caller asked about that pane.
+    let missing = sprag(&sock, &["processes", "4242"]);
+    assert!(
+        !missing.ok && missing.stderr.contains("no pane 4242"),
+        "an absent pane is refused with the ids that do exist: {}",
+        missing.stderr,
+    );
+}
