@@ -484,7 +484,7 @@ impl OutputSignal {
 /// Two variants rather than a string and a `regex: bool`, for the reason
 /// [`crate::wire::REGEX_FIELD`] already gives about those slots: a needle and a pattern are
 /// separate languages, so one string must not mean both depending on a mode carried beside it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum OutputQuery {
     /// A literal needle, ASCII-case-folded — `find.<needle>`'s language.
     Literal(String),
@@ -598,8 +598,17 @@ impl OutputChannel {
         self.queued.store(false, Ordering::Release);
         let fire = {
             let mut parked = self.lock();
-            // Taken out first so `search` — which may take registry locks — is never called while
-            // this vector is borrowed mutably, and so a `park` from a re-entrant path cannot be lost.
+            // ⚠ THIS LOCK IS HELD ACROSS `search`, and `search` is not cheap: it walks a pane's whole
+            // retained output (338 us at the default scrollback cap) and takes the registry and
+            // workspace locks on the way. That is R291's "never hold a lock across expensive work"
+            // read literally — and it is sound here for a reason that is structural rather than
+            // lucky: EVERY mutator of this vector (`park`, `release`, `drain`, and this pass) runs
+            // on the dispatch owner, so there is no second thread to keep waiting. Releasing it
+            // around the searches would be worse, not better: a `park` landing in the gap would be
+            // clobbered by the write-back below.
+            //
+            // Taken OUT rather than iterated so `search` is not called while the vector is borrowed
+            // mutably.
             let waits = std::mem::take(&mut *parked);
             let mut fire = Vec::new();
             let mut kept = Vec::with_capacity(waits.len());

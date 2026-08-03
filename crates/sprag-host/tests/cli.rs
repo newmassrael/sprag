@@ -1350,6 +1350,96 @@ fn the_cli_find_regex_reads_the_needle_as_a_pattern() {
     );
 }
 
+/// **THE live gate for `wait-for-output`, and the round that added the verb did not write it.**
+///
+/// The owner's "did you register all the debt?" is what found the gap: 172 tests here cover the
+/// other verbs and this one had none, so the whole CLI half rested on hand-driven runs that left
+/// nothing standing. R291's rule is to build the missing assertion rather than register it.
+///
+/// Three properties, each of which is a property of the PATH and not of the parser: the verb really
+/// BLOCKS and is released by the pane's own output; the search reads what the pane KEPT (so a line
+/// scrolled far past any recent window still answers); and a refused pattern exits non-zero with
+/// the engine's reason rather than succeeding emptily.
+#[test]
+fn the_cli_waits_for_output_a_pane_has_not_printed_yet() {
+    // A pane that says nothing for a moment, then says it — so the wait cannot pass by finding
+    // something that was already there when it started.
+    let (_host, sock) = spawn_host_running(&[
+        "sh",
+        "-c",
+        "sleep 1; printf 'the-build-is-done\\n'; seq 1 60; exec cat",
+    ]);
+
+    let started = Instant::now();
+    let waited = sprag(
+        &sock,
+        &["wait-for-output", "--pane", "0", "the-build-is-done"],
+    );
+    assert!(waited.ok, "the wait succeeded: {}", waited.stderr);
+    assert_eq!(
+        waited.stdout.trim_end(),
+        "0:0: the-build-is-done",
+        "and printed the matching line in find's own format: {:?}",
+        waited.stdout,
+    );
+    // It BLOCKED rather than returning empty: the pane needed a second to get there, and a verb
+    // that answered without waiting would have come back at once with nothing.
+    assert!(
+        started.elapsed() >= Duration::from_millis(500),
+        "the verb blocked until the pane produced ({:?})",
+        started.elapsed(),
+    );
+
+    // THE DISCRIMINATOR. The marker is line 0 of sixty-one and the pane is 24 rows, so a reader
+    // that re-read the visible screen — which is what a polling implementation does — would find
+    // nothing. Asked again, it answers immediately from the pane's RETAINED output.
+    let again = sprag(
+        &sock,
+        &["wait-for-output", "--pane", "0", "the-build-is-done"],
+    );
+    assert!(again.ok, "asked again: {}", again.stderr);
+    assert_eq!(
+        again.stdout.trim_end(),
+        "0:0: the-build-is-done",
+        "still matched from scrollback: {:?}",
+        again.stdout,
+    );
+    // The control, expressed the only way this SURFACE can express it: the match is line 0 of a
+    // capture with sixty-one lines, on a 24-row pane — so it sits at least 37 lines above anything
+    // a reader of the recent window could see. `capture-pane` reads `full_text` (scrollback AND
+    // visible) and the CLI has no visible-only read at all, so a screen-only comparison is not
+    // available here; the assertion that reads the six rows directly is the unit test in
+    // `sprag_host::rpc`, and this one measures the DISTANCE instead.
+    let captured = sprag(&sock, &["capture-pane", "0", "-p"]);
+    assert!(captured.ok, "capture-pane succeeded: {}", captured.stderr);
+    let lines = captured.stdout.lines().count();
+    assert!(
+        lines >= 60,
+        "the pane kept {lines} lines, so line 0 is far outside a 24-row view",
+    );
+    assert!(
+        captured.stdout.starts_with("the-build-is-done"),
+        "and line 0 is the marker itself: {:?}",
+        &captured.stdout[..captured.stdout.len().min(40)],
+    );
+
+    // A refused pattern is an ERROR with the engine's reason, never an empty success — the
+    // difference between "your pattern is wrong" and "it has not happened yet".
+    let bad = sprag(&sock, &["wait-for-output", "--pane", "0", "--regex", "a(b"]);
+    assert!(!bad.ok, "an invalid pattern fails rather than parking");
+    assert!(
+        bad.stderr.contains("invalid pattern"),
+        "with the reason: {}",
+        bad.stderr,
+    );
+
+    // And the argument checks the caller can act on, each named.
+    let no_pane = sprag(&sock, &["wait-for-output", "anything"]);
+    assert!(!no_pane.ok && no_pane.stderr.contains("--pane N is required"));
+    let no_needle = sprag(&sock, &["wait-for-output", "--pane", "0"]);
+    assert!(!no_needle.ok && no_needle.stderr.contains("a search needle is required"));
+}
+
 // ---------------------------------------------------------------------------
 // The durability ring, end to end: a daemon that dies gives its panes back WITH
 // their scrollback.
