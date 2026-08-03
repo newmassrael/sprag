@@ -148,7 +148,7 @@ use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, HOST_SOCKET, HostConn, HostEndpoint, INVALID_PARAMS, RpcFault, socket_path,
 };
-use sprag_terminal::{LayoutNodeWire, LayoutSnapshot, PaneId, SplitDir};
+use sprag_terminal::{LayoutSnapshot, arrangement};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -1843,7 +1843,7 @@ fn require_pane(
 ///
 /// Both handlers answer `InvokeError::Rejected` for exactly two causes, read off their source:
 /// this host installs no agent detector, or it holds no pane with that id (daemon-WIDE — the agent
-/// memory is keyed by [`PaneId`] alone, so a hook may report a pane in
+/// memory is keyed by [`PaneId`](sprag_terminal::PaneId) alone, so a hook may report a pane in
 /// another session).
 /// `InvokeError` has no payload — not the trait's three-variant enum, not the RPC's — so **which of
 /// the two it was cannot cross the wire**, and no amount of care on this side recovers it. Filed as
@@ -2465,108 +2465,16 @@ fn layout(args: Vec<String>) -> io::Result<()> {
             format!("layout: the daemon's arrangement did not parse: {error}"),
         )
     })?;
-    print!("{}", render_layout(&snapshot));
+    // The drawing itself is the library's, so the agent-facing surface and this one show an
+    // operator the SAME picture of one arrangement. What is spelled here is what is this verb's
+    // own: the revision heading, and the naming — a pane by the host id the caller passes back to
+    // `select-pane`, which is a different integer from the one an MCP tool takes.
+    print!(
+        "revision {}\n{}",
+        snapshot.revision,
+        arrangement::render(&snapshot, &|pane| format!("pane {pane}")),
+    );
     Ok(())
-}
-
-/// The text [`layout`] prints for one arrangement — pure, so every shape is testable without a
-/// daemon and the integration test can pin what an operator sees.
-///
-/// ```text
-/// revision 12
-/// 50% left|right
-/// ├─ pane 1
-/// └─ 60% top|bottom
-///    ├─ pane 2  (fills the window)
-///    └─ pane 3
-/// floating: 4
-/// ```
-///
-/// **A divider line reads `RATIO SIDE|SIDE`, where the ratio is the FIRST side's share and the two
-/// branches below are in that order** — so `├─` is the left/top child and `└─` the right/bottom
-/// one. That one sentence is what makes the drawing exact rather than suggestive, and it is why
-/// the sides are named on every divider instead of being left to the glyphs.
-///
-/// A zoomed pane is marked in the words [`zoom_pane`] itself prints ("fills the window"), so the
-/// verb that sets the state and the verb that reads it cannot drift into two vocabularies. The
-/// float list is additive — absent, not empty — which is the rule [`agent`] already follows.
-fn render_layout(snapshot: &LayoutSnapshot) -> String {
-    let mut out = format!("revision {}\n", snapshot.revision);
-    let mut zoom_shown = false;
-    match snapshot.tree.root.as_ref() {
-        Some(root) => render_layout_node(root, snapshot.zoomed, &mut zoom_shown, "", "", &mut out),
-        // A window every pane of which has been floated out still has an arrangement to report,
-        // and reporting it as nothing at all would read as a failed call.
-        None => out.push_str("no panes tiled\n"),
-    }
-    if !snapshot.floating.is_empty() {
-        let ids: Vec<String> = snapshot.floating.iter().map(ToString::to_string).collect();
-        out.push_str(&format!("floating: {}\n", ids.join(" ")));
-    }
-    // The daemon's own invariant (`Window::heal_zoom`) is that a zoom names a pane the window is ON
-    // and TILES, so the marker above always lands on a leaf. This says so anyway when it did not,
-    // because that invariant is held on the OTHER side of a socket whose whole reason for carrying
-    // a `WIRE_PROTOCOL` number is that the process there can be a different build (R280). A reader
-    // that assumed the writer would drop, in silence, the fact that one pane covers all of this.
-    if let Some(pane) = snapshot.zoomed.filter(|_| !zoom_shown) {
-        out.push_str(&format!("zoomed: pane {pane} (not in this arrangement)\n"));
-    }
-    out
-}
-
-/// One node of [`render_layout`]'s drawing: `head` prefixes this node's own line and `tail`
-/// prefixes its descendants', which is what keeps a deep arrangement's guides connected.
-fn render_layout_node(
-    node: &LayoutNodeWire,
-    zoomed: Option<PaneId>,
-    zoom_shown: &mut bool,
-    head: &str,
-    tail: &str,
-    out: &mut String,
-) {
-    match node {
-        LayoutNodeWire::Leaf(pane) => {
-            let mark = if zoomed == Some(*pane) {
-                *zoom_shown = true;
-                "  (fills the window)"
-            } else {
-                ""
-            };
-            out.push_str(&format!("{head}pane {pane}{mark}\n"));
-        }
-        LayoutNodeWire::Split {
-            dir,
-            ratio,
-            first,
-            second,
-            ..
-        } => {
-            // `Horizontal` lays `first` LEFT and `second` RIGHT; `Vertical` lays it TOP and BOTTOM
-            // (`SplitDir`'s own convention) — named here in the reading order the branches below
-            // are drawn in, so the two cannot be read the wrong way round.
-            let sides = match dir {
-                SplitDir::Horizontal => "left|right",
-                SplitDir::Vertical => "top|bottom",
-            };
-            out.push_str(&format!("{head}{:.0}% {sides}\n", ratio * 100.0));
-            render_layout_node(
-                first,
-                zoomed,
-                zoom_shown,
-                &format!("{tail}├─ "),
-                &format!("{tail}│  "),
-                out,
-            );
-            render_layout_node(
-                second,
-                zoomed,
-                zoom_shown,
-                &format!("{tail}└─ "),
-                &format!("{tail}   "),
-                out,
-            );
-        }
-    }
 }
 
 /// `agent [-t SESSION] [PANE]`: what the AI agent in each pane is doing — H3's verdict, from the
@@ -4075,134 +3983,6 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A leaf, spelled once so the arrangement literals below read as the shapes they are.
-    fn leaf(pane: u64) -> LayoutNodeWire {
-        LayoutNodeWire::Leaf(PaneId(pane))
-    }
-
-    /// A division at `ratio` — `id: None`, because the drawing never reads a divider's identity and
-    /// a test that supplied one would suggest it did.
-    fn split(
-        dir: SplitDir,
-        ratio: f32,
-        first: LayoutNodeWire,
-        second: LayoutNodeWire,
-    ) -> LayoutNodeWire {
-        LayoutNodeWire::Split {
-            id: None,
-            dir,
-            ratio,
-            first: Box::new(first),
-            second: Box::new(second),
-        }
-    }
-
-    fn snapshot(revision: u64, root: Option<LayoutNodeWire>) -> LayoutSnapshot {
-        LayoutSnapshot {
-            revision,
-            tree: sprag_terminal::LayoutWire { root },
-            floating: Vec::new(),
-            zoomed: None,
-        }
-    }
-
-    /// The whole drawing, pinned as one string rather than probed for fragments — the arrangement
-    /// is what this verb exists to show, so a test that only asked whether the ids appeared would
-    /// pass on a rendering that put them in the wrong places.
-    ///
-    /// Nesting on the SECOND child is the case worth pinning: it is the only one where the parent's
-    /// continuation prefix matters, and getting it wrong (indenting the grandchildren under the
-    /// first branch's guide) draws a tree that is connected but false.
-    #[test]
-    fn an_arrangement_draws_as_a_tree_whose_dividers_name_their_sides() {
-        let tree = split(
-            SplitDir::Horizontal,
-            0.5,
-            leaf(1),
-            split(SplitDir::Vertical, 0.6, leaf(2), leaf(3)),
-        );
-        assert_eq!(
-            render_layout(&snapshot(12, Some(tree))),
-            "revision 12\n\
-             50% left|right\n\
-             ├─ pane 1\n\
-             └─ 60% top|bottom\n\
-             \x20  ├─ pane 2\n\
-             \x20  └─ pane 3\n",
-        );
-    }
-
-    /// The first child's subtree gets the CONNECTED guide (`│`) and the second's gets blank space,
-    /// which is the other half of the prefix rule and cannot be seen in a right-nested tree.
-    #[test]
-    fn a_nested_first_child_keeps_its_parents_guide() {
-        let tree = split(
-            SplitDir::Vertical,
-            0.25,
-            split(SplitDir::Horizontal, 0.75, leaf(4), leaf(5)),
-            leaf(6),
-        );
-        assert_eq!(
-            render_layout(&snapshot(3, Some(tree))),
-            "revision 3\n\
-             25% top|bottom\n\
-             ├─ 75% left|right\n\
-             │  ├─ pane 4\n\
-             │  └─ pane 5\n\
-             └─ pane 6\n",
-        );
-    }
-
-    /// A one-pane window roots at a LEAF, so it draws with no guides at all — and a window whose
-    /// panes have all been floated out still reports, rather than answering with silence.
-    #[test]
-    fn the_degenerate_arrangements_still_say_what_they_are() {
-        assert_eq!(
-            render_layout(&snapshot(1, Some(leaf(0)))),
-            "revision 1\npane 0\n",
-        );
-        let mut emptied = snapshot(9, None);
-        emptied.floating = vec![PaneId(2), PaneId(7)];
-        assert_eq!(
-            render_layout(&emptied),
-            "revision 9\nno panes tiled\nfloating: 2 7\n",
-        );
-    }
-
-    /// The zoom is marked on the pane it names, in the words `zoom-pane` itself prints — and the
-    /// float list stays ABSENT when nothing floats rather than printing an empty one.
-    #[test]
-    fn the_zoomed_pane_is_marked_where_it_sits() {
-        let mut zoomed = snapshot(4, Some(split(SplitDir::Horizontal, 0.5, leaf(1), leaf(2))));
-        zoomed.zoomed = Some(PaneId(2));
-        assert_eq!(
-            render_layout(&zoomed),
-            "revision 4\n\
-             50% left|right\n\
-             ├─ pane 1\n\
-             └─ pane 2  (fills the window)\n",
-        );
-    }
-
-    /// A zoom naming a pane this arrangement does not tile is REPORTED, not swallowed.
-    ///
-    /// The daemon's invariant forbids it, so this can only arrive from a daemon of another build —
-    /// which is the case `WIRE_PROTOCOL` exists for (R280). The failure it prevents is the silent
-    /// one: an operator reading a tidy three-pane drawing while one pane covers all of it.
-    #[test]
-    fn a_zoom_the_tree_does_not_hold_is_reported_rather_than_dropped() {
-        let mut skewed = snapshot(7, Some(split(SplitDir::Vertical, 0.5, leaf(1), leaf(2))));
-        skewed.zoomed = Some(PaneId(8));
-        assert_eq!(
-            render_layout(&skewed),
-            "revision 7\n\
-             50% top|bottom\n\
-             ├─ pane 1\n\
-             └─ pane 2\n\
-             zoomed: pane 8 (not in this arrangement)\n",
-        );
-    }
 
     /// The property the whole of [`own_session`] exists for, asserted where it can be seen without
     /// a display: the spawned child LEADS a session of its own, so the hangup that goes to the

@@ -14,6 +14,7 @@
 //! host projects it).
 
 pub mod activity;
+pub mod arrangement;
 pub mod command;
 /// Deriving a directory's current git branch — a session-sidebar display fact (crate-internal).
 mod git;
