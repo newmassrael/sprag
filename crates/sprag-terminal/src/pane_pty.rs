@@ -712,9 +712,12 @@ impl PanePty {
     /// `None` when the child has exited or been reaped (same guard and same reason as
     /// [`cwd`](Self::cwd) — a recycled pid must not be walked), when nothing owns the terminal, or
     /// on a platform with no `/proc`.
+    /// It is [`foreground_pgid_of`] applied to this pane's [`pid`](Self::pid), and it is one
+    /// function rather than two so that a caller holding only a pid — a sweep that has released its
+    /// workspace lock before doing I/O — cannot end up with a second answer.
     #[must_use]
     pub fn foreground_pgid(&self) -> Option<u32> {
-        read_foreground_pgid(self.pid()?)
+        foreground_pgid_of(self.pid()?)
     }
 
     /// Whether the child has closed the pseudoterminal (no more output).
@@ -953,25 +956,44 @@ fn read_cwd(_pid: u32) -> Option<PathBuf> {
 /// Read the foreground process group of a process's controlling terminal.
 ///
 /// Linux: `/proc/<pid>/stat` field 8, `tpgid`, through the crate's one parse of that line
-/// ([`crate::procfs::Stat`]) — which is where the `comm`-in-parentheses hazard, the byte-rather-
-/// than-`&str` decision and the `-1`-is-an-absence rule are all stated. It is the same number
-/// `tcgetpgrp` would return for that terminal (measured equal at a prompt, under a foreground job,
-/// and after that job was killed) and it is reachable without a master fd, which this crate hands
+/// (the crate-private `procfs::Stat`) — which is where the `comm`-in-parentheses hazard, the
+/// byte-rather-than-`&str` decision and the `-1`-is-an-absence rule are all stated. It is the same
+/// number `tcgetpgrp` would return for that terminal (measured equal at a prompt, under a foreground
+/// job, and after that job was killed) and it is reachable without a master fd, which this crate hands
 /// to the resize coalescer thread.
 ///
 /// **This used to be a second parser of that line, and it read the file as a `String`** — so a
 /// child whose `comm` the kernel truncated mid-codepoint reported no foreground group at all, while
-/// the sibling parser in [`crate::ports`] had been written on bytes precisely to survive that.
+/// the sibling parser in the crate-private `ports` module had been written on bytes to survive that.
+///
+/// # Why this is public, and takes a PID rather than a pane
+///
+/// It is I/O, and the caller that runs it most often — the daemon's settle sweep, once per pane per
+/// sweep interval — must not perform I/O while holding the workspace lock
+/// every client wake wants. **Measured (R291): doing so turned a concurrent reader's median from
+/// +0.8 us to +687 us and its p99 from +5.8 us to +41.8 ms**, because the sweeper released the lock
+/// and immediately re-took it around 4 us of syscalls, which is a convoy.
+///
+/// So the sweep reads each pane's [`PanePty::pid`] under the lock, releases it, and calls this. A
+/// pid is not a pane, and that is the point: nothing here can touch the registry.
+///
+/// **The residual, stated rather than smoothed over:** `PanePty::pid` stops answering once the exit
+/// is published, which is what stops a recycled pid being read — and between that check and this
+/// call the window is now microseconds wide instead of nanoseconds. It is the same window
+/// [`crate::PaneProcesses`] already documents for the same reason, not a new class, and closing it
+/// needs the exit to publish before the reap is observable.
 #[cfg(target_os = "linux")]
-fn read_foreground_pgid(pid: u32) -> Option<u32> {
+#[must_use]
+pub fn foreground_pgid_of(pid: u32) -> Option<u32> {
     crate::procfs::stat(pid)?.tpgid
 }
 
-/// No `/proc` off Linux — the same honest `None` as [`read_cwd`], and with the same consequence:
-/// a report bound to a process group is simply never released by that rule, which is where this
-/// tree already was.
+/// No `/proc` off Linux — the same honest `None` as this file's `read_cwd`, and with the same
+/// consequence: a report bound to a process group is simply never released by that rule, which is
+/// where this tree already was.
 #[cfg(not(target_os = "linux"))]
-fn read_foreground_pgid(_pid: u32) -> Option<u32> {
+#[must_use]
+pub fn foreground_pgid_of(_pid: u32) -> Option<u32> {
     None
 }
 

@@ -10,9 +10,8 @@
 //!
 //! R290 published WHAT is running
 //! ([`PaneProcesses`](sprag_terminal::PaneProcesses), the `pane_processes` address) and measured
-//! what that answer costs: **2751 us for a fresh read**, because `/proc` has no index by process
-//! group and naming a job's members means a pass over every process on the box. Nothing can be
-//! watched at that price.
+//! what that answer costs: a fresh read is a pass over every process on the box, because `/proc`
+//! has no index by process group. **Nothing can be watched at that price.**
 //!
 //! Its IDENTITY is a different object.
 //! [`PanePty::foreground_pgid`](sprag_terminal::PanePty::foreground_pgid) is one
@@ -20,9 +19,31 @@
 //! that number IS a job change. So the daemon watches the identity and lets the reader pay for the
 //! description only when it wants one.
 //!
-//! **That is the whole reason this module exists rather than a `pane_processes` poll.** A watch
-//! over the answer would be 2751 us every five seconds forever; a watch over its identity is a
-//! `read(2)` per pane.
+//! # The trade, MEASURED (R291) — `sprag-latency`, i9-14900HX, `--release`, four runs, minima
+//!
+//! Both rows from the SAME runs, which is the only way the ratio means anything:
+//!
+//! | | |
+//! |---|---|
+//! | `request pane_processes (max_age 0)` — the ANSWER | **2737.59 - 3566.94 us** |
+//! | `sweep: foreground_pgid, 3 panes` — the IDENTITY | **9.375 - 12.380 us** (3.1 - 4.1 us a pane) |
+//! | `sweep: JobWatch::observe, settled` | **0.014 - 0.018 us** |
+//! | so the event against the answer it names | **236x - 292x cheaper** |
+//!
+//! **That is the whole reason this module exists rather than a `pane_processes` poll.** A watch over
+//! the ANSWER would be about 3 ms every five seconds forever, on every daemon, to notice that a
+//! shell went back to its prompt. A watch over its identity is 12 us — **0.00025% of one core** at
+//! [`SWEEP_INTERVAL`](crate::agent::SWEEP_INTERVAL). The first row brackets R290's own 2751.41 us,
+//! which is the check that the two rounds measured the same thing.
+//!
+//! # ⚠ Where the reading happens matters more than what it costs
+//!
+//! The sweep does NOT hold a workspace lock across these reads, and that is measured rather than
+//! stylistic: with the `/proc` reads inside the pane loop, a concurrent pane-list reader's median
+//! went from **+0.8 us to +687 us** and its p99 from **+5.8 us to +41.8 ms** against the
+//! private-registry control, because the sweeper released each lock and immediately re-took it
+//! around ~4 us of syscalls per pane. [`sprag_terminal::foreground_pgid_of`] exists so the pass can
+//! read a pid under the lock and the file after it, and carries the whole number.
 //!
 //! # Why it is a TYPE and not a map inside the sweep
 //!

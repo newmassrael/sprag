@@ -19,22 +19,30 @@
 //!
 //! # What it costs, and the part that is not the obvious part
 //!
-//! Measured R261 on a live registry with real PTY panes, `--release`, five runs:
+//! **Re-measured at R291 against the commit before it (`f7e8b24`) built the same way**, because
+//! this pass gained a per-pane `/proc` read and a number that moves needs its control. Three runs
+//! each, `--release`, live registry with three real PTY panes.
 //!
-//! * **A quiet pass is free to everybody else.** Every pane settled under unchanged rules, the whole
-//!   pass 0.37 to 0.58 us, and a concurrent pane-list reader cannot tell whether it is running:
-//!   +0.4 to +0.8 us on its median against a control doing the same work on a private registry, at
-//!   SEVEN TO TWELVE MILLION times the real duty cycle.
-//! * **A pass in which every pane OWES an evaluation is a different object** — 44 to 58 us for three
-//!   panes, about 100x the quiet one, because the workspace lock is held across
-//!   [`AgentClock::observe`] for every pane in that window. That is not hypothetical: **a manifest
-//!   reload makes every remembered pane stale at once**, so saving `config.toml` schedules exactly
-//!   one such pass, and so does the first pass after boot.
-//! * **The reader pays a bigger share of a reload than the lock does.** A pane-list request runs the
-//!   same detector under the same clock, so after a reload the reader evaluates too — 45 to 62 us on
-//!   its own median with no second thread in the process at all.
+//! * **A quiet pass now costs the job sample and little else** — 0.46 to 0.64 us at the control,
+//!   **12.87 to 14.57 us here**, and the whole difference is one `/proc/<pid>/stat` line per pane.
+//!   Against a five-second period that is 0.00025% of one core.
+//! * **It is still free to everybody else, and that had to be re-earned.** A concurrent pane-list
+//!   reader sees **-10.6 to +0.8 us** on its median and -16.6 to +3.4 us at p99 against a control
+//!   sweeping a private registry — indistinguishable from the +0.8 to +1.6 us the control commit
+//!   shows. **It was NOT free in the first version of this pass**, which read `/proc` under the
+//!   workspace lock: +687 to +3000 us on the median and +41.8 to +51.3 ms at p99. See
+//!   [`sweep_once`]'s lock discipline for why the reads moved out.
+//! * **A pass in which every pane OWES an evaluation is a different object** — 197.4 to 215.2 us for
+//!   three panes here against 158.2 to 185.5 at the control, because the workspace lock is held
+//!   across [`AgentClock::observe`] for every pane in that window. That is not hypothetical: **a
+//!   manifest reload makes every remembered pane stale at once**, so saving `config.toml` schedules
+//!   exactly one such pass, and so does the first pass after boot.
+//! * **⚠ R261's recorded 44 to 58 us for that churning pass was already STALE before this round** —
+//!   the control commit measures 158.2 to 185.5 us on the same instrument. Nothing in R291 caused
+//!   it; it is thirty rounds of a growing detector and a different box, and it is corrected here
+//!   rather than left standing because it was only found by running the control at all.
 //!
-//! The numbers, the conditions and the one comparison that cannot be made are on [`sweep_once`].
+//! The conditions and the one comparison that cannot be made are on [`sweep_once`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
@@ -92,7 +100,14 @@ pub struct SweepReport {
 /// found for it.
 ///
 /// [`JobWatch`] holds why watching the job is affordable at all: the pass reads its IDENTITY (one
-/// `/proc/<pid>/stat` line), never the 2751 us walk that describes it.
+/// `/proc/<pid>/stat` line), never the walk that describes it. **MEASURED (R291), four runs,
+/// minima: 9.375 - 12.380 us for three panes including the watch's own bookkeeping, against
+/// 2737.59 - 3566.94 us for one `pane_processes` read taken in the same runs** — 236x to 292x, and
+/// 0.00025% of one core at [`crate::agent::SWEEP_INTERVAL`].
+///
+/// It is a real term all the same, and it is the first one this pass pays on EVERY sweep rather
+/// than only on a churning one. That is the trade the event is bought with, and the numbers below
+/// are re-measured against the commit before it rather than inherited.
 ///
 /// `now` is passed rather than read so a caller can drive the pass at a chosen instant — the tests
 /// depend on it and so does any harness that wants a deterministic pass. `discover` is the
@@ -117,11 +132,25 @@ pub struct SweepReport {
 /// thread serving pane-list requests, with the pass running CONTINUOUSLY rather than once every five
 /// seconds, so that a negligible answer settles the real cadence a fortiori.
 ///
-/// **The recurring pass is free.** Shared minus a control sweeping a PRIVATE registry at the same
-/// rate: +0.4 to +0.8 us on the reader's median and -2.4 to +0.9 us at p99 — at seven to twelve
-/// million times the daemon's actual duty cycle. Taken again while another project was building
-/// (the tool's control spread 29-240% against 25-69%), the same differences read -1.4 to +5.9 and
-/// -1.6 to +6.4: the paired design holds across a 2x change in the box, which is what it is for.
+/// **The recurring pass is free — RE-EARNED at R291, not inherited.** Shared minus a control
+/// sweeping a PRIVATE registry at the same rate: **-10.6 to +0.8 us on the reader's median and
+/// -16.6 to +3.4 us at p99**, against **+0.8 to +1.6 / +1.6 to +5.8** at the commit before this
+/// pass sampled the job at all (`f7e8b24`, built the same way). R261's original reading was +0.4 to
+/// +0.8 / -2.4 to +0.9, and it held again while another project was building — the paired design
+/// survives a 2x change in the box, which is what it is for.
+///
+/// **⚠ THE FIRST VERSION OF THE JOB SAMPLE BROKE THIS, and only this row said so.** With the
+/// `/proc` read inside the pane loop — under the workspace lock, where the screen read already is —
+/// the same difference was **+687 to +3000 us on the median and +41.8 to +51.3 ms at p99**. The
+/// sweeper was releasing each lock and immediately re-taking it around ~4 us of syscalls per pane,
+/// and `std`'s mutex is not fair, so the reader starved.
+///
+/// The daemon's own duty cycle hides that completely: one pass per
+/// [`SWEEP_INTERVAL`](crate::agent::SWEEP_INTERVAL) cannot convoy with itself. **But hiding it is
+/// exactly what would have made this instrument useless** — it runs the pass continuously so that a
+/// negligible answer settles the real cadence *a fortiori*, and an answer that is not negligible
+/// settles nothing at all. So the I/O moved out from under the lock
+/// ([`sprag_terminal::foreground_pgid_of`]) rather than the paragraph being rewritten to excuse it.
 ///
 /// **The churning pass cannot be answered the same way, and that is a property of the system rather
 /// than of the instrument.** A pane-list request runs the same detector under the same clock, so
@@ -131,12 +160,18 @@ pub struct SweepReport {
 /// the reader having done the rest. The two conditions cannot be matched, so their difference is not
 /// a lock cost — R255's shape again, a comparison that cannot be resolved at the level it was asked.
 ///
-/// So that case is bounded DIRECTLY instead, by this pass's own duration: 44 to 58 us for three
-/// panes against 0.37 to 0.58 us quiet, about 100x, and a reader wants one window so what it can
-/// wait for is that window's share. The consequence is stated rather than left to be met: a manifest
-/// edit schedules one pass in which every remembered pane is stale. It is a one-off on a user action,
+/// So that case is bounded DIRECTLY instead, by this pass's own duration: **197.4 to 215.2 us for
+/// three panes against 12.87 to 14.57 us quiet**, and a reader wants one window so what it can wait
+/// for is that window's share. The consequence is stated rather than left to be met: a manifest edit
+/// schedules one pass in which every remembered pane is stale. It is a one-off on a user action,
 /// which is why this is documented and not redesigned — and it is the paragraph a future slice that
 /// makes evaluations dearer, or lets one window hold many more panes, has to come back and re-read.
+///
+/// **⚠ The pair this replaces read 44 to 58 us against 0.37 to 0.58, and the first of those was
+/// already wrong before R291 touched anything**: the control commit measures 158.2 to 185.5 us for
+/// the churning pass on the same instrument. Thirty rounds of a growing detector, not this change —
+/// and the only reason it was caught is that a number this round moved got a control, which is the
+/// argument for giving one to every number that moves.
 pub fn sweep_once(
     registry: &Mutex<SessionRegistry>,
     agents: &AgentClock,
@@ -170,15 +205,15 @@ pub fn sweep_once(
     // round twice for a single observation.
     let mut woken: HashMap<String, Vec<Event>> = HashMap::new();
     for (session, pool) in &pools {
+        // What the foreground-job sample needs out of this window, collected UNDER the lock and
+        // read OUTSIDE it. See the loop below for why the two halves are split at all.
+        let mut children: Vec<(PaneId, Option<u32>)> = Vec::new();
         let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
         for pane in pool.panes() {
             let id = pane.id();
             live.insert(id);
             report.visited += 1;
-            // THE FOREGROUND JOB, and it is deliberately ABOVE the agent gate's `continue`: a job
-            // change is a different fact on a different clock, and gating it on `owes_evaluation`
-            // would tie it to the settle window and the ruleset, which have nothing to say about
-            // what a shell is running.
+            // THE FOREGROUND JOB, first half: the pane's child pid, which is a field read.
             //
             // Only on a SWEEP. `discover` means "additionally look for what nobody has asked
             // about", which a job change is by construction — nothing requests one and no dispatch
@@ -187,16 +222,11 @@ pub fn sweep_once(
             // faster job cadence means moving the park, not adding a constant here that would look
             // independent and would not be.
             //
-            // The read is one `/proc/<pid>/stat` line, taken under the workspace lock that is
-            // already held — the same lock the screen read below is taken under, and strictly less
-            // work than that. `JobWatch::observe` holds the establish rule: a pane's first reading
-            // is not news.
-            if discover && jobs.observe(id, pane.pty().foreground_pgid()) {
-                report.jobs_changed += 1;
-                woken
-                    .entry(session.clone())
-                    .or_default()
-                    .push(Event::PaneJobChanged(id.0));
+            // It is deliberately ABOVE the agent gate's `continue`: a job change is a different fact
+            // on a different clock, and gating it on `owes_evaluation` would tie it to the settle
+            // window and the ruleset, which have nothing to say about what a shell is running.
+            if discover {
+                children.push((id, pane.pty().pid()));
             }
             // A REPORT outlives the process that made it, and this is what bounds that. The thing
             // that expires is the REPORTER, and it can go in two ways the daemon can see:
@@ -258,6 +288,29 @@ pub fn sweep_once(
                 !agents.with(|state| state.is_due(id, now)),
                 "pane {id} is still due after being observed at the same instant",
             );
+        }
+        // THE WORKSPACE LOCK IS RELEASED HERE, and the `/proc` reads happen after it. **This is not
+        // tidiness — it is measured.** With the reads inside the loop above, a concurrent pane-list
+        // reader's median went from +0.8 us to +687 us and its p99 from +5.8 us to +41.8 ms against
+        // the private-registry control, because the sweeper released the lock and immediately
+        // re-took it around 4 us of syscalls per pane: a convoy, and `std`'s mutex is not fair.
+        //
+        // The daemon's own duty cycle hides it — one pass per `SWEEP_INTERVAL` cannot convoy with
+        // itself — but that made the instrument's whole argument unavailable. R261 measures these
+        // locks by running the pass CONTINUOUSLY so that a negligible answer settles the real
+        // cadence a fortiori, and an answer that is not negligible settles nothing.
+        drop(pool);
+        for (id, child) in children {
+            // `PanePty::pid` already answered `None` for a reaped child, which is what stops a
+            // recycled pid being read; `foreground_pgid_of` is the same read `PanePty::foreground_pgid`
+            // performs, named so it can be made without a pane in hand.
+            if jobs.observe(id, child.and_then(sprag_terminal::foreground_pgid_of)) {
+                report.jobs_changed += 1;
+                woken
+                    .entry(session.clone())
+                    .or_default()
+                    .push(Event::PaneJobChanged(id.0));
+            }
         }
     }
 
@@ -629,13 +682,19 @@ mod tests {
         );
     }
 
-    /// A tracker must not outlive its pane, and the census that decides it is DAEMON-WIDE.
+    /// **NEITHER** tracker may outlive its pane, and the census that decides it is DAEMON-WIDE.
     ///
     /// The arc register listed this as deliberately uncovered, on the grounds that a leaked tracker
     /// is unobservable through any surface — true while the pass was a closure in a binary. The
     /// registry's own length is the observable, and reaching it only needed the pass to be callable.
+    ///
+    /// **The [`JobWatch`] half was added at R291 because a revert-proof found nothing to fail.**
+    /// Deleting `jobs.retain_live(&live)` from the pass left the whole suite green: the watch's own
+    /// unit test calls that method DIRECTLY, so it pins the method and says nothing about whether
+    /// the pass ever calls it. Both censuses are asserted here, on one pane close, so they cannot
+    /// come apart.
     #[test]
-    fn a_pass_forgets_the_tracker_of_a_pane_that_is_gone() {
+    fn a_pass_forgets_the_trackers_of_a_pane_that_is_gone() {
         let reg = registry_with(&[("a", claude_pane()), ("b", painting("$ "))]);
         let agents = clock();
         let channels = ChannelRegistry::default();
@@ -644,8 +703,9 @@ mod tests {
 
         sweep_once(&reg, &agents, &jobs, &channels, base, true);
         assert_eq!(agents.with(|state| state.len()), 2);
+        assert_eq!(jobs.len(), 2, "and the job watch has met both panes");
 
-        // Session `b`'s pane closes. Its tracker is now the only thing that remembers it.
+        // Session `b`'s pane closes. Its trackers are now the only thing that remembers it.
         {
             let pool = {
                 let guard = reg.lock().unwrap_or_else(PoisonError::into_inner);
@@ -661,6 +721,12 @@ mod tests {
             agents.with(|state| state.len()),
             1,
             "a census from one session would have forgotten the other session's panes too",
+        );
+        assert_eq!(
+            jobs.len(),
+            1,
+            "and a job watch that kept the entry would compare a future pane's first reading \
+             against a dead pane's job",
         );
     }
 

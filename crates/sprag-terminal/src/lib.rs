@@ -41,7 +41,9 @@ pub use layout::{
     LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,
     MAX_LAYOUT_DEPTH, PaneDir, SplitDir, SplitId, SplitSide,
 };
-pub use pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput};
+pub use pane_pty::{
+    CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput, foreground_pgid_of,
+};
 pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,
 };

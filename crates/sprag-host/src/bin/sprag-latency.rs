@@ -775,6 +775,52 @@ fn under(state: &HostState, mut background: impl FnMut() + Send) -> Vec<Duration
 static PASSES: AtomicU64 = AtomicU64::new(0);
 static EVALUATED: AtomicU64 = AtomicU64::new(0);
 
+/// Every pane's foreground job, read exactly as [`sweep_once`] reads it — the registry lock taken
+/// and RELEASED to clone out the pools, each pool locked only long enough to read its panes' child
+/// PIDS, and the `/proc/<pid>/stat` lines read after that lock is dropped.
+///
+/// **The split is the measurement's subject and not an incidental detail.** An instrument that held
+/// the workspace lock across the reads would be measuring a shape the daemon deliberately does not
+/// have — the one R291 measured at +687 us on a concurrent reader's median before moving the I/O
+/// out ([`sprag_terminal::foreground_pgid_of`] carries that number).
+///
+/// It is deliberately the WALK and not one pane: what the daemon does every
+/// [`SWEEP_INTERVAL`] is this, for every pane it has. Returns the
+/// count so the compiler cannot elide the reads and so a run that measured an empty registry is
+/// visible rather than fast.
+fn read_every_foreground_pgid(host: &HostState) -> usize {
+    let pools: Vec<_> = {
+        let reg = host
+            .registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reg.sessions()
+            .iter()
+            .flat_map(|session| {
+                session
+                    .windows()
+                    .iter()
+                    .map(|window| Arc::clone(window.workspace()))
+            })
+            .collect()
+    };
+    let mut read = 0;
+    for pool in &pools {
+        let children: Vec<Option<u32>> = {
+            let pool = pool
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pool.panes().iter().map(|pane| pane.pty().pid()).collect()
+        };
+        for child in children {
+            if child.and_then(sprag_terminal::foreground_pgid_of).is_some() {
+                read += 1;
+            }
+        }
+    }
+    read
+}
+
 /// One sweep pass over `host`'s registry, at `now`, with discovery on — the daemon's own call.
 ///
 /// `jobs` is the host's OWN foreground-job watch and must be the same one across calls: a watch
@@ -1311,6 +1357,49 @@ fn main() -> ExitCode {
     budget(
         "what a second reader inside the tolerance pays",
         processes_held.min,
+    );
+
+    // **R291's cost argument, as the pair that makes it legible.** The job-change EVENT does not
+    // watch the answer above — it watches that answer's IDENTITY. One `/proc/<pid>/stat` line per
+    // pane against a pass over every process on the box, and the sweep pays it for every pane once
+    // every `SWEEP_INTERVAL`, which is a thing the row above could never be: 2.7 ms every five
+    // seconds, forever, to notice that a shell went back to its prompt.
+    //
+    // Measured as the WALK over all `PANE_COUNT` panes, because that is what the daemon does; a
+    // single-pane row would understate a per-pane term by the count.
+    let jobs_read = read_every_foreground_pgid(&state);
+    assert_eq!(
+        jobs_read, PANE_COUNT,
+        "every pane has a live child, or this row is measuring an empty walk",
+    );
+    let job_sample = paired(
+        &format!("sweep: foreground_pgid, {PANE_COUNT} panes"),
+        &mut controls,
+        None,
+        || {
+            black_box(read_every_foreground_pgid(black_box(&state)));
+        },
+    );
+    // And what the WATCH does with each reading: one hash insert and one comparison, which is the
+    // whole of the establish rule. Measured on a settled pane — the answer every quiet pane gives.
+    let watch = JobWatch::new();
+    black_box(watch.observe(PaneId(0), Some(4242)));
+    let job_observe = paired(
+        "sweep: JobWatch::observe, settled",
+        &mut controls,
+        None,
+        || {
+            black_box(watch.observe(black_box(PaneId(0)), black_box(Some(4242))));
+        },
+    );
+    budget(
+        "what watching every pane's job costs one sweep",
+        job_sample.min + job_observe.min * PANE_COUNT as u32,
+    );
+    println!(
+        "  {:<46} {:>9.2}x  cheaper than one /proc pass",
+        "so the EVENT against the ANSWER it names",
+        processes_fresh.min.as_secs_f64() / job_sample.min.as_secs_f64(),
     );
 
     // THE DERIVE SITE, at the two ends of a realistic span. It runs after EVERY mutating dispatch,
