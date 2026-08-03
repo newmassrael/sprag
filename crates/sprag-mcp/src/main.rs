@@ -20,10 +20,24 @@
 //! sibling's screen without interpreting it: whether the AI in that pane is waiting for a human
 //! (H3). They report the daemon's own verdict, so two agents watching one pane agree.
 //!
+//! ## A pane NUMBER is positional, so the handle an agent holds is a NAME
+//!
+//! Every tool here addresses a pane by its 1-based number in `list_panes`, and that number moves:
+//! closing any earlier pane shifts every number after it. So a number an agent remembered can come
+//! to name a DIFFERENT pane, and the `write_pane` that follows succeeds against the wrong subject —
+//! the worst answer a surface can give, because nothing about it looks like a failure.
+//!
+//! The stable handle could not be the host id this surface already prints, because a number and an
+//! id are both integers and one argument cannot carry the two without a mode flag. A NAME is a
+//! string, so **JSON's own types discriminate it**: `pane: 3` is the third pane and `pane: "build"`
+//! is the pane called build. That is why the handle is a name ([`sprag_terminal::PaneName`], which
+//! refuses an all-digit one for exactly this reason), and why [`tool_open_pane`] takes one at birth
+//! — an agent that names its work pane never has to hold a number at all.
+//!
 //! ## The agent's OWN pane, and why it is the only structural write here
 //!
-//! [`tool_open_pane`] and [`tool_close_pane`] are the one place this surface CHANGES the set of
-//! panes rather than reading or typing into it. Everything else here works on a pane a person
+//! [`tool_open_pane`], [`tool_close_pane`] and [`tool_rename_pane`] are the one place this surface
+//! CHANGES the set of panes (or what a person reads on one) rather than reading or typing into it. Everything else here works on a pane a person
 //! opened, which left "run the build over there and wait for it" — the workflow `pane_processes`,
 //! `pane_job_changed` and `wait_for_change` were built for — with no first step an agent could take.
 //!
@@ -32,8 +46,9 @@
 //! own workbench, appended without an opinion about the arrangement.
 //!
 //! What makes the destructive half safe to hand an agent is that the daemon records WHO ASKED for
-//! each pane ([`sprag_terminal::Pane::opened_by`]), so `close_pane` can refuse every pane its caller
-//! did not open. That is an ergonomic guard rather than a boundary — an agent that can `write_pane`
+//! each pane ([`sprag_terminal::Pane::opened_by`]), so `close_pane` — and `rename_pane`, on the
+//! same argument, since a pane's name is what a PERSON reads on it — can refuse every pane its
+//! caller did not open. That is an ergonomic guard rather than a boundary — an agent that can `write_pane`
 //! into a shell can run `sprag kill-pane` — and the mistake it prevents is the one that actually
 //! happens: a mis-resolved pane number ending a person's editor and taking its scrollback with it.
 //!
@@ -288,7 +303,9 @@ fn tools_list() -> Value {
             {
                 "name": "list_panes",
                 "description": "List the sibling terminal panes in this sprag window, \
-                    with their 1-based number, host id, size, running command, live \
+                    with their 1-based number, any NAME they have been given (pass a name as \
+                    `pane` in place of the number — it does not shift when a pane closes, and a \
+                    number does), host id, size, running command, live \
                     window title, and the most recent attention notification a pane \
                     raised (OSC 9 / 777 / 99), if any. Also reports each pane's invisible \
                     input-mode state: whether its app is tracking the MOUSE (DECSET \
@@ -1529,7 +1546,7 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
         };
         spawn_args["cwd"] = json!(dir);
     }
-    let id = host_call(
+    let id = host_call_kinded(
         "scene/invoke",
         json!({ "path": mux_action_path(SPAWN_ACTION), "args": spawn_args }),
     )
@@ -1547,7 +1564,7 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
                  Call list_panes to see which names are in use."
             ),
         ),
-        None => why,
+        None => why.0,
     })?
     .as_u64()
     .ok_or("the host did not answer with a new pane id")?;
@@ -1764,7 +1781,7 @@ fn tool_rename_pane(args: &Value) -> Result<String, String> {
     // The daemon's answer carries the name it RECORDED, so this reports what landed rather than
     // what was asked for — a name is trimmed on the way in, and echoing the request would tell the
     // caller to address the pane by a string that does not resolve.
-    let answer = host_call(
+    let answer = host_call_kinded(
         "scene/invoke",
         json!({ "path": mux_action_path(RENAME_PANE_ACTION), "args": action_args }),
     )
@@ -1777,7 +1794,7 @@ fn tool_rename_pane(args: &Value) -> Result<String, String> {
                  Call list_panes to see which names are in use."
             ),
         ),
-        None => why,
+        None => why.0,
     })?;
     match answer.get("name").and_then(Value::as_str) {
         Some(recorded) => Ok(format!(
@@ -2478,15 +2495,46 @@ fn notification_line(note: &Value) -> String {
 /// leaves the variant name in front of it, which is the leak R283 removed from the CLI; this
 /// replaces it.
 ///
+/// **Decided by the fault's KIND, never by its rendering.** `HostConn::call` maps any fault to
+/// [`io::ErrorKind::Other`] and a transport failure to its own kind, so this reads the code — the
+/// discipline R292 established after matching on wording had already cost a round. Grepping the
+/// message for `InvokeRejected` would work today and would silently stop working the moment
+/// upstream reworded it, putting the leak back with nothing failing.
+///
 /// A transport failure is NOT replaced. "The socket went away" and "the daemon said no" are
 /// different things to be told, and a caller that could not reach the daemon at all must not be
 /// handed a sentence about pane names.
-fn refusal_sentence(raw: &str, instead: &str) -> String {
-    if raw.contains("InvokeRejected") {
+fn refusal_sentence((raw, kind): &(String, io::ErrorKind), instead: &str) -> String {
+    if *kind == io::ErrorKind::Other {
         instead.to_owned()
     } else {
         format!("{raw} — {instead}")
     }
+}
+
+/// [`host_call`], keeping the failure's ERROR KIND so a caller can tell a REFUSAL from a transport
+/// failure ([`refusal_sentence`]). The plain form drops it, because every other tool here reports
+/// the daemon's own sentence unchanged.
+fn host_call_kinded(method: &str, params: Value) -> Result<Value, (String, io::ErrorKind)> {
+    let sock = host_sock().ok_or_else(|| {
+        (
+            "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
+             ancestor); these pane tools do not apply to this session"
+                .to_owned(),
+            io::ErrorKind::NotFound,
+        )
+    })?;
+    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT).map_err(|e| {
+        let kind = e.kind();
+        (
+            format!("cannot reach the sprag host at {}: {e}", sock.display()),
+            kind,
+        )
+    })?;
+    conn.call(method, params).map_err(|e| {
+        let kind = e.kind();
+        (e.to_string(), kind)
+    })
 }
 
 fn host_call(method: &str, params: Value) -> Result<Value, String> {
