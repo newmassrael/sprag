@@ -11051,6 +11051,72 @@
         "A lone Escape in a terminal client depends on a parser timeout somebody else owns, which is why the editor takes C-c and C-g as well."
       ]
     },
+    "R307": {
+      "decision_summary": "A boundary between panes is a thing you can say: the daemon gains its first divider op, the axis picks the boundary and the direction moves it, the distance is in cells, and five words say WHICH nothing happened.",
+      "changes_bullets": [
+        "resize_pane {pane?,dir,cells?} is the daemon's FIRST op that moves a divider; before it the only gesture in the whole product that could change a split's share was a pointer drag in sprag-gui, so sprag-tui could not resize at all",
+        "the boundary is chosen by the AXIS (LayoutTree::divider_on, the nearest ancestor split, no side skip) and moved by the DIRECTION, so -R takes it right and whether the pane grows follows from which side it sits on — tmux's behaviour in one sentence with no case analysis",
+        "the distance is in CELLS and the conversion is the daemon's alone: a cell becomes a share against the split's region under the ARBITRATED window, which no client holds even in principle",
+        "Divider::stepped shares one private inverse with the pointer drag's ratio_at, so the clamp that keeps a cell on each side and the half-cell that makes the inverse exact are written once for both gestures",
+        "ResizeHow answers five words (resized / at_minimum / at_edge / untiled / zoomed), each with one cause and one remedy, where the rival's resize_pane answers a bool",
+        "a zoomed window is REPORTED and NOT moved: R285 made the zoom a projection so the arrangement is untouched by it, and acting invisibly is worse than doing nothing",
+        "the window-size precondition is checked FIRST, so one verb has one contract — a test found a one-pane window answering at_edge where a two-pane one refused",
+        "sprag resize-pane gains -L|-R|-U|-D [N] beside -x -y; resize-pane -L|-R|-U|-D [N] joins the binding vocabulary with tmux's EIGHT repeating defaults (prefix C-Arrow at one cell, M-Arrow at five), which the keymap's own comment had recorded as the family sprag had no verb for",
+        "HostClient::resize_toward is carried out by both frontends; MCP resize_pane is gated on the same provenance close/rename/swap use, on an argument that is this verb's own — a pane's WIDTH decides whether what the agent reads is wrapped"
+      ],
+      "verification_bullets": [
+        "suite EXIT 0 / 46 targets / 2043 tests (R306 left 2028); clippy 0 with no suppression; fmt; doc gate 0/16",
+        "pixel smoke 159/0 on a REBUILT release set (five checks new, was 151/0), driving prefix C-Left and C-Right through the shipped sprag-gui binary and judging the DAEMON's pane widths",
+        "TEN revert-proofs each shown to DISCRIMINATE plus a CONTROL edit shown to stay GREEN — and the control EARNED ITS PLACE: it caught a harness bug (--no-fail-fast after the -- separator) that had made five of the ten reads false",
+        "a live sprag-tui on a real pseudoterminal driven by prefix C-Left, judged on the daemon's pane sizes, with -r proven (no second prefix) and a bare arrow proven to reach the pane instead",
+        "a live CLI test against a real daemon: 50% -> 60% -> 40% predicted by arithmetic, a clamp reporting 39 of 500 asked for, an edge succeeding with its own sentence, and an unmeasured window refusing",
+        "a live MCP test through the shipped binary: the person's pane refused, the agent's own resized, the drawn share moving 50% -> 38%",
+        "a SKEW RUN BOTH DIRECTIONS whose controls measured a defect: the new client told a parent-commit daemon there was no pane 0 when the pane existed and the window was pinned"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "WIRE_PROTOCOL STAYS 9, and it is MEASURED rather than reasoned — the first round in six that does not bump. An added ACTION passes client/hello where an added ARGUMENT would be dropped silently, so the failure is loud; what the skew run found is that it was loud and WRONG, and the fix is the unknown-action mechanism R306 built and left with one caller.",
+        "Neither frontend SHOWS a resize outcome: HostClient::resize_toward reduces five words to a bool, so a user pressing the key in a zoomed window sees nothing and is told nothing.",
+        "A window nobody is watching refuses the verb, so a detached session cannot be resized from a shell without window-size manual plus a pinned rectangle. Stated in the refusal; it is the arbitration rule, not this verb's.",
+        "The pointer drag still writes a WHOLE TREE through set_layout with an expected revision, where the key moves one boundary with none — two writers of one ratio, only one of them checking for a concurrent author.",
+        "The palette advertises no chord and has no resize rows; R307 widens that hole by eight keys."
+      ],
+      "publishable_decision_summary": "A boundary between panes is a thing you can say: the daemon gains its first divider op, the axis picks the boundary and the direction moves it, the distance is in cells, and five words say WHICH nothing happened.",
+      "publishable_changes_bullets": [
+        "resize_pane {pane?,dir,cells?} is the daemon's FIRST op that moves a divider; before it the only gesture in the whole product that could change a split's share was a pointer drag in sprag-gui, so sprag-tui could not resize at all",
+        "the boundary is chosen by the AXIS (LayoutTree::divider_on, the nearest ancestor split, no side skip) and moved by the DIRECTION, so -R takes it right and whether the pane grows follows from which side it sits on — tmux's behaviour in one sentence with no case analysis",
+        "the distance is in CELLS and the conversion is the daemon's alone: a cell becomes a share against the split's region under the ARBITRATED window, which no client holds even in principle",
+        "Divider::stepped shares one private inverse with the pointer drag's ratio_at, so the clamp that keeps a cell on each side and the half-cell that makes the inverse exact are written once for both gestures",
+        "ResizeHow answers five words (resized / at_minimum / at_edge / untiled / zoomed), each with one cause and one remedy, where the rival's resize_pane answers a bool",
+        "a zoomed window is REPORTED and NOT moved: R285 made the zoom a projection so the arrangement is untouched by it, and acting invisibly is worse than doing nothing",
+        "the window-size precondition is checked FIRST, so one verb has one contract — a test found a one-pane window answering at_edge where a two-pane one refused",
+        "sprag resize-pane gains -L|-R|-U|-D [N] beside -x -y; resize-pane -L|-R|-U|-D [N] joins the binding vocabulary with tmux's EIGHT repeating defaults (prefix C-Arrow at one cell, M-Arrow at five), which the keymap's own comment had recorded as the family sprag had no verb for",
+        "HostClient::resize_toward is carried out by both frontends; MCP resize_pane is gated on the same provenance close/rename/swap use, on an argument that is this verb's own — a pane's WIDTH decides whether what the agent reads is wrapped"
+      ],
+      "publishable_verification_bullets": [
+        "suite EXIT 0 / 46 targets / 2043 tests (R306 left 2028); clippy 0 with no suppression; fmt; doc gate 0/16",
+        "pixel smoke 159/0 on a REBUILT release set (five checks new, was 151/0), driving prefix C-Left and C-Right through the shipped sprag-gui binary and judging the DAEMON's pane widths",
+        "TEN revert-proofs each shown to DISCRIMINATE plus a CONTROL edit shown to stay GREEN — and the control EARNED ITS PLACE: it caught a harness bug (--no-fail-fast after the -- separator) that had made five of the ten reads false",
+        "a live sprag-tui on a real pseudoterminal driven by prefix C-Left, judged on the daemon's pane sizes, with -r proven (no second prefix) and a bare arrow proven to reach the pane instead",
+        "a live CLI test against a real daemon: 50% -> 60% -> 40% predicted by arithmetic, a clamp reporting 39 of 500 asked for, an edge succeeding with its own sentence, and an unmeasured window refusing",
+        "a live MCP test through the shipped binary: the person's pane refused, the agent's own resized, the drawn share moving 50% -> 38%",
+        "a SKEW RUN BOTH DIRECTIONS whose controls measured a defect: the new client told a parent-commit daemon there was no pane 0 when the pane existed and the window was pinned"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "WIRE_PROTOCOL STAYS 9, and it is MEASURED rather than reasoned — the first round in six that does not bump. An added ACTION passes client/hello where an added ARGUMENT would be dropped silently, so the failure is loud; what the skew run found is that it was loud and WRONG, and the fix is the unknown-action mechanism R306 built and left with one caller.",
+        "Neither frontend SHOWS a resize outcome: HostClient::resize_toward reduces five words to a bool, so a user pressing the key in a zoomed window sees nothing and is told nothing.",
+        "A window nobody is watching refuses the verb, so a detached session cannot be resized from a shell without window-size manual plus a pinned rectangle. Stated in the refusal; it is the arbitration rule, not this verb's.",
+        "The pointer drag still writes a WHOLE TREE through set_layout with an expected revision, where the key moves one boundary with none — two writers of one ratio, only one of them checking for a concurrent author.",
+        "The palette advertises no chord and has no resize rows; R307 widens that hole by eight keys."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
