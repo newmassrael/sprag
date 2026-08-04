@@ -2375,10 +2375,16 @@ fn tool_swap_pane(args: &Value) -> Result<String, String> {
     // whose caller cannot know who it traded with, so that one resolves the partner from a listing
     // read AFTER the action — the answer describes the state the action left. Its failure is NOT
     // the call's failure (`relisted`'s rule): the arrangement has already moved.
+    // The `dir` arm's partner is an ID the caller never named, and it is resolved against the
+    // listing ALREADY IN HAND rather than a fresh one — which is not a shortcut but the honest
+    // reading. A swap moves no pane's NUMBER: numbers are pool order, and this verb changes only
+    // where the panes sit, which is the whole `panes`-answers-WHO / `layout`-answers-WHERE split.
+    // Re-reading would name the partner at a second instant for no fact gained, and cost a third
+    // host call — the two-instant join the directional arm exists to remove. (`close_pane` DOES
+    // re-read, because a close is the one verb that renumbers.)
     let partner = partner.or_else(|| {
         let with = answer["b"].as_u64()?;
-        query_panes()
-            .ok()?
+        panes
             .iter()
             .find(|pane| pane.id == with)
             .map(render_pane_handle)
