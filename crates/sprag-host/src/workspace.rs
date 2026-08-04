@@ -1130,7 +1130,7 @@ impl WorkspaceExternal {
             // client reads, and it is the whole question for one that only has to decide whether to
             // re-project. `SelectHow::changed` is the ONE derivation of it.
             "changed": selection.how.changed(),
-            "outcome": selection.how.wire_str(),
+            crate::wire::OUTCOME_KEY: selection.how.wire_str(),
         })))
     }
 

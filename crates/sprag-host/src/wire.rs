@@ -1589,10 +1589,11 @@ impl SwapHow {
 
     /// Read the outcome of an answer, from any daemon — including one that does not carry the key.
     ///
-    /// `toward` is the direction the caller asked for, if it asked for one, and `partner` is the
-    /// answer's `b`. Together with `changed` they determine three of the four words exactly: a
-    /// `with` request that changed nothing traded a pane with itself, and a `dir` request that
-    /// changed nothing went nowhere. Only WHICH nothing is unrecoverable, and this answers the
+    /// `toward` is the direction the caller asked for, if it asked for one — which is what makes the
+    /// derivation exact rather than a guess. `changed` plus the arm the caller chose determine three
+    /// of the four words: a `with` request that changed nothing traded a pane with itself, and a
+    /// `dir` request that changed nothing went nowhere. Only WHICH nothing is unrecoverable, and
+    /// this answers the
     /// honest half of it ([`AtEdge`](Self::AtEdge), the case a user meets; a floating origin needs a
     /// client that floated it).
     ///
