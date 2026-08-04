@@ -1139,6 +1139,62 @@ fn a_name_typed_at_the_prompt_renames_the_window_and_never_reaches_the_shell() {
     );
 }
 
+/// **`prefix &` ASKS before it destroys, and only a `y` destroys anything.**
+///
+/// tmux's key with tmux's own guard. R305 shipped `kill-window` bindable and UNBOUND because there
+/// was no prompt to guard it with, and recorded that its arm therefore had no live coverage at all
+/// — this is that coverage, on both answers.
+///
+/// The NO half runs first and is the one that discriminates: a client that performed the verb and
+/// asked afterwards, or that treated any key as consent, would pass a yes-only test.
+#[test]
+fn the_kill_key_asks_and_only_a_yes_takes_the_window() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &sock;
+
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+
+    // A second window, so a kill has something to take that is not the session itself.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"c");
+    wait_for("a second window to exist", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        )
+    });
+
+    // ASKED, and answered NO — with `n`, which is not a key the guard has any special reading of:
+    // anything but `y` is no, which is tmux's rule and the safe direction for a question whose yes
+    // cannot be taken back.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"&");
+    tui.type_bytes(b"n");
+    typing_follows(&mut tui, &mut conn, &session, 1);
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        "a refused kill takes nothing, and the keyboard is the pane's again",
+    );
+
+    // ...and YES takes it. The session is left on the survivor, which is the daemon's own choice.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"&");
+    tui.type_bytes(b"y");
+    wait_for("the answered kill to reach the daemon", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), true)],
+        )
+    });
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "and the client survived destroying a window it was projecting",
+    );
+}
+
 /// The ARRANGEMENT's pane order for `session`'s current window — the fact a swap moves and the pane
 /// LISTING does not.
 ///

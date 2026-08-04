@@ -254,6 +254,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         focus,
         Clear::Yes,
         &mut held,
+        // Nothing is being asked at boot, and the state that would say so is declared below —
+        // where it belongs, one line before the loop that owns it.
+        None,
     )?;
 
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
@@ -294,6 +297,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 focus,
                                 Clear::Yes,
                                 &mut held,
+                                asking.as_ref(),
                             )?;
                             continue;
                         }
@@ -309,6 +313,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 focus,
                                 Clear::Yes,
                                 &mut held,
+                                asking.as_ref(),
                             )?;
                             Command::Act(action)
                         }
@@ -360,6 +365,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             focus,
                             Clear::No,
                             &mut held,
+                            asking.as_ref(),
                         )?;
                     }
                     // A zoom changes what this client DRAWS without changing the pane set, so it
@@ -383,6 +389,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             focus,
                             Clear::No,
                             &mut held,
+                            asking.as_ref(),
                         )?;
                     }
                     // THE WINDOW LEVEL, reached from a key (R305). All three arms share one shape
@@ -430,6 +437,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             focus,
                             Clear::Yes,
                             &mut held,
+                            asking.as_ref(),
                         )?;
                     }
                     // A DIRECTIONAL move is the daemon's to resolve, so this arm publishes nothing
@@ -451,6 +459,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             focus,
                             Clear::No,
                             &mut held,
+                            asking.as_ref(),
                         )?;
                     }
                     // The SWAP's twin of the arm above, and identical for the same reason: the
@@ -469,6 +478,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             focus,
                             Clear::No,
                             &mut held,
+                            asking.as_ref(),
                         )?;
                     }
                     // The four ASKING actions are consumed above, where `Ask::of` turns them into a
@@ -495,6 +505,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             focus,
                             Clear::No,
                             &mut held,
+                            asking.as_ref(),
                         )?;
                     }
                 }
@@ -551,6 +562,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         focus,
                                         Clear::Yes,
                                         &mut held,
+                                        asking.as_ref(),
                                     )?;
                                 }
                             }
@@ -575,6 +587,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             focus,
                             Clear::No,
                             &mut held,
+                            asking.as_ref(),
                         )?;
                     }
                     // Pane-LOCAL cells: `pane_at` has already subtracted the rectangle's origin.
@@ -608,6 +621,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     focus,
                     Clear::Yes,
                     &mut held,
+                    asking.as_ref(),
                 )?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
@@ -635,6 +649,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 focus,
                 Clear::No,
                 &mut held,
+                asking.as_ref(),
             )?;
         }
     }
@@ -705,6 +720,7 @@ fn paint(
     focus: Option<PaneId>,
     clear: Clear,
     held: &mut Painted,
+    asking: Option<&Asking>,
 ) -> Result<(), Box<dyn Error>> {
     // The outer terminal's title, refreshed HERE because this is the one function that writes the
     // terminal at all — so every path that repaints also re-titles, and no future caller can add a
@@ -757,6 +773,19 @@ fn paint(
         screen.add_changes(divider_changes(&Divider { area, ..*divider }));
     }
     screen.add_changes(cursor);
+    // THE PROMPT LAST, and inside this function rather than at the call sites, for the reason the
+    // retitle above is here: this is the one place that writes the terminal, so every path that
+    // repaints also re-draws the question, and no future caller can add a repaint that drops it.
+    // Found by the audit rather than by a test — a resize or a host wake while the prompt was up
+    // wiped the row off the screen while this client went on eating every keystroke.
+    if let Some(asking) = asking {
+        screen.add_changes(prompt_changes(
+            screen_area,
+            &asking.question(),
+            asking.answer(),
+            asking.caret(),
+        ));
+    }
     screen.flush()?;
     Ok(())
 }
@@ -1198,8 +1227,12 @@ impl Asking {
     }
 }
 
-/// Paint the prompt row over the bottom of the screen — see [`prompt_changes`] for why it is an
-/// overlay and not a reserved row.
+/// Paint the prompt row over the bottom of the screen, and nothing else.
+///
+/// The row-only path, used while a name is being TYPED: a keystroke changes one row, and repainting
+/// every pane for it would put the whole arrangement through the diff cache at typing rate. Every
+/// other path goes through [`paint`], which draws this same row last so a repaint cannot lose it —
+/// see [`prompt_changes`] for why the row is an overlay and not a reserved line.
 fn paint_prompt(
     screen: &mut BufferedTerminal<SystemTerminal>,
     screen_area: Rect,
