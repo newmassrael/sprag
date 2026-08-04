@@ -1631,10 +1631,16 @@ mod tests {
         mutate(registry);
         // The session may have been RENAMED by `mutate`, which is the case this whole pass is
         // about: read the shape at the address it has now, exactly as the dispatch funnel does.
-        let now = registry
-            .name_of(before.sessions[0].0)
-            .unwrap_or(&session)
-            .to_owned();
+        // Resolved by the identity of the session this shape was read FOR — found by name in the
+        // BEFORE shape, never by position: a helper that silently read another session's identity
+        // would make every assertion below a claim about the wrong thing.
+        let id = before
+            .sessions
+            .iter()
+            .find(|(_, name)| *name == session)
+            .expect("the scoped session is in its own shape")
+            .0;
+        let now = registry.name_of(id).unwrap_or(&session).to_owned();
         let after = SessionShape::read(registry, &now);
         before.diff(&after)
     }
@@ -1795,6 +1801,35 @@ mod tests {
             },
             EventKind::LayoutUpdated => Event::LayoutUpdated,
         }
+    }
+
+    /// No kind's DETAIL key may be its own SUBJECT key — they land in one JSON object, so a kind
+    /// with both spelled the same would silently overwrite its subject with its detail and a reader
+    /// would parse a well-formed event about the wrong thing.
+    ///
+    /// It holds today by inspection (`pane_moved` is a PANE subject with a `window` detail); this
+    /// is the assertion that keeps it holding, because the failure would be a wrong answer that
+    /// decodes cleanly — the class `to_wire` exists to keep out.
+    #[test]
+    fn no_kinds_detail_key_can_overwrite_its_subject() {
+        for kind in EventKind::ALL {
+            if let (Some(subject), Some(detail)) = (kind.subject_key(), kind.detail_key()) {
+                assert_ne!(
+                    subject,
+                    detail,
+                    "`{}` would write its detail over its own subject",
+                    kind.wire_str(),
+                );
+            }
+        }
+        // And the pairing is real rather than vacuous: at least one kind has both keys, so the
+        // loop above is walking a case instead of finding none.
+        assert!(
+            EventKind::ALL
+                .iter()
+                .any(|kind| kind.subject_key().is_some() && kind.detail_key().is_some()),
+            "some kind must carry both, or this test asserts nothing",
+        );
     }
 
     #[test]
