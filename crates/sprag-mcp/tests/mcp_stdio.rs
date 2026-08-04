@@ -2218,6 +2218,137 @@ fn an_agent_cannot_close_a_pane_another_pane_opened() {
     );
 }
 
+/// **The live gate for `swap_pane`**: an agent PLACES the pane it opened, and is refused every other
+/// one — against a real daemon and the shipped binary.
+///
+/// It is a live test rather than a unit one for two reasons a unit test cannot reach. The gate reads
+/// a provenance the DAEMON recorded through a socket, so this is the third verb proving that one
+/// fact is one fact (`close_pane` and `rename_pane` are the other two). And the arrangement is read
+/// back through `pane_layout` — a different code path from the tool's own answer — because a tool
+/// that reported a trade it had not made would otherwise pass on its own wording.
+///
+/// The ORDER is deliberate: the refusals are checked BEFORE the happy path, so a gate that refused
+/// nothing could not pass this test by having already moved everything.
+#[test]
+fn an_agent_places_the_pane_it_opened_and_no_other() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool("open_pane", json!({ "name": "build" }));
+    server.call_tool("open_pane", json!({ "name": "logs" }));
+    // ASSERTED, not assumed: the two opens APPEND, so the spine is 1 | 2 | 3 and the presses below
+    // each have somewhere to go.
+    let before = server.call_tool("pane_layout", json!({}));
+    assert!(
+        before.contains("pane 1: right=pane 2")
+            && before.contains("pane 2: left=pane 1, right=pane 3"),
+        "the fixture starts with the person's pane LEFTMOST — read from the adjacency table, \
+         because the pane NUMBERS are pool order and a swap deliberately does not move them: \
+         {before}",
+    );
+
+    // The PERSON's pane is not the agent's to place — the same sentence the close and the rename
+    // give, on the same fact.
+    let refused = server.call_tool_error("swap_pane", json!({ "pane": 1, "dir": "right" }));
+    assert!(
+        refused.contains("pane 1 was opened by a person, not by you")
+            && refused.contains("their arrangement"),
+        "it says why, and that the reason is the arrangement rather than the pane: {refused}",
+    );
+    assert_eq!(
+        server.call_tool("pane_layout", json!({})),
+        before,
+        "and the refusal really refused — the arrangement is untouched",
+    );
+
+    // Neither partner, and both: one sentence each, because the daemon can only answer `Rejected`.
+    let neither = server.call_tool_error("swap_pane", json!({ "pane": "build" }));
+    assert!(
+        neither.contains("either 'with'") && neither.contains("'dir'"),
+        "a call naming no partner is told what the two choices are: {neither}",
+    );
+    let both = server.call_tool_error(
+        "swap_pane",
+        json!({ "pane": "build", "with": 3, "dir": "left" }),
+    );
+    assert!(
+        both.contains("name the partner two different ways"),
+        "and a call naming both is told they are alternatives: {both}",
+    );
+
+    // THE HAPPY PATH, by direction: the agent's own pane trades with the person's.
+    let moved = server.call_tool("swap_pane", json!({ "pane": "build", "dir": "left" }));
+    assert!(
+        moved.contains("Moved pane 2 (\"build\") one place left")
+            && moved.contains("pane 1")
+            && moved.contains("Nobody's cursor moved"),
+        "it names both panes and says what it did NOT do: {moved}",
+    );
+    let after = server.call_tool("pane_layout", json!({}));
+    assert!(
+        after.contains("pane 2: right=pane 1")
+            && after.contains("pane 1: left=pane 2, right=pane 3"),
+        "and the arrangement — a different code path — agrees the two traded PLACES: {after}",
+    );
+    assert!(
+        after.contains("pane 1 (id 0)  (you are here)"),
+        "the agent's own pane keeps its NUMBER through a trade, which is the panes/layout split: \
+         a number is pool order and a swap moves cells: {after}",
+    );
+
+    // AT THE EDGE: honest, not a failure, and not the same sentence as a trade with itself. `build`
+    // is leftmost now, which the reading above established rather than assumed.
+    let edge = server.call_tool("swap_pane", json!({ "pane": "build", "dir": "left" }));
+    assert!(
+        edge.contains("There is nothing to the left of pane 2 (\"build\")")
+            && edge.contains("edge of the window"),
+        "the edge names the direction asked for and the pane still held: {edge}",
+    );
+    assert_eq!(
+        server.call_tool("pane_layout", json!({})),
+        after,
+        "and nothing moved",
+    );
+
+    // ...and by PARTNER, naming the person's pane as the one displaced: that is legal, because a
+    // swap places the pane the caller owns and the other one goes where it came from.
+    let named = server.call_tool("swap_pane", json!({ "pane": "build", "with": "logs" }));
+    assert!(
+        named.contains("pane 2 (\"build\") and pane 3 (\"logs\") have traded places"),
+        "the partner arm names both panes in this surface's handles: {named}",
+    );
+    let swapped = server.call_tool("pane_layout", json!({}));
+    assert!(
+        swapped.contains("pane 3: right=pane 1")
+            && swapped.contains("pane 1: left=pane 3, right=pane 2"),
+        "and the two really traded — `logs` is leftmost now and `build` is where it was: \
+         {swapped}",
+    );
+
+    // A pane traded with ITSELF is a no-op with its own sentence, never a failure.
+    let itself = server.call_tool("swap_pane", json!({ "pane": "build", "with": "build" }));
+    assert!(
+        itself.contains("is the pane you asked to trade it with"),
+        "and it is not reported as an error: {itself}",
+    );
+}
+
+/// A pane opened by ANOTHER pane's agent cannot be PLACED either — the second half of the gate, on
+/// the verb where "somebody else opened this" is the interesting case.
+#[test]
+fn an_agent_cannot_place_a_pane_another_pane_opened() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut theirs = McpServer::spawn_in_pane(&sock, 0);
+    theirs.call_tool("open_pane", json!({}));
+
+    let mine = add_pane(&sock, &["cat"]);
+    let mut server = McpServer::spawn_in_pane(&sock, mine);
+    let refused = server.call_tool_error("swap_pane", json!({ "pane": 2, "dir": "left" }));
+    assert!(
+        refused.contains("pane 2 was opened by pane 1, not by you"),
+        "the refusal names the pane that did open it, in this surface's numbers: {refused}",
+    );
+}
+
 /// A server that is not inside a pane refuses to open one at all.
 ///
 /// There would be nobody to record as the opener, so the pane could never be closed by this tool —

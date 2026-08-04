@@ -114,8 +114,8 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
     LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
-    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, SelectAsk, SelectHow, TEXT_ACTION,
-    find_slot_for, pane_processes_at, regex_slot_for,
+    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk,
+    SwapHow, TEXT_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -276,8 +276,9 @@ fn handle_initialize(message: &Value) -> Value {
             or at rest, and `agent_explain` says why. \
             For your OWN work, `open_pane` gives you a new pane to run things in without taking \
             over one a person is reading — name it there, and address it by that name afterwards \
-            — `rename_pane` changes that name later, and `close_pane` closes a pane you opened \
-            (only those two act on a pane you opened; a person's pane is refused). \
+            — `rename_pane` changes that name later, `swap_pane` moves it to a different place in \
+            the arrangement, and `close_pane` closes it (all three act ONLY on a pane you opened; \
+            a person's pane is refused, because their names and their arrangement are theirs). \
             `select_pane` moves where the USER is typing, so use it only when you have \
             something for them to look at. \
             If a tool reports it is not inside a sprag terminal, these tools do not apply to \
@@ -776,6 +777,43 @@ fn tools_list() -> Value {
                     },
                     "additionalProperties": false
                 }
+            },
+            {
+                "name": "swap_pane",
+                "description": "Move a pane YOU OPENED to a different place in the arrangement, by \
+                    trading places with another pane. Use it to put a pane you opened where the \
+                    user can see it beside something — next to the editor, under the one it \
+                    belongs with. `pane` is REQUIRED and names the pane being MOVED: only a pane \
+                    you opened yourself with open_pane can be moved, because where a person's own \
+                    panes sit is their arrangement and not yours. Give EITHER `with` (trade with \
+                    that pane) OR `dir` (trade with the pane one step that way, like a tmux \
+                    `swap-pane -L`) — never both. Both panes keep their size and their contents; \
+                    only their PLACES are exchanged, and nobody's cursor moves — use select_pane \
+                    for that. The answer says what happened, including \"there is nothing that \
+                    way\", which is a normal outcome at the edge of a layout and not a failure. \
+                    Call pane_layout first if you need to know what lies where.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg,
+                        "with": {
+                            "description": "The pane to trade places with — a NUMBER (1-based, \
+                                see list_panes) or a pane's NAME. It may be any pane, including \
+                                one a person opened: it is displaced by the trade, not moved by \
+                                a decision of yours.",
+                            "type": ["integer", "string"]
+                        },
+                        "dir": {
+                            "type": "string",
+                            "enum": PaneDir::ALL.map(PaneDir::wire_str),
+                            "description": "Trade with the pane one step that way from `pane`, \
+                                resolved against the live arrangement in the same moment it \
+                                moves. Use pane_layout to see what lies that way."
+                        }
+                    },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
             }
         ]
     })
@@ -812,6 +850,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "close_pane" => tool_close_pane(&args),
         "rename_pane" => tool_rename_pane(&args),
         "select_pane" => tool_select_pane(&args),
+        "swap_pane" => tool_swap_pane(&args),
         other => Err(format!("unknown tool: {other}")),
     };
     match outcome {
@@ -2208,6 +2247,192 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
     ))
 }
 
+/// `swap_pane` — move a pane THIS pane opened to a different place in the arrangement.
+///
+/// # Why an agent may write the arrangement at all, when R294 said it may not
+///
+/// R294 re-derived debt item 14 and answered **NO to `move`/`swap`/`zoom`** on R285's argument:
+/// *those decide what a HUMAN looks at, and an agent has no basis for the decision*. That argument
+/// is not inverted here. **Its premise moved, in the same round that stated it**: R294's own YES
+/// half was *"opening and closing its own workbench"*, and it created the first panes an agent is
+/// answerable for ([`PaneInfo::opened_by`]). For a pane a person opened an agent still has no basis
+/// — they arranged it. For a pane the agent opened it is the only party that has one.
+///
+/// So the gate is authorship, which is [`tool_close_pane`]'s and [`tool_rename_pane`]'s gate on the
+/// same argument — the THIRD instance of one policy rather than a new one — and it is ergonomic
+/// rather than a boundary for R294's stated reason: an agent that can `write_pane` into a shell can
+/// run `sprag swap-pane` itself. What it removes is the agent's own mistake.
+///
+/// The DAEMON is deliberately ungated: `sprag swap-pane` is an operator's verb and an operator means
+/// it. The daemon publishes the fact, this surface applies the policy — R294's split.
+///
+/// # Why `pane` is required, where `select_pane`'s is optional
+///
+/// Because its default would be the ACTIVE pane, which is the pane a person is typing in, which the
+/// gate above refuses by construction. An argument whose default can only fail is not a default. The
+/// same reasoning removes the `_here` spelling this tool's twin has: the pane this server runs in was
+/// opened by a person and handed to the agent, so `from_here`'s counterpart could never be accepted
+/// either. Both absences are decisions, and this is where they are written down.
+///
+/// # One read, not two
+///
+/// [`tool_close_pane`]'s rule: the target is resolved and the gate evaluated from ONE listing, so
+/// the pane the caller named and the pane the gate answered about are the same pane at the same
+/// instant. The PARTNER is resolved from that same listing for the same reason.
+fn tool_swap_pane(args: &Value) -> Result<String, String> {
+    let toward = match args.get(SwapAsk::DIR_KEY) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(word)) => Some(PaneDir::from_wire(word).ok_or_else(|| {
+            format!(
+                "'{}' must be one of {}, not {word:?}",
+                SwapAsk::DIR_KEY,
+                PaneDir::ALL.map(PaneDir::wire_str).join(", ")
+            )
+        })?),
+        Some(other) => {
+            return Err(format!(
+                "'{}' must be a direction word, not {other}",
+                SwapAsk::DIR_KEY
+            ));
+        }
+    };
+    let named = args
+        .get(SwapAsk::WITH_KEY)
+        .is_some_and(|with| !with.is_null());
+    let target = pane_target(args)?;
+    let panes = query_panes()?;
+    let pane = resolve_in(&panes, &target)?;
+    let subject = render_pane_handle(pane);
+    let mine = own_pane();
+    match pane.opened_by {
+        Some(opener) if Some(opener) == mine => {}
+        Some(opener) => {
+            return Err(format!(
+                "{subject} was opened by {}, not by you, so swap_pane will not move it. Only a \
+                 pane you opened yourself is yours to place.",
+                short_name(PaneId(opener), &|id| panes
+                    .iter()
+                    .find(|p| p.id == id.0)
+                    .map(|p| p.number)),
+            ));
+        }
+        None => {
+            return Err(format!(
+                "{subject} was opened by a person, not by you, so swap_pane will not move it — \
+                 where their panes sit is their arrangement. Only a pane you opened yourself with \
+                 open_pane is yours to place. (To put the user ON a pane instead of moving one, \
+                 use select_pane.)"
+            ));
+        }
+    }
+    // Exactly one partner, the wire action's own rule — restated here because the daemon can only
+    // answer `Rejected` for a malformed request (`InvokeError::Rejected` carries no payload,
+    // upstream PINION-PR82), and neither mistake has a reading worth guessing.
+    let (ask, partner) = match (named, toward) {
+        (true, None) => {
+            let with = resolve_in(&panes, &pane_target_at(args, SwapAsk::WITH_KEY)?)?;
+            (
+                SwapAsk::With {
+                    pane: Some(PaneId(pane.id)),
+                    with: PaneId(with.id),
+                },
+                Some(render_pane_handle(with)),
+            )
+        }
+        (false, Some(dir)) => (
+            SwapAsk::Toward {
+                pane: Some(PaneId(pane.id)),
+                dir,
+            },
+            None,
+        ),
+        (false, None) => {
+            return Err(format!(
+                "swap_pane needs either '{}' (a NUMBER from list_panes, or a pane's NAME — trade \
+                 with THAT pane) or '{}' (\"left\" / \"right\" / \"up\" / \"down\" — trade with \
+                 the pane one step that way)",
+                SwapAsk::WITH_KEY,
+                SwapAsk::DIR_KEY,
+            ));
+        }
+        (true, Some(_)) => {
+            return Err(format!(
+                "'{}' and '{}' name the partner two different ways; give one. '{}' trades with \
+                 THAT pane; '{}' trades with whatever is one step that way.",
+                SwapAsk::WITH_KEY,
+                SwapAsk::DIR_KEY,
+                SwapAsk::WITH_KEY,
+                SwapAsk::DIR_KEY,
+            ));
+        }
+    };
+    let answer = host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SWAP_PANE_ACTION), "args": ask.to_args() }),
+    )?;
+    let how = SwapHow::read(&answer, toward);
+    // The daemon answers with IDS; this surface speaks numbers and names. A DIRECTION is the arm
+    // whose caller cannot know who it traded with, so that one resolves the partner from a listing
+    // read AFTER the action — the answer describes the state the action left. Its failure is NOT
+    // the call's failure (`relisted`'s rule): the arrangement has already moved.
+    let partner = partner.or_else(|| {
+        let with = answer["b"].as_u64()?;
+        query_panes()
+            .ok()?
+            .iter()
+            .find(|pane| pane.id == with)
+            .map(render_pane_handle)
+    });
+    Ok(render_swap(how, toward, &subject, partner.as_deref()))
+}
+
+/// What `swap_pane` tells the agent, as a pure function of the outcome — [`render_selection`]'s rule,
+/// so all four sentences are pinned by unit tests and not only the ones a live daemon can be driven
+/// into.
+///
+/// `subject` is the pane the caller asked to move, in this surface's own vocabulary, and it is the
+/// subject of every sentence including the two where nothing happened — unlike the select, where a
+/// step that goes nowhere leaves the user on a pane that may not be the origin. Here there is no
+/// third pane to confuse: a swap that traded nothing left the named pane exactly where it was.
+///
+/// The two nothing-happened outcomes get distinct sentences with distinct remedies, which is the
+/// whole point of the daemon naming them: an edge means "look the other way", a floating pane means
+/// "there is no way to look at all".
+fn render_swap(
+    how: SwapHow,
+    asked: Option<PaneDir>,
+    subject: &str,
+    partner: Option<&str>,
+) -> String {
+    let partner = partner.map_or_else(|| "the other pane".to_owned(), str::to_owned);
+    match (how, asked) {
+        (SwapHow::Swapped, Some(dir)) => format!(
+            "Moved {subject} one place {}: it and {partner} have traded places. Nobody's cursor \
+             moved — call select_pane if you want the user to look at it.",
+            dir.wire_str()
+        ),
+        (SwapHow::Swapped, None) => format!(
+            "{subject} and {partner} have traded places. Nobody's cursor moved — call select_pane \
+             if you want the user to look at it."
+        ),
+        (SwapHow::AtEdge, Some(dir)) => format!(
+            "There is nothing {} {subject}, so it stayed where it is: that is the edge of the \
+             window. Call pane_layout to see what lies where.",
+            dir.beyond()
+        ),
+        (SwapHow::Untiled, _) => format!(
+            "{subject} is FLOATING: a floating pane is in no arrangement, so it has no neighbour in \
+             any direction and nothing moved. Name the pane to trade with using 'with' instead, or \
+             ask the user to dock it."
+        ),
+        // A pane traded with itself, and — degrading rather than failing — a daemon answering a
+        // word its request could not produce. Both are honestly "nothing moved".
+        (SwapHow::SamePane | SwapHow::AtEdge, _) => {
+            format!("{subject} is the pane you asked to trade it with, so nothing moved.")
+        }
+    }
+}
+
 /// Which pane a `dir` step starts at, and how to SAY it — [`None`] for the default, the pane the
 /// user is on.
 ///
@@ -3236,7 +3461,8 @@ mod tests {
                 "open_pane",
                 "close_pane",
                 "rename_pane",
-                "select_pane"
+                "select_pane",
+                "swap_pane"
             ]
         );
         for tool in tools["tools"].as_array().unwrap() {
@@ -3395,6 +3621,61 @@ mod tests {
         assert!(
             vanished.contains("id 42") && vanished.contains("list_panes"),
             "the fallback subject is the id, with the read that resolves it: {vanished}",
+        );
+    }
+
+    /// All four SWAP outcomes as an agent reads them, plus the degradation —
+    /// [`a_selection_reads_as_a_sentence_about_where_the_user_is_now`]'s rule one verb over.
+    ///
+    /// The two "nothing moved" sentences must not be interchangeable here either, and the remedies
+    /// are the same pair: look the other way / there is no way to look. **Every success sentence
+    /// says nobody's cursor moved**, because the verb one tool over does exactly that and an agent
+    /// holding both needs to know which one it just called.
+    #[test]
+    fn a_swap_reads_as_a_sentence_about_where_the_pane_is_now() {
+        let moved = render_swap(
+            SwapHow::Swapped,
+            Some(PaneDir::Left),
+            "pane 3 (\"build\")",
+            Some("pane 1"),
+        );
+        assert_eq!(
+            moved,
+            "Moved pane 3 (\"build\") one place left: it and pane 1 have traded places. Nobody's \
+             cursor moved — call select_pane if you want the user to look at it.",
+            "a NAME rides in the sentence, and so does the pane it traded with — the handle a \
+             `dir` caller never typed",
+        );
+        assert_eq!(
+            render_swap(SwapHow::Swapped, None, "pane 3", Some("pane 1")),
+            "pane 3 and pane 1 have traded places. Nobody's cursor moved — call select_pane if \
+             you want the user to look at it.",
+        );
+        assert_eq!(
+            render_swap(SwapHow::SamePane, None, "pane 3", Some("pane 3")),
+            "pane 3 is the pane you asked to trade it with, so nothing moved.",
+        );
+        let edge = render_swap(SwapHow::AtEdge, Some(PaneDir::Up), "pane 1", None);
+        assert!(
+            edge.contains("There is nothing above pane 1")
+                && edge.contains("stayed where it is")
+                && edge.contains("pane_layout"),
+            "an edge names the direction, says nothing moved, and points at the read that \
+             explains it: {edge}",
+        );
+        let floating = render_swap(SwapHow::Untiled, Some(PaneDir::Up), "pane 3", None);
+        assert!(
+            floating.contains("pane 3 is FLOATING")
+                && floating.contains("no arrangement")
+                && floating.contains("'with'"),
+            "a floating pane gets the OTHER remedy — name the pane to trade with: {floating}",
+        );
+        assert_ne!(edge, floating, "two outcomes, two sentences");
+        // A partner the listing no longer holds: the trade HAPPENED, so the answer says so rather
+        // than failing a call that succeeded.
+        assert!(
+            render_swap(SwapHow::Swapped, Some(PaneDir::Right), "pane 3", None)
+                .contains("the other pane"),
         );
     }
 
