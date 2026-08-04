@@ -967,6 +967,17 @@ mod tests {
             String::new()
         }
         fn kill_window(&self, _name: &str) {}
+        /// This fixture drives the session RAIL, which renames nothing — an honest refusal, which
+        /// is also what a host that cannot rename should answer.
+        fn rename_window(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn rename_session(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn rename_pane(&self, _id: PaneId, _name: &str) -> Option<String> {
+            None
+        }
     }
 
     /// The scoped intent tag the shell delivers for a button click at `tag`.

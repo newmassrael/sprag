@@ -91,6 +91,7 @@ pub(crate) fn access_nodes_for_window(window_id: &str, focused: Option<&str>) ->
 fn modal_access_nodes(focused: Option<&str>) -> Vec<AccessNode> {
     let mut nodes = crate::confirm::confirm_access_nodes(focused);
     nodes.extend(crate::palette::palette_access_nodes(focused));
+    nodes.extend(crate::prompt::prompt_access_nodes(focused));
     nodes
 }
 

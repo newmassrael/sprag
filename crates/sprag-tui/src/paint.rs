@@ -49,6 +49,7 @@ use termwiz::cell::{Blink, CellAttributes, Intensity, Underline, unicode_column_
 use termwiz::color::{ColorAttribute, SrgbaTuple};
 use termwiz::hyperlink::Hyperlink;
 use termwiz::surface::{Change, CursorShape, CursorVisibility, Position};
+use unicode_segmentation::UnicodeSegmentation;
 
 use sprag_terminal::SplitDir;
 
@@ -189,6 +190,88 @@ fn pane_rows_changes(
         run.flush(&mut changes);
     }
 
+    changes
+}
+
+/// The prompt ROW: the question this client is asking, painted over the bottom line of `area`.
+///
+/// # Why it is painted OVER the panes rather than given a row of its own
+///
+/// This client reports its own area to the daemon, which arbitrates the WINDOW size across every
+/// attached client. A row taken out of the window while a prompt is up would resize every OTHER
+/// client's panes because this one asked a question, and give them all back when it closed —
+/// exactly the cost [`agent_window_title`] declined a permanent status row for. So the row is an
+/// OVERLAY: the arrangement underneath is untouched, and closing the prompt repaints the frame.
+///
+/// `caret` is the byte offset the cursor sits at within `answer` ([`Line::cursor`]), or [`None`]
+/// for a question with nothing to type into. It is measured HERE, with this painter's own
+/// [`unicode_column_width`] — the shared editor deliberately reports an offset rather than a column
+/// count, because how wide a cluster is belongs to the surface that draws it.
+///
+/// [`Line::cursor`]: sprag_host::prompt::Line::cursor
+#[must_use]
+pub fn prompt_changes(
+    area: Rect,
+    question: &str,
+    answer: &str,
+    caret: Option<usize>,
+) -> Vec<Change> {
+    if area.is_empty() {
+        return Vec::new();
+    }
+    let row = area.row + area.rows - 1;
+    let width = usize::from(area.cols);
+    // REVERSE VIDEO, which is what every multiplexer's status line wears and what a pane's own
+    // output almost never does: the row has to read as the client speaking rather than as the
+    // program underneath it, and this client has no colour scheme of its own to spend.
+    let mut attrs = CellAttributes::default();
+    attrs.set_reverse(true);
+    let mut changes = vec![
+        Change::AllAttributes(attrs),
+        Change::CursorPosition {
+            x: Position::Absolute(usize::from(area.col)),
+            y: Position::Absolute(usize::from(row)),
+        },
+    ];
+    let line = format!("{question} {answer}");
+    // Truncated by COLUMNS, not characters: a name in CJK fills two cells per glyph, and a client
+    // that counted characters would run its own prompt off the end of the row for exactly the
+    // users whose names need this editor. The tail is dropped rather than the head — the question
+    // says which verb is being answered, which is the half a user cannot reconstruct.
+    let mut painted = String::new();
+    let mut columns = 0;
+    for cluster in line.graphemes(true) {
+        let cluster_width = unicode_column_width(cluster, None);
+        if columns + cluster_width > width {
+            break;
+        }
+        painted.push_str(cluster);
+        columns += cluster_width;
+    }
+    changes.push(Change::Text(painted));
+    // The rest of the row is the prompt's too: blanking it is what makes the overlay opaque, so a
+    // pane's output cannot appear to be part of the question.
+    if columns < width {
+        changes.push(Change::Text(" ".repeat(width - columns)));
+    }
+    if let Some(caret) = caret {
+        let before = unicode_column_width(question, None)
+            + 1
+            + unicode_column_width(&answer[..caret.min(answer.len())], None);
+        // Clamped to the row: a name longer than the terminal is wide leaves the caret at the edge
+        // rather than off the screen, which is where the text it is editing has been truncated to.
+        let at = usize::from(area.col) + before.min(width.saturating_sub(1));
+        changes.push(Change::CursorPosition {
+            x: Position::Absolute(at),
+            y: Position::Absolute(usize::from(row)),
+        });
+        changes.push(Change::CursorVisibility(CursorVisibility::Visible));
+        changes.push(Change::CursorShape(CursorShape::SteadyBar));
+    } else {
+        // A yes/no has nothing to edit, so the caret would only draw attention to a place the user
+        // cannot type. Hidden rather than parked at the end.
+        changes.push(Change::CursorVisibility(CursorVisibility::Hidden));
+    }
     changes
 }
 

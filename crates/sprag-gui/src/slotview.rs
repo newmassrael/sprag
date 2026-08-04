@@ -283,6 +283,18 @@ impl SlotView {
         self.reseed_pane_focus();
     }
 
+    /// The host this view reads, for a caller that needs the PROTOCOL rather than a projection.
+    ///
+    /// One caller: [`crate::prompt`], which hands the client's host to
+    /// [`Subject::commit`](sprag_host::prompt::Subject::commit) — the shared function that carries a
+    /// prompt's answer to the daemon. Delegating three renames through this view instead would put a
+    /// second copy of that decision in the client, which is the one thing the shared module exists
+    /// to prevent. No reseed either: a rename changes what a thing is CALLED, so this client's pane
+    /// set and its focus are untouched, unlike every window verb above.
+    pub(crate) fn host(&self) -> &dyn HostClient {
+        self.host.as_ref()
+    }
+
     /// Leave the keyboard on a live pane after an op that may have REPLACED this client's pane set.
     ///
     /// A window's panes belong to that window alone, so selecting another one swaps every pane this
@@ -1160,6 +1172,17 @@ mod tests {
             String::new()
         }
         fn kill_window(&self, _name: &str) {}
+        /// These fixtures exercise slot ROUTING, not renaming — refused honestly rather than
+        /// answered with a name nothing recorded.
+        fn rename_window(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn rename_session(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn rename_pane(&self, _id: PaneId, _name: &str) -> Option<String> {
+            None
+        }
         /// No sample: these fixtures exercise the ROUTING over a session list, not the facts a row
         /// paints. An empty reading of age zero is the honest "nothing sampled here" (see
         /// `HostClient::session_activity`), and it keeps every subtitle out of the fixture's way.

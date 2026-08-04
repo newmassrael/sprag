@@ -113,12 +113,13 @@ use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
 use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed};
+use sprag_host::prompt::{Ask, Line, Subject, Typed};
 use sprag_host::wire::SelectWindowAsk;
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
     Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, agent_window_title,
-    cursor_changes, divider_changes, tile, title_change, wire_key, with_ratio,
+    cursor_changes, divider_changes, prompt_changes, tile, title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -258,6 +259,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
     // state, not the other way round.
     let mut keys = PrefixMode::ToPane;
+    // The question this client is asking, if any — see [`Asking`]. `None` is the steady state, and
+    // while it is `Some` every keystroke belongs to the prompt.
+    let mut asking: Option<Asking> = None;
     loop {
         // `None` blocks until the terminal has something OR the waker fires — the select this
         // client's whole idle cost rests on.
@@ -266,7 +270,64 @@ fn run() -> Result<(), Box<dyn Error>> {
             // is used: a repaint cannot change what a key means. Routed in a `let` before the match
             // so the borrow the re-read takes ends before an arm reads the prefix back out.
             Some(InputEvent::Key(event)) => {
-                match command(&mut keys, refreshed(&mut keymap), &event) {
+                // THE PROMPT OWNS THE KEYBOARD while it is up, and this is checked before the key
+                // is looked at rather than after: a user answering a question is not addressing the
+                // keymap, the prefix or the pane, and an unhandled key is swallowed rather than
+                // leaked to a shell behind a question the user has not answered yet. `sprag-gui`
+                // states the same rule at the top of its own routing for its destructive prompt.
+                let command = if let Some(open) = &mut asking {
+                    match open.answered(&host, &event) {
+                        // Still asking: only the row changed, so only the row is painted.
+                        Answered::Asking => {
+                            paint_prompt(&mut screen, screen_area, open)?;
+                            continue;
+                        }
+                        // Closed with nothing to do — repaint the FRAME, which is what puts the
+                        // panes back under the row the overlay borrowed.
+                        Answered::Closed => {
+                            asking = None;
+                            paint(
+                                &mut screen,
+                                &host,
+                                &tiling,
+                                screen_area,
+                                focus,
+                                Clear::Yes,
+                                &mut held,
+                            )?;
+                            continue;
+                        }
+                        // Answered yes: the row is given back first, then the guarded action runs
+                        // through the very same arms a bare binding reaches.
+                        Answered::Perform(action) => {
+                            asking = None;
+                            paint(
+                                &mut screen,
+                                &host,
+                                &tiling,
+                                screen_area,
+                                focus,
+                                Clear::Yes,
+                                &mut held,
+                            )?;
+                            Command::Act(action)
+                        }
+                    }
+                } else {
+                    command(&mut keys, refreshed(&mut keymap), &event)
+                };
+                // An action that cannot be carried out without an ANSWER opens the prompt instead
+                // of acting. Asked here for EVERY action rather than per arm, so the decision is
+                // `Ask::of`'s alone — the same discipline `Routed::next` applies to the prefix
+                // mode, and for the same reason: two frontends cannot each hold half a rule.
+                if let Command::Act(action) = &command
+                    && let Some(ask) = Ask::of(action, &host, focus)
+                {
+                    let open = asking.insert(Asking::open(ask));
+                    paint_prompt(&mut screen, screen_area, open)?;
+                    continue;
+                }
+                match command {
                     Command::Act(BoundAction::DetachClient) => break,
                     Command::Swallow => {}
                     Command::ToPane(key) => {
@@ -410,6 +471,17 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
+                    // The four ASKING actions are consumed above, where `Ask::of` turns them into a
+                    // question. This arm is reached only when it answered `None` — a `rename-pane`
+                    // pressed with no pane focused, which has no subject and so nothing to ask
+                    // about. Doing nothing is the honest outcome: inventing a subject would rename
+                    // a pane the user is not looking at.
+                    Command::Act(
+                        BoundAction::RenameWindow
+                        | BoundAction::RenameSession
+                        | BoundAction::RenamePane
+                        | BoundAction::ConfirmBefore { .. },
+                    ) => {}
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
                         select_pane(&host, &mut focus, next.or_else(|| tiling.first_pane()));
@@ -975,6 +1047,172 @@ fn refreshed(keymap: &mut sprag_host::config::ClientConfig) -> &Keymap {
         tracing::warn!(target: "sprag_tui::keys", %error, "the edited config was not usable; keeping the loaded keymap");
     }
     keymap.keymap()
+}
+
+/// The question this client is asking, and everything it needs to finish asking it.
+///
+/// The SURFACE half of [`sprag_host::prompt`]: the shared module decides which actions ask, what
+/// they ask and what an answer does; this holds the live editor and the sentence to paint. A GUI
+/// holds a field and a modal instead, which is the split the shared module's own docs draw.
+enum Asking {
+    /// A name is being typed.
+    Line {
+        /// What the answer will name — carried, not re-derived, so the commit cannot land on a
+        /// different subject than the question named.
+        subject: Subject,
+        /// The editor.
+        line: Line,
+        /// What the daemon (or the grammar) refused last, painted after the question and cleared by
+        /// the next edit: a refusal is about the text that was sent, so it stops being true the
+        /// moment that text changes.
+        refusal: Option<String>,
+    },
+    /// A yes/no is being answered.
+    Confirm {
+        /// The whole sentence, as it was when the prompt was armed.
+        question: String,
+        /// What to do on `y`.
+        action: BoundAction,
+    },
+}
+
+/// What answering did.
+enum Answered {
+    /// Still asking — repaint the row.
+    Asking,
+    /// The prompt is over and there is nothing to do.
+    Closed,
+    /// The prompt is over and this action was authorised.
+    Perform(BoundAction),
+}
+
+impl Asking {
+    /// Open a prompt for `ask`.
+    fn open(ask: Ask) -> Self {
+        match ask {
+            Ask::Line { subject, seed } => Self::Line {
+                subject,
+                line: Line::new(&seed),
+                refusal: None,
+            },
+            // The two sentences are joined HERE and the answer hint is added here too: the shared
+            // ask names the act and its consequence, and how one answers is the surface's — this
+            // client has no buttons, so `(y/n)` is what tells a user which keys mean what.
+            Ask::Confirm {
+                question,
+                consequence,
+                action,
+                ..
+            } => Self::Confirm {
+                question: match consequence {
+                    Some(also) => format!("{question} {also} (y/n)"),
+                    None => format!("{question} (y/n)"),
+                },
+                action: *action,
+            },
+        }
+    }
+
+    /// The sentence to paint: the question, and the refusal if one is standing.
+    fn question(&self) -> String {
+        match self {
+            Self::Line {
+                subject, refusal, ..
+            } => match refusal {
+                // Two spaces, so the refusal reads as a second clause rather than as part of the
+                // name being typed — the row has no colour of its own to separate them with.
+                Some(why) => format!("{}  {why}", subject.question()),
+                None => subject.question().to_owned(),
+            },
+            Self::Confirm { question, .. } => question.clone(),
+        }
+    }
+
+    /// The text being edited (empty for a yes/no, which has none).
+    fn answer(&self) -> &str {
+        match self {
+            Self::Line { line, .. } => line.text(),
+            Self::Confirm { .. } => "",
+        }
+    }
+
+    /// Where the caret goes, or [`None`] for a question with nothing to type into.
+    fn caret(&self) -> Option<usize> {
+        match self {
+            Self::Line { line, .. } => Some(line.cursor()),
+            Self::Confirm { .. } => None,
+        }
+    }
+
+    /// Feed one keystroke to the open prompt.
+    ///
+    /// The two arms answer different questions and so read keys differently, and neither gesture is
+    /// invented here: a line is edited with the readline chords the pane behind it would have used
+    /// ([`Line::typed`]), and a yes/no takes `y` and treats EVERYTHING ELSE as no — tmux's own
+    /// `confirm-before` rule, and the safe direction for a question whose yes destroys something.
+    /// `Enter` is deliberately not a yes for that reason: the key that arms a prompt must not also
+    /// be the key that answers it.
+    fn answered(&mut self, host: &WireHost, event: &KeyEvent) -> Answered {
+        let Some(key) = wire_key(event) else {
+            // A key the wire cannot spell is still the prompt's — swallowed, not passed on.
+            return Answered::Asking;
+        };
+        let mut scratch = [0u8; 4];
+        let name = key.name(&mut scratch).to_owned();
+        match self {
+            Self::Confirm { action, .. } => match name.as_str() {
+                "y" | "Y" => Answered::Perform(action.clone()),
+                _ => Answered::Closed,
+            },
+            Self::Line {
+                subject,
+                line,
+                refusal,
+            } => match line.typed(&name, key.mods()) {
+                Typed::Ignored => Answered::Asking,
+                Typed::Edited => {
+                    // The standing refusal was about text that no longer exists.
+                    *refusal = None;
+                    Answered::Asking
+                }
+                Typed::Cancel => Answered::Closed,
+                Typed::Commit => {
+                    let answer = line.text().to_owned();
+                    // The grammar first, with the daemon's own function, so the sentence names the
+                    // rule; then the daemon, whose refusal now has one cause left. Either way the
+                    // prompt STAYS OPEN with what was typed still in it — a user who has to retype
+                    // a name they just typed has been told off rather than helped.
+                    match subject
+                        .check(&answer)
+                        .and_then(|()| subject.commit(host, &answer))
+                    {
+                        Ok(_recorded) => Answered::Closed,
+                        Err(why) => {
+                            *refusal = Some(why);
+                            Answered::Asking
+                        }
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Paint the prompt row over the bottom of the screen — see [`prompt_changes`] for why it is an
+/// overlay and not a reserved row.
+fn paint_prompt(
+    screen: &mut BufferedTerminal<SystemTerminal>,
+    screen_area: Rect,
+    asking: &Asking,
+) -> Result<(), Box<dyn Error>> {
+    screen.add_changes(prompt_changes(
+        screen_area,
+        &asking.question(),
+        asking.answer(),
+        asking.caret(),
+    ));
+    screen.flush()?;
+    Ok(())
 }
 
 /// What the loop should do with a key.

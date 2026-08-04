@@ -185,6 +185,10 @@ pub(crate) struct ViewState {
     pub(crate) find: crate::find::FindFieldState,
     /// The command palette's query field, on the same terms as the find field's.
     pub(crate) palette: crate::palette::PaletteFieldState,
+    /// The name prompt's field — the same pair every other field here is read as
+    /// (interaction state, caret offset), left as the tuple `read_text_field_state` answers rather
+    /// than wrapped: this surface has ONE field, so a named struct would only rename its halves.
+    pub(crate) prompt: (pinion_core::widgets::text_field::TextFieldState, u32),
 }
 
 /// Overlay the find bar on `scene` when it is open (a no-op when closed), pushed LAST so the
@@ -211,6 +215,28 @@ fn with_find_bar(scene: Scene, field: crate::find::FindFieldState, theme: &Theme
 /// opened over the palette while its focus trap is up.
 fn with_palette(scene: Scene, field: crate::palette::PaletteFieldState, theme: &Theme) -> Scene {
     let Some(panel) = crate::palette::view_palette(field, theme, (WINDOW_W, WINDOW_H)) else {
+        return scene;
+    };
+    let Scene::Container(mut root) = scene else {
+        return scene;
+    };
+    root.children.push(panel);
+    Scene::Container(root)
+}
+
+/// Overlay the destructive-command prompt on `scene` when one is armed (a no-op otherwise), pushed
+/// after the palette — above EVERYTHING, including the surface that armed it.
+///
+/// Innermost is what this modal means: it is the last question before something irreversible happens,
+/// so nothing may be clicked or typed while it is up, and least of all the palette row that armed it.
+/// (The palette closes before arming, so the two are never up together; the layering is the guarantee
+/// rather than the mechanism.)
+fn with_prompt(
+    scene: Scene,
+    field: (pinion_core::widgets::text_field::TextFieldState, u32),
+    theme: &Theme,
+) -> Scene {
+    let Some(panel) = crate::prompt::view_prompt(field, theme, (WINDOW_W, WINDOW_H)) else {
         return scene;
     };
     let Scene::Container(mut root) = scene else {
@@ -280,14 +306,21 @@ pub(crate) fn view_for_window(window_id: &str, state: ViewState, _frame: &Frame)
         // (R140) when it is open (a no-op when closed) — LAST so the popup paints over.
         // The find bar rides ABOVE the tiling and BELOW the context menu: a menu opened over the
         // bar must still paint on top, and the menu's own dismiss barrier must not sit over it.
+        // The name prompt goes between the palette and the confirmation, which is the order of
+        // how much each one is a point of no return: a palette can be dismissed, a name can be
+        // typed and re-typed, and a destructive yes cannot be taken back.
         _ => with_confirm(
-            with_palette(
-                crate::ctxmenu::overlay(
-                    with_find_bar(view_main(&tv, &theme), state.find, &theme),
-                    state.menu,
+            with_prompt(
+                with_palette(
+                    crate::ctxmenu::overlay(
+                        with_find_bar(view_main(&tv, &theme), state.find, &theme),
+                        state.menu,
+                        &theme,
+                    ),
+                    state.palette,
                     &theme,
                 ),
-                state.palette,
+                state.prompt,
                 &theme,
             ),
             &theme,

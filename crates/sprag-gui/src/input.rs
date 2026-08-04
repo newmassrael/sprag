@@ -336,6 +336,12 @@ fn action_label(action: &BoundAction) -> &'static str {
         BoundAction::NewWindow => "new-window",
         BoundAction::SelectWindow { .. } => "select-window",
         BoundAction::KillWindow => "kill-window",
+        BoundAction::RenameWindow => "rename-window",
+        BoundAction::RenameSession => "rename-session",
+        BoundAction::RenamePane => "rename-pane",
+        // The GUARD's own name, not the verb it guards: what this diag line records is that a key
+        // opened a question, and the answer's own `perform` records what ran.
+        BoundAction::ConfirmBefore { .. } => "confirm-before",
     }
 }
 
@@ -353,7 +359,7 @@ fn action_label(action: &BoundAction) -> &'static str {
 /// Nothing here repaints: a split's new pane and a focus move both reach the paint through the
 /// channels that already carry them (the host announces the pane set, and a focus request re-derives
 /// the ring), which is why the palette's `New pane` needs no repaint either.
-fn perform(action: BoundAction, active: usize) {
+pub(crate) fn perform(action: BoundAction, active: usize) {
     match action {
         BoundAction::DetachClient => pinion_core::use_quit_sink().request_quit(),
         BoundAction::SendPrefix => {
@@ -412,6 +418,15 @@ fn perform(action: BoundAction, active: usize) {
                 slots.kill_window(&window.name);
             }
         }
+        // THE FOUR ACTIONS THAT ASK reach this function only through their own question being
+        // ANSWERED, which is why they are not opened here: `route_key` calls `prompt::Ask::of`
+        // before it performs anything, and a `confirm-before`'s yes re-enters this function with the
+        // verb it guarded. Reached with an ask outstanding only if `Ask::of` answered `None` — a
+        // `rename-pane` with no pane focused, which has no subject to rename.
+        BoundAction::RenameWindow
+        | BoundAction::RenameSession
+        | BoundAction::RenamePane
+        | BoundAction::ConfirmBefore { .. } => {}
     }
 }
 
@@ -453,6 +468,14 @@ pub(crate) fn route_key(
     // it. Answering is `Enter` on the CHOSEN button, which starts on Cancel (see [`crate::confirm`]).
     if crate::confirm::handle_key(key) {
         return true;
+    }
+    // The NAME prompt, on the same terms and for the same reason (R306): while this client is
+    // asking for a name, no key may reach a pane behind the scrim — including when there is no
+    // focus at all, which is why this precedes the `focused` destructure rather than following it.
+    // It is BELOW the confirmation because a destructive yes is the more dangerous question; the
+    // two are never up together, so the order is a guarantee rather than a mechanism.
+    if crate::prompt::is_open() {
+        return crate::prompt::handle_key(scene, key, modifiers);
     }
     let Some(tag) = focused else {
         return false;
@@ -513,7 +536,26 @@ pub(crate) fn route_key(
         // caller reading `again` here would be a second author of the mode transition.
         Routed::Act { action, .. } => {
             crate::diag::chord(action_label(&action), "act", active);
-            perform(action, active);
+            // An action that cannot be carried out without an ANSWER opens a question instead of
+            // acting, and WHICH ones those are is `Ask::of`'s decision alone — asked here for every
+            // action, so this client and `sprag-tui` cannot come to different conclusions about
+            // whether a verb needs asking about.
+            match sprag_host::prompt::Ask::of(
+                &action,
+                use_terminal().slots.host(),
+                use_terminal().slots.pane_at(active),
+            ) {
+                Some(sprag_host::prompt::Ask::Line { subject, seed }) => {
+                    crate::prompt::open(subject, &seed);
+                }
+                Some(ask @ sprag_host::prompt::Ask::Confirm { .. }) => {
+                    let sprag_host::prompt::Ask::Confirm { action, .. } = &ask else {
+                        unreachable!("matched Confirm above")
+                    };
+                    crate::confirm::arm_bound(action, active, &ask);
+                }
+                None => perform(action, active),
+            }
             return true;
         }
         // The prefix itself, and a command key bound to nothing: both are consumed. Passing an

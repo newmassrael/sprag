@@ -3707,6 +3707,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -3779,6 +3780,7 @@ dependencies = [
  "sprag-vt",
  "termwiz",
  "tracing",
+ "unicode-segmentation",
 ]
 
 [[package]]

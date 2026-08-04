@@ -68,6 +68,13 @@ toml_edit = { workspace = true }
 # serde derive for the wire DTOs (PaneScrollFacts + the pane cells-frame). The
 # GridBuffer's own serde comes from pinion-core; this is for sprag's frame types.
 serde = { workspace = true }
+# The prompt's line editor (crate::prompt) moves and deletes by GRAPHEME CLUSTER, not by
+# codepoint: a Backspace over a composed Hangul syllable or an emoji ZWJ sequence has to take the
+# whole thing. Already in this tree for the emulator's own clustering (sprag-vt), so this is the
+# same answer to the same question one layer up rather than a new dependency. It stops at the
+# cluster: how WIDE one is on screen is the surface's question, not the buffer's, so the editor
+# reports a byte offset and each frontend measures with its own painter's width function.
+unicode-segmentation = { workspace = true }
 
 [dev-dependencies]
 # The real-socket wire tests build/decode base64 image payloads (R1404 Stage 5 on-demand).

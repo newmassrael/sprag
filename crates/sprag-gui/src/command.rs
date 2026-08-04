@@ -853,6 +853,10 @@ mod tests {
         /// renders only the default session), so a recording fake is the ONLY way to observe that this
         /// arm addresses the right one at all.
         killed_sessions: Vec<String>,
+        /// Every name a rename was ASKED for, exactly as it was sent — so a test can tell a client
+        /// that forwards what the user typed from one that trimmed it on the way (R306: the grammar
+        /// is the daemon's, and a client that pre-trimmed would be a second opinion about it).
+        renamed: Vec<String>,
     }
 
     /// A [`HostClient`] serving fixed window / session lists and RECORDING the actions
@@ -894,6 +898,20 @@ mod tests {
         }
         fn kill_window(&self, name: &str) {
             self.log.borrow_mut().killed_windows.push(name.to_owned());
+        }
+        /// RECORDED, and answering the TRIMMED name — a fake that echoed its argument would let a
+        /// caller that paints its own input pass a test the daemon would fail it on.
+        fn rename_window(&self, name: &str) -> Option<String> {
+            self.log.borrow_mut().renamed.push(name.to_owned());
+            Some(name.trim().to_owned())
+        }
+        fn rename_session(&self, name: &str) -> Option<String> {
+            self.log.borrow_mut().renamed.push(name.to_owned());
+            Some(name.trim().to_owned())
+        }
+        fn rename_pane(&self, _id: PaneId, name: &str) -> Option<String> {
+            self.log.borrow_mut().renamed.push(name.to_owned());
+            Some(name.trim().to_owned())
         }
         fn break_pane(&self, id: PaneId, _name: Option<&str>) -> Option<String> {
             self.log.borrow_mut().broken_panes.push(id);

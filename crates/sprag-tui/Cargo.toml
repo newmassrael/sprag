@@ -37,6 +37,10 @@ sprag-vt = { workspace = true }
 # GridBuffer (the cells this crate paints) + QuitSink (the client's quit edge, which
 # the poll thread pulls when the daemon is gone). GPU-FREE: pinion's data layer.
 pinion-core = { workspace = true }
+# The prompt row is truncated a CLUSTER at a time (crate::paint): a wide glyph either fits in the
+# columns that are left or does not go on the row at all, and splitting one would put half a
+# syllable at the edge. Same crate the shared editor steps with, and the emulator clusters with.
+unicode-segmentation = { workspace = true }
 # `ProjectionToken` — the per-row damage stamps a frame arrives with, which is what lets
 # `PaintCache` rebuild only the rows that can have changed. Promoted OUT of [dev-dependencies],
 # where it was for the paint tests' real projection: a production `use` from a dev-only

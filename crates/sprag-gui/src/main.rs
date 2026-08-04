@@ -251,6 +251,7 @@ mod hyperlink;
 mod input;
 mod keys;
 mod palette;
+mod prompt;
 mod reflow;
 mod rpc;
 mod scrollbar;
@@ -479,6 +480,7 @@ impl WidgetCore for TerminalViewer {
         // and registered while it is CLOSED for the same reason: the field's External is what holds
         // the query text, and an unpainted External costs nothing.
         externals.extend(palette::create_palette_externals());
+        externals.extend(prompt::create_prompt_externals());
         // ...and the destructive-command PROMPT the palette (and the window strip) arms instead of
         // acting: its captured sentence, its two answers, and its own modal `open` query. Registered
         // on the same terms, and readable over RPC while nothing is armed so "is this client asking
@@ -931,6 +933,7 @@ impl WidgetCore for TerminalViewer {
             menu: ctxmenu::read_menu_state(scene),
             find: find::read_field_state(scene),
             palette: palette::read_field_state(scene),
+            prompt: prompt::read_field_state(scene),
         }
     }
 

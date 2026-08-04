@@ -93,11 +93,12 @@ use sprag_host::wire::{
     CLOSE_ACTION, DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk,
-    SwapAsk, SwapHow, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at,
-    find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
+    PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE,
+    SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
+    project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -2312,6 +2313,53 @@ impl HostClient for WireHost {
         {
             self.refresh_view();
         }
+    }
+
+    /// The CURRENT window's rename, sent with NO target so the daemon resolves it under its own
+    /// lock — see [`HostClient::rename_window`] for why a client must not name it.
+    ///
+    /// The view is refreshed because the window strip and every window-named read this client
+    /// paints are about to be wrong. The answer is the daemon's recorded name; `null` from a
+    /// pre-R306 daemon reads as a refusal here, which is the honest degradation — a client one
+    /// protocol number ahead cannot tell that apart from a rejection, and the number exists so it
+    /// never has to.
+    fn rename_window(&self, name: &str) -> Option<String> {
+        let params = invoke(
+            &mux_action_path(RENAME_WINDOW_ACTION),
+            json!({ "name": name }),
+        );
+        let recorded = self.request("scene/invoke", params, "rename_window")?;
+        self.refresh_view();
+        recorded
+            .get("name")
+            .and_then(|name| name.as_str())
+            .map(str::to_owned)
+    }
+
+    /// The SCOPE's rename — the session this connection is attached to (R303), never a name this
+    /// client read out of its mirror.
+    fn rename_session(&self, name: &str) -> Option<String> {
+        let params = invoke(
+            &mux_action_path(RENAME_SESSION_ACTION),
+            json!({ "name": name }),
+        );
+        let recorded = self.request("scene/invoke", params, "rename_session")?;
+        self.refresh_view();
+        recorded.as_str().map(str::to_owned)
+    }
+
+    /// One pane's rename, addressed BY ID — the only one of the three with an identity to carry.
+    fn rename_pane(&self, id: PaneId, name: &str) -> Option<String> {
+        let params = invoke(
+            &mux_action_path(RENAME_PANE_ACTION),
+            json!({ "pane": id.0, "name": name }),
+        );
+        let recorded = self.request("scene/invoke", params, "rename_pane")?;
+        self.refresh_view();
+        recorded
+            .get("name")
+            .and_then(|name| name.as_str())
+            .map(str::to_owned)
     }
 
     /// Create a pane in the scoped session's current window over the wire, returning its host id.

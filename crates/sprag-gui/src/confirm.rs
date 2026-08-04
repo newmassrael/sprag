@@ -70,6 +70,9 @@ use pinion_core::widgets::modal::{ModalState, modal_introspection_extra, use_mod
 use pinion_core::{Color, Scene};
 use pinion_widget_paint::scrim::{M3_SCRIM_ALPHA, scrim_backdrop, scrim_fill};
 
+use sprag_host::keymap::BoundAction;
+use sprag_host::prompt::Ask;
+
 use crate::command::{Command, Confirmation};
 use crate::slotview::SlotView;
 use crate::terminal::use_terminal;
@@ -123,11 +126,35 @@ const CONFIRM_CHOICE_KEY: &str = "sprag_gui.confirm.choice";
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 struct Armed {
     /// What will run if the answer is yes.
-    command: Command,
+    guarded: Guarded,
     /// The pane the activating surface had captured, threaded through untouched.
     target: Option<usize>,
     /// The words to show, captured when the command was armed (see the module docs).
     confirmation: Confirmation,
+}
+
+/// What a yes will actually do — the two vocabularies this ONE surface guards.
+///
+/// A catalog [`Command`] is what a palette row, a menu row or the strip's "×" activates: this
+/// client's own named things. A BOUND ACTION is what a user's `confirm-before` binding names, and
+/// that is a different vocabulary with a different author — theirs. Both are destructive questions
+/// with two answers, so both belong on this surface; neither can be expressed in the other's terms,
+/// which is why this is a sum rather than a translation.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+enum Guarded {
+    /// A command from [`crate::command`]'s catalog.
+    Command(Command),
+    /// A [`BoundAction`], held as its CANONICAL SPELLING.
+    ///
+    /// The spelling and not the value, because this record lives in a reactive `Signal` and so must
+    /// serialize, while a `BoundAction` carries three types from two crates that deliberately have
+    /// no serde. The spelling is not a workaround: round-tripping through
+    /// [`Display`](std::fmt::Display) and `parse` is that type's stated contract — it is what
+    /// `sprag list-keys` prints and what a user types back — and
+    /// `actions_parse_from_the_shells_spelling_and_round_trip` is the test that holds it. A spelling
+    /// that failed to parse would mean that contract had broken, so it is REPORTED rather than
+    /// unwrapped, and the guarded act simply does not happen.
+    Bound(String),
 }
 
 /// Which button the keyboard is on.
@@ -195,18 +222,46 @@ pub(crate) fn is_open() -> bool {
 /// activation has been dealt with".
 pub(crate) fn run_or_arm(command: Command, target: Option<usize>, slots: &SlotView) {
     match command.confirmation(target, slots) {
-        Some(confirmation) => arm(command, target, confirmation),
+        Some(confirmation) => arm(Guarded::Command(command), target, confirmation),
         None => command.run(target, slots),
     }
+}
+
+/// Hold a `confirm-before` binding's action for an answer, showing the question
+/// [`sprag_host::prompt`] built for it (R306).
+///
+/// The keymap's own door onto this surface, and it does NOT go through
+/// [`run_or_arm`]: a bound action is not a catalog command, and the decision to ask was already
+/// taken — by the user, when they wrote `confirm-before` in their config. This client's job is to
+/// ask, in its own idiom, exactly what the shared ask says.
+pub(crate) fn arm_bound(action: &BoundAction, active: usize, ask: &Ask) {
+    let Ask::Confirm {
+        question,
+        consequence,
+        verb,
+        ..
+    } = ask
+    else {
+        return;
+    };
+    arm(
+        Guarded::Bound(action.to_string()),
+        Some(active),
+        Confirmation {
+            prompt: question.clone(),
+            consequence: consequence.clone(),
+            verb: (*verb).to_owned(),
+        },
+    );
 }
 
 /// Hold `command` for an answer, showing `confirmation`.
 ///
 /// Resets the choice to the safe one on every arm — a prompt must never open on the button a previous
 /// prompt was left on.
-fn arm(command: Command, target: Option<usize>, confirmation: Confirmation) {
+fn arm(guarded: Guarded, target: Option<usize>, confirmation: Confirmation) {
     use_armed().set(Some(Armed {
-        command,
+        guarded,
         target,
         confirmation,
     }));
@@ -224,8 +279,30 @@ fn arm(command: Command, target: Option<usize>, confirmation: Confirmation) {
 fn accept(slots: &SlotView) -> Option<Command> {
     let armed = use_armed().get()?;
     dismiss();
-    armed.command.run(armed.target, slots);
-    Some(armed.command)
+    match armed.guarded {
+        Guarded::Command(command) => {
+            command.run(armed.target, slots);
+            Some(command)
+        }
+        // A bound action is carried out through the SAME `perform` a bare binding reaches, so a
+        // guarded verb and an unguarded one cannot come to behave differently. `None` because there
+        // is no catalog command to report: the caller's report is about the catalog.
+        Guarded::Bound(spelling) => {
+            match (BoundAction::parse(&spelling), armed.target) {
+                (Ok(action), Some(active)) => crate::input::perform(action, active),
+                // The spelling round-trip is `BoundAction`'s own contract (see [`Guarded::Bound`]),
+                // so this is a broken invariant rather than a user mistake — reported, and nothing
+                // destructive happens.
+                (Err(error), _) => {
+                    tracing::error!(target: "sprag_gui::confirm", %spelling, %error, "a guarded action did not parse back");
+                }
+                (Ok(_), None) => {
+                    tracing::error!(target: "sprag_gui::confirm", %spelling, "a guarded action was armed with no pane");
+                }
+            }
+            None
+        }
+    }
 }
 
 /// Answer NO: clear the prompt, having run nothing. Also the auto-disarm and the light-dismiss.
@@ -257,11 +334,19 @@ fn activate_choice(slots: &SlotView) {
 /// Without this a prompt could linger over something already gone, and its answer would be a benign
 /// host no-op — the confirmation equivalent of a dialog for a file that has been deleted.
 pub(crate) fn reconcile(slots: &SlotView) {
-    if let Some(armed) = use_armed().get()
-        && !armed.command.target_still_exists(armed.target, slots)
+    if let Some(Armed {
+        guarded: Guarded::Command(command),
+        target,
+        ..
+    }) = use_armed().get()
+        && !command.target_still_exists(target, slots)
     {
         dismiss();
     }
+    // A BOUND action is deliberately not reconciled: it names no target (a keystroke acts where the
+    // user is, which is `BoundAction`'s rule at every arm), so there is nothing that can vanish
+    // while the prompt is up. The window `kill-window` will kill is whichever one is current when
+    // the answer comes, which is the same resolution the rename verbs use and for the same reason.
 }
 
 // ─── Keyboard ────────────────────────────────────────────────────────────────────────────────────

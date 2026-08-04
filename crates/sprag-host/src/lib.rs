@@ -63,6 +63,7 @@ pub mod options;
 pub mod pane;
 pub mod plugins;
 pub mod project;
+pub mod prompt;
 pub mod rpc;
 pub mod runs;
 pub mod scope;

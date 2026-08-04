@@ -662,6 +662,41 @@ pub trait HostClient {
     /// LAST window ends the session. A no-op for an unknown name.
     fn kill_window(&self, name: &str);
 
+    /// Rename the scoped session's CURRENT window, answering the name the daemon RECORDED — or
+    /// [`None`] if it refused (tmux `rename-window`).
+    ///
+    /// # It names no window, and that is the whole design
+    ///
+    /// The CLI verb takes an optional window; this takes none, so the daemon resolves *the current
+    /// one* under its own lock at the moment the rename happens. A client that read its mirror for
+    /// the current window's name and then renamed BY that name would be addressing a fact about the
+    /// past — the shape R304 measured landing on an impostor that had taken a freed name. There is
+    /// no target here to go stale.
+    ///
+    /// The ANSWER is the recorded name because a name is trimmed and validated on the way in
+    /// ([`WindowName`](sprag_terminal::WindowName)), so a caller that echoed its own argument would
+    /// paint a name the window does not have. [`None`] has one cause once a caller has checked the
+    /// grammar with that same type: the name is already another window's.
+    fn rename_window(&self, name: &str) -> Option<String>;
+
+    /// Rename the session this connection is scoped to, answering the name the daemon RECORDED — or
+    /// [`None`] if it refused (tmux `rename-session`).
+    ///
+    /// The scope IS the target, so like [`rename_window`](Self::rename_window) there is no name to
+    /// go stale — and for a display client the scope is its ATTACHMENT (R303), so this renames the
+    /// session the user is looking at even if somebody renamed it a moment ago. The daemon carries
+    /// the session's change channel and every attachment across with the name (R302), which is why
+    /// a client can ask for this without knowing who else is watching.
+    fn rename_session(&self, name: &str) -> Option<String>;
+
+    /// Give the pane with `id` the name `name`, answering the name the daemon RECORDED — or
+    /// [`None`] if it refused.
+    ///
+    /// The one rename that carries a TARGET, because a [`PaneId`] is an identity: registry-unique,
+    /// stable, and not the thing being changed. A pane NAME is an address (R295), which is what
+    /// makes this worth a gesture rather than a decoration.
+    fn rename_pane(&self, id: PaneId, name: &str) -> Option<String>;
+
     /// Create a pane in the scoped session's CURRENT window, born with a shell (tmux
     /// `split-window`), returning its id — or `None` if the child could not be started.
     ///
@@ -2287,6 +2322,47 @@ impl HostClient for Host {
     fn kill_window(&self, name: &str) {
         let session = lock(&self.registry).default_session().name().to_owned();
         let _outcome = lock(&self.registry).kill_window(&session, name);
+    }
+
+    /// The default session's current window, renamed under the registry lock. The three renames
+    /// below are the in-process arm of the same verbs the wire client sends — each answers the
+    /// RECORDED name, which is the registry's own answer rather than a re-read.
+    fn rename_window(&self, name: &str) -> Option<String> {
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        let current = registry
+            .session(&session)?
+            .current_window()
+            .name()
+            .to_owned();
+        registry.rename_window(&session, &current, name).ok()
+    }
+
+    fn rename_session(&self, name: &str) -> Option<String> {
+        let mut registry = lock(&self.registry);
+        let from = registry.default_session().name().to_owned();
+        registry.rename_session(&from, name).ok()
+    }
+
+    /// The pane's own pool, under the workspace lock.
+    ///
+    /// The UNIQUENESS check the wire action makes is scoped to this arm's one session because that
+    /// is all this arm has: it is single-session by construction (its `scope` is always the default
+    /// session), so "every pane this host holds" and "every pane of the session" are the same set.
+    /// The daemon's arm is registry-wide for the same fact reached the other way.
+    fn rename_pane(&self, id: PaneId, name: &str) -> Option<String> {
+        let parsed = sprag_terminal::PaneName::parse(name).ok()?;
+        let workspace = self.workspace();
+        let mut pool = lock(&workspace);
+        if pool
+            .panes()
+            .iter()
+            .any(|pane| pane.id() != id && pane.name() == Some(&parsed))
+        {
+            return None;
+        }
+        pool.set_pane_name(id, Some(parsed.clone()))
+            .then(|| parsed.as_str().to_owned())
     }
 
     /// Read straight off the pane's own pty, so this arm is the authority the wire client's

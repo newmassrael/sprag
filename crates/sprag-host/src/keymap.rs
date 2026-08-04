@@ -300,22 +300,50 @@ impl KeySpec {
     /// consequence: `Ctrl-D` is simply not the key `d` is bound to. It also makes `C-o` BINDABLE,
     /// which the special case could not express at all.
     ///
-    /// Case is the one thing not compared exactly, and only for a single ASCII letter. A terminal
-    /// sends `Ctrl-B` as the C0 byte `0x02`, which decodes as lowercase, while a terminal using the
-    /// `CSI u` encoding reports whichever case the layout produced — two spellings of one keystroke.
-    /// Shift is not affected: it is a MODIFIER here, so a bound `d` still does not match `Shift-D`.
+    /// **SHIFT is not a modifier on a printable CHARACTER, and R306 measured what pretending
+    /// otherwise costs.** A character key already carries its shift state in the character: a user
+    /// pressing `Shift+5` on a US layout produces `%`, and `sprag-gui` reports it as the W3C key
+    /// `"%"` with winit's `shift_key()` ALSO set (`winit_modifiers_to_pinion`), where `sprag-tui`
+    /// reads a raw pty byte and reports `"%"` with no modifier at all — the same keystroke, two
+    /// spellings, and an exact modifier comparison matches only the second. So `prefix %`, a tmux
+    /// default this project has shipped since the keymap existed, did not fire in the GUI on a real
+    /// keyboard, and every test missed it because both the unit tests and the pixel smoke synthesize
+    /// the key WITHOUT the flag a keyboard sets. Shift is therefore masked off BOTH sides for a
+    /// character, and compared exactly for a NAMED key (`S-Tab` is a different key from `Tab`, and
+    /// nothing about `Tab` carries the shift).
+    ///
+    /// Case is compared exactly for a character too, with ONE exception: a lone ASCII letter under
+    /// `Ctrl`. A terminal sends `Ctrl-B` as the C0 byte `0x02`, which decodes as lowercase, while a
+    /// `CSI u` terminal reports whichever case the layout produced — two spellings of one keystroke,
+    /// and the C0 byte cannot say which. Without `Ctrl` the case is the CHARACTER and folding it
+    /// would make `P` and `p` one binding, which is exactly how `prefix P` silently stole
+    /// `prefix p`'s window walk while this was being written.
     #[must_use]
     pub fn matches(&self, name: &str, mods: Modifiers) -> bool {
-        self.mods == mods && same_key(&self.name, name)
+        let character = is_character(&self.name) && is_character(name);
+        let shifted = |mods: Modifiers| Modifiers {
+            shift: !character && mods.shift,
+            ..mods
+        };
+        shifted(self.mods) == shifted(mods) && same_key(&self.name, name, self.mods.ctrl)
     }
 }
 
-/// Whether two key names are the same key, comparing a lone ASCII letter case-insensitively.
-fn same_key(spec: &str, typed: &str) -> bool {
-    if is_ascii_letter(spec) && is_ascii_letter(typed) {
+/// Whether two key names are the same key — a lone ASCII letter under `Ctrl` case-insensitively,
+/// everything else exactly. See [`KeySpec::matches`] for why `ctrl` is what decides it.
+fn same_key(spec: &str, typed: &str, ctrl: bool) -> bool {
+    if ctrl && is_ascii_letter(spec) && is_ascii_letter(typed) {
         return spec.eq_ignore_ascii_case(typed);
     }
     spec == typed
+}
+
+/// Whether `name` is one printable CHARACTER — the keys whose shift state is the character itself,
+/// as opposed to the named keys ([`sprag_input::NAMED_KEYS`]) where `Shift` is a modifier a user
+/// really does hold.
+fn is_character(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| !c.is_control()) && chars.next().is_none()
 }
 
 /// Whether `name` is exactly one ASCII letter — the only names whose case is a terminal's choice
@@ -461,6 +489,64 @@ pub enum BoundAction {
     /// It names no window, on [`NewWindow`](Self::NewWindow)'s rule: a keystroke acts where the user
     /// is.
     KillWindow,
+    /// `rename-window` — ask for the current window's new name, then rename it (tmux `prefix ,`).
+    ///
+    /// **The first arm that cannot be carried out by the keystroke alone.** Every other verb in
+    /// this vocabulary either takes no argument or takes one a config can fix; a name is neither,
+    /// because a binding that fixed one would rename every window to the same string. So the arm
+    /// does not carry a name — it carries the DECISION TO ASK, and
+    /// [`prompt::Ask::of`](crate::prompt::Ask::of) turns it into the question.
+    ///
+    /// That is also why there is no `command-prompt` verb here. tmux spells this
+    /// `command-prompt -I "#W" -p "(rename-window) " "rename-window '%%'"`: a format language to
+    /// name the window, a template, and a substitution that re-parses text the user typed. The
+    /// question and the seed are DERIVED from the live state at the moment the key is pressed, so
+    /// there is nothing for a format language to do; and the answer fills a typed slot, so there is
+    /// nothing for the quoting to protect.
+    ///
+    /// It names no window, on [`NewWindow`](Self::NewWindow)'s rule.
+    RenameWindow,
+    /// `rename-session` — ask for this session's new name, then rename it (tmux `prefix $`).
+    ///
+    /// [`RenameWindow`](Self::RenameWindow)'s twin one level up, and the one that moves an ADDRESS:
+    /// the session name is what every `-t` takes and what every attached client holds. The daemon
+    /// carries the change channel and the attachments across with it (R302/R303), which is why a
+    /// client can ask for this without knowing anything about who else is watching.
+    RenameSession,
+    /// `rename-pane` — ask for the focused pane's new name, then rename it.
+    ///
+    /// The one rename with a TARGET, because the one with an identity to target: a
+    /// [`PaneId`](sprag_terminal::PaneId) is registry-unique and does not move, where a window and a
+    /// session are addressed by the very name being changed. R295 settled that a pane name is an
+    /// ADDRESS rather than a decoration; this is the gesture that gives a human one.
+    ///
+    /// **Bound to `prefix P` by default, and that key comes from the RIVAL.** tmux has no
+    /// pane-rename verb at all, so there is no key to inherit from it; herdr binds
+    /// `prefix+shift+p` (`rename_pane`, `src/config/model.rs` at `9a4ce5e1`). Where the primary
+    /// parity target is silent, taking the other one's key beats inventing a third — a herdr user's
+    /// fingers already carry it, and the alternative was spending one of a shrinking set of free
+    /// letters on a guess.
+    RenamePane,
+    /// `confirm-before <action>` — ask a yes/no question naming what will be destroyed, and carry
+    /// `action` out only if the answer is yes (tmux's `prefix &` guard).
+    ///
+    /// # Why a WRAPPER and not a property of the destructive verb
+    ///
+    /// The GUI's command catalog decides destructiveness per COMMAND, because a palette row is the
+    /// client's own vocabulary and a user who types four letters and presses Enter has not aimed at
+    /// anything. A BINDING is the opposite: it is the user's own sentence, so `bind & kill-window`
+    /// and `bind & confirm-before kill-window` have to mean different things or the config does not
+    /// mean what it says. sprag ships the guarded spelling as the DEFAULT — tmux's key with tmux's
+    /// guard — and leaves the bare verb bindable by anyone who wants it.
+    ///
+    /// The wrapped action is [`Box`]ed because an action that contains an action is a recursive
+    /// type, and refused if it would ask a question of its own ([`asks`](Self::asks)): a prompt
+    /// that opens a prompt is a grammar this vocabulary does not have a surface for, and a
+    /// `confirm-before rename-window` would ask twice for something that destroys nothing.
+    ConfirmBefore {
+        /// What to do if the answer is yes.
+        action: Box<BoundAction>,
+    },
 }
 
 /// tmux's spelling of "the next pane", which is the only `-t` target form a binding may carry.
@@ -535,7 +621,7 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 9] = [
+    pub const VOCABULARY: [&'static str; 13] = [
         "detach-client",
         "send-prefix",
         "split-window -h|-v [-b]",
@@ -545,7 +631,38 @@ impl BoundAction {
         "new-window",
         "select-window -n|-p|-t <window>",
         "kill-window",
+        "rename-window",
+        "rename-session",
+        "rename-pane",
+        "confirm-before <action>",
     ];
+
+    /// Whether carrying this out puts a QUESTION on the user's screen first.
+    ///
+    /// Derived here rather than listed at each surface, and read by two callers that must agree:
+    /// [`parse`](Self::parse) refuses to wrap an asking action in another ask, and
+    /// [`prompt::Ask::of`](crate::prompt::Ask::of) builds the question. A third arm that asks and is
+    /// left out of this would compile and then nest a prompt inside a prompt — so this is the one
+    /// place the property is decided, exhaustively.
+    #[must_use]
+    pub fn asks(&self) -> bool {
+        match self {
+            Self::RenameWindow
+            | Self::RenameSession
+            | Self::RenamePane
+            | Self::ConfirmBefore { .. } => true,
+            Self::DetachClient
+            | Self::SendPrefix
+            | Self::SplitWindow { .. }
+            | Self::SelectNextPane
+            | Self::SelectPaneToward { .. }
+            | Self::SwapPaneToward { .. }
+            | Self::ZoomPane { .. }
+            | Self::NewWindow
+            | Self::SelectWindow { .. }
+            | Self::KillWindow => false,
+        }
+    }
 
     /// Parse an action as the shell spells it — `split-window -h`, `detach-client`.
     ///
@@ -558,11 +675,32 @@ impl BoundAction {
         let verb = words
             .next()
             .ok_or_else(|| KeyError::UnknownAction(action.to_owned()))?;
-        let flags: Vec<&str> = words.collect();
         let bad = |why: &str| KeyError::BadFlags {
             action: action.to_owned(),
             why: why.to_owned(),
         };
+        // `confirm-before` is resolved BEFORE the flag vector is built, because its argument is a
+        // whole ACTION and not a flag list: the rest of the line is the same grammar again, parsed
+        // by the same function. That recursion is the point — one vocabulary, so a verb added later
+        // is wrappable the day it exists, without this arm being told about it.
+        if verb == "confirm-before" {
+            let rest = words.collect::<Vec<_>>().join(" ");
+            if rest.is_empty() {
+                return Err(bad(
+                    "needs an action to guard, e.g. `confirm-before kill-window`",
+                ));
+            }
+            let inner = Self::parse(&rest)?;
+            if inner.asks() {
+                return Err(bad(
+                    "cannot guard an action that already asks a question of its own",
+                ));
+            }
+            return Ok(Self::ConfirmBefore {
+                action: Box::new(inner),
+            });
+        }
+        let flags: Vec<&str> = words.collect();
         match verb {
             "detach-client" | "send-prefix" => {
                 if !flags.is_empty() {
@@ -684,6 +822,30 @@ impl BoundAction {
                     Self::KillWindow
                 })
             }
+            // The three verbs that ASK. Each takes no argument for the same reason `new-window`
+            // takes none and a stronger one besides: the name is what the user is about to type, so
+            // a binding carrying one would rename everything it touches to the same string.
+            "rename-window" | "rename-session" | "rename-pane" => {
+                if !flags.is_empty() {
+                    return Err(bad(
+                        "takes no arguments (the name is what the prompt asks for, and a binding \
+                         that fixed one would give everything it renames the same name)",
+                    ));
+                }
+                Ok(match verb {
+                    "rename-window" => Self::RenameWindow,
+                    "rename-session" => Self::RenameSession,
+                    _ => Self::RenamePane,
+                })
+            }
+            // tmux's own spelling for this, refused with the reason rather than as an unknown verb:
+            // a user pasting a line out of their `.tmux.conf` is the likeliest way anyone types
+            // `command-prompt` at sprag, and "unknown action" would send them looking for a typo.
+            "command-prompt" => Err(bad(
+                "sprag has no command-prompt: the rename verbs ASK by themselves (bind , \
+                 rename-window), deriving the question and the current name from the live session, \
+                 so there is no template to substitute into",
+            )),
             // `select-pane`'s shape one level up: matched on the whole flag vector, because `-t
             // <window>` is TWO words that mean one thing.
             "select-window" => match flags.as_slice() {
@@ -738,6 +900,13 @@ impl fmt::Display for BoundAction {
             }),
             Self::NewWindow => f.write_str("new-window"),
             Self::KillWindow => f.write_str("kill-window"),
+            Self::RenameWindow => f.write_str("rename-window"),
+            Self::RenameSession => f.write_str("rename-session"),
+            Self::RenamePane => f.write_str("rename-pane"),
+            // Rendered by rendering the action it wraps, so a nested spelling round-trips through
+            // [`BoundAction::parse`] the way every other one does — `list-keys` prints what a user
+            // could type back.
+            Self::ConfirmBefore { action } => write!(f, "confirm-before {action}"),
             Self::SelectWindow { ask } => match ask {
                 SelectWindowAsk::Step(WindowStep::Next) => f.write_str("select-window -n"),
                 SelectWindowAsk::Step(WindowStep::Previous) => f.write_str("select-window -p"),
@@ -880,12 +1049,26 @@ impl Default for Keymap {
                 // presses more than any other after the splits, and before this round it was
                 // `Routed::Swallow` — it silently did nothing.
                 //
-                // `&` (kill-window) is deliberately NOT here: tmux's default for it is
-                // `confirm-before -p "kill-window #W? (y/n)" kill-window`, and sprag has neither
-                // that verb nor a prompt surface in `sprag-tui`. The action is BINDABLE, so a user
-                // who wants the key can say so; shipping the spelling without the guard would hand
-                // a tmux user's fingers a destructive verb they expect to be asked about.
                 bind("c", BoundAction::NewWindow),
+                // `&` — tmux's key for `kill-window`, WITH tmux's own guard (R306). R305 left this
+                // unbound because there was no prompt surface to guard it with, and shipping a
+                // destructive verb on the key a tmux user's fingers already know, without the
+                // question those fingers expect, was the wrong half of that trade. The bare verb
+                // stays bindable for anyone who wants it: `confirm-before` is a wrapper precisely
+                // so a config can say either thing.
+                bind(
+                    "&",
+                    BoundAction::ConfirmBefore {
+                        action: Box::new(BoundAction::KillWindow),
+                    },
+                ),
+                // THE THREE RENAMES. `,` and `$` are tmux's own keys for exactly these verbs; `P`
+                // is herdr's (`prefix+shift+p`), taken because tmux has no pane-rename verb at all
+                // and inheriting the other parity target's key beats inventing a third — see
+                // [`BoundAction::RenamePane`].
+                bind(",", BoundAction::RenameWindow),
+                bind("$", BoundAction::RenameSession),
+                bind("P", BoundAction::RenamePane),
                 // NOT repeating, where the arrows are: tmux marks `next-window`/`previous-window`
                 // `-r` and sprag does not, because a held window key walks a RING with no edge to
                 // stop at — three unintended repeats put the user two windows past where they meant
@@ -1375,10 +1558,9 @@ mod tests {
         assert!(!ctrl_o.matches("o", Modifiers::default()));
     }
 
-    /// A lone ASCII letter compares case-insensitively, because a terminal chooses the case: the C0
-    /// byte for `Ctrl-B` decodes lowercase while a `CSI u` terminal reports the layout's case.
-    ///
-    /// Shift is unaffected — it is a modifier here, so a bound `d` still does not match `Shift-D`.
+    /// A lone ASCII letter under `Ctrl` compares case-insensitively, because a terminal chooses the
+    /// case there: the C0 byte for `Ctrl-B` decodes lowercase while a `CSI u` terminal reports the
+    /// layout's case. WITHOUT `Ctrl` the case is the character, so `d` and `D` are two keys.
     #[test]
     fn a_lone_letter_is_case_insensitive_but_shift_still_is_not() {
         let ctrl_b = KeySpec::parse("C-b").expect("parses");
@@ -1780,9 +1962,18 @@ mod tests {
                 // a pane walk STOPS at the arrangement's edge — the flag follows the shape of what
                 // is being walked, which is why it is not simply copied from tmux row by row.
                 //
-                // `&` (kill-window) is ABSENT on purpose: tmux guards it with `confirm-before`,
-                // which sprag does not have. `kill-window` is bindable; it is not bound.
                 "c new-window",
+                // tmux's `&`, WITH tmux's own guard (R306). R305 left this key unbound because
+                // there was no prompt surface to guard it with; there is one now, and the bare verb
+                // stays bindable for anyone who wants no question.
+                "& confirm-before kill-window",
+                // THE THREE RENAMES (R306) — the first rows here whose verb cannot be carried out
+                // by the keystroke alone, because a name is a string a key does not carry. `,` and
+                // `$` are tmux's own keys; `P` is herdr's, taken because tmux has no pane-rename
+                // verb to inherit a key from.
+                ", rename-window",
+                "$ rename-session",
+                "P rename-pane",
                 "n select-window -n",
                 "p select-window -p",
                 // tmux's four `-r` rows, read from `list-keys -T prefix` on tmux 3.2a. Its own
