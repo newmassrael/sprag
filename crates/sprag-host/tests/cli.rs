@@ -2340,6 +2340,27 @@ fn the_cli_swaps_a_pane_with_the_one_in_a_direction() {
         drawn_layout(&sock),
         format!("50% left|right\n├─ pane 0\n└─ pane {new_pane}\n"),
     );
+
+    // ...and the ORIGIN THROUGH `-t`, which is a combination and not a repetition: `scope_and_rest`
+    // runs BEFORE the verb's own parse and consumes a value-taking flag, so a second positional is
+    // exactly what it could swallow. R300 found this hole one verb over — `--from` had never been
+    // driven through `-t` and was "read and reasoned safe", which is not the same as run.
+    let scoped_origin = sprag(&sock, &["swap-pane", "-t", "0", "0", "-R"]);
+    assert!(
+        scoped_origin.ok,
+        "swap-pane -t 0 0 -R succeeded: {}",
+        scoped_origin.stderr
+    );
+    assert_eq!(
+        scoped_origin.stdout.trim(),
+        format!("swapped pane 0 with {new_pane}"),
+        "the scope parse did not eat the origin",
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane {new_pane}\n└─ pane 0\n"),
+        "and it really moved the pane the positional named",
+    );
 }
 
 /// What the three placement verbs DID, as the CLI can now show it — debt-register item 11.
