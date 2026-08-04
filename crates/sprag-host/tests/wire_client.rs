@@ -21,9 +21,9 @@ use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
-    RENAME_SESSION_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
-    cells_slot_at, project_slot_for,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION,
+    SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -1349,6 +1349,175 @@ fn re_scoping_one_connection_switches_which_session_it_serves_over_the_real_sock
         pane_ids(&mut conn),
         vec![0],
         "switched back -> the default again"
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// A client scoped to its ATTACHMENT follows a `rename-session`, over the REAL socket — and the
+/// same client scoped by NAME does not. The whole of R303's thesis, driven through the daemon.
+///
+/// The three readings are the three the instrument took against a live daemon before a line was
+/// written, in order:
+///
+/// 1. **Before**: both clients read their session. (The control that makes the rest mean
+///    something — a `scope_to_attached` that never worked would fail here.)
+/// 2. **After the rename**: the ATTACHED client still reads the same session under its new name;
+///    the NAME-scoped one is refused, which is what its poll thread reads as "my session is gone"
+///    and leaves on.
+/// 3. **After a NEW session takes the retired name**: the name-scoped client is served — by the
+///    IMPOSTOR. This is the sharp half: not a refusal but a success, against a session it never
+///    named, on the connection it also sends keystrokes down. The attached client is untouched.
+///
+/// The two sessions are told apart by their WINDOW names rather than by the session name, because
+/// the session name is the very thing under test: `orig` and `impostor` are facts the rename cannot
+/// move, so a reply naming one of them says which registry entry answered.
+#[test]
+fn an_attached_client_follows_a_rename_where_a_name_scoped_one_is_captured_by_an_impostor() {
+    let (_host, sock) = spawn_host();
+    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    admin
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+    let rename_window = |conn: &mut HostConn, session: &str, to: &str| {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": mux_action_path(RENAME_WINDOW_ACTION),
+                "args": { "name": to },
+            }),
+        )
+        .expect("rename_window answers");
+    };
+    rename_window(&mut admin, "work", "orig");
+
+    // The DISPLAY client: hello, attach by name, then off the name and onto the attachment — the
+    // exact sequence `sprag-client`'s `attach_and_follow` performs at boot.
+    let mut viewer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
+        .expect("client/hello is accepted");
+    viewer.scope_to("work".to_owned());
+    viewer
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+    viewer.scope_to_attached();
+
+    // The client this round is fixing: identical, except that it keeps re-sending the name.
+    let mut by_name =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the name-scoped client connects");
+    by_name
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "by-name" }))
+        .expect("client/hello is accepted");
+    by_name.scope_to("work".to_owned());
+    by_name
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+
+    // What each connection's requests are ABOUT, in the daemon's own words. Read here rather than
+    // only in the live client test because THIS fixture can discriminate: `work` is not the
+    // daemon's default session, so a slot that answered "the default" instead of "the scope" gives
+    // a different string. (It was written the other way round first, in a fixture where the
+    // client's session WAS the default — and a revert-proof that broke the slot passed.)
+    let scope_name = |conn: &mut HostConn| -> Option<String> {
+        conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(SESSION_SLOT) }),
+        )
+        .ok()?
+        .as_str()
+        .map(str::to_owned)
+    };
+    let default_session = scope_name(&mut admin).expect("an unscoped read names the default");
+    assert_ne!(
+        default_session, "work",
+        "the fixture only discriminates if the viewed session is NOT the default",
+    );
+    assert_eq!(
+        scope_name(&mut viewer).as_deref(),
+        Some("work"),
+        "an attached-scoped read is about the session this client is viewing",
+    );
+
+    // 1. BEFORE — the control.
+    let window_of = |conn: &mut HostConn| -> Option<String> {
+        conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(WINDOWS_SLOT) }),
+        )
+        .ok()?
+        .as_array()?
+        .iter()
+        .find(|w| w["current"].as_bool().unwrap_or(false))?["name"]
+            .as_str()
+            .map(str::to_owned)
+    };
+    assert_eq!(window_of(&mut viewer).as_deref(), Some("orig"));
+    assert_eq!(window_of(&mut by_name).as_deref(), Some("orig"));
+
+    // The rename, on a THIRD connection — a person typing `sprag rename-session`.
+    admin
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "work",
+                "path": mux_action_path(RENAME_SESSION_ACTION),
+                "args": { "name": "prod" },
+            }),
+        )
+        .expect("rename_session answers");
+
+    // 2. AFTER — the attached client is still on its own session; the name-scoped one is refused.
+    assert_eq!(
+        window_of(&mut viewer).as_deref(),
+        Some("orig"),
+        "the attachment moved with the rename, so this client never noticed it",
+    );
+    assert!(
+        by_name
+            .call(
+                "scene/query",
+                json!({ "path": mux_action_path(WINDOWS_SLOT) })
+            )
+            .is_err(),
+        "a client re-sending the retired name is refused — the detach measured at R303",
+    );
+
+    // 3. THE IMPOSTOR — a new session takes the freed name and captures the name-scoped client.
+    admin
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+    rename_window(&mut admin, "work", "impostor");
+    assert_eq!(
+        window_of(&mut by_name).as_deref(),
+        Some("impostor"),
+        "the name-scoped client is SERVED, by a session it never named — the silent half",
+    );
+    assert_eq!(
+        window_of(&mut viewer).as_deref(),
+        Some("orig"),
+        "while the attached client is on the session it has been viewing all along",
+    );
+    // ...and the daemon tells it the NEW name, which is what a client whose scope is no longer a
+    // name has to be told in order to label itself.
+    assert_eq!(
+        scope_name(&mut viewer).as_deref(),
+        Some("prod"),
+        "the attached scope's name follows the rename",
+    );
+    assert_eq!(
+        scope_name(&mut admin).as_deref(),
+        Some(default_session.as_str()),
+        "control: an unscoped read still names the default, which the rename did not touch",
     );
 
     let _ = std::fs::remove_file(&sock);
