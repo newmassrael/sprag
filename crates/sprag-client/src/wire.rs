@@ -95,8 +95,9 @@ use sprag_host::wire::{
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
-    cells_slot_at, find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
+    SPAWN_ACTION, SPLIT_ACTION, SelectAsk, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -1884,12 +1885,16 @@ impl HostClient for WireHost {
     /// user cycled, the pane a split just opened. A DIRECTION is the other kind of request and
     /// takes the other arm of the same action: see [`Self::select_toward`], which names no pane at
     /// either end.
+    ///
+    /// The request is built by [`SelectAsk`], not by a `json!` here: this crate is the one both
+    /// frontends share, so a key spelled by hand in it is a key that can drift away from the daemon
+    /// that reads it while every test on both sides stays green.
     fn select_pane(&self, id: PaneId) -> bool {
         self.request(
             "scene/invoke",
             invoke(
                 &mux_action_path(SELECT_PANE_ACTION),
-                json!({ "pane": id.0 }),
+                SelectAsk::Pane(id).to_args(),
             ),
             "select_pane",
         )
@@ -1913,7 +1918,11 @@ impl HostClient for WireHost {
             "scene/invoke",
             invoke(
                 &mux_action_path(SELECT_PANE_ACTION),
-                json!({ "dir": dir.wire_str() }),
+                // No ORIGIN, and that is the whole of what a display client means: this call comes
+                // from a KEYPRESS, and a keypress is always "from where I am". The argument exists
+                // for a caller that is not the person — an agent reasoning about the pane beside its
+                // own — which is why it reaches the MCP tool and the CLI verb and stops there.
+                SelectAsk::Toward { dir, from: None }.to_args(),
             ),
             "select_toward",
         )?;

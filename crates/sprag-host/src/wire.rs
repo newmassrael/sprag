@@ -13,8 +13,8 @@
 //! same builders, so the ABI is defined once.
 
 use pinion_core::external::{SchemaArg, SchemaField};
-use serde_json::Value;
-use sprag_terminal::PaneDir;
+use serde_json::{Map, Value};
+use sprag_terminal::{PaneDir, PaneId};
 
 use crate::{INPUT_TAG, MUX_TAG};
 
@@ -963,22 +963,41 @@ pub const SELECT_WINDOW_ACTION: &str = "select_window";
 /// private answer, which is why nothing that draws nothing — an agent, a shell — could say "here".
 ///
 /// Two ways to NAME the target, and exactly one of them per request (the shape
-/// [`RESIZE_WINDOW_ACTION`] uses for its four):
+/// [`RESIZE_WINDOW_ACTION`] uses for its four) — the grammar is [`SelectAsk`], which is where the
+/// three keys below are spelled and the only place a client builds them:
 ///
 /// * `pane` — that pane, which must be one of the current window's. A FLOATING pane is a legal
 ///   target: it is still a pane of the window and still takes input.
-/// * `dir` — `"left"` / `"right"` / `"up"` / `"down"`: the neighbour of the pane that is active NOW
-///   (tmux's `select-pane -L/-R/-U/-D`), resolved by
-///   [`LayoutTree::neighbor`](sprag_terminal::LayoutTree::neighbor) from the ARRANGEMENT rather
-///   than from any client's rectangles.
-/// * neither, or both ⇒ `TypeMismatch`. "Select nothing" and "select two things" are not requests
-///   with an obvious reading, and guessing one would make a client's bug silent.
+/// * `dir` — `"left"` / `"right"` / `"up"` / `"down"`: one step that way (tmux's `select-pane
+///   -L/-R/-U/-D`), resolved by [`LayoutTree::neighbor`](sprag_terminal::LayoutTree::neighbor) from
+///   the ARRANGEMENT rather than from any client's rectangles.
+/// * `from` — the pane that step is measured FROM, and only alongside `dir`. Absent ⇒ the pane that
+///   is active NOW, which is what a keypress means and what the CLI and the keybinding always mean.
+/// * neither `pane` nor `dir`, or both, or `from` without `dir` ⇒ `TypeMismatch`. "Select nothing",
+///   "select two things" and "step from here toward nowhere" are not requests with an obvious
+///   reading, and guessing one would make a client's bug silent.
 ///
 /// **A direction with no neighbour is not an error.** The answer is the active pane unmoved: a key
 /// bound to `select-pane -L` pressed at the left edge is a well-formed request whose honest answer is
 /// "nothing to move to", and refusing it would log a failure every time a user reached the edge of
 /// their layout. A `pane` that names no pane of the current window IS refused (`Rejected`) — the rule
-/// [`SPLIT_ACTION`] already applies to its target.
+/// [`SPLIT_ACTION`] already applies to its target — **and so is a `from` that names one**, because an
+/// origin the window does not hold is the same mistake one argument over. It is refused rather than
+/// answered [`Untiled`](SelectHow::Untiled): a pane of another window is not "in no arrangement", it
+/// is in one this request cannot see, and a caller told the floating story would go looking for a
+/// float that is not there.
+///
+/// # Why an ORIGIN belongs on the wire and not in the caller
+///
+/// Because the caller that wants one cannot compute it. "Put the user on the pane left of THAT one"
+/// is a layout read at one instant and a select at another — the two-instant join the `dir` arm
+/// exists to remove, rebuilt the moment the origin stops being the active pane. The walk is free
+/// here: it happens under the lock that is already held, on the arrangement the daemon already owns.
+///
+/// It does NOT break the arm's own rule that *neither end is the client's fact*. What a client may
+/// not supply is a POSITION — adjacency derived from its rectangles, which is where the rival's
+/// answer comes from. An IDENTITY is different: a pane id is the client's to hold (a process inside
+/// a pane reads its own from `SPRAG_PANE`), and naming one says nothing about where it sits.
 ///
 /// # The answer: `{pane, changed, outcome}`
 ///
@@ -990,14 +1009,133 @@ pub const SELECT_WINDOW_ACTION: &str = "select_window";
 /// `outcome`.
 pub const SELECT_PANE_ACTION: &str = "select_pane";
 
+/// The REQUEST grammar of [`SELECT_PANE_ACTION`] — what a caller may ask, as a type that cannot
+/// spell the combinations the action refuses.
+///
+/// The daemon [`parse`](Self::parse)s one of these and every client [`to_args`](Self::to_args)
+/// builds one, so the three keys are spelled ONCE for four surfaces (the daemon, the CLI verb, the
+/// MCP tool, the keybinding). Before it each end wrote its own `{"dir": …}` literal, which is the
+/// shape R292 removed from the event filter for the same reason: a wire word spelled twice is a wire
+/// word that can drift.
+///
+/// The XOR is in the type rather than in a validator, so a client CANNOT construct "a pane and a
+/// direction" or "an origin with nowhere to go" — the daemon still refuses those, because they can
+/// arrive from something that is not this type, but no code in this tree can produce one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SelectAsk {
+    /// `{pane}` — make THAT pane active. It must be one of the scoped window's, floating or tiled.
+    Pane(PaneId),
+    /// `{dir, from?}` — one step `dir` from `from`, or from the ACTIVE pane when `from` is absent.
+    Toward {
+        /// Which way to step.
+        dir: PaneDir,
+        /// The pane the step starts at. [`None`] ⇒ the active pane — what a keypress means.
+        from: Option<PaneId>,
+    },
+}
+
+impl SelectAsk {
+    /// The request key naming a pane to select outright.
+    pub const PANE_KEY: &'static str = "pane";
+    /// The request key naming which way to step.
+    pub const DIR_KEY: &'static str = "dir";
+    /// The request key naming the pane a step is measured FROM.
+    pub const FROM_KEY: &'static str = "from";
+
+    /// The `args` object a client sends for this ask.
+    ///
+    /// A [`Toward`](Self::Toward) with no origin emits exactly the bytes it emitted before origins
+    /// existed — the key is absent, not null — so the commonest request on this action is unchanged
+    /// on the wire and a reader of a trace can still tell the two asks apart by eye.
+    #[must_use]
+    pub fn to_args(self) -> Value {
+        let mut map = Map::new();
+        match self {
+            Self::Pane(pane) => {
+                map.insert(Self::PANE_KEY.to_owned(), Value::from(pane.0));
+            }
+            Self::Toward { dir, from } => {
+                map.insert(Self::DIR_KEY.to_owned(), Value::from(dir.wire_str()));
+                if let Some(from) = from {
+                    map.insert(Self::FROM_KEY.to_owned(), Value::from(from.0));
+                }
+            }
+        }
+        Value::Object(map)
+    }
+
+    /// The ask an `args` value names, or [`None`] for anything this grammar does not admit.
+    ///
+    /// One [`None`] for every refusal because the action answers one error for all of them
+    /// (`TypeMismatch`): a key of the wrong type, both namings, neither, and an origin with no
+    /// direction are the same class of caller bug, and `InvokeError` carries no payload to tell them
+    /// apart with anyway (upstream PINION-PR82). The SURFACES say which one, because each of them
+    /// knows what it sent.
+    #[must_use]
+    pub fn parse(args: &Value) -> Option<Self> {
+        let map = match args {
+            Value::Object(map) => Some(map),
+            // A request with no args at all is not malformed JSON, it is the empty ask — which this
+            // grammar does not admit either, one line down.
+            Value::Null => None,
+            _ => return None,
+        };
+        // An explicit `null` reads as absent, so a client that fills its whole argument struct in
+        // (and leaves the optional halves null) asks the same thing as one that omits them.
+        let field = |key: &str| {
+            map.and_then(|map| map.get(key))
+                .filter(|value| !value.is_null())
+        };
+        let pane_id = |key: &str| match field(key) {
+            None => Ok(None),
+            Some(value) => value.as_u64().map(|id| Some(PaneId(id))).ok_or(()),
+        };
+        let pane = pane_id(Self::PANE_KEY).ok()?;
+        let from = pane_id(Self::FROM_KEY).ok()?;
+        let dir = match field(Self::DIR_KEY) {
+            None => None,
+            Some(value) => Some(PaneDir::from_wire(value.as_str()?)?),
+        };
+        match (pane, dir, from) {
+            (Some(pane), None, None) => Some(Self::Pane(pane)),
+            (None, Some(dir), from) => Some(Self::Toward { dir, from }),
+            _ => None,
+        }
+    }
+
+    /// The direction this ask stepped in, if it stepped — what [`SelectHow::read`] needs to read a
+    /// pre-`outcome` answer, and what a surface needs to word its own sentence.
+    #[must_use]
+    pub fn toward(self) -> Option<PaneDir> {
+        match self {
+            Self::Pane(_) => None,
+            Self::Toward { dir, .. } => Some(dir),
+        }
+    }
+
+    /// The pane this ask measured its step from, when the caller named one.
+    #[must_use]
+    pub fn origin(self) -> Option<PaneId> {
+        match self {
+            Self::Pane(_) => None,
+            Self::Toward { from, .. } => from,
+        }
+    }
+}
+
 /// The `outcome` key of a [`SELECT_PANE_ACTION`] answer: why the session is on the pane it names.
 ///
 /// **Four words, total over the request grammar, each with exactly one cause** — the property that
 /// makes an operator-facing or agent-facing sentence exact rather than a list of possibilities
 /// ([`sprag_terminal::ZoomOutcome`] states the same rule for the zoom's two bools). A `pane` request
 /// can only [`Moved`](Self::Moved) or find itself [`AlreadyActive`](Self::AlreadyActive); a `dir`
-/// request can only `Moved`, stop [`AtEdge`](Self::AtEdge), or be asked from an
+/// request can also stop [`AtEdge`](Self::AtEdge) or be measured from an
 /// [`Untiled`](Self::Untiled) pane.
+///
+/// A `dir` request reaches `AlreadyActive` only by naming an ORIGIN
+/// ([`SelectAsk::Toward::from`]) whose neighbour is the pane the session is already on — the cause
+/// is the same one word for one fact ("the pane it resolved to is the pane it was on"), and the
+/// arms that can produce it grew rather than the vocabulary.
 ///
 /// # Why the daemon says it instead of the caller deriving it
 ///
@@ -1014,15 +1152,17 @@ pub const SELECT_PANE_ACTION: &str = "select_pane";
 pub enum SelectHow {
     /// The active pane MOVED to the pane the answer names.
     Moved,
-    /// A `pane` request naming the pane the session was ALREADY on — a re-select, which is a
-    /// legitimate no-op rather than a failure (a client publishing the focus it already shows).
+    /// The request RESOLVED to the pane the session was already on — a `pane` naming it (a
+    /// re-select, which is a legitimate no-op rather than a failure: a client publishing the focus
+    /// it already shows), or a `dir` whose step from a named origin landed back on it.
     AlreadyActive,
-    /// A `dir` request from a pane the arrangement holds, with nothing that way: the window's edge.
+    /// A `dir` request whose origin the arrangement holds, with nothing that way: the window's edge.
     AtEdge,
-    /// A `dir` request from a pane the arrangement holds NO LEAF for — the active pane is floating,
-    /// so it has no neighbours in any direction. Distinct from [`AtEdge`](Self::AtEdge) on purpose:
-    /// the remedy is different (dock it, or select by name), and an edge is a boundary the movement
-    /// ran into where this is a request with no adjacency to walk at all.
+    /// A `dir` request whose ORIGIN the arrangement holds NO LEAF for — it is floating, so it has no
+    /// neighbours in any direction. That origin is the active pane unless the request named one.
+    /// Distinct from [`AtEdge`](Self::AtEdge) on purpose: the remedy is different (dock it, or
+    /// select by name), and an edge is a boundary the movement ran into where this is a request with
+    /// no adjacency to walk at all.
     Untiled,
 }
 
@@ -1061,19 +1201,31 @@ impl SelectHow {
         matches!(self, Self::Moved)
     }
 
-    /// Read the outcome of an answer, INCLUDING from a daemon that predates the `outcome` key.
+    /// Read the outcome of an answer, from any daemon — including one that does not carry the key.
     ///
     /// `toward` is the direction the caller asked for, if it asked for one — which is what makes the
-    /// fallback exact rather than a guess. A pre-R299 daemon answers `{pane, changed}` only, and
-    /// those two plus the arm the caller chose determine three of the four words: a `pane` request
-    /// that changed nothing was `AlreadyActive`, and a `dir` request that changed nothing went
-    /// nowhere. Only the reason it went nowhere is unrecoverable, and the answer says the honest
-    /// thing rather than the specific one ([`AtEdge`](Self::AtEdge), which is the case a user meets;
-    /// a floating active pane needs a client that floated it).
+    /// derivation exact rather than a guess. `{pane, changed}` plus the arm the caller chose
+    /// determine three of the four words: a `pane` request that changed nothing was `AlreadyActive`,
+    /// and a `dir` request that changed nothing went nowhere. Only the reason it went nowhere is
+    /// unrecoverable, and the answer says the honest thing rather than the specific one
+    /// ([`AtEdge`](Self::AtEdge), which is the case a user meets; a floating pane needs a client that
+    /// floated it).
     ///
-    /// One reader for every client, so a skew's degraded sentence is decided here rather than
-    /// re-derived per surface. The `outcome` key is ADDITIVE, so an old CLIENT reading a new daemon
-    /// simply ignores it: this is the other direction, the one an added key does not cover by itself.
+    /// One reader for every client, so a degraded sentence is decided here rather than re-derived
+    /// per surface.
+    ///
+    /// # It stopped being a SKEW path when the origin arrived
+    ///
+    /// It was written as one: the `outcome` key was ADDITIVE, so R299 shipped without moving
+    /// [`WIRE_PROTOCOL`] and a new CLIENT still had to say something sensible to an old daemon. The
+    /// origin argument is not additive in that way — an old daemon would ACCEPT it, DROP it, and move
+    /// the user from the wrong pane — so the number moved, and a daemon that omits `outcome` is
+    /// now refused by name before a request reaches it.
+    ///
+    /// What is left is a TOTAL function's default: `read` must answer for any value, and this is the
+    /// answer it gives. The `(dir, unchanged)` branch assumes the ask carried no origin, which the
+    /// protocol number is now what makes safe — an answer old enough to lack `outcome` cannot have
+    /// come from a request new enough to carry `from`.
     #[must_use]
     pub fn read(answer: &Value, toward: Option<PaneDir>) -> Self {
         if let Some(how) = answer["outcome"].as_str().and_then(Self::from_wire) {
@@ -1153,7 +1305,7 @@ pub const RESIZE_WINDOW_ACTION: &str = "resize_window";
 /// The mux control external invoke action that BREAKS a pane out of its window into a new window
 /// of the SCOPED session, born current, and returns its name (`{pane, name?}`) — tmux `break-pane`.
 ///
-/// `pane` is the id of the pane to move; its source window is DERIVED (a [`PaneId`](sprag_terminal::PaneId)
+/// `pane` is the id of the pane to move; its source window is DERIVED (a [`PaneId`]
 /// is registry-unique, so the window that holds it is unambiguous — the caller never names the
 /// source). `name` absent ⇒ the lowest free integer window name. Refused (`Rejected`) if the pane's
 /// window tiles only that one pane, if an explicit `name` is taken, or if no window holds `pane`.
@@ -1177,7 +1329,7 @@ pub const JOIN_PANE_ACTION: &str = "join_pane";
 /// with pixels and a gesture can do, and a shell script or an agent cannot.
 ///
 /// **NEITHER window is named**, and that is the design rather than a shorthand. A
-/// [`PaneId`](sprag_terminal::PaneId) is registry-unique, so `pane` implies its source window (the
+/// [`PaneId`] is registry-unique, so `pane` implies its source window (the
 /// rule [`BREAK_PANE_ACTION`] already states) and `target` implies its destination. One request
 /// therefore covers both a re-placement inside one window and a move into another, with no mode
 /// flag: whether the two windows differ is an observation about the two ids, never a choice the
@@ -1240,7 +1392,7 @@ pub const SWAP_PANE_ACTION: &str = "swap_pane";
 /// whichever pane it is aimed at; `true` / `false` are the explicit forms.
 ///
 /// **The window is DERIVED from the pane**, [`MOVE_PANE_ACTION`]'s rule at both ends: a zoom is a
-/// per-window fact and a [`PaneId`](sprag_terminal::PaneId) is registry-unique, so zooming a pane
+/// per-window fact and a [`PaneId`] is registry-unique, so zooming a pane
 /// of a window nobody is looking at is a well-formed request. herdr's `pane.zoom` cannot express
 /// it — its flag is per-tab and its target is resolved inside the active tab.
 ///
@@ -1450,6 +1602,83 @@ mod tests {
         assert!(PANE_SCHEMA.contains(&FIND_FIELD) && PANE_SCHEMA.contains(&REGEX_FIELD));
     }
 
+    /// The REQUEST grammar round trips through the bytes, both ways, for every shape a caller can
+    /// spell — which is what makes one type serve the daemon that parses and the three clients that
+    /// build.
+    ///
+    /// The `from`-less step must emit the bytes it emitted before origins existed, and that is
+    /// asserted as a LITERAL rather than as `to_args` compared with itself: the commonest request on
+    /// this action is the one a trace reader and an old-daemon probe both recognise by eye.
+    #[test]
+    fn the_select_grammar_round_trips_through_the_bytes_it_sends() {
+        let shapes = [
+            SelectAsk::Pane(PaneId(7)),
+            SelectAsk::Toward {
+                dir: PaneDir::Left,
+                from: None,
+            },
+            SelectAsk::Toward {
+                dir: PaneDir::Down,
+                from: Some(PaneId(0)),
+            },
+        ];
+        for ask in shapes {
+            assert_eq!(SelectAsk::parse(&ask.to_args()), Some(ask), "{ask:?}");
+        }
+        assert_eq!(shapes[0].to_args(), json!({"pane": 7}));
+        assert_eq!(
+            shapes[1].to_args(),
+            json!({"dir": "left"}),
+            "a step with no origin says nothing about one — the key is ABSENT, not null",
+        );
+        assert_eq!(shapes[2].to_args(), json!({"dir": "down", "from": 0}));
+        assert_eq!(shapes[2].toward(), Some(PaneDir::Down));
+        assert_eq!(shapes[2].origin(), Some(PaneId(0)));
+        assert_eq!(shapes[0].toward(), None, "a named pane stepped nowhere");
+        assert_eq!(shapes[1].origin(), None);
+    }
+
+    /// Every reading the grammar does NOT admit, in one place — because each of them is a caller
+    /// bug the daemon answers with one `TypeMismatch`, so this is the only surface that says what
+    /// the set is.
+    ///
+    /// An explicit `null` reads as ABSENT, deliberately: a client that fills in a whole argument
+    /// struct and leaves the optional halves null must ask the same thing as one that omits them,
+    /// or the same request would mean two things depending on how it was built.
+    #[test]
+    fn the_select_grammar_admits_nothing_else() {
+        for refused in [
+            json!({}),
+            json!(null),
+            json!([]),
+            json!("left"),
+            json!({"pane": 1, "dir": "left"}),
+            json!({"pane": 1, "from": 2}),
+            json!({"from": 2}),
+            json!({"dir": "sideways"}),
+            json!({"dir": 3}),
+            json!({"pane": "1"}),
+            json!({"dir": "left", "from": "2"}),
+            json!({"dir": "left", "from": -1}),
+        ] {
+            assert_eq!(SelectAsk::parse(&refused), None, "admitted {refused}");
+        }
+        assert_eq!(
+            SelectAsk::parse(&json!({"pane": 4, "dir": null, "from": null})),
+            Some(SelectAsk::Pane(PaneId(4))),
+            "an explicit null is an absent key",
+        );
+        assert_eq!(
+            SelectAsk::parse(&json!({"dir": "up", "extra": 1})),
+            Some(SelectAsk::Toward {
+                dir: PaneDir::Up,
+                from: None
+            }),
+            "a key this grammar does not know is not its business to police — the request \
+             declares its WIRE_PROTOCOL, which is the check that catches a shape it cannot read",
+        );
+    }
+
     /// The `outcome` vocabulary round trips, and `changed` has ONE derivation — so the key the
     /// daemon writes beside it can never disagree with the word.
     #[test]
@@ -1539,6 +1768,19 @@ mod tests {
     /// The hand-parsed slots (`panes`, `revision`) are deliberately absent: a client reads those
     /// key by key with explicit fallbacks, so adding a key cannot break one. What is pinned is what
     /// serde decodes WHOLE, which is where a shape change turns into a type error at slot nine.
+    ///
+    /// # And the REQUEST shapes, which version 2 of this pin did not cover
+    ///
+    /// Every shape above is an ANSWER. R300 moved the number for a REQUEST — `select_pane` gained an
+    /// origin argument — and reverting the bump left the whole suite green, because nothing here
+    /// looked at what a client SENDS. That is the same hole this pin exists to close, on the other
+    /// side of the wire, and it is the more dangerous side: an added answer key is absent-not-wrong
+    /// to an old reader, where an added ARGUMENT is ACCEPTED AND DROPPED by an old daemon and the
+    /// request still parses (R294 measured it).
+    ///
+    /// So a request grammar this project owns is pinned by its BYTES here too. Only the grammars
+    /// that are a TYPE — a hand-built `json!` at a call site is a literal a reader can already see,
+    /// where a type's rendering can move underneath every one of its four callers at once.
     ///
     /// # The case that motivates rendering bytes rather than reading diffs
     ///
@@ -1671,6 +1913,41 @@ mod tests {
             })
             .expect("a cell frame serialises"),
             r#"{"cells":{"cols":1,"rows":1,"cursor":{"col":0,"row":0,"shape":"Block","visible":false,"cursor_color":null,"blink":false},"screen":"Main","generations":[7],"styles":[{"fg":{"Rgb":{"r":1,"g":2,"b":3,"a":255}},"bg":{"Indexed":4},"attrs":{"bold":true,"dim":true,"italic":true,"underline":"curly","blink":true,"reverse":true,"hidden":true,"strikethrough":true},"underline_color":{"Indexed":5},"hyperlink":0,"width":"Narrow"}],"lines":[{"text":[[1,"A"]],"style":[[1,0]]}],"hyperlinks":[{"uri":"https://example.test","id":null}]},"scrollback_len":11,"visible_rows":1}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The REQUEST half. Both arms, because an argument added to either is a request an older
+        // daemon accepts, silently drops, and answers about something else.
+        assert_eq!(
+            serde_json::to_string(&SelectAsk::Pane(PaneId(7)).to_args()).expect("an ask renders"),
+            r#"{"pane":7}"#,
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &SelectAsk::Toward {
+                    dir: PaneDir::Down,
+                    from: Some(PaneId(0)),
+                }
+                .to_args()
+            )
+            .expect("an ask renders"),
+            r#"{"dir":"down","from":0}"#,
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &SelectAsk::Toward {
+                    dir: PaneDir::Down,
+                    from: None,
+                }
+                .to_args()
+            )
+            .expect("an ask renders"),
+            r#"{"dir":"down"}"#,
             "{}",
             BUMP,
         );

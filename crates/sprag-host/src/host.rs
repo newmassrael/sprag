@@ -59,7 +59,7 @@ use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, 
 
 use crate::external::lock;
 use crate::scope::SessionScope;
-use crate::wire::SelectHow;
+use crate::wire::{SelectAsk, SelectHow};
 
 /// Per-pane facts the client reads each frame that are NOT carried in the cell
 /// buffer but ride ALONGSIDE it in one pane-frame: the scrollback depth (the
@@ -1660,15 +1660,6 @@ pub(crate) fn active_pane(
     window.active_pane()
 }
 
-/// How a caller NAMES the pane it wants active — see [`crate::wire::SELECT_PANE_ACTION`].
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum PaneTarget {
-    /// That pane, by id.
-    Named(PaneId),
-    /// Whatever is adjacent to the ACTIVE pane in this direction — tmux `select-pane -L/-R/-U/-D`.
-    Toward(PaneDir),
-}
-
 /// What a select DID — the pane the window is on afterwards, and why it is that one.
 ///
 /// A named pair rather than `(PaneId, SelectHow)`, on [`sprag_terminal::ZoomOutcome`]'s argument:
@@ -1685,13 +1676,20 @@ pub(crate) struct Selection {
 /// Make a pane active in the scoped window — the ONE place the active pane moves.
 ///
 /// Answers the [`Selection`]. `None` — refused — for a window that holds no panes, a scope naming no
-/// window, and a [`PaneTarget::Named`] pane the window does not hold.
+/// window, a [`SelectAsk::Pane`] the window does not hold, and a
+/// [`from`](SelectAsk::Toward::from) origin it does not hold either.
 ///
-/// A [`PaneTarget::Toward`] that goes nowhere is NOT a refusal: it answers the unmoved active pane,
+/// A [`SelectAsk::Toward`] that goes nowhere is NOT a refusal: it answers the unmoved active pane,
 /// because reaching the edge of a layout is a normal outcome of a keypress rather than a caller's
-/// mistake (see the action's docs). WHICH nothing it was — an edge, or an active pane the tiling does
+/// mistake (see the action's docs). WHICH nothing it was — an edge, or an origin the tiling does
 /// not hold — is [`PaneStep`]'s three-way answer, taken here because it is free at this one lock and
 /// unavailable to anybody else without a second read at a second instant.
+///
+/// **A step that goes nowhere leaves the user on the ACTIVE pane, never on the origin.** They are
+/// the same pane for a request that named no origin, and the distinction is the whole of what an
+/// origin means: "one left of pane 7" says where to MEASURE from, not where to go if there is
+/// nothing there. Moving the user onto pane 7 because its left edge was empty would answer a
+/// question nobody asked — R299's own finding, one argument later.
 ///
 /// The resolve and the select happen under ONE registry lock, which is what makes them atomic: a
 /// caller that read the neighbour, released the lock, and then selected it could land the user on a
@@ -1700,7 +1698,7 @@ pub(crate) struct Selection {
 pub(crate) fn select_pane(
     registry: &Arc<Mutex<SessionRegistry>>,
     scope: &SessionScope,
-    target: PaneTarget,
+    ask: SelectAsk,
 ) -> Option<Selection> {
     let panes: Vec<PaneId> = lock(scope.workspace())
         .panes()
@@ -1712,13 +1710,24 @@ pub(crate) fn select_pane(
     window.reconcile_layout(&panes);
     let was = window.active_pane()?;
     // Where the request points — and, when a direction has nowhere to go, why the window stays.
-    let (wanted, nowhere) = match target {
-        PaneTarget::Named(pane) => (pane, None),
-        PaneTarget::Toward(dir) => match window.layout().step(was, dir) {
-            PaneStep::To(next) => (next, None),
-            PaneStep::Edge => (was, Some(SelectHow::AtEdge)),
-            PaneStep::Untiled => (was, Some(SelectHow::Untiled)),
-        },
+    let (wanted, nowhere) = match ask {
+        SelectAsk::Pane(pane) => (pane, None),
+        SelectAsk::Toward { dir, from } => {
+            let origin = from.unwrap_or(was);
+            // Checked against the POOL, exactly as the target is one line down in
+            // `Window::select_pane`: a FLOATING pane is a pane of this window and a legal origin —
+            // it simply has no adjacency, which is the `Untiled` answer rather than a refusal.
+            // Without this check a pane of ANOTHER window would walk off the end of `step` and be
+            // reported as floating, which is a true-sounding sentence about the wrong fact.
+            if !panes.contains(&origin) {
+                return None;
+            }
+            match window.layout().step(origin, dir) {
+                PaneStep::To(next) => (next, None),
+                PaneStep::Edge => (was, Some(SelectHow::AtEdge)),
+                PaneStep::Untiled => (was, Some(SelectHow::Untiled)),
+            }
+        }
     };
     // Re-asserted even when nothing moved, deliberately: `Window::select_pane` is where the zoom
     // invariant is healed, so a request that answers "nowhere" still passes through the one place
@@ -2059,8 +2068,12 @@ impl HostClient for Host {
     /// Straight to the resolve-and-select the wire action calls, so the in-process arm and a wire
     /// client walk ONE arrangement with one lock — not two implementations that agree today.
     fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
-        select_pane(&self.registry, &self.scope(), PaneTarget::Toward(dir))
-            .map(|selection| selection.pane)
+        select_pane(
+            &self.registry,
+            &self.scope(),
+            SelectAsk::Toward { dir, from: None },
+        )
+        .map(|selection| selection.pane)
     }
 
     /// The pane THIS registry's current window is on.
@@ -2081,7 +2094,7 @@ impl HostClient for Host {
     /// it cannot address. `false` for a pane this registry's current window does not hold, exactly
     /// as the wire client reports a refused invoke.
     fn select_pane(&self, id: PaneId) -> bool {
-        select_pane(&self.registry, &self.scope(), PaneTarget::Named(id)).is_some()
+        select_pane(&self.registry, &self.scope(), SelectAsk::Pane(id)).is_some()
     }
 
     /// The DEFAULT session's windows (this arm scopes there; see [`Host::workspace`]). Total: the

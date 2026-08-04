@@ -496,7 +496,7 @@ impl WorkspaceExternal {
         let _ = crate::host::select_pane(
             &self.registry,
             &self.scope,
-            crate::host::PaneTarget::Named(id),
+            crate::wire::SelectAsk::Pane(id),
         );
         // Both the pane set and the arrangement changed: one announce covers both, exactly as a
         // plain spawn's does for the set alone.
@@ -1097,39 +1097,27 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::Null))
     }
 
-    /// `select_pane {pane?} | {dir?}` action: make a pane active in THIS request's session's
+    /// `select_pane {pane?} | {dir?, from?}` action: make a pane active in THIS request's session's
     /// current window — tmux `select-pane`. See [`crate::wire::SELECT_PANE_ACTION`].
     ///
     /// Answers `{pane, changed, outcome}` — where the window is, whether that moved, and WHY it is
     /// there ([`crate::wire::SelectHow`]). The reason is the daemon's to state because one of its
     /// four cases cannot be reconstructed from the other two keys by any caller: an edge and a
-    /// floating active pane both leave the window where it was.
+    /// floating origin both leave the window where it was.
+    ///
+    /// The grammar is parsed by [`SelectAsk`](crate::wire::SelectAsk) rather than key by key here,
+    /// because the CLI verb and the MCP tool BUILD one and this is the end that has to admit exactly
+    /// what they can spell. Every reading it refuses is one `TypeMismatch`: "select nothing", "select
+    /// two things" and "step from a pane toward nowhere" are one class of caller bug, and
+    /// `InvokeError` has no payload to separate them with anyway.
     fn select_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let empty = Map::new();
-        let map = match args {
-            IntrospectValue::Json(Value::Object(m)) => m,
-            IntrospectValue::Null => &empty,
+        let value = match args {
+            IntrospectValue::Json(value) => value,
+            IntrospectValue::Null => &Value::Null,
             _ => return Err(InvokeError::TypeMismatch),
         };
-        let named = match map.get("pane") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(PaneId(value.as_u64().ok_or(InvokeError::TypeMismatch)?)),
-        };
-        let toward = match map.get("dir") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(word)) => {
-                Some(PaneDir::from_wire(word).ok_or(InvokeError::TypeMismatch)?)
-            }
-            Some(_) => return Err(InvokeError::TypeMismatch),
-        };
-        // Exactly one, because neither reading of the other two cases is obvious: "select nothing"
-        // and "select two things" are a caller's bug, and guessing one for them would hide it.
-        let target = match (named, toward) {
-            (Some(pane), None) => crate::host::PaneTarget::Named(pane),
-            (None, Some(dir)) => crate::host::PaneTarget::Toward(dir),
-            _ => return Err(InvokeError::TypeMismatch),
-        };
-        let selection = crate::host::select_pane(&self.registry, &self.scope, target)
+        let ask = crate::wire::SelectAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
+        let selection = crate::host::select_pane(&self.registry, &self.scope, ask)
             .ok_or(InvokeError::Rejected)?;
         if selection.how.changed() {
             // Only on a real move: the announce is what wakes every parked client to re-read, and
@@ -5983,6 +5971,144 @@ mod tests {
         );
     }
 
+    /// `select_pane {dir, from}` measures the step from the pane the CALLER names, not from where
+    /// the user is — the question an agent asks about the panes around its own.
+    ///
+    /// Every case below is paired with the SAME direction asked without an origin, and each pair
+    /// answers differently. That is the whole test: a fixture where the two agree cannot tell an
+    /// origin that is read from one that is dropped, which is exactly what an old daemon does with
+    /// it (R294) and why this argument costs a `WIRE_PROTOCOL` bump.
+    #[test]
+    fn select_pane_steps_from_the_pane_the_caller_names() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext); // 0 | (1 over 2), the session left on pane 2
+
+        let ask = |ext: &mut WorkspaceExternal, args: Value| {
+            ext.invoke(SELECT_PANE_ACTION, IntrospectValue::Json(args))
+        };
+
+        // RIGHT of 0 is 1. From the active pane (2, in the right column) the same word is an edge,
+        // so the two arms cannot be confused for each other.
+        assert_eq!(
+            ask(&mut ext, json!({"dir": "right"})),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 2, "changed": false, "outcome": "at_edge"})
+            )),
+            "the control: from where the user IS, right is the edge",
+        );
+        assert_eq!(
+            ask(&mut ext, json!({"dir": "right", "from": 0})),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 1, "changed": true, "outcome": "moved"})
+            )),
+            "and from pane 0 the same word crosses the split",
+        );
+
+        // UP from 1 is the top of the window. The user is on 1 now, so the unmoved answer names 1
+        // either way — go back to 2 first, where the two panes differ.
+        ask(&mut ext, json!({"pane": 2})).expect("pane 2 is there to select");
+        assert_eq!(
+            ask(&mut ext, json!({"dir": "up", "from": 1})),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 2, "changed": false, "outcome": "at_edge"})
+            )),
+            "nothing above 1 — and the user stays on 2, the pane they were on. Answering 1 would \
+             move them onto the origin because its edge was empty, which is a question nobody asked",
+        );
+        assert_eq!(
+            ask(&mut ext, json!({"dir": "up"})),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 1, "changed": true, "outcome": "moved"})
+            )),
+            "the control again: from 2 the same word moves",
+        );
+
+        // A step that lands back on the pane the session is already on — reachable ONLY with an
+        // origin, and the one combination R299's four words could not produce.
+        ask(&mut ext, json!({"pane": 2})).expect("pane 2 is there to select");
+        assert_eq!(
+            ask(&mut ext, json!({"dir": "down", "from": 1})),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 2, "changed": false, "outcome": "already_active"})
+            )),
+            "down from 1 IS pane 2, and the user was already there: a re-select, not an edge",
+        );
+    }
+
+    /// A named origin that is FLOATING answers `untiled` while the user's own pane is tiled — the
+    /// two facts that word conflated for as long as the origin could only be the active pane.
+    ///
+    /// The rival spends one word (`NoNeighbor`) on this, on the edge, AND on an origin missing from
+    /// the rectangles it last drew (herdr `9a4ce5e1`, `directional_pane_target`).
+    #[test]
+    fn a_named_origin_that_floats_is_untiled_while_the_user_is_not() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext); // the session is on pane 2, tiled
+
+        // THE CONTROL, and it MOVES: while 1 is tiled, stepping onto it from 2 lands there.
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "up", "from": 2}))
+            ),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 1, "changed": true, "outcome": "moved"})
+            )),
+        );
+        ext.invoke(
+            SELECT_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 2})),
+        )
+        .expect("back onto 2, so the user is on a TILED pane while the origin floats");
+        ext.invoke(
+            SET_FLOATING_ACTION,
+            IntrospectValue::Json(json!({"id": 1, "floating": true})),
+        )
+        .expect("float a pane the user is NOT on");
+
+        for dir in ["up", "left", "right", "down"] {
+            assert_eq!(
+                ext.invoke(
+                    SELECT_PANE_ACTION,
+                    IntrospectValue::Json(json!({"dir": dir, "from": 1}))
+                ),
+                Ok(IntrospectValue::Json(
+                    json!({"pane": 2, "changed": false, "outcome": "untiled"})
+                )),
+                "the ORIGIN is in no arrangement, and the user — who is not — stays on 2",
+            );
+        }
+        assert_eq!(active_row(&mut ext), Some(2));
+    }
+
+    /// An origin the current window does not hold is REFUSED, not answered `untiled`.
+    ///
+    /// The distinction is the point: a pane of another window is not "in no arrangement", it is in
+    /// one this request cannot see, and `step` cannot tell them apart because a tree holds no leaf
+    /// for either. A caller told the floating story would go looking for a float that is not there.
+    #[test]
+    fn an_origin_the_window_does_not_hold_is_refused_rather_than_called_floating() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext);
+
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "left", "from": 99}))
+            ),
+            Err(InvokeError::Rejected),
+            "the same answer the same pane id gets as a TARGET, one argument over",
+        );
+        assert_eq!(
+            active_row(&mut ext),
+            Some(2),
+            "and the refusal left the window where it was",
+        );
+    }
+
     /// The argument shape: exactly ONE way of naming the target per request. Neither and both are
     /// refused as malformed rather than guessed at, and an unknown pane is a REJECTION — the
     /// well-formed-but-unhonorable answer `split` already gives its target.
@@ -5998,6 +6124,11 @@ mod tests {
             json!({"dir": "sideways"}),
             json!({"dir": 3}),
             json!({"pane": "1"}),
+            // An ORIGIN with nothing to be the origin OF, and one of the wrong type. Both are the
+            // same class of caller bug as the three above and get the same one answer.
+            json!({"from": 1}),
+            json!({"pane": 1, "from": 0}),
+            json!({"dir": "left", "from": "1"}),
         ] {
             assert_eq!(
                 ext.invoke(SELECT_PANE_ACTION, IntrospectValue::Json(args.clone())),
