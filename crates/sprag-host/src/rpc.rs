@@ -531,7 +531,12 @@ pub fn handle_request(state: &HostState, request_json: &str) -> Option<String> {
 /// nothing.
 #[must_use]
 pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
-    match SessionScope::resolve(state.registry(), &request) {
+    // No frame, so no connection, so no client to be attached: this entry serves the string
+    // dispatch (a malformed frame's canonical parse error) and the in-process benchmark harness,
+    // neither of which has a peer that ever sent `client/hello`. An attached ask over it is refused
+    // as `NotAttached`, which is the truth rather than a limitation — inventing an attachment for a
+    // caller that has none is exactly the silent-wrong-target this whole module refuses.
+    match SessionScope::resolve(state.registry(), &request, || None) {
         Ok(scope) => handle_scoped(state, &scope, request),
         Err(error) => scope_refused(&request, &error),
     }
@@ -1427,7 +1432,17 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
                 }
                 return;
             }
-            let scope = match SessionScope::resolve(state.registry(), &parsed) {
+            // The ATTACHED arm's answer comes from the attachment map, keyed by THIS frame's
+            // connection — which is why the scope can only be resolved where the frame is. Passed
+            // as a closure so the lock is taken on that arm alone: every request resolves a scope,
+            // including every keystroke, and paying for a second registry on all of them to serve
+            // one ask would be the hot-path cost R291 recorded the lesson about.
+            let attached = || {
+                lock(state.attachments())
+                    .session_of(conn)
+                    .map(str::to_owned)
+            };
+            let scope = match SessionScope::resolve(state.registry(), &parsed, attached) {
                 Ok(scope) => scope,
                 Err(error) => {
                     if let Some(response) = scope_refused(&parsed, &error) {
@@ -1983,8 +1998,8 @@ mod tests {
     ) -> (serde_json::Value, serde_json::Value) {
         let once = |cells| {
             let request = parse_request(request_json).expect("a well-formed request");
-            let scope =
-                SessionScope::resolve(state.registry(), &request).expect("a resolvable scope");
+            let scope = SessionScope::resolve(state.registry(), &request, || None)
+                .expect("a resolvable scope");
             let response =
                 handle_scoped_with_cells(state, &scope, request, cells).expect("a response");
             serde_json::from_str::<serde_json::Value>(response.trim())

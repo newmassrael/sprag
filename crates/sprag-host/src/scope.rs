@@ -31,24 +31,40 @@
 //! A request scoped to `work` whose write lands in the default session is far worse than a
 //! refused request: it is silent, and it corrupts a session the client never named. pinion
 //! fought exactly this for its display windows and recorded the verdict — a dropped scope
-//! means "wrong target for writes, wrong data for reads" — so both ways a scope can fail
-//! here ([`ScopeError`]) refuse the request WHOLE. Neither falls back to the default.
+//! means "wrong target for writes, wrong data for reads" — so every way a scope can fail
+//! here ([`ScopeError`]) refuses the request WHOLE. None of them falls back to the default.
+//!
+//! ## A NAME is an address, and a display client must not scope by one
+//!
+//! That failure has a second door, and R303 measured a live daemon walking through it: a name can
+//! be RETIRED and RE-ISSUED. A client holding `work` across a `rename-session` is first refused
+//! (its session is alive and it detaches from it), and then, once a new session takes the freed
+//! name, silently SERVED — reading and typing into a session it never named. The scope was
+//! well-formed and honoured at every step; the address had simply stopped meaning what the client
+//! meant by it.
+//!
+//! So the grammar has a third arm ([`ScopeAsk::Attached`]): *the session this client is VIEWING*,
+//! resolved through the attachment the daemon already maintains and already moves with a rename.
+//! It is not a fallback for a name that failed — a fallback would never fire in the case above,
+//! because the stale name RESOLVES — it is a different question, asked by the clients whose reads
+//! were always about their own view. Naming a session stays exactly what it was, for every caller
+//! that means another one: `-t`, `client/attach`, the CLI.
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use pinion_rpc::Request;
-use serde_json::Value;
+use sprag_rpc::{ScopeAsk, ScopeFault};
 use sprag_terminal::{Session, SessionId, SessionRegistry, Workspace};
 
 use crate::external::lock;
-use crate::wire::SESSION_PARAM;
+use crate::wire::{ATTACHED_PARAM, SESSION_PARAM};
 
 /// Why a request's session scope could not be honored. The request is refused whole in
-/// either case, and the registry is untouched.
+/// every case, and the registry is untouched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeError {
-    /// The param is present but is not a string (`{"session": 42}`).
+    /// The session param is present but is not a string (`{"session": 42}`).
     ///
     /// Its own variant rather than folding into [`Unknown`](Self::Unknown), because the two
     /// are different mistakes: a non-string is a client that does not know the ABI, an
@@ -56,14 +72,59 @@ pub enum ScopeError {
     /// pinion records was precisely this corner going unnoticed — a malformed scope silently
     /// dropped, the request acting on the primary — so naming it is what keeps it visible.
     NotAString,
+    /// The [`ATTACHED_PARAM`] flag is present and is not a boolean
+    /// ([`ScopeFault::AttachedNotABool`]) — the same mistake as [`NotAString`](Self::NotAString),
+    /// on the other key, refused for the same reason. `false` is not this: it is a well-typed
+    /// "not by my attachment" and reads as an absent key.
+    AttachedNotABool,
+    /// Both scope keys ask at once ([`ScopeFault::TwoScopes`]).
+    ///
+    /// They are different questions — a NAME can address any session, an attachment addresses the
+    /// one this client is viewing — and a request that asks both has no answer that is not a
+    /// guess. Refused rather than resolved by precedence, because whichever key the daemon picked
+    /// would be right half the time and silently wrong the rest.
+    TwoScopes,
+    /// The request asked for its client's ATTACHMENT ([`ScopeAsk::Attached`]) and that client is
+    /// attached to nothing — it never sent `client/attach`, its connection never said hello, or
+    /// the session it was viewing was DESTROYED (which releases the attachment, see
+    /// [`AttachmentRegistry::session_ended`](crate::AttachmentRegistry::session_ended)).
+    ///
+    /// A client viewing nothing has nothing to read, so this is a refusal and not a fall-back to
+    /// the default: a display client that silently started painting some other session would be
+    /// the exact failure the attached scope exists to prevent. Its poll thread classifies the
+    /// refusal the way it classifies an unknown name — detach, or switch under a
+    /// `detach-on-destroy` switch policy — so the destroyed-session path behaves as it always did.
+    NotAttached,
     /// The param is a well-formed name that no session carries.
     Unknown(String),
+}
+
+impl From<ScopeFault> for ScopeError {
+    /// The grammar's faults, mapped onto this daemon's refusals. Exhaustive on purpose: a fault
+    /// added to the shared grammar must be answered here rather than folded into a neighbour.
+    fn from(fault: ScopeFault) -> Self {
+        match fault {
+            ScopeFault::NotAString => Self::NotAString,
+            ScopeFault::AttachedNotABool => Self::AttachedNotABool,
+            ScopeFault::TwoScopes => Self::TwoScopes,
+        }
+    }
 }
 
 impl fmt::Display for ScopeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAString => write!(f, "params.{SESSION_PARAM} must be a string"),
+            Self::AttachedNotABool => write!(f, "params.{ATTACHED_PARAM} must be a boolean"),
+            Self::TwoScopes => write!(
+                f,
+                "params.{SESSION_PARAM} and params.{ATTACHED_PARAM} name two different scopes; \
+                 send one",
+            ),
+            Self::NotAttached => write!(
+                f,
+                "params.{ATTACHED_PARAM} asks for this client's session and it is attached to none",
+            ),
             Self::Unknown(name) => write!(f, "no session named {name:?}"),
         }
     }
@@ -106,8 +167,9 @@ impl SessionScope {
     /// between the sites that need it (pinion's own scar: a hand-rolled second copy of its
     /// window extraction that had to agree forever for its gate to hold).
     ///
-    /// Absent → the default session. A string → that session. The contract and its rationale
-    /// are on [`crate::wire::SESSION_PARAM`].
+    /// Absent → the default session. A string → that session. `{"attached": true}` → the session
+    /// this connection's client is VIEWING. The grammar is [`ScopeAsk`], defined once for both
+    /// ends of the wire; the param's own contract is on [`crate::wire::SESSION_PARAM`].
     ///
     /// The workspace is resolved HERE, while the registry lock is already held and the
     /// session is known to exist, and travels with the name — so the assembly downstream
@@ -121,22 +183,50 @@ impl SessionScope {
     /// session is gone, so the client leaves" — see `sprag-gui`'s `detach_reason`), rather than
     /// lingering to list or re-create over a dead scope. A client creates its FIRST session on an
     /// UNSCOPED connection before scoping, so the create path is never gated on a session that
-    /// does not exist yet.
+    /// does not exist yet. A client scoped to its ATTACHMENT meets the same signal by the other
+    /// door — the kill releases the attachment, so its next request is
+    /// [`NotAttached`](ScopeError::NotAttached) rather than [`Unknown`](ScopeError::Unknown) —
+    /// which is why the two refusals are classified identically by a poll thread.
+    ///
+    /// ## The ATTACHED ask, and why the caller supplies it lazily
+    ///
+    /// [`ScopeAsk::Attached`] resolves through a DIFFERENT registry — the per-client attachment map
+    /// — which this module deliberately does not hold: a scope is a fact about a request, and
+    /// "which session is this client viewing" is a fact about a connection that only the dispatch
+    /// owner knows the id of. So the caller passes `attached`, called AT MOST ONCE and only on that
+    /// arm. Lazy for two reasons, both real:
+    ///
+    /// * **Cost.** Every request resolves a scope, including every keystroke. A caller that took
+    ///   the attachment lock eagerly would pay for it on the whole hot path to serve one arm.
+    /// * **Lock order.** `window::retile` takes attachments THEN the registry. This resolves the
+    ///   ask, calls `attached` (which may take the attachment lock and releases it), and only then
+    ///   takes the registry — the same order, and never nested, so no path here can order against
+    ///   that one.
+    ///
+    /// A caller with no connection to speak of (the string entry, whose requests arrive with no
+    /// frame) passes `|| None`, and an `attached` ask over it is refused as
+    /// [`NotAttached`](ScopeError::NotAttached) — which is true: there is no client there to be
+    /// attached.
     ///
     /// # Errors
     ///
-    /// [`ScopeError::NotAString`] for a present-but-non-string param;
-    /// [`ScopeError::Unknown`] for a name no session carries. Both refuse the request whole.
+    /// [`ScopeError::NotAString`] / [`ScopeError::AttachedNotABool`] / [`ScopeError::TwoScopes`]
+    /// for a params object this grammar does not admit; [`ScopeError::NotAttached`] for an
+    /// attached ask from a client viewing nothing; [`ScopeError::Unknown`] for a name no session
+    /// carries. All refuse the request whole.
     pub fn resolve(
         registry: &Arc<Mutex<SessionRegistry>>,
         request: &Request,
+        attached: impl FnOnce() -> Option<String>,
     ) -> Result<Self, ScopeError> {
-        let registry = lock(registry);
-        let named = match request.params.as_ref().and_then(|p| p.get(SESSION_PARAM)) {
-            None => return Ok(Self::of_default(&registry)),
-            Some(Value::String(name)) => name.clone(),
-            Some(_) => return Err(ScopeError::NotAString),
+        // Parsed BEFORE any lock: a malformed scope is refused without touching either registry,
+        // and the attached lookup below happens with nothing held.
+        let named = match ScopeAsk::parse(request.params.as_ref())? {
+            ScopeAsk::Default => return Ok(Self::of_default(&lock(registry))),
+            ScopeAsk::Named(name) => name,
+            ScopeAsk::Attached => attached().ok_or(ScopeError::NotAttached)?,
         };
+        let registry = lock(registry);
         let session = registry.session(&named).ok_or(ScopeError::Unknown(named))?;
         Ok(Self::of_session(session))
     }
@@ -244,12 +334,30 @@ mod tests {
         .expect("a well-formed request")
     }
 
+    /// Resolve `params` for a caller with NO attachment — the shape of every caller that names its
+    /// session, so these read exactly as they did before an attached scope existed.
+    fn resolve(
+        reg: &Arc<Mutex<SessionRegistry>>,
+        params: &str,
+    ) -> Result<SessionScope, ScopeError> {
+        SessionScope::resolve(reg, &request(params), || None)
+    }
+
+    /// Resolve `params` for a caller whose client IS attached to `viewing`.
+    fn resolve_attached(
+        reg: &Arc<Mutex<SessionRegistry>>,
+        params: &str,
+        viewing: &str,
+    ) -> Result<SessionScope, ScopeError> {
+        SessionScope::resolve(reg, &request(params), || Some(viewing.to_owned()))
+    }
+
     #[test]
     fn an_absent_param_resolves_to_the_default_session() {
         let reg = registry();
         // Both shapes of "did not ask": no session key, and no params object at all.
         for params in [r#"{"path":""}"#, "null"] {
-            let scope = SessionScope::resolve(&reg, &request(params)).expect("the default");
+            let scope = resolve(&reg, params).expect("the default");
             assert_eq!(scope.session(), "0", "params: {params}");
         }
     }
@@ -259,8 +367,7 @@ mod tests {
         let reg = registry();
         lock(&reg).new_session(Some("work")).unwrap();
 
-        let scope = SessionScope::resolve(&reg, &request(r#"{"session":"work"}"#))
-            .expect("a real name resolves");
+        let scope = resolve(&reg, r#"{"session":"work"}"#).expect("a real name resolves");
         assert_eq!(scope.session(), "work");
         // The pool that travels with the name is WORK's, not the default's — the whole
         // point of resolving both together. Compared by pointer: two sessions' pools are
@@ -283,7 +390,7 @@ mod tests {
             // is refused, as `NotAString`.
             assert!(
                 matches!(
-                    SessionScope::resolve(&reg, &request(&format!(r#"{{"session":{bad}}}"#))),
+                    resolve(&reg, &format!(r#"{{"session":{bad}}}"#)),
                     Err(ScopeError::NotAString)
                 ),
                 "a {bad} scope must be refused, not silently aliased to the default",
@@ -296,7 +403,7 @@ mod tests {
         let reg = registry();
         assert!(
             matches!(
-                SessionScope::resolve(&reg, &request(r#"{"session":"ghost"}"#)),
+                resolve(&reg, r#"{"session":"ghost"}"#),
                 Err(ScopeError::Unknown(name)) if name == "ghost"
             ),
             "a name no session carries is refused as Unknown, carrying the name asked for",
@@ -314,7 +421,7 @@ mod tests {
         // A second window, which `new_window` also makes current.
         lock(&reg).new_window(&default, Some("win1")).unwrap();
 
-        let scope = SessionScope::resolve(&reg, &request(r#"{"path":""}"#)).expect("the default");
+        let scope = resolve(&reg, r#"{"path":""}"#).expect("the default");
         assert_eq!(scope.session(), default);
         assert_eq!(scope.window(), "win1", "the scope names the current window");
         let win1_pool = lock(&reg).workspace_of(&default).unwrap();
@@ -326,7 +433,7 @@ mod tests {
         // Switch the current window back to "0": a fresh scope names "0" and carries "0"'s pool,
         // not the window it was switched away from.
         lock(&reg).select_window(&default, "0").unwrap();
-        let scope0 = SessionScope::resolve(&reg, &request(r#"{"path":""}"#)).expect("the default");
+        let scope0 = resolve(&reg, r#"{"path":""}"#).expect("the default");
         assert_eq!(scope0.window(), "0");
         let pool0 = lock(&reg).workspace_of(&default).unwrap();
         assert!(
@@ -337,5 +444,152 @@ mod tests {
             !Arc::ptr_eq(scope0.workspace(), &win1_pool),
             "the pool is the current window's, never the switched-away one's",
         );
+    }
+
+    /// The whole point of the arm: the SAME request bytes resolve to whatever session the client is
+    /// viewing, so a rename of that session is invisible to it.
+    ///
+    /// The fixture is chosen so the two things being told apart DISAGREE: the attachment names
+    /// `work`, the default session is `0`, and each is asserted to carry its OWN pool — a check
+    /// against the session name alone would pass for a resolve that quietly fell back to the
+    /// default, since a name is just a string either way.
+    #[test]
+    fn an_attached_ask_resolves_to_the_session_that_client_is_viewing() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+
+        let scope =
+            resolve_attached(&reg, r#"{"attached":true}"#, "work").expect("the viewed session");
+        assert_eq!(scope.session(), "work");
+        let work_pool = lock(&reg).workspace_of("work").unwrap();
+        assert!(
+            Arc::ptr_eq(scope.workspace(), &work_pool),
+            "and it carries the VIEWED session's pool, not the default's",
+        );
+
+        // The same request, from a client viewing the other session: the bytes did not move, the
+        // answer did. This is what a name can never do.
+        let other = resolve_attached(&reg, r#"{"attached":true}"#, "0").expect("the other view");
+        assert_eq!(other.session(), "0");
+        assert!(!Arc::ptr_eq(other.workspace(), &work_pool));
+    }
+
+    /// A rename is the case this arm exists for, driven end to end: the attachment moves (what
+    /// `rename_session` does to the attachment registry), the request bytes do not, and the client
+    /// lands on the SAME session under its new name — where the same client scoped by NAME is
+    /// refused outright.
+    #[test]
+    fn a_renamed_session_still_resolves_for_the_client_attached_to_it() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+        let work_pool = lock(&reg).workspace_of("work").unwrap();
+        lock(&reg).rename_session("work", "prod").unwrap();
+
+        // The attachment followed the rename (R302), so the client's unchanged request follows too.
+        let scope =
+            resolve_attached(&reg, r#"{"attached":true}"#, "prod").expect("the moved session");
+        assert_eq!(scope.session(), "prod");
+        assert!(
+            Arc::ptr_eq(scope.workspace(), &work_pool),
+            "the SAME session, addressed by the attachment rather than by a name",
+        );
+
+        // The control that makes the claim mean something: a client still sending the old NAME is
+        // refused — which is the detach measured at R303, and is why the arm above exists.
+        assert!(
+            matches!(
+                resolve(&reg, r#"{"session":"work"}"#),
+                Err(ScopeError::Unknown(name)) if name == "work"
+            ),
+            "the retired name resolves to nothing, so a name-scoped client is refused",
+        );
+    }
+
+    /// A client attached to NOTHING is told so, and is never quietly served the default session —
+    /// which for a display client would mean painting and typing into a session nobody put it on.
+    #[test]
+    fn an_attached_ask_from_a_client_viewing_nothing_is_refused() {
+        let reg = registry();
+        assert!(
+            matches!(
+                resolve(&reg, r#"{"attached":true}"#),
+                Err(ScopeError::NotAttached)
+            ),
+            "no attachment is a refusal, not a fall-back to the default",
+        );
+    }
+
+    /// The two keys are two different questions. Asking both is refused rather than resolved by
+    /// precedence: whichever the daemon picked would be silently wrong the other half of the time.
+    #[test]
+    fn naming_a_session_and_asking_for_the_attachment_at_once_is_refused() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+        assert!(
+            matches!(
+                resolve_attached(&reg, r#"{"session":"work","attached":true}"#, "0"),
+                Err(ScopeError::TwoScopes)
+            ),
+            "two scopes in one request have no honest answer",
+        );
+    }
+
+    /// `false` is a well-typed "not by my attachment" and reads as ABSENT; `null` and every other
+    /// type is a client that does not know the ABI and is refused — the same rule the session key
+    /// has carried since pinion's aliasing scar, applied to the key beside it.
+    #[test]
+    fn an_attached_flag_is_absent_when_false_and_refused_when_it_is_not_a_boolean() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+
+        // false alone: the default session, exactly as omitting the key.
+        let scope = resolve_attached(&reg, r#"{"attached":false}"#, "work").expect("the default");
+        assert_eq!(
+            scope.session(),
+            "0",
+            "an explicit no is the same question as not asking",
+        );
+        // ...and it does not poison a name sent beside it.
+        let named = resolve_attached(&reg, r#"{"session":"work","attached":false}"#, "0")
+            .expect("the named session");
+        assert_eq!(named.session(), "work");
+
+        for bad in ["null", "1", r#""true""#, "[]", "{}"] {
+            assert!(
+                matches!(
+                    resolve_attached(&reg, &format!(r#"{{"attached":{bad}}}"#), "work"),
+                    Err(ScopeError::AttachedNotABool)
+                ),
+                "an {bad} attachment flag must be refused, not read as a yes or as absent",
+            );
+        }
+    }
+
+    /// Every refusal says which one it is, in a sentence an operator reads off a socket. Pinned as
+    /// bytes because these reach a user through `sprag`'s stderr and a client's log, and a
+    /// refusal's WORDING is the only thing that distinguishes two failures with the same code.
+    #[test]
+    fn each_refusal_says_which_one_it_is() {
+        for (error, sentence) in [
+            (ScopeError::NotAString, "params.session must be a string"),
+            (
+                ScopeError::AttachedNotABool,
+                "params.attached must be a boolean",
+            ),
+            (
+                ScopeError::TwoScopes,
+                "params.session and params.attached name two different scopes; send one",
+            ),
+            (
+                ScopeError::NotAttached,
+                "params.attached asks for this client's session and it is attached to none",
+            ),
+            (
+                ScopeError::Unknown("ghost".to_owned()),
+                r#"no session named "ghost""#,
+            ),
+        ] {
+            assert_eq!(error.to_string(), sentence);
+        }
     }
 }

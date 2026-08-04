@@ -53,6 +53,136 @@ use serde_json::{Value, json};
 /// session, a string → that session, anything else → refused whole).
 pub const SESSION_PARAM: &str = "session";
 
+/// The JSON-RPC `params` key asking for the scope of the session THIS CONNECTION's client is
+/// ATTACHED to — `{"attached": true}`, the alternative to naming one in [`SESSION_PARAM`].
+///
+/// Defined beside its sibling and for the same reason: the writer owns the spelling and the host
+/// reads it. What it is FOR is on [`ScopeAsk::Attached`].
+pub const ATTACHED_PARAM: &str = "attached";
+
+/// WHICH session a request acts on, as the request ASKS for it — the scope grammar, defined ONCE
+/// for both ends of the wire.
+///
+/// A resolved scope is the host's (`sprag_host::SessionScope`, which carries proof the session
+/// exists); this is the question that precedes it, and it lives here because both sides need the
+/// SAME answer to "what does this params object ask for". The two directions are
+/// [`write_into`](Self::write_into) (what a client sends) and [`parse`](Self::parse) (what the
+/// daemon reads), so a spelling cannot drift between them and neither can the rule for a key that
+/// is present but empty.
+///
+/// The three arms are three different questions, not three spellings of one:
+///
+/// * [`Default`](Self::Default) — "whichever session this daemon calls its default". What a caller
+///   with no session in mind means: the `sprag` CLI's un-`-t`'d verbs, a fresh connection.
+/// * [`Named`](Self::Named) — "the session called this". The PUBLIC address, the thing a human
+///   types after `-t`, and the only arm that can address a session the caller is not viewing.
+/// * [`Attached`](Self::Attached) — "the session I am VIEWING". See its own doc: this is the arm a
+///   display client's every scoped read wants, and the one that cannot be stolen.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ScopeAsk {
+    /// No scope key at all ⇒ the daemon's DEFAULT session.
+    #[default]
+    Default,
+    /// `{"session": "<name>"}` ⇒ the session with that NAME — the public address every `-t` takes.
+    Named(String),
+    /// `{"attached": true}` ⇒ the session this connection's client is attached to
+    /// (`client/attach`), whatever it is currently CALLED.
+    ///
+    /// # Why a display client must use this and not its session's name
+    ///
+    /// A name is an ADDRESS, and an address can be retired and re-issued. A client that re-sends
+    /// the name it booted with is asking a question that stops meaning what it meant: after
+    /// `rename-session`, the name resolves to NOTHING (the client is refused and detaches from a
+    /// session that is alive and that it is still attached to); after a new session then takes the
+    /// retired name, it resolves to SOMEBODY ELSE (the client silently reads — and types into — a
+    /// session it never named). Both were measured at R303 against a live daemon.
+    ///
+    /// An attachment is not an address but a POINTER the daemon maintains: it moves with a rename
+    /// (R302) and ends with a kill, both inside the dispatch that does the thing. So this arm is
+    /// not a narrower race, it is no race — a request arriving on either side of a rename resolves
+    /// to the same session.
+    ///
+    /// It addresses only the client's OWN view, deliberately. Acting on another session is what
+    /// [`Named`](Self::Named) is for, and keeping the two apart is tmux's own split between a
+    /// client's attached session and a command's `-t` target.
+    Attached,
+}
+
+/// Why a params object does not name a scope this grammar admits. Every arm refuses the request
+/// WHOLE — none of them falls back to the default, because a scope that cannot be honoured means
+/// nothing rather than "probably the usual one".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeFault {
+    /// [`SESSION_PARAM`] is present and is not a string (`{"session": 42}`).
+    NotAString,
+    /// [`ATTACHED_PARAM`] is present and is neither a boolean nor null (`{"attached": 7}`).
+    AttachedNotABool,
+    /// BOTH keys ask for a scope at once. They are different questions and there is no honest way
+    /// to pick one, so neither is answered.
+    TwoScopes,
+}
+
+impl ScopeAsk {
+    /// Write this ask into a request's `params` map — the ONE place a client spells a scope.
+    ///
+    /// [`Default`](Self::Default) writes NOTHING: an absent scope is what a request meant before
+    /// either key existed, so the commonest request on the wire is unchanged byte for byte and a
+    /// reader of a trace can still tell the three asks apart by eye. (The same rule
+    /// `sprag_host::wire::SelectAsk::to_args` follows for an absent origin.)
+    pub fn write_into(&self, params: &mut serde_json::Map<String, Value>) {
+        match self {
+            Self::Default => {}
+            Self::Named(session) => {
+                params.insert(SESSION_PARAM.to_owned(), Value::String(session.clone()));
+            }
+            Self::Attached => {
+                params.insert(ATTACHED_PARAM.to_owned(), Value::Bool(true));
+            }
+        }
+    }
+
+    /// The ask a request's `params` names — the ONE place the scope keys are read.
+    ///
+    /// `params` is the whole params value (`None` for a request that carries none).
+    ///
+    /// # `false` is absent; `null` is NOT — and this grammar diverges from its neighbour on purpose
+    ///
+    /// `{"attached": false}` reads as [`Default`](Self::Default): a well-typed "no, not by my
+    /// attachment" says the same thing as omitting the key, so a client that fills in a whole scope
+    /// struct asks what one that omits it asks.
+    ///
+    /// `{"attached": null}` and `{"session": null}` are REFUSED, which is the opposite of the
+    /// null-is-absent rule `sprag_host::wire::SelectAsk` follows one layer down. The divergence is
+    /// deliberate and the asymmetry is the reason: a `select_pane` origin that reads as absent
+    /// selects from the active pane, which is the commonest thing the caller could have meant,
+    /// while a SCOPE that reads as absent silently retargets the request at the DEFAULT session —
+    /// "wrong target for writes, wrong data for reads", the corner pinion's aliasing campaign
+    /// missed for an entire round. A caller that put a key there was addressing something; where
+    /// being wrong is unrecoverable, an unreadable address is refused rather than guessed.
+    ///
+    /// # Errors
+    ///
+    /// [`ScopeFault`], one variant per way a scope can be malformed.
+    pub fn parse(params: Option<&Value>) -> Result<Self, ScopeFault> {
+        let named = match params.and_then(|params| params.get(SESSION_PARAM)) {
+            None => None,
+            Some(Value::String(name)) => Some(name.clone()),
+            Some(_) => return Err(ScopeFault::NotAString),
+        };
+        let attached = match params.and_then(|params| params.get(ATTACHED_PARAM)) {
+            None => false,
+            Some(Value::Bool(asked)) => *asked,
+            Some(_) => return Err(ScopeFault::AttachedNotABool),
+        };
+        match (named, attached) {
+            (Some(_), true) => Err(ScopeFault::TwoScopes),
+            (Some(name), false) => Ok(Self::Named(name)),
+            (None, true) => Ok(Self::Attached),
+            (None, false) => Ok(Self::Default),
+        }
+    }
+}
+
 /// The SHAPE this build speaks — the number both ends of the wire compare before either acts on
 /// the other's bytes.
 ///
@@ -112,7 +242,14 @@ pub const SESSION_PARAM: &str = "session";
 ///   asking a pre-R300 daemon for "the pane left of pane 7" would be answered "the pane left of
 ///   wherever the user happens to be", the user's cursor would move, and nothing anywhere would
 ///   report a failure. The number turns that into the one sentence it should be.
-pub const WIRE_PROTOCOL: u32 = 5;
+/// * **6** — a request can scope itself to the client's ATTACHMENT rather than to a session's name
+///   ([`ScopeAsk::Attached`], R303). The second bump caused by an added ARGUMENT, and the one with
+///   the worst failure yet if it were skipped: a post-R303 display client sends `{"attached":true}`
+///   and NO [`SESSION_PARAM`], which to a pre-R303 daemon is an ABSENT scope — i.e. *the default
+///   session*. Every read it paints and every KEYSTROKE it forwards would land in a session the
+///   user never opened it on, and both ends would report success. There is no answer key to be
+///   absent-not-wrong here; the argument's whole meaning is which session gets written to.
+pub const WIRE_PROTOCOL: u32 = 6;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
@@ -415,13 +552,13 @@ pub struct HostConn {
     reader: BufReader<UnixStream>,
     /// The next JSON-RPC request id. Monotonic; the server echoes it back.
     next_id: u64,
-    /// The session every request on this connection is scoped to
-    /// ([`SESSION_PARAM`]), or `None` for the default session. Set once by
-    /// [`scope_to`](Self::scope_to) after the session is known, and merged into each
-    /// request's params by [`call`](Self::call) — the ONE place scoping happens, so a
+    /// What every request on this connection asks its scope to be ([`ScopeAsk`]) — the default
+    /// session until a caller says otherwise. Set by [`scope_to`](Self::scope_to) (a name) or
+    /// [`scope_to_attached`](Self::scope_to_attached) (this client's own view), and merged into
+    /// each request's params by [`call`](Self::call) — the ONE place scoping happens, so a
     /// client's several connections (its request stream and its long-poll) cannot address
     /// different sessions.
-    session: Option<String>,
+    scope: ScopeAsk,
     /// Set once a read deadline expired mid-reply. See [`set_read_deadline`](Self::set_read_deadline)
     /// for why a timed-out connection can never be used again.
     timed_out: bool,
@@ -469,7 +606,7 @@ impl HostConn {
             writer: stream,
             reader,
             next_id: 1,
-            session: None,
+            scope: ScopeAsk::Default,
             timed_out: false,
             pending: VecDeque::new(),
         })
@@ -501,19 +638,38 @@ impl HostConn {
         self.reader.get_ref().set_read_timeout(deadline)
     }
 
-    /// Scope every subsequent request on this connection to the session named `session`, by
-    /// merging [`SESSION_PARAM`] into each request's params.
+    /// Scope every subsequent request on this connection to the session NAMED `session`
+    /// ([`ScopeAsk::Named`]).
     ///
-    /// A client learns its session name once (it attaches to a named one, or the daemon
-    /// allocates one), then scopes ALL its connections to it — both the request connection
-    /// and the long-poll — through this single seam, so no request can silently address a
-    /// different session than its siblings. Idempotent and settable again, though a client
-    /// scopes once at boot.
+    /// The address form: it can name any session, including one this client is not viewing, which
+    /// is what `client/attach` itself and every `-t` verb need. A DISPLAY client wants
+    /// [`scope_to_attached`](Self::scope_to_attached) instead for its own reads — a name it
+    /// re-sends can be retired under it and re-issued to another session (see
+    /// [`ScopeAsk::Attached`]).
+    ///
+    /// Idempotent and settable again; a client scopes by name to attach, then moves to its
+    /// attachment.
     pub fn scope_to(&mut self, session: impl Into<String>) {
-        self.session = Some(session.into());
+        self.scope = ScopeAsk::Named(session.into());
     }
 
-    /// Merge this connection's session scope (if any) into a request's params. Only an object
+    /// Scope every subsequent request on this connection to the session THIS CONNECTION's client
+    /// is ATTACHED to ([`ScopeAsk::Attached`]) — what a display client's own reads mean.
+    ///
+    /// The caller must have completed [`CLIENT_HELLO_METHOD`] on this connection (so the daemon
+    /// knows which client it belongs to) and its client must have attached on one of them;
+    /// otherwise every subsequent request is refused, exactly as an unknown name is. That is the
+    /// same shape as any other scope that cannot be honoured, and it is the honest one: a client
+    /// that is attached to nothing is viewing nothing.
+    ///
+    /// A client's several connections all resolve through the same `conn -> client -> session`
+    /// map, so scoping them all here keeps the request stream and the long-poll on ONE session
+    /// without any of them holding its name.
+    pub fn scope_to_attached(&mut self) {
+        self.scope = ScopeAsk::Attached;
+    }
+
+    /// Merge this connection's scope ([`ScopeAsk`]) into a request's params. Only an object
     /// `params` can carry the key; every scoped request the wire client issues is object-shaped
     /// (`{"path": ..}`), so a non-object is passed through untouched rather than reshaped —
     /// carrying a scope on a request that has no place for it is not something the wire client
@@ -534,9 +690,7 @@ impl HostConn {
         // here, at the one seam that builds a request, so no client can omit it — including the
         // ones that do not exist yet.
         map.insert(PROTOCOL_PARAM.to_owned(), Value::from(WIRE_PROTOCOL));
-        if let Some(session) = &self.session {
-            map.insert(SESSION_PARAM.to_owned(), Value::String(session.clone()));
-        }
+        self.scope.write_into(&mut map);
         Value::Object(map)
     }
 
@@ -888,6 +1042,73 @@ fn protocol_mismatch(daemon: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The grammar round trips through the BYTES, both ways, for every scope a caller can ask for
+    /// — the check that keeps the writer and the reader one grammar rather than two that agree
+    /// today. A key respelled on one side alone fails here.
+    #[test]
+    fn every_scope_round_trips_through_the_params_it_writes() {
+        for ask in [
+            ScopeAsk::Default,
+            ScopeAsk::Named("work".to_owned()),
+            ScopeAsk::Attached,
+        ] {
+            let mut params = serde_json::Map::new();
+            // Written beside a key of its own, because a scope never travels alone: the merge in
+            // `scoped` puts it next to the protocol declaration and whatever the method asked for,
+            // and a parse that read the whole params object as its own would break on that.
+            params.insert("path".to_owned(), Value::String("/x".to_owned()));
+            ask.write_into(&mut params);
+            assert_eq!(
+                ScopeAsk::parse(Some(&Value::Object(params))),
+                Ok(ask.clone()),
+                "{ask:?}",
+            );
+        }
+    }
+
+    /// Every way a scope object can be malformed, each its OWN refusal — because the daemon turns
+    /// each into a different sentence for an operator, and folding two together would make one of
+    /// them a lie.
+    ///
+    /// `{"attached": false}` is in here as the CONTROL: it is the one present-but-empty spelling
+    /// that is NOT a fault, so a parse that refused everything it did not understand would fail on
+    /// this line rather than pass the whole test vacuously.
+    #[test]
+    fn each_malformed_scope_is_its_own_refusal() {
+        let parse = |params: Value| ScopeAsk::parse(Some(&params));
+        assert_eq!(parse(json!({"session": 42})), Err(ScopeFault::NotAString));
+        assert_eq!(parse(json!({"session": null})), Err(ScopeFault::NotAString));
+        assert_eq!(
+            parse(json!({"attached": 1})),
+            Err(ScopeFault::AttachedNotABool),
+        );
+        assert_eq!(
+            parse(json!({"attached": null})),
+            Err(ScopeFault::AttachedNotABool),
+            "an explicit null is refused here and read as absent by `SelectAsk` one layer down — \
+             see `parse`'s doc for why a SCOPE is the one place guessing is unrecoverable",
+        );
+        assert_eq!(
+            parse(json!({"session": "work", "attached": true})),
+            Err(ScopeFault::TwoScopes),
+        );
+        assert_eq!(
+            parse(json!({"attached": false})),
+            Ok(ScopeAsk::Default),
+            "the CONTROL: a well-typed no is an absent key, not a fault",
+        );
+        assert_eq!(
+            parse(json!({"session": "work", "attached": false})),
+            Ok(ScopeAsk::Named("work".to_owned())),
+            "and it does not poison the name beside it",
+        );
+        assert_eq!(
+            ScopeAsk::parse(None),
+            Ok(ScopeAsk::Default),
+            "a request with no params at all asks for the default",
+        );
+    }
 
     /// An `io::Write` that reports what it was ASKED to do, not only what it received — the
     /// instrument this file's one-syscall claim needs, since a socket peer cannot see write

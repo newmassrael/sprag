@@ -277,6 +277,15 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
 /// the definition.
 pub use sprag_rpc::SESSION_PARAM;
 
+/// The OTHER scope key ([`sprag_rpc::ATTACHED_PARAM`]) — `{"attached": true}`, asking for the
+/// session the calling connection's client is VIEWING rather than one by name.
+///
+/// Re-exported here for the same reason [`SESSION_PARAM`] is, and read through the same grammar
+/// ([`sprag_rpc::ScopeAsk`]) rather than key by key, so the two keys' interaction — they are
+/// mutually exclusive, and an empty one is an ABSENT one — is decided in exactly one place.
+/// [`crate::ScopeError`] is the reader's contract for what each refusal means.
+pub use sprag_rpc::ATTACHED_PARAM;
+
 /// The client-lifecycle wire vocabulary (R-PR67 Stage 1), re-exported from the transport client
 /// that WRITES it ([`sprag_rpc`]) so the host that READS it shares ONE spelling — exactly as
 /// [`SESSION_PARAM`] is. [`CLIENT_HELLO_METHOD`] announces a connection's client id
@@ -939,6 +948,27 @@ pub const SET_FLOATING_ACTION: &str = "set_floating";
 /// SCOPED to the request's session (unlike `sessions`, whose subject is the set of sessions):
 /// windows are a property OF a session, so this answers about the one the request named.
 pub const WINDOWS_SLOT: &str = "windows";
+
+/// The mux control external query slot: the NAME of the session this request is SCOPED to — one
+/// string, the daemon's own answer to "which session is this about".
+///
+/// Trivial for a request that named its session, and the point for one that did not
+/// ([`ScopeAsk::Attached`](sprag_rpc::ScopeAsk::Attached)): a display client scoped to its
+/// ATTACHMENT has deliberately stopped holding a name, and a name is still what it must PAINT —
+/// the session rail's highlighted row, the palette's "current" mark, the next/previous-session walk,
+/// and `sprag-tui`'s terminal title all say which session the user is looking at.
+///
+/// Before this slot the client cached the name it booted with, and R303 measured what that costs
+/// the moment the daemon stopped killing it for a rename: the terminal title stayed `sprag: alpha`
+/// for the whole life of a client the daemon was reporting on `production`, and every "is this row
+/// me" comparison in the sidebar was against a name no session carried. Mirrored like every other
+/// fact a client paints (the poll thread refreshes it on each wake), rather than fetched from the
+/// paint path.
+///
+/// It is deliberately the SCOPE's name and not "this connection's attachment": the scope already
+/// resolved the question once, at the door, and a second derivation of one fact is how the two
+/// come to disagree.
+pub const SESSION_SLOT: &str = "session";
 
 /// The mux control external invoke action that creates a window in the SCOPED session, born with
 /// a shell, selects it, and returns its name (`{name?, cmd?, cols?, rows?, cwd?}`) — tmux
@@ -2322,6 +2352,35 @@ mod tests {
             })
             .expect("a cell frame serialises"),
             r#"{"cells":{"cols":1,"rows":1,"cursor":{"col":0,"row":0,"shape":"Block","visible":false,"cursor_color":null,"blink":false},"screen":"Main","generations":[7],"styles":[{"fg":{"Rgb":{"r":1,"g":2,"b":3,"a":255}},"bg":{"Indexed":4},"attrs":{"bold":true,"dim":true,"italic":true,"underline":"curly","blink":true,"reverse":true,"hidden":true,"strikethrough":true},"underline_color":{"Indexed":5},"hyperlink":0,"width":"Narrow"}],"lines":[{"text":[[1,"A"]],"style":[[1,0]]}],"hyperlinks":[{"uri":"https://example.test","id":null}]},"scrollback_len":11,"visible_rows":1}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The SCOPE grammar, which is the request half of EVERY method rather than one action's
+        // (`sprag_rpc::ScopeAsk`, R303). All three arms, and the empty one especially: `Default`
+        // writing nothing is what keeps the commonest request on the wire byte-identical to what it
+        // was before an attached scope existed, and a change that started emitting a key there
+        // would make every unscoped request a new shape without a line of this file moving.
+        //
+        // It earns its place here for the reason the section exists at all, in its sharpest form:
+        // an old daemon reading `{"attached":true}` finds no key it knows, which to it is an
+        // ABSENT scope — the DEFAULT session. Not a dropped argument that narrows an answer, but
+        // every read and every keystroke landing in a session nobody named.
+        let mut scope = serde_json::Map::new();
+        sprag_rpc::ScopeAsk::Default.write_into(&mut scope);
+        assert!(scope.is_empty(), "{}", BUMP);
+        sprag_rpc::ScopeAsk::Named("work".to_owned()).write_into(&mut scope);
+        assert_eq!(
+            serde_json::to_string(&scope).expect("a scope renders"),
+            r#"{"session":"work"}"#,
+            "{}",
+            BUMP,
+        );
+        let mut scope = serde_json::Map::new();
+        sprag_rpc::ScopeAsk::Attached.write_into(&mut scope);
+        assert_eq!(
+            serde_json::to_string(&scope).expect("a scope renders"),
+            r#"{"attached":true}"#,
             "{}",
             BUMP,
         );
