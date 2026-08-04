@@ -10739,6 +10739,68 @@
         "Item 27 opened, with two entries FIXED rather than registered — the `outcome` key spelled two ways one function apart, and a doc naming an argument its function does not take."
       ]
     },
+    "R302": {
+      "decision_summary": "A rename is not a death: sessions and windows gain an identity the name is only the address of, so the change funnel reports a rename as a rename and a moved pane as a move; and sprag rename-session moves the address with the session's parked clients and attachments still on it.",
+      "changes_bullets": [
+        "SessionId/WindowId: a within-run identity the NAME is only the address of",
+        "the funnel derives SessionRenamed/WindowRenamed/PaneMoved by identity",
+        "an event may carry ONE detail no later read could recover (the new name)",
+        "rename-session at the registry, the wire, and the CLI with an optional -t",
+        "the rename MOVES the channel: revision token, journal, every parked wait",
+        "the wake observer READS the address, so output signals the new name",
+        "attachments follow, so list-clients and the viewer badge stay honest",
+        "unknown_action tells a daemon older than a verb from a name already taken"
+      ],
+      "verification_bullets": [
+        "MEASURED FIRST at bc4ee37: rename-window emitted window_created beta + window_closed alpha; join-pane emitted pane_closed 1 + pane_created 1 in ONE batch",
+        "suite EXIT 0 / 45 targets / 1979 passed (R301 left 1966), clippy 0 no new suppression, fmt, doc gate 0/16, pixel smoke 136/0",
+        "NINE revert-proofs each shown to DISCRIMINATE; the tenth PASSED ANYWAY and the missing assertion was BUILT (a parked client woken by the rename itself)",
+        "skew run BOTH directions against a parent-commit daemon: an old client renders window_renamed and drops the detail it cannot read; a new client is told to restart a daemon older than the verb",
+        "the skew run MEASURED a wrong sentence of my own and the two faults were captured live: UnknownInvokePath against InvokeRejected",
+        "an attached client's next request carrying the retired name is REFUSED (measured over a raw probe) — registered, not hidden",
+        "WIRE_PROTOCOL stays 5: no shape moved, three kinds were added, and an old reader parses them"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "a display client does not FOLLOW a rename: its scope is a name it re-sends, so it detaches on the next request (the head of the next slice)",
+        "no MCP tool, no palette row, no key binding, no HostClient pair — each declined with its own argument, none an oversight",
+        "every other invoking CLI verb still folds an old-daemon fault into its own disjunction; unknown_action makes it one line each",
+        "herdr was AHEAD on all three events and its identity model is why; sprag is ahead on deriving them and on a label that RESOLVES"
+      ],
+      "publishable_decision_summary": "A rename is not a death: sessions and windows gain an identity the name is only the address of, so the change funnel reports a rename as a rename and a moved pane as a move; and sprag rename-session moves the address with the session's parked clients and attachments still on it.",
+      "publishable_changes_bullets": [
+        "SessionId/WindowId: a within-run identity the NAME is only the address of",
+        "the funnel derives SessionRenamed/WindowRenamed/PaneMoved by identity",
+        "an event may carry ONE detail no later read could recover (the new name)",
+        "rename-session at the registry, the wire, and the CLI with an optional -t",
+        "the rename MOVES the channel: revision token, journal, every parked wait",
+        "the wake observer READS the address, so output signals the new name",
+        "attachments follow, so list-clients and the viewer badge stay honest",
+        "unknown_action tells a daemon older than a verb from a name already taken"
+      ],
+      "publishable_verification_bullets": [
+        "MEASURED FIRST at bc4ee37: rename-window emitted window_created beta + window_closed alpha; join-pane emitted pane_closed 1 + pane_created 1 in ONE batch",
+        "suite EXIT 0 / 45 targets / 1979 passed (R301 left 1966), clippy 0 no new suppression, fmt, doc gate 0/16, pixel smoke 136/0",
+        "NINE revert-proofs each shown to DISCRIMINATE; the tenth PASSED ANYWAY and the missing assertion was BUILT (a parked client woken by the rename itself)",
+        "skew run BOTH directions against a parent-commit daemon: an old client renders window_renamed and drops the detail it cannot read; a new client is told to restart a daemon older than the verb",
+        "the skew run MEASURED a wrong sentence of my own and the two faults were captured live: UnknownInvokePath against InvokeRejected",
+        "an attached client's next request carrying the retired name is REFUSED (measured over a raw probe) — registered, not hidden",
+        "WIRE_PROTOCOL stays 5: no shape moved, three kinds were added, and an old reader parses them"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "a display client does not FOLLOW a rename: its scope is a name it re-sends, so it detaches on the next request (the head of the next slice)",
+        "no MCP tool, no palette row, no key binding, no HostClient pair — each declined with its own argument, none an oversight",
+        "every other invoking CLI verb still folds an old-daemon fault into its own disjunction; unknown_action makes it one line each",
+        "herdr was AHEAD on all three events and its identity model is why; sprag is ahead on deriving them and on a label that RESOLVES"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
