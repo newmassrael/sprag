@@ -10943,6 +10943,48 @@
         "No CLI verb and no TUI binding reach the new gesture; sprag list-clients does not publish where a client was last; and the destroy-policy paths that consume it (detach-on-destroy off / no-detached) are still the accepted live-smoke gap, since the policy is read from the client's own config file."
       ]
     },
+    "R305": {
+      "decision_summary": "A window is reachable from the keyboard: the daemon walks the window ring, select-window takes a step as well as a name, and the keymap vocabulary reaches past the pane for the first time",
+      "changes_bullets": [
+        "A session's windows became a RING the daemon walks: Session::select_window_relative wraps both ways and answers the name it landed on, and WindowStep is its own two-word vocabulary rather than a reuse of PaneDir, because a window list is ordinal where a pane arrangement is spatial.",
+        "select_window's wire grammar gained a relative arm (SelectWindowAsk: {window} XOR {relative}, spelled once for the daemon, the CLI and the keybinding), the verb now ANSWERS the window it landed on for both arms, and WIRE_PROTOCOL went 7 to 8.",
+        "The keymap vocabulary reached past the pane for the first time: new-window, select-window -n|-p|-t <window> and kill-window are bindable, prefix c / n / p are bound to tmux's own keys, and BoundAction stopped being Copy because the vocabulary carries a window name now. Both frontends carry the arms out; sprag select-window took tmux's -n / -p flags."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2014 passed (R304 left 2008); clippy 0 with no new suppression; fmt; doc gate 0/16; pixel smoke 142/0 on a REBUILT release set, six of those checks NEW and driving the window keys through the shipped GUI binary.",
+        "The defect was MEASURED LIVE before a line was written: a real sprag-tui pressed prefix c and the session still held one window after 45 seconds, because an unbound prefix key is Routed::Swallow. The counts were measured from source on both sides: 30 actions served, ~45 CLI verbs, ~15 palette commands, 7 bindable, against herdr's 51 BindingConfig fields.",
+        "TEN revert-proofs each shown to DISCRIMINATE plus a CONTROL edit shown to stay green; a skew run BOTH directions against a parent-commit daemon in its own worktree, socket and XDG dirs, in which the old daemon REFUSED the step outright (InvokeTypeMismatch, nothing moved) where the new one answers the window and moves the session."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "kill-window is BINDABLE and UNBOUND: tmux guards prefix & with confirm-before, which sprag does not have and sprag-tui has no surface for. rename-window is not in the vocabulary at all, because it needs a string a keystroke cannot carry.",
+        "The default table is a FIXTURE other tests rest on: binding c / n / p broke four tests that used those letters as \"an unbound key\", and each had to move to k. Adding a default silently changes what \"unbound\" means for every test that needs one.",
+        "Still unreachable from a key: new-session, kill-session, rename-session, rename-pane, break-pane, join-pane, move-pane, set-floating and resize-pane, all of which the daemon serves and the CLI has."
+      ],
+      "publishable_decision_summary": "A window is reachable from the keyboard: the daemon walks the window ring, select-window takes a step as well as a name, and the keymap vocabulary reaches past the pane for the first time",
+      "publishable_changes_bullets": [
+        "A session's windows became a RING the daemon walks: Session::select_window_relative wraps both ways and answers the name it landed on, and WindowStep is its own two-word vocabulary rather than a reuse of PaneDir, because a window list is ordinal where a pane arrangement is spatial.",
+        "select_window's wire grammar gained a relative arm (SelectWindowAsk: {window} XOR {relative}, spelled once for the daemon, the CLI and the keybinding), the verb now ANSWERS the window it landed on for both arms, and WIRE_PROTOCOL went 7 to 8.",
+        "The keymap vocabulary reached past the pane for the first time: new-window, select-window -n|-p|-t <window> and kill-window are bindable, prefix c / n / p are bound to tmux's own keys, and BoundAction stopped being Copy because the vocabulary carries a window name now. Both frontends carry the arms out; sprag select-window took tmux's -n / -p flags."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2014 passed (R304 left 2008); clippy 0 with no new suppression; fmt; doc gate 0/16; pixel smoke 142/0 on a REBUILT release set, six of those checks NEW and driving the window keys through the shipped GUI binary.",
+        "The defect was MEASURED LIVE before a line was written: a real sprag-tui pressed prefix c and the session still held one window after 45 seconds, because an unbound prefix key is Routed::Swallow. The counts were measured from source on both sides: 30 actions served, ~45 CLI verbs, ~15 palette commands, 7 bindable, against herdr's 51 BindingConfig fields.",
+        "TEN revert-proofs each shown to DISCRIMINATE plus a CONTROL edit shown to stay green; a skew run BOTH directions against a parent-commit daemon in its own worktree, socket and XDG dirs, in which the old daemon REFUSED the step outright (InvokeTypeMismatch, nothing moved) where the new one answers the window and moves the session."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "kill-window is BINDABLE and UNBOUND: tmux guards prefix & with confirm-before, which sprag does not have and sprag-tui has no surface for. rename-window is not in the vocabulary at all, because it needs a string a keystroke cannot carry.",
+        "The default table is a FIXTURE other tests rest on: binding c / n / p broke four tests that used those letters as \"an unbound key\", and each had to move to k. Adding a default silently changes what \"unbound\" means for every test that needs one.",
+        "Still unreachable from a key: new-session, kill-session, rename-session, rename-pane, break-pane, join-pane, move-pane, set-floating and resize-pane, all of which the daemon serves and the CLI has."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
