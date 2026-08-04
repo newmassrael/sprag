@@ -254,6 +254,28 @@ impl AttachmentRegistry {
         self.client_session.remove(&client)
     }
 
+    /// Move every client attached to `from` over to `to` — what a session RENAME does here.
+    ///
+    /// An attachment is *which session this client is VIEWING*, and a rename does not change what
+    /// anyone is looking at: it changes what that thing is called. Leaving the old string in place
+    /// would make [`clients`](Self::clients) (the `sprag list-clients` listing) name a session the
+    /// registry no longer holds, and [`attached_count`](Self::attached_count) report the renamed
+    /// session as having no viewers while people are typing into it — the badge every other client
+    /// draws.
+    ///
+    /// Returns how many attachments moved, so the caller can tell an actual rename of a viewed
+    /// session from one nobody was watching.
+    pub fn rename_session(&mut self, from: &str, to: &str) -> usize {
+        let mut moved = 0;
+        for session in self.client_session.values_mut() {
+            if session == from {
+                *session = to.to_owned();
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     /// How many DISTINCT clients are currently attached to `session` — the wire
     /// [`SessionInfo::attached`](sprag_terminal::SessionInfo::attached) badge.
     #[must_use]
@@ -640,6 +662,40 @@ mod tests {
         assert!(
             reg.clients().is_empty(),
             "the released client leaves the listing"
+        );
+    }
+
+    /// A session RENAME carries every attachment with it: nobody stopped looking at anything, so
+    /// the viewer count must not fall to zero on the renamed session and `list-clients` must not go
+    /// on naming one the registry no longer holds.
+    #[test]
+    fn attachments_follow_a_renamed_session() {
+        let mut reg = AttachmentRegistry::default();
+        let (a, b, elsewhere) = (ConnId::allocate(), ConnId::allocate(), ConnId::allocate());
+        reg.hello(a, "client-a".to_owned());
+        reg.hello(b, "client-b".to_owned());
+        reg.hello(elsewhere, "client-c".to_owned());
+        reg.attach(a, "work".to_owned());
+        reg.attach(b, "work".to_owned());
+        reg.attach(elsewhere, "play".to_owned());
+
+        assert_eq!(reg.rename_session("work", "prod"), 2, "both viewers moved");
+
+        assert_eq!(reg.attached_count("prod"), 2, "the badge follows the name");
+        assert_eq!(
+            reg.attached_count("work"),
+            0,
+            "and nothing is left attached to a name no session answers to",
+        );
+        assert_eq!(
+            reg.attached_count("play"),
+            1,
+            "control: another session's viewer is untouched",
+        );
+        assert_eq!(
+            reg.rename_session("ghost", "x"),
+            0,
+            "a session nobody views moves no attachment",
         );
     }
 }

@@ -1267,6 +1267,25 @@ pub const NEIGHBORS_FIELD: SchemaField =
 /// new name.
 pub const RENAME_WINDOW_ACTION: &str = "rename_window";
 
+/// The mux control external invoke action that renames the SCOPED session (`{name}`) — tmux
+/// `rename-session`. `name` is the new name; the session renamed is the request's own scope, so
+/// there is no target argument to disagree with it.
+///
+/// # This one moves an ADDRESS, which no other rename here does
+///
+/// A window name addresses a window inside its session and a pane name stands in for an id, but a
+/// session name is what every scoped request, every `-t` and every attached client holds. So the
+/// daemon carries three things across with it in one act: the registry entry, the session's change
+/// CHANNEL (`crate::notify::ChannelRegistry::rename` — its revision token, its journal, and every
+/// parked wait), and the ATTACHMENTS
+/// (`crate::AttachmentRegistry::rename_session`). Renaming only the first would leave every parked
+/// client waiting on a key nothing reaches again.
+///
+/// The change funnel reports it as ONE [`Event::SessionRenamed`](crate::events::Event::SessionRenamed)
+/// rather than a death and a birth, which is what a session's IDENTITY
+/// ([`SessionId`](sprag_terminal::SessionId)) exists for.
+pub const RENAME_SESSION_ACTION: &str = "rename_session";
+
 /// The mux control external invoke action that kills a window of the SCOPED session (`{window?}`)
 /// — tmux `kill-window`. `window` absent ⇒ the current one. Killing the session's LAST window
 /// ends the SESSION (and the last session ends the daemon), tmux's "kill the last window ⇒ the

@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_rpc::Request;
 use serde_json::Value;
-use sprag_terminal::{Session, SessionRegistry, Workspace};
+use sprag_terminal::{Session, SessionId, SessionRegistry, Workspace};
 
 use crate::external::lock;
 use crate::wire::SESSION_PARAM;
@@ -84,6 +84,18 @@ impl std::error::Error for ScopeError {}
 #[derive(Clone)]
 pub struct SessionScope {
     session: String,
+    /// The scoped session's IDENTITY, pinned beside its name at the same instant off the same
+    /// [`Session`].
+    ///
+    /// It is here for one caller: the change funnel, which runs AFTER the dispatch and must observe
+    /// the session's changes at the address the session HAS rather than the one the request
+    /// carried. Those are the same string for every method but one — `rename_session` moves it —
+    /// and observing the retired name there would read a session that no longer answers to it and
+    /// record its every window as closed.
+    ///
+    /// A name is the ADDRESS and stays the thing a client sends; this is the identity behind it,
+    /// and like [`SessionId`] itself it never reaches the wire.
+    id: SessionId,
     window: String,
     workspace: Arc<Mutex<Workspace>>,
 }
@@ -167,6 +179,7 @@ impl SessionScope {
         let window = session.current_window();
         Self {
             session: session.name().to_owned(),
+            id: session.id(),
             window: window.name().to_owned(),
             workspace: Arc::clone(window.workspace()),
         }
@@ -177,6 +190,14 @@ impl SessionScope {
     #[must_use]
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// The scoped session's IDENTITY — what its name is only the address of, and what the change
+    /// funnel resolves the CURRENT address from after a dispatch that may have moved it. See
+    /// [`SessionScope::id`] for why it is pinned here.
+    #[must_use]
+    pub const fn id(&self) -> SessionId {
+        self.id
     }
 
     /// The NAME of the window the scoped session was showing when this request resolved — how

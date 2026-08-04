@@ -73,6 +73,22 @@ struct SessionChannel {
     /// journal deliberately does not record ([`crate::events`]: a record per PTY batch would evict
     /// the ring at output rate), and the revision is the only token output moves.
     outputs: Arc<OutputChannel>,
+    /// The session NAME this channel currently answers to, shared with the wake observer.
+    ///
+    /// # Why the observer cannot just capture the name
+    ///
+    /// It used to, and a [`rename`](ChannelRegistry::rename) is what made that wrong: the whole
+    /// point of a rename is that the channel MOVES to a new key, and an observer holding the old
+    /// string would go on firing [`OutputSignal`] under a name no session answers to — so every
+    /// `pane/waitForOutput` parked on the renamed session would sit through every batch of output
+    /// its pane produced. The address is a fact that MOVES, so it is held once and read, not copied
+    /// into a closure at mint time.
+    ///
+    /// **Locked, on the PTY reader thread, and that is affordable for a stated reason**: the read
+    /// is inside the `arm()` edge, which is the idle→output TRANSITION and not the per-batch path
+    /// (see [`SessionChannel::new`] for the R152 rule this stays on the right side of). The only
+    /// writer is a rename, holding it for the length of one string move.
+    address: Arc<Mutex<String>>,
 }
 
 impl SessionChannel {
@@ -101,11 +117,15 @@ impl SessionChannel {
         let wake = Arc::clone(&waiters);
         let arm = Arc::clone(&outputs);
         let signal = Arc::clone(signal);
-        let session = session.to_owned();
+        let address = Arc::new(Mutex::new(session.to_owned()));
+        let named = Arc::clone(&address);
         assert!(
             revision.set_observer(move |n| {
                 wake.wake(n);
                 if arm.arm() {
+                    // Read on the EDGE, never per batch — and read rather than captured, because a
+                    // rename moves this channel to another name (see `SessionChannel::address`).
+                    let session = named.lock().unwrap_or_else(PoisonError::into_inner).clone();
                     signal.fire(&session);
                 }
             }),
@@ -117,6 +137,7 @@ impl SessionChannel {
             waiters,
             journal: Arc::new(JournalChannel::new()),
             outputs,
+            address,
         }
     }
 }
@@ -1082,6 +1103,41 @@ impl ChannelRegistry {
         self.lock().remove(session);
     }
 
+    /// Carry `from`'s channel over to `to` — what a session RENAME does to the wake machinery.
+    ///
+    /// # Why the channel MOVES rather than being re-minted
+    ///
+    /// Everything a client is currently waiting on lives in it: the scene-revision TOKEN (which
+    /// every pane of the session captured at spawn and bumps from its reader thread — nothing can
+    /// re-point those), the change JOURNAL with its cursor vocabulary and its established SHAPE, the
+    /// parked `scene/waitFor` replies, the filtered `events/waitFor` waits and their subscriptions,
+    /// and the parked output waits. A rename that minted a fresh channel would leave every one of
+    /// them parked on a key nothing reaches again — the session would be alive, its panes would be
+    /// producing output, and its clients would hear nothing for as long as they lived.
+    ///
+    /// So the rename is deliberately NOT a close plus a create, which is the same sentence
+    /// [`crate::events`] arrived at one layer up for the same reason.
+    ///
+    /// A stale channel already sitting on `to` (a name whose session is gone) is CLOSED first
+    /// rather than dropped, on [`close`](Self::close)'s own argument: dropping it would silently
+    /// take its parked replies with it.
+    pub fn rename(&self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+        if self.lock().contains_key(to) {
+            self.close(to);
+        }
+        let mut channels = self.lock();
+        if let Some(channel) = channels.remove(from) {
+            *channel
+                .address
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = to.to_owned();
+            channels.insert(to.to_owned(), channel);
+        }
+    }
+
     /// How many sessions currently have a channel — the live size of this map, for the test that
     /// pins [`close`](Self::close) actually forgetting one.
     #[must_use]
@@ -1108,6 +1164,7 @@ impl ChannelRegistry {
             waiters: Arc::clone(&channel.waiters),
             journal: Arc::clone(&channel.journal),
             outputs: Arc::clone(&channel.outputs),
+            address: Arc::clone(&channel.address),
         }
     }
 
@@ -1423,6 +1480,86 @@ mod tests {
             channels.journal("work").parked_count(),
             1,
             "and that one is still parked, having spent no round trip",
+        );
+    }
+
+    /// A RENAME carries the channel over: the revision token every pane already holds, the
+    /// journal's contents, and the waits parked on it. A rename that minted a fresh channel would
+    /// leave a live session's clients parked on a key nothing reaches again.
+    #[test]
+    fn a_rename_carries_the_channel_its_journal_and_its_parked_waits() {
+        let channels = ChannelRegistry::default();
+        // Something to lose: a record in the journal, and a client parked on the revision.
+        let revision = channels.revision("work");
+        let announced = channels.announce("work", vec![Event::LayoutUpdated]);
+        // Parked at the revision the announce LEFT, so it is genuinely waiting rather than
+        // answered on the spot by a change it has already accounted for.
+        let replies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&replies);
+        channels.waiters("work").park_if_current(
+            &revision,
+            announced,
+            Some(pinion_rpc::RequestId::Num(1)),
+            pinion_rpc::RpcReply::new(move |reply| {
+                sink.lock().expect("the reply sink").push(reply);
+            }),
+        );
+        assert_eq!(answered(&replies), 0, "parked, not answered");
+
+        channels.rename("work", "prod");
+
+        assert_eq!(
+            channels.len(),
+            1,
+            "one channel MOVED — not one closed and another minted",
+        );
+        assert!(
+            Arc::ptr_eq(&revision, &channels.revision("prod")),
+            "the SAME revision token: every pane of this session captured it at spawn and no              rename can re-point those",
+        );
+        assert_eq!(
+            channels.journal("prod").since(0).events.len(),
+            1,
+            "the journal came with it — a client resuming at its cursor is not sent back to a              full re-read",
+        );
+        assert_eq!(
+            channels.waiters("prod").parked_count(),
+            1,
+            "and so did the client parked on it, still waiting rather than dropped",
+        );
+        // It answers to the new name and only to that: the old one mints a fresh, empty channel.
+        assert_eq!(channels.journal("work").since(0).events.len(), 0);
+    }
+
+    /// The rename also moves the address the wake OBSERVER fires under. The observer used to
+    /// CAPTURE the session name at mint time, so after a rename every batch of output on a live
+    /// session signalled a name nothing answered to — and a `pane/waitForOutput` parked on it would
+    /// never be evaluated.
+    #[test]
+    fn output_after_a_rename_signals_the_new_address() {
+        let channels = ChannelRegistry::default();
+        let fired = record_signal(&channels);
+        // The signal only fires when something is WAITING for output — that is `arm`'s whole job.
+        let _parked = park_output(&channels, "work", ConnId::allocate());
+        let revision = channels.revision("work");
+
+        revision.bump();
+        assert_eq!(
+            fired.lock().unwrap().as_slice(),
+            ["work"],
+            "control: before the rename it fires under the name it was minted with",
+        );
+
+        channels.rename("work", "prod");
+        // Clear the queued latch the way a real pass does, then produce again on the pane's OWN
+        // token — captured at spawn, and the point is that nothing anywhere re-points it.
+        channels.outputs("prod").evaluate(|_, _| None);
+        revision.bump();
+
+        assert_eq!(
+            fired.lock().unwrap().as_slice(),
+            ["work", "prod"],
+            "the SAME token now signals the session's CURRENT address",
         );
     }
 

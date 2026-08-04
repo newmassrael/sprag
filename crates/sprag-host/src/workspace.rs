@@ -80,11 +80,11 @@ use crate::wire::{
     DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION,
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, NEIGHBORS_FIELD,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD,
-    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SwapAsk, WINDOW_SIZE_SLOT,
-    WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SwapAsk,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -1173,6 +1173,46 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::Null))
     }
 
+    /// `rename_session {name}` action: rename THIS request's session — tmux `rename-session`.
+    ///
+    /// The session renamed is the SCOPE's, so a caller renames what it already named; there is no
+    /// second target argument that could disagree with it.
+    ///
+    /// # The three things that move, and why the order is the order
+    ///
+    /// 1. **The registry entry**, which is what makes the new name resolve and the old one stop.
+    /// 2. **The change CHANNEL** ([`ChannelRegistry::rename`]) — its revision token, its journal
+    ///    and every parked wait. Without this the session would be alive under its new name while
+    ///    every client parked on it slept forever: the channel map is keyed by NAME.
+    /// 3. **The ATTACHMENTS**, so `list-clients` and the per-session viewer badge keep naming a
+    ///    session that exists.
+    ///
+    /// Then the wake, on the NEW name — [`announce`](Self::announce) would bump the scope's, which
+    /// is the name this call just retired, minting a fresh empty channel for it and waking nobody.
+    ///
+    /// The change itself is DERIVED at the dispatch funnel like every other, and it derives as one
+    /// rename because a session's identity does not move with its name (`sprag_terminal::SessionId`).
+    fn rename_session(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let new = map
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(InvokeError::TypeMismatch)?;
+        let from = self.scope.session().to_owned();
+        lock(&self.registry)
+            .rename_session(&from, new)
+            .map_err(|error| {
+                tracing::debug!(target: "sprag_host", %error, "refused to rename a session");
+                InvokeError::Rejected
+            })?;
+        self.channels.rename(&from, new);
+        if let Some(attachments) = &self.attachments {
+            lock(attachments).rename_session(&from, new);
+        }
+        self.channels.bump(new);
+        Ok(IntrospectValue::Json(Value::Null))
+    }
+
     /// `kill_window {window?}` action: kill a window of THIS request's session — tmux
     /// `kill-window`. `window` absent ⇒ the current one. Killing the session's LAST window ends
     /// the SESSION (the last session ends the daemon), handled through the SAME
@@ -1529,6 +1569,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SELECT_WINDOW_ACTION, "action"),
                     SchemaField::new(SELECT_PANE_ACTION, "action"),
                     SchemaField::new(RENAME_WINDOW_ACTION, "action"),
+                    SchemaField::new(RENAME_SESSION_ACTION, "action"),
                     SchemaField::new(KILL_WINDOW_ACTION, "action"),
                     SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
                     SchemaField::new(BREAK_PANE_ACTION, "action"),
@@ -2042,6 +2083,7 @@ impl WorkspaceExternal {
             SELECT_WINDOW_ACTION => self.select_window(&args),
             SELECT_PANE_ACTION => self.select_pane(&args),
             RENAME_WINDOW_ACTION => self.rename_window(&args),
+            RENAME_SESSION_ACTION => self.rename_session(&args),
             KILL_WINDOW_ACTION => self.kill_window(&args),
             RESIZE_WINDOW_ACTION => self.resize_window(&args),
             BREAK_PANE_ACTION => self.break_pane(&args),

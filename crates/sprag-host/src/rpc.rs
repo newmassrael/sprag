@@ -1493,9 +1493,20 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
                     // pinion has already bumped the scoped revision by now (it bumps after a
                     // mutating handler returns `Ok`, inside its own dispatcher), so the records land
                     // at the number a client woken by that bump will read with.
-                    state
-                        .channels()
-                        .observe(&lock(state.registry()), scope.session());
+                    //
+                    // Observed at the session's CURRENT address, resolved from the identity the
+                    // scope pinned — because ONE method moves it. `rename_session` retires the very
+                    // name this request carried, and observing that name would read a session the
+                    // registry no longer holds: an empty window list against an established shape,
+                    // i.e. every window of a live session reported CLOSED. Falling back to the
+                    // scope's own name covers the other way a session can leave (a kill), where
+                    // there is no new address and the channel has already been closed.
+                    let registry = lock(state.registry());
+                    let observed = registry
+                        .name_of(scope.id())
+                        .unwrap_or_else(|| scope.session());
+                    state.channels().observe(&registry, observed);
+                    drop(registry);
                     if let Some(response) = response {
                         reply.send(response);
                     }
