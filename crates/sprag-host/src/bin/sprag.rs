@@ -3515,17 +3515,24 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
 /// sentence that names the wrong thing.
 fn resize_toward(session: Option<&str>, ask: ResizeAsk) -> io::Result<()> {
     let mut conn = connect_scoped(session)?;
-    let answer: Value = conn
-        .call(
-            "scene/invoke",
-            scoped_invoke(session, mux_action_path(RESIZE_PANE_ACTION), ask.to_args()),
-        )
+    let answer: Value = match conn.try_call(
+        "scene/invoke",
+        scoped_invoke(session, mux_action_path(RESIZE_PANE_ACTION), ask.to_args()),
+    ) {
+        Ok(answer) => answer,
         // The session was pre-flighted, so a refusal is one of the two things the daemon refuses
         // for. Which one is this end's to guess, because `InvokeError::Rejected` carries no payload
         // (upstream PINION-PR82) — and unlike the disjunctions that class usually produces, both
         // halves here have a remedy a reader can act on.
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::Other {
+        //
+        // **THE VERSION SKEW IS TOLD APART, and this round's skew run is why.** This verb is the
+        // FIRST thing a daemon can be too old for that is not a bump: a `WIRE_PROTOCOL` change is
+        // refused by number at `client/hello`, but an ADDED ACTION leaves the handshake happy and
+        // fails at the invoke. Measured against a parent-commit daemon before this arm existed:
+        // the sentence below claimed *"there is no pane 0"* about a pane that was there, with the
+        // window pinned, sending a reader to look for a pane rather than to restart their daemon.
+        Err(CallError::Fault(fault)) => {
+            return Err(unknown_action("resize-pane", &fault).unwrap_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
                     format!(
@@ -3539,10 +3546,10 @@ fn resize_toward(session: Option<&str>, ask: ResizeAsk) -> io::Result<()> {
                         scope_name(session)
                     ),
                 )
-            } else {
-                error
-            }
-        })?;
+            }));
+        }
+        Err(other) => return Err(other.into()),
+    };
     println!(
         "{}",
         resize_sentence(
@@ -5080,6 +5087,41 @@ mod tests {
         assert_eq!(
             swap_sentence(SwapHow::Swapped, toward(PaneDir::Up), 3, None),
             "swapped pane 3",
+        );
+    }
+
+    /// A daemon too OLD for this verb is told apart from one that refuses it — the fault
+    /// `resize-pane` shares with `rename-session`, and the second caller that mechanism has ever
+    /// had.
+    ///
+    /// **This is not hypothetical: it is what this round's skew run MEASURED.** Against a
+    /// parent-commit daemon, with a pane that existed and a window that was pinned, the verb said
+    /// *"there is no pane 0 … or nothing is watching that window"* — a confident sentence about two
+    /// things that were both false, sending a reader to look for a pane instead of restarting their
+    /// daemon. It is the first thing in this project a daemon can be too old for WITHOUT a
+    /// `WIRE_PROTOCOL` bump: a number change is refused at `client/hello`, where an ADDED ACTION
+    /// leaves the handshake happy and fails at the invoke.
+    #[test]
+    fn a_daemon_too_old_for_the_boundary_verb_is_told_apart_from_one_refusing_it() {
+        let fault = |data: Value| RpcFault {
+            code: -32602,
+            message: "Invalid params".to_owned(),
+            data: Some(data),
+        };
+        let error = unknown_action("resize-pane", &fault(json!("UnknownInvokePath")))
+            .expect("an action this daemon lacks is explained");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(
+            error.to_string().contains("older than this `sprag`")
+                && error.to_string().contains("kill-server"),
+            "it names the cause and the remedy: {error}",
+        );
+        // THE CONTROL — the fault a daemon that HAS the verb sends when it refuses one, which must
+        // keep this verb's own disjunction. Without it the message would be right for the rare case
+        // and wrong for the common one.
+        assert!(
+            unknown_action("resize-pane", &fault(json!("InvokeRejected"))).is_none(),
+            "a real refusal keeps the verb's own words",
         );
     }
 
