@@ -4427,7 +4427,8 @@ mod tests {
             let mut a = lock(&attachments);
             let conn = pinion_rpc::ConnId::allocate();
             a.hello(conn, "gui".to_owned());
-            a.attach(conn, "0".to_owned()); // a client is viewing the empty anchor
+            let id = lock(&reg).default_session().id();
+            a.attach(conn, "0".to_owned(), id); // a client is viewing the empty anchor
         }
         let ext = WorkspaceExternal::new(
             Arc::clone(&reg),
@@ -4973,7 +4974,11 @@ mod tests {
             for (client, session) in [("gui", "work"), ("tui", "work"), ("other", "keeper")] {
                 let conn = pinion_rpc::ConnId::allocate();
                 a.hello(conn, client.to_owned());
-                a.attach(conn, session.to_owned());
+                let id = lock(&reg)
+                    .session(session)
+                    .expect("the fixture session")
+                    .id();
+                a.attach(conn, session.to_owned(), id);
             }
         }
         let mut ext = WorkspaceExternal::new(

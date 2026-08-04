@@ -300,6 +300,18 @@ pub use sprag_rpc::{
     ROWS_PARAM,
 };
 
+/// [`CLIENT_ATTACH_METHOD`]'s own TARGET grammar ([`sprag_rpc::AttachAsk`]) — `{"last": true}`,
+/// optionally narrowed by `{"unattached": true}`, asking to be moved to the session this client was
+/// viewing BEFORE this one (tmux `switch-client -l`).
+///
+/// Re-exported for the same one-spelling reason as the keys above, and read through the grammar
+/// rather than key by key so their interaction is decided in one place. It is deliberately NOT a
+/// scope key: a scope says which session a request is ABOUT, and these say where the client is
+/// GOING — which is why they can travel in the same params object as [`ATTACHED_PARAM`] without
+/// either reading the other. What the target means, and why a client cannot hold the answer itself,
+/// is on [`sprag_rpc::AttachAsk::LastViewed`].
+pub use sprag_rpc::{AttachAsk, AttachFault, LAST_PARAM, UNATTACHED_PARAM};
+
 /// The filtered CHANGE WAIT, re-exported from the client that writes it for the same one-spelling
 /// reason as the vocabulary above: [`EVENTS_WAIT_METHOD`] blocks until a change matching the caller's
 /// [`EventFilter`](crate::events::EventFilter) lands after [`SINCE_PARAM`], answering the same
@@ -2381,6 +2393,33 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&scope).expect("a scope renders"),
             r#"{"attached":true}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The ATTACH TARGET grammar (`sprag_rpc::AttachAsk`, R304), pinned beside the scope because
+        // the two travel in ONE params object and a key that started colliding would be invisible
+        // from either type alone. All three arms, and `Scoped` writing nothing for the same reason
+        // `Default` does.
+        //
+        // Its skew failure is the scope's, one level quieter: an old daemon finds no `last` key,
+        // falls through to the connection's scope — the client's OWN attachment — and answers
+        // success, so the gesture is a switch that did nothing and said it had moved.
+        let mut target = serde_json::Map::new();
+        sprag_rpc::AttachAsk::Scoped.write_into(&mut target);
+        assert!(target.is_empty(), "{}", BUMP);
+        sprag_rpc::AttachAsk::LastViewed { unattached: false }.write_into(&mut target);
+        assert_eq!(
+            serde_json::to_string(&target).expect("a target renders"),
+            r#"{"last":true}"#,
+            "{}",
+            BUMP,
+        );
+        let mut target = serde_json::Map::new();
+        sprag_rpc::AttachAsk::LastViewed { unattached: true }.write_into(&mut target);
+        assert_eq!(
+            serde_json::to_string(&target).expect("a target renders"),
+            r#"{"last":true,"unattached":true}"#,
             "{}",
             BUMP,
         );

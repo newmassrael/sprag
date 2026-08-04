@@ -663,7 +663,11 @@ mod tests {
         let attachments = Arc::new(Mutex::new(crate::attach::AttachmentRegistry::default()));
         let conn = pinion_rpc::ConnId::allocate();
         lock(&attachments).hello(conn, "client-under-test".to_owned());
-        lock(&attachments).attach(conn, session.clone());
+        let id = lock(&registry)
+            .session(&session)
+            .expect("the fixture session")
+            .id();
+        lock(&attachments).attach(conn, session.clone(), id);
         lock(&attachments).size(conn, ClientSize { cols: 90, rows: 30 });
         assert_eq!(
             lock(&attachments).sizes(&session),

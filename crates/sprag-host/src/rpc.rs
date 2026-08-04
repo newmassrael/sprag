@@ -44,11 +44,13 @@ use crate::notify::{ChannelRegistry, OutputQuery};
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
-    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD, EVENTS_WAIT_METHOD, INVALID_PARAMS,
-    NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD,
-    PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, SUBSCRIPTION_PARAM, WIRE_PROTOCOL,
+    AttachAsk, AttachFault, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM,
+    CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD,
+    EVENTS_WAIT_METHOD, INVALID_PARAMS, LAST_PARAM, NEEDLE_PARAM, PANE_PARAM,
+    PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM,
+    SINCE_PARAM, SUBSCRIPTION_PARAM, UNATTACHED_PARAM, WIRE_PROTOCOL,
 };
+use serde_json::Value;
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
 /// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
@@ -635,8 +637,18 @@ fn method_not_supported(request: &Request) -> String {
 /// request, `None` for a notification (no `id` — nobody to answer, and inventing one would break
 /// JSON-RPC), the same id-less choice [`scope_refused`] makes.
 fn lifecycle_ok(request: &Request) -> Option<String> {
+    lifecycle_answer(request, Value::Bool(true))
+}
+
+/// [`lifecycle_ok`] for a client-lifecycle reply that CARRIES something — `client/attach` answering
+/// which session the client landed on, or `null` for a history ask that found none.
+///
+/// A bare `true` says the request was honoured, which is all a hello or a size report has to say. An
+/// attach whose target the DAEMON chose has to say what it chose, or the client is left inferring
+/// its own location from a request it did not make.
+fn lifecycle_answer(request: &Request, result: Value) -> Option<String> {
     let id = request.id.clone()?;
-    Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": true }).to_string())
+    Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string())
 }
 
 /// The JSON-RPC `-32602 Invalid params` reply for a malformed client-lifecycle request (a missing
@@ -1131,11 +1143,47 @@ fn handle_attach(
     scope: &SessionScope,
     request: &Request,
 ) -> Option<String> {
+    let ask = match AttachAsk::parse(request.params.as_ref()) {
+        Ok(ask) => ask,
+        Err(fault) => return lifecycle_invalid(request, attach_fault_sentence(fault)),
+    };
+    // WHERE the client is going. The connection's scope is the target only when nothing else names
+    // one — see `AttachAsk` — and the history arm is resolved by IDENTITY, which is the whole
+    // reason it is answered here rather than remembered by the client.
+    let target = match ask {
+        AttachAsk::Scoped => Some((scope.session().to_owned(), scope.id())),
+        AttachAsk::LastViewed { unattached } => {
+            // attachments THEN registry, the order `window::retile` takes and the one
+            // `SessionScope::resolve` was written to keep. `name_of` answers liveness and the
+            // CURRENT name in one lookup, which is what an id buys.
+            let registry = state.registry();
+            let found = lock(state.attachments()).last_viewed(
+                conn,
+                |id| lock(registry).name_of(id).map(str::to_owned),
+                unattached,
+            );
+            match found {
+                Some((id, name)) => Some((name, id)),
+                // A client with nowhere to go back to has asked a legitimate question about an
+                // empty state, so it is ANSWERED, not refused: `null`, and the client stays where
+                // it is (tmux no-ops too). Refusing would make "no last session" indistinguishable
+                // from a daemon that is broken without matching on a code or a wording.
+                None => return lifecycle_answer(request, Value::Null),
+            }
+        }
+    };
+    let Some((session, id)) = target else {
+        return lifecycle_answer(request, Value::Null);
+    };
     // Bound and RELEASED before the arms run. A `lock(..)` written into the `match` scrutinee lives
     // for the whole match, and an arm below re-derives the window — which reads this same map. It
     // deadlocked the daemon's dispatch thread outright, and that is the honest failure mode: a
     // re-entrant lock is not a race that shows up occasionally, it is every attach, forever.
-    let outcome = lock(state.attachments()).attach(conn, scope.session().to_owned());
+    let outcome = lock(state.attachments()).attach(conn, session.clone(), id);
+    // The answer is the session the client is now attached to — the name it LANDED on, never the
+    // one it asked with. For the history arm the caller cannot know it; for the scoped arm it is
+    // what makes both arms one path in the client.
+    let landed = || lifecycle_answer(request, Value::String(session.clone()));
     match outcome {
         AttachOutcome::NoClient => lifecycle_invalid(
             request,
@@ -1144,22 +1192,36 @@ fn handle_attach(
         AttachOutcome::Changed { previous } => {
             tracing::info!(
                 target: "sprag_host::attach",
-                session = %scope.session(),
+                session = %session,
                 "client attached"
             );
             // BOTH sides of a switch: the session gained a viewer, and (on a switch rather than a
             // first attach) the one it left lost one. Each announces on its own channel, so a
             // client watching the session being left learns its badge fell — which the single
             // registry-wide token used to deliver as a side effect of waking everybody.
-            window_moved(state, scope.session());
+            window_moved(state, &session);
             // A SWITCH left a session too, and that session's window lost a reporter — so it is a
             // window that moved for the same reason, not merely a badge that fell.
-            if let Some(left) = previous.filter(|left| left != scope.session()) {
+            if let Some(left) = previous.filter(|left| *left != session) {
                 window_moved(state, &left);
             }
-            lifecycle_ok(request)
+            landed()
         }
-        AttachOutcome::Unchanged => lifecycle_ok(request),
+        AttachOutcome::Unchanged => landed(),
+    }
+}
+
+/// The operator-facing sentence for each way an attach names no target this daemon admits — one
+/// per [`AttachFault`], exhaustively, so a fault added to the shared grammar has to be answered
+/// here rather than folded into a neighbour ([`ScopeError`]'s rule, on the key beside it).
+fn attach_fault_sentence(fault: AttachFault) -> String {
+    match fault {
+        AttachFault::LastNotABool => format!("params.{LAST_PARAM} must be a boolean"),
+        AttachFault::UnattachedNotABool => format!("params.{UNATTACHED_PARAM} must be a boolean"),
+        AttachFault::UnattachedWithoutLast => format!(
+            "params.{UNATTACHED_PARAM} narrows params.{LAST_PARAM}, which this request does not ask \
+             for",
+        ),
     }
 }
 
