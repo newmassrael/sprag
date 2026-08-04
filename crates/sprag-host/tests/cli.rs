@@ -257,6 +257,40 @@ fn the_cli_manages_windows_over_the_socket() {
         "the current window moved back to 0",
     );
 
+    // select-window -n / -p: tmux's `next-window` / `previous-window`, on the verb sprag already
+    // had (R305). Two windows here, so `-n` from the first lands on the second and `-p` WRAPS back
+    // — the wrap is the half a walk that clamped would get wrong while looking right in the middle.
+    //
+    // The printed line is asserted too, because the daemon answers the window it LANDED on and a
+    // step cannot name one: a CLI that echoed its argument would print `-n` here.
+    let run = sprag(&sock, &["select-window", "-t", "0", "-n"]);
+    assert!(run.ok, "select-window -n succeeded: {}", run.stderr);
+    assert_eq!(
+        run.stdout.trim(),
+        "selected logs",
+        "the step prints the window the DAEMON landed on",
+    );
+    assert!(
+        sprag(&sock, &["windows", "-t", "0"])
+            .stdout
+            .contains("logs (current)"),
+        "and the session really moved",
+    );
+    let run = sprag(&sock, &["select-window", "-t", "0", "-n"]);
+    assert_eq!(
+        run.stdout.trim(),
+        "selected 0",
+        "the ring WRAPS past the last window onto the first",
+    );
+    let run = sprag(&sock, &["select-window", "-t", "0", "-p"]);
+    assert_eq!(
+        run.stdout.trim(),
+        "selected logs",
+        "...and the other way, past the first onto the last",
+    );
+    // Back where the checks below expect it.
+    assert!(sprag(&sock, &["select-window", "-t", "0", "0"]).ok);
+
     // rename-window -t 0 main: renames the CURRENT window ("0") to "main".
     assert!(sprag(&sock, &["rename-window", "-t", "0", "main"]).ok);
     let run = sprag(&sock, &["windows", "-t", "0"]);

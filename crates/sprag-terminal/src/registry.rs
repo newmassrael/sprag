@@ -1278,13 +1278,17 @@ impl Session {
     /// its name — the honest "you are where you were", which a caller can compare against what it
     /// had. No error case, so unlike [`select_window`](Self::select_window) it cannot refuse.
     pub fn select_window_relative(&mut self, step: WindowStep) -> &str {
-        let len = self.windows.len();
-        // `current_window` is an index into a `Vec` that is never empty, so the rem_euclid below is
-        // total; the `max(1)` says so to a reader rather than relying on it.
-        let len = len.max(1);
+        // A session ALWAYS holds at least one window — `kill_window` on the last one ends the
+        // SESSION instead (`WindowKillOutcome::Session`), which is why the wrap below is total and
+        // why the index that follows it cannot be out of range.
+        //
+        // Written without a `max(1)` or a clamp, deliberately: both LOOK like they make an empty
+        // session safe and neither does (`rem_euclid(0)` panics, and so does the index after it), so
+        // a guard here would promise a robustness this type does not have. The invariant is the
+        // guarantee; stating it is the honest form.
+        let len = self.windows.len() as isize;
         let here = self.current_window as isize;
-        let next = (here + step.offset()).rem_euclid(len as isize) as usize;
-        self.current_window = next.min(len - 1);
+        self.current_window = (here + step.offset()).rem_euclid(len) as usize;
         self.windows[self.current_window].name.as_str()
     }
 
