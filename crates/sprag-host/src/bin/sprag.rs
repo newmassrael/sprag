@@ -44,7 +44,7 @@
 //!
 //! sprag windows -t SESSION                list a session's windows (name, and which is current)
 //! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
-//! sprag select-window -t SESSION NAME     make NAME the session's current window
+//! sprag select-window -t SESSION <NAME|-n|-p>  make NAME current, or step along the window ring
 //! sprag rename-window -t SESSION [win] NEW rename a window (default: the current one) to NEW
 //! sprag rename-session [-t SESSION] NEW   rename a session. A session NAME is the address every
 //!                                         -t takes, so the daemon carries the session's parked
@@ -162,15 +162,16 @@ use sprag_host::wire::{
     RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
     REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
     SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
-    SelectHow, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since,
-    find_slot_for, pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
+    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
+    session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, HOST_SOCKET, HostConn, HostEndpoint,
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
-use sprag_terminal::{LayoutSnapshot, PaneDir, PaneId, arrangement};
+use sprag_terminal::{LayoutSnapshot, PaneDir, PaneId, WindowStep, arrangement};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -786,7 +787,7 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20             | wait-for-output --pane N NEEDLE [-t SESSION] [--regex]\n\
          \x20             | rename-session [-t SESSION] NEW\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
-         \x20      sprag <windows | new-window [name] | select-window NAME\n\
+         \x20      sprag <windows | new-window [name] | select-window <NAME|-n|-p>\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
          \x20             | resize-window [window]\n\
          \x20                 <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>\n\
@@ -3694,22 +3695,33 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
 /// `select-window -t SESSION NAME`: make NAME the session's current window.
 fn select_window(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "select-window")?;
-    let window = rest.into_iter().next().ok_or_else(|| {
+    let word = rest.into_iter().next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "select-window needs a window name",
+            "select-window needs a window name, or -n / -p to step along the ring",
         )
     })?;
+    // tmux's own flags for `next-window` / `previous-window`, on the verb sprag already has. The
+    // RING is walked by the daemon: a CLI that read the window list and named the next one would be
+    // a second answer to this question, computed from a list that can be a request old.
+    let ask = match word.as_str() {
+        "-n" => SelectWindowAsk::Step(WindowStep::Next),
+        "-p" => SelectWindowAsk::Step(WindowStep::Previous),
+        window => SelectWindowAsk::Named(window.to_owned()),
+    };
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
-    scoped_window_action(
+    let landed = scoped_window_action(
         &mut conn,
         &session,
         SELECT_WINDOW_ACTION,
-        json!({ "window": window }),
-        &format!("no window named {window:?} in session {session:?}"),
+        ask.to_args(),
+        &format!("no window named {word:?} in session {session:?}"),
     )?;
-    println!("selected {window}");
+    // The window the DAEMON says it landed on, never the argument: a step could not name one, and
+    // answering the argument on the other arm would be the mistake R295 fixed for `rename-pane` and
+    // R302 met again for `rename-session`.
+    println!("selected {}", landed.as_str().unwrap_or(&word));
     Ok(())
 }
 

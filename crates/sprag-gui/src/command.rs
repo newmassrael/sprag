@@ -884,6 +884,10 @@ mod tests {
         fn select_window(&self, name: &str) {
             self.log.borrow_mut().selected_windows.push(name.to_owned());
         }
+        /// Inert: this catalogue fixture drives which ROWS exist, not the window ring.
+        fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
+            None
+        }
         fn new_window(&self) -> String {
             self.log.borrow_mut().new_windows += 1;
             "w".to_owned()

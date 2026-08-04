@@ -113,6 +113,7 @@ use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
 use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed};
+use sprag_host::wire::SelectWindowAsk;
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
@@ -320,6 +321,53 @@ fn run() -> Result<(), Box<dyn Error>> {
                             screen_area,
                             focus,
                             Clear::No,
+                            &mut held,
+                        )?;
+                    }
+                    // THE WINDOW LEVEL, reached from a key (R305). All three arms share one shape
+                    // and one repaint, because all three change WHICH WINDOW this client projects:
+                    // the pane set is replaced wholesale, so the screen is cleared rather than
+                    // differenced — every cell has a new author, which is the one case
+                    // `Clear::No` (a projection partitioning the same window) does not cover.
+                    //
+                    // None of them publishes a focus: the daemon selects the window it created or
+                    // walked to, and `reconcile` follows the session's active pane onto this
+                    // client's ring on the next pass — one authority for "which pane the session is
+                    // on", the discipline the directional arm below leans on.
+                    Command::Act(
+                        action @ (BoundAction::NewWindow
+                        | BoundAction::SelectWindow { .. }
+                        | BoundAction::KillWindow),
+                    ) => {
+                        match action {
+                            BoundAction::NewWindow => {
+                                host.new_window();
+                            }
+                            BoundAction::SelectWindow { ask } => match ask {
+                                SelectWindowAsk::Named(window) => host.select_window(&window),
+                                SelectWindowAsk::Step(step) => {
+                                    host.select_window_toward(step);
+                                }
+                            },
+                            // The CURRENT window, which is the only one a keystroke can mean. Its
+                            // name comes off the client's own window mirror, where `current` is the
+                            // fact the daemon publishes for exactly this.
+                            BoundAction::KillWindow => {
+                                if let Some(window) = current_window_name(&host) {
+                                    host.kill_window(&window);
+                                }
+                            }
+                            _ => unreachable!("the match above admits only the three window arms"),
+                        }
+                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        mouse.follow(&host, &tiling);
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            focus,
+                            Clear::Yes,
                             &mut held,
                         )?;
                     }
@@ -776,6 +824,19 @@ fn drag_divider(
 /// LOCAL: it reports an edge and moves the cursor, and says nothing about which pane the SESSION is
 /// on. [`select_pane`] is the half that does, and the split is deliberate — a client following the
 /// daemon, or falling back because it cannot show the active pane, must not publish a correction
+/// The name of the session's CURRENT window, off this client's own window mirror — what
+/// `kill-window` from a key means by "this window".
+///
+/// The mirror rather than a fresh read: `current` is the fact the daemon publishes on the `windows`
+/// slot for exactly this question, and the poll thread refreshes it. `None` when the mirror holds no
+/// current window, which is a client that has not finished booting rather than a session without one.
+fn current_window_name(host: &WireHost) -> Option<String> {
+    host.windows()
+        .into_iter()
+        .find(|window| window.current)
+        .map(|window| window.name)
+}
+
 /// nobody asked for (see [`reconcile`]).
 fn set_focus(host: &WireHost, focus: &mut Option<PaneId>, next: Option<PaneId>) {
     if *focus == next {

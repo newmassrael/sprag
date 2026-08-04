@@ -10,6 +10,7 @@ use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
 use sprag_host::keymap::{BoundAction, Routed};
+use sprag_host::wire::SelectWindowAsk;
 
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
 /// per-pane key site [`pane_cache_key`] so the index suffix cannot drift.
@@ -319,7 +320,7 @@ fn switch_to_last_session() {
 /// Spelled as the VERB the user bound rather than as the enum's variant, so a `diag` line and the
 /// `config.toml` line that caused it read the same. The split's flags are left out: the label names
 /// which command ran, and the arrangement it produced is in the layout the next frame paints.
-fn action_label(action: BoundAction) -> &'static str {
+fn action_label(action: &BoundAction) -> &'static str {
     match action {
         BoundAction::DetachClient => "detach-client",
         BoundAction::SendPrefix => "send-prefix",
@@ -332,6 +333,9 @@ fn action_label(action: BoundAction) -> &'static str {
         // said `select-pane` would name the gesture the user did not make.
         BoundAction::SwapPaneToward { .. } => "swap-pane",
         BoundAction::ZoomPane { .. } => "zoom-pane",
+        BoundAction::NewWindow => "new-window",
+        BoundAction::SelectWindow { .. } => "select-window",
+        BoundAction::KillWindow => "kill-window",
     }
 }
 
@@ -381,6 +385,32 @@ fn perform(action: BoundAction, active: usize) {
         // that already carries an arrangement change, exactly as the split above does.
         BoundAction::ZoomPane { on } => {
             use_terminal().slots.zoom_pane(active, on);
+        }
+        // THE WINDOW LEVEL (R305). Nothing here repaints, for this function's standing reason: a
+        // window change reaches the paint through the channels that already carry it — the host
+        // announces the new pane set and the ring is re-derived — which is the same path the split
+        // above relies on.
+        BoundAction::NewWindow => {
+            use_terminal().slots.new_window();
+        }
+        // The walk is the DAEMON's, exactly as the directional pane move above is: this asks, and
+        // the answer arrives as the arrangement the host publishes.
+        BoundAction::SelectWindow { ask } => {
+            let slots = &use_terminal().slots;
+            match ask {
+                SelectWindowAsk::Named(window) => slots.select_window(&window),
+                SelectWindowAsk::Step(step) => {
+                    slots.select_window_toward(step);
+                }
+            }
+        }
+        // The CURRENT window, which is the only one a keystroke can mean — read off the same
+        // mirror the tab bar draws from, where `current` is the fact the daemon publishes for it.
+        BoundAction::KillWindow => {
+            let slots = &use_terminal().slots;
+            if let Some(window) = slots.windows().into_iter().find(|w| w.current) {
+                slots.kill_window(&window.name);
+            }
         }
     }
 }
@@ -482,7 +512,7 @@ pub(crate) fn route_key(
         // The repeat window rides on `Routed::next`, which `ClientKeys::route` already stored — a
         // caller reading `again` here would be a second author of the mode transition.
         Routed::Act { action, .. } => {
-            crate::diag::chord(action_label(action), "act", active);
+            crate::diag::chord(action_label(&action), "act", active);
             perform(action, active);
             return true;
         }
@@ -940,7 +970,11 @@ mod tests {
     /// the same bytes.
     ///
     /// REVERT-PROOF: drop the `refresh` in `ClientKeys::route` (read the file once at boot) and the
-    /// second half fails — `prefix c` stays unbound forever while `sprag list-keys` prints it.
+    /// second half fails — `prefix k` stays unbound forever while `sprag list-keys` prints it.
+    ///
+    /// The key is `k` and not `c` because R305 gave `c` a DEFAULT (`new-window`): this test needs a
+    /// key the shipped table does not mention, and one that quietly acquired a meaning would make
+    /// the first assertion pass for the opposite reason.
     #[test]
     fn an_edit_to_the_file_reaches_a_running_client() {
         let (host, _pane0) = two_cats();
@@ -950,16 +984,16 @@ mod tests {
             seed_terminal(host);
             let before = panes();
 
-            // `c` is bound to nothing yet: swallowed after the prefix, and nothing happens.
+            // `k` is bound to nothing yet: swallowed after the prefix, and nothing happens.
             assert!(press(0, "a", ctrl()));
-            assert!(press(0, "c", Modifiers::default()));
+            assert!(press(0, "k", Modifiers::default()));
             assert_eq!(panes(), before);
 
             config.write(
-                "[options]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"c\"\naction = \"split-window -v\"\n",
+                "[options]\nprefix = \"C-a\"\n\n[[bind]]\nkey = \"k\"\naction = \"split-window -v\"\n",
             );
             assert!(press(0, "a", ctrl()));
-            assert!(press(0, "c", Modifiers::default()));
+            assert!(press(0, "k", Modifiers::default()));
             assert_eq!(panes(), before + 1, "the edit landed with no reattach",);
         });
     }

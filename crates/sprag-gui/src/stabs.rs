@@ -960,6 +960,9 @@ mod tests {
             Vec::new()
         }
         fn select_window(&self, _name: &str) {}
+        fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
+            None
+        }
         fn new_window(&self) -> String {
             String::new()
         }

@@ -259,6 +259,15 @@ impl SlotView {
         self.reseed_pane_focus();
     }
 
+    /// Walk the window RING one step, wrapping (tmux `next-window` / `previous-window`) — the
+    /// `prefix n` / `prefix p` keys. The step is resolved by the daemon; this reseeds the focus for
+    /// the same reason a tab click does, because the window it projects has changed.
+    pub(crate) fn select_window_toward(&self, step: sprag_terminal::WindowStep) -> Option<String> {
+        let landed = self.host.select_window_toward(step);
+        self.reseed_pane_focus();
+        landed
+    }
+
     /// Create + select a window, born with a shell (tmux `new-window`), returning its name — the
     /// "+" tab.
     pub(crate) fn new_window(&self) -> String {
@@ -1144,6 +1153,9 @@ mod tests {
             Vec::new()
         }
         fn select_window(&self, _name: &str) {}
+        fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
+            None
+        }
         fn new_window(&self) -> String {
             String::new()
         }
