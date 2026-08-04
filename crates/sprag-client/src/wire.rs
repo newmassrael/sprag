@@ -95,9 +95,9 @@ use sprag_host::wire::{
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SwapAsk, SwapHow,
-    TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
-    project_slot_for, regex_slot_for, session_activity_at,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk,
+    SwapAsk, SwapHow, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at,
+    find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -110,7 +110,7 @@ use sprag_rpc::{
 };
 use sprag_terminal::{
     LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
-    ZoomOutcome,
+    WindowStep, ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
@@ -2266,7 +2266,7 @@ impl HostClient for WireHost {
     fn select_window(&self, name: &str) {
         let params = invoke(
             &mux_action_path(SELECT_WINDOW_ACTION),
-            json!({ "window": name }),
+            SelectWindowAsk::Named(name.to_owned()).to_args(),
         );
         if self
             .request("scene/invoke", params, "select_window")
@@ -2274,6 +2274,21 @@ impl HostClient for WireHost {
         {
             self.refresh_view();
         }
+    }
+
+    /// The RING walk, asked of the daemon and adopted from its answer — never resolved against this
+    /// client's `windows` mirror, which can be a revision behind the session it would be naming.
+    ///
+    /// The view is refreshed exactly as a named select refreshes it: the current window changed, so
+    /// every mirror this client projects from is about a different window now.
+    fn select_window_toward(&self, step: WindowStep) -> Option<String> {
+        let params = invoke(
+            &mux_action_path(SELECT_WINDOW_ACTION),
+            SelectWindowAsk::Step(step).to_args(),
+        );
+        let landed = self.request("scene/invoke", params, "select_window_toward")?;
+        self.refresh_view();
+        landed.as_str().map(str::to_owned)
     }
 
     fn new_window(&self) -> String {

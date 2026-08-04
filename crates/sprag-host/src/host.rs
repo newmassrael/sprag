@@ -52,8 +52,8 @@ use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneDir,
     PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, SessionInfo,
-    SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, WindowInfo, Workspace,
-    ZoomOutcome,
+    SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, WindowInfo, WindowStep,
+    Workspace, ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -635,6 +635,24 @@ pub trait HostClient {
     /// Make the window named `name` the scoped session's current window (tmux `select-window`).
     /// Every attached client's next read then projects that window. A no-op for an unknown name.
     fn select_window(&self, name: &str);
+
+    /// Walk the scoped session's windows one step, WRAPPING, and answer the window it landed on —
+    /// tmux `next-window` / `previous-window` (`select-window -n` / `-p`).
+    ///
+    /// A SECOND method beside [`select_window`](Self::select_window) rather than one taking a
+    /// grammar, which is the shape [`select_toward`](Self::select_toward) already has beside
+    /// [`select_pane`](Self::select_pane): the wire grammar
+    /// ([`SelectWindowAsk`](crate::wire::SelectWindowAsk)) is what the CLI and the keybinding BUILD,
+    /// and the trait offers the two questions a client actually asks.
+    ///
+    /// **The step is resolved by the DAEMON, never here.** A client walking its own `windows` mirror
+    /// would be a second answer to this question, derived from a list that can be one revision
+    /// behind the session it is naming — the argument R299/R300 settled for the pane walk, and the
+    /// reason that one carries no client-side geometry either.
+    ///
+    /// [`None`] when the host could not be asked. It cannot mean "nowhere to go": a session always
+    /// holds a window, so the walk always lands.
+    fn select_window_toward(&self, step: WindowStep) -> Option<String>;
 
     /// Create a window in the scoped session, born with a shell, and select it (tmux
     /// `new-window`), returning its name.
@@ -2233,6 +2251,14 @@ impl HostClient for Host {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
         let _ = registry.select_window(&session, name);
+    }
+
+    /// The walk, straight on the registry this arm owns — the same ring the wire arm asks the daemon
+    /// to walk, resolved here because this host IS the daemon for its one in-process client.
+    fn select_window_toward(&self, step: WindowStep) -> Option<String> {
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        registry.select_window_relative(&session, step).ok()
     }
 
     /// Create + select a window in the default session, birthing a shell into it — the in-process

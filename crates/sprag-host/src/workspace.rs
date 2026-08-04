@@ -83,8 +83,8 @@ use crate::wire::{
     PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
     RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SwapAsk,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
+    SelectWindowAsk, SwapAsk, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -1100,18 +1100,34 @@ impl WorkspaceExternal {
     /// `select_window {window}` action: make a window current in THIS request's session — tmux
     /// `select-window`. Session state: every attached client follows on its next read.
     fn select_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let window = as_object(args)?
-            .get("window")
-            .and_then(Value::as_str)
-            .ok_or(InvokeError::TypeMismatch)?;
-        lock(&self.registry)
-            .select_window(self.scope.session(), window)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to select a window");
-                InvokeError::Rejected
-            })?;
+        // The grammar is parsed by `SelectWindowAsk` rather than key by key here, for the reason
+        // `select_pane` states one verb over: the CLI and the keybinding BUILD one, and this is the
+        // end that has to admit exactly what they can spell.
+        let value = match args {
+            IntrospectValue::Json(value) => value,
+            IntrospectValue::Null => &Value::Null,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let ask = SelectWindowAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
+        let session = self.scope.session();
+        let landed = match &ask {
+            SelectWindowAsk::Named(window) => lock(&self.registry)
+                .select_window(session, window)
+                .map(|()| window.clone()),
+            // TOTAL once the session resolves — a session always has a window — so the only error
+            // this arm can carry is an unknown SESSION, which the scope already refused at the door.
+            SelectWindowAsk::Step(step) => {
+                lock(&self.registry).select_window_relative(session, *step)
+            }
+        }
+        .map_err(|error| {
+            tracing::debug!(target: "sprag_host", %error, "refused to select a window");
+            InvokeError::Rejected
+        })?;
         self.announce();
-        Ok(IntrospectValue::Json(Value::Null))
+        // The window it LANDED on, for both arms: a caller that stepped cannot know it, and giving
+        // the named arm the same answer is what keeps one shape for one verb.
+        Ok(IntrospectValue::Json(Value::String(landed)))
     }
 
     /// `select_pane {pane?} | {dir?, from?}` action: make a pane active in THIS request's session's
@@ -5144,7 +5160,10 @@ mod tests {
                 SELECT_WINDOW_ACTION,
                 IntrospectValue::Json(json!({"window": "0"}))
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            // The window it LANDED on (R305), where this used to answer null. The named arm knew
+            // already; giving it the same answer as the STEP arm — which cannot know — is what
+            // keeps one shape for one verb.
+            Ok(IntrospectValue::Json(json!("0"))),
         );
         assert!(rev.current() > before, "a select wakes waiters to re-read");
         assert_eq!(
