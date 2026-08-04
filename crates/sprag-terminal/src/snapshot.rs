@@ -1048,6 +1048,57 @@ mod tests {
         );
     }
 
+    /// **A boundary a user MOVED comes back where they left it.**
+    ///
+    /// The whole point of storing a share rather than re-deriving one: a resize is not a gesture,
+    /// it is a decision about how much room a program needs, and a restore that reverted every
+    /// window to an even split would throw that decision away on the one event a durable
+    /// multiplexer exists to survive.
+    ///
+    /// It is asserted on the RESTORED tree rather than on the file, because the file is not what a
+    /// user gets back. Every other ratio in this module's fixtures is `0.5`, which is also what a
+    /// fresh split mints — so before this, a restore that dropped the stored share and re-minted an
+    /// even one would have passed every test here.
+    #[test]
+    fn a_moved_boundary_comes_back_where_it_was_left() {
+        let mut window = win("0", vec![pane(0), pane(1)]);
+        // Not 0.5, and not a round number: a restore that re-minted an even split, or one that
+        // rounded through a percentage, would land somewhere this cannot be mistaken for.
+        let moved = 0.687_5_f32;
+        window.layout = LayoutWire::from(&{
+            let mut tree = crate::LayoutTree::new();
+            tree.append_pane(PaneId(0));
+            tree.append_pane(PaneId(1));
+            let split = tree
+                .divider_on(PaneId(0), crate::SplitDir::Horizontal)
+                .at()
+                .expect("two appended panes are divided horizontally");
+            tree.set_from_wire(
+                crate::with_ratio(&LayoutWire::from(&tree), split, moved)
+                    .expect("the split is there"),
+            )
+            .expect("a re-weighted tree is still well-formed");
+            tree
+        });
+
+        let (registry, _plan) = SessionRegistry::from_snapshot(snap_of("0", vec![window]))
+            .expect("a well-formed arrangement restores");
+        let restored = registry
+            .window("0", "0")
+            .expect("the window came back")
+            .layout()
+            .root()
+            .cloned()
+            .expect("with its arrangement");
+        match restored {
+            crate::LayoutNode::Split { ratio, .. } => assert!(
+                (ratio - moved).abs() < f32::EPSILON,
+                "the stored share came back exactly: {ratio} != {moved}",
+            ),
+            other => panic!("a two-pane window restores as a split, got {other:?}"),
+        }
+    }
+
     /// A stored layout that is not well-formed (here: the same pane twice) is refused as
     /// `SnapshotError::Layout` — the `set_from_wire` validation riding out through `Window::restore`.
     #[test]
