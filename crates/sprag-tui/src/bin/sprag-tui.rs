@@ -251,12 +251,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         &host,
         &tiling,
         screen_area,
-        focus,
-        Clear::Yes,
+        Frame {
+            focus,
+            clear: Clear::Yes,
+            // Nothing is being asked at boot, and the state that would say so is
+            // declared below — where it belongs, one line before the loop that owns it.
+            asking: None,
+        },
         &mut held,
-        // Nothing is being asked at boot, and the state that would say so is declared below —
-        // where it belongs, one line before the loop that owns it.
-        None,
     )?;
 
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
@@ -294,10 +296,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &host,
                                 &tiling,
                                 screen_area,
-                                focus,
-                                Clear::Yes,
+                                Frame {
+                                    focus,
+                                    clear: Clear::Yes,
+                                    asking: asking.as_ref(),
+                                },
                                 &mut held,
-                                asking.as_ref(),
                             )?;
                             continue;
                         }
@@ -310,10 +314,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &host,
                                 &tiling,
                                 screen_area,
-                                focus,
-                                Clear::Yes,
+                                Frame {
+                                    focus,
+                                    clear: Clear::Yes,
+                                    asking: asking.as_ref(),
+                                },
                                 &mut held,
-                                asking.as_ref(),
                             )?;
                             Command::Act(action)
                         }
@@ -362,10 +368,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             screen_area,
-                            focus,
-                            Clear::No,
+                            Frame {
+                                focus,
+                                clear: Clear::No,
+                                asking: asking.as_ref(),
+                            },
                             &mut held,
-                            asking.as_ref(),
                         )?;
                     }
                     // A zoom changes what this client DRAWS without changing the pane set, so it
@@ -386,10 +394,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             screen_area,
-                            focus,
-                            Clear::No,
+                            Frame {
+                                focus,
+                                clear: Clear::No,
+                                asking: asking.as_ref(),
+                            },
                             &mut held,
-                            asking.as_ref(),
                         )?;
                     }
                     // THE WINDOW LEVEL, reached from a key (R305). All three arms share one shape
@@ -434,10 +444,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             screen_area,
-                            focus,
-                            Clear::Yes,
+                            Frame {
+                                focus,
+                                clear: Clear::Yes,
+                                asking: asking.as_ref(),
+                            },
                             &mut held,
-                            asking.as_ref(),
                         )?;
                     }
                     // A DIRECTIONAL move is the daemon's to resolve, so this arm publishes nothing
@@ -456,10 +468,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             screen_area,
-                            focus,
-                            Clear::No,
+                            Frame {
+                                focus,
+                                clear: Clear::No,
+                                asking: asking.as_ref(),
+                            },
                             &mut held,
-                            asking.as_ref(),
                         )?;
                     }
                     // The SWAP's twin of the arm above, and identical for the same reason: the
@@ -475,10 +489,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             screen_area,
-                            focus,
-                            Clear::No,
+                            Frame {
+                                focus,
+                                clear: Clear::No,
+                                asking: asking.as_ref(),
+                            },
                             &mut held,
-                            asking.as_ref(),
                         )?;
                     }
                     // The four ASKING actions are consumed above, where `Ask::of` turns them into a
@@ -502,10 +518,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             screen_area,
-                            focus,
-                            Clear::No,
+                            Frame {
+                                focus,
+                                clear: Clear::No,
+                                asking: asking.as_ref(),
+                            },
                             &mut held,
-                            asking.as_ref(),
                         )?;
                     }
                 }
@@ -559,10 +577,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         &host,
                                         &tiling,
                                         screen_area,
-                                        focus,
-                                        Clear::Yes,
+                                        Frame {
+                                            focus,
+                                            clear: Clear::Yes,
+                                            asking: asking.as_ref(),
+                                        },
                                         &mut held,
-                                        asking.as_ref(),
                                     )?;
                                 }
                             }
@@ -584,10 +604,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             screen_area,
-                            focus,
-                            Clear::No,
+                            Frame {
+                                focus,
+                                clear: Clear::No,
+                                asking: asking.as_ref(),
+                            },
                             &mut held,
-                            asking.as_ref(),
                         )?;
                     }
                     // Pane-LOCAL cells: `pane_at` has already subtracted the rectangle's origin.
@@ -618,10 +640,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                     &host,
                     &tiling,
                     screen_area,
-                    focus,
-                    Clear::Yes,
+                    Frame {
+                        focus,
+                        clear: Clear::Yes,
+                        asking: asking.as_ref(),
+                    },
                     &mut held,
-                    asking.as_ref(),
                 )?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
@@ -646,10 +670,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 &host,
                 &tiling,
                 screen_area,
-                focus,
-                Clear::No,
+                Frame {
+                    focus,
+                    clear: Clear::No,
+                    asking: asking.as_ref(),
+                },
                 &mut held,
-                asking.as_ref(),
             )?;
         }
     }
@@ -717,11 +743,14 @@ fn paint(
     host: &WireHost,
     tiling: &Tiling,
     screen_area: Rect,
-    focus: Option<PaneId>,
-    clear: Clear,
+    frame: Frame<'_>,
     held: &mut Painted,
-    asking: Option<&Asking>,
 ) -> Result<(), Box<dyn Error>> {
+    let Frame {
+        focus,
+        clear,
+        asking,
+    } = frame;
     // The outer terminal's title, refreshed HERE because this is the one function that writes the
     // terminal at all — so every path that repaints also re-titles, and no future caller can add a
     // repaint that forgets to. Before the empty-tiling return: a client whose last pane just closed
@@ -1246,6 +1275,22 @@ fn paint_prompt(
     ));
     screen.flush()?;
     Ok(())
+}
+
+/// What one frame shows beyond the panes themselves — the three facts that are about THIS paint
+/// rather than about the arrangement.
+///
+/// A record because [`paint`] took eight arguments once the prompt row joined it, three of which
+/// were a bare `Option`, a two-state enum and another `Option` in a row: a call site that swapped
+/// two of them would still compile. Named fields cost nothing at eleven call sites and make the
+/// swap unrepresentable.
+struct Frame<'a> {
+    /// The pane the cursor belongs to.
+    focus: Option<PaneId>,
+    /// Whether the screen is cleared first — see [`Clear`].
+    clear: Clear,
+    /// The question this client is asking, drawn last so no repaint can lose it.
+    asking: Option<&'a Asking>,
 }
 
 /// What the loop should do with a key.
