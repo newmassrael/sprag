@@ -3661,6 +3661,13 @@ fn windows(args: Vec<String>) -> io::Result<()> {
 fn new_window(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "new-window")?;
     let name = rest.into_iter().next();
+    // The grammar, parsed with the daemon's own function before the request is built — see
+    // [`rename_window`] for why that is one authority with two callers rather than two authorities.
+    // It is also what keeps the refusal below a single cause.
+    if let Some(name) = &name {
+        sprag_terminal::WindowName::parse(name)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    }
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
     let action_args = match &name {
@@ -3679,8 +3686,9 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
             }
             None => Err(io::Error::other("new-window did not answer with a name")),
         },
-        // The only refusal for an explicitly-named window is a duplicate (the session was
-        // pre-flighted), which surfaces as `Other`.
+        // The only refusal left for an explicitly-named window is a duplicate: the session was
+        // pre-flighted and the name's grammar was checked above, so what surfaces as `Other` here
+        // has one cause.
         Err(error) if error.kind() == io::ErrorKind::Other => {
             let named = name.as_deref().unwrap_or_default();
             Err(io::Error::new(
@@ -3901,6 +3909,13 @@ fn select_sentence(how: SelectHow, ask: SelectAsk, pane: u64) -> String {
 }
 
 /// `rename-window -t SESSION [window] NEW`: rename a window (default: the current one) to NEW.
+///
+/// The name is parsed HERE as well as by the daemon, and that is not a second authority: it is
+/// [`WindowName`](sprag_terminal::WindowName) — the daemon's own function — called by a second
+/// caller, the shape `direction_of` already has. It buys the one thing the wire cannot deliver
+/// while PINION-PR82 is unlanded: a `Rejected` carries no payload, so checking the grammar before
+/// sending is what turns a three-way disjunction into a refusal that names the rule the user broke.
+/// The daemon still parses; nothing here decides.
 fn rename_window(args: Vec<String>) -> io::Result<()> {
     let (session, mut rest) = target_and_rest(args, "rename-window")?;
     let new = rest.pop().ok_or_else(|| {
@@ -3909,6 +3924,8 @@ fn rename_window(args: Vec<String>) -> io::Result<()> {
             "rename-window needs a new name",
         )
     })?;
+    sprag_terminal::WindowName::parse(&new)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     // An optional leading positional names the window to rename; absent ⇒ the current one.
     let window = rest.pop();
     let mut conn = connect(None)?;
@@ -3917,14 +3934,23 @@ fn rename_window(args: Vec<String>) -> io::Result<()> {
         Some(window) => json!({ "window": window, "name": new }),
         None => json!({ "name": new }),
     };
-    scoped_window_action(
+    let answer = scoped_window_action(
         &mut conn,
         &session,
         RENAME_WINDOW_ACTION,
         action_args,
+        // TWO causes, not three: the grammar was checked above, so what is left is a window that
+        // is not there and a name that is already another window's.
         &format!("rename-window: window not found, or {new:?} is already taken"),
     )?;
-    println!("renamed to {new}");
+    // What the DAEMON recorded, never the argument — `rename-session` and `rename-pane` print the
+    // same way for the same reason (a name is trimmed on the way in). The `null` arm is an older
+    // daemon that has the verb and not the answer (`WIRE_PROTOCOL` 8), where the argument is the
+    // best this client can say.
+    match answer.get("name").and_then(Value::as_str) {
+        Some(recorded) => println!("renamed to {recorded}"),
+        None => println!("renamed to {new}"),
+    }
     Ok(())
 }
 

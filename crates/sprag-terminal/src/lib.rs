@@ -35,6 +35,7 @@ pub mod sampled;
 pub mod session_name;
 pub mod snapshot;
 pub mod tiling;
+pub mod window_name;
 pub mod workspace;
 
 pub use activity::{ActivityReading, ActivitySampler, SessionActivity};
@@ -63,6 +64,7 @@ pub use snapshot::{
     snapshot,
 };
 pub use tiling::{Divider, PaneRect, Projection, Rect, Tiling, fit_window, tile, with_ratio};
+pub use window_name::{WindowName, WindowNameError};
 pub use workspace::{
     HistoryLimitSource, Pane, PaneEnvSource, PaneId, PaneInfo, PaneRebirth, Workspace,
 };

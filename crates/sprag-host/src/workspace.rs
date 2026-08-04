@@ -1196,14 +1196,21 @@ impl WorkspaceExternal {
             .get("name")
             .and_then(Value::as_str)
             .ok_or(InvokeError::TypeMismatch)?;
-        lock(&self.registry)
+        let recorded = lock(&self.registry)
             .rename_window(self.scope.session(), &window, new)
             .map_err(|error| {
                 tracing::debug!(target: "sprag_host", %error, "refused to rename a window");
                 InvokeError::Rejected
             })?;
         self.announce();
-        Ok(IntrospectValue::Json(Value::Null))
+        // The name that was RECORDED, not the one that was sent — `rename_pane`'s rule (R295) and
+        // `rename_session`'s (R302) met a third time, and the last of the three to get it. A window
+        // name is trimmed and validated on the way in ([`WindowName`](sprag_terminal::WindowName)),
+        // so a caller that echoed its own argument would tell a user the window is called something
+        // it is not. R306's prompt paints this answer.
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ "name": recorded }),
+        ))
     }
 
     /// `rename_session {name}` action: rename THIS request's session — tmux `rename-session`.
@@ -5188,20 +5195,40 @@ mod tests {
         );
     }
 
-    /// `rename_window` renames the CURRENT window by default (`window` absent ⇒ the scope's), and
-    /// a rename onto a name another window holds is refused.
+    /// `rename_window` renames the CURRENT window by default (`window` absent ⇒ the scope's),
+    /// answers the name it RECORDED, and refuses a rename onto a name another window holds or one
+    /// that breaks the grammar.
     #[test]
     fn rename_window_renames_the_current_by_default_and_refuses_a_duplicate() {
         let reg = registry();
         let (mut ext, _r) = control(&reg); // scope window "0"
 
-        // window absent ⇒ the current window ("0") is renamed.
+        // window absent ⇒ the current window ("0") is renamed. The argument is PADDED and the
+        // answer is not: what comes back is what the registry recorded, which is the whole reason
+        // this answer exists (R306) and the discriminator against a handler that echoed its input.
         assert_eq!(
             ext.invoke(
                 RENAME_WINDOW_ACTION,
-                IntrospectValue::Json(json!({"name": "main"}))
+                IntrospectValue::Json(json!({"name": "  main  "}))
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            Ok(IntrospectValue::Json(json!({"name": "main"}))),
+        );
+        // The grammar is the registry's, and a blank name is refused where it used to be stored —
+        // the LOUD half of the protocol bump.
+        assert_eq!(
+            ext.invoke(
+                RENAME_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"name": "   "}))
+            ),
+            Err(InvokeError::Rejected),
+        );
+        assert_eq!(
+            ext.invoke(
+                RENAME_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"name": "a\nb"}))
+            ),
+            Err(InvokeError::Rejected),
+            "a newline would forge a row of every listing that prints a window name",
         );
         lock(&reg).new_window("0", Some("logs")).unwrap();
         // Renaming "logs" onto the taken name "main" is refused.

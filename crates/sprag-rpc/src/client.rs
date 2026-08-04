@@ -386,7 +386,18 @@ impl AttachAsk {
 ///   is the LOUD half. The quiet half is the answer: `select_window` now answers the window it
 ///   landed on where it used to answer `null`, so a new client reading that answer against an old
 ///   daemon would learn nothing about where it went.
-pub const WIRE_PROTOCOL: u32 = 8;
+/// * **9** — a WINDOW name has a grammar, and `rename_window` answers the name it RECORDED
+///   (R306). The FIRST bump caused by a REFUSAL rather than by an argument or an answer, and the
+///   two directions fail differently, which is why both were measured:
+///   an old CLIENT against a new daemon is refused where it used to succeed — `rename-window ""`
+///   set an empty name, and a name with a newline in it forged a row of every listing that printed
+///   it; that half is LOUD and is the point of the change. A new CLIENT against an old daemon is
+///   the quiet half: the prompt behind `prefix ,` paints the recorded name off this answer, and an
+///   old daemon answers `null`, so the client would report nothing about a rename that happened.
+///   The grammar itself the client can check on its own — it calls the same `WindowName` the
+///   daemon does (named rather than linked: this crate does not depend on `sprag-terminal`) — but
+///   what a daemon RECORDED is only ever the daemon's to say.
+pub const WIRE_PROTOCOL: u32 = 9;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

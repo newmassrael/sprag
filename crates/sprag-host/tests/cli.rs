@@ -2376,6 +2376,65 @@ fn a_session_name_is_an_address_and_the_grammar_holds_at_both_ends() {
     );
 }
 
+/// The same grammar one level down (R306): a WINDOW name is an address too, and until this round it
+/// was the only one of the three with no rules at all.
+///
+/// The sibling above is the model, and the two differences are the point. The RECORDED name is
+/// asserted from the printed line — a verb that echoed its argument would print `  main  ` — which
+/// is the half `rename-window` could not report before, since the action answered `null`
+/// (`WIRE_PROTOCOL` 8 → 9). And the refusal is asserted to name the RULE rather than the wire's
+/// two-way disjunction, because the CLI parses with the daemon's own function before it sends.
+#[test]
+fn a_window_name_is_an_address_and_the_grammar_holds_at_both_ends() {
+    let (_host, sock) = spawn_host();
+
+    let renamed = sprag(&sock, &["rename-window", "-t", "0", "  main  "]);
+    assert!(renamed.ok, "a padded name is trimmed: {}", renamed.stderr);
+    assert_eq!(
+        renamed.stdout.trim(),
+        "renamed to main",
+        "the DAEMON's recorded name, not the argument this verb was handed",
+    );
+
+    for hostile in ["", "   ", "a\nb", "x\u{1b}[31m", &"z".repeat(81)] {
+        let refused = sprag(&sock, &["rename-window", "-t", "0", "main", hostile]);
+        assert!(
+            !refused.ok,
+            "a window cannot be renamed to {hostile:?}: {}",
+            refused.stdout,
+        );
+        assert!(
+            refused.stderr.contains("a window name"),
+            "the refusal names the rule that was broken: {:?}",
+            refused.stderr,
+        );
+    }
+
+    // The same grammar at the CREATE end, which is the other way a name enters over this CLI.
+    for hostile in ["", "a\nb"] {
+        let refused = sprag(&sock, &["new-window", "-t", "0", hostile]);
+        assert!(
+            !refused.ok,
+            "a window cannot be CREATED as {hostile:?}: {}",
+            refused.stdout,
+        );
+    }
+
+    // THE CONTROL — all digits is allowed, for the session name's reason one level down: the
+    // registry MINTS `0`, `1`, `2`, so a grammar that refused digits would refuse its own windows.
+    assert!(
+        sprag(&sock, &["rename-window", "-t", "0", "main", "7"]).ok,
+        "an all-digit window name is legal: this session's boot window is called `0`",
+    );
+    let listed = sprag(&sock, &["windows", "-t", "0"]);
+    assert_eq!(
+        listed.stdout.lines().count(),
+        1,
+        "and the listing is still ONE line for one window: {:?}",
+        listed.stdout,
+    );
+}
+
 /// A window RENAME and a pane MOVE reach a reader as what they are — one event each, carrying the
 /// fact no later read could recover.
 ///

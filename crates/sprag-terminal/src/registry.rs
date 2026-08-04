@@ -52,6 +52,7 @@ use crate::snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot,
     SnapshotError,
 };
+use crate::window_name::{WindowName, WindowNameError};
 use crate::workspace::{HistoryLimitSource, Pane, PaneEnvSource, Workspace};
 
 /// A session's IDENTITY — what stays put when its NAME moves.
@@ -896,6 +897,13 @@ pub enum SessionError {
     /// The name breaks the grammar an ADDRESS has to satisfy ([`SessionName`]) — carried whole so
     /// an in-process caller can say WHICH rule rather than listing all of them.
     Malformed(SessionNameError),
+    /// A WINDOW name breaks its own grammar ([`WindowName`]) — the sibling of
+    /// [`Malformed`](Self::Malformed) one level down.
+    ///
+    /// A separate variant rather than a shared "bad name" arm, because the two rendered sentences
+    /// name different things: a caller that collapsed them would tell a user their SESSION name was
+    /// blank while they were renaming a window.
+    MalformedWindow(WindowNameError),
 }
 
 impl std::fmt::Display for SessionError {
@@ -904,6 +912,7 @@ impl std::fmt::Display for SessionError {
             Self::Duplicate(name) => write!(f, "a session named {name:?} already exists"),
             Self::Unknown(name) => write!(f, "no session named {name:?}"),
             Self::Malformed(error) => error.fmt(f),
+            Self::MalformedWindow(error) => error.fmt(f),
         }
     }
 }
@@ -932,6 +941,10 @@ pub enum PaneMoveError {
     /// `break-pane` with an explicit new-window name already taken in the session — a name is an
     /// address, so it must stay unique.
     DuplicateWindow(String),
+    /// `break-pane` with an explicit new-window name that breaks [`WindowName`]'s grammar — carried
+    /// whole so an in-process caller can say WHICH rule, exactly as
+    /// [`SessionError::MalformedWindow`] does for the other two doors.
+    MalformedWindow(WindowNameError),
     /// `join-pane` with the source and destination window being the SAME one — a no-op move.
     SameWindow(String),
     /// `move-pane` with the pane and the target being the SAME pane. Refused rather than answered
@@ -948,6 +961,7 @@ impl std::fmt::Display for PaneMoveError {
             Self::UnknownPane(id) => write!(f, "no pane with id {} in that window", id.0),
             Self::LastPane => write!(f, "cannot break the only pane in a window"),
             Self::DuplicateWindow(name) => write!(f, "a window named {name:?} already exists"),
+            Self::MalformedWindow(error) => error.fmt(f),
             Self::SameWindow(name) => write!(f, "source and destination window are both {name:?}"),
             Self::SamePane(id) => write!(f, "cannot place pane {} beside itself", id.0),
         }
@@ -1220,16 +1234,23 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`SessionError::Duplicate`] if an explicit `name` is already a window of this session —
-    /// a name is how a window is addressed, so two of them would make the address ambiguous.
-    /// The allocated path cannot fail: it picks a name free by construction.
+    /// [`SessionError::MalformedWindow`] if an explicit `name` breaks the grammar an address has to
+    /// satisfy ([`WindowName`]), and [`SessionError::Duplicate`] if it is already a window of this
+    /// session — a name is how a window is addressed, so two of them would make the address
+    /// ambiguous. The allocated path cannot fail: it picks a name free by construction, and the
+    /// integer names it mints are exactly what [`WindowName`] deliberately allows.
+    ///
+    /// The grammar is checked BEFORE the duplicate, so a caller wrong in two ways is told about
+    /// the one it can act on: a name that cannot be a window's is not made usable by picking a
+    /// free one. [`rename_window`](Self::rename_window) orders it the same way.
     pub fn new_window(&mut self, name: Option<&str>) -> Result<String, SessionError> {
         let name = match name {
             Some(name) => {
-                if self.windows.iter().any(|w| w.name == name) {
-                    return Err(SessionError::Duplicate(name.to_owned()));
+                let name = WindowName::parse(name).map_err(SessionError::MalformedWindow)?;
+                if self.windows.iter().any(|w| w.name == name.as_str()) {
+                    return Err(SessionError::Duplicate(name.into()));
                 }
-                name.to_owned()
+                name.into()
             }
             None => self.lowest_free_window_name(),
         };
@@ -1292,24 +1313,36 @@ impl Session {
         self.windows[self.current_window].name.as_str()
     }
 
-    /// Rename the window named `name` to `new` — tmux `rename-window`.
+    /// Rename the window named `name` to `new` — tmux `rename-window`. Answers the name that was
+    /// RECORDED.
+    ///
+    /// The answer is the recorded name and never the argument, which is
+    /// [`set_pane_name`](crate::Workspace::set_pane_name) and
+    /// [`rename_session`](SessionRegistry::rename_session)'s rule met a third time: a name is
+    /// trimmed on the way in, so `" build "` lands as `build`, and a caller that echoed its own
+    /// argument would tell a user the window is called something it is not. R306 made that
+    /// load-bearing rather than tidy — the prompt behind `prefix ,` paints what came back.
     ///
     /// # Errors
     ///
-    /// [`SessionError::Unknown`] if no window carries `name`; [`SessionError::Duplicate`] if
-    /// `new` is already another window's name (a name is an address, so it must stay unique).
-    /// Renaming a window to the name it already has is a no-op, not a duplicate.
-    pub fn rename_window(&mut self, name: &str, new: &str) -> Result<(), SessionError> {
+    /// [`SessionError::Unknown`] if no window carries `name`;
+    /// [`SessionError::MalformedWindow`] if `new` breaks [`WindowName`]'s grammar;
+    /// [`SessionError::Duplicate`] if it is already another window's name (a name is an address, so
+    /// it must stay unique). Renaming a window to the name it already has is a no-op, not a
+    /// duplicate — and so is renaming it to a padded spelling of that name, since the two trim to
+    /// the same address.
+    pub fn rename_window(&mut self, name: &str, new: &str) -> Result<String, SessionError> {
         let idx = self
             .windows
             .iter()
             .position(|w| w.name == name)
             .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
-        if new != name && self.windows.iter().any(|w| w.name == new) {
-            return Err(SessionError::Duplicate(new.to_owned()));
+        let new = WindowName::parse(new).map_err(SessionError::MalformedWindow)?;
+        if new.as_str() != name && self.windows.iter().any(|w| w.name == new.as_str()) {
+            return Err(SessionError::Duplicate(new.into()));
         }
-        self.windows[idx].name = new.to_owned();
-        Ok(())
+        self.windows[idx].name = new.as_str().to_owned();
+        Ok(new.into())
     }
 
     /// Pin the size of the window named `name`, or un-pin it with `None` — tmux `resize-window`.
@@ -1369,7 +1402,8 @@ impl Session {
     /// # Errors
     ///
     /// [`PaneMoveError::UnknownPane`] if no window of the session holds `pane`;
-    /// [`PaneMoveError::DuplicateWindow`] if an explicit `new_name` is taken;
+    /// [`PaneMoveError::MalformedWindow`] if an explicit `new_name` breaks [`WindowName`]'s
+    /// grammar; [`PaneMoveError::DuplicateWindow`] if it is taken;
     /// [`PaneMoveError::LastPane`] if the source window tiles only that one pane (breaking it would
     /// just rename the window — tmux refuses the same).
     pub fn break_pane(
@@ -1380,13 +1414,15 @@ impl Session {
         let widx = self
             .window_index_of_pane(pane)
             .ok_or(PaneMoveError::UnknownPane(pane))?;
-        // Resolve the new window name (and reject a duplicate) BEFORE touching the pane.
+        // Resolve the new window name (grammar first, then the duplicate — `new_window`'s order,
+        // for its reason) BEFORE touching the pane.
         let name = match new_name {
             Some(n) => {
-                if self.windows.iter().any(|w| w.name == n) {
-                    return Err(PaneMoveError::DuplicateWindow(n.to_owned()));
+                let n = WindowName::parse(n).map_err(PaneMoveError::MalformedWindow)?;
+                if self.windows.iter().any(|w| w.name == n.as_str()) {
+                    return Err(PaneMoveError::DuplicateWindow(n.into()));
                 }
-                n.to_owned()
+                n.into()
             }
             None => self.lowest_free_window_name(),
         };
@@ -2378,18 +2414,19 @@ impl SessionRegistry {
     }
 
     /// Rename the window named `name` of the session named `session` to `new` — tmux
-    /// `rename-window`. See [`Session::rename_window`].
+    /// `rename-window`. Answers the name that was RECORDED. See [`Session::rename_window`].
     ///
     /// # Errors
     ///
-    /// [`SessionError::Unknown`] for an unknown session OR window; [`SessionError::Duplicate`]
-    /// if `new` is already another window's name.
+    /// [`SessionError::Unknown`] for an unknown session OR window;
+    /// [`SessionError::MalformedWindow`] if `new` breaks [`WindowName`]'s grammar;
+    /// [`SessionError::Duplicate`] if it is already another window's name.
     pub fn rename_window(
         &mut self,
         session: &str,
         name: &str,
         new: &str,
-    ) -> Result<(), SessionError> {
+    ) -> Result<String, SessionError> {
         self.session_named_mut(session)?.rename_window(name, new)
     }
 
@@ -3819,6 +3856,81 @@ mod tests {
             reg.new_window("ghost", None),
             Err(SessionError::Unknown(name)) if name == "ghost",
         ));
+    }
+
+    /// The grammar ([`WindowName`]) is enforced at all THREE doors a window name enters by, and the
+    /// name that comes back is the RECORDED one.
+    ///
+    /// One test for the three because the point is that there is no fourth door: a name that
+    /// reached the registry got here through `new_window`, `rename_window` or `break_pane`, and a
+    /// door added later without a parse is what this asserts against. The registry MINTS integer
+    /// names, so the digits case is checked here too — a grammar that refused them would refuse
+    /// every window this type creates.
+    #[test]
+    fn every_door_a_window_name_enters_by_parses_it_and_answers_what_it_recorded() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+
+        assert_eq!(
+            reg.new_window(&default, Some("  build  ")).unwrap(),
+            "build",
+            "new-window trims and answers what it stored",
+        );
+        assert_eq!(
+            reg.rename_window(&default, "build", "  main  ").unwrap(),
+            "main",
+            "a rename answers the RECORDED name, not the argument it was sent",
+        );
+        assert_eq!(
+            reg.session(&default)
+                .unwrap()
+                .windows()
+                .iter()
+                .filter(|w| w.name() == "main")
+                .count(),
+            1,
+            "and the padded spelling is not a second window",
+        );
+
+        for (door, refused) in [
+            ("new", reg.new_window(&default, Some("  ")).unwrap_err()),
+            (
+                "rename",
+                reg.rename_window(&default, "main", "").unwrap_err(),
+            ),
+        ] {
+            assert_eq!(
+                refused,
+                SessionError::MalformedWindow(WindowNameError::Empty),
+                "the {door} door refuses a blank name and says which rule",
+            );
+        }
+        assert_eq!(
+            reg.rename_window(&default, "main", "a\u{1b}[31m")
+                .unwrap_err(),
+            SessionError::MalformedWindow(WindowNameError::Control),
+            "an escape would be interpreted by whoever reads a listing",
+        );
+        assert_eq!(
+            reg.rename_window(&default, "main", "  main  ").unwrap(),
+            "main",
+            "a window renamed to a padded spelling of its own name is a no-op, not a duplicate",
+        );
+
+        // The THIRD door. A break needs a window with two panes to take one out of.
+        let ws = reg.workspace_of(&default).expect("a current window");
+        let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let _b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        assert_eq!(
+            reg.break_pane(&default, a, Some("x\ny")).unwrap_err(),
+            PaneMoveError::MalformedWindow(WindowNameError::Control),
+            "break-pane names a NEW window, so it is the same door under another verb",
+        );
+        assert_eq!(
+            reg.break_pane(&default, a, Some("  logs  ")).unwrap(),
+            "logs",
+            "and it answers the recorded name too",
+        );
     }
 
     /// `select-window` moves the current window (session state — every attached client
