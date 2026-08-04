@@ -94,9 +94,9 @@ use sprag_host::wire::{
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
+    SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SwapAsk, SwapHow,
+    TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
     project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
@@ -615,6 +615,32 @@ fn query_activity(conn: &mut HostConn) -> io::Result<sprag_terminal::ActivityRea
     })
 }
 
+/// The NAME of the session this client is viewing, mirrored — what it PAINTS where its scope is now
+/// an attachment rather than a name. Shared between the poll thread (which refreshes it) and the
+/// paint path (which reads it), under one lock, like every other mirror here.
+type SessionMirror = Arc<Mutex<String>>;
+
+/// Lock the mirrored session name, poison-tolerant (see [`lock_cache`] for the discipline).
+fn lock_session(session: &Mutex<String>) -> MutexGuard<'_, String> {
+    session.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Read the name of the session this connection's requests are scoped to — the ONE place
+/// [`SESSION_SLOT`] is queried, shared by the boot read, the poll thread's refresh and a switch's
+/// re-boot.
+fn query_session(conn: &mut HostConn) -> io::Result<String> {
+    read_slot(conn, mux_action_path(SESSION_SLOT))
+}
+
+/// Replace the mirrored session name — the ONE place it is written.
+///
+/// Unconditional, like [`store_windows`]: the name carries no revision, so a brief backward move
+/// (two wakes racing a rename) heals on the next one, and the alternative — guessing which of two
+/// answers is newer — is how a mirror comes to hold a name the daemon never had.
+fn store_session(session: &SessionMirror, name: String) {
+    *lock_session(session) = name;
+}
+
 /// Announce `conn`'s CLIENT id to the daemon and agree on the wire's SHAPE
 /// ([`HostConn::handshake`]) — the group key a client's several connections share, plus the check
 /// that this build and that daemon speak the same wire.
@@ -629,13 +655,67 @@ fn shake_hands(conn: &mut HostConn, client_id: &str) -> io::Result<()> {
 }
 
 /// Declare (or switch — tmux `switch-client`) this client's ATTACHED session to the one `conn` is
-/// scoped to (`client/attach`, R-PR67). The session rides the connection's scope, so no arg is
-/// needed; the daemon attributes the attach to the connection's client via its prior [`shake_hands`].
-/// BEST-EFFORT — like [`send_size`] and unlike [`shake_hands`]: what it drives is the sidebar's
-/// viewer badge, so a daemon that refuses it costs a count, not a correct reading.
-fn send_attach(conn: &mut HostConn) {
-    if let Err(error) = conn.call(CLIENT_ATTACH_METHOD, json!({})) {
-        tracing::debug!(target: "sprag_gui::wire", %error, "client/attach failed; viewer badge disabled");
+/// scoped to (`client/attach`, R-PR67), reporting whether the daemon took it. The session rides
+/// the connection's NAME scope, so no arg is needed; the daemon attributes the attach to the
+/// connection's client via its prior [`shake_hands`].
+///
+/// Still BEST-EFFORT — like [`send_size`] and unlike [`shake_hands`] — but the answer is no longer
+/// discardable, and that is what the return value is for. A successful attach is what makes
+/// [`HostConn::scope_to_attached`] legal on this client's connections; without one they must keep
+/// scoping by NAME, which is a worse address ([`scope_to_view`]) but the only one that still works.
+/// So a daemon that refuses the attach costs a viewer count and a rename this client can follow —
+/// not a correct reading.
+fn send_attach(conn: &mut HostConn) -> bool {
+    match conn.call(CLIENT_ATTACH_METHOD, json!({})) {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::debug!(
+                target: "sprag_gui::wire",
+                %error,
+                "client/attach failed; viewer badge disabled and this client's reads stay \
+                 name-scoped, so a rename of its session will detach it",
+            );
+            false
+        }
+    }
+}
+
+/// Attach `conn`'s client to `session` and then move `conn`'s own scope OFF that name and onto the
+/// ATTACHMENT — the ONE sequence a display client's connection goes through, at boot and at every
+/// switch, so neither can drift from the other.
+///
+/// The order is the whole content: you must NAME what you attach to (an attachment is a pointer,
+/// and a pointer has to be aimed at something), and from then on the name is the wrong address to
+/// keep sending. A `rename-session` retires it — the daemon then refuses this client, which reads
+/// the refusal as "my session is gone" and leaves a session that is alive; and once a NEW session
+/// takes the freed name, the same read SUCCEEDS against a stranger's panes. Both measured at R303.
+///
+/// Returns whether the connection ended up on the attached scope. `false` means the attach was
+/// refused and `conn` is left NAME-scoped, deliberately: that is what this client did before the
+/// attached scope existed, so a daemon that cannot attach degrades to the old behaviour rather
+/// than to no behaviour.
+fn attach_and_follow(conn: &mut HostConn, session: &str) -> bool {
+    conn.scope_to(session);
+    let attached = send_attach(conn);
+    if attached {
+        conn.scope_to_attached();
+    }
+    attached
+}
+
+/// Scope `conn` the way this client's OTHER connections are scoped — to the attachment when this
+/// client has one, else to `session` by name.
+///
+/// A client's several connections must address ONE session, and only the request connection sends
+/// `client/attach`; the rest inherit the attachment through the `conn -> client -> session` map by
+/// saying hello with the same client id. So the choice here is not "does THIS connection have an
+/// attachment" but "did this CLIENT attach", which is what `attached` carries — and getting that
+/// wrong in either direction is a poll thread reading a different session than the paint path.
+fn scope_to_view(conn: &mut HostConn, session: &str, attached: bool) {
+    if attached {
+        conn.scope_to_attached();
+    } else {
+        conn.scope_to(session);
     }
 }
 
@@ -847,12 +927,21 @@ pub struct WireHost {
     /// connection ([`shake_hands`]) and used to attach ([`send_attach`]) on boot and each switch;
     /// minted once per process ([`new_gui_client_id`]). A lifecycle token, not identity.
     client_id: String,
-    /// The session this client is CURRENTLY attached to — a client-local fact (the wire's
-    /// per-session `attached` COUNT is a different thing: how many clients view each session, not
-    /// which one THIS client is on). Read to highlight the switcher's current row and to no-op a switch to
-    /// the same session; re-pointed by [`switch_session`](WireHost::switch_session). `RefCell`
-    /// because `WireHost` is UI-thread-only.
-    session: RefCell<String>,
+    /// The NAME of the session this client is currently viewing — MIRRORED from the daemon
+    /// ([`SESSION_SLOT`]), not remembered.
+    ///
+    /// Read to highlight the switcher's current row, to mark the palette's current session, to walk
+    /// next/previous, and to title `sprag-tui`'s terminal. Re-pointed by
+    /// [`switch_session`](WireHost::switch_session) — and REFRESHED BY THE POLL THREAD, which is the
+    /// part that has to be a mirror: this client no longer addresses its session by name
+    /// ([`HostConn::scope_to_attached`]), so a `rename-session` moves it underneath and nothing the
+    /// client does would ever notice. **Measured at R303**: the terminal title stayed `sprag: alpha`
+    /// for the whole life of a client the daemon was reporting on `production`.
+    ///
+    /// `Arc<Mutex<_>>` rather than the `RefCell` it was, for exactly that reason: the writer is the
+    /// poll thread and the readers are the paint path, the same arrangement as every other mirror
+    /// here.
+    session: SessionMirror,
     /// The host endpoint this client connect-or-spawned on — kept so a session switch can open a
     /// FRESH poll connection to the same daemon (the request conn is re-scoped in place; the poll
     /// thread is torn down and a new one spawned on a new connection).
@@ -1418,13 +1507,16 @@ impl WireHost {
     ) -> io::Result<Self> {
         let endpoint = spec.endpoint;
         let (cols, rows) = (spec.cols, spec.rows);
-        conn.scope_to(session.clone());
         // R-PR67: this GUI is one attached CLIENT across its two connections — the id was minted
         // and announced by the handshake in `boot`, before anything was created. Attaching it to
         // the session makes the daemon count this window as a viewer (the sidebar badge), and is
         // done before the `since0` baseline below so the attach's own scene bump is folded into
         // the baseline rather than becoming a spurious first poll wake.
-        send_attach(&mut conn);
+        //
+        // R303: and it is what every read after it is scoped BY. `attach_and_follow` names the
+        // session to attach and then drops the name — this client asks for "the session I am
+        // viewing" from here on, so a rename of it moves this client with it instead of refusing it.
+        let attached = attach_and_follow(&mut conn, &session);
         let seeds = boot_panes(&mut conn, spec.argv, cols, rows, spec.panes, created)?;
 
         // Subscribe-then-snapshot: read the change-notification baseline BEFORE the
@@ -1474,7 +1566,7 @@ impl WireHost {
             activity,
             conn: RefCell::new(conn),
             client_id: client_id.clone(),
-            session: RefCell::new(session.clone()),
+            session: Arc::new(Mutex::new(session.clone())),
             endpoint: endpoint.clone(),
             boot_dims: (cols, rows),
             lost_session: Arc::new(AtomicBool::new(false)),
@@ -1486,9 +1578,11 @@ impl WireHost {
         };
         // The poll thread's own connection — a parked `scene/waitFor` on it never blocks the
         // request connection above (separate host handler threads). Scoped to the SAME session, so
-        // its `waitFor`/`revision`/re-queries watch the client's own session and never another's.
+        // its `waitFor`/`revision`/re-queries watch the client's own session and never another's —
+        // which after R303 means the same ATTACHMENT, not merely the same name. It attaches nothing
+        // itself; saying hello with this client's id is what puts it on the same view.
         let mut poll_conn = HostConn::connect(endpoint.path(), CONNECT_TIMEOUT)?;
-        poll_conn.scope_to(session);
+        scope_to_view(&mut poll_conn, &session, attached);
         // The poll connection is a SECOND connection of the SAME client: announce the same id so the
         // daemon groups both under one attached client (not two). Only the request conn attaches.
         shake_hands(&mut poll_conn, &client_id)?;
@@ -1560,6 +1654,7 @@ impl WireHost {
             Arc::clone(&self.windows),
             Arc::clone(&self.sessions),
             Arc::clone(&self.activity),
+            Arc::clone(&self.session),
             Arc::clone(&self.on_change),
             Arc::clone(&self.quit),
             Arc::new(detach_on_destroy),
@@ -1609,15 +1704,20 @@ impl WireHost {
             session_list,
             activity,
             since0,
+            attached,
         ) = {
             let mut conn = self.conn.borrow_mut();
-            conn.scope_to(session.to_owned());
             // R-PR67: re-attach this client to the session it just switched to (tmux
             // `switch-client`), moving its viewer count off the old session and onto this one. Before
             // the `since0` baseline, so the attach's scene bump is in the new poll's baseline rather
             // than a spurious self-wake. The old poll conn was already stopped by the caller, so its
             // `on_disconnect` fired; the request conn kept this client present across the switch.
-            send_attach(&mut conn);
+            //
+            // R303: the same `attach_and_follow` boot uses, so a switched-to session is addressed
+            // exactly as a booted-into one — every read below is already on the attachment. A switch
+            // that left this connection name-scoped would be a client that follows a rename until
+            // the user switches sessions and then quietly stops.
+            let attached = attach_and_follow(&mut conn, session);
             let since0 = read_revision(&mut conn)?;
             let seeds = query_panes(&mut conn)?;
             let fetched = fetch_frames(&mut conn, &pane_ids_of(&seeds));
@@ -1641,6 +1741,7 @@ impl WireHost {
                 session_list,
                 activity,
                 since0,
+                attached,
             )
         };
         // A fresh poll connection scoped to the target (its own host handler thread) — connected
@@ -1652,7 +1753,7 @@ impl WireHost {
         // taught out of ([`HostEndpoint::context`](sprag_rpc::HostEndpoint::context)).
         let mut poll_conn = HostConn::connect(self.endpoint.path(), CONNECT_TIMEOUT)
             .map_err(|error| self.endpoint.context(&error))?;
-        poll_conn.scope_to(session.to_owned());
+        scope_to_view(&mut poll_conn, session, attached);
         // The fresh poll conn is a new connection of the SAME client (the old one was torn down by
         // the switch): re-announce the shared id so the daemon keeps grouping both under one client.
         shake_hands(&mut poll_conn, &self.client_id)?;
@@ -1672,7 +1773,7 @@ impl WireHost {
         if let Some(reading) = activity {
             store_activity(&self.activity, reading);
         }
-        *self.session.borrow_mut() = session.to_owned();
+        store_session(&self.session, session.to_owned());
         // Record the just-attached session as most-recently-used, for a `detach-on-destroy off`
         // switch to walk (the current session lands at the MRU front, its predecessor next).
         push_mru(&mut self.mru.borrow_mut(), session);
@@ -2250,7 +2351,7 @@ impl HostClient for WireHost {
     /// The session this client is attached to — a client-local fact (the wire carries no
     /// "attached" marker), re-pointed by [`switch_session`](HostClient::switch_session).
     fn current_session(&self) -> String {
-        self.session.borrow().clone()
+        lock_session(&self.session).clone()
     }
 
     /// Switch this client to the session named `name` IN PLACE (tmux `switch-client`): stop the
@@ -2266,10 +2367,10 @@ impl HostClient for WireHost {
     /// A per-click gesture, not a per-frame path, and the daemon is local; the broader fix (a
     /// `HostConn` read deadline) is a `WireHost`-wide concern, not this seam's.
     fn switch_session(&self, name: &str) {
-        if name == self.session.borrow().as_str() {
+        if name == lock_session(&self.session).as_str() {
             return;
         }
-        let previous = self.session.borrow().clone();
+        let previous = lock_session(&self.session).clone();
         // Tear the current poll thread down BEFORE re-pointing anything: joined first, it cannot
         // race the mirror swap. `spawn_poll_for` (inside `attach_in_place`) installs the replacement.
         // Bind `take()` to a local FIRST so the `self.poll` borrow is released before the blocking
@@ -2349,7 +2450,7 @@ impl HostClient for WireHost {
             &mux_action_path(KILL_SESSION_ACTION),
             json!({ "name": name }),
         );
-        let is_own = name == self.session.borrow().as_str();
+        let is_own = name == lock_session(&self.session).as_str();
         // For an OWN kill under a switch policy, pick the successor NOW — BEFORE the kill removes
         // `name` from the list, so `next`/`previous` resolve against the list the user sees. `None`
         // means detach (the `on` default, or `name` is the last session). A kill of ANOTHER session
@@ -2415,7 +2516,7 @@ impl HostClient for WireHost {
     /// same accepted live-smoke gap the session-sidebar rounds carry.
     fn reconcile_lost_session(&self) {
         if self.lost_session.swap(false, Ordering::AcqRel) {
-            let me = self.session.borrow().clone();
+            let me = lock_session(&self.session).clone();
             let successor = destroy_successor(
                 detach_on_destroy(),
                 &self.sessions(),
@@ -2434,7 +2535,7 @@ impl HostClient for WireHost {
     /// client has visited no other surviving session (a fresh client that never switched, or all its
     /// prior sessions are gone) — matching tmux, which also no-ops with no last session.
     fn switch_to_last_session(&self) {
-        let current = self.session.borrow().clone();
+        let current = lock_session(&self.session).clone();
         // Resolve into a local so the `mru` borrow is released before `switch_session` (which
         // re-borrows `mru` mutably via `attach_in_place`'s `push_mru`).
         let last = mru_live_other(&self.mru.borrow(), &self.sessions(), &current);
@@ -3562,8 +3663,8 @@ fn merge_panes(
 ///
 /// Fails if the poll thread cannot be spawned (matching `spawn_or_attach`'s contract
 /// rather than panicking inside it).
-// The poll thread's inputs: its own connection, the FOUR shared mirrors it refreshes (cache /
-// layout / windows / sessions), the repaint + quit sinks, the destroy `policy` + the `lost_session`
+// The poll thread's inputs: its own connection, the shared mirrors it refreshes (cache / layout /
+// windows / sessions / activity / the session NAME), the repaint + quit sinks, the destroy `policy` + the `lost_session`
 // flag it raises for an out-of-band session kill under a switch policy, the stop flag, and the
 // subscribe baseline. Well over clippy's default limit — bundling the four `Arc<Mutex<_>>` mirrors
 // into a struct would ripple through every `WireHost` method that reads one, a churn out of
@@ -3576,6 +3677,7 @@ fn spawn_poll(
     windows: WindowsMirror,
     sessions: SessionsMirror,
     activity: ActivityMirror,
+    session: SessionMirror,
     on_change: Arc<dyn Fn() + Send + Sync>,
     quit: Arc<dyn QuitSink>,
     policy: Arc<dyn Fn() -> DetachOnDestroy + Send + Sync>,
@@ -3612,6 +3714,23 @@ fn spawn_poll(
                     break;
                 }
                 since = response["revision"].as_u64().unwrap_or(since);
+                // What this client's session is CALLED, re-read before anything it labels. Its
+                // scope is an attachment, so a `rename-session` moves this client silently and by
+                // design; the name is the one thing that has to notice, because it is what the
+                // sidebar highlights, the palette marks, the next/previous walk indexes, and
+                // `sprag-tui` puts in the terminal's title bar. BEST-EFFORT, like the activity
+                // sample and unlike the window list: a wake that cannot read it keeps the last-known
+                // name, which is a stale label on a working client — the same degradation, not a
+                // reason to stop painting. A definitive failure is caught by the window read below,
+                // which is not best-effort.
+                match query_session(&mut conn) {
+                    Ok(name) => store_session(&session, name),
+                    Err(error) => tracing::debug!(
+                        target: "sprag_gui::wire",
+                        %error,
+                        "session-name re-read failed this wake; keeping the last-known name",
+                    ),
+                }
                 // Re-read the window list FIRST each wake, so a new / killed / renamed / selected
                 // window (this client's or another attached one's) reaches the tab strip — AND so
                 // the current window is known before the layout store, which it tags: a switch
@@ -4315,6 +4434,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(String::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4395,6 +4515,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(String::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4478,6 +4599,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(String::new())),
             on_change,
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4537,6 +4659,7 @@ mod tests {
                 Arc::new(Mutex::new(Vec::new())),
                 Arc::new(Mutex::new(Vec::new())),
                 Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(String::new())),
                 on_change,
                 Arc::clone(&quit) as Arc<dyn QuitSink>,
                 Arc::new(move || policy),
@@ -4583,6 +4706,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(String::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Next),
@@ -4630,6 +4754,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(String::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Next),
@@ -4700,6 +4825,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(String::new())),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
