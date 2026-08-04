@@ -42,7 +42,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
-use crate::layout::{LayoutError, LayoutTree, LayoutWire, LeafHome, PaneDir, SplitDir, SplitSide};
+use crate::layout::{
+    LayoutError, LayoutTree, LayoutWire, LeafHome, PaneDir, PaneStep, SplitDir, SplitSide,
+};
 use crate::snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot,
     SnapshotError,
@@ -1403,7 +1405,7 @@ impl Session {
         }
     }
 
-    /// What is adjacent to `pane` in `dir`, IN THE WINDOW THAT HOLDS IT — the direction half of
+    /// Where a step from `pane` in `dir` lands, IN THE WINDOW THAT HOLDS IT — the direction half of
     /// [`swap_panes`](Self::swap_panes), and the reason it is here rather than on the host's
     /// scope-bound reader.
     ///
@@ -1414,24 +1416,32 @@ impl Session {
     /// window is derived from the pane id, the same rule the two move verbs follow at both ends.
     ///
     /// Reconciles that window first, so a pane that has just spawned is a candidate and one that has
-    /// just exited is not. `None` at an edge, and `None` for a pane no window of this session tiles.
-    pub fn neighbor_of(&mut self, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+    /// just exited is not.
+    ///
+    /// **The outer [`None`] and the inner [`PaneStep::Untiled`] are different facts, and the whole
+    /// reason this answers a [`PaneStep`] rather than an [`Option<PaneId>`]**: `None` means NO
+    /// WINDOW OF THIS SESSION HOLDS THE PANE — a caller's mistake, which its verb refuses — while
+    /// `Untiled` means this session holds it and the arrangement does not, so there is no adjacency
+    /// to walk. Collapsed into one `Option`, an id naming nothing at all reads exactly like a
+    /// floating pane and exactly like an edge, and the verb above answered "nothing that way" to all
+    /// three ([`crate::layout::PaneStep`] states the same rule one level down).
+    pub fn step_of(&mut self, pane: PaneId, dir: PaneDir) -> Option<PaneStep> {
         let idx = self.window_index_of_pane(pane)?;
         self.windows[idx].reconcile_own();
-        self.windows[idx].layout().neighbor(pane, dir)
+        Some(self.windows[idx].layout().step(pane, dir))
     }
 
     /// Fill the window that HOLDS `pane` with it alone, or end that window's zoom — tmux
     /// `resize-pane -Z`. Answers whether that window is zoomed after the call, `None` for a pane no
     /// window of this session holds.
     ///
-    /// The window is DERIVED from the pane for [`neighbor_of`](Self::neighbor_of)'s reason and by
+    /// The window is DERIVED from the pane for [`step_of`](Self::step_of)'s reason and by
     /// the rule both move verbs follow at both ends: a [`PaneId`] is registry-unique, so the caller
     /// never has to name a window, and zooming a pane of a window nobody is looking at is a
     /// well-formed request rather than one to refuse. herdr's `pane.zoom` takes a tab-scoped target
     /// and a per-tab flag, which cannot express it at all.
     ///
-    /// Reconciles that window first, for [`neighbor_of`](Self::neighbor_of)'s reason: a pane
+    /// Reconciles that window first, for [`step_of`](Self::step_of)'s reason: a pane
     /// spawned since anyone last read is a candidate, and one that has exited is not.
     pub fn zoom_pane(&mut self, pane: PaneId, on: Option<bool>) -> Option<ZoomOutcome> {
         let idx = self.window_index_of_pane(pane)?;
@@ -2206,14 +2216,15 @@ impl SessionRegistry {
             .move_pane(pane, target, side, dir)
     }
 
-    /// What is adjacent to `pane` in `dir`, in whichever window of `session` holds it — the
+    /// Where a step from `pane` in `dir` lands, in whichever window of `session` holds it — the
     /// registry-level entry the `swap_pane` handler's direction form uses. See
-    /// [`Session::neighbor_of`]. `None` for an unknown session, an unheld pane, or an edge.
-    pub fn neighbor_of(&mut self, session: &str, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+    /// [`Session::step_of`]. `None` for an unknown session or a pane it does not hold; the reason a
+    /// held pane went nowhere is the [`PaneStep`] inside.
+    pub fn step_of(&mut self, session: &str, pane: PaneId, dir: PaneDir) -> Option<PaneStep> {
         self.sessions
             .iter_mut()
             .find(|s| s.name == session)?
-            .neighbor_of(pane, dir)
+            .step_of(pane, dir)
     }
 
     /// Zoom `pane` — or un-zoom its window — in whichever window of `session` holds it: the
@@ -4512,22 +4523,25 @@ mod tests {
         assert_eq!(tiled(&mut reg, "1"), vec![c, d]);
 
         assert_eq!(
-            reg.neighbor_of(&default, c, PaneDir::Right),
-            Some(d),
+            reg.step_of(&default, c, PaneDir::Right),
+            Some(PaneStep::To(d)),
             "pane d is to c's right in the window that holds them both",
         );
         assert_eq!(
-            reg.neighbor_of(&default, d, PaneDir::Left),
-            Some(c),
+            reg.step_of(&default, d, PaneDir::Left),
+            Some(PaneStep::To(c)),
             "and the walk runs both ways in a window nobody is currently looking at",
         );
         assert_eq!(
-            reg.neighbor_of(&default, c, PaneDir::Left),
-            None,
-            "c is at that edge"
+            reg.step_of(&default, c, PaneDir::Left),
+            Some(PaneStep::Edge),
+            "c is at that edge — an ANSWER, and the whole reason this is a `PaneStep`",
         );
-        assert_eq!(reg.neighbor_of(&default, PaneId(999), PaneDir::Left), None);
-        assert_eq!(reg.neighbor_of("nope", c, PaneDir::Right), None);
+        // ...where a pane no window of this session holds is a REFUSAL, and the two used to be one
+        // `None`. A caller cannot tell "there is nothing to your left" from "you do not exist"
+        // unless this says so, and `swap_pane` answered success for the second until R301.
+        assert_eq!(reg.step_of(&default, PaneId(999), PaneDir::Left), None);
+        assert_eq!(reg.step_of("nope", c, PaneDir::Right), None);
     }
 
     /// `swap-pane` refuses an unreachable pane and answers "nothing moved" for a legal request that

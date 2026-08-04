@@ -1228,7 +1228,7 @@ impl SelectHow {
     /// come from a request new enough to carry `from`.
     #[must_use]
     pub fn read(answer: &Value, toward: Option<PaneDir>) -> Self {
-        if let Some(how) = answer["outcome"].as_str().and_then(Self::from_wire) {
+        if let Some(how) = answer[OUTCOME_KEY].as_str().and_then(Self::from_wire) {
             return how;
         }
         match (answer["changed"].as_bool().unwrap_or(false), toward) {
@@ -1353,15 +1353,19 @@ pub const JOIN_PANE_ACTION: &str = "join_pane";
 pub const MOVE_PANE_ACTION: &str = "move_pane";
 
 /// The mux control external invoke action that EXCHANGES two panes' positions
-/// (`{pane?, with}` XOR `{pane?, dir}`) — tmux `swap-pane`. Answers `{a, b, changed}`.
+/// (`{pane?, with}` XOR `{pane?, dir}`) — tmux `swap-pane`. Answers `{a, b, changed, outcome}`.
 ///
 /// The one arrangement gesture that is not a placement: a placement names where a pane goes, while a
 /// swap names only that two panes trade, and the shapes they trade into are whatever each already
 /// had. Every division keeps its id, direction and ratio — by construction, because the two leaves
 /// are exchanged where they sit rather than removed and put back.
 ///
+/// The grammar is [`SwapAsk`], which is where the three keys are spelled and the only place a client
+/// builds them — [`SELECT_PANE_ACTION`]'s rule one verb over, and for its reason.
+///
 /// `pane` ABSENT means the current window's ACTIVE pane, the default [`SPLIT_ACTION`] takes and for
-/// the same reason. Then exactly one of:
+/// the same reason. It is this action's ORIGIN, the thing [`SelectAsk::Toward::from`] is for the
+/// select: the pane being placed, which a direction is measured from. Then exactly one of:
 ///
 /// * `with` — that pane, which may live in ANOTHER window of the session. herdr refuses a
 ///   cross-tab swap outright (`PaneSwapReason::CrossTab`); sprag allows it because
@@ -1369,20 +1373,257 @@ pub const MOVE_PANE_ACTION: &str = "move_pane";
 ///   asymmetry in the other verb. Each window's ACTIVE pane then follows the CELL — it lands on the
 ///   pane that arrived, since the one it was on has left.
 /// * `dir` — `"left"` / `"right"` / `"up"` / `"down"`: the neighbour of `pane`, resolved by
-///   [`LayoutTree::neighbor`](sprag_terminal::LayoutTree::neighbor) from the ARRANGEMENT rather than
+///   [`LayoutTree::step`](sprag_terminal::LayoutTree::step) from the ARRANGEMENT rather than
 ///   from any client's rectangles, exactly as [`SELECT_PANE_ACTION`] resolves its own. Same-window
 ///   by construction — adjacency is a property of one tiling.
 /// * neither, or both ⇒ `TypeMismatch`, [`SELECT_PANE_ACTION`]'s rule.
 ///
 /// **A direction with no neighbour is not an error**, and neither is a pane swapped with itself.
-/// Both answer `{changed: false}` with the arrangement unmoved, for [`SELECT_PANE_ACTION`]'s reason:
+/// Both answer `changed: false` with the arrangement unmoved, for [`SELECT_PANE_ACTION`]'s reason:
 /// a key bound to `swap-pane -L` pressed at the left edge is a well-formed request whose honest
 /// answer is "nothing to trade with", and refusing it would log a failure every time a user reaches
-/// the edge of their layout. A pane id that names no pane of the SESSION is refused (`Rejected`).
+/// the edge of their layout.
 ///
-/// `a` and `b` answer with the two panes AS RESOLVED, so a `dir` caller learns who it swapped with;
-/// `b` is `null` when a direction found no neighbour.
+/// **A pane id that names no pane of the SESSION is refused (`Rejected`) — in BOTH arms.** The
+/// direction arm used to answer `{a: <that id>, b: null, changed: false}` for one, which is a
+/// success sentence about a pane that does not exist; measured at `a7375f4`, `{pane: 999,
+/// dir: "left"}` answered exactly that while `{pane: 0, with: 999}` one key over was refused and
+/// [`SELECT_PANE_ACTION`]'s own origin was refused too. One verb disagreeing with itself and with
+/// its twin is three readings of one rule.
+///
+/// # The answer: `{a, b, changed, outcome}`
+///
+/// `a` and `b` are the two panes AS RESOLVED, so a `dir` caller learns who it swapped with; `b` is
+/// `null` when a direction found nothing. `outcome` names WHY, in [`SwapHow`]'s four words, because
+/// `b: null` alone reads the same for an edge and for an origin the arrangement does not hold —
+/// facts with different remedies, which a caller cannot tell apart without a second read at a
+/// second instant. Measured at `a7375f4`: an edge and a FLOATING origin answered the same bytes,
+/// `{"a":N,"b":null,"changed":false}`.
 pub const SWAP_PANE_ACTION: &str = "swap_pane";
+
+/// The REQUEST grammar of [`SWAP_PANE_ACTION`] — what a caller may ask, as a type that cannot spell
+/// the combinations the action refuses.
+///
+/// [`SelectAsk`]'s shape one verb over, for its reason: the daemon [`parse`](Self::parse)s one of
+/// these and every client [`to_args`](Self::to_args) builds one, so the three keys are spelled ONCE
+/// for four surfaces (the daemon, the CLI verb, the MCP tool, the keybinding). Before it the daemon
+/// read the keys one at a time and the CLI hand-built a `json!` — the fifth-spelling shape R300
+/// removed from the select while leaving it standing here.
+///
+/// **The ORIGIN is a field of both arms rather than a third variant**, which is where this differs
+/// from [`SelectAsk`]. There a `from` without a `dir` has no reading at all (a target names itself);
+/// here `pane` is the pane BEING PLACED and both partners can be named against it, so "swap pane 3
+/// with pane 5" and "swap pane 3 with whatever is left of it" are one question asked two ways.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SwapAsk {
+    /// `{pane?, with}` — trade `pane` with THAT pane, which may live in another window.
+    With {
+        /// The pane being placed. [`None`] ⇒ the scoped window's active pane.
+        pane: Option<PaneId>,
+        /// The pane it trades places with.
+        with: PaneId,
+    },
+    /// `{pane?, dir}` — trade `pane` with its neighbour that way, within its own window.
+    Toward {
+        /// The pane being placed, and the pane the step is measured FROM. [`None`] ⇒ the scoped
+        /// window's active pane, which is what a keypress means.
+        pane: Option<PaneId>,
+        /// Which way to look for the partner.
+        dir: PaneDir,
+    },
+}
+
+impl SwapAsk {
+    /// The request key naming the pane being placed — this action's ORIGIN.
+    pub const PANE_KEY: &'static str = "pane";
+    /// The request key naming the pane to trade with outright.
+    pub const WITH_KEY: &'static str = "with";
+    /// The request key naming which way to look for the partner.
+    pub const DIR_KEY: &'static str = "dir";
+
+    /// The `args` object a client sends for this ask.
+    ///
+    /// An absent origin emits no key at all rather than a null, [`SelectAsk::to_args`]'s rule: the
+    /// commonest request on this action is unchanged on the wire and a reader of a trace can still
+    /// tell the two asks apart by eye.
+    #[must_use]
+    pub fn to_args(self) -> Value {
+        let mut map = Map::new();
+        let (pane, key, value) = match self {
+            Self::With { pane, with } => (pane, Self::WITH_KEY, Value::from(with.0)),
+            Self::Toward { pane, dir } => (pane, Self::DIR_KEY, Value::from(dir.wire_str())),
+        };
+        if let Some(pane) = pane {
+            map.insert(Self::PANE_KEY.to_owned(), Value::from(pane.0));
+        }
+        map.insert(key.to_owned(), value);
+        Value::Object(map)
+    }
+
+    /// The ask an `args` value names, or [`None`] for anything this grammar does not admit.
+    ///
+    /// One [`None`] for every refusal, [`SelectAsk::parse`]'s rule and for its reason: the action
+    /// answers one error for all of them (`TypeMismatch`), because `InvokeError` carries no payload
+    /// to tell them apart with (upstream PINION-PR82) and the SURFACES say which one, each knowing
+    /// what it sent.
+    ///
+    /// An explicit `null` reads as ABSENT — the same rule, so a client that fills its whole argument
+    /// struct in asks what one that omits the optional halves asks.
+    #[must_use]
+    pub fn parse(args: &Value) -> Option<Self> {
+        let map = match args {
+            Value::Object(map) => Some(map),
+            // No args at all is the empty ask, which this grammar does not admit either.
+            Value::Null => None,
+            _ => return None,
+        };
+        let field = |key: &str| {
+            map.and_then(|map| map.get(key))
+                .filter(|value| !value.is_null())
+        };
+        let pane_id = |key: &str| match field(key) {
+            None => Ok(None),
+            Some(value) => value.as_u64().map(|id| Some(PaneId(id))).ok_or(()),
+        };
+        let pane = pane_id(Self::PANE_KEY).ok()?;
+        let with = pane_id(Self::WITH_KEY).ok()?;
+        let dir = match field(Self::DIR_KEY) {
+            None => None,
+            Some(value) => Some(PaneDir::from_wire(value.as_str()?)?),
+        };
+        match (with, dir) {
+            (Some(with), None) => Some(Self::With { pane, with }),
+            (None, Some(dir)) => Some(Self::Toward { pane, dir }),
+            _ => None,
+        }
+    }
+
+    /// The pane being placed, when the caller named one — [`None`] ⇒ the active pane.
+    #[must_use]
+    pub fn origin(self) -> Option<PaneId> {
+        match self {
+            Self::With { pane, .. } | Self::Toward { pane, .. } => pane,
+        }
+    }
+
+    /// The direction this ask looked in, if it looked — what [`SwapHow::read`] needs to read a
+    /// pre-`outcome` answer, and what a surface needs to word its own sentence.
+    #[must_use]
+    pub fn toward(self) -> Option<PaneDir> {
+        match self {
+            Self::With { .. } => None,
+            Self::Toward { dir, .. } => Some(dir),
+        }
+    }
+}
+
+/// The `outcome` key of a [`SWAP_PANE_ACTION`] answer: what became of the two panes.
+///
+/// **Four words, total over the request grammar, each with exactly one cause** — the property
+/// [`SelectHow`] states for the verb beside this one, and the reason an operator-facing or
+/// agent-facing sentence can be exact rather than a list of possibilities. A `with` request can only
+/// [`Swapped`](Self::Swapped) or find itself [`SamePane`](Self::SamePane); a `dir` request can only
+/// `Swapped`, stop [`AtEdge`](Self::AtEdge), or be measured from an [`Untiled`](Self::Untiled) pane.
+///
+/// # Why the daemon says it instead of the caller deriving it
+///
+/// [`SelectHow`]'s reason, one verb over. Three of the four ARE derivable by a caller that remembers
+/// which arm it asked and compares `a` with `b` ([`read`](Self::read) does exactly that for a daemon
+/// too old to answer this key). The fourth is not: telling "nothing that way" from "the pane you are
+/// placing is floating, so it has no that-way" takes the arrangement, and a client that read the
+/// arrangement to explain its own swap would join two instants to describe one.
+///
+/// The rival is AHEAD of where sprag was here and this is the axis they lose on:
+/// `PaneSwapReason` (herdr `9a4ce5e1`, `src/api/schema/panes.rs:481`) has FOUR words too —
+/// `NoNeighbor` / `SamePane` / `NotFound` / `CrossTab` — where sprag answered `b: null` for two
+/// different facts. But `NoNeighbor` is still one word for an edge AND for a source missing from the
+/// rectangles they last composed (`directional_pane_target`), which is the same collapse their
+/// directional FOCUS has; `NotFound` is a refusal here rather than an outcome; and `CrossTab` is a
+/// capability sprag has and they refuse.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SwapHow {
+    /// The two panes TRADED PLACES: `a` sits where `b` was and `b` where `a` was.
+    Swapped,
+    /// A `with` request whose two panes are ONE pane. A legitimate no-op rather than a failure — a
+    /// client re-asserting a placement it already has — and never reachable from a `dir` request,
+    /// because a step never lands on the pane it started from.
+    SamePane,
+    /// A `dir` request whose origin the arrangement holds, with nothing that way: the window's edge.
+    AtEdge,
+    /// A `dir` request whose ORIGIN the arrangement holds NO LEAF for — it is floating, so it has no
+    /// neighbours in any direction. Distinct from [`AtEdge`](Self::AtEdge) on purpose: the remedy is
+    /// different (dock it, or name a partner), and an edge is a boundary the movement ran into where
+    /// this is a request with no adjacency to walk at all.
+    Untiled,
+}
+
+impl SwapHow {
+    /// Every outcome, for a caller enumerating the vocabulary (a test, a description).
+    pub const ALL: [Self; 4] = [Self::Swapped, Self::SamePane, Self::AtEdge, Self::Untiled];
+
+    /// This outcome's wire word — the value of the answer's `outcome` key.
+    #[must_use]
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Self::Swapped => "swapped",
+            Self::SamePane => "same_pane",
+            Self::AtEdge => "at_edge",
+            Self::Untiled => "untiled",
+        }
+    }
+
+    /// The outcome a wire word names, or [`None`] for a word this build does not know.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|how| how.wire_str() == word)
+    }
+
+    /// Whether the arrangement MOVED — the answer's `changed` key, spelled once.
+    ///
+    /// The daemon announces on exactly this, because a swap that traded nothing gives a parked
+    /// client nothing to re-read.
+    #[must_use]
+    pub fn changed(self) -> bool {
+        matches!(self, Self::Swapped)
+    }
+
+    /// Read the outcome of an answer, from any daemon — including one that does not carry the key.
+    ///
+    /// `toward` is the direction the caller asked for, if it asked for one, and `partner` is the
+    /// answer's `b`. Together with `changed` they determine three of the four words exactly: a
+    /// `with` request that changed nothing traded a pane with itself, and a `dir` request that
+    /// changed nothing went nowhere. Only WHICH nothing is unrecoverable, and this answers the
+    /// honest half of it ([`AtEdge`](Self::AtEdge), the case a user meets; a floating origin needs a
+    /// client that floated it).
+    ///
+    /// One reader for every client, [`SelectHow::read`]'s rule, so a degraded sentence is decided
+    /// here rather than re-derived at each surface.
+    #[must_use]
+    pub fn read(answer: &Value, toward: Option<PaneDir>) -> Self {
+        if let Some(how) = answer
+            .get(OUTCOME_KEY)
+            .and_then(Value::as_str)
+            .and_then(Self::from_wire)
+        {
+            return how;
+        }
+        if answer
+            .get("changed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Self::Swapped;
+        }
+        match toward {
+            Some(_) => Self::AtEdge,
+            None => Self::SamePane,
+        }
+    }
+}
+
+/// The key both [`SelectHow`] and [`SwapHow`] answer under — one word for one question ("why is it
+/// like that"), spelled once because two actions carry it.
+pub const OUTCOME_KEY: &str = "outcome";
 
 /// The mux control external invoke action that fills a window with ONE pane, or ends that
 /// (`{pane?, on?}`) — tmux `resize-pane -Z`. Answers `{pane, zoomed, changed}`.
@@ -1741,6 +1982,154 @@ mod tests {
         assert_eq!(SelectHow::read(&json!({}), None), SelectHow::AlreadyActive);
     }
 
+    /// The SWAP's grammar round trips through the bytes, every shape, both ways — the select's rule
+    /// one verb over, and the reason one type can serve the daemon that parses and the three clients
+    /// that build.
+    #[test]
+    fn the_swap_grammar_round_trips_through_the_bytes_it_sends() {
+        let shapes = [
+            SwapAsk::With {
+                pane: None,
+                with: PaneId(5),
+            },
+            SwapAsk::With {
+                pane: Some(PaneId(3)),
+                with: PaneId(5),
+            },
+            SwapAsk::Toward {
+                pane: None,
+                dir: PaneDir::Left,
+            },
+            SwapAsk::Toward {
+                pane: Some(PaneId(3)),
+                dir: PaneDir::Up,
+            },
+        ];
+        for ask in shapes {
+            assert_eq!(SwapAsk::parse(&ask.to_args()), Some(ask), "{ask:?}");
+        }
+        assert_eq!(
+            shapes[0].to_args(),
+            json!({"with": 5}),
+            "a swap with no origin says nothing about one — the key is ABSENT, not null",
+        );
+        assert_eq!(shapes[1].to_args(), json!({"pane": 3, "with": 5}));
+        assert_eq!(shapes[2].to_args(), json!({"dir": "left"}));
+        assert_eq!(shapes[3].to_args(), json!({"pane": 3, "dir": "up"}));
+        assert_eq!(shapes[3].toward(), Some(PaneDir::Up));
+        assert_eq!(shapes[3].origin(), Some(PaneId(3)));
+        assert_eq!(shapes[1].toward(), None, "a named partner looked nowhere");
+        assert_eq!(shapes[2].origin(), None);
+    }
+
+    /// Every reading the SWAP grammar does not admit — one `TypeMismatch` at the daemon, so this is
+    /// the only surface that says what the set is.
+    ///
+    /// The set differs from the select's in exactly one place, and deliberately: `{pane, with}` is
+    /// LEGAL here where `{pane, from}` is not there. An origin with no direction has no reading when
+    /// the other key is a target; here the origin is the pane being placed and the partner is named
+    /// outright, so both are needed at once.
+    #[test]
+    fn the_swap_grammar_admits_nothing_else() {
+        for refused in [
+            json!({}),
+            json!(null),
+            json!([]),
+            json!("left"),
+            json!({"pane": 1}),
+            json!({"with": 2, "dir": "left"}),
+            json!({"pane": 1, "with": 2, "dir": "left"}),
+            json!({"dir": "sideways"}),
+            json!({"dir": 3}),
+            json!({"pane": "1", "with": 2}),
+            json!({"with": "2"}),
+            json!({"with": -1}),
+        ] {
+            assert_eq!(SwapAsk::parse(&refused), None, "admitted {refused}");
+        }
+        assert_eq!(
+            SwapAsk::parse(&json!({"pane": null, "with": 4, "dir": null})),
+            Some(SwapAsk::With {
+                pane: None,
+                with: PaneId(4)
+            }),
+            "an explicit null is an absent key",
+        );
+        assert_eq!(
+            SwapAsk::parse(&json!({"dir": "up", "extra": 1})),
+            Some(SwapAsk::Toward {
+                pane: None,
+                dir: PaneDir::Up
+            }),
+            "a key this grammar does not know is not its business to police — the request declares \
+             its WIRE_PROTOCOL, which is the check that catches a shape it cannot read",
+        );
+    }
+
+    /// The swap's `outcome` vocabulary round trips, and `changed` has ONE derivation.
+    #[test]
+    fn the_swap_outcome_words_round_trip_and_only_a_trade_counts_as_changed() {
+        for how in SwapHow::ALL {
+            assert_eq!(SwapHow::from_wire(how.wire_str()), Some(how));
+        }
+        assert_eq!(SwapHow::from_wire("Swapped"), None);
+        assert_eq!(SwapHow::from_wire("edge"), None);
+        assert_eq!(SwapHow::from_wire(""), None);
+        assert_eq!(
+            SwapHow::ALL.map(SwapHow::changed),
+            [true, false, false, false],
+            "exactly one of the four moved the arrangement, which is what wakes parked clients",
+        );
+        // The two verbs answer under ONE key, so a client reading `outcome` needs no per-action
+        // spelling — and the two vocabularies are DISJOINT except where they mean the same thing.
+        assert_eq!(SelectHow::AtEdge.wire_str(), SwapHow::AtEdge.wire_str());
+        assert_eq!(SelectHow::Untiled.wire_str(), SwapHow::Untiled.wire_str());
+        assert!(
+            SelectHow::from_wire(SwapHow::SamePane.wire_str()).is_none(),
+            "a select cannot answer the swap's own word",
+        );
+    }
+
+    /// The swap's reader takes the daemon's word when there is one, and stays exact against a daemon
+    /// built before the word existed — the direction an additive answer key does not cover by itself.
+    #[test]
+    fn a_swap_outcome_is_read_from_the_word_and_falls_back_to_the_arm_that_was_asked() {
+        let word = |how: SwapHow| json!({"a": 3, "b": 4, "changed": how.changed(), "outcome": how.wire_str()});
+        for how in SwapHow::ALL {
+            assert_eq!(SwapHow::read(&word(how), None), how);
+            assert_eq!(SwapHow::read(&word(how), Some(PaneDir::Left)), how);
+        }
+
+        // A pre-R301 daemon: `{a, b, changed}` and nothing more.
+        let old = |b: Value, changed: bool| json!({"a": 3, "b": b, "changed": changed});
+        assert_eq!(
+            SwapHow::read(&old(json!(4), true), Some(PaneDir::Left)),
+            SwapHow::Swapped,
+        );
+        assert_eq!(SwapHow::read(&old(json!(4), true), None), SwapHow::Swapped);
+        assert_eq!(
+            SwapHow::read(&old(json!(3), false), None),
+            SwapHow::SamePane,
+            "a PARTNER request that traded nothing traded a pane with itself — exact without the word",
+        );
+        assert_eq!(
+            SwapHow::read(&old(Value::Null, false), Some(PaneDir::Left)),
+            SwapHow::AtEdge,
+            "a DIRECTION that traded nothing found nothing; WHICH nothing is what the word adds, \
+             and the edge is the case a user meets",
+        );
+        // A word this build does not know, and a malformed answer, both degrade rather than fail:
+        // a swap that already happened must still be reported.
+        assert_eq!(
+            SwapHow::read(
+                &json!({"a": 3, "changed": true, "outcome": "teleported"}),
+                None
+            ),
+            SwapHow::Swapped,
+        );
+        assert_eq!(SwapHow::read(&json!({}), None), SwapHow::SamePane);
+    }
+
     #[test]
     fn mux_action_path_matches_the_documented_grammar() {
         assert_eq!(mux_action_path(SPAWN_ACTION), "/sprag_mux/external/spawn");
@@ -1948,6 +2337,61 @@ mod tests {
             )
             .expect("an ask renders"),
             r#"{"dir":"down"}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The swap's grammar, all four spellings: an origin present and absent on each arm, because
+        // the origin is a FIELD of both here rather than a variant of its own.
+        assert_eq!(
+            serde_json::to_string(
+                &SwapAsk::With {
+                    pane: Some(PaneId(3)),
+                    with: PaneId(5),
+                }
+                .to_args()
+            )
+            .expect("an ask renders"),
+            r#"{"pane":3,"with":5}"#,
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &SwapAsk::With {
+                    pane: None,
+                    with: PaneId(5),
+                }
+                .to_args()
+            )
+            .expect("an ask renders"),
+            r#"{"with":5}"#,
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &SwapAsk::Toward {
+                    pane: Some(PaneId(3)),
+                    dir: PaneDir::Right,
+                }
+                .to_args()
+            )
+            .expect("an ask renders"),
+            r#"{"pane":3,"dir":"right"}"#,
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &SwapAsk::Toward {
+                    pane: None,
+                    dir: PaneDir::Right,
+                }
+                .to_args()
+            )
+            .expect("an ask renders"),
+            r#"{"dir":"right"}"#,
             "{}",
             BUMP,
         );

@@ -59,7 +59,7 @@ use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, 
 
 use crate::external::lock;
 use crate::scope::SessionScope;
-use crate::wire::{SelectAsk, SelectHow};
+use crate::wire::{SelectAsk, SelectHow, SwapAsk, SwapHow};
 
 /// Per-pane facts the client reads each frame that are NOT carried in the cell
 /// buffer but ride ALONGSIDE it in one pane-frame: the scrollback depth (the
@@ -568,6 +568,31 @@ pub trait HostClient {
     fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
         let _ = dir;
         None
+    }
+
+    /// Trade the session's active pane with its NEIGHBOUR in `dir` — tmux `swap-pane`, and the
+    /// wire's `{dir}` form of [`crate::wire::SWAP_PANE_ACTION`].
+    ///
+    /// [`select_toward`](Self::select_toward)'s twin, and everything that method's own section says
+    /// about naming no pane at either end holds here unchanged: the ORIGIN is the active pane, which
+    /// this client only projects, and the PARTNER is a property of the arrangement, which this
+    /// client only mirrors. So the direction travels and the daemon resolves it, under one lock,
+    /// with `sprag swap-pane -L` from a shell reaching the same code path.
+    ///
+    /// Answers whether the arrangement MOVED. That is less than the wire carries — the answer names
+    /// both panes and says WHY in [`crate::wire::SwapHow`]'s four words — and the reduction is
+    /// deliberate for [`select_toward`](Self::select_toward)'s reason: a client that draws the
+    /// arrangement re-reads it, and nothing here has anything to SAY about an edge. The day one
+    /// wants "you are at the edge", this signature is where the fact stops.
+    ///
+    /// **The user's cursor does not follow, and does not need to**: the active pane is a PANE, not a
+    /// cell, so the pane a user is typing into is still theirs after it has moved. That is a
+    /// property of the daemon's swap rather than something a client arranges.
+    ///
+    /// Defaulted to `false`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    fn swap_toward(&self, dir: PaneDir) -> bool {
+        let _ = dir;
+        false
     }
 
     /// Install `tree` as the current window's arrangement, returning the CANONICAL result
@@ -1742,6 +1767,95 @@ pub(crate) fn select_pane(
     })
 }
 
+/// What a swap DID — the two panes as resolved, and why they ended up that way.
+///
+/// [`Selection`]'s shape one verb over, and a named record for its reason: at a call site a
+/// `(PaneId, Option<PaneId>, SwapHow)` says nothing about which half is which, and these are not
+/// interchangeable — two are ids a caller reports, the third is a claim about what happened.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Swap {
+    /// The pane the request placed — the origin it named, or the active pane.
+    pub(crate) a: PaneId,
+    /// The pane it traded with. [`None`] when a direction found nobody, which is the only way a
+    /// well-formed request answers without a partner.
+    pub(crate) b: Option<PaneId>,
+    /// What became of them — the answer's `outcome` word.
+    pub(crate) how: SwapHow,
+}
+
+/// Exchange two panes' places — the ONE place the arrangement trades two leaves.
+///
+/// Answers the [`Swap`]. `None` — refused — for a scope whose window holds no panes, an origin no
+/// window of the session holds, and a partner that is not a TILED pane of it.
+///
+/// A [`SwapAsk::Toward`] that finds nobody is NOT a refusal: it answers the unmoved arrangement,
+/// because reaching the edge of a layout is a normal outcome of a keypress rather than a caller's
+/// mistake. WHICH nothing it was — an edge, or an origin the tiling does not hold — is
+/// [`PaneStep`]'s three-way answer, taken here because it is free at this one lock.
+///
+/// **The resolve and the trade happen under ONE registry lock**, which is what makes them atomic and
+/// is a fix rather than a restatement: the wire handler used to take the lock three times (once for
+/// the active pane, once for the neighbour, once for the swap), so a pane could exit between the
+/// walk that chose it and the trade that moved it. That is exactly the tear
+/// [`select_pane`] holds one lock to avoid, in the verb beside it.
+pub(crate) fn swap_pane(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    scope: &SessionScope,
+    ask: SwapAsk,
+) -> Option<Swap> {
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
+    let mut registry = lock(registry);
+    let a = match ask.origin() {
+        Some(pane) => pane,
+        None => {
+            let window = registry.window_mut(scope.session(), scope.window())?;
+            window.reconcile_layout(&panes);
+            window.active_pane()?
+        }
+    };
+    let b = match ask {
+        SwapAsk::With { with, .. } => with,
+        SwapAsk::Toward { dir, .. } => {
+            // `None` here is an origin NO window of this session holds — a caller's mistake, and a
+            // refusal, where the two steps inside are answers. Before R301 all three were one
+            // `None` and all three answered "nothing to trade with".
+            match registry.step_of(scope.session(), a, dir)? {
+                PaneStep::To(partner) => partner,
+                PaneStep::Edge => {
+                    return Some(Swap {
+                        a,
+                        b: None,
+                        how: SwapHow::AtEdge,
+                    });
+                }
+                PaneStep::Untiled => {
+                    return Some(Swap {
+                        a,
+                        b: None,
+                        how: SwapHow::Untiled,
+                    });
+                }
+            }
+        }
+    };
+    let changed = registry.swap_panes(scope.session(), a, b).ok()?;
+    Some(Swap {
+        a,
+        b: Some(b),
+        // The registry compared the two ids: it answers `false` only for a pane traded with itself,
+        // which is the one outcome besides the trade that a NAMED partner can reach.
+        how: if changed {
+            SwapHow::Swapped
+        } else {
+            SwapHow::SamePane
+        },
+    })
+}
+
 /// What is ADJACENT to `pane` in the scoped window, in every direction — see
 /// [`crate::wire::NEIGHBORS_FIELD`].
 ///
@@ -2074,6 +2188,16 @@ impl HostClient for Host {
             SelectAsk::Toward { dir, from: None },
         )
         .map(|selection| selection.pane)
+    }
+
+    /// ...and the same for the SWAP, through the same one function the wire action calls.
+    fn swap_toward(&self, dir: PaneDir) -> bool {
+        swap_pane(
+            &self.registry,
+            &self.scope(),
+            SwapAsk::Toward { pane: None, dir },
+        )
+        .is_some_and(|swap| swap.how.changed())
     }
 
     /// The pane THIS registry's current window is on.

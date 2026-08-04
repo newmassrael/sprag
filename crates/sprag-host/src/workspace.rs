@@ -62,7 +62,7 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_terminal::{
-    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneDir, PaneId, SessionInfo,
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneId, SessionInfo,
     SessionRegistry, SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
 };
 
@@ -83,7 +83,7 @@ use crate::wire::{
     PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION,
     REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
     SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, WINDOW_SIZE_SLOT,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SwapAsk, WINDOW_SIZE_SLOT,
     WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
@@ -1369,57 +1369,47 @@ impl WorkspaceExternal {
     }
 
     /// `swap_pane {pane?, with}` XOR `{pane?, dir}` action: exchange two panes' positions — tmux
-    /// `swap-pane`. Answers `{a, b, changed}`. See [`crate::wire::SWAP_PANE_ACTION`].
+    /// `swap-pane`. Answers `{a, b, changed, outcome}`. See [`crate::wire::SWAP_PANE_ACTION`].
     ///
-    /// The naming shape is [`select_pane`](Self::select_pane)'s, and so is the split between a
+    /// The naming shape is [`select_pane`](Self::select_pane)'s, parsed by
+    /// [`SwapAsk`] rather than key by key, and so is the split between a
     /// refusal and a quiet "nothing moved": a direction that finds no neighbour is a well-formed
     /// request at the edge of a layout, while a pane id naming nothing is a caller's mistake.
+    ///
+    /// **A pane the session does not hold is refused in BOTH arms**, which is a fix rather than a
+    /// restatement: the direction arm used to answer `{a: <that id>, b: null, changed: false}` —
+    /// success, about a pane that does not exist — because the registry's old `neighbor_of` gave one
+    /// `None` for an unheld pane, a floating one and an edge. It answers a
+    /// [`PaneStep`](sprag_terminal::PaneStep) inside an [`Option`] now, so the refusal and the two
+    /// nothings are three different values at the one place that can tell them apart.
     fn swap_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let map = as_object(args)?;
-        let pane = self.pane_target(map, "pane")?;
-        let named = match map.get("with") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(PaneId(value.as_u64().ok_or(InvokeError::TypeMismatch)?)),
-        };
-        let toward = match map.get("dir") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(word)) => {
-                Some(PaneDir::from_wire(word).ok_or(InvokeError::TypeMismatch)?)
-            }
-            Some(_) => return Err(InvokeError::TypeMismatch),
-        };
-        // Exactly one, for `select_pane`'s reason: "swap with nothing" and "swap with two things"
-        // are a caller's bug, and guessing a reading for them would hide it.
-        let with = match (named, toward) {
-            (Some(with), None) => Some(with),
-            // A direction with no neighbour is the EDGE of the layout, not an error — the answer is
-            // "nothing to trade with", which is what a key bound to `swap-pane -L` deserves.
-            //
-            // Resolved in the window that HOLDS `pane`, not in the scoped one: this verb takes a
-            // pane the caller named, which may live in another window, and answering "no neighbour"
-            // there would be false rather than conservative.
-            (None, Some(dir)) => lock(&self.registry).neighbor_of(self.scope.session(), pane, dir),
+        let value = match args {
+            IntrospectValue::Json(value) => value,
+            IntrospectValue::Null => &Value::Null,
             _ => return Err(InvokeError::TypeMismatch),
         };
-        let Some(with) = with else {
-            return Ok(IntrospectValue::Json(
-                serde_json::json!({ "a": pane.0, "b": Value::Null, "changed": false }),
-            ));
-        };
-        let changed = lock(&self.registry)
-            .swap_panes(self.scope.session(), pane, with)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to swap two panes");
-                InvokeError::Rejected
-            })?;
-        if changed {
+        // Exactly one partner, for `select_pane`'s reason: "swap with nothing" and "swap with two
+        // things" are a caller's bug, and guessing a reading for them would hide it. The type is
+        // what refuses them, so no combination this parse admits needs checking again below.
+        let ask = SwapAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
+        let swap = crate::host::swap_pane(&self.registry, &self.scope, ask).ok_or_else(|| {
+            tracing::debug!(target: "sprag_host", ?ask, "refused to swap two panes");
+            InvokeError::Rejected
+        })?;
+        if swap.how.changed() {
             // Only on a real move, `select_pane`'s rule: the announce wakes every parked client to
             // re-read, and a swap that traded nothing has nothing for them to read.
             self.announce();
         }
-        Ok(IntrospectValue::Json(
-            serde_json::json!({ "a": pane.0, "b": with.0, "changed": changed }),
-        ))
+        Ok(IntrospectValue::Json(serde_json::json!({
+            "a": swap.a.0,
+            "b": swap.b.map_or(Value::Null, |pane| Value::from(pane.0)),
+            // Kept beside `outcome` rather than replaced by it, `select_pane`'s rule: it is the one
+            // bit every existing client reads, and the whole question for one that only has to
+            // decide whether to re-read the arrangement. `SwapHow::changed` is its ONE derivation.
+            "changed": swap.how.changed(),
+            crate::wire::OUTCOME_KEY: swap.how.wire_str(),
+        })))
     }
 
     /// `zoom_pane {pane?, on?}` action: fill the window that holds `pane` with it alone, or end
@@ -5573,7 +5563,10 @@ mod tests {
             .expect("both panes are tiled"),
         ));
 
-        assert_eq!(answer, json!({"a": 0, "b": 2, "changed": true}));
+        assert_eq!(
+            answer,
+            json!({"a": 0, "b": 2, "changed": true, "outcome": "swapped"}),
+        );
         assert_eq!(
             tiled_order(&mut ext),
             vec![2, 1, 0],
@@ -5607,7 +5600,8 @@ mod tests {
                 )
                 .expect("an edge is not an error"),
             )),
-            json!({"a": 0, "b": Value::Null, "changed": false}),
+            json!({"a": 0, "b": Value::Null, "changed": false, "outcome": "at_edge"}),
+            "the EDGE, named — and not the same bytes a floating origin answers",
         );
         assert_eq!(tiled_order(&mut ext), before, "and nothing moved");
 
@@ -5619,7 +5613,7 @@ mod tests {
                 )
                 .expect("pane 1 is to the right"),
             )),
-            json!({"a": 0, "b": 1, "changed": true}),
+            json!({"a": 0, "b": 1, "changed": true, "outcome": "swapped"}),
             "and the direction resolved to the pane the arrangement says is adjacent",
         );
     }
@@ -5788,7 +5782,7 @@ mod tests {
                 )
                 .expect("a pane swapped with itself is legal"),
             )),
-            json!({"a": 1, "b": 1, "changed": false}),
+            json!({"a": 1, "b": 1, "changed": false, "outcome": "same_pane"}),
         );
         assert_eq!(
             ext.invoke(
@@ -5798,6 +5792,57 @@ mod tests {
             .unwrap_err(),
             InvokeError::Rejected,
             "a pane id naming nothing is a caller's mistake, not an edge",
+        );
+        assert_eq!(
+            ext.invoke(
+                SWAP_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 9, "dir": "left"}))
+            )
+            .unwrap_err(),
+            InvokeError::Rejected,
+            "and so is one in the DIRECTION arm — which answered a null partner and changed: false \
+             until R301, a success sentence about a pane that does not exist",
+        );
+    }
+
+    /// The three ways a directional swap can go nowhere are THREE ANSWERS, and until R301 they were
+    /// one — measured at `a7375f4` against a live daemon, an edge and a FLOATING origin answered the
+    /// same bytes (`{"a":N,"b":null,"changed":false}`) and an id naming nothing answered them too.
+    ///
+    /// The remedies differ, which is what makes the collapse a defect rather than a terseness: an
+    /// edge means "look the other way", a float means "there is no way to look", and an unheld id
+    /// means the caller is wrong about what exists.
+    #[test]
+    fn a_swap_that_trades_nothing_says_which_nothing_it_was() {
+        let reg = registry();
+        let (mut ext, rev) = control(&reg);
+        three_pane_window(&mut ext); // 0 | (1 / 2)
+        let before = rev.current();
+
+        // FLOATED: the origin is a pane of this session with no leaf in the arrangement, so there
+        // is no adjacency to walk in ANY direction — not an edge in one.
+        ext.invoke(
+            SET_FLOATING_ACTION,
+            IntrospectValue::Json(json!({"id": 2, "floating": true})),
+        )
+        .expect("a pane can be floated out of the tiling");
+        for dir in ["left", "right", "up", "down"] {
+            assert_eq!(
+                answer_doc(Some(
+                    ext.invoke(
+                        SWAP_PANE_ACTION,
+                        IntrospectValue::Json(json!({"pane": 2, "dir": dir}))
+                    )
+                    .expect("a floating origin is answered, not refused"),
+                )),
+                json!({"a": 2, "b": Value::Null, "changed": false, "outcome": "untiled"}),
+                "{dir}",
+            );
+        }
+        assert_eq!(
+            rev.current(),
+            before + 1,
+            "and none of the four woke a parked client — the float itself is the only bump",
         );
     }
 
