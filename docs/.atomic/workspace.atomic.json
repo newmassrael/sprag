@@ -10695,6 +10695,50 @@
         "`PaneDir::ALL` is still an array literal no compiler checks (item 25's residual, untouched)."
       ]
     },
+    "R301": {
+      "decision_summary": "R301: a swap says WHICH nothing happened, and an agent places the pane it opened",
+      "changes_bullets": [
+        "SwapAsk / SwapHow: the swap's request grammar is a TYPE the daemon parses and every client builds, and its answer carries an `outcome` word — four, total over the grammar, one cause each (swapped / same_pane / at_edge / untiled).",
+        "An EDGE, a FLOATING origin and a pane the session does not hold answered the SAME BYTES until now, the third as SUCCESS; measured against a parent-commit daemon before the design was written, not argued.",
+        "swap-pane -L|-R|-U|-D joins the binding vocabulary with four derived defaults (prefix S-Arrow), and MCP swap_pane lets an agent place the pane it opened — gated on `opened_by`, the third instance of R294's policy."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 45 targets / 1966 tests (R300 left 1956); clippy 0 with no new suppression; fmt; doc gate 0/16, which CAUGHT three links a rename broke; pixel smoke 136/0.",
+        "FOURTEEN revert-proofs, each shown to DISCRIMINATE — the sharpest drove the UNSHIFTED arrow through the new live TUI test and the arrangement never moved, which is what proves the modifier reaches the client's decoder.",
+        "Skew run BOTH directions against a parent-commit daemon (own worktree, socket and XDG config/data/state, a swap that MOVES first as the live control): an added ANSWER key is absent-not-wrong, so WIRE_PROTOCOL stays 5.",
+        "Requests priced with a control that moves (3 with a named scope, 2 without) and the first instrument DISCARDED for measuring nothing — it traced write(2) where the transport uses sendto(2)."
+      ],
+      "impact_refs": [
+        "1",
+        "2"
+      ],
+      "carry_forward_bullets": [
+        "Item 26's own wording was FALSE and measuring refuted it: `sprag swap-pane 7 -L` always sent an origin, so the asymmetry was a SPELLING, not a capability. Sixth instance of an inherited item's wording being a claim.",
+        "herdr is AHEAD on the axis this round takes: `PaneSwapReason` has four words where sprag had none. Its `NoNeighbor` still covers an edge AND a source missing from the rects it last composed, and its key path resolves from that frame.",
+        "Item 27 opened, with two entries FIXED rather than registered — the `outcome` key spelled two ways one function apart, and a doc naming an argument its function does not take."
+      ],
+      "publishable_decision_summary": "R301: a swap says WHICH nothing happened, and an agent places the pane it opened",
+      "publishable_changes_bullets": [
+        "SwapAsk / SwapHow: the swap's request grammar is a TYPE the daemon parses and every client builds, and its answer carries an `outcome` word — four, total over the grammar, one cause each (swapped / same_pane / at_edge / untiled).",
+        "An EDGE, a FLOATING origin and a pane the session does not hold answered the SAME BYTES until now, the third as SUCCESS; measured against a parent-commit daemon before the design was written, not argued.",
+        "swap-pane -L|-R|-U|-D joins the binding vocabulary with four derived defaults (prefix S-Arrow), and MCP swap_pane lets an agent place the pane it opened — gated on `opened_by`, the third instance of R294's policy."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 45 targets / 1966 tests (R300 left 1956); clippy 0 with no new suppression; fmt; doc gate 0/16, which CAUGHT three links a rename broke; pixel smoke 136/0.",
+        "FOURTEEN revert-proofs, each shown to DISCRIMINATE — the sharpest drove the UNSHIFTED arrow through the new live TUI test and the arrangement never moved, which is what proves the modifier reaches the client's decoder.",
+        "Skew run BOTH directions against a parent-commit daemon (own worktree, socket and XDG config/data/state, a swap that MOVES first as the live control): an added ANSWER key is absent-not-wrong, so WIRE_PROTOCOL stays 5.",
+        "Requests priced with a control that moves (3 with a named scope, 2 without) and the first instrument DISCARDED for measuring nothing — it traced write(2) where the transport uses sendto(2)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "2"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Item 26's own wording was FALSE and measuring refuted it: `sprag swap-pane 7 -L` always sent an origin, so the asymmetry was a SPELLING, not a capability. Sixth instance of an inherited item's wording being a claim.",
+        "herdr is AHEAD on the axis this round takes: `PaneSwapReason` has four words where sprag had none. Its `NoNeighbor` still covers an edge AND a source missing from the rects it last composed, and its key path resolves from that frame.",
+        "Item 27 opened, with two entries FIXED rather than registered — the `outcome` key spelled two ways one function apart, and a doc naming an argument its function does not take."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
