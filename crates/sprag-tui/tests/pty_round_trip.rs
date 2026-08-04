@@ -52,7 +52,7 @@ use portable_pty::{
 };
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, PANES_SLOT, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION,
+    FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -951,6 +951,44 @@ const ARROW_LEFT: &[u8] = b"\x1b[D";
 /// ...and the RIGHT arrow, `CSI C`.
 const ARROW_RIGHT: &[u8] = b"\x1b[C";
 
+/// The bytes a terminal sends for SHIFT + the left arrow — `CSI 1;2D`, the modified form, where
+/// parameter 2 is the modifier mask (`1 + 1` for shift).
+///
+/// This is a DIFFERENT byte sequence from [`ARROW_LEFT`], not the same one with a flag, which is
+/// exactly why the binding it drives had to be driven live rather than reasoned about: a client
+/// whose decoder dropped the parameters would report `ArrowLeft` and silently run the SELECT.
+const SHIFT_ARROW_LEFT: &[u8] = b"\x1b[1;2D";
+
+/// ...and SHIFT + the right arrow, `CSI 1;2C`.
+const SHIFT_ARROW_RIGHT: &[u8] = b"\x1b[1;2C";
+
+/// The ARRANGEMENT's pane order for `session`'s current window — the fact a swap moves and the pane
+/// LISTING does not.
+///
+/// [`pane_ids`] answers the pool, which is deliberately unmoved by a swap (`panes` says WHO,
+/// `layout` says WHERE), so a swap test that read it would pass over a daemon that did nothing at
+/// all. This reads the arena the layout slot publishes and takes its leaves in order.
+fn tiled_order(conn: &mut HostConn, session: &str) -> Vec<u64> {
+    let Ok(layout) = conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(LAYOUT_SLOT) }),
+    ) else {
+        return Vec::new();
+    };
+    // The arena's nodes in index order are not paint order; the tree's `panes()` walk is. Reading
+    // the leaves as they appear is enough HERE because a one-split window's arena holds its two
+    // leaves in the order the split made them, which the assertions below pin explicitly.
+    layout["tree"]["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|node| node["leaf"].as_u64())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// What an 80x24 terminal divides into, computed the way the layouter computes it so the numbers in
 /// the tests below are derived rather than copied: one cell for the divider, the remainder split
 /// with the odd cell on the far side.
@@ -1218,6 +1256,88 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
         !held.contains("elsewhere"),
         "what was typed after moving right must not reach pane 0: {held:?}",
     );
+}
+
+/// **The SHIFTED arrow moves the PANE, and the cursor stays with it** — `prefix S-Left` in the
+/// shipped binary, against a real daemon, with nothing bound by this test.
+///
+/// The twin of `the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge`, and it exists as a LIVE
+/// test rather than a unit one for a reason that was a real risk and not a ritual: `S-ArrowLeft` is a
+/// different byte sequence from `ArrowLeft` (`CSI 1;2D` against `CSI D`), so a default binding on a
+/// modified key is a promise about this client's DECODER. A decoder that dropped the modifier would
+/// report `ArrowLeft`, run the SELECT, and leave a shipped default binding that parses and never
+/// fires — the exact shape the keymap's own docs say the vocabulary must not have.
+///
+/// Three claims:
+///
+/// * **the ARRANGEMENT moves** — read from the layout slot, because the pane LISTING is deliberately
+///   unmoved by a swap and a test reading it would pass over a daemon that did nothing;
+/// * **the ACTIVE pane does not** — which is what tells this apart from the select one modifier key
+///   away. A client that ran `select-pane -L` here would move the cursor and leave the layout alone,
+///   i.e. it would fail both of the first two assertions in opposite directions;
+/// * **the EDGE is quiet** — the same pane, pressed again with nothing to its left, moves nothing and
+///   fails nothing.
+#[test]
+fn the_shifted_arrows_move_the_pane_and_leave_the_cursor_on_it() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    tui.type_bytes(b"before");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "before")
+    });
+
+    // `-h` puts the panes side by SIDE, so pane 0 is the LEFT one and focus lands on the right.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for("the split to settle", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        )
+    });
+    let ids = pane_ids(&mut conn, &session);
+    let (left, right) = (ids[0], ids[1]);
+    wait_for("the split to leave the session on the NEW pane", || {
+        settled(active_pane(&mut conn, &session), &Some(right))
+    });
+    assert_eq!(
+        tiled_order(&mut conn, &session),
+        vec![left, right],
+        "the split put the new pane on the RIGHT, which is what the presses below depend on",
+    );
+
+    // SHIFT-LEFT: the pane the user is on trades places with pane 0.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(SHIFT_ARROW_LEFT);
+    wait_for("the shifted left arrow to trade the two panes", || {
+        settled(tiled_order(&mut conn, &session), &vec![right, left])
+    });
+    assert_eq!(
+        active_pane(&mut conn, &session),
+        Some(right),
+        "and the user is still on the pane they moved — a swap moves a PANE, not a cursor, which \
+         is the whole difference from the unshifted arrow",
+    );
+
+    // ...AT THE EDGE: nothing moves, and nothing fails. A client that read this as a CYCLE would
+    // send the pane back to the right and the assertion below would catch it.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(SHIFT_ARROW_LEFT);
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(SHIFT_ARROW_RIGHT);
+    wait_for("the shifted RIGHT arrow to trade them back", || {
+        settled(tiled_order(&mut conn, &session), &vec![left, right])
+    });
+    assert_eq!(
+        active_pane(&mut conn, &session),
+        Some(right),
+        "the cursor stayed put across all three presses",
+    );
+
+    // The pane's CHILD is still reachable, which is what says the swap moved a leaf rather than
+    // rebuilding one: the session is on `right` and typing still lands there.
+    typing_follows(&mut tui, &mut conn, &session, right);
 }
 
 /// An arrangement changed by ANOTHER client reaches this one — the property that makes a

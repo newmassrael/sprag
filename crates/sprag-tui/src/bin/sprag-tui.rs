@@ -344,6 +344,24 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
+                    // The SWAP's twin of the arm above, and identical for the same reason: the
+                    // daemon resolves the direction and this re-reads. What it does NOT need is a
+                    // focus move — the active pane is a PANE, so a user typing into it goes on
+                    // typing into it in its new cell, and the reconcile below just re-tiles.
+                    Command::Act(BoundAction::SwapPaneToward { dir }) => {
+                        host.swap_toward(dir);
+                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        mouse.follow(&host, &tiling);
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            focus,
+                            Clear::No,
+                            &mut held,
+                        )?;
+                    }
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
                         select_pane(&host, &mut focus, next.or_else(|| tiling.first_pane()));

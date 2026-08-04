@@ -382,6 +382,26 @@ pub enum BoundAction {
         /// Which way to move — tmux's `-L` / `-R` / `-U` / `-D`.
         dir: PaneDir,
     },
+    /// `swap-pane -L|-R|-U|-D` — trade places with the pane ADJACENT in that direction.
+    ///
+    /// [`SelectPaneToward`](Self::SelectPaneToward)'s twin: the same walk over the same arrangement,
+    /// moving the PANE instead of the cursor. Everything that arm's docs say about where adjacency
+    /// is resolved holds here verbatim — the direction travels and the daemon walks its own tree,
+    /// where the rival's key path reads the rectangles of the frame it last composed
+    /// (`directional_pane_swap_from_view`, herdr `9a4ce5e1`) and only falls back to its API when
+    /// that lookup fails.
+    ///
+    /// **It carries no origin**, unlike the CLI verb and the MCP tool: a keystroke can only ever
+    /// mean "the pane I am on", which is the same reason
+    /// [`SelectPaneToward`](Self::SelectPaneToward) carries none.
+    SwapPaneToward {
+        /// Which way the pane moves — tmux's `-L` / `-R` / `-U` / `-D` spelling, though not tmux's
+        /// MEANING: `swap-pane -U` there swaps with the previous pane in index order, where this is
+        /// the pane above in the arrangement. sprag has no index-order swap to give the flag its
+        /// tmux reading, and one vocabulary for the four directions is worth more than a flag that
+        /// means two things.
+        dir: PaneDir,
+    },
     /// `zoom-pane [-Z|-u]` — fill the window with the focused pane alone, or give the arrangement
     /// back (tmux's `resize-pane -Z`, bound to `prefix z`).
     ZoomPane {
@@ -468,11 +488,12 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 5] = [
+    pub const VOCABULARY: [&'static str; 6] = [
         "detach-client",
         "send-prefix",
         "split-window -h|-v [-b]",
         "select-pane -L|-R|-U|-D|-t :.+",
+        "swap-pane -L|-R|-U|-D",
         "zoom-pane [-Z|-u]",
     ];
 
@@ -582,6 +603,22 @@ impl BoundAction {
                      the rest of tmux's target grammar is not built",
                 )),
             },
+            // The select's directional arm, with the two things a binding must not carry left out:
+            // no `-t` target (a keystroke acts where the user is, `split-window`'s rule) and no
+            // partner pane id (same rule, and the CLI verb has both).
+            "swap-pane" => match flags.as_slice() {
+                [flag] if let Some(dir) = direction_of(flag) => Ok(Self::SwapPaneToward { dir }),
+                [first, second]
+                    if direction_of(first).is_some() && direction_of(second).is_some() =>
+                {
+                    Err(bad("-L/-R/-U/-D name one direction; give only one"))
+                }
+                _ => Err(bad(
+                    "a binding swaps by DIRECTION (-L/-R/-U/-D); the pane id and the partner the \
+                     CLI verb takes are what a keystroke cannot carry, since it acts where the \
+                     user is",
+                )),
+            },
             _ => Err(KeyError::UnknownAction(verb.to_owned())),
         }
     }
@@ -609,6 +646,7 @@ impl fmt::Display for BoundAction {
                 NEXT_PANE_TARGET[0], NEXT_PANE_TARGET[1]
             ),
             Self::SelectPaneToward { dir } => write!(f, "select-pane {}", flag_of(*dir)),
+            Self::SwapPaneToward { dir } => write!(f, "swap-pane {}", flag_of(*dir)),
             Self::ZoomPane { on } => f.write_str(match on {
                 None => "zoom-pane",
                 Some(true) => "zoom-pane -Z",
@@ -684,13 +722,21 @@ pub struct Keymap {
 }
 
 impl Default for Keymap {
-    /// tmux's own defaults, for the actions sprag's clients have.
+    /// tmux's own defaults, for the actions sprag's clients have — plus ONE derived set, named as
+    /// such.
     ///
     /// Verified against `tmux 3.2a`'s `list-keys -T prefix` on this machine rather than recalled:
     /// `C-b send-prefix`, `" split-window`, `% split-window -h`, `d detach-client`,
     /// `o select-pane -t :.+`, and `-r Up/Down/Left/Right select-pane -U/-D/-L/-R`. The one
     /// divergence is `"`, spelled `-v` here for the reason [`BoundAction::parse`] gives; the arrow
     /// keys carry sprag's own names for the reason the module docs give.
+    ///
+    /// **The four SHIFTED arrows are not tmux's and this is where that is said.** tmux's only swap
+    /// defaults are `{` and `}` (`swap-pane -U` / `-D`), and there those flags mean the PREVIOUS and
+    /// NEXT pane in index order — a verb sprag does not have, so those keys would carry a different
+    /// meaning under a spelling a tmux user already knows. The shifted arrow is derived from the
+    /// four lines above it instead: same key, same direction, moving the pane rather than the
+    /// cursor.
     fn default() -> Self {
         let key = |spec: &str| KeySpec::parse(spec).expect("a default key spec is well formed");
         let bind = |spec: &str, action| Bind {
@@ -706,6 +752,7 @@ impl Default for Keymap {
             ..bind(spec, action)
         };
         let toward = |dir| BoundAction::SelectPaneToward { dir };
+        let swapping = |dir| BoundAction::SwapPaneToward { dir };
         Self {
             prefix: key("C-b"),
             repeat_time: DEFAULT_REPEAT_TIME,
@@ -744,6 +791,24 @@ impl Default for Keymap {
                 repeating("ArrowDown", toward(PaneDir::Down)),
                 repeating("ArrowLeft", toward(PaneDir::Left)),
                 repeating("ArrowRight", toward(PaneDir::Right)),
+                // THE SAME ARROW, WITH SHIFT: take the pane with you instead of leaving it.
+                //
+                // Derived from the table above rather than copied from either rival, and that is
+                // the argument for it. tmux's ONLY swap defaults are `{` and `}` — `swap-pane -U`
+                // and `-D`, which there mean the PREVIOUS and NEXT pane in index order, not up and
+                // down; sprag has no index-order swap, so binding those keys would give a tmux
+                // user's fingers a different verb under the same spelling. herdr binds
+                // `prefix+shift+h/j/k/l`, a vim vocabulary this map does not otherwise speak.
+                // Shift-plus-the-focus-key is instead the relationship every tiling window manager
+                // already uses for move-versus-focus, and it composes with the four keys sprag has
+                // already chosen.
+                //
+                // `-r` for the arrows' own reason: moving a pane three cells is three presses, and
+                // holding the prefix table open is what makes them one gesture.
+                repeating("S-ArrowUp", swapping(PaneDir::Up)),
+                repeating("S-ArrowDown", swapping(PaneDir::Down)),
+                repeating("S-ArrowLeft", swapping(PaneDir::Left)),
+                repeating("S-ArrowRight", swapping(PaneDir::Right)),
             ],
         }
     }
@@ -1260,6 +1325,27 @@ mod tests {
                 "select-pane -D",
                 BoundAction::SelectPaneToward { dir: PaneDir::Down },
             ),
+            // All four again for the SWAP, and the point of asserting the set twice is that the two
+            // verbs must not collapse into one: they share a flag table and a direction type, so a
+            // parse that fell through to the select would round-trip its own answer and pass.
+            (
+                "swap-pane -L",
+                BoundAction::SwapPaneToward { dir: PaneDir::Left },
+            ),
+            (
+                "swap-pane -R",
+                BoundAction::SwapPaneToward {
+                    dir: PaneDir::Right,
+                },
+            ),
+            (
+                "swap-pane -U",
+                BoundAction::SwapPaneToward { dir: PaneDir::Up },
+            ),
+            (
+                "swap-pane -D",
+                BoundAction::SwapPaneToward { dir: PaneDir::Down },
+            ),
             // All three states of the zoom, because the bare form is the TOGGLE here — the one
             // place this vocabulary reads a bare verb as a meaning rather than refusing it, and the
             // round trip is what pins that the three do not collapse into one another.
@@ -1367,6 +1453,40 @@ mod tests {
             both.to_string().contains("give only one"),
             "and it says which mistake it was: {both}",
         );
+
+        // The SWAP takes ONE of those two shapes — the directions — and the refusals say so. Its
+        // `-t :.+` is not "unbuilt but coming": a swap with the next pane in PAINT order is a
+        // different verb from a swap with the pane beside you, and this vocabulary has only the
+        // second.
+        assert_eq!(
+            BoundAction::parse("swap-pane -U"),
+            Ok(BoundAction::SwapPaneToward { dir: PaneDir::Up })
+        );
+        for action in [
+            "swap-pane",
+            "swap-pane -t :.+",
+            // The partner and the origin the CLI verb takes: both are ids, and a keystroke acts
+            // where the user is.
+            "swap-pane 3",
+            "swap-pane 3 -L",
+            "swap-pane -L -t :.+",
+            "swap-pane -x",
+        ] {
+            assert!(
+                matches!(BoundAction::parse(action), Err(KeyError::BadFlags { .. })),
+                "{action:?} should be refused",
+            );
+        }
+        let swap_both = BoundAction::parse("swap-pane -L -R").expect_err("one direction only");
+        assert!(
+            swap_both.to_string().contains("give only one"),
+            "and it says which mistake it was: {swap_both}",
+        );
+        let carried = BoundAction::parse("swap-pane 3").expect_err("a binding names no pane");
+        assert!(
+            carried.to_string().contains("where the user is"),
+            "and it says where a binding acts: {carried}",
+        );
     }
 
     /// **The vocabulary a user is shown is the vocabulary the parser has.**
@@ -1436,7 +1556,8 @@ mod tests {
         }
     }
 
-    /// The defaults ARE tmux's table for the actions sprag's clients have.
+    /// The defaults ARE tmux's table for the actions sprag's clients have — and the four rows that
+    /// are NOT tmux's are the last four, which is why this asserts the whole list in order.
     ///
     /// The REPEAT flag is asserted with each row rather than in a test of its own, because `-r` is
     /// half of what a default binding IS: tmux's four arrows repeat and its other five do not, and
@@ -1474,7 +1595,35 @@ mod tests {
                 "-r ArrowDown select-pane -D",
                 "-r ArrowLeft select-pane -L",
                 "-r ArrowRight select-pane -R",
+                // NOT tmux's — DERIVED from the four above, and the only rows in this table that
+                // are. tmux binds `{` / `}` to `swap-pane -U` / `-D`, which there mean the previous
+                // and next pane in INDEX order; sprag has no index-order swap, so those keys would
+                // mean something else under a spelling a tmux user already knows. Shift-plus-the-
+                // focus-key is the move-versus-focus relationship every tiling window manager uses.
+                "-r S-ArrowUp swap-pane -U",
+                "-r S-ArrowDown swap-pane -D",
+                "-r S-ArrowLeft swap-pane -L",
+                "-r S-ArrowRight swap-pane -R",
             ],
+        );
+        // The SHIFT is what tells the two sets apart, and it is asserted as a fact about the
+        // lookup rather than as a rendering: an unshifted arrow must still SELECT. Without this a
+        // key vocabulary that dropped the modifier would print the table above and bind eight rows
+        // onto four keys, with the first match winning silently.
+        assert_eq!(
+            keymap.action(KeyTable::Prefix, "ArrowLeft", Modifiers::default()),
+            Some(BoundAction::SelectPaneToward { dir: PaneDir::Left }),
+        );
+        assert_eq!(
+            keymap.action(
+                KeyTable::Prefix,
+                "ArrowLeft",
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                }
+            ),
+            Some(BoundAction::SwapPaneToward { dir: PaneDir::Left }),
         );
     }
 

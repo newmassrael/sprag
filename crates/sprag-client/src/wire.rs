@@ -95,9 +95,9 @@ use sprag_host::wire::{
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, SelectAsk, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
-    ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
-    session_activity_at,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SwapAsk, SwapHow, TEXT_ACTION,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
+    project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -1927,6 +1927,28 @@ impl HostClient for WireHost {
             "select_toward",
         )?;
         answer["pane"].as_u64().map(PaneId)
+    }
+
+    /// Send the DIRECTION and let the daemon trade the two leaves — the same action
+    /// `sprag swap-pane -L` invokes, so a keystroke and a shell command are one code path.
+    ///
+    /// [`Self::select_toward`]'s twin in every respect, including what it DROPS: the answer names
+    /// both panes and carries an `outcome` word (`sprag_host::wire::SwapHow` — an edge, a floating
+    /// origin and a pane traded with itself all read differently there), and this keeps only
+    /// whether the arrangement moved, because nothing that draws one has anything to SAY about why
+    /// it did not.
+    ///
+    /// The origin is absent for that method's reason: a keypress is always "the pane I am on".
+    fn swap_toward(&self, dir: PaneDir) -> bool {
+        self.request(
+            "scene/invoke",
+            invoke(
+                &mux_action_path(SWAP_PANE_ACTION),
+                SwapAsk::Toward { pane: None, dir }.to_args(),
+            ),
+            "swap_toward",
+        )
+        .is_some_and(|answer| SwapHow::read(&answer, Some(dir)).changed())
     }
 
     /// The session's arbitrated window, read from the same mirror as the arrangement — a lock, no

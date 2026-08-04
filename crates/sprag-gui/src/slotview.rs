@@ -191,6 +191,16 @@ impl SlotView {
         let _ = self.host.select_toward(dir);
     }
 
+    /// Ask the daemon to TRADE the active pane with its neighbour one step in `dir` — the swap's
+    /// directional arm, resolved against the same arrangement (see [`HostClient::swap_toward`]).
+    ///
+    /// The answer is dropped for [`Self::select_toward`]'s reason: the daemon announces an
+    /// arrangement that moved, and the layout mirror this client projects from is what re-reads it.
+    /// Adopting the answer here would be a second path to a fact this client has one path to.
+    pub(crate) fn swap_toward(&self, dir: PaneDir) {
+        let _ = self.host.swap_toward(dir);
+    }
+
     /// The display slot holding `pane` — the inverse of [`Self::id`], for PROJECTING
     /// host-side state that names panes by identity (the window's arrangement) onto this
     /// client's slots.

@@ -328,6 +328,9 @@ fn action_label(action: BoundAction) -> &'static str {
         // action landed on is in the next frame's layout — the same reason the split's flags are
         // left out.
         BoundAction::SelectNextPane | BoundAction::SelectPaneToward { .. } => "select-pane",
+        // Its own verb, unlike the two select forms above: this one MOVES A PANE, and a label that
+        // said `select-pane` would name the gesture the user did not make.
+        BoundAction::SwapPaneToward { .. } => "swap-pane",
         BoundAction::ZoomPane { .. } => "zoom-pane",
     }
 }
@@ -369,6 +372,10 @@ fn perform(action: BoundAction, active: usize) {
         // request on the next pass. One path to "which pane the session is on" rather than two,
         // which is the same discipline the zoom below leans on.
         BoundAction::SelectPaneToward { dir } => use_terminal().slots.select_toward(dir),
+        // The same shape one verb over, and for the same reason: the daemon resolves the direction
+        // and announces the arrangement it produced, which is the channel the dock topology is
+        // already projected from. Nothing here repaints.
+        BoundAction::SwapPaneToward { dir } => use_terminal().slots.swap_toward(dir),
         // The wire client re-reads the arrangement when the zoom moved anything, and the layout
         // mirror is what the dock topology is projected from — so this repaints through the channel
         // that already carries an arrangement change, exactly as the split above does.
