@@ -52,7 +52,8 @@ use portable_pty::{
 };
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, LAYOUT_SLOT, PANES_SLOT, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION,
+    FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RENAME_SESSION_ACTION,
+    SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -1501,6 +1502,103 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
 /// The detach is driven as the two keystrokes a user types, through the same decoder every other
 /// key crosses, so this is the prefix mechanism observed in the shipped binary rather than in the
 /// unit test of the routing function.
+/// A REAL client SURVIVES a rename of the session it is attached to, and goes on painting it.
+///
+/// The live driver for R303, and the only thing that proves the CLIENT uses the attached scope: the
+/// daemon serving it is a separate claim (`sprag-host`'s
+/// `an_attached_client_follows_a_rename_where_a_name_scoped_one_is_captured_by_an_impostor`), and a
+/// client that never asked for it would pass that one and die here.
+///
+/// **Measured before it was written**, against a daemon at `2402e62`: `sprag attach alpha --tui`
+/// EXITED the moment `sprag rename-session` ran — its next scoped read carried the retired name,
+/// the daemon refused it, and `detach_reason` reads any refusal as "my session is gone". A control
+/// in the same run renamed a DIFFERENT session and the client lived, which is what made the
+/// instrument mean something; that control is the first half of this test.
+///
+/// The client's DEATH is deliberately not what is asserted, because it is not the only shape the
+/// failure takes: reverting `attach_and_follow`'s scope switch and running THIS harness leaves the
+/// client a live process painting nothing — frozen on the frame it had when the name was retired
+/// (measured; the reverted run's last observation is `["before", …] (client: running)`). Both are
+/// the same defect and neither is the definition of it, so what this asserts is the thing a user
+/// actually has: a client that is still counted on its session and still painting it.
+///
+/// The three assertions are ordered so each one's failure says something different:
+///
+/// 1. renaming ANOTHER session must not disturb this client (the control — a client that ignored
+///    every refusal would pass 2 and 3 while asserting nothing);
+/// 2. renaming ITS OWN session leaves it running and still counted as a viewer, now under the new
+///    name (the attachment moved, R302, and the client's scope moved with it);
+/// 3. it still PAINTS the pane — typed after the rename, so the whole round trip (keystroke → the
+///    session's pane → the frame back) is exercised on the far side of the address change, not just
+///    the process's continued existence.
+#[test]
+fn a_rename_of_its_session_leaves_the_client_attached_and_painting() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let rename = |conn: &mut HostConn, from: &str, to: &str| {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": from,
+                "path": mux_action_path(RENAME_SESSION_ACTION),
+                "args": { "name": to },
+            }),
+        )
+        .expect("rename_session answers");
+    };
+
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+
+    // 1. THE CONTROL: another session is renamed. Nothing about this client may move.
+    let mut admin = observe(&sock);
+    admin
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "bystander" } }),
+        )
+        .expect("new_session answers");
+    rename(&mut admin, "bystander", "renamed-bystander");
+    wait_for("the client to still be counted on its own session", || {
+        settled(attached(&mut conn, &session), &1)
+    });
+
+    // 2. ITS OWN session is renamed, out of band, by a third party.
+    rename(&mut admin, &session, "prod");
+    wait_for("the viewer badge to follow the name", || {
+        settled(attached(&mut conn, "prod"), &1)
+    });
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "the client must outlive a rename of the session it is viewing",
+    );
+
+    // 3. ...and it is still a WORKING client, not merely a live process.
+    // The row ACCUMULATES (the pane's `cat` echoes onto the same line), so the expected text is
+    // both halves — which is stronger than matching the new one alone: it says the client is
+    // painting the SAME pane it was before the rename, not a fresh view of something else.
+    tui.type_bytes(b"after");
+    wait_for("the client to paint through the new address", || {
+        painted(&mut tui, "beforeafter")
+    });
+    assert_eq!(
+        pane_size(&mut conn, "prod"),
+        Some(BOOT_PTY),
+        "and it is still the session's client, holding the pane at its terminal's size",
+    );
+
+    // 4. AND IT SAYS SO. Surviving the rename is not enough if the client goes on LABELLING itself
+    // with the retired name — which is exactly what it did when the survival landed and the name was
+    // still a string cached at boot: MEASURED, one `OSC 2` in a whole capture, `sprag: alpha`, for a
+    // client the daemon was reporting on `production`. The terminal title is the one label a test
+    // can read from outside the process, and it is fed by the same `current_session()` the session
+    // rail highlights with and the next/previous walk indexes by.
+    wait_for(
+        "the terminal's title to name the session's NEW name",
+        || settled(tui.title(), &Some("sprag: prod".to_owned())),
+    );
+}
+
 #[test]
 fn the_prefix_detaches_and_the_session_lives_on() {
     let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
