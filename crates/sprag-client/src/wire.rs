@@ -1902,6 +1902,12 @@ impl HostClient for WireHost {
     /// The reply carries the pane the window is on afterwards, which is what a caller adopts; a
     /// direction with no neighbour answers the unmoved pane rather than a fault, so an arrow key
     /// held against the edge of a layout is quiet.
+    ///
+    /// **It also carries an `outcome` word this client DROPS** (`sprag_host::wire::SelectHow`: an
+    /// edge and a floating active pane read differently there). Deliberate, and recorded here rather
+    /// than left for a reader to wonder about: the trait answers where to put the focus ring, and
+    /// nothing that draws one has anything to SAY about why it did not move. The day a client wants
+    /// "you are at the edge", this signature is where the fact stops.
     fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
         let answer = self.request(
             "scene/invoke",

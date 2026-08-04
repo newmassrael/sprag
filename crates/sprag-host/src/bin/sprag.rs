@@ -4327,22 +4327,22 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
 fn swap_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = target_and_rest(args, "swap-pane")?;
-    let mut dir: Option<&'static str> = None;
+    let mut dir: Option<PaneDir> = None;
     let mut panes: Vec<u64> = Vec::new();
     for arg in rest {
-        match arg.as_str() {
-            "-L" | "-R" | "-U" | "-D" => {
+        // The ONE flag parser ([`keymap::direction_of`](sprag_host::keymap::direction_of)), not a
+        // table of this verb's own: until R299 both this and `select-pane` mapped a flag straight to
+        // a WIRE word, skipping `PaneDir` — two copies of one vocabulary, checked by nothing, and the
+        // second one survived the round that removed the first because nothing failed either way.
+        match sprag_host::keymap::direction_of(&arg) {
+            Some(named) => {
                 if dir.is_some() {
                     return Err(bad("swap-pane: give only one direction".to_owned()));
                 }
-                dir = Some(match arg.as_str() {
-                    "-L" => "left",
-                    "-R" => "right",
-                    "-U" => "up",
-                    _ => "down",
-                });
+                dir = Some(named);
             }
-            other => {
+            None => {
+                let other = arg.as_str();
                 if panes.len() == 2 {
                     return Err(bad(format!("swap-pane: unexpected argument {other:?}")));
                 }
@@ -4365,9 +4365,9 @@ fn swap_pane(args: Vec<String>) -> io::Result<()> {
         ([with], None) => args["with"] = json!(with),
         ([pane], Some(dir)) => {
             args["pane"] = json!(pane);
-            args["dir"] = json!(dir);
+            args["dir"] = json!(dir.wire_str());
         }
-        ([], Some(dir)) => args["dir"] = json!(dir),
+        ([], Some(dir)) => args["dir"] = json!(dir.wire_str()),
         _ => {
             return Err(bad(
                 "swap-pane takes a pane to swap with OR a direction (-L/-R/-U/-D), not both"

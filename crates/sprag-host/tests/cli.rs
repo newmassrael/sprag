@@ -2253,6 +2253,69 @@ fn drawn_layout(sock: &Path) -> String {
     rest.to_owned()
 }
 
+/// `swap-pane -L|-R` over the socket — the DIRECTIONAL half of the verb, which had **no live
+/// coverage at all** until R299 touched its flag parse.
+///
+/// It is its own test rather than a step in `the_cli_shows_where_the_placement_verbs_put_a_pane`,
+/// whose every assertion inherits the state the one before it left: appending there broke a later
+/// zoom reading, which is R272's *"read what a CONTAINER asserts before appending"* met head on.
+///
+/// Two claims. The flags are two DIRECTIONS (a verb that mapped every flag to one word would pass a
+/// single-direction test — this one held its own `"-R" => "right"` table, a copy of the one
+/// `select-pane` shed, checked by nothing), and **the EDGE succeeds**: a key bound to this must not
+/// log a failure every time a user reaches the side of their own layout.
+#[test]
+fn the_cli_swaps_a_pane_with_the_one_in_a_direction() {
+    let (_host, sock) = spawn_host();
+    let split = sprag(&sock, &["split-window", "-h", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let new_pane = split.stdout.trim().to_owned();
+    // ASSERTED, not assumed: the split leaves the session on the pane it opened, on the RIGHT — so
+    // the first press below has somewhere to go and the second is at an edge.
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane 0\n└─ pane {new_pane}\n"),
+    );
+
+    let left = sprag(&sock, &["swap-pane", "-t", "0", "-L"]);
+    assert!(left.ok, "swap-pane -L succeeded: {}", left.stderr);
+    assert_eq!(
+        left.stdout.trim(),
+        format!("swapped pane {new_pane} with 0"),
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane {new_pane}\n└─ pane 0\n"),
+        "the active pane traded with the one to ITS LEFT",
+    );
+
+    // AT THE EDGE: the same flag, from the pane it just moved to the left of the window.
+    let edge = sprag(&sock, &["swap-pane", "-t", "0", "-L"]);
+    assert!(
+        edge.ok,
+        "walking into the edge is not an error: {}",
+        edge.stderr
+    );
+    assert_eq!(
+        edge.stdout.trim(),
+        format!("pane {new_pane} has nothing to trade with that way"),
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane {new_pane}\n└─ pane 0\n"),
+        "and nothing moved",
+    );
+
+    // ...and the OTHER flag is the other direction, which is what tells a direction from a toggle.
+    let right = sprag(&sock, &["swap-pane", "-t", "0", "-R"]);
+    assert!(right.ok, "swap-pane -R succeeded: {}", right.stderr);
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane 0\n└─ pane {new_pane}\n"),
+        "back where it started, so the two flags are not one direction spelled twice",
+    );
+}
+
 /// What the three placement verbs DID, as the CLI can now show it — debt-register item 11.
 ///
 /// The point of the test is the pair of readings taken at every step: `sprag panes` lists the same
@@ -3043,6 +3106,21 @@ fn list_keys_reads_the_users_config_with_no_daemon() {
         binds.contains(&"bind-key -T prefix C-a send-prefix".to_owned()),
         "the self-send follows the prefix: {binds:?}",
     );
+    // THE FOUR DIRECTIONAL DEFAULTS, INCLUDING THE `-r` COLUMN — the rows R297 shipped and read by
+    // hand, which left nothing standing: this test mentioned `ArrowUp` and `select-pane -U` zero
+    // times, and the keymap's own unit test asserts a string IT formats rather than this rendering.
+    // R299 then rewrote the flag table underneath both, which is the round that owed the assertion.
+    for (key, flag) in [
+        ("ArrowUp", "-U"),
+        ("ArrowDown", "-D"),
+        ("ArrowLeft", "-L"),
+        ("ArrowRight", "-R"),
+    ] {
+        assert!(
+            binds.contains(&format!("bind-key -r -T prefix {key} select-pane {flag}")),
+            "tmux repeats exactly these four, and the -r is part of the row: {binds:?}",
+        );
+    }
 }
 
 /// A broken config is a clean refusal that names the file and what is wrong — never a silently

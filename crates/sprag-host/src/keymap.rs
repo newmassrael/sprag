@@ -424,8 +424,12 @@ const NEXT_PANE_TARGET: [&str; 2] = ["-t", ":.+"];
 /// no compiler checks for completeness. A new variant therefore fails to compile HERE (so it cannot
 /// be rendered wrongly) and would fail to PARSE silently if it were also left out of `ALL`. Rust
 /// has no stable way to derive that array, so the gap is named rather than hidden.
+///
+/// PRIVATE, unlike [`direction_of`]: rendering a flag is this module's own job (the `Display` below),
+/// and nothing outside it asks. A `pub` with no caller outside the crate is the shape this project has
+/// now recorded three times and is not adding a fourth.
 #[must_use]
-pub fn flag_of(dir: PaneDir) -> &'static str {
+fn flag_of(dir: PaneDir) -> &'static str {
     match dir {
         PaneDir::Left => "-L",
         PaneDir::Right => "-R",
@@ -434,8 +438,12 @@ pub fn flag_of(dir: PaneDir) -> &'static str {
     }
 }
 
-/// The [`PaneDir`] a directional flag names, or [`None`] for anything that is not one —
-/// [`flag_of`]'s inverse, derived from it rather than tabulated beside it.
+/// The [`PaneDir`] a directional flag names (`-L` / `-R` / `-U` / `-D`), or [`None`] for anything
+/// that is not one.
+///
+/// The inverse of this module's ONE flag table — an exhaustive `match`, private because rendering a
+/// flag is the keymap's own job — and DERIVED from it rather than tabulated beside it, so a parse and
+/// a render cannot drift apart while every test still passes.
 ///
 /// Public because the flag spelling has a SECOND parser: `sprag select-pane -L` reaches the same
 /// action from a shell. That one held its own `"-L" => "left"` table, which mapped a flag straight
