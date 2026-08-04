@@ -1099,6 +1099,11 @@ impl WorkspaceExternal {
 
     /// `select_pane {pane?} | {dir?}` action: make a pane active in THIS request's session's
     /// current window — tmux `select-pane`. See [`crate::wire::SELECT_PANE_ACTION`].
+    ///
+    /// Answers `{pane, changed, outcome}` — where the window is, whether that moved, and WHY it is
+    /// there ([`crate::wire::SelectHow`]). The reason is the daemon's to state because one of its
+    /// four cases cannot be reconstructed from the other two keys by any caller: an edge and a
+    /// floating active pane both leave the window where it was.
     fn select_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let empty = Map::new();
         let map = match args {
@@ -1124,16 +1129,21 @@ impl WorkspaceExternal {
             (None, Some(dir)) => crate::host::PaneTarget::Toward(dir),
             _ => return Err(InvokeError::TypeMismatch),
         };
-        let (pane, changed) = crate::host::select_pane(&self.registry, &self.scope, target)
+        let selection = crate::host::select_pane(&self.registry, &self.scope, target)
             .ok_or(InvokeError::Rejected)?;
-        if changed {
+        if selection.how.changed() {
             // Only on a real move: the announce is what wakes every parked client to re-read, and
             // a select that changed nothing has nothing for them to read.
             self.announce();
         }
-        Ok(IntrospectValue::Json(
-            serde_json::json!({ "pane": pane.0, "changed": changed }),
-        ))
+        Ok(IntrospectValue::Json(serde_json::json!({
+            "pane": selection.pane.0,
+            // Kept beside `outcome` rather than replaced by it: it is the one bit every existing
+            // client reads, and it is the whole question for one that only has to decide whether to
+            // re-project. `SelectHow::changed` is the ONE derivation of it.
+            "changed": selection.how.changed(),
+            "outcome": selection.how.wire_str(),
+        })))
     }
 
     /// The pane a request means when it names none: the current window's ACTIVE pane.
@@ -5823,7 +5833,9 @@ mod tests {
                 SELECT_PANE_ACTION,
                 IntrospectValue::Json(json!({"pane": 0}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": true}))),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 0, "changed": true, "outcome": "moved"})
+            )),
         );
 
         assert_eq!(active_row(&mut ext), Some(0));
@@ -5840,7 +5852,10 @@ mod tests {
                 SELECT_PANE_ACTION,
                 IntrospectValue::Json(json!({"pane": 0}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": false}))),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 0, "changed": false, "outcome": "already_active"})
+            )),
+            "and it says WHICH kind of nothing happened: a re-select, not an edge",
         );
         assert_eq!(rev.current(), settled, "an unchanged select wakes nobody");
     }
@@ -5860,7 +5875,9 @@ mod tests {
                 SELECT_PANE_ACTION,
                 IntrospectValue::Json(json!({"dir": "up"}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 1, "changed": true}))),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 1, "changed": true, "outcome": "moved"})
+            )),
             "UP from the bottom of the right column is the pane above it — and there is no 'up' \
              in a pane list, which is what separates this from an index walk",
         );
@@ -5869,14 +5886,18 @@ mod tests {
                 SELECT_PANE_ACTION,
                 IntrospectValue::Json(json!({"dir": "left"}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": true}))),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 0, "changed": true, "outcome": "moved"})
+            )),
         );
         assert_eq!(
             ext.invoke(
                 SELECT_PANE_ACTION,
                 IntrospectValue::Json(json!({"dir": "right"}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 1, "changed": true}))),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 1, "changed": true, "outcome": "moved"})
+            )),
             "and back to whichever of the right column's panes covers most of pane 0",
         );
     }
@@ -5900,9 +5921,66 @@ mod tests {
                 SELECT_PANE_ACTION,
                 IntrospectValue::Json(json!({"dir": "left"}))
             ),
-            Ok(IntrospectValue::Json(json!({"pane": 0, "changed": false}))),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 0, "changed": false, "outcome": "at_edge"})
+            )),
+            "and the word is at_edge, which is what makes it sayable as 'nothing to the left of 0' \
+             rather than as 'already on 0' — an answer to a question the caller did not ask",
         );
         assert_eq!(active_row(&mut ext), Some(0), "and nothing moved");
+    }
+
+    /// The fourth outcome, and the one NO caller can derive: a direction asked from a pane the
+    /// arrangement holds no leaf for. An edge and a floating pane both leave the window where it
+    /// was, so `changed: false` cannot tell them apart — and they have opposite remedies.
+    ///
+    /// The rival reports one word for both (`PaneFocusDirectionReason::NoNeighbor`, herdr
+    /// `9a4ce5e1`): `directional_pane_target` looks its source pane up among the rects it last drew
+    /// and answers `None` when it is absent, exactly as at an edge.
+    #[test]
+    fn a_direction_from_a_floating_pane_says_it_is_in_no_arrangement() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        three_pane_window(&mut ext); // the split leaves the session on pane 2
+
+        // THE CONTROL, taken first: while pane 2 is tiled, the same request moves.
+        assert_eq!(
+            ext.invoke(
+                SELECT_PANE_ACTION,
+                IntrospectValue::Json(json!({"dir": "up"}))
+            ),
+            Ok(IntrospectValue::Json(
+                json!({"pane": 1, "changed": true, "outcome": "moved"})
+            )),
+        );
+        ext.invoke(
+            SELECT_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 2})),
+        )
+        .expect("back onto the pane about to be floated");
+        ext.invoke(
+            SET_FLOATING_ACTION,
+            IntrospectValue::Json(json!({"id": 2, "floating": true})),
+        )
+        .expect("float the active pane");
+
+        for dir in ["up", "left", "right", "down"] {
+            assert_eq!(
+                ext.invoke(
+                    SELECT_PANE_ACTION,
+                    IntrospectValue::Json(json!({"dir": dir}))
+                ),
+                Ok(IntrospectValue::Json(
+                    json!({"pane": 2, "changed": false, "outcome": "untiled"})
+                )),
+                "a floating pane has no neighbour in ANY direction, and that is not an edge",
+            );
+        }
+        assert_eq!(
+            active_row(&mut ext),
+            Some(2),
+            "and the user stays where they are",
+        );
     }
 
     /// The argument shape: exactly ONE way of naming the target per request. Neither and both are

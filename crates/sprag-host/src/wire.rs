@@ -13,6 +13,8 @@
 //! same builders, so the ABI is defined once.
 
 use pinion_core::external::{SchemaArg, SchemaField};
+use serde_json::Value;
+use sprag_terminal::PaneDir;
 
 use crate::{INPUT_TAG, MUX_TAG};
 
@@ -972,12 +974,118 @@ pub const SELECT_WINDOW_ACTION: &str = "select_window";
 /// * neither, or both ⇒ `TypeMismatch`. "Select nothing" and "select two things" are not requests
 ///   with an obvious reading, and guessing one would make a client's bug silent.
 ///
-/// **A direction with no neighbour is not an error.** The answer is `{pane, changed: false}` with
-/// the active pane unmoved: a key bound to `select-pane -L` pressed at the left edge is a
-/// well-formed request whose honest answer is "nothing to move to", and refusing it would log a
-/// failure every time a user reached the edge of their layout. A `pane` that names no pane of the
-/// current window IS refused (`Rejected`) — the rule [`SPLIT_ACTION`] already applies to its target.
+/// **A direction with no neighbour is not an error.** The answer is the active pane unmoved: a key
+/// bound to `select-pane -L` pressed at the left edge is a well-formed request whose honest answer is
+/// "nothing to move to", and refusing it would log a failure every time a user reached the edge of
+/// their layout. A `pane` that names no pane of the current window IS refused (`Rejected`) — the rule
+/// [`SPLIT_ACTION`] already applies to its target.
+///
+/// # The answer: `{pane, changed, outcome}`
+///
+/// `pane` is the pane the window is ON afterwards, which a caller adopts either way, and `changed`
+/// says whether that differs from before. `outcome` names WHY it is that pane, in [`SelectHow`]'s
+/// four words — because `changed: false` alone reads the same for a re-select of the pane the session
+/// was already on and for a direction that had nowhere to go, and those need opposite sentences. A
+/// caller that only has to project the answer reads `pane`; one that has to SAY what happened reads
+/// `outcome`.
 pub const SELECT_PANE_ACTION: &str = "select_pane";
+
+/// The `outcome` key of a [`SELECT_PANE_ACTION`] answer: why the session is on the pane it names.
+///
+/// **Four words, total over the request grammar, each with exactly one cause** — the property that
+/// makes an operator-facing or agent-facing sentence exact rather than a list of possibilities
+/// ([`sprag_terminal::ZoomOutcome`] states the same rule for the zoom's two bools). A `pane` request
+/// can only [`Moved`](Self::Moved) or find itself [`AlreadyActive`](Self::AlreadyActive); a `dir`
+/// request can only `Moved`, stop [`AtEdge`](Self::AtEdge), or be asked from an
+/// [`Untiled`](Self::Untiled) pane.
+///
+/// # Why the daemon says it instead of the caller deriving it
+///
+/// Three of the four ARE derivable by a caller that remembers which arm it asked
+/// ([`read`](Self::read) does exactly that for a daemon too old to answer this key). The fourth is
+/// not: telling "nothing that way" from "the pane you are on is floating, so there is no that-way"
+/// takes the arrangement, and a client that read the arrangement to explain its own move would join
+/// two instants to describe one — the torn read the whole directional arm exists to remove.
+///
+/// The rival spends one word here (`PaneFocusDirectionReason::NoNeighbor`, herdr `9a4ce5e1`) and
+/// reports it for both cases: `directional_pane_target` looks the source pane up in the rects of its
+/// last composed frame and answers `None` when it is absent, exactly as it does at an edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SelectHow {
+    /// The active pane MOVED to the pane the answer names.
+    Moved,
+    /// A `pane` request naming the pane the session was ALREADY on — a re-select, which is a
+    /// legitimate no-op rather than a failure (a client publishing the focus it already shows).
+    AlreadyActive,
+    /// A `dir` request from a pane the arrangement holds, with nothing that way: the window's edge.
+    AtEdge,
+    /// A `dir` request from a pane the arrangement holds NO LEAF for — the active pane is floating,
+    /// so it has no neighbours in any direction. Distinct from [`AtEdge`](Self::AtEdge) on purpose:
+    /// the remedy is different (dock it, or select by name), and an edge is a boundary the movement
+    /// ran into where this is a request with no adjacency to walk at all.
+    Untiled,
+}
+
+impl SelectHow {
+    /// Every outcome, for a caller enumerating the vocabulary (a test, a description).
+    pub const ALL: [Self; 4] = [
+        Self::Moved,
+        Self::AlreadyActive,
+        Self::AtEdge,
+        Self::Untiled,
+    ];
+
+    /// This outcome's wire word — the value of the answer's `outcome` key.
+    #[must_use]
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Self::Moved => "moved",
+            Self::AlreadyActive => "already_active",
+            Self::AtEdge => "at_edge",
+            Self::Untiled => "untiled",
+        }
+    }
+
+    /// The outcome a wire word names, or [`None`] for a word this build does not know.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|how| how.wire_str() == word)
+    }
+
+    /// Whether the active pane MOVED — the answer's `changed` key, spelled once.
+    ///
+    /// The daemon announces on exactly this, because a select that moved nothing gives a parked
+    /// client nothing to re-read.
+    #[must_use]
+    pub fn changed(self) -> bool {
+        matches!(self, Self::Moved)
+    }
+
+    /// Read the outcome of an answer, INCLUDING from a daemon that predates the `outcome` key.
+    ///
+    /// `toward` is the direction the caller asked for, if it asked for one — which is what makes the
+    /// fallback exact rather than a guess. A pre-R299 daemon answers `{pane, changed}` only, and
+    /// those two plus the arm the caller chose determine three of the four words: a `pane` request
+    /// that changed nothing was `AlreadyActive`, and a `dir` request that changed nothing went
+    /// nowhere. Only the reason it went nowhere is unrecoverable, and the answer says the honest
+    /// thing rather than the specific one ([`AtEdge`](Self::AtEdge), which is the case a user meets;
+    /// a floating active pane needs a client that floated it).
+    ///
+    /// One reader for every client, so a skew's degraded sentence is decided here rather than
+    /// re-derived per surface. The `outcome` key is ADDITIVE, so an old CLIENT reading a new daemon
+    /// simply ignores it: this is the other direction, the one an added key does not cover by itself.
+    #[must_use]
+    pub fn read(answer: &Value, toward: Option<PaneDir>) -> Self {
+        if let Some(how) = answer["outcome"].as_str().and_then(Self::from_wire) {
+            return how;
+        }
+        match (answer["changed"].as_bool().unwrap_or(false), toward) {
+            (true, _) => Self::Moved,
+            (false, None) => Self::AlreadyActive,
+            (false, Some(_)) => Self::AtEdge,
+        }
+    }
+}
 
 /// The arguments of [`NEIGHBORS_FIELD`] — one pane `id`, `Open` for [`PROJECT_ARGS`]' reason.
 const NEIGHBORS_ARGS: &[SchemaArg] = &[SchemaArg::open("pane", "int")];
@@ -1250,6 +1358,7 @@ pub fn regex_slot_for(pattern: &str) -> String {
 #[cfg(test)]
 mod tests {
     use pinion_core::external::ArgDomain;
+    use serde_json::json;
 
     use super::*;
 
@@ -1339,6 +1448,68 @@ mod tests {
         assert!(matches!(REGEX_FIELD.args[0].domain, ArgDomain::Open));
         // And both are published, so an agent discovers that the choice exists.
         assert!(PANE_SCHEMA.contains(&FIND_FIELD) && PANE_SCHEMA.contains(&REGEX_FIELD));
+    }
+
+    /// The `outcome` vocabulary round trips, and `changed` has ONE derivation — so the key the
+    /// daemon writes beside it can never disagree with the word.
+    #[test]
+    fn the_outcome_words_round_trip_and_only_a_move_counts_as_changed() {
+        for how in SelectHow::ALL {
+            assert_eq!(SelectHow::from_wire(how.wire_str()), Some(how));
+        }
+        assert_eq!(SelectHow::from_wire("Moved"), None);
+        assert_eq!(SelectHow::from_wire("edge"), None);
+        assert_eq!(SelectHow::from_wire(""), None);
+        assert_eq!(
+            SelectHow::ALL.map(SelectHow::changed),
+            [true, false, false, false],
+            "exactly one of the four moved the active pane, which is what wakes parked clients",
+        );
+    }
+
+    /// The reader takes the daemon's word when there is one — and stays exact against a daemon built
+    /// before the word existed, which is the direction an ADDITIVE answer key does not cover by
+    /// itself (an old CLIENT simply ignores a new key; a new client meets a missing one).
+    ///
+    /// Three of the four are recoverable from `changed` plus the arm the caller chose. The fourth is
+    /// not, and the fallback says the honest thing rather than the specific one.
+    #[test]
+    fn an_outcome_is_read_from_the_word_and_falls_back_to_the_arm_that_was_asked() {
+        let word = |how: SelectHow| json!({"pane": 3, "changed": how.changed(), "outcome": how.wire_str()});
+        for how in SelectHow::ALL {
+            assert_eq!(SelectHow::read(&word(how), None), how);
+            assert_eq!(SelectHow::read(&word(how), Some(PaneDir::Left)), how);
+        }
+
+        // A pre-R299 daemon: `{pane, changed}` and nothing more.
+        let old = |changed: bool| json!({"pane": 3, "changed": changed});
+        assert_eq!(SelectHow::read(&old(true), None), SelectHow::Moved);
+        assert_eq!(
+            SelectHow::read(&old(true), Some(PaneDir::Up)),
+            SelectHow::Moved,
+        );
+        assert_eq!(
+            SelectHow::read(&old(false), None),
+            SelectHow::AlreadyActive,
+            "a PANE request that moved nothing was a re-select — exact without the word",
+        );
+        assert_eq!(
+            SelectHow::read(&old(false), Some(PaneDir::Left)),
+            SelectHow::AtEdge,
+            "a DIRECTION that moved nothing went nowhere; which nothing is what the word adds, and \
+             the edge is the case a user meets",
+        );
+        // A word this build does not know, and a malformed answer, both degrade rather than fail:
+        // rendering is the last thing a caller does, and a select that already happened must still
+        // be reported.
+        assert_eq!(
+            SelectHow::read(
+                &json!({"pane": 3, "changed": true, "outcome": "teleported"}),
+                None
+            ),
+            SelectHow::Moved,
+        );
+        assert_eq!(SelectHow::read(&json!({}), None), SelectHow::AlreadyActive);
     }
 
     #[test]
