@@ -725,6 +725,19 @@ enum Attaching<'a> {
         /// Restrict it to a session no OTHER client is viewing (tmux `no-detached`).
         unattached: bool,
     },
+    /// Wherever this client ALREADY is — its own attachment, by identity.
+    ///
+    /// For resuming rather than switching: a gesture that turned out to have nowhere to go has
+    /// stopped this client's poll thread and has to start one again over the session it never left.
+    /// Naming that session would be this round's own defect in its recovery path — the name is a
+    /// mirror, and a rename in the instant before the gesture would make the resume FAIL and take
+    /// the client down with it. An attachment cannot go stale that way, and the daemon answers what
+    /// the session is called now.
+    ///
+    /// It is deliberately NOT how a SWITCH recovers: after a failed switch the attachment may
+    /// already have moved to the target, and the client wants the session it was on — which only a
+    /// name can say.
+    Attached,
 }
 
 /// Attach `conn`'s client where `to` says and then move `conn`'s own scope onto the ATTACHMENT —
@@ -753,6 +766,13 @@ fn attach_and_follow(conn: &mut HostConn, to: Attaching<'_>) -> Landed {
         }
         Attaching::LastViewed { unattached } => {
             send_attach(conn, AttachAsk::LastViewed { unattached })
+        }
+        // The scope IS the target here: the daemon reads `{"attached": true}` as this client's own
+        // attachment and re-attaches it to itself, which is a no-op that answers the one thing the
+        // caller needs — what that session is called now.
+        Attaching::Attached => {
+            conn.scope_to_attached();
+            send_attach(conn, AttachAsk::Scoped)
         }
     };
     if matches!(landed, Landed::On(_)) {
@@ -1777,7 +1797,8 @@ impl WireHost {
                 // target has nothing to carry on with, because the refusal WAS its answer.
                 Landed::Refused => match to {
                     Attaching::Named(session) => (session.to_owned(), false),
-                    Attaching::LastViewed { .. } => return Ok(None),
+                    // Neither of these has a name to carry on with: the refusal WAS the answer.
+                    Attaching::LastViewed { .. } | Attaching::Attached => return Ok(None),
                 },
             };
             let since0 = read_revision(&mut conn)?;
@@ -1889,10 +1910,12 @@ impl WireHost {
         }
     }
 
-    /// Re-attach to `session` after a switch failed, and DETACH if even that will not work — the
-    /// recovery both [`switch_session`](HostClient::switch_session) and
-    /// [`switch_to_last_session`](HostClient::switch_to_last_session) need, and the reason a failed
-    /// switch never leaves a client with a stopped poll thread.
+    /// Re-attach to `session` after a SWITCH failed, and DETACH if even that will not work — the
+    /// reason a failed switch never leaves a client with a stopped poll thread.
+    ///
+    /// By NAME, deliberately: a switch that failed may have moved the attachment to the target
+    /// already, so "where I am" is the wrong question and only the name says which session the user
+    /// was on. [`resume`](Self::resume) is the other half of that distinction.
     fn fall_back_to(&self, session: &str) {
         if let Err(error) = self.attach_in_place(Attaching::Named(session)) {
             tracing::error!(
@@ -1901,6 +1924,19 @@ impl WireHost {
                 "could not re-attach to the previous session either; detaching",
             );
             self.quit.request_quit();
+        }
+    }
+
+    /// Start serving again over the session this client never left — for a gesture that stopped the
+    /// poll thread and then found it had nowhere to go.
+    ///
+    /// By ATTACHMENT first ([`Attaching::Attached`]), because nothing moved and the client is still
+    /// exactly where it was; `previous` is only the degraded path's address, for a client whose
+    /// attach was refused and which therefore has no attachment to resume ([`attach_and_follow`]).
+    fn resume(&self, previous: &str) {
+        match self.attach_in_place(Attaching::Attached) {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => self.fall_back_to(previous),
         }
     }
 
@@ -2562,17 +2598,12 @@ impl HostClient for WireHost {
             json!({ "name": name }),
         );
         let is_own = name == lock_session(&self.session).as_str();
-        // For an OWN kill under a switch policy, pick the successor NOW — BEFORE the kill removes
-        // `name` from the list, so `next`/`previous` resolve against the list the user sees. `None`
-        // means detach (the `on` default, or `name` is the last session). A kill of ANOTHER session
-        // never switches this client.
-        let successor = if is_own {
-            destroy_successor(detach_on_destroy(), &self.sessions(), name)
-        } else {
-            // A kill of ANOTHER session never switches this client.
-            Successor::Detach
-        };
-        if is_own && successor != Successor::Detach {
+        // For an OWN kill under a switch policy, plan the successor NOW — BEFORE the kill removes
+        // `name` from the list, so `next`/`previous` and the fallbacks resolve against the list the
+        // user can see. A kill of ANOTHER session never switches this client, so it plans nothing.
+        let successor =
+            is_own.then(|| destroy_successor(detach_on_destroy(), &self.sessions(), name));
+        if let Some(plan) = successor.filter(|plan| *plan != Successor::Detach) {
             // switch-to-next. STOP the poll thread BEFORE the kill so the own-kill switch is
             // DETERMINISTIC and self-contained. Killing `name` bumps the scene revision, waking the
             // poll (still scoped to the dying session) into a re-query the host now REFUSES; under a
@@ -2589,7 +2620,7 @@ impl HostClient for WireHost {
                 poll.stop();
             }
             let _ = self.request("scene/invoke", params, "kill_session");
-            self.follow(successor);
+            self.follow(plan);
             return;
         }
         let _ = self.request("scene/invoke", params, "kill_session");
@@ -2653,16 +2684,16 @@ impl HostClient for WireHost {
         }
         match self.attach_in_place(Attaching::LastViewed { unattached: false }) {
             Ok(Some(_)) => {}
-            // Nowhere to go back to, or the switch failed: either way this client stays where it
-            // was — and its poll thread has to be restarted, which re-attaching does.
-            Ok(None) => self.fall_back_to(&previous),
+            // Nowhere to go back to, or the ask failed: either way this client stays where it
+            // was — and its poll thread has to be restarted, which resuming does.
+            Ok(None) => self.resume(&previous),
             Err(error) => {
                 tracing::warn!(
                     target: "sprag_gui::wire",
                     %error,
                     "could not switch to the last session; staying put",
                 );
-                self.fall_back_to(&previous);
+                self.resume(&previous);
             }
         }
     }
