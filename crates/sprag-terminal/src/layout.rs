@@ -114,6 +114,27 @@ impl PaneDir {
     /// what a caller asking for a pane's whole neighbourhood iterates.
     pub const ALL: [Self; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
 
+    /// The English phrase for "past a pane in this direction" — `"to the left of"`, `"above"` — for a
+    /// surface that has to SAY there is nothing that way.
+    ///
+    /// Here rather than in each surface because there are two of them (the `select-pane` CLI verb and
+    /// the agent-facing `select_pane` tool), and four adjectives copied per surface is the shape this
+    /// project keeps finding drifted. `up`/`down` are the reason it is a phrase and not the
+    /// [`wire_str`](Self::wire_str) word: "nothing up of pane 3" is not a sentence.
+    ///
+    /// Prose in the arrangement crate is not new here — [`SessionError`](crate::SessionError) and
+    /// [`PaneMoveError`](crate::PaneMoveError) already carry operator sentences, for the same reason:
+    /// the vocabulary belongs to the type, not to whoever prints it.
+    #[must_use]
+    pub fn beyond(self) -> &'static str {
+        match self {
+            Self::Left => "to the left of",
+            Self::Right => "to the right of",
+            Self::Up => "above",
+            Self::Down => "below",
+        }
+    }
+
     /// The axis this direction moves along: left/right divide a ROW (`Horizontal`), up/down a
     /// COLUMN (`Vertical`).
     #[must_use]
@@ -550,7 +571,7 @@ impl Span {
 /// client holding the published one has to be able to ask the question the host can answer — else
 /// every reader that needs "which pane is to the left of this one" writes its own walk, and a second
 /// derivation of adjacency is a second thing that can come to disagree with `select-pane -L`. There
-/// is one derivation ([`neighbor_in`]); both forms are its input.
+/// is one derivation ([`step_in`]); both forms are its input.
 ///
 /// A node's split IDENTITY is deliberately absent: it is the one field the two forms genuinely
 /// differ on (the wire's is optional, for a divider a client minted), and adjacency does not depend
@@ -675,16 +696,52 @@ fn facing_leaves<N: Arranged>(node: &N, dir: PaneDir, span: Span, out: &mut Vec<
     }
 }
 
-/// The pane adjacent to `pane` in `dir` within the arrangement rooted at `root`, or `None` when
-/// there is none — the ONE derivation of adjacency in this project.
+/// Where a directional step from a pane LANDS, or why it does not — the answer of
+/// [`LayoutTree::step`].
+///
+/// The two ways to go nowhere are DIFFERENT FACTS, and telling them apart is the whole reason this
+/// type exists beside [`LayoutTree::neighbor`]: an EDGE is a boundary a movement ran into, where an
+/// untiled origin has no adjacency to walk at all. `neighbor`'s `None` collapses them, which is
+/// right for a caller asking "is there one" and wrong for one that has to SAY why nothing happened
+/// — the same distinction [`Window::zoom_pane`](crate::registry::Window::zoom_pane) draws one verb
+/// over when it refuses a floating target instead of answering it like an edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaneStep {
+    /// The pane adjacent in that direction.
+    To(PaneId),
+    /// The arrangement holds the pane and nothing lies that way: it is at that edge of the window.
+    Edge,
+    /// The arrangement holds no leaf for the pane, so there is no adjacency to walk — a pane that
+    /// has exited, one a client has FLOATED out of the tiling, or a window that tiles nothing.
+    Untiled,
+}
+
+impl PaneStep {
+    /// The pane this step lands on, for a caller that only asks whether there is one.
+    #[must_use]
+    pub fn to(self) -> Option<PaneId> {
+        match self {
+            Self::To(pane) => Some(pane),
+            Self::Edge | Self::Untiled => None,
+        }
+    }
+}
+
+/// Where a directional step from `pane` lands within the arrangement rooted at `root` — the ONE
+/// derivation of adjacency in this project.
 ///
 /// Its statement, its guarantees and the reason it is structural rather than geometric are on
-/// [`LayoutTree::neighbor`], which is one of its two callers; the other is [`LayoutWire::neighbor`],
-/// so a client reading a published arrangement gets the daemon's own answer rather than its own.
-fn neighbor_in<N: Arranged>(root: &N, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
+/// [`LayoutTree::neighbor`], one of whose two callers this is; the other is
+/// [`LayoutWire::neighbor`], so a client reading a published arrangement gets the daemon's own
+/// answer rather than its own.
+///
+/// The three-way answer costs nothing to produce: whether the tree holds a leaf for `pane` is
+/// already decided here, by the [`leaf_path`] walk this has always begun with. Returning it is what
+/// keeps a caller from asking a SECOND question to learn why the first answered nothing.
+fn step_in<N: Arranged>(root: &N, pane: PaneId, dir: PaneDir) -> PaneStep {
     let mut path = Vec::new();
     if !leaf_path(root, pane, &mut path) {
-        return None;
+        return PaneStep::Untiled;
     }
     // The span of each ancestor ACROSS the move, and — after the loop — of the pane's own
     // leaf. Recorded before the node's own division is applied, which is what makes
@@ -737,9 +794,14 @@ fn neighbor_in<N: Arranged>(root: &N, pane: PaneId, dir: PaneDir) -> Option<Pane
                     best
                 }
             })
-            .map(|(pane, _)| pane);
+            // A sibling sub-tree always bottoms out in at least one leaf, so the fallback is
+            // unreachable rather than a case: it is spelled as the EDGE because that is what an
+            // empty facing set would mean, and never as a panic in a walk a keystroke drives.
+            .map_or(PaneStep::Edge, |(pane, _)| PaneStep::To(pane));
     }
-    None
+    // The tree holds this pane's leaf and no division on the axis faces that way, which IS the
+    // statement "it is at that edge of the window".
+    PaneStep::Edge
 }
 
 /// A window's logical layout tree: how its DOCKED panes are arranged, and nothing about
@@ -805,7 +867,26 @@ impl LayoutTree {
     /// one shape, not two implementations that agree today.
     #[must_use]
     pub fn neighbor(&self, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
-        neighbor_in(self.root.as_ref()?, pane, dir)
+        self.step(pane, dir).to()
+    }
+
+    /// [`neighbor`](Self::neighbor) with the reason it found nothing — see [`PaneStep`].
+    ///
+    /// One walk, two forms, exactly as `neighbor` and [`LayoutWire::neighbor`] are: this is the
+    /// derivation and `neighbor` is this answer with the reason dropped, so no caller can reach a
+    /// second definition of "the pane to the left".
+    ///
+    /// Whoever CARRIES OUT a directional move asks this one, because it has to say what happened
+    /// (`sprag_host::wire::SELECT_PANE_ACTION`); a client that merely DRAWS the arrangement asks
+    /// `neighbor` on the published twin, which is why the twin has no `step` — the daemon resolves a
+    /// move, so nothing on that side has a reason to state.
+    #[must_use]
+    pub fn step(&self, pane: PaneId, dir: PaneDir) -> PaneStep {
+        match self.root.as_ref() {
+            Some(root) => step_in(root, pane, dir),
+            // A window that tiles nothing holds no leaf for any pane, which is what `Untiled` says.
+            None => PaneStep::Untiled,
+        }
     }
 
     /// Mint the next never-reused split id.
@@ -1204,7 +1285,7 @@ impl LayoutWire {
     /// the tiling — exactly as on the owned tree.
     #[must_use]
     pub fn neighbor(&self, pane: PaneId, dir: PaneDir) -> Option<PaneId> {
-        neighbor_in(self.root.as_ref()?, pane, dir)
+        step_in(self.root.as_ref()?, pane, dir).to()
     }
 }
 
@@ -2969,6 +3050,55 @@ mod tests {
         );
     }
 
+    /// The three-way step tells the two "no neighbour" cases APART, which the [`Option`] form cannot:
+    /// a pane at the window's edge is in the arrangement, a floated or exited one is not, and only
+    /// this walk knows which without a second question.
+    ///
+    /// `neighbor` must keep agreeing with it for every pane and direction — it IS this answer with
+    /// the reason dropped, and a test that only checked the new form would let the old one drift.
+    #[test]
+    fn a_step_says_whether_nothing_that_way_means_an_edge_or_an_untiled_pane() {
+        // `0 | 1`, the smallest shape with both an inside and an edge.
+        let mut tree = LayoutTree::new();
+        heal(&mut tree, &ids(2));
+
+        assert_eq!(
+            tree.step(PaneId(0), PaneDir::Right),
+            PaneStep::To(PaneId(1))
+        );
+        assert_eq!(
+            tree.step(PaneId(0), PaneDir::Left),
+            PaneStep::Edge,
+            "the tree holds pane 0 and nothing is to its left: that IS the window's edge",
+        );
+        assert_eq!(
+            tree.step(PaneId(0), PaneDir::Up),
+            PaneStep::Edge,
+            "a horizontal division leaves both panes spanning the height",
+        );
+        assert_eq!(
+            tree.step(PaneId(7), PaneDir::Left),
+            PaneStep::Untiled,
+            "a pane with no leaf here is not at an edge — it is in no arrangement at all",
+        );
+        assert_eq!(
+            LayoutTree::new().step(PaneId(0), PaneDir::Left),
+            PaneStep::Untiled,
+            "and a window that tiles nothing answers the same rather than panicking",
+        );
+
+        for pane in [0, 1, 7] {
+            for dir in PaneDir::ALL {
+                assert_eq!(
+                    tree.neighbor(PaneId(pane), dir),
+                    tree.step(PaneId(pane), dir).to(),
+                    "one derivation, two forms (pane {pane}, {})",
+                    dir.wire_str(),
+                );
+            }
+        }
+    }
+
     /// The direction vocabulary has ONE definition, so a word the wire accepts is a word this walk
     /// understands and back again.
     #[test]
@@ -2987,6 +3117,12 @@ mod tests {
                 SplitDir::Vertical,
                 SplitDir::Vertical
             ],
+        );
+        // The PROSE spelling, pinned because two surfaces print it: up and down are why it is a
+        // phrase and not the wire word ("nothing up of pane 3" is not a sentence).
+        assert_eq!(
+            PaneDir::ALL.map(PaneDir::beyond),
+            ["to the left of", "to the right of", "above", "below"],
         );
     }
 }

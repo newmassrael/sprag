@@ -40,7 +40,7 @@ pub use activity::{ActivityReading, ActivitySampler, SessionActivity};
 pub use command::{command_from_parts, default_shell_command, shell_command_line};
 pub use layout::{
     LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire, LeafHome,
-    MAX_LAYOUT_DEPTH, PaneDir, SplitDir, SplitId, SplitSide,
+    MAX_LAYOUT_DEPTH, PaneDir, PaneStep, SplitDir, SplitId, SplitSide,
 };
 pub use pane_name::{PaneName, PaneNameError};
 pub use pane_pty::{
