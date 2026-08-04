@@ -39,17 +39,56 @@
 //! stays window-free, and adding windows later needs no address migration.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::PaneId;
 use crate::layout::{
     LayoutError, LayoutTree, LayoutWire, LeafHome, PaneDir, PaneStep, SplitDir, SplitSide,
 };
+use crate::snapshot::WindowSnapshot;
 use crate::snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot,
     SnapshotError,
 };
 use crate::workspace::{HistoryLimitSource, Pane, PaneEnvSource, Workspace};
+
+/// A session's IDENTITY — what stays put when its NAME moves.
+///
+/// # Why a session needs one when a pane has had one all along
+///
+/// A [`PaneId`] is public: it addresses a pane on the wire, and a pane's name is a second,
+/// friendlier address on top of it. A SESSION has no such id — `-t` takes a name, tmux's grammar
+/// takes a name, and this registry looks one up by name. That is deliberate and stays: the
+/// **address is the name**.
+///
+/// What it cost is the ability to tell a RENAME from a death. A session's public shape is its
+/// name, so "`work` is gone and `prod` is here" is what a close plus a create looks like too, and
+/// the change funnel (`sprag_host::events`) had no way to prefer the honest reading — the same
+/// sentence that crate's docs give for why there was no `WindowRenamed`. So this id exists for
+/// exactly one consumer: the DERIVATION, which can now say *the session that was called `work` is
+/// now called `prod`* rather than reporting a death and a birth a client acts on by tearing down
+/// everything it held.
+///
+/// # It is a WITHIN-RUN identity and does not cross the wire
+///
+/// Minted from one registry-wide counter, never reused while the daemon lives, and NOT restored
+/// from the durability snapshot — a rebooted daemon mints fresh ones, because the only holder an
+/// id could have had is a client that did not survive the reboot either. Nothing serialises it.
+/// The trade, stated rather than hidden: a client cannot hold an identity that outlives a rename;
+/// it holds a name and is TOLD the moment that name moves.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct SessionId(pub u64);
+
+/// A window's IDENTITY — [`SessionId`]'s twin one level down, for the same derivation and on the
+/// same terms: unique registry-wide, minted from the one counter, never on the wire.
+///
+/// Registry-wide rather than per-session even though every comparison of one happens inside a
+/// single session today, because the day a window can MOVE between sessions is the day a
+/// per-session id starts colliding — and that failure would show up as a wrong EVENT, which is the
+/// class this whole type exists to remove.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct WindowId(pub u64);
 
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
 /// and which of them a client has FLOATED out of the tiling.
@@ -70,6 +109,9 @@ use crate::workspace::{HistoryLimitSource, Pane, PaneEnvSource, Workspace};
 /// on the same line the rest of the module draws: WHICH panes are tiled is logical and lives
 /// here; WHERE a floating window sits on the user's screen is pixels and never does.
 pub struct Window {
+    /// This window's IDENTITY — what survives a [`rename`](SessionRegistry::rename_window), where
+    /// [`name`](Self::name) is only its address. See [`SessionId`] for why both exist.
+    id: WindowId,
     name: String,
     workspace: Arc<Mutex<Workspace>>,
     layout: LayoutTree,
@@ -153,8 +195,9 @@ impl Window {
     /// An empty window named `name` over `pool` — which the caller obtains from
     /// [`Workspace::sibling`], so every window in the registry mints from ONE id counter
     /// (the load-bearing invariant; see the module docs).
-    fn new(name: &str, pool: Workspace) -> Self {
+    fn new(name: &str, pool: Workspace, id: WindowId) -> Self {
         Self {
+            id,
             name: name.to_owned(),
             workspace: Arc::new(Mutex::new(pool)),
             layout: LayoutTree::new(),
@@ -199,27 +242,33 @@ impl Window {
     /// here on purpose: at this moment the pool is empty and every pane is still coming, so any
     /// check would refuse the whole set. The first reconcile after the re-spawns is where the
     /// question can be answered, and it is where it is answered.
+    ///
+    /// The IDENTITY is minted FRESH rather than restored, and that is the boundary
+    /// [`SessionId`] states: an id says which window a change is about within one run of the
+    /// daemon, and every client that could have held one across the reboot is gone. What comes
+    /// back addressed is the NAME.
+    ///
+    /// Takes the whole [`WindowSnapshot`] rather than its seven fields spread out, because that
+    /// is what its one caller has in hand and a positional list that long is a list a later field
+    /// can be inserted into wrongly.
     fn restore(
-        name: &str,
         pool: Workspace,
-        layout: LayoutWire,
-        floating: Vec<PaneId>,
-        manual_size: Option<(u16, u16)>,
-        active: Option<PaneId>,
-        zoomed: Option<PaneId>,
+        id: WindowId,
+        snapshot: WindowSnapshot,
     ) -> Result<Self, LayoutError> {
         let mut tree = LayoutTree::new();
-        tree.set_from_wire(layout)?;
+        tree.set_from_wire(snapshot.layout)?;
         Ok(Self {
-            name: name.to_owned(),
+            id,
+            name: snapshot.name,
             workspace: Arc::new(Mutex::new(pool)),
             layout: tree,
-            floating: floating.into_iter().collect(),
+            floating: snapshot.floating.into_iter().collect(),
             homes: HashMap::new(),
-            manual_size,
+            manual_size: snapshot.manual_size,
             layout_revision: 0,
-            active,
-            zoomed,
+            active: snapshot.active,
+            zoomed: snapshot.zoomed,
         })
     }
 
@@ -228,6 +277,12 @@ impl Window {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The window's IDENTITY — unchanged by a rename, where [`name`](Self::name) is not.
+    #[must_use]
+    pub const fn id(&self) -> WindowId {
+        self.id
     }
 
     /// The window's pane pool — the `Arc<Mutex<Workspace>>` the host hands to the scene
@@ -989,27 +1044,52 @@ fn is_zero(n: &usize) -> bool {
 /// [`rename_window`](Self::rename_window) and the registry's
 /// [`kill_window`](SessionRegistry::kill_window) are the ops on this shape (tmux's windows).
 pub struct Session {
+    /// This session's IDENTITY — what a [`rename`](SessionRegistry::rename_session) does not move.
+    /// See [`SessionId`].
+    id: SessionId,
     name: String,
     windows: Vec<Window>,
     current_window: usize,
+    /// The counter this session's windows mint their [`WindowId`]s from — the registry's, cloned,
+    /// so every window in the registry draws from ONE source exactly as every pane does.
+    ///
+    /// It is here rather than on the registry because a window is born inside a `&mut Session`
+    /// ([`new_window`](Self::new_window), [`break_pane`](Self::break_pane)), which cannot reach the
+    /// registry. Same shape and same reason as [`Workspace`]'s pane counter.
+    ids: Arc<AtomicU64>,
 }
 
 impl Session {
     /// A session named `name` holding one empty window `"0"` — a session always has at
     /// least one window, which is what makes [`current_window`](Self::current_window)
     /// total.
-    fn new(name: &str, pool: Workspace) -> Self {
+    fn new(name: &str, pool: Workspace, ids: Arc<AtomicU64>) -> Self {
+        let id = SessionId(ids.fetch_add(1, Ordering::Relaxed));
+        let window = Window::new("0", pool, WindowId(ids.fetch_add(1, Ordering::Relaxed)));
         Self {
+            id,
             name: name.to_owned(),
-            windows: vec![Window::new("0", pool)],
+            windows: vec![window],
             current_window: 0,
+            ids,
         }
+    }
+
+    /// The next [`WindowId`] this session's counter hands out.
+    fn mint_window(&self) -> WindowId {
+        WindowId(self.ids.fetch_add(1, Ordering::Relaxed))
     }
 
     /// The session's display name (default `"0"`; the tmux `-s` name later).
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The session's IDENTITY — unchanged by a rename, where [`name`](Self::name) is not.
+    #[must_use]
+    pub const fn id(&self) -> SessionId {
+        self.id
     }
 
     /// All windows, in creation order.
@@ -1102,7 +1182,8 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .sibling();
-        self.windows.push(Window::new(&name, pool));
+        let id = self.mint_window();
+        self.windows.push(Window::new(&name, pool, id));
         self.current_window = self.windows.len() - 1;
         Ok(name)
     }
@@ -1240,7 +1321,7 @@ impl Session {
         // The new window is born ALREADY holding the moved pane; heal its tree to the single leaf
         // and select it (tmux's break-pane makes the new window current).
         new_pool.adopt(taken);
-        let mut win = Window::new(&name, new_pool);
+        let mut win = Window::new(&name, new_pool, self.mint_window());
         win.reconcile_own();
         self.windows.push(win);
         self.current_window = self.windows.len() - 1;
@@ -1564,6 +1645,13 @@ pub struct SessionRegistry {
     /// removes) the last — so at least one always remains, which is what makes
     /// [`default_session`](Self::default_session) total.
     sessions: Vec<Session>,
+    /// The ONE source of [`SessionId`]s and [`WindowId`]s for everything this registry holds —
+    /// cloned into each [`Session`] so a window born inside one mints from it too.
+    ///
+    /// Its counterpart for panes lives on the [`Workspace`] and is shared the same way (the
+    /// module's load-bearing invariant); this is that invariant applied to the two shapes that
+    /// had no identity at all.
+    ids: Arc<AtomicU64>,
     /// How many BIRTHS are in flight — sessions (or a whole restored registry) that exist here
     /// while the panes that populate them do not exist yet. See [`pin_birth`](Self::pin_birth).
     births: usize,
@@ -1576,8 +1664,14 @@ impl SessionRegistry {
     /// fresh global id counter (which later windows will share).
     #[must_use]
     pub fn new(default_size: (u16, u16)) -> Self {
+        let ids = Arc::new(AtomicU64::new(0));
         Self {
-            sessions: vec![Session::new("0", Workspace::new(default_size))],
+            sessions: vec![Session::new(
+                "0",
+                Workspace::new(default_size),
+                Arc::clone(&ids),
+            )],
+            ids,
             births: 0,
         }
     }
@@ -1656,6 +1750,8 @@ impl SessionRegistry {
         // One counter for the whole registry, seeded to the stored mark; every window's pool
         // siblings off this seed (which is itself only a counter holder — never a live pool).
         let seed = Workspace::with_seeded_counter(snapshot.default_size, snapshot.next_id);
+        // A FRESH identity counter: ids are within-run and are not in the file ([`SessionId`]).
+        let ids = Arc::new(AtomicU64::new(0));
         let mut sessions = Vec::with_capacity(snapshot.sessions.len());
         let mut plan = Vec::new();
         let mut seen_sessions = HashSet::new();
@@ -1726,13 +1822,9 @@ impl SessionRegistry {
                     });
                 }
                 let window = Window::restore(
-                    &w.name,
                     seed.sibling(),
-                    w.layout,
-                    w.floating,
-                    w.manual_size,
-                    w.active,
-                    w.zoomed,
+                    WindowId(ids.fetch_add(1, Ordering::Relaxed)),
+                    w,
                 )
                 .map_err(|e| SnapshotError::Layout(e.to_string()))?;
                 windows.push(window);
@@ -1747,9 +1839,11 @@ impl SessionRegistry {
                     ))
                 })?;
             sessions.push(Session {
+                id: SessionId(ids.fetch_add(1, Ordering::Relaxed)),
                 name: s.name,
                 windows,
                 current_window,
+                ids: Arc::clone(&ids),
             });
         }
         // `births: 0` — a rebuilt registry claims nothing on its own. The restore that ADOPTS it
@@ -1758,6 +1852,7 @@ impl SessionRegistry {
         Ok((
             Self {
                 sessions,
+                ids,
                 births: 0,
             },
             RestorePlan { panes: plan },
@@ -2025,7 +2120,8 @@ impl SessionRegistry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .sibling();
-        self.sessions.push(Session::new(&name, pool));
+        self.sessions
+            .push(Session::new(&name, pool, Arc::clone(&self.ids)));
         Ok(name)
     }
 
@@ -2082,6 +2178,53 @@ impl SessionRegistry {
         // Removing the session takes its windows -> workspaces -> panes out of the registry; the
         // returned Session carries them so the caller drops it (SIGHUP + reader join) off-lock.
         Ok(KillOutcome::Removed(self.sessions.remove(idx)))
+    }
+
+    /// Rename the session named `name` to `new` — tmux `rename-session`.
+    ///
+    /// This MOVES AN ADDRESS, which is what makes it different from
+    /// [`rename_window`](Self::rename_window) one level down and from
+    /// a pane's rename beside it. A window is addressed inside its session and a
+    /// pane by an id its name only stands in for; a SESSION name is what every `-t`, every scoped
+    /// connection and every attached client holds. So the registry's half is only the first half:
+    /// the daemon must also carry the session's change CHANNEL and its clients' ATTACHMENTS across
+    /// with it, or a rename orphans everyone parked on the old name (`sprag_host::workspace`'s
+    /// `rename_session` action is where that happens, and it is the caller of this).
+    ///
+    /// The IDENTITY does not move ([`Session::id`]), which is what lets the change funnel report
+    /// this as one rename instead of a session dying and another being born.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no session carries `name`; [`SessionError::Duplicate`] if `new`
+    /// is another session's name — an address must stay unique or one client's request silently
+    /// lands in another's session, which is the failure [`new_session`](Self::new_session) refuses a
+    /// duplicate for. Renaming a session to the name it already has is a NO-OP rather than a
+    /// duplicate, exactly as `rename_window` treats its own.
+    pub fn rename_session(&mut self, name: &str, new: &str) -> Result<(), SessionError> {
+        let idx = self
+            .sessions
+            .iter()
+            .position(|session| session.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        if new != name && self.sessions.iter().any(|session| session.name == new) {
+            return Err(SessionError::Duplicate(new.to_owned()));
+        }
+        self.sessions[idx].name = new.to_owned();
+        Ok(())
+    }
+
+    /// What the session with this IDENTITY is called NOW, or `None` if it is gone.
+    ///
+    /// The lookup a caller holding a resolved scope makes after a dispatch that may have moved the
+    /// name it resolved: see `sprag_host`'s derive site, which observes a session's changes at the
+    /// address the session has rather than the one the request carried.
+    #[must_use]
+    pub fn name_of(&self, id: SessionId) -> Option<&str> {
+        self.sessions
+            .iter()
+            .find(|session| session.id == id)
+            .map(|session| session.name.as_str())
     }
 
     /// The session named `name`, mutably, or [`SessionError::Unknown`] — the resolution the
@@ -3535,6 +3678,75 @@ mod tests {
             reg.rename_window(&default, "ghost", "x"),
             Err(SessionError::Unknown(name)) if name == "ghost",
         ));
+    }
+
+    /// `rename-session` renames, refuses a name another session holds, treats a rename to the
+    /// name it already has as a no-op, and refuses an unknown one — and through all of that the
+    /// session's IDENTITY does not move, which is the property the change funnel derives on.
+    #[test]
+    fn rename_session_moves_the_name_and_never_the_identity() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_session(Some("play")).unwrap();
+        let was = reg.session(&default).unwrap().id();
+
+        reg.rename_session(&default, "work").unwrap();
+        assert!(
+            reg.session(&default).is_none(),
+            "the old address stops resolving — that is what makes it an address",
+        );
+        let renamed = reg.session("work").expect("the new address resolves");
+        assert_eq!(
+            renamed.id(),
+            was,
+            "SAME session: an identity that moved with the name would make every rename              indistinguishable from a close plus a create, which is the whole reason it exists",
+        );
+        assert_eq!(
+            reg.name_of(was),
+            Some("work"),
+            "and it answers to the new one"
+        );
+
+        // Onto a name another session holds: refused, and NOTHING moves.
+        assert_eq!(
+            reg.rename_session("work", "play").unwrap_err(),
+            SessionError::Duplicate("play".to_owned()),
+        );
+        assert_eq!(reg.name_of(was), Some("work"), "unchanged");
+
+        // To its own name: a no-op, not a duplicate.
+        reg.rename_session("work", "work").unwrap();
+        assert_eq!(reg.name_of(was), Some("work"));
+
+        assert!(matches!(
+            reg.rename_session("ghost", "x"),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+    }
+
+    /// Every session and every window this registry mints gets a DISTINCT identity — the property
+    /// the funnel's whole derivation rests on, and one a per-session counter would break the day a
+    /// window can move between sessions.
+    #[test]
+    fn no_two_sessions_or_windows_share_an_identity() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_session(Some("play")).unwrap();
+        reg.new_window("play", Some("1")).unwrap();
+
+        let sessions: HashSet<_> = reg.sessions().iter().map(Session::id).collect();
+        assert_eq!(sessions.len(), 2, "two sessions, two identities");
+        let windows: HashSet<_> = reg
+            .sessions()
+            .iter()
+            .flat_map(|session| session.windows().iter().map(Window::id))
+            .collect();
+        assert_eq!(
+            windows.len(),
+            4,
+            "four windows across two sessions, four identities — registry-wide, not per-session",
+        );
     }
 
     /// Killing a NON-last window removes it, drains its panes, and keeps `current_window` valid

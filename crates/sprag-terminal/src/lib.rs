@@ -50,8 +50,8 @@ pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,
 };
 pub use registry::{
-    KillOutcome, PaneMoveError, Session, SessionError, SessionInfo, SessionRegistry, Window,
-    WindowInfo, WindowKillOutcome, ZoomOutcome,
+    KillOutcome, PaneMoveError, Session, SessionError, SessionId, SessionInfo, SessionRegistry,
+    Window, WindowId, WindowInfo, WindowKillOutcome, ZoomOutcome,
 };
 pub use remote::SshRemote;
 pub use sampled::{Reading, Sampled};
