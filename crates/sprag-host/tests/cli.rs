@@ -2150,6 +2150,139 @@ fn the_pane_listing_says_which_pane_asked_for_a_pane() {
     );
 }
 
+/// `sprag rename-session` moves the session's ADDRESS, and everything addressed by it moves too —
+/// end to end against a real daemon, because that is the only place the three halves meet.
+///
+/// The JOURNAL assertion is the load-bearing one. A rename that minted a fresh channel would leave
+/// this reading empty and every parked client asleep, and nothing in the registry or the CLI would
+/// show it: the session would be alive under its new name with its clients waiting on a key nothing
+/// reaches again.
+#[test]
+fn a_session_can_be_renamed_and_its_address_takes_its_clients_with_it() {
+    let (_host, sock) = spawn_host();
+
+    // Something for the journal to hold, so "the journal survived" is a claim with a witness.
+    assert!(sprag(&sock, &["new-window", "-t", "0", "alpha"]).ok);
+    let before = sprag(&sock, &["events", "-t", "0", "--since", "0"]);
+    assert!(
+        before.stdout.contains("window_created\talpha"),
+        "the journal holds the window's birth before the rename: {:?}",
+        before.stdout,
+    );
+
+    let renamed = sprag(&sock, &["rename-session", "-t", "0", "prod"]);
+    assert!(renamed.ok, "rename-session succeeded: {}", renamed.stderr);
+    assert_eq!(renamed.stdout.trim(), "renamed to prod");
+
+    // The new address resolves and the old one does not — that is what makes a name an address.
+    let listed = sprag(&sock, &["ls"]);
+    assert!(
+        listed.stdout.contains("prod:"),
+        "the listing names the session by its new name: {:?}",
+        listed.stdout,
+    );
+    let stale = sprag(&sock, &["panes", "-t", "0"]);
+    assert!(!stale.ok, "the retired name resolves to nothing");
+    assert!(
+        stale.stderr.contains("no session named \"0\""),
+        "and says so as a sentence: {:?}",
+        stale.stderr,
+    );
+
+    // THE ONE THAT MATTERS: the journal came across, and the rename is IN it — as one rename,
+    // naming the address the client held and the one it answers to now.
+    let after = sprag(&sock, &["events", "-t", "prod", "--since", "0"]);
+    assert!(
+        after.stdout.contains("window_created\talpha"),
+        "the journal moved with the session rather than being minted fresh: {:?}",
+        after.stdout,
+    );
+    assert!(
+        after.stdout.contains("session_renamed\t0\tprod"),
+        "and the change reads as ONE rename carrying both names: {:?}",
+        after.stdout,
+    );
+    assert!(
+        !after.stdout.contains("session_closed"),
+        "never as a death: {:?}",
+        after.stdout,
+    );
+
+    // A rename onto a name another session holds is refused as a sentence, and changes nothing.
+    assert!(sprag(&sock, &["new", "spare"]).ok);
+    let taken = sprag(&sock, &["rename-session", "-t", "prod", "spare"]);
+    assert!(!taken.ok, "a duplicate address is refused");
+    assert!(
+        taken.stderr.contains("already another session's name"),
+        "the refusal names the cause: {:?}",
+        taken.stderr,
+    );
+    assert!(
+        sprag(&sock, &["panes", "-t", "prod"]).ok,
+        "and the refused rename moved nothing",
+    );
+}
+
+/// A window RENAME and a pane MOVE reach a reader as what they are — one event each, carrying the
+/// fact no later read could recover.
+///
+/// Live, because the derivation is only half the path: the printer has to render the DETAIL beside
+/// the subject, and a test on the diff alone would pass on a build whose `sprag events` prints the
+/// subject and drops the rest.
+///
+/// Each assertion has its NEGATIVE beside it, because the defect this replaced was not a missing
+/// event but a pair of wrong ones — `window_created beta` + `window_closed alpha` for a rename, and
+/// `pane_closed 1` + `pane_created 1` in one batch for a move.
+#[test]
+fn a_renamed_window_and_a_moved_pane_are_not_reported_as_deaths() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new-window", "-t", "0", "alpha"]).ok);
+
+    assert!(sprag(&sock, &["rename-window", "-t", "0", "alpha", "beta"]).ok);
+    let events = sprag(&sock, &["events", "-t", "0", "--since", "0"]);
+    assert!(
+        events.stdout.contains("window_renamed\talpha\tbeta"),
+        "one rename, naming the address a client held and the one it answers to now: {:?}",
+        events.stdout,
+    );
+    assert!(
+        !events.stdout.contains("window_closed"),
+        "and no death: {:?}",
+        events.stdout,
+    );
+
+    // A pane moved between windows: born in the first, joined into the second.
+    assert!(sprag(&sock, &["select-window", "-t", "0", "0"]).ok);
+    let born = sprag(&sock, &["split-window", "-t", "0"]);
+    assert!(born.ok, "split-window succeeded: {}", born.stderr);
+    let pane = born.stdout.trim().to_owned();
+    assert!(sprag(&sock, &["join-pane", "-t", "0", &pane, "beta"]).ok);
+
+    let events = sprag(&sock, &["events", "-t", "0", "--since", "0"]);
+    assert!(
+        events.stdout.contains(&format!("pane_moved\t{pane}\tbeta")),
+        "the move names the pane AND the window it went to — which no slot serves, because \
+         `panes` and `layout` answer for the current window only: {:?}",
+        events.stdout,
+    );
+    assert!(
+        !events.stdout.contains(&format!("pane_closed\t{pane}")),
+        "the pane did not die: {:?}",
+        events.stdout,
+    );
+    assert_eq!(
+        events
+            .stdout
+            .lines()
+            .filter(|line| *line == format!("pane_created\t{pane}"))
+            .count(),
+        1,
+        "and was born exactly ONCE — at the split that made it, never again on arriving \
+         somewhere: {:?}",
+        events.stdout,
+    );
+}
+
 /// `sprag rename-pane` names a pane, the listing says so, and every refusal is read as a SENTENCE.
 ///
 /// End to end against a real daemon, because the whole loop is CLI-reachable here — unlike the

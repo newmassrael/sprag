@@ -46,6 +46,9 @@
 //! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
 //! sprag select-window -t SESSION NAME     make NAME the session's current window
 //! sprag rename-window -t SESSION [win] NEW rename a window (default: the current one) to NEW
+//! sprag rename-session [-t SESSION] NEW   rename a session. A session NAME is the address every
+//!                                         -t takes, so the daemon carries the session's parked
+//!                                         clients and its attachments across with it
 //! sprag kill-window -t SESSION [win]      kill a window (default: the current one); the last ends the session
 //! sprag resize-window -t SESSION [win] <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>
 //!                                         PIN a window's size so it stops following the clients
@@ -147,6 +150,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use sprag_host::events::EventKind;
 use sprag_host::hooks::{self, HookError, Target};
 use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
 use sprag_host::shellword::shell_quote;
@@ -155,11 +159,11 @@ use sprag_host::wire::{
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOVE_PANE_ACTION, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM,
     PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
-    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk, SwapHow,
-    TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since, find_slot_for,
-    pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
+    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
+    SelectHow, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since,
+    find_slot_for, pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -197,6 +201,7 @@ fn run() -> io::Result<()> {
         Some("select-window") => select_window(args.collect()),
         Some("select-pane") => select_pane(args.collect()),
         Some("rename-window") => rename_window(args.collect()),
+        Some("rename-session") => rename_session(args.collect()),
         Some("kill-window") => kill_window(args.collect()),
         Some("resize-window") => resize_window(args.collect()),
         Some("break-pane") => break_pane(args.collect()),
@@ -779,6 +784,7 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
          \x20             | find NEEDLE [-t SESSION] [--pane N] [--regex]\n\
          \x20             | wait-for-output --pane N NEEDLE [-t SESSION] [--regex]\n\
+         \x20             | rename-session [-t SESSION] NEW\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window NAME\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
@@ -3113,7 +3119,20 @@ fn print_events(batch: &Value, cursor: u64) -> u64 {
                 _ => None,
             })
             .unwrap_or_default();
-        println!("{kind}\t{subject}");
+        // The DETAIL, for the three kinds that move an address — the new name, or the window a
+        // pane moved into. Its key comes from the vocabulary itself
+        // ([`EventKind::detail_key`](sprag_host::events::EventKind::detail_key)) rather than from a
+        // second list here: this printer already scans a hand-written subject-key list, and one
+        // copy of a vocabulary in a client is what R292 made the event TYPE names stop being.
+        //
+        // A kind this build does not know prints no detail, which is honest rather than clever: an
+        // older CLI reading a newer daemon shows the type and the subject it can read.
+        let detail = EventKind::from_wire(kind)
+            .and_then(EventKind::detail_key)
+            .and_then(|key| event[key].as_str())
+            .map(|value| format!("\t{value}"))
+            .unwrap_or_default();
+        println!("{kind}\t{subject}{detail}");
     }
     batch["next"].as_u64().unwrap_or(cursor)
 }
@@ -3856,6 +3875,59 @@ fn rename_window(args: Vec<String>) -> io::Result<()> {
         action_args,
         &format!("rename-window: window not found, or {new:?} is already taken"),
     )?;
+    println!("renamed to {new}");
+    Ok(())
+}
+
+/// `rename-session [-t SESSION] NEW`: rename a session (default: the daemon's default one) to NEW.
+///
+/// # It moves an ADDRESS, and that is what makes it different from the two renames beside it
+///
+/// A session name is what every `-t` takes, what every scoped connection carries and what every
+/// attached client holds — so this verb is the one rename whose effect reaches outside the thing
+/// renamed. The daemon carries the session's change channel and its clients' attachments across
+/// with it (see [`RENAME_SESSION_ACTION`]); what it cannot
+/// carry is a name already typed into somebody's shell history.
+///
+/// The scope is OPTIONAL, like every other non-placement verb here: `sprag rename-session prod`
+/// renames the session an unscoped request lands in, which is the one a lone user has.
+fn rename_session(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "rename-session")?;
+    let mut rest = rest.into_iter();
+    let new = rest.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename-session needs a new name",
+        )
+    })?;
+    if let Some(other) = rest.next() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("rename-session: unexpected argument {other:?}"),
+        ));
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    conn.call(
+        "scene/invoke",
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(RENAME_SESSION_ACTION),
+            json!({ "name": new }),
+        ),
+    )
+    // Two causes, and the daemon knows which — `InvokeError::Rejected` carries no payload
+    // (upstream PINION-PR82), so this lists them rather than guessing. An UNKNOWN scope never
+    // reaches here: it is refused at the door as a scope error carrying its own sentence.
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::Other {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("rename-session refused: {new:?} is already another session's name"),
+            )
+        } else {
+            error
+        }
+    })?;
     println!("renamed to {new}");
     Ok(())
 }

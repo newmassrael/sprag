@@ -558,10 +558,16 @@ fn tools_list() -> Value {
                     reported, since a dead pane keeps its place and so is never `pane_closed`), \
                     `pane_created`, `pane_closed`, `pane_renamed` (a pane was given a name, given \
                     a different one, or had it taken away — so an address you were holding may \
-                    have stopped resolving), `pane_selected`, `window_created`, \
-                    `window_closed`, `window_selected`, `session_created`, `session_closed`, \
-                    `layout_updated` — each naming its SUBJECT, not its new value: follow up with \
-                    agent_state, pane_processes or list_panes to read the subject it names. To \
+                    have stopped resolving), `pane_selected`, `pane_moved` (a pane LEFT one window \
+                    for another — it did not die and was not re-created, and the `window` key names \
+                    where it went), `window_created`, `window_closed`, `window_selected`, \
+                    `window_renamed`, `session_created`, `session_closed`, `session_renamed` (the \
+                    session ITSELF was renamed: the `session` key is the name it had — the one you \
+                    were holding — and `name` is what it answers to now), `layout_updated` — each \
+                    naming its SUBJECT, not its new value, except the three that MOVE AN ADDRESS: a \
+                    rename and a pane's move also carry the one fact no later read could recover. \
+                    Follow up with agent_state, pane_processes or list_panes to read the subject a \
+                    change names. To \
                     wait for a command to finish: call this with pane N and kinds \
                     ['pane_job_changed','pane_closed'], then read pane_processes to see what is \
                     running there now (back at the shell means the command is done); the second \
