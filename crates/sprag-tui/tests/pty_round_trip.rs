@@ -346,6 +346,39 @@ fn pane_text_of(conn: &mut HostConn, session: &str, pane: u64) -> String {
     .unwrap_or_else(|| "<unreadable>".to_owned())
 }
 
+/// Wait until THIS CLIENT routes what is typed into `pane`, by sending one `.` at a time until one
+/// more of them is on that pane's screen than was there before.
+///
+/// **The daemon's `active` flag moving is NOT this.** A client routes keystrokes through its own
+/// mirror and adopts a move on its next wake, so a marker typed straight after a directional key can
+/// still be in flight to the pane the client had not left yet. Observed rather than slept through,
+/// because the wake is a wake and not a duration.
+///
+/// It COUNTS rather than looking for a dot, and that is the difference between a check and a
+/// decoration: a shell prompt may already hold one (a hostname, a path), so "there is a dot there"
+/// can be true before anything at all has landed.
+///
+/// Without this, `the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge` failed once under a full
+/// workspace load with pane 0 holding `"beforeed"` — the first five characters of its marker had gone
+/// to the pane the client was still routing to. R297 wrote the wait against the DAEMON's fact; the
+/// sibling test one screen down had already recorded the mechanism ("the client learns of the select
+/// on its next wake") and solved it with one character typed until it lands.
+fn typing_follows(tui: &mut Tui, conn: &mut HostConn, session: &str, pane: u64) {
+    let before = pane_text_of(conn, session, pane).matches('.').count();
+    wait_for(
+        &format!("this client's typing to follow the session onto pane {pane}"),
+        || {
+            tui.type_bytes(b".");
+            let held = pane_text_of(conn, session, pane);
+            if held.matches('.').count() > before {
+                Ok(())
+            } else {
+                Err(format!("pane {pane} holds {held:?}"))
+            }
+        },
+    );
+}
+
 /// Poll `observe` until it reports the condition holds, or fail after [`DEADLINE`] naming `what`
 /// and the LAST thing that was there instead.
 ///
@@ -1122,6 +1155,7 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
     wait_for("the left arrow to move the session onto pane 0", || {
         settled(active_pane(&mut conn, &session), &Some(left))
     });
+    typing_follows(&mut tui, &mut conn, &session, left);
     tui.type_bytes(b"reached");
     wait_for("what was typed after the move to reach pane 0", || {
         let held = pane_text(&mut conn, &session);
@@ -1156,6 +1190,7 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
     wait_for("the right arrow to move the session back", || {
         settled(active_pane(&mut conn, &session), &Some(right))
     });
+    typing_follows(&mut tui, &mut conn, &session, right);
     tui.type_bytes(b"elsewhere");
 
     // ...and LEFT once more, whose echo is what dates the negative assertion below. The far pane is
@@ -1168,6 +1203,7 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
     wait_for("the left arrow to bring the session back to pane 0", || {
         settled(active_pane(&mut conn, &session), &Some(left))
     });
+    typing_follows(&mut tui, &mut conn, &session, left);
     tui.type_bytes(b"landed");
     wait_for("the last marker to reach pane 0", || {
         let held = pane_text(&mut conn, &session);
