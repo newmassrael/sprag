@@ -2467,6 +2467,9 @@ fn the_cli_selects_a_pane_by_id_and_by_direction_over_the_socket() {
     assert_eq!(right.stdout.trim(), format!("selected {one}"));
 
     // At the EDGE: well-formed, honest, and not a failure — the case a keybinding hits constantly.
+    // The sentence names the DIRECTION the caller asked for, because "already on 0" — what this
+    // printed until R299, and what this test asserted — answers a question nobody asked: the caller
+    // did not say "put me on 0", it said "go left", and the honest answer is that there is no left.
     sprag(&sock, &["select-pane", "-L"]);
     let edge = sprag(&sock, &["select-pane", "-L"]);
     assert!(
@@ -2474,8 +2477,14 @@ fn the_cli_selects_a_pane_by_id_and_by_direction_over_the_socket() {
         "walking into the edge is not an error: {}",
         edge.stderr
     );
-    assert_eq!(edge.stdout.trim(), "already on 0");
+    assert_eq!(edge.stdout.trim(), "nothing to the left of 0");
     assert!(active_row("at the edge").starts_with("0:"));
+
+    // ...and the SAME "nothing moved" from a request that named a pane keeps the other sentence, so
+    // the two are distinguishable at a shell rather than only over the wire.
+    let again = sprag(&sock, &["select-pane", "0"]);
+    assert!(again.ok, "a re-select is not an error: {}", again.stderr);
+    assert_eq!(again.stdout.trim(), "already on 0");
 
     // A pane the window does not hold is the daemon's refusal, and it names the miss.
     let ghost = sprag(&sock, &["select-pane", "9999"]);

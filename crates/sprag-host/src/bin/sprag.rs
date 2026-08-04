@@ -151,16 +151,16 @@ use sprag_host::wire::{
     PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
     RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
     RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
-    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
-    session_activity_at,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectHow, TEXT_ACTION, WINDOWS_SLOT,
+    ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at, project_slot_for,
+    regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, HOST_SOCKET, HostConn, HostEndpoint,
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
-use sprag_terminal::{LayoutSnapshot, arrangement};
+use sprag_terminal::{LayoutSnapshot, PaneDir, arrangement};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -3651,27 +3651,30 @@ fn select_window(args: Vec<String>) -> io::Result<()> {
 /// A pane id and a direction name the same thing two ways, so exactly one is given. A direction
 /// with no neighbour is not an error: it prints where the caller still is, because walking into the
 /// edge of a layout is what a keybinding does at the edge, not a mistake it should fail on.
+///
+/// The four outcomes get four sentences, from the daemon's own
+/// [`outcome`](sprag_host::wire::SelectHow) word. Before it there were two, and one of them was
+/// wrong for the commonest case a script meets: `-L` at the left edge printed `already on 0`, an
+/// answer to a question the caller had not asked.
+///
+/// The flag parse is [`keymap::direction_of`](sprag_host::keymap::direction_of), not a table of its
+/// own: this verb used to map `-L` straight to the wire word `"left"`, which was a third spelling of
+/// one vocabulary and skipped [`PaneDir`] on the way.
 fn select_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "select-pane")?;
-    let mut dir: Option<&'static str> = None;
+    let mut dir: Option<PaneDir> = None;
     let mut pane: Option<u64> = None;
     for arg in rest {
-        let flag = match arg.as_str() {
-            "-L" => Some("left"),
-            "-R" => Some("right"),
-            "-U" => Some("up"),
-            "-D" => Some("down"),
-            _ => None,
-        };
+        let flag = sprag_host::keymap::direction_of(&arg);
         match flag {
-            Some(word) => {
+            Some(named) => {
                 if dir.is_some() {
                     return Err(bad(
                         "select-pane: -L/-R/-U/-D name one direction; give only one".to_owned(),
                     ));
                 }
-                dir = Some(word);
+                dir = Some(named);
             }
             None => {
                 if pane.is_some() {
@@ -3689,7 +3692,7 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
     }
     let action_args = match (pane, dir) {
         (Some(pane), None) => json!({ "pane": pane }),
-        (None, Some(dir)) => json!({ "dir": dir }),
+        (None, Some(dir)) => json!({ "dir": dir.wire_str() }),
         (None, None) => {
             return Err(bad(
                 "select-pane needs a pane id or a direction: sprag select-pane PANE | -L|-R|-U|-D"
@@ -3732,12 +3735,38 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
             "select-pane: the daemon answered without a pane",
         )
     })?;
-    if answer["changed"] == json!(true) {
-        println!("selected {selected}");
-    } else {
-        println!("already on {selected}");
-    }
+    println!(
+        "{}",
+        select_sentence(SelectHow::read(&answer, dir), dir, selected)
+    );
     Ok(())
+}
+
+/// What `select-pane` prints, as a pure function of the daemon's answer — so every one of the four
+/// outcomes is pinned by a unit test rather than only by whichever of them a live daemon can be
+/// driven into.
+///
+/// `dir` is the direction asked for, if one was. It is an argument rather than a field of the outcome
+/// because the outcome is the DAEMON's fact and the phrasing is this surface's: only the caller knows
+/// it said `-L`, and only that makes "nothing to the left of 0" sayable.
+///
+/// **No arm can panic**, deliberately. An outcome word can only reach here from a daemon, so an
+/// `at_edge` answered to a request that named a PANE is a wrong answer that parses — and this
+/// degrades to the true half of it ("nothing moved") instead of turning a rendering into a crash,
+/// which is the failure mode `sprag list-keys`' own flag table had until this round.
+fn select_sentence(how: SelectHow, dir: Option<PaneDir>, pane: u64) -> String {
+    match (how, dir) {
+        (SelectHow::Moved, _) => format!("selected {pane}"),
+        // Named for what the caller ASKED and could not have: an edge press is not "already on".
+        (SelectHow::AtEdge, Some(dir)) => format!("nothing {} {pane}", dir.beyond()),
+        // No remedy is offered for the float itself, and that is not an omission: NO CLI verb docks
+        // a pane (`SET_FLOATING_ACTION` appears nowhere in this binary), so "dock it" would name an
+        // action this surface cannot perform. What it can do is take a pane id, and it says so.
+        (SelectHow::Untiled, _) => format!(
+            "{pane} is floating, so nothing is beside it in any direction; name a pane to move to"
+        ),
+        (SelectHow::AlreadyActive | SelectHow::AtEdge, _) => format!("already on {pane}"),
+    }
 }
 
 /// `rename-window -t SESSION [window] NEW`: rename a window (default: the current one) to NEW.
@@ -4487,6 +4516,53 @@ mod tests {
             child_sid, pid,
             "it LEADS its own session, which is what makes the hangup unreachable",
         );
+    }
+
+    /// All four `select-pane` sentences, including the two a live daemon is hard to drive into —
+    /// which is why the rendering is a pure function rather than four `println!`s inside the verb.
+    ///
+    /// The `-L`-at-the-edge line is the one this round CHANGED: it printed `already on 0`, an answer
+    /// to a question the caller had not asked. Its integration test asserted that string, so the
+    /// suite agreed with the wrong sentence for as long as it existed.
+    #[test]
+    fn select_pane_says_which_of_the_four_things_happened() {
+        assert_eq!(
+            select_sentence(SelectHow::Moved, None, 3),
+            "selected 3",
+            "the shape a script greps, unchanged",
+        );
+        assert_eq!(
+            select_sentence(SelectHow::Moved, Some(PaneDir::Left), 3),
+            "selected 3",
+        );
+        assert_eq!(
+            select_sentence(SelectHow::AlreadyActive, None, 0),
+            "already on 0",
+        );
+        // The four LITERALS, not `format!("nothing {} 0", dir.beyond())` — which is what this
+        // asserted on its first draft and is not a test: it formats the string it then compares, so
+        // `beyond()` could return anything and it would still pass (proved by changing one phrase and
+        // watching it stay green). The register carries the same defect for `list-keys`' `-r` column.
+        assert_eq!(
+            PaneDir::ALL.map(|dir| select_sentence(SelectHow::AtEdge, Some(dir), 0)),
+            [
+                "nothing to the left of 0",
+                "nothing to the right of 0",
+                "nothing above 0",
+                "nothing below 0",
+            ]
+            .map(str::to_owned),
+            "the direction the caller ASKED for is what makes this sayable, and each of the four \
+             reads as English",
+        );
+        assert_eq!(
+            select_sentence(SelectHow::Untiled, Some(PaneDir::Up), 2),
+            "2 is floating, so nothing is beside it in any direction; name a pane to move to",
+            "and it advises only what THIS surface can do — no CLI verb docks a pane",
+        );
+        // A daemon answering a word its request could not produce degrades to the true half of it
+        // rather than panicking in a rendering — the failure mode `list-keys`' flag table had.
+        assert_eq!(select_sentence(SelectHow::AtEdge, None, 5), "already on 5",);
     }
 
     /// A slot the daemon does not serve reaches an operator as a SENTENCE with a remedy, not as a
