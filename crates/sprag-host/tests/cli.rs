@@ -2702,6 +2702,40 @@ fn the_cli_moves_the_boundary_beside_a_pane() {
         "pane 0 not resized: the boundary is already as far left as it goes",
     );
 
+    // A MOVED BOUNDARY IS A CHANGE AN AGENT CAN WAIT FOR — asserted here, against a live daemon,
+    // because the derivation is three hops from the action (the registry bumps a window's layout
+    // revision, the change funnel diffs it, the journal records it) and each hop could drop it.
+    //
+    // It is a LIVE assertion and not a unit one because the funnel is the DAEMON's: an in-process
+    // external produces no events at all, so a unit test would have measured its own harness. That
+    // is not hypothetical — it is what the first version of this check did, and it failed for a
+    // reason that had nothing to do with the verb.
+    let journal = sprag(&sock, &["events", "-t", "0", "--since", "0"]);
+    assert!(journal.ok, "events succeeded: {}", journal.stderr);
+    assert!(
+        journal.stdout.contains("layout_updated"),
+        "a moved boundary reached the journal: {:?}",
+        journal.stdout,
+    );
+    // THE CONTROL, and it is what makes the line above mean anything: an edge moves nothing, so the
+    // journal must not grow for it. Without this, a funnel that recorded a layout change on every
+    // invoke would pass.
+    let lines = journal.stdout.lines().count();
+    let edge_again = sprag(&sock, &["resize-pane", "0", "-U", "2"]);
+    assert!(
+        edge_again.ok,
+        "an edge is not an error: {}",
+        edge_again.stderr
+    );
+    assert_eq!(
+        sprag(&sock, &["events", "-t", "0", "--since", "0"])
+            .stdout
+            .lines()
+            .count(),
+        lines,
+        "a boundary that did not move gives a parked agent nothing to re-read",
+    );
+
     // The two forms are two different actions, and naming both is this end's mistake to report.
     let both = sprag(
         &sock,

@@ -2851,6 +2851,43 @@ mod tests {
             "{}",
             BUMP,
         );
+
+        // The RESIZE's grammar (R307). It is one arm, but three spellings that matter: the origin
+        // present and absent, and the DISTANCE, which is the only number any request grammar in
+        // this file carries. A `cells` that stopped being emitted when it equals the default would
+        // render identically to a bare ask here and mean something else on a daemon whose default
+        // ever changed — which is exactly the absent-argument hazard this half of the pin exists
+        // for, with the argument being one this project owns both ends of.
+        for (ask, rendered) in [
+            (
+                ResizeAsk {
+                    pane: Some(PaneId(3)),
+                    dir: PaneDir::Left,
+                    cells: 5,
+                },
+                r#"{"pane":3,"dir":"left","cells":5}"#,
+            ),
+            (
+                ResizeAsk {
+                    pane: None,
+                    dir: PaneDir::Down,
+                    cells: ResizeAsk::CELLS_DEFAULT,
+                },
+                r#"{"dir":"down","cells":1}"#,
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&ask.to_args()).expect("an ask renders"),
+                rendered,
+                "{}",
+                BUMP,
+            );
+            assert_eq!(
+                ResizeAsk::parse(&ask.to_args()),
+                Some(ask),
+                "and what it renders is what it reads back",
+            );
+        }
     }
 
     /// What a failing shape pin has to say, since the person reading it is the one who moved the
