@@ -77,7 +77,7 @@
 //! smaller than the window still shows the panes it has room for — it is cropping a tiling it
 //! agrees with, which is a different thing from computing a smaller one.
 
-use crate::{LayoutNodeWire, LayoutWire, PaneId, SplitDir, SplitId};
+use crate::{LayoutNodeWire, LayoutWire, PaneDir, PaneId, SplitDir, SplitId, SplitSide};
 
 /// A rectangle of character cells in the local terminal's coordinates, `col`/`row` counted from the
 /// top-left of the screen.
@@ -311,16 +311,95 @@ impl Divider {
     /// arrangement that is still two panes rather than collapsing one to nothing.
     #[must_use]
     pub fn ratio_at(&self, col: u16, row: u16) -> Option<f32> {
-        let (extent, along, origin) = match self.dir {
-            SplitDir::Horizontal => (self.region.cols, col, self.region.col),
-            SplitDir::Vertical => (self.region.rows, row, self.region.row),
+        let along = self.along();
+        let pointer = match self.dir {
+            SplitDir::Horizontal => col,
+            SplitDir::Vertical => row,
         };
-        // One cell for the divider and at least one for each child: below three there is no move
-        // to make, and `divide` would already be refusing to show two panes.
-        let avail = extent.checked_sub(1).filter(|avail| *avail >= 2)?;
-        let near = along.checked_sub(origin)?.clamp(1, avail - 1);
-        Some((f32::from(near) + 0.5) / f32::from(avail))
+        self.ratio_for(pointer.checked_sub(along.origin)?)
+            .map(|(ratio, _)| ratio)
     }
+
+    /// The ratio that moves this divider `cells` cells `toward`, and how many cells it ACTUALLY
+    /// moves — `None` for a direction off this divider's own axis, or a region too small to hold a
+    /// move at all.
+    ///
+    /// [`ratio_at`](Self::ratio_at)'s sibling: that one is a POINTER arriving at a cell, this one a
+    /// COUNT of cells to travel, and both are the same question about where the boundary ends up.
+    /// They share one private inverse, so the clamp that keeps a cell on each side and
+    /// the half-cell that makes the inverse exact are each written once for both gestures — the
+    /// property this project keeps losing when a second surface re-derives a first one's rule.
+    ///
+    /// **The direction moves the BOUNDARY, not the pane.** `Right`/`Down` ([`SplitSide::Second`])
+    /// take the divider's cell up its axis and `Left`/`Up` take it down, whichever pane asked:
+    /// whether that grows or shrinks the asker follows from the side it sits on, which is what
+    /// makes the rule one sentence instead of a table. See
+    /// [`LayoutTree::divider_on`](crate::LayoutTree::divider_on).
+    ///
+    /// The returned count is what a caller REPORTS, and it is the reason the clamp is not the
+    /// caller's to repeat: a move that ran into the last cell answers fewer cells than were asked
+    /// for, and a caller comparing the two learns it was clamped without holding a second copy of
+    /// where the limit is.
+    #[must_use]
+    pub fn stepped(&self, toward: PaneDir, cells: u16) -> Option<(f32, u16)> {
+        if toward.axis() != self.dir {
+            return None;
+        }
+        let along = self.along();
+        let wanted = match toward.side() {
+            SplitSide::Second => along.at.saturating_add(cells),
+            SplitSide::First => along.at.saturating_sub(cells),
+        };
+        self.ratio_for(wanted)
+            .map(|(ratio, near)| (ratio, near.abs_diff(along.at)))
+    }
+
+    /// This divider's geometry ALONG the axis it divides — everything both public forms measure in.
+    fn along(&self) -> Along {
+        match self.dir {
+            SplitDir::Horizontal => Along {
+                extent: self.region.cols,
+                origin: self.region.col,
+                at: self.area.col.saturating_sub(self.region.col),
+            },
+            SplitDir::Vertical => Along {
+                extent: self.region.rows,
+                origin: self.region.row,
+                at: self.area.row.saturating_sub(self.region.row),
+            },
+        }
+    }
+
+    /// The ratio that puts this divider `near` cells into its own region, with the offset it
+    /// actually lands on — **the ONE definition of "the divider sits at this cell"**.
+    ///
+    /// Both public forms reduce to this, so neither can drift into its own idea of where the
+    /// boundary may stop or of how a cell maps onto a share. `None` when the region cannot hold a
+    /// move: one cell for the divider and at least one for each child, so below three there is
+    /// nothing to move and [`divide`] would already be refusing to show two panes.
+    fn ratio_for(&self, near: u16) -> Option<(f32, u16)> {
+        let avail = self.along().extent.checked_sub(1).filter(|a| *a >= 2)?;
+        // The half-cell is what makes the inverse robust: the layouter computes `floor(avail *
+        // ratio)`, so asking for `(near + 0.5) / avail` lands strictly inside the interval that
+        // floors to `near` rather than on its edge, where a float's last bit decides the answer.
+        let near = near.clamp(1, avail - 1);
+        Some(((f32::from(near) + 0.5) / f32::from(avail), near))
+    }
+}
+
+/// A [`Divider`]'s geometry along the axis it divides — see [`Divider::along`].
+///
+/// A named struct rather than a tuple because all three are `u16` measured in the same units, and a
+/// caller that took them positionally would be one transposition away from a resize that works on
+/// one axis and not the other.
+#[derive(Clone, Copy, Debug)]
+struct Along {
+    /// The whole region's span on this axis, divider cell included.
+    extent: u16,
+    /// Where the region starts on the screen, so a screen coordinate can be made region-local.
+    origin: u16,
+    /// The divider's own offset into the region.
+    at: u16,
 }
 
 /// `tree` with the split identified by `id` set to `ratio`, or `None` when no node carries that id.

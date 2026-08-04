@@ -50,16 +50,17 @@ use pinion_core::GridBuffer;
 use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    ActivityReading, CommandBuilder, HistoryLimitSource, LayoutSnapshot, LayoutWire, Pane, PaneDir,
-    PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, SessionInfo,
-    SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, WindowInfo, WindowStep,
-    Workspace, ZoomOutcome,
+    ActivityReading, CommandBuilder, DividerStep, HistoryLimitSource, LayoutSnapshot, LayoutWire,
+    Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep,
+    Projection, Rect, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide,
+    WindowInfo, WindowStep, Workspace, ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
+use crate::attach::{AttachmentRegistry, ClientSize};
 use crate::external::lock;
 use crate::scope::SessionScope;
-use crate::wire::{SelectAsk, SelectHow, SwapAsk, SwapHow};
+use crate::wire::{ResizeAsk, ResizeHow, SelectAsk, SelectHow, SwapAsk, SwapHow};
 
 /// Per-pane facts the client reads each frame that are NOT carried in the cell
 /// buffer but ride ALONGSIDE it in one pane-frame: the scrollback depth (the
@@ -1906,6 +1907,141 @@ pub(crate) fn swap_pane(
         } else {
             SwapHow::SamePane
         },
+    })
+}
+
+/// What a resize DID — the pane as resolved, how far the boundary went, and why it stopped.
+///
+/// [`Swap`]'s shape one verb over, and a named record for its reason: `(PaneId, u16, ResizeHow)`
+/// says nothing at a call site about which number is a distance and which an id.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Resize {
+    /// The pane the request moved a boundary of — the one it named, or the active pane.
+    pub(crate) pane: PaneId,
+    /// How many cells the boundary ACTUALLY travelled. Zero for every outcome but
+    /// [`ResizeHow::Resized`], and BELOW what was asked when the move ran into the last cell a
+    /// side may keep.
+    pub(crate) cells: u16,
+    /// What became of the boundary — the answer's `outcome` word.
+    pub(crate) how: ResizeHow,
+}
+
+/// Move the boundary that bounds `pane` on `ask.dir`'s axis — the ONE place a split's share moves
+/// by a distance rather than by a whole tree being written back.
+///
+/// Answers the [`Resize`]. `None` — refused — for a scope whose window the registry does not hold,
+/// an origin no window of the session holds, and a window with NO SIZE (no client has reported an
+/// area and nothing is pinned), because a cell has no length in a window nobody has measured.
+/// Those three share one refusal for the reason every action on this wire does: `InvokeError`
+/// carries no payload (upstream PINION-PR82), and the SURFACES say which, each knowing what it
+/// sent.
+///
+/// # The conversion, and why it is here
+///
+/// A boundary's position is a share of the region its split divides, and a caller asks in CELLS.
+/// The region comes from `tile(tree, window)` — the TREE this process owns and the WINDOW this
+/// process arbitrates across every attached client — so this is the only place that can do the
+/// conversion at all without re-deriving one of the two from a rectangle of its own. It is the same
+/// argument the daemon-side reflow makes about a pane's size, one question further in.
+///
+/// The share itself comes from [`Divider::stepped`](sprag_terminal::tiling::Divider::stepped),
+/// which the pointer drag's [`ratio_at`](sprag_terminal::tiling::Divider::ratio_at) shares — so the
+/// key and the mouse round the same way and stop in the same place.
+///
+/// # Locks
+///
+/// The pool and the attachment reports are read FIRST, each lock taken and released in turn, and
+/// then the registry — the order the daemon-side reflow already takes, so this cannot invert it.
+pub(crate) fn resize_pane(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    attachments: &Arc<Mutex<AttachmentRegistry>>,
+    scope: &SessionScope,
+    ask: ResizeAsk,
+) -> Option<Resize> {
+    let panes: Vec<PaneId> = lock(scope.workspace())
+        .panes()
+        .iter()
+        .map(Pane::id)
+        .collect();
+    let sizes = lock(attachments).sizes(scope.session());
+    let mut registry = lock(registry);
+    let window = registry.window_mut(scope.session(), scope.window())?;
+    window.reconcile_layout(&panes);
+    let pane = match ask.pane {
+        Some(pane) => pane,
+        None => window.active_pane()?,
+    };
+    // Before anything is measured: a zoomed window's arrangement is not what is on screen, and
+    // R285 made the zoom a PROJECTION exactly so that the arrangement is untouched by it.
+    if window.zoomed().is_some() {
+        return Some(Resize {
+            pane,
+            cells: 0,
+            how: ResizeHow::Zoomed,
+        });
+    }
+    let step = window.layout().divider_on(pane, ask.dir.axis());
+    let split = match step {
+        DividerStep::At(split) => split,
+        DividerStep::Edge => {
+            return Some(Resize {
+                pane,
+                cells: 0,
+                how: ResizeHow::AtEdge,
+            });
+        }
+        DividerStep::Untiled => {
+            return Some(Resize {
+                pane,
+                cells: 0,
+                how: ResizeHow::Untiled,
+            });
+        }
+    };
+    let area = crate::window::arbitrate(
+        crate::config::window_size(),
+        &sizes,
+        window
+            .manual_size()
+            .map(|(cols, rows)| ClientSize { cols, rows }),
+    )?;
+    let tree = LayoutWire::from(window.layout());
+    // `Whole`, not the snapshot's projection: the zoom is already refused above, so the two agree,
+    // and naming the arrangement is what says which of them a boundary is a fact of.
+    let tiling = tile(
+        &Projection::Whole(&tree),
+        Rect::screen(area.cols, area.rows),
+    );
+    // A split the tiling does not draw a divider for is one the window was too small to show, which
+    // `tile` states is a pane DROPPED rather than shrunk. There is no boundary on screen to move.
+    let Some((ratio, moved)) = tiling
+        .dividers
+        .iter()
+        .find(|divider| divider.id == Some(split))
+        .and_then(|divider| divider.stepped(ask.dir, ask.cells))
+    else {
+        return Some(Resize {
+            pane,
+            cells: 0,
+            how: ResizeHow::AtMinimum,
+        });
+    };
+    if moved == 0 {
+        return Some(Resize {
+            pane,
+            cells: 0,
+            how: ResizeHow::AtMinimum,
+        });
+    }
+    // `None` for the expected revision: this write is the daemon's own, derived from the tree it is
+    // holding the lock over, so there is no earlier read of somebody else's for it to be stale
+    // against — which is precisely the case that method's `expected` documents.
+    let moved_tree = with_ratio(&tree, split, ratio)?;
+    window.set_layout(moved_tree, None).ok()?;
+    Some(Resize {
+        pane,
+        cells: moved,
+        how: ResizeHow::Resized,
     })
 }
 

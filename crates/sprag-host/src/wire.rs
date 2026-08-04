@@ -1773,6 +1773,234 @@ impl SwapHow {
 /// like that"), spelled once because two actions carry it.
 pub const OUTCOME_KEY: &str = "outcome";
 
+/// The mux control external invoke action that MOVES A BOUNDARY between panes
+/// (`{pane?, dir, cells?}`) — tmux `resize-pane -L|-R|-U|-D`. Answers `{pane, cells, outcome}`.
+///
+/// # The op this daemon did not have
+///
+/// Until R307 a split's ratio could be moved by exactly ONE gesture in this whole product: a
+/// pointer drag on a divider in `sprag-gui`, settled back through [`SET_LAYOUT_ACTION`] as a whole
+/// tree. `sprag resize-pane`'s own docs said why — *"they move a DIVIDER, which is layout the
+/// daemon does not model as an op"* — so `sprag-tui` had no way to change a pane's share at all,
+/// and neither did a key, a shell or an agent.
+///
+/// It is the daemon's op rather than a client's for the reason this crate's own daemon-side reflow
+/// states about a pane's size: the answer is `tile(tree, window)`, the TREE is this process's and
+/// the WINDOW is this process's (arbitrated across every attached client), so a client converting
+/// cells to a share would be re-deriving one of them from a rectangle of its own. It is also the
+/// reason the amount can be CELLS at all — see below.
+///
+/// # The grammar
+///
+/// [`ResizeAsk`], spelled once and built by every client, [`SwapAsk`]'s rule.
+///
+/// * `pane` ABSENT means the scoped window's ACTIVE pane, the default [`SPLIT_ACTION`],
+///   [`SWAP_PANE_ACTION`] and [`ZOOM_PANE_ACTION`] all take, and the only thing a keystroke can mean.
+/// * `dir` — `"left"` / `"right"` / `"up"` / `"down"`. **It moves the BOUNDARY, not the pane**:
+///   `right` takes the boundary right, and whether that grows or shrinks `pane` follows from which
+///   side of it the pane sits on. That is tmux's behaviour and it needs no case analysis to state,
+///   because the boundary is chosen by the AXIS alone
+///   ([`LayoutTree::divider_on`](sprag_terminal::LayoutTree::divider_on)).
+/// * `cells` — how far, defaulting to 1. A COUNT OF CELLS, not a share, and that is the argument
+///   worth stating: a share cannot mean "five columns". The rival's `amount` is an `f32` defaulting
+///   to `0.05` (herdr `9a4ce5e1`, `handle_pane_resize`), so one keypress moves a different number of
+///   columns on a different window — and a different number again on a nested split, because a share
+///   is measured against its own sub-region rather than against the screen.
+///
+/// # The answer: `{pane, cells, outcome}`
+///
+/// `pane` is the pane AS RESOLVED, so a caller that named none learns which one it moved. `cells`
+/// is how many the boundary ACTUALLY travelled, which is below `cells` asked when it ran into the
+/// last cell a side may keep — so a caller learns it was clamped without holding a second copy of
+/// where the limit is. `outcome` is [`ResizeHow`], which says WHICH nothing happened when nothing
+/// did.
+///
+/// REFUSED (`Rejected`), with nothing moved: `pane` naming no pane of the scoped session, or the
+/// window having NO SIZE — no client has reported an area and nothing is pinned. The second is a
+/// refusal rather than an outcome because a cell has no length in a window nobody has measured, and
+/// it is the same fact `resize-window` already refuses on ([`NoBasis`](crate::window::NoBasis)).
+pub const RESIZE_PANE_ACTION: &str = "resize_pane";
+
+/// The REQUEST grammar of [`RESIZE_PANE_ACTION`] — what a caller may ask, as a type that cannot
+/// spell what the action refuses.
+///
+/// [`SwapAsk`]'s shape one verb over and for its reason: the daemon [`parse`](Self::parse)s one of
+/// these and every client [`to_args`](Self::to_args) builds one, so the three keys are spelled ONCE
+/// for four surfaces (the daemon, the CLI verb, the MCP tool, the keybinding).
+///
+/// It is a STRUCT rather than an enum, unlike its two neighbours, because this action has one arm:
+/// a boundary is always named by a direction. There is no `with`-shaped alternative — naming the
+/// split itself would be naming a [`SplitId`](sprag_terminal::SplitId), which is the drag's handle
+/// and not a thing a human or an agent has ever seen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResizeAsk {
+    /// The pane whose boundary moves. [`None`] ⇒ the scoped window's active pane, which is what a
+    /// keypress means.
+    pub pane: Option<PaneId>,
+    /// Which way the BOUNDARY travels.
+    pub dir: PaneDir,
+    /// How many cells. Never zero — a request to move nothing is refused by
+    /// [`parse`](Self::parse) rather than answered, because its honest answer would be
+    /// indistinguishable from a boundary that could not move.
+    pub cells: u16,
+}
+
+impl ResizeAsk {
+    /// The request key naming the pane whose boundary moves.
+    pub const PANE_KEY: &'static str = "pane";
+    /// The request key naming which way the boundary travels.
+    pub const DIR_KEY: &'static str = "dir";
+    /// The request key naming how far, in cells.
+    pub const CELLS_KEY: &'static str = "cells";
+
+    /// How far a request that names no distance means — tmux's own `resize-pane` default, and the
+    /// only amount a bare key can sensibly carry.
+    pub const CELLS_DEFAULT: u16 = 1;
+
+    /// The `args` object a client sends for this ask.
+    ///
+    /// An absent origin emits no key at all rather than a null, [`SwapAsk::to_args`]'s rule; the
+    /// DEFAULT distance is emitted anyway, because unlike an origin it is a number the caller
+    /// chose and a trace that dropped it would not show what was asked.
+    #[must_use]
+    pub fn to_args(self) -> Value {
+        let mut map = Map::new();
+        if let Some(pane) = self.pane {
+            map.insert(Self::PANE_KEY.to_owned(), Value::from(pane.0));
+        }
+        map.insert(Self::DIR_KEY.to_owned(), Value::from(self.dir.wire_str()));
+        map.insert(Self::CELLS_KEY.to_owned(), Value::from(self.cells));
+        Value::Object(map)
+    }
+
+    /// The ask an `args` value names, or [`None`] for anything this grammar does not admit.
+    ///
+    /// One [`None`] for every refusal, [`SwapAsk::parse`]'s rule and for its reason. An explicit
+    /// `null` reads as ABSENT, so a client that fills its whole argument struct in asks what one
+    /// that omits the optional halves asks — and `cells: 0` is REFUSED rather than defaulted,
+    /// because a caller that spelled a zero meant something this action cannot do.
+    #[must_use]
+    pub fn parse(args: &Value) -> Option<Self> {
+        let map = match args {
+            Value::Object(map) => map,
+            // No args at all names no direction, which this grammar does not admit.
+            _ => return None,
+        };
+        let field = |key: &str| map.get(key).filter(|value| !value.is_null());
+        let pane = match field(Self::PANE_KEY) {
+            None => None,
+            Some(value) => Some(PaneId(value.as_u64()?)),
+        };
+        let dir = PaneDir::from_wire(field(Self::DIR_KEY)?.as_str()?)?;
+        let cells = match field(Self::CELLS_KEY) {
+            None => Self::CELLS_DEFAULT,
+            Some(value) => u16::try_from(value.as_u64()?).ok().filter(|n| *n > 0)?,
+        };
+        Some(Self { pane, dir, cells })
+    }
+}
+
+/// The `outcome` key of a [`RESIZE_PANE_ACTION`] answer: what became of the boundary.
+///
+/// **Five words, total over the request grammar, each with exactly one cause and one remedy** —
+/// [`SwapHow`]'s property one verb over, and the axis this verb beats the rival on outright: their
+/// `resize_pane` answers a `bool` (herdr `9a4ce5e1`, `src/layout.rs:241`), so an edge, a floating
+/// pane, a zoom and a boundary already as far as it goes are ONE value with four remedies.
+///
+/// A move that was CLAMPED is [`Resized`](Self::Resized) with a smaller `cells` than was asked for,
+/// not a word of its own: it changed, and the number says by how much. That is what keeps
+/// [`changed`](Self::changed) derivable from the word alone — the property every parked client
+/// depends on, since it decides whether there is anything to re-read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResizeHow {
+    /// The boundary MOVED. `cells` says how far, which is below what was asked when it ran into
+    /// the last cell a side may keep.
+    Resized,
+    /// There is a boundary and it is already as far that way as it can go — one cell is the least
+    /// a side may keep, which is
+    /// [`Divider::stepped`](sprag_terminal::tiling::Divider::stepped)'s clamp, shared with the
+    /// pointer drag's so the key and the mouse stop in the same place.
+    AtMinimum,
+    /// The arrangement holds the pane and has no division on that axis at all: the pane spans the
+    /// window that way, so there is no boundary to move. Distinct from
+    /// [`AtMinimum`](Self::AtMinimum) because the remedy is different — split first, rather than
+    /// resize the other way.
+    AtEdge,
+    /// The arrangement holds no leaf for the pane: it is floating, so it has no boundaries in any
+    /// direction. [`SwapHow::Untiled`]'s fact, one verb over.
+    Untiled,
+    /// The window is ZOOMED, so its arrangement is not what is on screen.
+    ///
+    /// **The boundary is deliberately NOT moved.** R285 made a zoom a PROJECTION precisely so the
+    /// arrangement is untouched by it; moving a boundary the user cannot see, and answering
+    /// success for it, is the one outcome worse than doing nothing.
+    Zoomed,
+}
+
+impl ResizeHow {
+    /// Every outcome, for a caller enumerating the vocabulary (a test, a description).
+    pub const ALL: [Self; 5] = [
+        Self::Resized,
+        Self::AtMinimum,
+        Self::AtEdge,
+        Self::Untiled,
+        Self::Zoomed,
+    ];
+
+    /// This outcome's wire word — the value of the answer's [`OUTCOME_KEY`].
+    #[must_use]
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Self::Resized => "resized",
+            Self::AtMinimum => "at_minimum",
+            Self::AtEdge => "at_edge",
+            Self::Untiled => "untiled",
+            Self::Zoomed => "zoomed",
+        }
+    }
+
+    /// The outcome a wire word names, or [`None`] for a word this build does not know.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|how| how.wire_str() == word)
+    }
+
+    /// Whether the ARRANGEMENT moved — [`SwapHow::changed`]'s rule, and what the daemon announces
+    /// on: a resize that moved no boundary gives a parked client nothing to re-read.
+    #[must_use]
+    pub fn changed(self) -> bool {
+        matches!(self, Self::Resized)
+    }
+
+    /// The sentence a surface says when nothing moved — [`None`] when something did.
+    ///
+    /// One wording for every surface (the CLI verb, the MCP tool, whatever a frontend shows),
+    /// [`PaneDir::beyond`](sprag_terminal::PaneDir::beyond)'s rule: four adjectives copied per
+    /// surface is the shape this project keeps finding drifted. It takes the direction because
+    /// three of the five sentences are only exact with it in them.
+    #[must_use]
+    pub fn why(self, dir: PaneDir) -> Option<String> {
+        match self {
+            Self::Resized => None,
+            Self::AtMinimum => Some(format!(
+                "the boundary is already as far {} as it goes",
+                dir.wire_str()
+            )),
+            Self::AtEdge => Some(format!(
+                "the pane spans the window that way, so there is no boundary to move {}",
+                dir.wire_str()
+            )),
+            Self::Untiled => {
+                Some("the pane is floating, so it has no boundaries to move".to_owned())
+            }
+            Self::Zoomed => Some(
+                "the window is zoomed, so its arrangement is not on screen; unzoom to resize"
+                    .to_owned(),
+            ),
+        }
+    }
+}
+
 /// The mux control external invoke action that fills a window with ONE pane, or ends that
 /// (`{pane?, on?}`) — tmux `resize-pane -Z`. Answers `{pane, zoomed, changed}`.
 ///

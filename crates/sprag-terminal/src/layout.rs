@@ -727,6 +727,35 @@ impl PaneStep {
     }
 }
 
+/// Which division governs a pane's extent along one axis — the answer
+/// [`LayoutTree::divider_on`] gives, and [`PaneStep`]'s sibling.
+///
+/// It has the same three-way shape for the same reason: an arrangement that holds the pane and has
+/// no division to move is a DIFFERENT fact from one that does not hold the pane at all, and a
+/// caller that must say why nothing happened cannot recover the difference from a bare [`None`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DividerStep {
+    /// The split whose boundary bounds the pane on that axis.
+    At(SplitId),
+    /// The arrangement holds the pane and no division on that axis lies above it: the pane spans
+    /// the window that way, so both of its edges on that axis are the window's own.
+    Edge,
+    /// The arrangement holds no leaf for the pane — it is floating, it has exited, or the window
+    /// tiles nothing. [`PaneStep::Untiled`]'s fact, one question over.
+    Untiled,
+}
+
+impl DividerStep {
+    /// The split this lands on, for a caller that only asks whether there is one.
+    #[must_use]
+    pub fn at(self) -> Option<SplitId> {
+        match self {
+            Self::At(id) => Some(id),
+            Self::Edge | Self::Untiled => None,
+        }
+    }
+}
+
 /// Where a directional step from `pane` lands within the arrangement rooted at `root` — the ONE
 /// derivation of adjacency in this project.
 ///
@@ -887,6 +916,48 @@ impl LayoutTree {
             // A window that tiles nothing holds no leaf for any pane, which is what `Untiled` says.
             None => PaneStep::Untiled,
         }
+    }
+
+    /// Which division bounds `pane` along `axis` — the ONE derivation of "the boundary a resize
+    /// moves", as [`step`](Self::step) is the one derivation of adjacency.
+    ///
+    /// # Why the question is about an AXIS and not about a direction
+    ///
+    /// The boundary that governs how wide a pane is is its own region's edge on that axis, and a
+    /// region has one such edge inside the arrangement whichever child of that division it is: a
+    /// pane in `first` is bounded on the far side, a pane in `second` on the near side, and both
+    /// are the SAME division. So which boundary to move is settled by the axis alone, and the
+    /// direction settles only which way it goes — see
+    /// `sprag_host::wire::ResizeHow`, where `-R` means the boundary moves right and whether the
+    /// pane grows or shrinks falls out of the side it sits on. tmux behaves this way and needs no
+    /// case analysis to; the rival spends four geometric predicates over the rectangles it last
+    /// painted plus an opposite-direction fallback to reach the same boundary
+    /// (`nearest_resize_split`, herdr `9a4ce5e1`).
+    ///
+    /// # Why NEAREST, and why it does not skip a side
+    ///
+    /// Innermost first, as [`step`](Self::step)'s own walk is: an outer division only bounds the
+    /// pane's region where every inner one runs the other way. The one place this differs from the
+    /// adjacency walk is that it does NOT skip an ancestor the pane sits on the moving side of —
+    /// a NEIGHBOUR must be across the boundary, where the boundary that bounds a pane is its own
+    /// either way.
+    #[must_use]
+    pub fn divider_on(&self, pane: PaneId, axis: SplitDir) -> DividerStep {
+        let Some(root) = self.root.as_ref() else {
+            // A window that tiles nothing holds no leaf for any pane, which is what `Untiled` says.
+            return DividerStep::Untiled;
+        };
+        let mut path = Vec::new();
+        if !leaf_path(root, pane, &mut path) {
+            return DividerStep::Untiled;
+        }
+        path.iter()
+            .rev()
+            .find_map(|(node, _)| match node {
+                LayoutNode::Split { id, dir, .. } if *dir == axis => Some(DividerStep::At(*id)),
+                _ => None,
+            })
+            .unwrap_or(DividerStep::Edge)
     }
 
     /// Mint the next never-reused split id.

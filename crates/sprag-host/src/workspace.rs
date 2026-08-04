@@ -81,10 +81,11 @@ use crate::wire::{
     KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, NEIGHBORS_FIELD,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD,
     PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
-    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    SelectWindowAsk, SwapAsk, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION,
+    RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk, WINDOW_SIZE_SLOT,
+    WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -1501,6 +1502,47 @@ impl WorkspaceExternal {
         })))
     }
 
+    /// `resize_pane {pane?, dir, cells?}` action: move the boundary that bounds `pane` on that
+    /// axis — tmux `resize-pane -L|-R|-U|-D`. Answers `{pane, cells, outcome}`. See
+    /// [`crate::wire::RESIZE_PANE_ACTION`].
+    ///
+    /// [`swap_pane`](Self::swap_pane)'s shape: the grammar is parsed by a type rather than key by
+    /// key, and the same line is drawn between a REFUSAL and a quiet "nothing moved" — a direction
+    /// with no boundary to move is a well-formed request at the edge of a layout, where a pane id
+    /// naming nothing is a caller's mistake.
+    ///
+    /// **It needs the ATTACHMENTS**, unlike every other arrangement action here, because a cell has
+    /// no length until the window has a size and the size is arbitrated across every attached
+    /// client. An external built without them cannot answer — the same `None` a window with no
+    /// reported area gives, and for the same reason rather than by coincidence.
+    fn resize_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let value = match args {
+            IntrospectValue::Json(value) => value,
+            IntrospectValue::Null => &Value::Null,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let ask = ResizeAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
+        let attachments = self.attachments.as_ref().ok_or(InvokeError::Rejected)?;
+        let resize = crate::host::resize_pane(&self.registry, attachments, &self.scope, ask)
+            .ok_or_else(|| {
+                tracing::debug!(target: "sprag_host", ?ask, "refused to move a pane boundary");
+                InvokeError::Rejected
+            })?;
+        if resize.how.changed() {
+            // Only on a real move, `select_pane`'s rule: the announce wakes every parked client to
+            // re-read, and a boundary that did not move has nothing for them to read.
+            self.announce();
+        }
+        Ok(IntrospectValue::Json(serde_json::json!({
+            "pane": resize.pane.0,
+            // How far it ACTUALLY went, which is below what was asked when it ran into the last
+            // cell a side may keep — so a caller learns it was clamped without holding a second
+            // copy of where the limit is.
+            "cells": resize.cells,
+            crate::wire::OUTCOME_KEY: resize.how.wire_str(),
+        })))
+    }
+
     /// `zoom_pane {pane?, on?}` action: fill the window that holds `pane` with it alone, or end
     /// that window's zoom — tmux `resize-pane -Z`. Answers `{pane, zoomed, changed}`. See
     /// [`crate::wire::ZOOM_PANE_ACTION`].
@@ -1625,6 +1667,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(JOIN_PANE_ACTION, "action"),
                     SchemaField::new(MOVE_PANE_ACTION, "action"),
                     SchemaField::new(SWAP_PANE_ACTION, "action"),
+                    SchemaField::new(RESIZE_PANE_ACTION, "action"),
                     SchemaField::new(ZOOM_PANE_ACTION, "action"),
                     SchemaField::new(DROP_FILE_ACTION, "action"),
                     SchemaField::new(PANES_SLOT, "list"),
@@ -2147,6 +2190,7 @@ impl WorkspaceExternal {
             JOIN_PANE_ACTION => self.join_pane(&args),
             MOVE_PANE_ACTION => self.move_pane(&args),
             SWAP_PANE_ACTION => self.swap_pane(&args),
+            RESIZE_PANE_ACTION => self.resize_pane(&args),
             ZOOM_PANE_ACTION => self.zoom_pane(&args),
             DROP_FILE_ACTION => self.drop_file(&args),
             REPORT_AGENT_ACTION => self.report_agent(&args),
@@ -5789,6 +5833,282 @@ mod tests {
             "the arena is the same size — nothing was retired and re-minted",
         );
         assert!(rev.current() > before);
+    }
+
+    /// A control surface whose session has a WINDOW — an attached client reporting `cols x rows`.
+    ///
+    /// Every other surface in this module is built without attachments, which is exactly right for
+    /// an action whose answer does not depend on how big anything is. `resize_pane`'s does: a cell
+    /// has no length until somebody has measured the window, so this is the harness that action
+    /// needs and the reason it is not `control`.
+    fn control_with_a_window(
+        reg: &Arc<Mutex<SessionRegistry>>,
+        cols: u16,
+        rows: u16,
+    ) -> WorkspaceExternal {
+        let attachments = Arc::new(Mutex::new(crate::AttachmentRegistry::default()));
+        {
+            let mut a = lock(&attachments);
+            let conn = pinion_rpc::ConnId::allocate();
+            a.hello(conn, "gui".to_owned());
+            let id = lock(reg).default_session().id();
+            a.attach(conn, "0".to_owned(), id);
+            a.size(conn, crate::ClientSize { cols, rows });
+        }
+        WorkspaceExternal::new(
+            Arc::clone(reg),
+            SessionScope::unscoped(reg),
+            Arc::new(ChannelRegistry::default()),
+            None,
+            Some(attachments),
+            None,
+            sampler(),
+        )
+    }
+
+    /// How wide the PTY of `pane` is — the fact a resize exists to move, read where the program in
+    /// the pane reads it rather than off the ratio this action writes.
+    fn pane_cols(reg: &Arc<Mutex<SessionRegistry>>, pane: u64) -> u16 {
+        lock(&pool(reg))
+            .pane(PaneId(pane))
+            .expect("the pane is alive")
+            .pty()
+            .dimensions()
+            .0
+    }
+
+    /// **THE POINT OF THE VERB**, asserted where a program in the pane would feel it: five cells
+    /// asked for, five cells answered, and the PTY five columns wider.
+    ///
+    /// Two panes side by side over an 80-column window divide 79 usable columns (one is the
+    /// divider) at an even share, so the left pane opens at `floor(79 * 0.5)` = 39. Moving the
+    /// boundary five cells right puts it at 44, and the assertion is on the PTY rather than on the
+    /// ratio because a share that moved without reflowing anything is the defect this whole front
+    /// keeps finding.
+    #[test]
+    fn resize_pane_moves_the_boundary_and_says_how_far() {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 80, 24);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        assert_eq!(pane_cols(&reg, 0), 39, "an even share of 79 usable columns");
+
+        let answer = write_doc(ext.invoke(
+            RESIZE_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 5})),
+        ));
+
+        assert_eq!(answer, json!({"pane": 0, "cells": 5, "outcome": "resized"}),);
+        assert_eq!(
+            pane_cols(&reg, 0),
+            44,
+            "the pane the boundary moved away from"
+        );
+        assert_eq!(pane_cols(&reg, 1), 35, "and the one it moved into");
+    }
+
+    /// **The direction moves the BOUNDARY, not the pane** — the rule that makes this verb one
+    /// sentence instead of a table, and the one a test written from the other end would get
+    /// backwards. `left` from the RIGHT pane grows it, because the boundary it is measured against
+    /// is the one on its near side.
+    #[test]
+    fn a_direction_moves_the_boundary_whichever_pane_asked() {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 80, 24);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        let (left, right) = (pane_cols(&reg, 0), pane_cols(&reg, 1));
+
+        write_doc(ext.invoke(
+            RESIZE_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 1, "dir": "left", "cells": 4})),
+        ));
+
+        assert_eq!(pane_cols(&reg, 1), right + 4, "the asker GREW");
+        assert_eq!(pane_cols(&reg, 0), left - 4, "at its neighbour's expense");
+        assert_ne!(
+            left, right,
+            "and the fixture's two panes are not the same width, so 'grew' and 'shrank' can be told apart"
+        );
+    }
+
+    /// A boundary that runs into the last cell a side may keep answers how far it ACTUALLY went,
+    /// and asking again from there is [`ResizeHow::AtMinimum`] — a fact with its own remedy, where
+    /// the rival answers the same `bool` it answers for an edge, a float and a zoom.
+    #[test]
+    fn a_clamped_resize_says_how_far_it_got_and_then_says_it_cannot() {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 80, 24);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+
+        let answer = write_doc(ext.invoke(
+            RESIZE_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 500})),
+        ));
+        assert_eq!(
+            answer,
+            json!({"pane": 0, "cells": 39, "outcome": "resized"}),
+            "39 of the 500 asked for — the boundary stopped one cell short of the far wall",
+        );
+        assert_eq!(pane_cols(&reg, 1), 1, "the far pane keeps its cell");
+
+        assert_eq!(
+            write_doc(ext.invoke(
+                RESIZE_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 1})),
+            )),
+            json!({"pane": 0, "cells": 0, "outcome": "at_minimum"}),
+            "and from there it says WHICH nothing happened",
+        );
+    }
+
+    /// A pane that spans the window on the axis asked for has no boundary to move — a DIFFERENT
+    /// fact from one whose boundary is at its limit, with a different remedy (split first), so it
+    /// is a different word.
+    #[test]
+    fn a_resize_with_no_boundary_that_way_is_an_edge() {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 80, 24);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+
+        assert_eq!(
+            write_doc(ext.invoke(
+                RESIZE_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0, "dir": "down", "cells": 3})),
+            )),
+            json!({"pane": 0, "cells": 0, "outcome": "at_edge"}),
+            "two panes SIDE BY SIDE have no horizontal boundary between them",
+        );
+        assert_eq!(pane_cols(&reg, 0), 39, "and nothing moved");
+    }
+
+    /// A floating pane has no leaf in the arrangement, so it has no boundaries in any direction —
+    /// `SwapHow::Untiled`'s fact one verb over, and named rather than collapsed into the edge.
+    #[test]
+    fn a_resize_of_a_floating_pane_is_untiled() {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 80, 24);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        ext.invoke(
+            SET_FLOATING_ACTION,
+            IntrospectValue::Json(json!({"id": 0, "floating": true})),
+        )
+        .unwrap();
+
+        assert_eq!(
+            write_doc(ext.invoke(
+                RESIZE_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 3})),
+            )),
+            json!({"pane": 0, "cells": 0, "outcome": "untiled"}),
+        );
+    }
+
+    /// A zoomed window's arrangement is not what is on screen, so the boundary is NOT moved and the
+    /// answer says why.
+    ///
+    /// Acting invisibly is the one outcome worse than doing nothing: R285 made the zoom a
+    /// PROJECTION precisely so the arrangement is untouched by it, and a resize that quietly
+    /// re-weighted a split the user cannot see would hand them a different layout on unzooming
+    /// than the one they left.
+    #[test]
+    fn a_resize_under_a_zoom_moves_nothing_and_says_which_nothing() {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 80, 24);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        ext.invoke(
+            ZOOM_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0, "on": true})),
+        )
+        .unwrap();
+
+        assert_eq!(
+            write_doc(ext.invoke(
+                RESIZE_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 5})),
+            )),
+            json!({"pane": 0, "cells": 0, "outcome": "zoomed"}),
+        );
+        ext.invoke(
+            ZOOM_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": 0, "on": false})),
+        )
+        .unwrap();
+        assert_eq!(
+            pane_cols(&reg, 0),
+            39,
+            "and the arrangement came back exactly as it was left",
+        );
+    }
+
+    /// A window NOBODY HAS MEASURED refuses the request, because a cell has no length in it — the
+    /// same fact `resize-window` already refuses on, and a refusal rather than an outcome because
+    /// it is a state of the daemon rather than a shape of the layout.
+    #[test]
+    fn a_resize_needs_a_window_somebody_has_measured() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg); // no attachments: nothing has reported an area
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+
+        assert_eq!(
+            ext.invoke(
+                RESIZE_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 5})),
+            ),
+            Err(InvokeError::Rejected),
+        );
+    }
+
+    /// The grammar refuses what it cannot mean, as a TYPE — no direction, an unknown direction, and
+    /// a zero distance, which is a caller spelling a move that has no reading rather than one
+    /// leaving the amount out.
+    #[test]
+    fn a_resize_request_must_name_a_direction_and_a_real_distance() {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 80, 24);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .unwrap();
+        }
+        for malformed in [
+            json!({"pane": 0}),
+            json!({"pane": 0, "dir": "sideways"}),
+            json!({"pane": 0, "dir": "right", "cells": 0}),
+            json!({"pane": 0, "dir": "right", "cells": -2}),
+        ] {
+            assert_eq!(
+                ext.invoke(RESIZE_PANE_ACTION, IntrospectValue::Json(malformed.clone())),
+                Err(InvokeError::TypeMismatch),
+                "{malformed} is not a request this action has a reading for",
+            );
+        }
+        assert_eq!(
+            write_doc(ext.invoke(
+                RESIZE_PANE_ACTION,
+                IntrospectValue::Json(json!({"pane": 0, "dir": "right"})),
+            )),
+            json!({"pane": 0, "cells": 1, "outcome": "resized"}),
+            "an ABSENT distance is tmux's default of one cell, which is what a bare key means",
+        );
     }
 
     /// A DIRECTION resolves through the same adjacency `select_pane -L` uses, and at the EDGE the
