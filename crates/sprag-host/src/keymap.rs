@@ -400,39 +400,50 @@ pub enum BoundAction {
 ///
 /// The rest of tmux's target grammar (`-t :=2`, `-t {left-of}`, session/window addressing) is H5's,
 /// and accepting a fragment of it here would promise a grammar sprag has not built. The DIRECTIONAL
-/// forms are not part of it — they are flags ([`DIRECTION_FLAGS`]), not targets.
+/// forms are not part of it — they are flags ([`flag_of`]), not targets.
 const NEXT_PANE_TARGET: [&str; 2] = ["-t", ":.+"];
 
-/// tmux's four directional flags and the [`PaneDir`] each one names.
+/// tmux's directional flag for `dir` — `-L` / `-R` / `-U` / `-D`.
 ///
-/// ONE table, read in both directions — [`BoundAction::parse`] maps a flag to a direction and
-/// [`BoundAction`]'s [`Display`](fmt::Display) maps it back. Two tables would be two spellings of
-/// one vocabulary that could drift apart while every test still passed, which is the shape R296
-/// found copy-pasted between a search slot and a wait.
+/// **An exhaustive `match`, and that is the point.** This was a `[(&str, PaneDir); 4]` table with a
+/// reverse lookup that `.expect()`ed every direction to be in it: a fifth [`PaneDir`] variant broke
+/// neither the array's length nor `PaneDir::ALL`'s, so the first thing to notice would have been
+/// `sprag list-keys` PANICKING inside a [`Display`](fmt::Display) impl. Written as a match, that
+/// same variant fails to COMPILE here, which is where the vocabulary is decided.
 ///
-/// The four words themselves live once more, on
-/// [`PaneDir::from_wire`](sprag_terminal::PaneDir::from_wire) — this table is the FLAG spelling the
-/// shell takes, that one is the wire's.
-const DIRECTION_FLAGS: [(&str, PaneDir); 4] = [
-    ("-L", PaneDir::Left),
-    ("-R", PaneDir::Right),
-    ("-U", PaneDir::Up),
-    ("-D", PaneDir::Down),
-];
-
-/// The [`PaneDir`] a directional flag names, or [`None`] for anything that is not one.
-fn direction_of(flag: &str) -> Option<PaneDir> {
-    DIRECTION_FLAGS
-        .iter()
-        .find_map(|(text, dir)| (*text == flag).then_some(*dir))
+/// It stays ONE table for both directions — [`direction_of`] is this function searched, so a parse
+/// and a render cannot drift apart while every test still passes (the shape R296 found copy-pasted
+/// between a search slot and a wait, and R297 found in `sprag bind-key`'s own copy of the action
+/// list).
+///
+/// The four DIRECTIONS themselves are spelled once more, on
+/// [`PaneDir::from_wire`](sprag_terminal::PaneDir::from_wire) — this is the FLAG spelling a shell
+/// and a config take, that one is the WIRE's. Two vocabularies, deliberately, each written once.
+///
+/// **The residual, stated:** [`direction_of`] searches [`PaneDir::ALL`], which is an array literal
+/// no compiler checks for completeness. A new variant therefore fails to compile HERE (so it cannot
+/// be rendered wrongly) and would fail to PARSE silently if it were also left out of `ALL`. Rust
+/// has no stable way to derive that array, so the gap is named rather than hidden.
+#[must_use]
+pub fn flag_of(dir: PaneDir) -> &'static str {
+    match dir {
+        PaneDir::Left => "-L",
+        PaneDir::Right => "-R",
+        PaneDir::Up => "-U",
+        PaneDir::Down => "-D",
+    }
 }
 
-/// The flag that names `dir` — [`direction_of`]'s inverse, over the same table.
-fn flag_of(dir: PaneDir) -> &'static str {
-    DIRECTION_FLAGS
-        .iter()
-        .find_map(|(text, named)| (*named == dir).then_some(*text))
-        .expect("DIRECTION_FLAGS names every PaneDir")
+/// The [`PaneDir`] a directional flag names, or [`None`] for anything that is not one —
+/// [`flag_of`]'s inverse, derived from it rather than tabulated beside it.
+///
+/// Public because the flag spelling has a SECOND parser: `sprag select-pane -L` reaches the same
+/// action from a shell. That one held its own `"-L" => "left"` table, which mapped a flag straight
+/// to a WIRE word and so bypassed [`PaneDir`] altogether — a third spelling of one vocabulary,
+/// checked by nothing. One parser, two callers.
+#[must_use]
+pub fn direction_of(flag: &str) -> Option<PaneDir> {
+    PaneDir::ALL.into_iter().find(|dir| flag_of(*dir) == flag)
 }
 
 impl BoundAction {
