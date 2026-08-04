@@ -389,11 +389,13 @@ impl AttachAsk {
 /// * **9** — a WINDOW name has a grammar, and `rename_window` answers the name it RECORDED
 ///   (R306). The FIRST bump caused by a REFUSAL rather than by an argument or an answer, and the
 ///   two directions fail differently, which is why both were measured:
-///   an old CLIENT against a new daemon is refused where it used to succeed — `rename-window ""`
-///   set an empty name, and a name with a newline in it forged a row of every listing that printed
-///   it; that half is LOUD and is the point of the change. A new CLIENT against an old daemon is
-///   the quiet half: the prompt behind `prefix ,` paints the recorded name off this answer, and an
-///   old daemon answers `null`, so the client would report nothing about a rename that happened.
+///   the OLD behaviour is what the refusal is about — MEASURED against a parent-commit daemon,
+///   which answered `renamed to ` to `rename-window ""` and then listed a window with no name at
+///   all, and which stored `  main  ` padding and all. That is the half a user sees.
+///   The other direction is the QUIET one this number exists for: the prompt behind `prefix ,`
+///   paints the recorded name off this answer, and a daemon that predates it answers `null` — so
+///   without the bump a new client would report nothing about a rename that happened. With it, both
+///   directions are refused at `client/hello` by number, which is the whole point.
 ///   The grammar itself the client can check on its own — it calls the same `WindowName` the
 ///   daemon does (named rather than linked: this crate does not depend on `sprag-terminal`) — but
 ///   what a daemon RECORDED is only ever the daemon's to say.

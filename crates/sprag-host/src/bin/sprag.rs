@@ -3943,13 +3943,23 @@ fn rename_window(args: Vec<String>) -> io::Result<()> {
         // is not there and a name that is already another window's.
         &format!("rename-window: window not found, or {new:?} is already taken"),
     )?;
-    // What the DAEMON recorded, never the argument — `rename-session` and `rename-pane` print the
-    // same way for the same reason (a name is trimmed on the way in). The `null` arm is an older
-    // daemon that has the verb and not the answer (`WIRE_PROTOCOL` 8), where the argument is the
-    // best this client can say.
+    // What the DAEMON recorded, never the argument — `rename-pane` prints the same way for the same
+    // reason (a name is trimmed on the way in, so echoing the argument would report a name the
+    // window does not have).
+    //
+    // An ABSENT name is not "an older daemon" and is not degraded to the argument: a daemon that
+    // answers this action at all has passed the `WIRE_PROTOCOL` handshake, which moved to 9 in the
+    // same change that added the answer — MEASURED in R306's skew run, where a pre-R306 daemon is
+    // refused at `client/hello` before a rename is ever sent. So there is no old-daemon case left
+    // for a fallback to serve, and a fallback that printed the argument would hide a broken
+    // contract behind a plausible sentence.
     match answer.get("name").and_then(Value::as_str) {
         Some(recorded) => println!("renamed to {recorded}"),
-        None => println!("renamed to {new}"),
+        None => {
+            return Err(io::Error::other(
+                "rename-window: the daemon did not say what name it recorded",
+            ));
+        }
     }
     Ok(())
 }

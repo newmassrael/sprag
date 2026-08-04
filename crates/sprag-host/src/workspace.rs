@@ -5203,6 +5203,35 @@ mod tests {
         let reg = registry();
         let (mut ext, _r) = control(&reg); // scope window "0"
 
+        // THE GRAMMAR FIRST, and the ORDER is the assertion. A rename moves the name this
+        // request's SCOPE names, so once the window is called `main` a scope still saying `0`
+        // refuses everything with `Unknown` — which is `Rejected` on the wire and looks exactly
+        // like a refused NAME. The first version of this test asserted the two below AFTER the
+        // rename and passed with the daemon's grammar deleted, which is the vacuous-fixture hazard
+        // this project has now recorded four times: choose a fixture where the two things being
+        // told apart actually disagree.
+        assert_eq!(
+            ext.invoke(
+                RENAME_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"name": "   "}))
+            ),
+            Err(InvokeError::Rejected),
+            "a blank name is refused where it used to be STORED — the loud half of the bump",
+        );
+        assert_eq!(
+            ext.invoke(
+                RENAME_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"name": "a\nb"}))
+            ),
+            Err(InvokeError::Rejected),
+            "a newline would forge a row of every listing that prints a window name",
+        );
+        assert_eq!(
+            answer_doc(ext.query(WINDOWS_SLOT)),
+            json!([{"name": "0", "current": true}]),
+            "and neither refusal touched the window, which is what makes them about the NAME",
+        );
+
         // window absent ⇒ the current window ("0") is renamed. The argument is PADDED and the
         // answer is not: what comes back is what the registry recorded, which is the whole reason
         // this answer exists (R306) and the discriminator against a handler that echoed its input.
@@ -5212,23 +5241,6 @@ mod tests {
                 IntrospectValue::Json(json!({"name": "  main  "}))
             ),
             Ok(IntrospectValue::Json(json!({"name": "main"}))),
-        );
-        // The grammar is the registry's, and a blank name is refused where it used to be stored —
-        // the LOUD half of the protocol bump.
-        assert_eq!(
-            ext.invoke(
-                RENAME_WINDOW_ACTION,
-                IntrospectValue::Json(json!({"name": "   "}))
-            ),
-            Err(InvokeError::Rejected),
-        );
-        assert_eq!(
-            ext.invoke(
-                RENAME_WINDOW_ACTION,
-                IntrospectValue::Json(json!({"name": "a\nb"}))
-            ),
-            Err(InvokeError::Rejected),
-            "a newline would forge a row of every listing that prints a window name",
         );
         lock(&reg).new_window("0", Some("logs")).unwrap();
         // Renaming "logs" onto the taken name "main" is refused.
