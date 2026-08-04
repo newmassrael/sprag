@@ -596,6 +596,29 @@ pub trait HostClient {
         false
     }
 
+    /// Move the boundary that bounds the session's active pane on `dir`'s axis, by `cells` — tmux
+    /// `resize-pane -L|-R|-U|-D`, and the wire's [`crate::wire::RESIZE_PANE_ACTION`].
+    ///
+    /// [`swap_toward`](Self::swap_toward)'s sibling, and what that method's own section says about
+    /// naming no pane holds unchanged. It has a STRONGER version of the same argument besides:
+    /// converting `cells` into a share needs the split's region, which needs the arbitrated window
+    /// — a fact a client does not have even in principle, since it is derived from every OTHER
+    /// attached client's report too. A client that did the conversion from its own rectangle would
+    /// move the boundary a different distance than the user asked for whenever it was not the
+    /// largest client.
+    ///
+    /// Answers whether the arrangement MOVED, dropping the wire's `cells` and
+    /// [`crate::wire::ResizeHow`] for [`select_toward`](Self::select_toward)'s reason: a client
+    /// that draws the arrangement re-reads it, and nothing here has anything to SAY about a
+    /// boundary that stopped short. The day a frontend wants to tell the user, this signature is
+    /// where the fact stops.
+    ///
+    /// Defaulted to `false`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    fn resize_toward(&self, dir: PaneDir, cells: u16) -> bool {
+        let _ = (dir, cells);
+        false
+    }
+
     /// Install `tree` as the current window's arrangement, returning the CANONICAL result
     /// — the write half of the arc (see [`sprag_terminal::layout`]).
     ///

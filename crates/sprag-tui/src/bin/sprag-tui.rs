@@ -497,6 +497,33 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
+                    // THE BOUNDARY (R307), and the same shape a third time. The reconcile is what
+                    // makes it visible: a resize changes no pane's identity and no window's pane
+                    // set, so the ONLY thing that moved is the rectangle each pane is tiled into —
+                    // which is exactly what `reconcile` re-derives. `Clear::No` for the standing
+                    // reason: a tiling partitions the screen, so every cell still has an author.
+                    //
+                    // **This is the arm that makes `sprag-tui` able to resize at all.** Before it
+                    // the only gesture in this product that could move a split's share was a
+                    // pointer drag in `sprag-gui`, and a terminal client had no pointer to drag
+                    // with — so a TUI user's arrangement was whatever the even splits gave them.
+                    Command::Act(BoundAction::ResizePaneToward { dir, cells }) => {
+                        host.resize_toward(dir, cells);
+                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        mouse.follow(&host, &tiling);
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            screen_area,
+                            Frame {
+                                focus,
+                                clear: Clear::No,
+                                asking: asking.as_ref(),
+                            },
+                            &mut held,
+                        )?;
+                    }
                     // The four ASKING actions are consumed above, where `Ask::of` turns them into a
                     // question. This arm is reached only when it answered `None` — a `rename-pane`
                     // pressed with no pane focused, which has no subject and so nothing to ask

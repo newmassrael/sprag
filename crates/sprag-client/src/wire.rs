@@ -94,11 +94,12 @@ use sprag_host::wire::{
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    RESIZE_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE,
-    SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
-    project_slot_for, regex_slot_for, session_activity_at,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
+    SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
+    ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -2205,6 +2206,32 @@ impl HostClient for WireHost {
             "swap_toward",
         )
         .is_some_and(|answer| SwapHow::read(&answer, Some(dir)).changed())
+    }
+
+    /// The boundary beside the active pane, moved `cells` cells `dir` — the client half of
+    /// `resize-pane -L|-R|-U|-D`.
+    ///
+    /// The outcome word is read rather than the `changed` key, because this action has no such key:
+    /// a resize has FIVE outcomes and only one of them moved anything, so a boolean beside them
+    /// would be a second encoding of one fact. An answer this build cannot read is `false` — the
+    /// honest reduction, since a client that cannot tell whether the arrangement moved must not
+    /// claim it did.
+    fn resize_toward(&self, dir: PaneDir, cells: u16) -> bool {
+        self.request(
+            "scene/invoke",
+            invoke(
+                &mux_action_path(RESIZE_PANE_ACTION),
+                ResizeAsk {
+                    pane: None,
+                    dir,
+                    cells,
+                }
+                .to_args(),
+            ),
+            "resize_toward",
+        )
+        .and_then(|answer| ResizeHow::from_wire(answer[sprag_host::wire::OUTCOME_KEY].as_str()?))
+        .is_some_and(ResizeHow::changed)
     }
 
     /// The session's arbitrated window, read from the same mirror as the arrangement — a lock, no

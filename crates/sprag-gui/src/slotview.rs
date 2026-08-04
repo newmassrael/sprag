@@ -201,6 +201,17 @@ impl SlotView {
         let _ = self.host.swap_toward(dir);
     }
 
+    /// Ask the daemon to MOVE THE BOUNDARY beside the active pane `cells` cells in `dir` — see
+    /// [`HostClient::resize_toward`].
+    ///
+    /// The answer is dropped for [`Self::select_toward`]'s reason, and the DISTANCE is sent rather
+    /// than resolved here for a reason of this verb's own: a cell becomes a share against the
+    /// arbitrated window, which is derived from every attached client's report and not from this
+    /// one's surface.
+    pub(crate) fn resize_toward(&self, dir: PaneDir, cells: u16) {
+        let _ = self.host.resize_toward(dir, cells);
+    }
+
     /// The display slot holding `pane` — the inverse of [`Self::id`], for PROJECTING
     /// host-side state that names panes by identity (the window's arrangement) onto this
     /// client's slots.

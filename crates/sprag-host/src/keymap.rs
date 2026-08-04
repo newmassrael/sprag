@@ -436,6 +436,29 @@ pub enum BoundAction {
         /// means two things.
         dir: PaneDir,
     },
+    /// `resize-pane -L|-R|-U|-D [N]` — move the boundary that bounds the focused pane on that axis
+    /// (tmux's `prefix C-Arrow` and `prefix M-Arrow`, and the eight `-r` defaults this vocabulary
+    /// had no verb for until R307).
+    ///
+    /// **The direction moves the BOUNDARY, not the pane.** Whether the focused pane grows or
+    /// shrinks follows from which side of that boundary it sits on, which is what makes one rule
+    /// cover both and is exactly how tmux behaves. See
+    /// [`crate::wire::RESIZE_PANE_ACTION`].
+    ///
+    /// Unlike every other directional arm here it carries a DISTANCE, and that is the one argument
+    /// a binding may fix: `split-window`'s pane target is refused because a keystroke acts where
+    /// the user is, and a name is refused because it is what the user is about to type — a
+    /// distance is neither. It is the whole content of the difference between tmux's two default
+    /// families, one cell on `C-Arrow` and five on `M-Arrow`, and a vocabulary that could not
+    /// spell it would need two verbs to say one thing.
+    ResizePaneToward {
+        /// Which way the BOUNDARY travels — tmux's `-L` / `-R` / `-U` / `-D`.
+        dir: PaneDir,
+        /// How many cells. Never zero: a binding that moved nothing is one the user cannot tell
+        /// from a broken one, so [`parse`](Self::parse) refuses it rather than accepting a key
+        /// that does nothing.
+        cells: u16,
+    },
     /// `zoom-pane [-Z|-u]` — fill the window with the focused pane alone, or give the arrangement
     /// back (tmux's `resize-pane -Z`, bound to `prefix z`).
     ZoomPane {
@@ -621,12 +644,13 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 13] = [
+    pub const VOCABULARY: [&'static str; 14] = [
         "detach-client",
         "send-prefix",
         "split-window -h|-v [-b]",
         "select-pane -L|-R|-U|-D|-t :.+",
         "swap-pane -L|-R|-U|-D",
+        "resize-pane -L|-R|-U|-D [N]",
         "zoom-pane [-Z|-u]",
         "new-window",
         "select-window -n|-p|-t <window>",
@@ -657,6 +681,7 @@ impl BoundAction {
             | Self::SelectNextPane
             | Self::SelectPaneToward { .. }
             | Self::SwapPaneToward { .. }
+            | Self::ResizePaneToward { .. }
             | Self::ZoomPane { .. }
             | Self::NewWindow
             | Self::SelectWindow { .. }
@@ -807,6 +832,51 @@ impl BoundAction {
                      user is",
                 )),
             },
+            // The ONE arm that takes a number, and the one flag vector that is not a set: the
+            // distance follows the direction, so a per-flag loop would have to remember which flag
+            // it was reading a number for.
+            "resize-pane" => match flags.as_slice() {
+                [flag] if let Some(dir) = direction_of(flag) => Ok(Self::ResizePaneToward {
+                    dir,
+                    // The bare form is tmux's own default distance, so `resize-pane -L` means what
+                    // `sprag resize-pane -L` means and what tmux's `-L` means — one string, one
+                    // reading, at three surfaces.
+                    cells: crate::wire::ResizeAsk::CELLS_DEFAULT,
+                }),
+                // BEFORE the distance arm, and the order is load-bearing: `-R` is not a number, so
+                // a distance arm reached first would report the second DIRECTION as a bad distance
+                // — a message about the wrong word. The test that found this is the reason the two
+                // arms are written in this order rather than the order they were thought of in.
+                [first, second]
+                    if direction_of(first).is_some() && direction_of(second).is_some() =>
+                {
+                    Err(bad("-L/-R/-U/-D name one direction; give only one"))
+                }
+                [flag, count] if let Some(dir) = direction_of(flag) => {
+                    let cells = count
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|cells| *cells > 0)
+                        .ok_or_else(|| {
+                            bad(&format!(
+                                "{count:?} is not a distance in cells (1 or more); a key that \
+                                 moved nothing is one a user cannot tell from a broken one"
+                            ))
+                        })?;
+                    Ok(Self::ResizePaneToward { dir, cells })
+                }
+                // tmux's `-Z` is sprag's `zoom-pane`, and saying so is worth a sentence: a tmux
+                // user's fingers know `resize-pane -Z`, and an unknown-flag message would leave
+                // them looking for a flag rather than for a verb.
+                ["-Z"] | ["-u"] => Err(bad(
+                    "sprag spells tmux's resize-pane -Z as its own verb: bind `zoom-pane`",
+                )),
+                _ => Err(bad(
+                    "a binding moves a boundary by DIRECTION and an optional distance in cells \
+                     (-L/-R/-U/-D [N]); the pane id and the exact -x/-y rectangle the CLI verb \
+                     takes are what a keystroke cannot carry",
+                )),
+            },
             // The two window verbs that take nothing, refused loudly for a flag rather than
             // ignoring it: a user who wrote one meant something by it, and this vocabulary has no
             // reading for it.
@@ -893,6 +963,12 @@ impl fmt::Display for BoundAction {
             ),
             Self::SelectPaneToward { dir } => write!(f, "select-pane {}", flag_of(*dir)),
             Self::SwapPaneToward { dir } => write!(f, "swap-pane {}", flag_of(*dir)),
+            // The distance is ALWAYS printed, even when it is the default one: `list-keys` exists
+            // to answer "what does this key do", and two keys differing only in how far they move
+            // must not render identically.
+            Self::ResizePaneToward { dir, cells } => {
+                write!(f, "resize-pane {} {cells}", flag_of(*dir))
+            }
             Self::ZoomPane { on } => f.write_str(match on {
                 None => "zoom-pane",
                 Some(true) => "zoom-pane -Z",
@@ -1013,16 +1089,17 @@ impl Default for Keymap {
         };
         let toward = |dir| BoundAction::SelectPaneToward { dir };
         let swapping = |dir| BoundAction::SwapPaneToward { dir };
+        let sizing = |dir, cells| BoundAction::ResizePaneToward { dir, cells };
         Self {
             prefix: key("C-b"),
             repeat_time: DEFAULT_REPEAT_TIME,
             // The ROOT table ships empty, which is also tmux's state for keyboard keys: its own
             // default root table holds mouse bindings only (measured from `list-keys -T root`).
             //
-            // The FOUR ARROWS are the only defaults that repeat, and they are the only ones tmux
-            // repeats among the actions this vocabulary has. Its other `-r` defaults are
-            // `resize-pane`'s eight, which sprag has no bound action for — so `-r` still appears
-            // here exactly where tmux puts it and nowhere sprag invented.
+            // THE SIXTEEN REPEATING BINDINGS are the four arrows, the four shifted ones, and
+            // `resize-pane`'s eight — which is every default tmux marks `-r` among the actions
+            // this vocabulary has, plus the shifted set derived from the first four. `-r` appears
+            // where tmux puts it and, for the swap, where the same argument puts it.
             binds: vec![
                 bind("C-b", BoundAction::SendPrefix),
                 bind(
@@ -1110,6 +1187,27 @@ impl Default for Keymap {
                 repeating("S-ArrowDown", swapping(PaneDir::Down)),
                 repeating("S-ArrowLeft", swapping(PaneDir::Left)),
                 repeating("S-ArrowRight", swapping(PaneDir::Right)),
+                // THE EIGHT `-r` DEFAULTS THE COMMENT ABOVE SAID THIS VOCABULARY HAD NO VERB FOR,
+                // and they are tmux's own keys, flags and distances: `C-Up/Down/Left/Right` move
+                // the boundary one cell and `M-` the same four move it five
+                // (`tmux 3.2a`, `list-keys -T prefix`, read on this machine).
+                //
+                // Both families are `-r` there and here, and this is the verb that needs it most:
+                // a boundary is dragged to where it looks right, which is a dozen presses, not one.
+                // The two distances exist for the same gesture at two speeds — coarse first, then
+                // one cell at a time — which is the whole reason the arm carries a NUMBER.
+                //
+                // They sit under the prefix rather than in the root table even though `C-Arrow` is
+                // free there, because a root binding takes the chord away from the program in the
+                // pane for good, and `C-Left`/`C-Right` are word-motion in readline.
+                repeating("C-ArrowUp", sizing(PaneDir::Up, 1)),
+                repeating("C-ArrowDown", sizing(PaneDir::Down, 1)),
+                repeating("C-ArrowLeft", sizing(PaneDir::Left, 1)),
+                repeating("C-ArrowRight", sizing(PaneDir::Right, 1)),
+                repeating("M-ArrowUp", sizing(PaneDir::Up, 5)),
+                repeating("M-ArrowDown", sizing(PaneDir::Down, 5)),
+                repeating("M-ArrowLeft", sizing(PaneDir::Left, 5)),
+                repeating("M-ArrowRight", sizing(PaneDir::Right, 5)),
             ],
         }
     }
@@ -1991,6 +2089,75 @@ mod tests {
         }
     }
 
+    /// The ONE arm that carries a NUMBER: it parses, it round-trips, it refuses a distance that is
+    /// not one, and the bare form is tmux's own default of a single cell.
+    ///
+    /// The ROUND TRIP is the load-bearing half. `list-keys` prints what a user could type back, and
+    /// a distance dropped from the rendering would make every `M-` row print as its `C-` twin —
+    /// four keys that look identical in the one place a user goes to find out what a key does.
+    #[test]
+    fn the_resize_binding_carries_a_distance_and_round_trips() {
+        let parsed = |spec: &str| BoundAction::parse(spec).expect("a well-formed resize binding");
+        assert_eq!(
+            parsed("resize-pane -L"),
+            BoundAction::ResizePaneToward {
+                dir: PaneDir::Left,
+                cells: 1,
+            },
+            "the bare form is tmux's own default distance, so one string has one reading here, in \
+             `sprag resize-pane -L`, and in tmux",
+        );
+        assert_eq!(
+            parsed("resize-pane -D 5"),
+            BoundAction::ResizePaneToward {
+                dir: PaneDir::Down,
+                cells: 5,
+            },
+        );
+        for spelling in [
+            "resize-pane -L 1",
+            "resize-pane -R 12",
+            "resize-pane -U 5",
+            "resize-pane -D 200",
+        ] {
+            assert_eq!(
+                parsed(spelling).to_string(),
+                spelling,
+                "what `list-keys` prints must parse back to the same action",
+            );
+        }
+        // The bare form renders WITH the distance it means, which is the one place the round trip
+        // is not the identity — and the honest direction to break it in.
+        assert_eq!(parsed("resize-pane -L").to_string(), "resize-pane -L 1");
+
+        let bad = |spec: &str| match BoundAction::parse(spec) {
+            Err(KeyError::BadFlags { why, .. }) => why,
+            other => panic!("{spec:?} must be refused as bad flags, got {other:?}"),
+        };
+        assert!(
+            bad("resize-pane -L 0").contains("cannot tell from a broken one"),
+            "a key that moves nothing is refused rather than accepted as a no-op",
+        );
+        assert!(bad("resize-pane -L x").contains("not a distance in cells"));
+        assert!(bad("resize-pane -L -3").contains("not a distance in cells"));
+        assert!(bad("resize-pane -L -R").contains("give only one"));
+        assert!(bad("resize-pane").contains("moves a boundary by DIRECTION"));
+        assert!(bad("resize-pane -x 40").contains("moves a boundary by DIRECTION"));
+        // tmux's own spelling of the ZOOM, which sprag has as a verb of its own: a user whose
+        // fingers know `resize-pane -Z` is sent to the verb rather than to the flag list.
+        assert!(bad("resize-pane -Z").contains("bind `zoom-pane`"));
+
+        // It does NOT ask, so `confirm-before` may guard it — the property `asks` decides once for
+        // every arm, checked here because a new arm is exactly when it can be got wrong.
+        assert!(!parsed("resize-pane -L 5").asks());
+        assert_eq!(
+            BoundAction::parse("confirm-before resize-pane -L 5").expect("guardable"),
+            BoundAction::ConfirmBefore {
+                action: Box::new(parsed("resize-pane -L 5")),
+            },
+        );
+    }
+
     /// The defaults ARE tmux's table for the actions sprag's clients have — and the four rows that
     /// are NOT tmux's are the last four, which is why this asserts the whole list in order.
     ///
@@ -2063,26 +2230,60 @@ mod tests {
                 "-r S-ArrowDown swap-pane -D",
                 "-r S-ArrowLeft swap-pane -L",
                 "-r S-ArrowRight swap-pane -R",
+                // tmux's OTHER eight `-r` rows (R307) — its keys, its flags and its two distances,
+                // read from the same `list-keys -T prefix`. Until this round they were the one
+                // family of tmux defaults this vocabulary had no verb for, which the table's own
+                // comment said in so many words.
+                //
+                // The DISTANCE is printed even where it is the default, because two keys that
+                // differ only in how far they move must not render identically in `list-keys`.
+                "-r C-ArrowUp resize-pane -U 1",
+                "-r C-ArrowDown resize-pane -D 1",
+                "-r C-ArrowLeft resize-pane -L 1",
+                "-r C-ArrowRight resize-pane -R 1",
+                "-r M-ArrowUp resize-pane -U 5",
+                "-r M-ArrowDown resize-pane -D 5",
+                "-r M-ArrowLeft resize-pane -L 5",
+                "-r M-ArrowRight resize-pane -R 5",
             ],
         );
-        // The SHIFT is what tells the two sets apart, and it is asserted as a fact about the
-        // lookup rather than as a rendering: an unshifted arrow must still SELECT. Without this a
-        // key vocabulary that dropped the modifier would print the table above and bind eight rows
+        // The MODIFIER is what tells the four families apart, and it is asserted as a fact about
+        // the lookup rather than as a rendering: a bare arrow must still SELECT. Without this a key
+        // vocabulary that dropped the modifier would print the table above and bind SIXTEEN rows
         // onto four keys, with the first match winning silently.
+        //
+        // All four are checked on ONE key, which is what makes the check discriminating: the four
+        // rows differ in the modifier alone, so a lookup that compared anything less would answer
+        // the same action for every one of them.
+        let pressed = |mods: Modifiers| keymap.action(KeyTable::Prefix, "ArrowLeft", mods);
+        let with = |apply: fn(&mut Modifiers)| {
+            let mut mods = Modifiers::default();
+            apply(&mut mods);
+            mods
+        };
         assert_eq!(
-            keymap.action(KeyTable::Prefix, "ArrowLeft", Modifiers::default()),
+            pressed(Modifiers::default()),
             Some(BoundAction::SelectPaneToward { dir: PaneDir::Left }),
         );
         assert_eq!(
-            keymap.action(
-                KeyTable::Prefix,
-                "ArrowLeft",
-                Modifiers {
-                    shift: true,
-                    ..Modifiers::default()
-                }
-            ),
+            pressed(with(|mods| mods.shift = true)),
             Some(BoundAction::SwapPaneToward { dir: PaneDir::Left }),
+        );
+        assert_eq!(
+            pressed(with(|mods| mods.ctrl = true)),
+            Some(BoundAction::ResizePaneToward {
+                dir: PaneDir::Left,
+                cells: 1,
+            }),
+        );
+        assert_eq!(
+            pressed(with(|mods| mods.alt = true)),
+            Some(BoundAction::ResizePaneToward {
+                dir: PaneDir::Left,
+                cells: 5,
+            }),
+            "the two resize families differ ONLY in the distance, so a table that dropped the \
+             number would bind eight keys to one action",
         );
     }
 

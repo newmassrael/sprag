@@ -332,6 +332,9 @@ fn action_label(action: &BoundAction) -> &'static str {
         // Its own verb, unlike the two select forms above: this one MOVES A PANE, and a label that
         // said `select-pane` would name the gesture the user did not make.
         BoundAction::SwapPaneToward { .. } => "swap-pane",
+        // Its own verb for the swap's reason: this one MOVES A BOUNDARY, and the distance is left
+        // out with the split's flags because the arrangement it produced is in the next frame.
+        BoundAction::ResizePaneToward { .. } => "resize-pane",
         BoundAction::ZoomPane { .. } => "zoom-pane",
         BoundAction::NewWindow => "new-window",
         BoundAction::SelectWindow { .. } => "select-window",
@@ -386,6 +389,14 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         // and announces the arrangement it produced, which is the channel the dock topology is
         // already projected from. Nothing here repaints.
         BoundAction::SwapPaneToward { dir } => use_terminal().slots.swap_toward(dir),
+        // The same shape again, and the reason the DISTANCE travels rather than being applied here:
+        // a cell becomes a share against the split's region under the ARBITRATED window, which is
+        // derived from every attached client's report and not from this one's surface. A client
+        // converting it would move the boundary a different distance than the user asked for
+        // whenever another client is larger.
+        BoundAction::ResizePaneToward { dir, cells } => {
+            use_terminal().slots.resize_toward(dir, cells);
+        }
         // The wire client re-reads the arrangement when the zoom moved anything, and the layout
         // mirror is what the dock topology is projected from — so this repaints through the channel
         // that already carries an arrangement change, exactly as the split above does.
