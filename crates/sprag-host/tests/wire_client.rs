@@ -1645,6 +1645,81 @@ fn a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// A client can re-attach to WHERE IT ALREADY IS without naming it, and is told what that session
+/// is called now — the `{"attached": true}` attach, over the socket, across a rename.
+///
+/// R303 registered this spelling as "accepted and means nothing": it resolved to the client's own
+/// attachment and re-attached it to itself. It has a meaning now, and this is it — the client that
+/// has to RESUME (a gesture stopped its poll thread and then found nowhere to go) must start
+/// serving again over the session it never left, and naming that session is precisely the mistake
+/// this round exists to remove. A rename in the instant before would make a named resume fail and
+/// take the client down with it.
+///
+/// The rename is what makes the fixture discriminate: `work` no longer resolves, so a resume that
+/// went by the name the client last saw is refused here, and one that goes by the attachment is
+/// answered `renamed`.
+#[test]
+fn a_client_can_resume_where_it_already_is_and_is_told_the_current_name() {
+    let (_host, sock) = spawn_host();
+    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    admin
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+
+    let mut viewer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "resumer" }))
+        .expect("client/hello is accepted");
+    viewer.scope_to("work".to_owned());
+    viewer
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+    viewer.scope_to_attached();
+
+    admin
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "work",
+                "path": mux_action_path(RENAME_SESSION_ACTION),
+                "args": { "name": "renamed" },
+            }),
+        )
+        .expect("rename_session answers");
+
+    assert_eq!(
+        viewer
+            .call(CLIENT_ATTACH_METHOD, json!({}))
+            .expect("client/attach is accepted"),
+        json!("renamed"),
+        "an attach scoped to the attachment resumes where the client is and names it",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "renamed"),
+        1,
+        "and it did not move: one viewer, on the session it never left",
+    );
+
+    // The CONTROL that makes the claim mean something: the NAME it attached with is refused now.
+    let mut by_name =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("a name-scoped client connects");
+    by_name
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "by-name" }))
+        .expect("client/hello is accepted");
+    by_name.scope_to("work".to_owned());
+    assert!(
+        by_name.call(CLIENT_ATTACH_METHOD, json!({})).is_err(),
+        "a resume that went by the remembered name would be refused outright",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// Every way an attach can name a target this daemon does not admit, as the SENTENCE an operator
 /// reads — over the socket, not through the grammar's own unit tests.
 ///
