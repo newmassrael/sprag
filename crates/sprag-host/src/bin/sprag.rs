@@ -36,6 +36,11 @@
 //!                                         select-pane). Session state: every
 //!                                         attached client follows, and a pane verb given no
 //!                                         target acts on it
+//! sprag swap-pane -t SESSION [PANE] <WITH | -L|-R|-U|-D>
+//!                                         EXCHANGE two panes' places — the same walk, moving the
+//!                                         pane instead of the cursor. The leading PANE is the
+//!                                         origin (default: the active pane), which is what
+//!                                         select-pane spells --from
 //!
 //! sprag windows -t SESSION                list a session's windows (name, and which is current)
 //! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
@@ -152,9 +157,9 @@ use sprag_host::wire::{
     PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
     RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
     RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, TEXT_ACTION, WINDOWS_SLOT,
-    ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at, project_slot_for,
-    regex_slot_for, session_activity_at,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk, SwapHow,
+    TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since, find_slot_for,
+    pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -780,10 +785,10 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20             | resize-window [window]\n\
          \x20                 <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>\n\
          \x20             | break-pane PANE [name] | join-pane PANE WINDOW\n\
-         \x20             | move-pane PANE -h|-v [-b] TARGET\n\
-         \x20             | swap-pane [PANE] <WITH | -L|-R|-U|-D>> -t SESSION\n\
+         \x20             | move-pane PANE -h|-v [-b] TARGET> -t SESSION\n\
          \x20      sprag <panes | layout | processes [PANE]\n\
          \x20             | select-pane <PANE | -L|-R|-U|-D [--from PANE]>\n\
+         \x20             | swap-pane [PANE] <WITH | -L|-R|-U|-D>\n\
          \x20             | split-window [-h|-v [-b] [PANE]] [-- command…]\n\
          \x20             | kill-pane [PANE]\n\
          \x20             | resize-pane [PANE] -x COLS -y ROWS\n\
@@ -4376,15 +4381,35 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
     }
 }
 
-/// `swap-pane -t SESSION [PANE] <WITH | -L|-R|-U|-D>`: exchange two panes' positions — tmux
+/// `swap-pane [-t SESSION] [PANE] <WITH | -L|-R|-U|-D>`: exchange two panes' positions — tmux
 /// `swap-pane`.
 ///
 /// PANE omitted means the session's ACTIVE pane. The partner is either a pane id or a direction,
 /// exactly one of them; a direction at the edge of the layout prints "nothing to trade with" and
 /// succeeds, which is what a key bound to this deserves.
+///
+/// # The ORIGIN is the leading positional, and there is deliberately no `--from`
+///
+/// `swap-pane 7 -L` measures the step from pane 7, which is exactly what
+/// [`select_pane`]'s `--from` does one verb over. The two verbs spell it differently because their
+/// POSITIONAL grammars differ, not because one of them lacks the argument: `select-pane`'s only
+/// positional is already the target, so an origin there needs a flag, while this verb's first
+/// positional has always been the pane being placed. Adding `--from` here would give ONE verb two
+/// spellings of one concept, which is a drift surface rather than a convenience —
+/// **and the debt register's claim that this verb "takes no origin" was measured and refuted before
+/// this was written.**
+///
+/// # The scope is OPTIONAL here, unlike the other placement verbs
+///
+/// Every other PANE verb takes an optional `-t` (`split-window`, `kill-pane`, `resize-pane`,
+/// `send-keys`, `capture-pane`, `select-pane`, `rename-pane`) and the placement quartet
+/// (`break-pane` / `join-pane` / `move-pane` / `zoom-pane`) requires one. This verb moved to the
+/// majority because R301 made it `select-pane`'s directional twin — same flags, same origin, same
+/// daemon-side resolution — and a twin that cannot be typed the same way is not one. The other four
+/// are unchanged and registered, because nothing this round makes them twins of anything.
 fn swap_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
-    let (session, rest) = target_and_rest(args, "swap-pane")?;
+    let (session, rest) = scope_and_rest(args, "swap-pane")?;
     let mut dir: Option<PaneDir> = None;
     let mut panes: Vec<u64> = Vec::new();
     for arg in rest {
@@ -4412,53 +4437,120 @@ fn swap_pane(args: Vec<String>) -> io::Result<()> {
             }
         }
     }
-    let mut args = json!({});
     // The two shapes, and exactly one of them — the wire refuses "both" and "neither" as malformed,
-    // so the CLI names the mistake here rather than letting it read as a daemon refusal.
-    match (panes.as_slice(), dir) {
-        ([pane, with], None) => {
-            args["pane"] = json!(pane);
-            args["with"] = json!(with);
+    // so the CLI names the mistake here rather than letting it read as a daemon refusal. The ask is
+    // a TYPE, so the combinations below are the only ones expressible past this point.
+    let ask = match (panes.as_slice(), dir) {
+        ([pane, with], None) => SwapAsk::With {
+            pane: Some(PaneId(*pane)),
+            with: PaneId(*with),
+        },
+        ([with], None) => SwapAsk::With {
+            pane: None,
+            with: PaneId(*with),
+        },
+        ([pane], Some(dir)) => SwapAsk::Toward {
+            pane: Some(PaneId(*pane)),
+            dir,
+        },
+        ([], Some(dir)) => SwapAsk::Toward { pane: None, dir },
+        ([], None) => {
+            return Err(bad(
+                "swap-pane needs a pane to trade with or a direction: sprag swap-pane [PANE] \
+                 <WITH | -L|-R|-U|-D>"
+                    .to_owned(),
+            ));
         }
-        ([with], None) => args["with"] = json!(with),
-        ([pane], Some(dir)) => {
-            args["pane"] = json!(pane);
-            args["dir"] = json!(dir.wire_str());
-        }
-        ([], Some(dir)) => args["dir"] = json!(dir.wire_str()),
         _ => {
             return Err(bad(
                 "swap-pane takes a pane to swap with OR a direction (-L/-R/-U/-D), not both"
                     .to_owned(),
             ));
         }
-    }
-    let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
-    let answer = conn.call(
-        "scene/invoke",
-        json!({ "session": session, "path": mux_action_path(SWAP_PANE_ACTION), "args": args }),
-    );
-    match answer {
-        Ok(answer) => {
-            let a = answer["a"].as_u64();
-            match (
-                answer["changed"].as_bool().unwrap_or(false),
-                a,
-                answer["b"].as_u64(),
-            ) {
-                (true, Some(a), Some(b)) => println!("swapped pane {a} with {b}"),
-                (false, Some(a), Some(b)) => println!("pane {a} is already pane {b}"),
-                (_, Some(a), None) => println!("pane {a} has nothing to trade with that way"),
-                _ => println!("nothing to swap"),
+    };
+    let mut conn = connect_scoped(session.as_deref())?;
+    let answer = conn
+        .call(
+            "scene/invoke",
+            scoped_invoke(
+                session.as_deref(),
+                mux_action_path(SWAP_PANE_ACTION),
+                ask.to_args(),
+            ),
+        )
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::Other {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    // Which pane the daemon could not find is this end's to say, because
+                    // `InvokeError::Rejected` carries no payload (upstream PINION-PR82) and only
+                    // the caller knows which ids it sent. It stays a disjunction of the ids it
+                    // actually named rather than of every id in the session.
+                    match ask {
+                        SwapAsk::With { pane, with } => format!(
+                            "swap-pane refused: {} is not a tiled pane of this session",
+                            match pane {
+                                Some(pane) => format!("pane {}, or pane {with},", pane.0),
+                                None => format!("pane {with}, or the active pane,", with = with.0),
+                            }
+                        ),
+                        SwapAsk::Toward {
+                            pane: Some(pane), ..
+                        } => format!("swap-pane refused: this session holds no pane {}", pane.0),
+                        SwapAsk::Toward { pane: None, .. } => {
+                            "swap-pane refused: this session's current window holds no panes"
+                                .to_owned()
+                        }
+                    },
+                )
+            } else {
+                error
             }
-            Ok(())
+        })?;
+    println!(
+        "{}",
+        swap_sentence(
+            SwapHow::read(&answer, ask.toward()),
+            ask,
+            answer["a"].as_u64().unwrap_or_default(),
+            answer["b"].as_u64(),
+        )
+    );
+    Ok(())
+}
+
+/// What `swap-pane` prints, as a pure function of the daemon's answer — so every one of the four
+/// outcomes is pinned by a unit test rather than only by whichever of them a live daemon can be
+/// driven into ([`select_sentence`]'s rule, one verb over).
+///
+/// `a` is the pane the daemon placed and `b` the partner it resolved, which is what makes the
+/// success sentence name a pane a `dir` caller never typed. The two nothing-happened sentences name
+/// `a`, which is the ORIGIN — the pane whose edge was reached, or the floating one — never the
+/// partner, because there is none.
+///
+/// **No arm can panic**, deliberately: an outcome word can only reach here from a daemon, so an
+/// `at_edge` answered to a request that named a partner is a wrong answer that parses, and this
+/// degrades to the true half of it rather than turning a rendering into a crash.
+fn swap_sentence(how: SwapHow, ask: SwapAsk, a: u64, b: Option<u64>) -> String {
+    match (how, ask.toward()) {
+        (SwapHow::Swapped, _) => match b {
+            Some(b) => format!("swapped pane {a} with {b}"),
+            // A daemon that says it traded and names nobody to have traded with; the honest half is
+            // that something moved.
+            None => format!("swapped pane {a}"),
+        },
+        (SwapHow::AtEdge, Some(dir)) => {
+            format!("nothing {} {a} to trade with", dir.beyond())
         }
-        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("swap-pane refused: session {session:?} has no such pane, or it is not tiled"),
-        )),
-        Err(error) => Err(error),
+        // No remedy is offered for the float itself, and that is not an omission: NO CLI verb docks
+        // a pane (`SET_FLOATING_ACTION` appears nowhere in this binary), so "dock it" would name an
+        // action this surface cannot perform. What it can do is take a pane id, and it says so.
+        (SwapHow::Untiled, _) => format!(
+            "{a} is floating, so nothing is beside it in any direction; name a pane to trade with"
+        ),
+        (SwapHow::SamePane | SwapHow::AtEdge, _) => {
+            format!("pane {a} cannot trade places with itself")
+        }
     }
 }
 
@@ -4627,6 +4719,64 @@ mod tests {
         );
     }
 
+    /// All four `swap-pane` sentences, including the two a live daemon is hard to drive into —
+    /// [`select_pane_says_which_of_the_four_things_happened`]'s rule one verb over, and here the
+    /// need is sharper: until R301 this verb had ONE sentence for three different outcomes.
+    #[test]
+    fn swap_pane_says_which_of_the_four_things_happened() {
+        let toward = |dir| SwapAsk::Toward {
+            pane: Some(PaneId(3)),
+            dir,
+        };
+        let with = SwapAsk::With {
+            pane: Some(PaneId(3)),
+            with: PaneId(5),
+        };
+        assert_eq!(
+            swap_sentence(SwapHow::Swapped, with, 3, Some(5)),
+            "swapped pane 3 with 5",
+            "the shape a script greps, unchanged",
+        );
+        assert_eq!(
+            swap_sentence(SwapHow::Swapped, toward(PaneDir::Left), 3, Some(5)),
+            "swapped pane 3 with 5",
+            "and a DIRECTION caller learns who it traded with — the id it never typed",
+        );
+        assert_eq!(
+            swap_sentence(SwapHow::SamePane, with, 3, Some(3)),
+            "pane 3 cannot trade places with itself",
+        );
+        // The four LITERALS, never `format!("nothing {} 3", dir.beyond())` — a sentence compared
+        // against the string the test formatted itself is not a test, which R299 proved on this
+        // verb's twin by changing a phrase and watching it stay green.
+        assert_eq!(
+            PaneDir::ALL.map(|dir| swap_sentence(SwapHow::AtEdge, toward(dir), 3, None)),
+            [
+                "nothing to the left of 3 to trade with",
+                "nothing to the right of 3 to trade with",
+                "nothing above 3 to trade with",
+                "nothing below 3 to trade with",
+            ]
+            .map(str::to_owned),
+        );
+        assert_eq!(
+            swap_sentence(SwapHow::Untiled, toward(PaneDir::Up), 3, None),
+            "3 is floating, so nothing is beside it in any direction; name a pane to trade with",
+            "the OTHER sentence the edge one used to cover, and it advises only what THIS surface \
+             can do — no CLI verb docks a pane",
+        );
+        // A daemon answering a word its request could not produce degrades to the true half of it
+        // rather than panicking in a rendering.
+        assert_eq!(
+            swap_sentence(SwapHow::AtEdge, with, 3, Some(5)),
+            "pane 3 cannot trade places with itself",
+        );
+        assert_eq!(
+            swap_sentence(SwapHow::Swapped, toward(PaneDir::Up), 3, None),
+            "swapped pane 3",
+        );
+    }
+
     /// The usage text names every flag `select-pane` PARSES — held against the flag constants
     /// themselves, so the two spellings cannot drift.
     ///
@@ -4659,6 +4809,32 @@ mod tests {
         assert_eq!(
             named, every,
             "the usage line must offer every direction the verb parses: {line}",
+        );
+
+        // The SWAP's line, by the same derivation — and one thing more: it must no longer sit in
+        // the block that ends `-t SESSION`, because the verb stopped requiring one. A usage that
+        // says a flag is mandatory when it is not sends a reader to type something they need not.
+        let (window_block, pane_block) = USAGE
+            .split_once("sprag <panes")
+            .expect("the usage opens the pane block with `sprag <panes`");
+        assert!(
+            !window_block.contains("swap-pane"),
+            "swap-pane must not be in the block that requires -t: {window_block}",
+        );
+        let swap = pane_block
+            .lines()
+            .find(|line| line.contains("swap-pane"))
+            .expect("the usage names swap-pane among the pane verbs");
+        let mut swap_named: Vec<&str> = swap
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .filter_map(sprag_host::keymap::direction_of)
+            .map(PaneDir::wire_str)
+            .collect();
+        swap_named.sort_unstable();
+        swap_named.dedup();
+        assert_eq!(
+            swap_named, every,
+            "the swap's usage line must offer every direction it parses: {swap}",
         );
     }
 

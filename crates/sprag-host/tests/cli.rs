@@ -2298,7 +2298,9 @@ fn the_cli_swaps_a_pane_with_the_one_in_a_direction() {
     );
     assert_eq!(
         edge.stdout.trim(),
-        format!("pane {new_pane} has nothing to trade with that way"),
+        format!("nothing to the left of {new_pane} to trade with"),
+        "the sentence names the DIRECTION the caller asked and the pane it asked about — where \
+         before R301 it said only 'that way', which is the same sentence a FLOATING pane got",
     );
     assert_eq!(
         drawn_layout(&sock),
@@ -2313,6 +2315,30 @@ fn the_cli_swaps_a_pane_with_the_one_in_a_direction() {
         drawn_layout(&sock),
         format!("50% left|right\n├─ pane 0\n└─ pane {new_pane}\n"),
         "back where it started, so the two flags are not one direction spelled twice",
+    );
+
+    // The SCOPE is optional now, which is what makes this verb `select-pane`'s twin at the one
+    // surface a person types: every other pane verb already took `-t` or nothing, and this one
+    // required it. Same request, same answer, no `-t`.
+    let bare = sprag(&sock, &["swap-pane", "-L"]);
+    assert!(bare.ok, "swap-pane with no -t succeeded: {}", bare.stderr);
+    assert_eq!(
+        bare.stdout.trim(),
+        format!("swapped pane {new_pane} with 0"),
+    );
+
+    // And the ORIGIN is the leading positional — the thing `select-pane` spells `--from`. Sending
+    // pane 0 back to the right names a pane the session is NOT on, so this cannot be the default
+    // arm answering.
+    let origin = sprag(&sock, &["swap-pane", "0", "-L"]);
+    assert!(origin.ok, "swap-pane 0 -L succeeded: {}", origin.stderr);
+    assert_eq!(
+        origin.stdout.trim(),
+        format!("swapped pane 0 with {new_pane}")
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane 0\n└─ pane {new_pane}\n"),
     );
 }
 
