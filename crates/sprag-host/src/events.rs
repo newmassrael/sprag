@@ -100,27 +100,32 @@
 //!
 //! The H6 design priced this paragraph by argument ("mutating dispatches are user actions"), and
 //! that argument was already false when it was written: input is an invoke. So it is measured, on
-//! `sprag-latency`'s rows (i9-14900HX, `--release`, three runs, minima), with **no change to find**
-//! — the steady state, and the only one that recurs:
+//! `sprag-latency`'s rows, `--release`, minima — and **re-measured by R302 against a CONTROL COMMIT
+//! built the same way** (`bc4ee37`), because that round changed what the diff asks. An inherited
+//! duration goes stale silently (R291), and these had: the figures this paragraph used to carry
+//! (0.121-0.142 us for one pane, 0.651-0.754 for 64) were taken on another box and another round,
+//! and the control below measures the SAME code at 0.357 and 3.084.
 //!
-//! * **1 pane: 0.121-0.142 us.**
-//! * **64 panes: 0.651-0.754 us.**
+//! Steady state, no change to find — the only one that recurs. `control → now`:
 //!
-//! About 9-10 ns per pane, which is the sorted id vector plus a workspace lock per window. Against
-//! a keystroke path measured in milliseconds (R246: ~5 ms per keystroke in release), the top row is
-//! **~0.015% of one keystroke** — and 64 panes is already the wide end of `REGISTRY_SIZES`.
+//! * **1 pane: 0.357 → 0.257 us.**
+//! * **64 panes: 3.084 → 4.522 us.**
+//! * **64 panes, every one NAMED: 11.127 → 11.062 us** (unmoved; the name clone dominates).
+//! * **1 window: 0.418 → 0.478 us.**
+//! * **16 windows: 4.018 → 3.208 us.**
 //!
-//! The OTHER axis, because the pane rows hold the window count at one and this walk takes a
-//! WORKSPACE LOCK PER WINDOW — the term that scales with locks rather than with `u64`s. One pane
-//! per window, same conditions:
+//! **Two opposite movements, each with its cause, and neither is noise.** Matching by IDENTITY
+//! replaced string comparisons with `u64` ones for the session and window halves, which is why the
+//! window row got CHEAPER as it widens. The pane half got dearer at the wide end (+1.44 us at 64
+//! panes) because it now asks a SESSION-WIDE question per pane — `SessionShape::window_of`, a
+//! binary search per window — where it used to look only inside the pane's own window. That is the
+//! price of telling a MOVE from a death, and it is paid where the answer is needed.
 //!
-//! * **1 window: 0.168-0.288 us.**
-//! * **16 windows: 1.217-1.313 us.**
-//!
-//! About **70 ns per window against 10 ns per pane** — a window costs roughly seven panes, which is
-//! the lock and is the shape to expect. At sixteen windows it is still **~0.025% of one keystroke**.
-//! The two axes agree where they meet: the `1 pane` and `1 window` rows describe the SAME
-//! configuration reached by two different constructions, and they land within each other's spread.
+//! Against a keystroke path measured in milliseconds (R246: ~5 ms per keystroke in release), the
+//! wide end is **~0.09% of one keystroke**, and 64 panes is already the wide end of
+//! `REGISTRY_SIZES`. The window axis is the one that scales with LOCKS rather than with `u64`s (one
+//! workspace lock per window), which is why it is measured separately and why it is the axis to
+//! watch if either number ever stops being negligible.
 
 use std::collections::VecDeque;
 
