@@ -3322,3 +3322,111 @@ fn a_repeat_binding_acts_twice_on_one_prefix_and_then_lets_go() {
         painted(&mut tui, "live^B^B%")
     });
 }
+
+/// **`prefix C-Left` moves a real boundary in a real client** — the first gesture other than a
+/// pointer drag in `sprag-gui` that has ever changed a split's share, driven here on a terminal
+/// that has no pointer at all.
+///
+/// The assertion is on the DAEMON's pane sizes rather than on this client's screen, `pane_sizes`'s
+/// standing reason: a client that tiled its own surface correctly while telling both children they
+/// still had the whole terminal would paint a picture that looks right and wrap every line in the
+/// wrong column. The whole point of the verb is the number the CHILD is given.
+///
+/// Three claims a plausible wrong implementation passes only one of:
+///
+/// * the key reaches the daemon at all — `sprag-tui` had no resize surface of any kind before this;
+/// * the DIRECTION moves the boundary, so `C-Left` takes columns from the pane on its left and
+///   `C-Right` gives them back, from the same focused pane;
+/// * `-r` holds the prefix table open, so the second press needs no second prefix — which is what
+///   makes dragging a boundary ten cells one gesture instead of twenty keystrokes.
+#[test]
+fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+    tui.type_bytes(&[0x02]); // prefix
+    tui.type_bytes(b"%"); // side by side
+    let (left, right) = halves(BOOT_PTY.0);
+    wait_for("the split to reach two real PTYs", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(left, BOOT_PTY.1), (right, BOOT_PTY.1)],
+        )
+    });
+    // ASSERTED, not assumed: the split leaves the session on the pane it opened, the RIGHT one — so
+    // `C-Left` below moves the boundary on that pane's near side and GROWS it.
+    assert_eq!(active_pane(&mut conn, &session), Some(1));
+
+    // ONE prefix, then the resize key. tmux's own default, and its own byte sequence: xterm sends
+    // Ctrl+Left as CSI 1;5D.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"\x1b[1;5D");
+    wait_for("the boundary to move one cell left", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(left - 1, BOOT_PTY.1), (right + 1, BOOT_PTY.1)],
+        )
+    });
+
+    // NO SECOND PREFIX. This is `-r`, and it is what makes the verb usable: a boundary is dragged
+    // to where it looks right, which is a dozen presses.
+    tui.type_bytes(b"\x1b[1;5D");
+    tui.type_bytes(b"\x1b[1;5D");
+    wait_for("two more presses inside the repeat window", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(left - 3, BOOT_PTY.1), (right + 3, BOOT_PTY.1)],
+        )
+    });
+
+    // THE DISCRIMINATOR for the direction: the opposite flag from the same pane gives the columns
+    // back. A verb that grew whichever pane asked would have shrunk it here too.
+    //
+    // The SLEEP is not padding — it is what makes the next press a PREFIX. The repeat window from
+    // the presses above is still open, and inside it `C-b` is `send-prefix` (the self-send), so a
+    // prefix typed here would go to the shell and the arrow after it would follow. Waiting past
+    // `repeat-time` is the honest way to start a new gesture, and the first version of this test
+    // did not and measured exactly that.
+    let past_the_repeat_window = || std::thread::sleep(Duration::from_millis(700));
+    past_the_repeat_window();
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"\x1b[1;5C"); // Ctrl+Right
+    wait_for("the boundary to come back one cell", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(left - 2, BOOT_PTY.1), (right + 2, BOOT_PTY.1)],
+        )
+    });
+
+    // And the FIVE-cell family, on tmux's own second key.
+    past_the_repeat_window();
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"\x1b[1;3C"); // Alt+Right
+    wait_for("the coarse key to move five cells at once", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(left + 3, BOOT_PTY.1), (right - 3, BOOT_PTY.1)],
+        )
+    });
+
+    // THE BINDING IS UNDER THE PREFIX, not in the root table: the same bytes with NO prefix move
+    // nothing. Without this the test would pass over a client that resized on every arrow key and
+    // took the chord away from the program in the pane for good — which is the whole reason these
+    // eight defaults are not root bindings (`C-Left` is word-motion in readline).
+    past_the_repeat_window();
+    tui.type_bytes(b"\x1b[1;5D");
+    tui.type_bytes(b"\x1b[1;5D");
+    // Something the pane WILL answer, sent after them, so this waits on a real event rather than on
+    // a duration: if the arrows had been swallowed the sizes would have moved before this arrives.
+    tui.type_bytes(b"done");
+    wait_for("the unprefixed keys to reach the pane", || {
+        if tui.rows().iter().any(|row| row.contains("done")) {
+            Ok(())
+        } else {
+            Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+        }
+    });
+    assert_eq!(
+        pane_sizes(&mut conn, &session),
+        vec![(left + 3, BOOT_PTY.1), (right - 3, BOOT_PTY.1)],
+        "an arrow with no prefix is the PANE's, so the arrangement did not move",
+    );
+}
