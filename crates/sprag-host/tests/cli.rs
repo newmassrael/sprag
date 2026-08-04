@@ -2570,6 +2570,90 @@ fn the_cli_selects_a_pane_by_id_and_by_direction_over_the_socket() {
     );
 }
 
+/// `select-pane -L|-R --from PANE` over the socket: the step is measured from the pane the CALLER
+/// names, and where it goes nowhere the user stays where THEY were.
+///
+/// Every case is paired with the same flag asked WITHOUT `--from`, and the two answer differently.
+/// A fixture where they agree cannot tell an origin that is honoured from one that is dropped —
+/// which is exactly what a daemon from before this argument does with it, and the reason the wire
+/// protocol number moved rather than the argument simply being added.
+#[test]
+fn the_cli_steps_a_direction_from_the_pane_it_names() {
+    let (_host, sock) = spawn_host();
+    // `0 | 1 | 2`, a row wide enough that an origin in the middle has a different left and right
+    // from either end.
+    let one = split_id(&sock, &["split-window", "-h", "0", "--", "cat"]);
+    let two = split_id(
+        &sock,
+        &["split-window", "-h", &one.to_string(), "--", "cat"],
+    );
+
+    let selected = sprag(&sock, &["select-pane", &two.to_string()]);
+    assert!(selected.ok, "start on the rightmost: {}", selected.stderr);
+
+    // THE CONTROL: from where the user is (2), right is the edge.
+    let control = sprag(&sock, &["select-pane", "-R"]);
+    assert!(control.ok, "an edge is not an error: {}", control.stderr);
+    assert_eq!(
+        control.stdout.trim(),
+        format!("nothing to the right of {two}")
+    );
+
+    // ...and from pane 0 the same flag crosses into 1. Same daemon, same instant, same flag: the
+    // only thing that differs is the origin.
+    let stepped = sprag(&sock, &["select-pane", "-R", "--from", "0"]);
+    assert!(stepped.ok, "--from: {}", stepped.stderr);
+    assert_eq!(stepped.stdout.trim(), format!("selected {one}"));
+
+    // An origin at the window's edge: NOTHING moves, and the sentence names the ORIGIN rather than
+    // the pane the user is on — two different panes, which is a distinction no request without an
+    // origin can even express.
+    let edge = sprag(&sock, &["select-pane", "-L", "--from", "0"]);
+    assert!(
+        edge.ok,
+        "an origin at the edge is not an error: {}",
+        edge.stderr
+    );
+    assert_eq!(edge.stdout.trim(), "nothing to the left of 0");
+    let listed = sprag(&sock, &["panes"]);
+    let active: Vec<&str> = listed
+        .stdout
+        .lines()
+        .filter(|line| line.contains("(active)"))
+        .collect();
+    assert_eq!(active.len(), 1, "one active row: {}", listed.stdout);
+    assert!(
+        active[0].starts_with(&format!("{one}:")),
+        "the user stayed on {one} — a step that goes nowhere must not move them onto the ORIGIN: \
+         {}",
+        listed.stdout,
+    );
+
+    // An origin the window does not hold is the daemon's refusal, and this end says which argument
+    // named it — the daemon cannot, because a refusal carries no payload.
+    let ghost = sprag(&sock, &["select-pane", "-L", "--from", "9999"]);
+    assert!(!ghost.ok, "an unknown origin is refused");
+    assert!(
+        ghost.stderr.contains("9999") && ghost.stderr.contains("step from"),
+        "and names it as the ORIGIN, not as the target: {}",
+        ghost.stderr,
+    );
+    // An origin with no direction to be the origin OF, refused by the parser before a request goes
+    // out — the same rule the daemon applies, said in this surface's own words.
+    let no_dir = sprag(&sock, &["select-pane", "0", "--from", "1"]);
+    assert!(
+        !no_dir.ok && no_dir.stderr.contains("--from"),
+        "{}",
+        no_dir.stderr
+    );
+    let dangling = sprag(&sock, &["select-pane", "-L", "--from"]);
+    assert!(
+        !dangling.ok && dangling.stderr.contains("needs a pane id"),
+        "{}",
+        dangling.stderr
+    );
+}
+
 /// The scoped window's arrangement, as the daemon serves it.
 fn layout_of(conn: &mut HostConn) -> sprag_terminal::LayoutTree {
     let value = conn
