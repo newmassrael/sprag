@@ -53,7 +53,7 @@ use portable_pty::{
 use serde_json::{Value, json};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RENAME_SESSION_ACTION,
-    SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION,
+    SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, WINDOWS_SLOT,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -962,6 +962,89 @@ const SHIFT_ARROW_LEFT: &[u8] = b"\x1b[1;2D";
 
 /// ...and SHIFT + the right arrow, `CSI 1;2C`.
 const SHIFT_ARROW_RIGHT: &[u8] = b"\x1b[1;2C";
+
+/// The `windows` slot for `session` — every window's NAME and which one is current, as the DAEMON
+/// holds it. The authority a window key is judged against: a client that painted a second window
+/// without the daemon having one would pass any check made on its own screen.
+fn windows_of(conn: &mut HostConn, session: &str) -> Vec<(String, bool)> {
+    conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(WINDOWS_SLOT) }),
+    )
+    .ok()
+    .and_then(|value| value.as_array().cloned())
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|w| {
+        Some((
+            w["name"].as_str()?.to_owned(),
+            w["current"].as_bool().unwrap_or(false),
+        ))
+    })
+    .collect()
+}
+
+/// **The window level, reached from a KEY** — a real `sprag-tui` on a real PTY presses `prefix c`
+/// and then `prefix n` / `prefix p`, and the DAEMON's own window list is what is asserted.
+///
+/// Measured at `7a8f93f` before the arms existed: `prefix c` was `Routed::Swallow`, so the session
+/// still held one window and the client painted the same pane. Every window verb the daemon serves
+/// — and that the GUI palette already offers — was unreachable from a key, which for `sprag-tui`
+/// (no palette) meant unreachable at all.
+///
+/// The three assertions are ordered so each failure says something different: the window was
+/// CREATED and selected; the walk moves to a DIFFERENT window and wraps; and the walk lands where
+/// the daemon says, not where the client guessed.
+#[test]
+fn the_window_keys_create_and_walk_the_sessions_windows() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &sock;
+
+    // Something typed first, so the keys below are proven to act on a WORKING client.
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("0".to_owned(), true)],
+        "the session boots with one window, which is what makes the create visible",
+    );
+
+    // 1. `prefix c` — tmux's most-pressed key after the splits.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"c");
+    wait_for("the key to create a second window and select it", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        )
+    });
+
+    // 2. `prefix n` — the walk WRAPS, which is what makes a window list a ring.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"n");
+    wait_for("the next-window key to wrap onto the first", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), true), ("1".to_owned(), false)],
+        )
+    });
+
+    // 3. `prefix p` — the other way, wrapping back.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"p");
+    wait_for("the previous-window key to wrap onto the last", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        )
+    });
+
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "and the client is still alive, having driven three window keys",
+    );
+}
 
 /// The ARRANGEMENT's pane order for `session`'s current window — the fact a swap moves and the pane
 /// LISTING does not.
@@ -2097,16 +2180,18 @@ fn sprag_on(sock: &Path, config: &ConfigHome, args: &[&str]) -> std::process::Ou
 ///
 /// Three claims, in the order that makes the middle one discriminating:
 ///
-/// * **Before the bind, `prefix c` does NOTHING.** `c` is unbound, so the client swallows it — and
+/// * **Before the bind, `prefix k` does NOTHING.** `k` is unbound, so the client swallows it — and
 ///   the pane must not receive it either. Establishing this first is what stops the last claim
 ///   passing for the wrong reason: a client that detached on any unbound key would satisfy it.
-/// * `sprag bind-key c detach-client` writes the file while the client holds the terminal.
-/// * **`prefix c` now detaches**, and the daemon's attached count falls. There is no reattach
+/// * `sprag bind-key k detach-client` writes the file while the client holds the terminal.
+/// * The key is `k` and not `c`: R305 gave `c` a DEFAULT (`new-window`), and this test needs one
+///   the shipped table does not mention, or its FIRST claim would be false.
+/// * **`prefix k` now detaches**, and the daemon's attached count falls. There is no reattach
 ///   anywhere in this test.
 ///
 /// REVERT-PROOF: make `refreshed` return the loaded table without calling `refresh` (i.e. read the
 /// config once at startup, as slice 1 did) and the third claim times out — the client keeps
-/// swallowing `c` forever while `sprag list-keys` prints it bound, which is exactly the divergence
+/// swallowing `k` forever while `sprag list-keys` prints it bound, which is exactly the divergence
 /// between the printed table and the live one that this design exists to make impossible.
 #[test]
 fn a_bind_key_run_while_attached_reaches_the_running_client() {
@@ -2122,9 +2207,9 @@ fn a_bind_key_run_while_attached_reaches_the_running_client() {
     tui.type_bytes(b"live");
     wait_for("the client to be painting", || painted(&mut tui, "live"));
 
-    // `prefix c` with `c` unbound: swallowed by the client, and NOT delivered to the child.
+    // `prefix k` with `k` unbound: swallowed by the client, and NOT delivered to the child.
     tui.type_bytes(&[0x02]);
-    tui.type_bytes(b"c");
+    tui.type_bytes(b"k");
     // A second, ordinary keystroke that DOES reach the pane, so the absence above is read from a
     // screen that has since been repainted rather than from one that simply had not caught up.
     tui.type_bytes(b"x");
@@ -2132,13 +2217,13 @@ fn a_bind_key_run_while_attached_reaches_the_running_client() {
         painted(&mut tui, "livex")
     });
     assert!(
-        !pane_text(&mut conn, &session).contains('c'),
+        !pane_text(&mut conn, &session).contains('k'),
         "an unbound command key must not be delivered to the child: {:?}",
         pane_text(&mut conn, &session),
     );
 
     // The edit, by the shipped CLI, into the file the running client read at startup.
-    sprag_config(&config, &["bind-key", "c", "detach-client"]);
+    sprag_config(&config, &["bind-key", "k", "detach-client"]);
     assert!(
         std::fs::read_to_string(config.path())
             .expect("the CLI wrote it")
@@ -2148,7 +2233,7 @@ fn a_bind_key_run_while_attached_reaches_the_running_client() {
 
     // ...and the same two keystrokes now mean what the file says, with no reattach.
     tui.type_bytes(&[0x02]);
-    tui.type_bytes(b"c");
+    tui.type_bytes(b"k");
     let status = tui.wait();
     assert!(
         status.success(),

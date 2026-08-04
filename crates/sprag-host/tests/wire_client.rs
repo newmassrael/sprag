@@ -1769,6 +1769,109 @@ fn a_malformed_attach_target_is_refused_with_the_sentence_that_says_which() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// The window RING walked over the REAL socket — `select_window {relative}`, the verb behind
+/// `prefix n` / `prefix p` and `sprag select-window -n|-p`.
+///
+/// The walk is the DAEMON's, so this is where it is judged: a client that resolved the step from
+/// its own window mirror would be a second answer to this question, and the mirror can be a
+/// revision behind. Each step is asserted through the `windows` slot rather than only through the
+/// answer, so an action that ANSWERED a name without moving the session fails.
+#[test]
+fn the_window_ring_is_walked_by_the_daemon_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    for _ in 0..2 {
+        conn.call(
+            "scene/invoke",
+            json!({ "session": "0", "path": mux_action_path(NEW_WINDOW_ACTION), "args": {} }),
+        )
+        .expect("new_window answers");
+    }
+    // Three windows — "0", "1", "2" — and `new_window` selected the last.
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![
+            ("0".to_owned(), false),
+            ("1".to_owned(), false),
+            ("2".to_owned(), true),
+        ],
+    );
+
+    let step = |conn: &mut HostConn, relative: &str| -> Value {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(SELECT_WINDOW_ACTION),
+                "args": { "relative": relative },
+            }),
+        )
+        .expect("select_window answers")
+    };
+
+    // Forward from the last WRAPS onto the first — what makes a window list a ring rather than a
+    // row, and the half a clamping walk would get wrong while looking right in the middle.
+    assert_eq!(step(&mut conn, "next"), json!("0"));
+    assert_eq!(
+        windows_in(&mut conn, "0").into_iter().find(|w| w.1),
+        Some(("0".to_owned(), true)),
+        "the answer names the window the SESSION is on, not just a string",
+    );
+    assert_eq!(step(&mut conn, "next"), json!("1"));
+    // ...and backward from the first wraps onto the last.
+    assert_eq!(step(&mut conn, "previous"), json!("0"));
+    assert_eq!(step(&mut conn, "previous"), json!("2"));
+    assert_eq!(
+        windows_in(&mut conn, "0").into_iter().find(|w| w.1),
+        Some(("2".to_owned(), true)),
+    );
+
+    // The NAMED arm answers the same shape — one verb, one answer, whichever way it was asked.
+    assert_eq!(
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(SELECT_WINDOW_ACTION),
+                "args": { "window": "1" },
+            }),
+        )
+        .expect("select_window answers"),
+        json!("1"),
+    );
+
+    // Every reading this grammar does not admit is refused, and the CONTROL above is that the two
+    // well-formed ones are not: a name AND a step, neither, and a step that is not a word this
+    // vocabulary has.
+    for bad in [
+        json!({ "window": "1", "relative": "next" }),
+        json!({}),
+        json!({ "relative": "sideways" }),
+        json!({ "relative": 1 }),
+    ] {
+        assert!(
+            conn.call(
+                "scene/invoke",
+                json!({
+                    "session": "0",
+                    "path": mux_action_path(SELECT_WINDOW_ACTION),
+                    "args": bad,
+                }),
+            )
+            .is_err(),
+            "{bad} names no window this grammar admits, so it must be refused",
+        );
+    }
+    // ...and the refusals moved nothing.
+    assert_eq!(
+        windows_in(&mut conn, "0").into_iter().find(|w| w.1),
+        Some(("1".to_owned(), true)),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// Two WINDOWS in ONE session are independent, over a REAL socket — the tmux "windows" shape.
 ///
 /// A `new_window` is born with its own shell and BECOMES current, so the session's reads answer
