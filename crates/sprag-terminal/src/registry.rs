@@ -91,6 +91,58 @@ pub struct SessionId(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct WindowId(pub u64);
 
+/// One step along a session's window RING — tmux `next-window` / `previous-window`, and
+/// `select-window -n` / `-p`.
+///
+/// A direction rather than a target, and a SEPARATE vocabulary from [`PaneDir`] rather than a reuse
+/// of it, because the two walks are different kinds of question: a pane walk is spatial (four ways,
+/// an edge at each end), a window walk is ordinal (two ways, no ends). Spelling them with one type
+/// would let a caller ask for the window "to the left", which the registry would then have to
+/// refuse at runtime for a mistake the types can prevent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowStep {
+    /// The window AFTER the current one, wrapping past the last onto the first.
+    Next,
+    /// The window BEFORE it, wrapping past the first onto the last.
+    Previous,
+}
+
+impl WindowStep {
+    /// Every step, for a caller that must be exhaustive over the vocabulary (a flag table, a test).
+    pub const ALL: [Self; 2] = [Self::Next, Self::Previous];
+
+    /// How far this moves along the ring — the ONE place the direction becomes arithmetic, so the
+    /// two arms cannot come to disagree about which way is forward.
+    #[must_use]
+    pub const fn offset(self) -> isize {
+        match self {
+            Self::Next => 1,
+            Self::Previous => -1,
+        }
+    }
+
+    /// Read a step off the wire (`"next"` / `"previous"`), [`None`] for anything else.
+    ///
+    /// The ONE definition of this vocabulary, exactly as [`PaneDir::from_wire`] is for the four
+    /// directions: the wire action, the CLI flags and the keybinding read the same two words, so a
+    /// third spelling cannot appear in one of them alone.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|step| step.wire_str() == word)
+    }
+
+    /// This step's wire word — the inverse of [`from_wire`](Self::from_wire), and DERIVED from by it
+    /// rather than tabulated beside it, so a parse and a render cannot drift apart while every test
+    /// still passes (R296/R297's shape, applied on the way in).
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Next => "next",
+            Self::Previous => "previous",
+        }
+    }
+}
+
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
 /// and which of them a client has FLOATED out of the tiling.
 ///
@@ -1210,6 +1262,32 @@ impl Session {
         Ok(())
     }
 
+    /// Make the NEXT or PREVIOUS window current, WRAPPING — tmux `next-window` /
+    /// `previous-window`, and `select-window -n` / `-p`. Answers the name it landed on.
+    ///
+    /// # Why this wraps where the PANE walk does not
+    ///
+    /// A pane walk is SPATIAL: `select-pane -L` measures against an arrangement, an edge really
+    /// exists, and `at_edge` is the honest answer there. A window list is an ORDINAL RING — the
+    /// order the sidebar draws and the order `windows` publishes — so "the next one" is always
+    /// defined and wrapping is what the ring means. tmux wraps for the same reason, and this
+    /// session's own `Vec` order is what both ends already agree on.
+    ///
+    /// TOTAL, and that is a property rather than an accident: a session always holds at least one
+    /// window, so there is always somewhere to land. With ONE window it lands on itself and answers
+    /// its name — the honest "you are where you were", which a caller can compare against what it
+    /// had. No error case, so unlike [`select_window`](Self::select_window) it cannot refuse.
+    pub fn select_window_relative(&mut self, step: WindowStep) -> &str {
+        let len = self.windows.len();
+        // `current_window` is an index into a `Vec` that is never empty, so the rem_euclid below is
+        // total; the `max(1)` says so to a reader rather than relying on it.
+        let len = len.max(1);
+        let here = self.current_window as isize;
+        let next = (here + step.offset()).rem_euclid(len as isize) as usize;
+        self.current_window = next.min(len - 1);
+        self.windows[self.current_window].name.as_str()
+    }
+
     /// Rename the window named `name` to `new` — tmux `rename-window`.
     ///
     /// # Errors
@@ -2277,6 +2355,24 @@ impl SessionRegistry {
         self.session_named_mut(session)?.select_window(name)
     }
 
+    /// Walk `session`'s windows one step, wrapping, and answer the name it landed on — tmux
+    /// `next-window` / `previous-window`. See [`Session::select_window_relative`] for why this
+    /// wraps where the pane walk does not, and why it cannot fail once the session resolves.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no session carries `session` — the ONLY way this refuses.
+    pub fn select_window_relative(
+        &mut self,
+        session: &str,
+        step: WindowStep,
+    ) -> Result<String, SessionError> {
+        Ok(self
+            .session_named_mut(session)?
+            .select_window_relative(step)
+            .to_owned())
+    }
+
     /// Rename the window named `name` of the session named `session` to `new` — tmux
     /// `rename-window`. See [`Session::rename_window`].
     ///
@@ -3156,6 +3252,99 @@ mod tests {
             6,
             "the boot session plus the five created"
         );
+    }
+
+    /// The window RING: `next` walks forward and WRAPS, `previous` walks back and wraps, and each
+    /// answers the name it landed on.
+    ///
+    /// The wrap is asserted from BOTH ends rather than once, because a walk that clamped instead of
+    /// wrapping would be indistinguishable from a correct one anywhere in the middle — and the two
+    /// ends fail differently (a clamped `next` sticks on the last, a clamped `previous` on the
+    /// first).
+    ///
+    /// REVERT-PROOF: drop the `rem_euclid` for a saturating step and the two wrap rows fail; swap
+    /// `WindowStep::offset`'s signs and every row lands one window the wrong way.
+    #[test]
+    fn the_window_walk_wraps_in_both_directions_and_answers_where_it_landed() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let session = reg.default_session().name().to_owned();
+        for name in ["a", "b"] {
+            reg.new_window(&session, Some(name)).expect("a window");
+        }
+        // Three windows: "0" (the boot window), "a", "b" — and `new_window` selected the last.
+        reg.select_window(&session, "0")
+            .expect("start at the first");
+
+        let step = |reg: &mut SessionRegistry, step| {
+            reg.select_window_relative(&session, step)
+                .expect("the session resolves")
+        };
+        assert_eq!(step(&mut reg, WindowStep::Next), "a");
+        assert_eq!(step(&mut reg, WindowStep::Next), "b");
+        assert_eq!(
+            step(&mut reg, WindowStep::Next),
+            "0",
+            "the last wraps onto the first, which is what makes it a ring",
+        );
+        assert_eq!(
+            step(&mut reg, WindowStep::Previous),
+            "b",
+            "and the first wraps onto the last, going the other way",
+        );
+        assert_eq!(step(&mut reg, WindowStep::Previous), "a");
+
+        // The walk really MOVED the session's current window, not just answered a name — read back
+        // through the listing every client projects from.
+        let current: Vec<(String, bool)> = reg
+            .session(&session)
+            .expect("the session")
+            .window_infos()
+            .into_iter()
+            .map(|info| (info.name, info.current))
+            .collect();
+        assert_eq!(
+            current,
+            vec![
+                ("0".to_owned(), false),
+                ("a".to_owned(), true),
+                ("b".to_owned(), false),
+            ],
+        );
+    }
+
+    /// A session with ONE window walks to itself, both ways — the property that makes the step
+    /// TOTAL, so the action can answer without an error case where the named form has one.
+    #[test]
+    fn the_window_walk_is_total_for_a_session_with_one_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let session = reg.default_session().name().to_owned();
+        for step in WindowStep::ALL {
+            assert_eq!(
+                reg.select_window_relative(&session, step)
+                    .expect("the session resolves"),
+                "0",
+                "{step:?} on a one-window session lands where it was",
+            );
+        }
+        assert!(
+            reg.select_window_relative("nosuch", WindowStep::Next)
+                .is_err(),
+            "the ONLY way this refuses is a session that does not exist",
+        );
+    }
+
+    /// The two wire words are ONE vocabulary, read and written by the same table — so a spelling
+    /// cannot drift between the action, the CLI flags and the keybinding.
+    #[test]
+    fn a_window_step_round_trips_through_its_wire_word() {
+        for step in WindowStep::ALL {
+            assert_eq!(WindowStep::from_wire(step.wire_str()), Some(step));
+        }
+        assert_eq!(WindowStep::from_wire("sideways"), None);
+        // The words themselves, pinned: they cross the wire, so renaming one is a protocol change
+        // rather than a refactor.
+        assert_eq!(WindowStep::Next.wire_str(), "next");
+        assert_eq!(WindowStep::Previous.wire_str(), "previous");
     }
 
     /// Killing a NON-last session removes it; killing the DEFAULT (first) re-points the default
