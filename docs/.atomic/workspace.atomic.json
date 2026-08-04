@@ -10903,6 +10903,46 @@
         "An MCP agent still scopes by name and cannot ask for an attachment, because it never attaches — the attached scope serves clients that attach, by construction."
       ]
     },
+    "R304": {
+      "decision_summary": "A client REMEMBERS a session, not a name: the visit history moves to the daemon keyed by SessionId, client/attach learns to ask for it, and WIRE_PROTOCOL goes 6 to 7",
+      "changes_bullets": [
+        "A client's session VISIT history moved to the daemon, keyed by SessionId: AttachmentRegistry::client_history plus last_viewed, which resolves through SessionRegistry::name_of (liveness and the current name in one lookup) and prunes ids that no longer resolve.",
+        "client/attach gained a TARGET grammar spelled once in sprag-rpc (AttachAsk): {\"last\": true}, narrowed by {\"unattached\": true} for tmux detach-on-destroy no-detached, with three refusals so an unreadable target never falls through to \"the session you are already on\". The reply became the session NAME the client landed on, or null when a history ask found none.",
+        "sprag-client's mru: RefCell<Vec<String>> and its two helpers are DELETED; destroy_successor now returns a plan (Successor) naming the ask and its fallback, and attach_in_place continues from the name the daemon answered. A resume after a no-op gesture addresses the ATTACHMENT, which also gives {\"attached\": true} on an attach the meaning R303 registered it as lacking."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2008 passed (R303 left 45 / 1995); clippy 0 with no new suppression; fmt; doc gate 0/16 (it CAUGHT a public-to-private link); pixel smoke 136/0 on a REBUILT release set.",
+        "ELEVEN revert-proofs each shown to DISCRIMINATE plus one CONTROL edit shown to stay green; two of them came back green and BOTH were findings: a test that asserted nothing (fixed by building the missing assertion) and a stale-binary hazard in the revert-proof harness itself.",
+        "Skew run BOTH directions against a parent-commit (8d1de4a) daemon in its own worktree, socket and XDG dirs: each build refuses the other by protocol number, exit 1; and a raw probe at protocol 6 MEASURED the silent failure the bump exists for."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The ATTACHMENT itself stays name-keyed with its two hooks (R302 rename, R303 kill) on a stated rule: a fact about the PRESENT can be kept true where the change is published, a fact about the PAST cannot. Whether it should be id-keyed too is registered, not assumed.",
+        "No CLI verb and no TUI binding reach the new gesture; sprag list-clients does not publish where a client was last; and the destroy-policy paths that consume it (detach-on-destroy off / no-detached) are still the accepted live-smoke gap, since the policy is read from the client's own config file."
+      ],
+      "publishable_decision_summary": "A client REMEMBERS a session, not a name: the visit history moves to the daemon keyed by SessionId, client/attach learns to ask for it, and WIRE_PROTOCOL goes 6 to 7",
+      "publishable_changes_bullets": [
+        "A client's session VISIT history moved to the daemon, keyed by SessionId: AttachmentRegistry::client_history plus last_viewed, which resolves through SessionRegistry::name_of (liveness and the current name in one lookup) and prunes ids that no longer resolve.",
+        "client/attach gained a TARGET grammar spelled once in sprag-rpc (AttachAsk): {\"last\": true}, narrowed by {\"unattached\": true} for tmux detach-on-destroy no-detached, with three refusals so an unreadable target never falls through to \"the session you are already on\". The reply became the session NAME the client landed on, or null when a history ask found none.",
+        "sprag-client's mru: RefCell<Vec<String>> and its two helpers are DELETED; destroy_successor now returns a plan (Successor) naming the ask and its fallback, and attach_in_place continues from the name the daemon answered. A resume after a no-op gesture addresses the ATTACHMENT, which also gives {\"attached\": true} on an attach the meaning R303 registered it as lacking."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2008 passed (R303 left 45 / 1995); clippy 0 with no new suppression; fmt; doc gate 0/16 (it CAUGHT a public-to-private link); pixel smoke 136/0 on a REBUILT release set.",
+        "ELEVEN revert-proofs each shown to DISCRIMINATE plus one CONTROL edit shown to stay green; two of them came back green and BOTH were findings: a test that asserted nothing (fixed by building the missing assertion) and a stale-binary hazard in the revert-proof harness itself.",
+        "Skew run BOTH directions against a parent-commit (8d1de4a) daemon in its own worktree, socket and XDG dirs: each build refuses the other by protocol number, exit 1; and a raw probe at protocol 6 MEASURED the silent failure the bump exists for."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The ATTACHMENT itself stays name-keyed with its two hooks (R302 rename, R303 kill) on a stated rule: a fact about the PRESENT can be kept true where the change is published, a fact about the PAST cannot. Whether it should be id-keyed too is registered, not assumed.",
+        "No CLI verb and no TUI binding reach the new gesture; sprag list-clients does not publish where a client was last; and the destroy-policy paths that consume it (detach-on-destroy off / no-detached) are still the accepted live-smoke gap, since the policy is read from the client's own config file."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
