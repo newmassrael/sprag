@@ -108,6 +108,9 @@ fn main() -> ExitCode {
             // the shipped default prefix back — so `C-b z` here is the table sprag ships. It
             // restores the pane set it found, for the check below that needs exactly one.
             check_a_pane_fills_the_window_from_a_row_and_a_key(&mut smoke, &mut report);
+            // After the keymap gate, which leaves the shipped table in force — this check drives
+            // the DEFAULT prefix, so it must not run while a user config has moved it.
+            check_the_window_keys_reach_the_daemon(&mut smoke, &mut report);
             // HERE for the same reason as the keymap gate above: it needs exactly ONE pane, so the
             // pane the daemon reports and the grid this window paints are unambiguously the same
             // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
@@ -2461,6 +2464,97 @@ fn check_a_pinned_window_overrides_what_this_window_measured(
 
     // Leave the file as this check found it, so a later one reads its own settings and not these.
     let _ = smoke.write_user_config("");
+}
+
+/// **The WINDOW keys, through the shipped GUI binary** (R305) — `prefix c` creates a window and
+/// `prefix n` walks the ring, judged against the DAEMON's own window list.
+///
+/// This is the GUI half of what `sprag-tui`'s pty test drives, and it exists because the two
+/// frontends carry a bound action out in their OWN code: the keymap arm is shared, the `perform`
+/// that runs it is not. A round that drove only the TUI would be inferring the GUI from a file it
+/// does not use — the shape this project's register keeps flagging.
+///
+/// The prefix here is the SHIPPED one (`C-b`), because this check runs on whatever config the run
+/// leaves in force and the keymap gate above deliberately ends on an empty file.
+///
+/// **What it leaves, stated** (item 15's hazard, on the round that adds a check): one extra window,
+/// and the session on its FIRST window rather than the one it found current. Every later check
+/// reads the window it is on rather than a fixed name, so that is survivable — and saying it here
+/// is what stops the next check being written against an inheritance nobody wrote down.
+fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session for the window keys", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the window keys", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the window keys", false);
+        return;
+    }
+    let before = windows_of(&mut daemon, &session);
+    report.check(
+        &format!("the session has windows to start from ({before:?})"),
+        !before.is_empty(),
+    );
+
+    // `prefix c` — the key that did nothing at all before this round.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "c", false).is_ok();
+    report.check("the GUI accepts `prefix c`", pressed);
+    let grown = smoke.wait_for(|s| {
+        let _ = s;
+        let now = windows_of(&mut daemon, &session);
+        (now.len() > before.len()).then_some(now)
+    });
+    report.check(
+        &format!("`prefix c` created a window on the daemon ({grown:?})"),
+        grown.is_ok(),
+    );
+    let Ok(grown) = grown else { return };
+    report.check(
+        "...and the daemon selected it, which is what a client then projects",
+        grown.last().is_some_and(|(_, current)| *current),
+    );
+
+    // `prefix n` — the RING, walked by the daemon. From the last window it WRAPS onto the first,
+    // which is the half a client-side walk would be free to get wrong.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "n", false).is_ok();
+    report.check("the GUI accepts `prefix n`", pressed);
+    let walked = smoke.wait_for(|s| {
+        let _ = s;
+        let now = windows_of(&mut daemon, &session);
+        now.first()
+            .is_some_and(|(_, current)| *current)
+            .then_some(now)
+    });
+    report.check(
+        &format!("`prefix n` wrapped onto the session's first window ({walked:?})"),
+        walked.is_ok(),
+    );
+}
+
+/// Every window of `session` and which one is current, straight off the daemon — the authority the
+/// window keys are judged against, since a client that painted a window the daemon does not hold
+/// would satisfy any check made on its own tree.
+fn windows_of(daemon: &mut HostConn, session: &str) -> Vec<(String, bool)> {
+    daemon
+        .call(
+            "scene/query",
+            json!({ "path": "/sprag_mux/external/windows", "session": session }),
+        )
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|w| {
+            Some((
+                w["name"].as_str()?.to_owned(),
+                w["current"].as_bool().unwrap_or(false),
+            ))
+        })
+        .collect()
 }
 
 /// The session's arbitrated window, straight off the daemon — the derived answer every client is
