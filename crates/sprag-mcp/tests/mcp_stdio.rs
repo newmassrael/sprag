@@ -2446,3 +2446,115 @@ fn an_agent_reads_what_each_pane_is_running() {
         "a pane this terminal does not have is refused, not answered empty: {refused}",
     );
 }
+
+/// **The live gate for `resize_pane`**, and the first time an agent has been able to change how big
+/// anything is — against a real daemon and the shipped binary.
+///
+/// The window is PINNED through the real `sprag` CLI rather than reported by a display client,
+/// because a cell has no length until somebody has measured the window and an MCP server is not a
+/// display client. That is the same precondition the verb states everywhere else, met the one way a
+/// headless test can meet it.
+///
+/// The ORDER is `an_agent_places_the_pane_it_opened_and_no_other`'s and for its reason: the refusal
+/// is checked BEFORE the happy path, so a gate that refused nothing could not pass by having
+/// already resized everything. The arrangement is read back through `pane_layout`, a different code
+/// path from the tool's own answer, so a tool that reported a move it had not made would not pass on
+/// its own wording.
+#[test]
+fn an_agent_sizes_the_pane_it_opened_and_no_other() {
+    let dir = std::env::temp_dir().join(format!(
+        "sprag-mcp-resize-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
+    std::fs::write(
+        dir.join("sprag").join("config.toml"),
+        "[options]\nwindow-size = \"manual\"\n",
+    )
+    .expect("write the config");
+    let home = dir.display().to_string();
+    let (_daemon, sock) = spawn_daemon_with(&["cat"], BOOT_PANE, &[("XDG_CONFIG_HOME", &home)]);
+
+    let cli = PathBuf::from(env!("CARGO_BIN_EXE_sprag-mcp"))
+        .parent()
+        .expect("the built sprag-mcp has a directory")
+        .join("sprag");
+    assert!(
+        cli.exists(),
+        "{} is not built — run `cargo test --workspace`, or `cargo build -p sprag-host --bins`",
+        cli.display(),
+    );
+    let pinned = Command::new(&cli)
+        .args(["resize-window", "-t", "0", "-x", "101", "-y", "30"])
+        .env(SOCK_ENV, &sock)
+        .env("XDG_CONFIG_HOME", &home)
+        .output()
+        .expect("run the sprag CLI");
+    assert!(
+        pinned.status.success(),
+        "the window is pinned: {}",
+        String::from_utf8_lossy(&pinned.stderr),
+    );
+
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool("open_pane", json!({ "name": "build" }));
+    let before = server.call_tool("pane_layout", json!({}));
+
+    // THE PERSON's pane is not the agent's to size — the same fact the close, the rename and the
+    // swap are gated on, now with the reason this verb has: how big their panes are is theirs.
+    let refused = server.call_tool_error("resize_pane", json!({ "pane": 1, "dir": "right" }));
+    assert!(
+        refused.contains("pane 1 was opened by a person, not by you")
+            && refused.contains("how big their panes are is their arrangement"),
+        "it says why, and the reason is the SIZE rather than the placement: {refused}",
+    );
+    assert_eq!(
+        server.call_tool("pane_layout", json!({})),
+        before,
+        "and the refusal really refused",
+    );
+
+    // Its OWN pane, by name. 100 usable columns at an even share puts the boundary at 50; twelve
+    // cells left of that is 38.
+    let moved = server.call_tool(
+        "resize_pane",
+        json!({ "pane": "build", "dir": "left", "cells": 12 }),
+    );
+    assert!(
+        moved.contains("boundary 12 cells")
+            && moved.contains("gave up exactly that much")
+            && moved.contains("read_pane"),
+        "it says how far it went and what to do next: {moved}",
+    );
+    let after = server.call_tool("pane_layout", json!({}));
+    assert_ne!(after, before, "the arrangement really moved");
+    assert!(
+        before.contains("50% left|right") && after.contains("38% left|right"),
+        "the DRAWING carries the share, and it is the number this test's own arithmetic \
+         predicted: 100 usable columns, an even share at 50, twelve cells left of it is 38. \
+         before:\n{before}\nafter:\n{after}",
+    );
+
+    // A distance past the wall reports what it ACTUALLY got — the fact no outcome word carries, and
+    // the one an agent needs to know not to ask again.
+    let clamped = server.call_tool(
+        "resize_pane",
+        json!({ "pane": "build", "dir": "left", "cells": 500 }),
+    );
+    assert!(
+        clamped.contains("of the 500 asked for") && clamped.contains("no more room that way"),
+        "a clamped move says so: {clamped}",
+    );
+
+    // The grammar refuses what it has no reading for, HERE, because the daemon can only answer
+    // `Rejected` for a malformed request.
+    let no_dir = server.call_tool_error("resize_pane", json!({ "pane": "build" }));
+    assert!(no_dir.contains("which way the BOUNDARY"), "{no_dir}");
+    let zero = server.call_tool_error(
+        "resize_pane",
+        json!({ "pane": "build", "dir": "left", "cells": 0 }),
+    );
+    assert!(zero.contains("1 or more"), "{zero}");
+}

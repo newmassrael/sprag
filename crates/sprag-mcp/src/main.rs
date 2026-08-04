@@ -113,9 +113,10 @@ use sprag_host::events::EventFilter;
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
-    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
-    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk,
-    SwapHow, TEXT_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
+    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire,
+    RENAME_PANE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION, SINCE_PARAM,
+    SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk, SwapHow, TEXT_ACTION,
+    find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -277,8 +278,10 @@ fn handle_initialize(message: &Value) -> Value {
             For your OWN work, `open_pane` gives you a new pane to run things in without taking \
             over one a person is reading — name it there, and address it by that name afterwards \
             — `rename_pane` changes that name later, `swap_pane` moves it to a different place in \
-            the arrangement, and `close_pane` closes it (all three act ONLY on a pane you opened; \
-            a person's pane is refused, because their names and their arrangement are theirs). \
+            the arrangement, `resize_pane` makes it wider or taller when what you are reading \
+            wraps, and `close_pane` closes it (all four act ONLY on a pane you opened; a person's \
+            pane is refused, because their names, their arrangement and how big their panes are \
+            are theirs). \
             `select_pane` moves where the USER is typing, so use it only when you have \
             something for them to look at. \
             If a tool reports it is not inside a sprag terminal, these tools do not apply to \
@@ -820,6 +823,43 @@ fn tools_list() -> Value {
                     "required": ["pane"],
                     "additionalProperties": false
                 }
+            },
+            {
+                "name": "resize_pane",
+                "description": "Make a pane YOU OPENED wider or taller by moving the boundary \
+                    between it and its neighbour. Use it when the output you are READING is \
+                    wrapping: a pane's width is what decides whether a build log, a table or a \
+                    stack trace arrives in one line per line, so widening your own pane changes \
+                    what read_pane can see. `pane` is REQUIRED and names the pane whose boundary \
+                    moves: only a pane you opened yourself with open_pane can be resized, because \
+                    how big a person's own panes are is their arrangement and not yours. `dir` \
+                    moves the BOUNDARY that way — so \"right\" makes a pane on the LEFT of it \
+                    wider and a pane on the RIGHT of it narrower — and `cells` says how far, in \
+                    terminal cells, defaulting to 1. The neighbour gives up exactly what your \
+                    pane gains; the window does not change size. The answer says how many cells \
+                    it ACTUALLY moved, which is fewer than you asked for when it reached the last \
+                    cell the far side may keep — a normal outcome, not a failure. Call \
+                    pane_layout first if you need to know what lies where.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg,
+                        "dir": {
+                            "type": "string",
+                            "enum": PaneDir::ALL.map(PaneDir::wire_str),
+                            "description": "Which way the BOUNDARY moves. Whether `pane` grows \
+                                or shrinks follows from which side of that boundary it is on."
+                        },
+                        "cells": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "How far, in terminal cells. Defaults to 1. A width \
+                                is a count of columns, so ask for the columns you need."
+                        }
+                    },
+                    "required": ["pane", "dir"],
+                    "additionalProperties": false
+                }
             }
         ]
     })
@@ -857,6 +897,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "rename_pane" => tool_rename_pane(&args),
         "select_pane" => tool_select_pane(&args),
         "swap_pane" => tool_swap_pane(&args),
+        "resize_pane" => tool_resize_pane(&args),
         other => Err(format!("unknown tool: {other}")),
     };
     match outcome {
@@ -2410,6 +2451,115 @@ fn tool_swap_pane(args: &Value) -> Result<String, String> {
 /// The two nothing-happened outcomes get distinct sentences with distinct remedies, which is the
 /// whole point of the daemon naming them: an edge means "look the other way", a floating pane means
 /// "there is no way to look at all".
+/// `resize_pane` — move the boundary beside a pane THIS SERVER OPENED, in cells.
+///
+/// [`tool_swap_pane`]'s ownership gate, unchanged and for its reason: a resize necessarily takes
+/// cells FROM the pane on the other side of the boundary, so an agent widening somebody's pane
+/// narrows another one they did not ask about. The rival's `pane.resize` resizes any pane by id
+/// (herdr `9a4ce5e1`, `handle_pane_resize`) — nothing on one of their panes records what created
+/// it, so there is no gate to apply.
+///
+/// The argument for the verb EXISTING on this surface is its own, and it is not the swap's. R285
+/// declined an MCP zoom because *"an agent reads and types; a zoom is a thing you do FOR a human to
+/// look at"*, and R288 recorded that the argument had inverted once already. It inverts here too, in
+/// a way neither of those verbs does: **a pane's WIDTH is what decides whether the output this
+/// server itself reads is wrapped**, so a resize is the one arrangement verb whose subject is the
+/// agent's own reading.
+fn tool_resize_pane(args: &Value) -> Result<String, String> {
+    let dir = match args.get(ResizeAsk::DIR_KEY) {
+        Some(Value::String(word)) => PaneDir::from_wire(word).ok_or_else(|| {
+            format!(
+                "'{}' must be one of {}, not {word:?}",
+                ResizeAsk::DIR_KEY,
+                PaneDir::ALL.map(PaneDir::wire_str).join(", ")
+            )
+        })?,
+        _ => {
+            return Err(format!(
+                "resize_pane needs '{}' (\"left\" / \"right\" / \"up\" / \"down\") — which way the \
+                 BOUNDARY beside the pane moves",
+                ResizeAsk::DIR_KEY,
+            ));
+        }
+    };
+    let cells = match args.get(ResizeAsk::CELLS_KEY) {
+        None | Some(Value::Null) => ResizeAsk::CELLS_DEFAULT,
+        Some(value) => value
+            .as_u64()
+            .and_then(|cells| u16::try_from(cells).ok())
+            .filter(|cells| *cells > 0)
+            .ok_or_else(|| {
+                format!(
+                    "'{}' must be a whole number of cells, 1 or more — {value} is not a distance",
+                    ResizeAsk::CELLS_KEY,
+                )
+            })?,
+    };
+    let panes = query_panes()?;
+    let pane = resolve_in(&panes, &pane_target(args)?)?;
+    let subject = render_pane_handle(pane);
+    let mine = own_pane();
+    match pane.opened_by {
+        Some(opener) if Some(opener) == mine => {}
+        Some(opener) => {
+            return Err(format!(
+                "{subject} was opened by {}, not by you, so resize_pane will not move its \
+                 boundary. Only a pane you opened yourself is yours to size.",
+                short_name(PaneId(opener), &|id| panes
+                    .iter()
+                    .find(|p| p.id == id.0)
+                    .map(|p| p.number)),
+            ));
+        }
+        None => {
+            return Err(format!(
+                "{subject} was opened by a person, not by you, so resize_pane will not move its \
+                 boundary — how big their panes are is their arrangement. Only a pane you opened \
+                 yourself with open_pane is yours to size."
+            ));
+        }
+    }
+    let ask = ResizeAsk {
+        pane: Some(PaneId(pane.id)),
+        dir,
+        cells,
+    };
+    let answer = host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(RESIZE_PANE_ACTION), "args": ask.to_args() }),
+    )?;
+    let how = ResizeHow::from_wire(answer[OUTCOME_KEY].as_str().unwrap_or_default())
+        .unwrap_or(ResizeHow::Resized);
+    let moved = u16::try_from(answer["cells"].as_u64().unwrap_or_default()).unwrap_or(u16::MAX);
+    Ok(render_resize(how, ask, &subject, moved))
+}
+
+/// What `resize_pane` tells the agent, as a pure function of the daemon's answer.
+///
+/// The nothing-happened halves come from [`ResizeHow::why`], which the CLI verb also reads — one
+/// wording for two surfaces — with this surface adding what an AGENT does next. The CLAMPED case is
+/// the one worth spelling out here: it is not an outcome word, and an agent that asked for twenty
+/// columns and got seven has to know that asking again will get it nothing.
+fn render_resize(how: ResizeHow, ask: ResizeAsk, subject: &str, moved: u16) -> String {
+    match how.why(ask.dir) {
+        Some(why) => format!("{subject} was not resized: {why}."),
+        None if moved < ask.cells => format!(
+            "Moved {subject}'s {} boundary {moved} cell{} of the {} asked for — it reached the \
+             last cell the far side may keep, so there is no more room that way. Call read_pane to \
+             see the pane at its new width.",
+            ask.dir.wire_str(),
+            if moved == 1 { "" } else { "s" },
+            ask.cells,
+        ),
+        None => format!(
+            "Moved {subject}'s {} boundary {moved} cell{}; the pane on the other side of it gave \
+             up exactly that much. Call read_pane to see the pane at its new width.",
+            ask.dir.wire_str(),
+            if moved == 1 { "" } else { "s" },
+        ),
+    }
+}
+
 fn render_swap(
     how: SwapHow,
     asked: Option<PaneDir>,
@@ -3474,7 +3624,8 @@ mod tests {
                 "close_pane",
                 "rename_pane",
                 "select_pane",
-                "swap_pane"
+                "swap_pane",
+                "resize_pane"
             ]
         );
         for tool in tools["tools"].as_array().unwrap() {
