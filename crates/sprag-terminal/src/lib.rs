@@ -32,6 +32,7 @@ mod procfs;
 pub mod registry;
 pub mod remote;
 pub mod sampled;
+pub mod session_name;
 pub mod snapshot;
 pub mod tiling;
 pub mod workspace;
@@ -55,6 +56,7 @@ pub use registry::{
 };
 pub use remote::SshRemote;
 pub use sampled::{Reading, Sampled};
+pub use session_name::{SessionName, SessionNameError};
 pub use snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneHistory, PaneRestore, PaneSnapshot, RestorePlan,
     SNAPSHOT_VERSION, SessionSnapshot, Snapshot, SnapshotError, WindowSnapshot, pane_histories,

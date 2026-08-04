@@ -1192,6 +1192,10 @@ impl WorkspaceExternal {
     ///
     /// The change itself is DERIVED at the dispatch funnel like every other, and it derives as one
     /// rename because a session's identity does not move with its name (`sprag_terminal::SessionId`).
+    ///
+    /// Answers the name the registry RECORDED (trimmed, validated —
+    /// [`SessionName`](sprag_terminal::SessionName)), so a caller reports the address that now
+    /// resolves rather than the string it happened to send.
     fn rename_session(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
         let new = map
@@ -1199,18 +1203,23 @@ impl WorkspaceExternal {
             .and_then(Value::as_str)
             .ok_or(InvokeError::TypeMismatch)?;
         let from = self.scope.session().to_owned();
-        lock(&self.registry)
+        // The RECORDED name, never the argument: a name is trimmed on the way in, so
+        // `rename-session "  work  "` lands as `work` and everything below — the channel key, the
+        // attachments, the wake, the answer a client prints — has to be about what the registry
+        // now holds. Answering the argument is the mistake R295 fixed one level down for
+        // `rename_pane`, met again here.
+        let to = lock(&self.registry)
             .rename_session(&from, new)
             .map_err(|error| {
                 tracing::debug!(target: "sprag_host", %error, "refused to rename a session");
                 InvokeError::Rejected
             })?;
-        self.channels.rename(&from, new);
+        self.channels.rename(&from, &to);
         if let Some(attachments) = &self.attachments {
-            lock(attachments).rename_session(&from, new);
+            lock(attachments).rename_session(&from, &to);
         }
-        self.channels.bump(new);
-        Ok(IntrospectValue::Json(Value::Null))
+        self.channels.bump(&to);
+        Ok(IntrospectValue::Json(Value::String(to)))
     }
 
     /// `kill_window {window?}` action: kill a window of THIS request's session — tmux

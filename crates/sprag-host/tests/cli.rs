@@ -2223,6 +2223,67 @@ fn a_session_can_be_renamed_and_its_address_takes_its_clients_with_it() {
     );
 }
 
+/// A session NAME is an address, so the grammar is enforced at both places one can enter — and
+/// the listing this protects is asserted by reading it back.
+///
+/// MEASURED before it was written, against a live daemon at `9bca338`: `rename-session ""`
+/// answered `renamed to `, a name holding a newline printed as TWO rows of `sprag ls`, and
+/// `x\ty\x1b[31m` put an escape sequence into the reader's terminal. R295 settled this rule for a
+/// PANE name; a rename is what made the same hole reachable for the widest address the daemon has.
+#[test]
+fn a_session_name_is_an_address_and_the_grammar_holds_at_both_ends() {
+    let (_host, sock) = spawn_host();
+
+    // A name is TRIMMED and the verb reports what the DAEMON recorded, not the argument sent.
+    let renamed = sprag(&sock, &["rename-session", "-t", "0", "  work  "]);
+    assert!(renamed.ok, "a padded name is trimmed: {}", renamed.stderr);
+    assert_eq!(renamed.stdout.trim(), "renamed to work");
+    assert!(
+        sprag(&sock, &["panes", "-t", "work"]).ok,
+        "and `work` is the address that resolves",
+    );
+
+    // Every rule, at the RENAME end.
+    for hostile in ["", "   ", "a\nb", "x\u{1b}[31m", &"z".repeat(81)] {
+        let refused = sprag(&sock, &["rename-session", "-t", "work", hostile]);
+        assert!(
+            !refused.ok,
+            "a session cannot be renamed to {hostile:?}: {}",
+            refused.stdout,
+        );
+        assert!(
+            refused.stderr.contains("control character"),
+            "the refusal lists the rules a user can act on: {:?}",
+            refused.stderr,
+        );
+    }
+    assert!(
+        sprag(&sock, &["panes", "-t", "work"]).ok,
+        "and every refusal left the address alone",
+    );
+
+    // The same grammar at the CREATE end, which is the other way a name enters.
+    for hostile in ["", "a\nb"] {
+        let refused = sprag(&sock, &["new", hostile]);
+        assert!(!refused.ok, "a session cannot be CREATED as {hostile:?}");
+    }
+
+    // THE CONTROL — all digits is allowed here where a pane name refuses it, because a session has
+    // no ordinal to be confused with and this registry ALLOCATES exactly those names.
+    assert!(
+        sprag(&sock, &["rename-session", "-t", "work", "7"]).ok,
+        "an all-digit session name is legal: the daemon's own boot session is called `0`",
+    );
+    let listed = sprag(&sock, &["ls"]);
+    assert_eq!(
+        listed.stdout.lines().count(),
+        1,
+        "and the listing is still ONE line for one session — the contract the control rule \
+         protects: {:?}",
+        listed.stdout,
+    );
+}
+
 /// A window RENAME and a pane MOVE reach a reader as what they are — one event each, carrying the
 /// fact no later read could recover.
 ///

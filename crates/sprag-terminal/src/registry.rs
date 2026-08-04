@@ -46,6 +46,7 @@ use crate::PaneId;
 use crate::layout::{
     LayoutError, LayoutTree, LayoutWire, LeafHome, PaneDir, PaneStep, SplitDir, SplitSide,
 };
+use crate::session_name::{SessionName, SessionNameError};
 use crate::snapshot::WindowSnapshot;
 use crate::snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneRestore, RestorePlan, SNAPSHOT_VERSION, Snapshot,
@@ -840,6 +841,9 @@ pub enum SessionError {
     Duplicate(String),
     /// No session carries the name ([`SessionRegistry::kill_session`]).
     Unknown(String),
+    /// The name breaks the grammar an ADDRESS has to satisfy ([`SessionName`]) — carried whole so
+    /// an in-process caller can say WHICH rule rather than listing all of them.
+    Malformed(SessionNameError),
 }
 
 impl std::fmt::Display for SessionError {
@@ -847,6 +851,7 @@ impl std::fmt::Display for SessionError {
         match self {
             Self::Duplicate(name) => write!(f, "a session named {name:?} already exists"),
             Self::Unknown(name) => write!(f, "no session named {name:?}"),
+            Self::Malformed(error) => error.fmt(f),
         }
     }
 }
@@ -2107,11 +2112,16 @@ impl SessionRegistry {
     /// it picks a name that is free by construction.
     pub fn new_session(&mut self, name: Option<&str>) -> Result<String, SessionError> {
         let name = match name {
+            // Parsed BEFORE the duplicate check, so a caller offering an unusable name is told
+            // which rule it broke rather than that the name is free. See [`SessionName`] for the
+            // grammar and for why an all-digit name is not one of the refusals — this method's own
+            // allocation below mints exactly those.
             Some(name) => {
-                if self.session(name).is_some() {
-                    return Err(SessionError::Duplicate(name.to_owned()));
+                let name = String::from(SessionName::parse(name).map_err(SessionError::Malformed)?);
+                if self.session(&name).is_some() {
+                    return Err(SessionError::Duplicate(name));
                 }
-                name.to_owned()
+                name
             }
             None => self.lowest_free_name(),
         };
@@ -2201,17 +2211,22 @@ impl SessionRegistry {
     /// lands in another's session, which is the failure [`new_session`](Self::new_session) refuses a
     /// duplicate for. Renaming a session to the name it already has is a NO-OP rather than a
     /// duplicate, exactly as `rename_window` treats its own.
-    pub fn rename_session(&mut self, name: &str, new: &str) -> Result<(), SessionError> {
+    pub fn rename_session(&mut self, name: &str, new: &str) -> Result<String, SessionError> {
         let idx = self
             .sessions
             .iter()
             .position(|session| session.name == name)
             .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        // The grammar an ADDRESS has to satisfy, and the reason this verb had to bring it: until a
+        // session could be renamed, a name entered the registry only at birth. MEASURED before it
+        // was written — a rename accepted `""`, a newline that printed as two rows of `sprag ls`,
+        // and an escape sequence that reached the reader's terminal.
+        let new = String::from(SessionName::parse(new).map_err(SessionError::Malformed)?);
         if new != name && self.sessions.iter().any(|session| session.name == new) {
-            return Err(SessionError::Duplicate(new.to_owned()));
+            return Err(SessionError::Duplicate(new));
         }
-        self.sessions[idx].name = new.to_owned();
-        Ok(())
+        self.sessions[idx].name.clone_from(&new);
+        Ok(new)
     }
 
     /// What the session with this IDENTITY is called NOW, or `None` if it is gone.

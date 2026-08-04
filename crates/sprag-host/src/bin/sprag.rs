@@ -1311,13 +1311,20 @@ fn new(name: Option<String>) -> io::Result<()> {
             }
             None => Err(io::Error::other("new did not answer with a name")),
         },
-        // The host answers a refused create with a JSON-RPC error (`Other`); the only refusal for
-        // an explicitly-named create is a duplicate — say so cleanly, mirroring kill-session.
+        // The host answers a refused create with a JSON-RPC error (`Other`), and an explicitly-named
+        // create now has TWO refusals rather than one: the name is taken, or it breaks the grammar
+        // an address has to satisfy (`sprag_terminal::SessionName`). The daemon knows which and
+        // cannot say — `InvokeError::Rejected` carries no payload (upstream PINION-PR82) — so this
+        // lists them. Before the grammar existed this sentence was exact; leaving it would have
+        // told a user with a blank name that somebody else had taken it.
         Err(error) if error.kind() == io::ErrorKind::Other => {
             let named = name.as_deref().unwrap_or_default();
             Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                format!("a session named {named:?} already exists"),
+                format!(
+                    "a session named {named:?} already exists, or that name is blank, over 80 \
+                     bytes, or contains a control character"
+                ),
             ))
         }
         Err(error) => Err(error),
@@ -3937,7 +3944,7 @@ fn rename_session(args: Vec<String>) -> io::Result<()> {
         ));
     }
     let mut conn = connect_scoped(session.as_deref())?;
-    match conn.try_call(
+    let answer = match conn.try_call(
         "scene/invoke",
         scoped_invoke(
             session.as_deref(),
@@ -3945,23 +3952,37 @@ fn rename_session(args: Vec<String>) -> io::Result<()> {
             json!({ "name": new }),
         ),
     ) {
-        Ok(Value::Null | Value::Object(_)) | Ok(_) => {}
-        // ONE cause, said plainly — this verb is refused for exactly one reason it can state, and
-        // an UNKNOWN scope never reaches here (it is refused at the door as a scope error carrying
-        // its own sentence). The version-skew case is told APART rather than folded in: a daemon
-        // older than this verb answers a different fault, and saying "that name is taken" to
-        // somebody whose daemon simply predates the verb sends them to fix the wrong thing.
+        Ok(answer) => answer,
+        // The causes, listed because the daemon knows which and cannot say — `InvokeError::Rejected`
+        // carries no payload (upstream PINION-PR82). An UNKNOWN scope never reaches here: it is
+        // refused at the door as a scope error carrying its own sentence. The version-skew case is
+        // told APART rather than folded in: a daemon older than this verb answers a different
+        // fault, and saying "that name is taken" to somebody whose daemon simply predates the verb
+        // sends them to fix the wrong thing.
         Err(CallError::Fault(fault)) => {
             return Err(unknown_action("rename-session", &fault).unwrap_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("rename-session refused: {new:?} is already another session's name"),
+                    format!(
+                        "rename-session refused: {new:?} is already another session's name, or is \
+                         blank, over 80 bytes, or contains a control character"
+                    ),
                 )
             }));
         }
         Err(other) => return Err(other.into()),
+    };
+    // What the DAEMON recorded, never the argument that was sent: a name is trimmed on the way in,
+    // so `rename-session "  work  "` lands as `work`, and echoing the argument would report an
+    // address that does not resolve. `rename-pane` prints the same way for the same reason.
+    match answer.as_str() {
+        Some(recorded) => println!("renamed to {recorded}"),
+        None => {
+            // An OLDER daemon that has this verb but answers `null` — absent-not-wrong, so the
+            // argument is the best this client can say and it says it rather than nothing.
+            println!("renamed to {new}");
+        }
     }
-    println!("renamed to {new}");
     Ok(())
 }
 
