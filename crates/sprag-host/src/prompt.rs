@@ -414,6 +414,33 @@ impl Line {
         }
     }
 
+    /// Insert PASTED text at the cursor — one line of it, with the control characters dropped.
+    ///
+    /// A paste is not a run of keystrokes and must not be treated as one: a pasted newline at a
+    /// shell prompt RUNS what is above it, and the same bytes here would commit a name the user has
+    /// not read. So the first line is taken and the rest is discarded, which is what every
+    /// single-line field does — and the controls go with it, since every grammar this prompt feeds
+    /// refuses them anyway.
+    ///
+    /// It exists because a terminal delivers a paste as its OWN event: `sprag-tui` was forwarding
+    /// that event to the focused PANE while the prompt held the keyboard, so a pasted name went
+    /// into the shell behind the question. The keystroke path had been closed; this had not.
+    pub fn pasted(&mut self, text: &str) -> Typed {
+        let line: String = text
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        if line.is_empty() {
+            return Typed::Ignored;
+        }
+        self.text.insert_str(self.cursor, &line);
+        self.cursor += line.len();
+        Typed::Edited
+    }
+
     /// Put the cursor at byte offset `at` (a boundary the caller already knows is one).
     fn move_to(&mut self, at: usize) -> Typed {
         if self.cursor == at {
@@ -636,6 +663,34 @@ mod tests {
             "a named key is not text — and Ignored is still SWALLOWED by the caller",
         );
         assert_eq!(line.text(), "x", "none of which typed anything");
+    }
+
+    /// A PASTE is one line, with the controls dropped — never a commit.
+    ///
+    /// The newline is the assertion that matters: the same bytes at the shell prompt behind this
+    /// one would RUN what was pasted, and a prompt that treated a pasted `\n` as `Enter` would
+    /// commit a name the user has not read yet.
+    #[test]
+    fn a_paste_is_one_line_of_text_and_never_an_answer() {
+        let mut line = Line::new("build");
+        assert_eq!(line.pasted("-x"), Typed::Edited);
+        assert_eq!(line.text(), "build-x");
+
+        let mut line = Line::new("");
+        assert_eq!(line.pasted("one\ntwo\nthree"), Typed::Edited);
+        assert_eq!(line.text(), "one", "the tail is dropped, not run");
+
+        let mut line = Line::new("");
+        assert_eq!(line.pasted("a\u{1b}[31mb\tc"), Typed::Edited);
+        assert_eq!(line.text(), "a[31mbc", "the controls go, the text stays");
+
+        let mut line = Line::new("keep");
+        assert_eq!(line.pasted("\n"), Typed::Ignored);
+        assert_eq!(
+            line.text(),
+            "keep",
+            "and a paste with nothing in it types nothing"
+        );
     }
 
     /// The grammar check is the daemon's own, one rule at a time — the sentence a user acts on.

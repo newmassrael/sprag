@@ -1890,7 +1890,30 @@ impl SessionRegistry {
         // check because the two say different things about a corrupt file, and an operator reading
         // the refusal should learn which invariant the file broke.
         let mut seen_names: HashSet<crate::PaneName> = HashSet::new();
-        for s in snapshot.sessions {
+        for mut s in snapshot.sessions {
+            // A NAME OUT OF THE FILE IS REPAIRED, NOT REFUSED — the fourth door a name enters by,
+            // and the one R302 and R306 both missed while stating that the grammar held at every
+            // one. A snapshot written by an OLDER build can legitimately hold a name this build
+            // refuses (`sprag rename-window ""` stored one until R306), and this function's own
+            // top-of-file rule is that a user's sessions migrate by being LOADED rather than being
+            // thrown away — so a name that cannot be an address is replaced by one that can and the
+            // repair is reported. Refusal is kept for what a corrupt file breaks structurally
+            // (duplicate ids, duplicate names): those cannot be repaired without guessing which
+            // pane a caller meant.
+            if let Err(error) = SessionName::parse(&s.name) {
+                let repaired = (0u64..)
+                    .map(|n| n.to_string())
+                    .find(|candidate| !seen_sessions.contains(candidate))
+                    .expect("some name in 0..=len is always free");
+                tracing::warn!(
+                    target: "sprag_terminal::snapshot",
+                    was = %s.name.escape_debug(),
+                    now = %repaired,
+                    %error,
+                    "a restored session name is not an address; it was renamed",
+                );
+                s.name = repaired;
+            }
             if !seen_sessions.insert(s.name.clone()) {
                 return Err(SnapshotError::Malformed(format!(
                     "duplicate session {:?}",
@@ -1905,7 +1928,24 @@ impl SessionRegistry {
             }
             let mut windows = Vec::with_capacity(s.windows.len());
             let mut seen_windows = HashSet::new();
-            for w in s.windows {
+            for mut w in s.windows {
+                // The window's own half of the repair above, allocated within THIS session because
+                // that is where a window name has to be unique.
+                if let Err(error) = WindowName::parse(&w.name) {
+                    let repaired = (0u64..)
+                        .map(|n| n.to_string())
+                        .find(|candidate| !seen_windows.contains(candidate))
+                        .expect("some name in 0..=len is always free");
+                    tracing::warn!(
+                        target: "sprag_terminal::snapshot",
+                        session = %s.name,
+                        was = %w.name.escape_debug(),
+                        now = %repaired,
+                        %error,
+                        "a restored window name is not an address; it was renamed",
+                    );
+                    w.name = repaired;
+                }
                 if !seen_windows.insert(w.name.clone()) {
                     return Err(SnapshotError::Malformed(format!(
                         "session {:?} has duplicate window {:?}",
@@ -3856,6 +3896,58 @@ mod tests {
             reg.new_window("ghost", None),
             Err(SessionError::Unknown(name)) if name == "ghost",
         ));
+    }
+
+    /// A name that cannot be an ADDRESS is repaired on the way OUT of a snapshot — the fourth door,
+    /// and the one both name-grammar rounds missed.
+    ///
+    /// A file written by an older build can hold what this one refuses (`rename-window ""` stored a
+    /// blank name until R306, and `rename-session` did until R302), so a restore that REFUSED would
+    /// throw away every session a user had over one bad label. The repair is reported, and the
+    /// structural refusals beside it are untouched: a duplicate id cannot be repaired without
+    /// guessing.
+    #[test]
+    fn a_name_that_cannot_be_an_address_is_repaired_by_the_restore_and_not_refused() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, Some("keep")).unwrap();
+        let ws = reg.workspace_of(&default).expect("a current window");
+        lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
+        let mut snap = crate::snapshot::snapshot(&Arc::new(Mutex::new(reg)));
+
+        // What an older build could legitimately have written into the file.
+        snap.sessions[0].name = "  ".to_owned();
+        snap.sessions[0].windows[0].name = "a\nb".to_owned();
+
+        let (back, plan) = SessionRegistry::from_snapshot(snap).expect("a bad name is not fatal");
+        let session = back.sessions().first().expect("the session survived");
+        assert_eq!(
+            session.name(),
+            "0",
+            "the blank session name became an address"
+        );
+        assert_eq!(
+            session
+                .windows()
+                .iter()
+                .map(Window::name)
+                .collect::<Vec<_>>(),
+            vec!["0", "keep"],
+            "and so did the window's, without disturbing the one that was already fine",
+        );
+        assert!(
+            SessionName::parse(session.name()).is_ok()
+                && session
+                    .windows()
+                    .iter()
+                    .all(|w| WindowName::parse(w.name()).is_ok()),
+            "every name in the restored registry parses, which is the invariant this closes",
+        );
+        assert!(
+            plan.panes.iter().all(|p| p.session == "0"),
+            "and the panes are re-spawned into the session as it is now CALLED: {:?}",
+            plan.panes,
+        );
     }
 
     /// The grammar ([`WindowName`]) is enforced at all THREE doors a window name enters by, and the

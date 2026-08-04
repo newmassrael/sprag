@@ -1114,6 +1114,28 @@ fn a_name_typed_at_the_prompt_renames_the_window_and_never_reaches_the_shell() {
         "the name was typed AT THE CLIENT: not one character of it reached the pane",
     );
 
+    // A PASTE is the prompt's too. Bracketed (DEC 2004), which is how a terminal delivers one and
+    // why it arrives as its own event rather than as keystrokes — the path that was still going
+    // straight to the shell after the keystroke path had been closed.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b",");
+    let shell_before_paste = pane_text_of(&mut conn, &session, 0);
+    tui.type_bytes(b"\x1b[200~-pasted\x1b[201~\r");
+    wait_for(
+        "the pasted text to reach the daemon as part of the name",
+        || {
+            settled(
+                windows_of(&mut conn, &session),
+                &vec![("build-pasted".to_owned(), true)],
+            )
+        },
+    );
+    assert_eq!(
+        pane_text_of(&mut conn, &session, 0),
+        shell_before_paste,
+        "and not one character of the paste reached the pane",
+    );
+
     // CANCELLING gives the keyboard back, and the window keeps the name it has.
     //
     // `C-c` rather than `Escape`, and the reason is a property of terminals rather than of this
@@ -1129,7 +1151,7 @@ fn a_name_typed_at_the_prompt_renames_the_window_and_never_reaches_the_shell() {
     typing_follows(&mut tui, &mut conn, &session, 0);
     assert_eq!(
         windows_of(&mut conn, &session),
-        vec![("build".to_owned(), true)],
+        vec![("build-pasted".to_owned(), true)],
         "a cancelled prompt renames nothing, and the client is typing into the pane again",
     );
     assert_eq!(

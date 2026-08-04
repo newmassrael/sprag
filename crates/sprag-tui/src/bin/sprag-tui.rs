@@ -537,7 +537,25 @@ fn run() -> Result<(), Box<dyn Error>> {
             // brackets it if — and only if — the pane's CHILD asked for bracketing, which is a mode
             // only the host can see. A shell that wanted to see a multi-line paste as one edit
             // still does; one that did not still runs it line by line.
-            Some(InputEvent::Paste(text)) => paste(&host, focus, &text),
+            // A PASTE, and the prompt gets first refusal on it for the same reason it gets first
+            // refusal on a keystroke: a name pasted into an open question must not land in the
+            // shell behind it. Found by the debt audit — the key path was closed and this was not.
+            Some(InputEvent::Paste(text)) => match &mut asking {
+                Some(Asking::Line { line, refusal, .. }) => {
+                    if line.pasted(&text) == Typed::Edited {
+                        *refusal = None;
+                    }
+                    paint_prompt(
+                        &mut screen,
+                        screen_area,
+                        asking.as_ref().expect("just matched"),
+                    )?;
+                }
+                // A yes/no has nowhere to put text. Swallowed rather than forwarded, which is what
+                // the keystroke path does with everything it does not understand.
+                Some(Asking::Confirm { .. }) => {}
+                None => paste(&host, focus, &text),
+            },
             // The pointer is addressed by WHERE IT IS, not by what has the keyboard: a report
             // belongs to the pane under it, which is the only reading a program can make sense of.
             // A press ALSO moves the keyboard there, so the two never drift apart — a client that
