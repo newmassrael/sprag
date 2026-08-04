@@ -10635,6 +10635,66 @@
         "NEXT on this seam, in order: the origin argument above (item 25's head); `swap-pane -L|-R|-U|-D` as a bound action, still the cheapest thing in the herdr comparison; and a harness for the coverage residuals, now ELEVEN across items 15/16/18/19/20/22/23/24/25 and overdue by seven rounds."
       ]
     },
+    "R300": {
+      "decision_summary": "select_pane takes an ORIGIN, so an agent can ask for the pane next to a named one - or next to its own - in a single instant, and the wire protocol number moves because an added ARGUMENT is silently dropped where an added answer key is not",
+      "changes_bullets": [
+        "select_pane's request grammar became a TYPE (SelectAsk: `pane` XOR `dir`+`from?`), parsed by the daemon and built by all four clients, so three wire keys are spelled once where the CLI, the MCP tool and the shared wire client each wrote their own literal.",
+        "The `dir` arm takes an ORIGIN: `from` names the pane the step is measured from, absent meaning the ACTIVE pane, which is what a keypress means and what the CLI and the keybinding still always mean.",
+        "A step that goes nowhere leaves the user on the ACTIVE pane, never on the origin, and the two nothing-happened sentences name the ORIGIN at both text surfaces because with an origin they are two different panes.",
+        "An origin the current window does not hold is REFUSED, not answered `untiled`: a pane of another window is not \"in no arrangement\", and `step` cannot tell those apart because a tree holds no leaf for either.",
+        "`WIRE_PROTOCOL` 4 -> 5, the first bump caused by an added ARGUMENT rather than an added or moved ANSWER: an old daemon ACCEPTS `from`, DROPS it, and moves the user from the wrong pane off a request that parses.",
+        "The MCP tool takes `from` (a number or a NAME) and `from_here: true` (the pane the server runs in, from its own environment, with no listing read at all); a boolean because both string and integer already mean something else on this surface.",
+        "The SHAPE PIN now covers REQUEST shapes as well as answers, because reverting the protocol bump left the whole suite green - the pin had only ever looked at what a client DESERIALISES."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 45 targets / 1956 passed (R299 left 1946: +9 the round's own tests, +1 the usage assertion the audit forced), clippy 0 with no new suppression, fmt, doc gate 0/16 (it CAUGHT four now-redundant `PaneId` links a new import created), pixel smoke 136/0.",
+        "ELEVEN revert-proofs, each shown to DISCRIMINATE: the daemon dropping the origin (fails at all three surfaces), a dead end moving the user onto the origin, the membership check removed (answers `untiled` for a pane of no window), the CLI sentence naming the landed pane, `from_here` falling back to the active pane, the client building without the key, a stray origin ignored rather than refused, the origin reading the `pane` key, a renamed request key (caught by the extended shape pin, with the bump instruction), and the usage line losing `-U` and losing `--from`.",
+        "SKEW RUN both directions against a parent-commit daemon in its own worktree, own socket, own XDG config/data/state, with an OLD-client-to-OLD-daemon move first as the live control: NEW client to OLD daemon and OLD client to NEW daemon are both refused BY NAME with both numbers and the remedy.",
+        "The defect the bump prevents was MEASURED, not argued: a raw probe sending `{dir:\"right\",from:1}` at protocol 4 to the old daemon answered `{\"pane\":1,\"changed\":true,\"outcome\":\"moved\"}` and the user's cursor MOVED, where the new daemon answers `{\"pane\":0,\"changed\":false,\"outcome\":\"at_edge\"}` for the same bytes.",
+        "Round trips PRICED with strace on connect(2), same binary, same daemon, same end state: \"put the user beside my own pane\" is 4 host round trips today (pane_layout then select_pane by number) and 2 with `from_here`. The counter MOVES with the calls (5 for three tools, 4 for two, 2 for one), which is what says it reads the code under test. `from: N` is 3 - the number or name still costs one listing, stated rather than rounded down."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The audit of the finished tree FIXED three rather than registering them: the shared wire client (`sprag-client`) was a FIFTH hand-built spelling of the request keys in the crate both frontends depend on; the CLI usage block and the module doc did not know `--from`; and NOTHING in the suite read the usage text at all, which is the `sprag bind-key` shape that was stale for eight rounds - it is now a `const` with a test that derives the four direction flags from the parser instead of copying them.",
+        "An origin cannot cross a WINDOW: `select_pane` is scoped to the session's current window and its `pane` arm already refuses another window's pane, so the origin follows the same rule. herdr's `pane.focus_direction` finds the origin's TAB and SWITCHES to it - a deliberate scope cut here, not an oversight, and the place to re-decide if a caller ever wants one verb to change two session facts.",
+        "The KEYBINDING and `HostClient::select_toward` still carry no origin, deliberately: a keypress can only mean \"from here\", and no display client has anything to say with one. The trait's debt narrows no further this round.",
+        "`from: <number>` inherits the positional hazard R295 named - the client resolves it against a listing at one instant and invokes at another - which is why `from_here` and a NAME are the two exact handles and why the tool description says so. Pre-existing on this surface, stated rather than newly registered.",
+        "The eleventh coverage residual is unchanged: `untiled` still has no live driver at either text surface for the ACTIVE-pane case, because nothing on the CLI or MCP surface floats a pane (item 14). A NAMED origin that floats now DOES have unit coverage, which is the half this round could reach.",
+        "`PaneDir::ALL` is still an array literal no compiler checks (item 25's residual, untouched)."
+      ],
+      "publishable_decision_summary": "select_pane takes an ORIGIN, so an agent can ask for the pane next to a named one - or next to its own - in a single instant, and the wire protocol number moves because an added ARGUMENT is silently dropped where an added answer key is not",
+      "publishable_changes_bullets": [
+        "select_pane's request grammar became a TYPE (SelectAsk: `pane` XOR `dir`+`from?`), parsed by the daemon and built by all four clients, so three wire keys are spelled once where the CLI, the MCP tool and the shared wire client each wrote their own literal.",
+        "The `dir` arm takes an ORIGIN: `from` names the pane the step is measured from, absent meaning the ACTIVE pane, which is what a keypress means and what the CLI and the keybinding still always mean.",
+        "A step that goes nowhere leaves the user on the ACTIVE pane, never on the origin, and the two nothing-happened sentences name the ORIGIN at both text surfaces because with an origin they are two different panes.",
+        "An origin the current window does not hold is REFUSED, not answered `untiled`: a pane of another window is not \"in no arrangement\", and `step` cannot tell those apart because a tree holds no leaf for either.",
+        "`WIRE_PROTOCOL` 4 -> 5, the first bump caused by an added ARGUMENT rather than an added or moved ANSWER: an old daemon ACCEPTS `from`, DROPS it, and moves the user from the wrong pane off a request that parses.",
+        "The MCP tool takes `from` (a number or a NAME) and `from_here: true` (the pane the server runs in, from its own environment, with no listing read at all); a boolean because both string and integer already mean something else on this surface.",
+        "The SHAPE PIN now covers REQUEST shapes as well as answers, because reverting the protocol bump left the whole suite green - the pin had only ever looked at what a client DESERIALISES."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 45 targets / 1956 passed (R299 left 1946: +9 the round's own tests, +1 the usage assertion the audit forced), clippy 0 with no new suppression, fmt, doc gate 0/16 (it CAUGHT four now-redundant `PaneId` links a new import created), pixel smoke 136/0.",
+        "ELEVEN revert-proofs, each shown to DISCRIMINATE: the daemon dropping the origin (fails at all three surfaces), a dead end moving the user onto the origin, the membership check removed (answers `untiled` for a pane of no window), the CLI sentence naming the landed pane, `from_here` falling back to the active pane, the client building without the key, a stray origin ignored rather than refused, the origin reading the `pane` key, a renamed request key (caught by the extended shape pin, with the bump instruction), and the usage line losing `-U` and losing `--from`.",
+        "SKEW RUN both directions against a parent-commit daemon in its own worktree, own socket, own XDG config/data/state, with an OLD-client-to-OLD-daemon move first as the live control: NEW client to OLD daemon and OLD client to NEW daemon are both refused BY NAME with both numbers and the remedy.",
+        "The defect the bump prevents was MEASURED, not argued: a raw probe sending `{dir:\"right\",from:1}` at protocol 4 to the old daemon answered `{\"pane\":1,\"changed\":true,\"outcome\":\"moved\"}` and the user's cursor MOVED, where the new daemon answers `{\"pane\":0,\"changed\":false,\"outcome\":\"at_edge\"}` for the same bytes.",
+        "Round trips PRICED with strace on connect(2), same binary, same daemon, same end state: \"put the user beside my own pane\" is 4 host round trips today (pane_layout then select_pane by number) and 2 with `from_here`. The counter MOVES with the calls (5 for three tools, 4 for two, 2 for one), which is what says it reads the code under test. `from: N` is 3 - the number or name still costs one listing, stated rather than rounded down."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The audit of the finished tree FIXED three rather than registering them: the shared wire client (`sprag-client`) was a FIFTH hand-built spelling of the request keys in the crate both frontends depend on; the CLI usage block and the module doc did not know `--from`; and NOTHING in the suite read the usage text at all, which is the `sprag bind-key` shape that was stale for eight rounds - it is now a `const` with a test that derives the four direction flags from the parser instead of copying them.",
+        "An origin cannot cross a WINDOW: `select_pane` is scoped to the session's current window and its `pane` arm already refuses another window's pane, so the origin follows the same rule. herdr's `pane.focus_direction` finds the origin's TAB and SWITCHES to it - a deliberate scope cut here, not an oversight, and the place to re-decide if a caller ever wants one verb to change two session facts.",
+        "The KEYBINDING and `HostClient::select_toward` still carry no origin, deliberately: a keypress can only mean \"from here\", and no display client has anything to say with one. The trait's debt narrows no further this round.",
+        "`from: <number>` inherits the positional hazard R295 named - the client resolves it against a listing at one instant and invokes at another - which is why `from_here` and a NAME are the two exact handles and why the tool description says so. Pre-existing on this surface, stated rather than newly registered.",
+        "The eleventh coverage residual is unchanged: `untiled` still has no live driver at either text surface for the ACTIVE-pane case, because nothing on the CLI or MCP surface floats a pane (item 14). A NAMED origin that floats now DOES have unit coverage, which is the half this round could reach.",
+        "`PaneDir::ALL` is still an array literal no compiler checks (item 25's residual, untouched)."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
