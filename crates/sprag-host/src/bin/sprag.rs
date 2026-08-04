@@ -2027,6 +2027,36 @@ fn unknown_slot(command: &str, path: &str, fault: &RpcFault) -> Option<io::Error
     ))
 }
 
+/// An invoke refused because this daemon has never HEARD of the action — the invoke-side twin of
+/// [`unknown_slot`], and `None` for any other fault so a caller's own disjunction still runs.
+///
+/// # Why it is worth telling apart from a refusal
+///
+/// Both arrive as `-32602 Invalid params`, so a verb that maps every fault to its own sentence
+/// tells a user their name was taken when the truth is that their daemon predates the verb. That is
+/// not hypothetical — it is what this round's skew run MEASURED, one direction at a time, against a
+/// parent-commit daemon: `sprag rename-session` said *"prod" is already another session's name*
+/// about a name no session held.
+///
+/// Captured from that live daemon rather than invented: an action it does not serve answers
+/// `{"code":-32602,"message":"Invalid params","data":"UnknownInvokePath"}`, where a genuine refusal
+/// of an action it DOES serve answers `"InvokeRejected"`. Matched on the structured `data` for
+/// [`unknown_slot`]'s reason — a substring test against a rendering is a test against a
+/// presentation decision.
+fn unknown_action(command: &str, fault: &RpcFault) -> Option<io::Error> {
+    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownInvokePath" {
+        return None;
+    }
+    Some(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "{command}: this daemon does not know this verb — it is older than this `sprag`. \
+             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
+             from the durability snapshot)",
+        ),
+    ))
+}
+
 /// Turn a refused agent invoke into a sentence about PANES — what [`report_agent`] and
 /// [`release_agent`] say instead of the raw refusal (R283).
 ///
@@ -3907,27 +3937,30 @@ fn rename_session(args: Vec<String>) -> io::Result<()> {
         ));
     }
     let mut conn = connect_scoped(session.as_deref())?;
-    conn.call(
+    match conn.try_call(
         "scene/invoke",
         scoped_invoke(
             session.as_deref(),
             mux_action_path(RENAME_SESSION_ACTION),
             json!({ "name": new }),
         ),
-    )
-    // Two causes, and the daemon knows which — `InvokeError::Rejected` carries no payload
-    // (upstream PINION-PR82), so this lists them rather than guessing. An UNKNOWN scope never
-    // reaches here: it is refused at the door as a scope error carrying its own sentence.
-    .map_err(|error| {
-        if error.kind() == io::ErrorKind::Other {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("rename-session refused: {new:?} is already another session's name"),
-            )
-        } else {
-            error
+    ) {
+        Ok(Value::Null | Value::Object(_)) | Ok(_) => {}
+        // ONE cause, said plainly — this verb is refused for exactly one reason it can state, and
+        // an UNKNOWN scope never reaches here (it is refused at the door as a scope error carrying
+        // its own sentence). The version-skew case is told APART rather than folded in: a daemon
+        // older than this verb answers a different fault, and saying "that name is taken" to
+        // somebody whose daemon simply predates the verb sends them to fix the wrong thing.
+        Err(CallError::Fault(fault)) => {
+            return Err(unknown_action("rename-session", &fault).unwrap_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("rename-session refused: {new:?} is already another session's name"),
+                )
+            }));
         }
-    })?;
+        Err(other) => return Err(other.into()),
+    }
     println!("renamed to {new}");
     Ok(())
 }
@@ -4952,6 +4985,48 @@ mod tests {
     /// The fault is the one a live daemon actually sends, captured rather than invented: R290 asked
     /// a running `sprag-term` for a path it has no slot for and read
     /// `{"code":-32602,"message":"Invalid params","data":"UnknownIntrospectPath"}` off the socket.
+    /// An action a daemon has never heard of is reported as a daemon too OLD, and a genuine
+    /// refusal of an action it DOES serve keeps the verb's own sentence.
+    ///
+    /// Both faults were CAPTURED from a parent-commit daemon during this round's skew run, not
+    /// invented: `/sprag_mux/external/rename_session` answered `UnknownInvokePath` there while
+    /// `rename_window` with a bad window answered `InvokeRejected`. Before this told them apart,
+    /// `sprag rename-session` against that daemon said the new name was already taken — about a
+    /// name no session held.
+    #[test]
+    fn an_unknown_action_is_reported_as_an_old_daemon_and_a_refusal_is_not() {
+        let fault = |data: Value| RpcFault {
+            code: -32602,
+            message: "Invalid params".to_owned(),
+            data: Some(data),
+        };
+        let error = unknown_action("rename-session", &fault(json!("UnknownInvokePath")))
+            .expect("an action this daemon lacks is explained");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "rename-session: this daemon does not know this verb — it is older than this \
+             `sprag`. Restart it to bring it to this build — `sprag kill-server` (sessions are \
+             restored from the durability snapshot)",
+        );
+
+        // THE CONTROL — the fault a daemon that HAS the verb sends when it refuses one, which
+        // must keep the verb's own disjunction. Without this the message would be right for the
+        // rare case and wrong for the common one.
+        assert!(
+            unknown_action("rename-session", &fault(json!("InvokeRejected"))).is_none(),
+            "a real refusal keeps the verb's own words",
+        );
+        assert!(
+            unknown_action(
+                "rename-session",
+                &fault(json!("a session named UnknownInvokePath")),
+            )
+            .is_none(),
+            "and a mention is not the refusal",
+        );
+    }
+
     /// The live half — that a daemon built at the PARENT commit refuses exactly this for
     /// `pane_processes.0` while answering `panes` cleanly — was proven with a worktree build and a
     /// control, and cannot be a standing test: this suite spawns the CURRENT daemon, which serves
