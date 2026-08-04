@@ -69,7 +69,8 @@
 //!                                         A name is an ADDRESS an agent can hold where a pane
 //!                                         NUMBER goes stale; unique across the daemon
 //! sprag kill-pane [-t SESSION] PANE               close a pane (tmux kill-pane)
-//! sprag resize-pane [-t SESSION] PANE -x COLS -y ROWS  resize a pane's PTY + emulator
+//! sprag resize-pane [-t SESSION] [PANE] -x COLS -y ROWS  resize a pane's PTY + emulator
+//! sprag resize-pane [-t SESSION] [PANE] -L|-R|-U|-D [N]  move the boundary beside a pane
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
 //! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
 //! sprag agent [-t SESSION] [PANE]                 what the AI agent in each pane is doing
@@ -160,11 +161,11 @@ use sprag_host::wire::{
     MOVE_PANE_ACTION, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM,
     PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
     RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
-    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
-    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
-    session_activity_at,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
+    ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
+    SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
+    WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at,
+    project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -798,7 +799,7 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20             | swap-pane [PANE] <WITH | -L|-R|-U|-D>\n\
          \x20             | split-window [-h|-v [-b] [PANE]] [-- command…]\n\
          \x20             | kill-pane [PANE]\n\
-         \x20             | resize-pane [PANE] -x COLS -y ROWS\n\
+         \x20             | resize-pane [PANE] <-x COLS -y ROWS | -L|-R|-U|-D [N]>\n\
          \x20             | zoom-pane [PANE] [-u]\n\
          \x20             | rename-pane PANE <NAME | --clear>\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
@@ -3372,24 +3373,37 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
     }
 }
 
-/// `resize-pane [-t SESSION] PANE -x COLS -y ROWS`: resize a pane's PTY and emulator — tmux
-/// `resize-pane -x -y`.
+/// `resize-pane [-t SESSION] [PANE] -x COLS -y ROWS` or `[PANE] -L|-R|-U|-D [N]`: set a pane's
+/// exact size, or move the boundary that bounds it — tmux's two `resize-pane` forms.
 ///
-/// BOTH dimensions are required, because the wire action takes both and a terminal has no notion of
-/// "the other one, unchanged" that this CLI could honestly supply: reading the pane's current size
-/// and sending it back would race any client resizing the same pane. tmux's relative forms
-/// (`-U`/`-D`/`-L`/`-R`) are absent for the same reason `split-window -h` is — they move a DIVIDER,
-/// which is layout the daemon does not model as an op.
+/// # Two forms, one verb, and never both
 ///
-/// No `cell_width`/`cell_height` is sent: those carry a display's font metric so the PTY's pixel
-/// winsize and XTWINOPS reports are truthful, and a shell has none. Omitting them leaves the pane's
-/// last-known cell geometry untouched, which is the honest answer rather than a zeroed guess.
+/// `-x -y` names a RECTANGLE and reaches the pane's PTY directly. BOTH dimensions are required,
+/// because the wire action takes both and a terminal has no notion of "the other one, unchanged"
+/// that this CLI could honestly supply: reading the pane's current size and sending it back would
+/// race any client resizing the same pane.
+///
+/// `-L`/`-R`/`-U`/`-D` names a BOUNDARY and a distance in cells, defaulting to one. It moves the
+/// division the arrangement puts between this pane and its neighbours on that axis, so the two
+/// panes' sizes change together and the window's own size does not — which is why it is a different
+/// wire action ([`RESIZE_PANE_ACTION`]) and not a flag on the first form. **The direction moves the
+/// BOUNDARY, not the pane**: `-R` takes it right, and whether the named pane grows or shrinks
+/// follows from which side of it the pane sits on, exactly as tmux behaves.
+///
+/// Giving both is refused here rather than at the daemon, because they are two different actions
+/// and only this end knows the user typed one command.
+///
+/// No `cell_width`/`cell_height` is sent by the rectangle form: those carry a display's font metric
+/// so the PTY's pixel winsize and XTWINOPS reports are truthful, and a shell has none. Omitting them
+/// leaves the pane's last-known cell geometry untouched, which is the honest answer rather than a
+/// zeroed guess.
 fn resize_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "resize-pane")?;
     let mut pane: Option<u64> = None;
     let mut cols: Option<u64> = None;
     let mut rows: Option<u64> = None;
+    let mut toward: Option<(PaneDir, Option<u16>)> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         let mut dimension = |name: &str, flag: &str| -> io::Result<u64> {
@@ -3406,14 +3420,50 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
         match arg.as_str() {
             "-x" | "--width" => cols = Some(dimension("column", "-x")?),
             "-y" | "--height" => rows = Some(dimension("row", "-y")?),
+            // The ONE flag parser, `swap-pane`'s rule: a table of this verb's own would be the
+            // third spelling of a four-word vocabulary, checked by nothing.
+            other if sprag_host::keymap::direction_of(other).is_some() => {
+                if toward.is_some() {
+                    return Err(bad("resize-pane: give only one direction".to_owned()));
+                }
+                let dir = sprag_host::keymap::direction_of(other).unwrap_or(PaneDir::Left);
+                toward = Some((dir, None));
+            }
+            // A bare number AFTER a direction is that direction's distance; before one it is the
+            // pane. Order is what tells them apart, which is the order tmux's own form has.
+            other
+                if toward.is_some_and(|(_, cells)| cells.is_none())
+                    && other.parse::<u16>().is_ok_and(|n| n > 0) =>
+            {
+                let cells = other.parse::<u16>().unwrap_or(1);
+                toward = toward.map(|(dir, _)| (dir, Some(cells)));
+            }
             _ if pane.is_none() => pane = Some(parse_pane_id(Some(arg), "resize-pane")?),
             other => return Err(bad(format!("resize-pane: unexpected argument {other:?}"))),
         }
     }
+    if let Some((dir, cells)) = toward {
+        if cols.is_some() || rows.is_some() {
+            return Err(bad(
+                "resize-pane sets an exact size (-x COLS -y ROWS) or moves a boundary \
+                 (-L|-R|-U|-D [N]), not both"
+                    .to_owned(),
+            ));
+        }
+        return resize_toward(
+            session.as_deref(),
+            ResizeAsk {
+                pane: pane.map(PaneId),
+                dir,
+                cells: cells.unwrap_or(ResizeAsk::CELLS_DEFAULT),
+            },
+        );
+    }
     // No pane id ⇒ the active one, resolved by the daemon exactly as `kill-pane`'s is.
     let (Some(cols), Some(rows)) = (cols, rows) else {
         return Err(bad(
-            "resize-pane needs both dimensions (-x COLS -y ROWS)".to_owned()
+            "resize-pane needs both dimensions (-x COLS -y ROWS) or a direction (-L|-R|-U|-D [N])"
+                .to_owned(),
         ));
     };
     let mut conn = connect_scoped(session.as_deref())?;
@@ -3456,6 +3506,88 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
         ),
     );
     Ok(())
+}
+
+/// The BOUNDARY half of `resize-pane` — see that verb for the grammar.
+///
+/// Split out rather than inlined because it is a different wire action with a different answer, and
+/// folding two request/answer pairs into one flat function is how a verb ends up with a refusal
+/// sentence that names the wrong thing.
+fn resize_toward(session: Option<&str>, ask: ResizeAsk) -> io::Result<()> {
+    let mut conn = connect_scoped(session)?;
+    let answer: Value = conn
+        .call(
+            "scene/invoke",
+            scoped_invoke(session, mux_action_path(RESIZE_PANE_ACTION), ask.to_args()),
+        )
+        // The session was pre-flighted, so a refusal is one of the two things the daemon refuses
+        // for. Which one is this end's to guess, because `InvokeError::Rejected` carries no payload
+        // (upstream PINION-PR82) — and unlike the disjunctions that class usually produces, both
+        // halves here have a remedy a reader can act on.
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::Other {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "resize-pane refused: {} in {}, or nothing is watching that window — a \
+                         cell has no length until a client reports an area or `window-size manual` \
+                         plus `sprag resize-window` pins one",
+                        ask.pane.map_or_else(
+                            || "the current window holds no panes".to_owned(),
+                            |pane| format!("there is no pane {}", pane.0)
+                        ),
+                        scope_name(session)
+                    ),
+                )
+            } else {
+                error
+            }
+        })?;
+    println!(
+        "{}",
+        resize_sentence(
+            ResizeHow::from_wire(
+                answer[sprag_host::wire::OUTCOME_KEY]
+                    .as_str()
+                    .unwrap_or_default()
+            )
+            .unwrap_or(ResizeHow::Resized),
+            ask,
+            answer["pane"].as_u64().unwrap_or_default(),
+            u16::try_from(answer["cells"].as_u64().unwrap_or_default()).unwrap_or(u16::MAX),
+        )
+    );
+    Ok(())
+}
+
+/// What the BOUNDARY form of `resize-pane` prints, as a pure function of the daemon's answer — so
+/// every one of the five outcomes is pinned by a unit test rather than only by whichever of them a
+/// live daemon can be driven into ([`swap_sentence`]'s rule, one verb over).
+///
+/// `pane` is the pane AS RESOLVED, which is what makes the sentence name a pane the caller may not
+/// have typed. `cells` is how far the boundary actually went, and the sentence says so when that is
+/// less than was asked — the fact a caller cannot recover from an outcome word, and the one this
+/// verb exists to report.
+///
+/// **The nothing-happened sentences come from [`ResizeHow::why`]**, not from a table here: four of
+/// them would otherwise be copied into whatever surface reports next, which is the shape this
+/// project keeps finding drifted.
+fn resize_sentence(how: ResizeHow, ask: ResizeAsk, pane: u64, cells: u16) -> String {
+    match how.why(ask.dir) {
+        Some(why) => format!("pane {pane} not resized: {why}"),
+        None if cells < ask.cells => format!(
+            "moved pane {pane}'s {} boundary {cells} cell{} of the {} asked for; it stopped at the \
+             last cell the far side may keep",
+            ask.dir.wire_str(),
+            if cells == 1 { "" } else { "s" },
+            ask.cells,
+        ),
+        None => format!(
+            "moved pane {pane}'s {} boundary {cells} cell{}",
+            ask.dir.wire_str(),
+            if cells == 1 { "" } else { "s" },
+        ),
+    }
 }
 
 /// `send-keys [-t SESSION] PANE [-l] [--] KEY…`: deliver keystrokes to a pane — tmux `send-keys`.
@@ -4949,6 +5081,63 @@ mod tests {
             swap_sentence(SwapHow::Swapped, toward(PaneDir::Up), 3, None),
             "swapped pane 3",
         );
+    }
+
+    /// Every one of the five resize outcomes has its own sentence, and the CLAMPED move — which is
+    /// not an outcome word at all — has a sixth.
+    ///
+    /// Pinned as a pure function for [`swap_sentence`]'s reason: a live daemon can be driven into
+    /// three of these easily and into `zoomed` and `untiled` only with a setup per case, so the
+    /// wording would otherwise be tested by whatever happened to be reachable.
+    #[test]
+    fn resize_pane_says_which_of_the_five_things_happened() {
+        let ask = |dir, cells| ResizeAsk {
+            pane: Some(PaneId(3)),
+            dir,
+            cells,
+        };
+        assert_eq!(
+            resize_sentence(ResizeHow::Resized, ask(PaneDir::Right, 5), 3, 5),
+            "moved pane 3's right boundary 5 cells",
+            "the shape a script greps",
+        );
+        assert_eq!(
+            resize_sentence(ResizeHow::Resized, ask(PaneDir::Left, 1), 3, 1),
+            "moved pane 3's left boundary 1 cell",
+            "and it counts in English",
+        );
+        assert_eq!(
+            resize_sentence(ResizeHow::Resized, ask(PaneDir::Right, 40), 3, 7),
+            "moved pane 3's right boundary 7 cells of the 40 asked for; it stopped at the last \
+             cell the far side may keep",
+            "THE FACT NO OUTCOME WORD CARRIES — it moved, and not as far as it was told to",
+        );
+        assert_eq!(
+            resize_sentence(ResizeHow::AtMinimum, ask(PaneDir::Up, 2), 3, 0),
+            "pane 3 not resized: the boundary is already as far up as it goes",
+        );
+        assert_eq!(
+            resize_sentence(ResizeHow::AtEdge, ask(PaneDir::Down, 2), 3, 0),
+            "pane 3 not resized: the pane spans the window that way, so there is no boundary to \
+             move down",
+            "a DIFFERENT fact from the minimum, with a different remedy",
+        );
+        assert_eq!(
+            resize_sentence(ResizeHow::Untiled, ask(PaneDir::Left, 1), 3, 0),
+            "pane 3 not resized: the pane is floating, so it has no boundaries to move",
+        );
+        assert_eq!(
+            resize_sentence(ResizeHow::Zoomed, ask(PaneDir::Left, 1), 3, 0),
+            "pane 3 not resized: the window is zoomed, so its arrangement is not on screen; \
+             unzoom to resize",
+        );
+        // Every word renders, so a daemon answering one this build did not expect cannot reach a
+        // formatter that panics — `swap_sentence`'s rule.
+        for how in ResizeHow::ALL {
+            for dir in PaneDir::ALL {
+                assert!(!resize_sentence(how, ask(dir, 3), 3, 1).is_empty());
+            }
+        }
     }
 
     /// The usage text names every flag `select-pane` PARSES — held against the flag constants

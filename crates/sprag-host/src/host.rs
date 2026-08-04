@@ -1971,8 +1971,19 @@ pub(crate) fn resize_pane(
         Some(pane) => pane,
         None => window.active_pane()?,
     };
-    // Before anything is measured: a zoomed window's arrangement is not what is on screen, and
-    // R285 made the zoom a PROJECTION exactly so that the arrangement is untouched by it.
+    // THE VERB'S PRECONDITION, and it comes FIRST for a reason a test found: a cell has no length
+    // in a window nobody has measured, so the request cannot be evaluated at all. Checking it after
+    // the arrangement would make the refusal depend on the LAYOUT — a one-pane window answering
+    // `at_edge` where a two-pane one refuses — which is one verb with two contracts.
+    let area = crate::window::arbitrate(
+        crate::config::window_size(),
+        &sizes,
+        window
+            .manual_size()
+            .map(|(cols, rows)| ClientSize { cols, rows }),
+    )?;
+    // Then the zoom: a zoomed window's arrangement is not what is on screen, and R285 made the
+    // zoom a PROJECTION exactly so that the arrangement is untouched by it.
     if window.zoomed().is_some() {
         return Some(Resize {
             pane,
@@ -1998,13 +2009,6 @@ pub(crate) fn resize_pane(
             });
         }
     };
-    let area = crate::window::arbitrate(
-        crate::config::window_size(),
-        &sizes,
-        window
-            .manual_size()
-            .map(|(cols, rows)| ClientSize { cols, rows }),
-    )?;
     let tree = LayoutWire::from(window.layout());
     // `Whole`, not the snapshot's projection: the zoom is already refused above, so the two agree,
     // and naming the arrangement is what says which of them a boundary is a fact of.

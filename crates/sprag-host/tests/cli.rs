@@ -2598,6 +2598,123 @@ fn drawn_layout(sock: &Path) -> String {
     rest.to_owned()
 }
 
+/// `resize-pane -L|-R|-U|-D` over the socket — **the first gesture other than a pointer drag in
+/// `sprag-gui` that has ever moved a split's share**, driven end to end against a real daemon.
+///
+/// The window is PINNED rather than reported by an attached client, which is what makes this
+/// runnable from a shell at all: a cell has no length until somebody has measured the window, so
+/// this test also pins the refusal that says so. `sprag layout` renders the share as a percentage,
+/// which is the observable — and it is the DAEMON's own reading of its own tree, not this end's.
+///
+/// Three claims, each of which a plausible wrong implementation passes only one of:
+///
+/// * a direction moves the BOUNDARY, so `-R` from the LEFT pane and `-L` from the RIGHT pane move
+///   it opposite ways. A verb that grew whichever pane asked would pass the first and fail here.
+/// * the distance is in CELLS, so the same flag over a different window moves a different
+///   percentage — the property `amount: f32` cannot have.
+/// * an outcome that is not a move says WHICH nothing happened, in its own sentence.
+#[test]
+fn the_cli_moves_the_boundary_beside_a_pane() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let (_host, sock) = spawn_host_env(&env);
+    // Nothing is watching yet: the verb refuses, and the sentence names both remedies.
+    let unmeasured = sprag(&sock, &["resize-pane", "0", "-R", "3"]);
+    assert!(!unmeasured.ok, "an unmeasured window refuses the move");
+    assert!(
+        unmeasured
+            .stderr
+            .contains("nothing is watching that window"),
+        "and says why: {:?}",
+        unmeasured.stderr,
+    );
+
+    let pinned = sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "101", "-y", "30"],
+        &env,
+    );
+    assert!(pinned.ok, "resize-window succeeded: {}", pinned.stderr);
+    let split = sprag(&sock, &["split-window", "-h", "--", "cat"]);
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+    let right = split.stdout.trim().to_owned();
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("50% left|right\n├─ pane 0\n└─ pane {right}\n"),
+        "an even share is where every division opens",
+    );
+
+    // 100 usable columns (one is the divider), so the boundary opens at 50 and ten cells right of
+    // that is 60 — a percentage this arithmetic predicts rather than one read back off the answer.
+    let grow = sprag(&sock, &["resize-pane", "0", "-R", "10"]);
+    assert!(grow.ok, "resize-pane -R succeeded: {}", grow.stderr);
+    assert_eq!(grow.stdout.trim(), "moved pane 0's right boundary 10 cells");
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("60% left|right\n├─ pane 0\n└─ pane {right}\n"),
+        "the boundary moved right, so the pane it moved away from grew",
+    );
+
+    // THE DISCRIMINATOR for "the direction moves the boundary": the same flag family from the pane
+    // on the OTHER side of it moves the share the other way, and grows the asker.
+    let from_the_right = sprag(&sock, &["resize-pane", &right, "-L", "20"]);
+    assert!(
+        from_the_right.ok,
+        "resize-pane -L succeeded: {}",
+        from_the_right.stderr,
+    );
+    assert_eq!(
+        from_the_right.stdout.trim(),
+        format!("moved pane {right}'s left boundary 20 cells"),
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("40% left|right\n├─ pane 0\n└─ pane {right}\n"),
+        "60 - 20 = 40: the RIGHT pane grew by moving the same boundary left",
+    );
+
+    // No boundary on the other axis at all — a different fact from a boundary at its limit, and a
+    // sentence of its own. It SUCCEEDS: a key at the edge of a layout must not report a failure.
+    let across = sprag(&sock, &["resize-pane", "0", "-U", "2"]);
+    assert!(across.ok, "an edge is not an error: {}", across.stderr);
+    assert_eq!(
+        across.stdout.trim(),
+        "pane 0 not resized: the pane spans the window that way, so there is no boundary to move up",
+    );
+    assert_eq!(
+        drawn_layout(&sock),
+        format!("40% left|right\n├─ pane 0\n└─ pane {right}\n"),
+        "and nothing moved",
+    );
+
+    // A distance past the wall reports how far it ACTUALLY got — the fact no outcome word carries.
+    let clamped = sprag(&sock, &["resize-pane", "0", "-L", "500"]);
+    assert!(clamped.ok, "a clamped move succeeded: {}", clamped.stderr);
+    assert_eq!(
+        clamped.stdout.trim(),
+        "moved pane 0's left boundary 39 cells of the 500 asked for; it stopped at the last cell \
+         the far side may keep",
+    );
+    let at_the_wall = sprag(&sock, &["resize-pane", "0", "-L", "1"]);
+    assert!(at_the_wall.ok, "and asking again is not an error");
+    assert_eq!(
+        at_the_wall.stdout.trim(),
+        "pane 0 not resized: the boundary is already as far left as it goes",
+    );
+
+    // The two forms are two different actions, and naming both is this end's mistake to report.
+    let both = sprag(
+        &sock,
+        &["resize-pane", "0", "-R", "2", "-x", "40", "-y", "10"],
+    );
+    assert!(!both.ok, "a size AND a direction is refused");
+    assert!(
+        both.stderr.contains("not both"),
+        "and says so: {:?}",
+        both.stderr,
+    );
+}
+
 /// `swap-pane -L|-R` over the socket — the DIRECTIONAL half of the verb, which had **no live
 /// coverage at all** until R299 touched its flag parse.
 ///
