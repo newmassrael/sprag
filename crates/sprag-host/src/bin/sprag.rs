@@ -3531,23 +3531,7 @@ fn resize_toward(session: Option<&str>, ask: ResizeAsk) -> io::Result<()> {
         // fails at the invoke. Measured against a parent-commit daemon before this arm existed:
         // the sentence below claimed *"there is no pane 0"* about a pane that was there, with the
         // window pinned, sending a reader to look for a pane rather than to restart their daemon.
-        Err(CallError::Fault(fault)) => {
-            return Err(unknown_action("resize-pane", &fault).unwrap_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "resize-pane refused: {} in {}, or nothing is watching that window — a \
-                         cell has no length until a client reports an area or `window-size manual` \
-                         plus `sprag resize-window` pins one",
-                        ask.pane.map_or_else(
-                            || "the current window holds no panes".to_owned(),
-                            |pane| format!("there is no pane {}", pane.0)
-                        ),
-                        scope_name(session)
-                    ),
-                )
-            }));
-        }
+        Err(CallError::Fault(fault)) => return Err(resize_refusal(ask, session, &fault)),
         Err(other) => return Err(other.into()),
     };
     println!(
@@ -3565,6 +3549,32 @@ fn resize_toward(session: Option<&str>, ask: ResizeAsk) -> io::Result<()> {
         )
     );
     Ok(())
+}
+
+/// What the BOUNDARY form of `resize-pane` says when the daemon refuses, as a pure function of the
+/// fault — so BOTH arms are pinned by a test rather than only the one a live daemon can be driven
+/// into.
+///
+/// A pure function rather than a closure inside [`resize_toward`] for exactly that reason: a test
+/// that called [`unknown_action`] directly would pin the mechanism and say nothing about whether
+/// this verb reaches it — the shape R291 records as *"a unit test on a method is not a test that the
+/// caller calls it"*, and the one `rename-session`'s own version of this still has.
+fn resize_refusal(ask: ResizeAsk, session: Option<&str>, fault: &RpcFault) -> io::Error {
+    unknown_action("resize-pane", fault).unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "resize-pane refused: {} in {}, or nothing is watching that window — a cell has no \
+                 length until a client reports an area or `window-size manual` plus `sprag \
+                 resize-window` pins one",
+                ask.pane.map_or_else(
+                    || "the current window holds no panes".to_owned(),
+                    |pane| format!("there is no pane {}", pane.0)
+                ),
+                scope_name(session)
+            ),
+        )
+    })
 }
 
 /// What the BOUNDARY form of `resize-pane` prints, as a pure function of the daemon's answer — so
@@ -5108,8 +5118,15 @@ mod tests {
             message: "Invalid params".to_owned(),
             data: Some(data),
         };
-        let error = unknown_action("resize-pane", &fault(json!("UnknownInvokePath")))
-            .expect("an action this daemon lacks is explained");
+        let ask = ResizeAsk {
+            pane: Some(PaneId(0)),
+            dir: PaneDir::Right,
+            cells: 5,
+        };
+        // Through the VERB's own refusal path, not through the mechanism directly: a test that
+        // called `unknown_action` here would pin that function and say nothing about whether this
+        // verb reaches it.
+        let error = resize_refusal(ask, None, &fault(json!("UnknownInvokePath")));
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert!(
             error.to_string().contains("older than this `sprag`")
@@ -5119,9 +5136,10 @@ mod tests {
         // THE CONTROL — the fault a daemon that HAS the verb sends when it refuses one, which must
         // keep this verb's own disjunction. Without it the message would be right for the rare case
         // and wrong for the common one.
+        let refused = resize_refusal(ask, None, &fault(json!("InvokeRejected"))).to_string();
         assert!(
-            unknown_action("resize-pane", &fault(json!("InvokeRejected"))).is_none(),
-            "a real refusal keeps the verb's own words",
+            refused.contains("there is no pane 0") && refused.contains("nothing is watching"),
+            "a real refusal keeps the verb's own words: {refused}",
         );
     }
 
