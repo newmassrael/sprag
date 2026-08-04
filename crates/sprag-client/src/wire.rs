@@ -105,8 +105,8 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn, HostEndpoint, ROWS_PARAM,
-    new_gui_client_id,
+    AttachAsk, CLIENT_ATTACH_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn, HostEndpoint,
+    ROWS_PARAM, new_gui_client_id,
 };
 use sprag_terminal::{
     LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
@@ -654,10 +654,27 @@ fn shake_hands(conn: &mut HostConn, client_id: &str) -> io::Result<()> {
     conn.handshake(client_id)
 }
 
-/// Declare (or switch — tmux `switch-client`) this client's ATTACHED session to the one `conn` is
-/// scoped to (`client/attach`, R-PR67), reporting whether the daemon took it. The session rides
-/// the connection's NAME scope, so no arg is needed; the daemon attributes the attach to the
-/// connection's client via its prior [`shake_hands`].
+/// What a `client/attach` did — the answer, which is the session this client is now attached to.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Landed {
+    /// Attached, to the session the daemon NAMED. For a [`Attaching::Named`] ask that is the name
+    /// asked with; for [`Attaching::LastViewed`] it is the answer, and the only way to learn it.
+    On(String),
+    /// A history ask found nowhere to go back to. Nothing moved, on either side.
+    Nowhere,
+    /// The daemon refused the attach or could not be reached. Nothing moved.
+    Refused,
+}
+
+/// Declare (or switch — tmux `switch-client`) this client's ATTACHED session (`client/attach`,
+/// R-PR67), and report where it LANDED.
+///
+/// `ask` is the target grammar ([`AttachAsk`]): absent means the session `conn` is scoped to, which
+/// is how every attach before R304 named one; [`AttachAsk::LastViewed`] asks the daemon to resolve
+/// the session this client was viewing before. The daemon answers the session's CURRENT NAME either
+/// way — so a caller reads where it went rather than assuming it, which is the only shape the
+/// history ask can have and is a better one for the named ask too (R295's rule: the recorded name,
+/// never the argument).
 ///
 /// Still BEST-EFFORT — like [`send_size`] and unlike [`shake_hands`] — but the answer is no longer
 /// discardable, and that is what the return value is for. A successful attach is what makes
@@ -665,9 +682,25 @@ fn shake_hands(conn: &mut HostConn, client_id: &str) -> io::Result<()> {
 /// scoping by NAME, which is a worse address ([`scope_to_view`]) but the only one that still works.
 /// So a daemon that refuses the attach costs a viewer count and a rename this client can follow —
 /// not a correct reading.
-fn send_attach(conn: &mut HostConn) -> bool {
-    match conn.call(CLIENT_ATTACH_METHOD, json!({})) {
-        Ok(_) => true,
+fn send_attach(conn: &mut HostConn, ask: AttachAsk) -> Landed {
+    let mut params = serde_json::Map::new();
+    ask.write_into(&mut params);
+    match conn.call(CLIENT_ATTACH_METHOD, Value::Object(params)) {
+        // A NAME is the daemon saying where this client now is. `null` is the history ask answering
+        // that there is nowhere to go back to — a state, not a failure, so it is not logged as one.
+        Ok(Value::String(session)) => Landed::On(session),
+        Ok(Value::Null) => Landed::Nowhere,
+        // A daemon that answered something else is one this client cannot follow. It is not a
+        // refusal (the request was taken) but it is not a landing either, and guessing which
+        // session it meant is the whole failure this round is about.
+        Ok(other) => {
+            tracing::debug!(
+                target: "sprag_gui::wire",
+                answer = %other,
+                "client/attach answered no session name; treating it as a refusal",
+            );
+            Landed::Refused
+        }
         Err(error) => {
             tracing::debug!(
                 target: "sprag_gui::wire",
@@ -675,32 +708,57 @@ fn send_attach(conn: &mut HostConn) -> bool {
                 "client/attach failed; viewer badge disabled and this client's reads stay \
                  name-scoped, so a rename of its session will detach it",
             );
-            false
+            Landed::Refused
         }
     }
 }
 
-/// Attach `conn`'s client to `session` and then move `conn`'s own scope OFF that name and onto the
-/// ATTACHMENT — the ONE sequence a display client's connection goes through, at boot and at every
-/// switch, so neither can drift from the other.
+/// Which session a client is asking to be moved to — the two ways it can name one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Attaching<'a> {
+    /// A session by NAME: the sidebar's row, a `-t` target, a session just created.
+    Named(&'a str),
+    /// The session this client was viewing BEFORE this one, resolved by the daemon (tmux
+    /// `switch-client -l`). The client cannot name it, and R304 measured what happens when it
+    /// tries — see [`AttachAsk::LastViewed`].
+    LastViewed {
+        /// Restrict it to a session no OTHER client is viewing (tmux `no-detached`).
+        unattached: bool,
+    },
+}
+
+/// Attach `conn`'s client where `to` says and then move `conn`'s own scope onto the ATTACHMENT —
+/// the ONE sequence a display client's connection goes through, at boot and at every switch, so
+/// neither can drift from the other. Answers where it landed.
 ///
-/// The order is the whole content: you must NAME what you attach to (an attachment is a pointer,
-/// and a pointer has to be aimed at something), and from then on the name is the wrong address to
-/// keep sending. A `rename-session` retires it — the daemon then refuses this client, which reads
-/// the refusal as "my session is gone" and leaves a session that is alive; and once a NEW session
-/// takes the freed name, the same read SUCCEEDS against a stranger's panes. Both measured at R303.
+/// The order is the whole content: you must AIM an attachment at something (a pointer has to point
+/// somewhere), and from then on the name is the wrong address to keep sending. A `rename-session`
+/// retires it — the daemon then refuses this client, which reads the refusal as "my session is
+/// gone" and leaves a session that is alive; and once a NEW session takes the freed name, the same
+/// read SUCCEEDS against a stranger's panes. Both measured at R303.
 ///
-/// Returns whether the connection ended up on the attached scope. `false` means the attach was
-/// refused and `conn` is left NAME-scoped, deliberately: that is what this client did before the
-/// attached scope existed, so a daemon that cannot attach degrades to the old behaviour rather
-/// than to no behaviour.
-fn attach_and_follow(conn: &mut HostConn, session: &str) -> bool {
-    conn.scope_to(session);
-    let attached = send_attach(conn);
-    if attached {
+/// [`Attaching::Named`] scopes `conn` to the name first, because a named attach IS the scope's:
+/// the daemon takes the connection's scope as the target when nothing else names one.
+/// [`Attaching::LastViewed`] names its own target, so it needs no scope of its own and never
+/// re-points one — a client asking to go back must not have to say where it currently is.
+///
+/// [`Landed::Refused`] leaves `conn` NAME-scoped on the named arm, deliberately: that is what this
+/// client did before the attached scope existed, so a daemon that cannot attach degrades to the old
+/// behaviour rather than to no behaviour.
+fn attach_and_follow(conn: &mut HostConn, to: Attaching<'_>) -> Landed {
+    let landed = match to {
+        Attaching::Named(session) => {
+            conn.scope_to(session);
+            send_attach(conn, AttachAsk::Scoped)
+        }
+        Attaching::LastViewed { unattached } => {
+            send_attach(conn, AttachAsk::LastViewed { unattached })
+        }
+    };
+    if matches!(landed, Landed::On(_)) {
         conn.scope_to_attached();
     }
-    attached
+    landed
 }
 
 /// Scope `conn` the way this client's OTHER connections are scoped — to the attachment when this
@@ -788,92 +846,43 @@ fn parse_detach_on_destroy(value: &str) -> DetachOnDestroy {
     }
 }
 
-/// The session this client should SWITCH to when its own attached session `killed` is destroyed
-/// under `policy`, or `None` to DETACH instead — the tmux `detach-on-destroy off`/`next`/`previous`
-/// target. `None` whenever the policy is [`Detach`](DetachOnDestroy::Detach), or `killed` is the
-/// only session (nothing to move to), or `killed` is not in `list` (already gone, so no neighbour to
-/// anchor on — a detach is the honest answer).
+/// Where a client goes when its own attached session is destroyed — the resolved tmux
+/// `detach-on-destroy` decision, as far as the CLIENT can resolve it.
 ///
-/// `off` walks `mru` — this client's visit history, most-recent-first ([`push_mru`]) — for the
-/// most-recent OTHER session still present in `list`; that is tmux's "switch to the last session"
-/// intent. Because sprag's history is CLIENT-LOCAL (not tmux's global last-activity), a client that
-/// only ever saw `killed` has no MRU other, so `off` FALLS BACK to the `next` list neighbour rather
-/// than detach — "off" means "don't leave if there is somewhere to go", so it detaches only when
-/// `killed` is truly the last session. `next`/`previous` ignore `mru`.
-///
-/// The neighbour (for `next`/`previous`, and `off`'s fallback) is by LIST ORDER — the order the
-/// sidebar draws it (session creation order, a stable `Vec`), so `next` moves to the row visually
-/// below and `previous` above, WRAPPING at the ends. tmux orders by session NAME (it has no visible
-/// list); sprag has a sidebar, so its visible order is the more intuitive, honest analog. `killed` is
-/// present in `list` when this runs (the successor is picked BEFORE the kill removes it), and with
-/// `len >= 2` the ±1 wrap can never land back on it — so the returned name is always a DIFFERENT,
-/// live session.
-/// The MOST-RECENT session in `mru` (this client's visit history, most-recent-first) that is NOT
-/// `current` and is still present in `list`, or `None` — the tmux "last session" target
-/// (`switch-client -l`) AND the preference a [`DetachOnDestroy::Off`] switch walks. Skips a `mru`
-/// entry that has since died (not in `list`); `None` when the client has visited no other surviving
-/// session (a fresh client that never switched, or all its prior sessions are gone).
-fn mru_live_other(mru: &[String], list: &[SessionInfo], current: &str) -> Option<String> {
-    mru.iter()
-        .find(|name| name.as_str() != current && list.iter().any(|session| session.name == **name))
-        .map(|name| name.to_string())
+/// [`LastViewed`](Self::LastViewed) is why this is a type rather than an `Option<String>`: the two
+/// MRU-preferring policies ask a question only the daemon can answer, so the answer is a PLAN
+/// (ask, and here is what to do if the answer is "nowhere") rather than a name.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Successor {
+    /// LEAVE. tmux `detach-on-destroy on`, or a switch policy with nowhere to go.
+    Detach,
+    /// Attach to this session by NAME — the `next`/`previous` list neighbour.
+    Named(String),
+    /// Ask the daemon for the session this client was viewing before ([`AttachAsk::LastViewed`]),
+    /// and fall back to `fallback` (or DETACH, when it is `None`) if it answers that there is none.
+    ///
+    /// The pick itself is deliberately NOT made here. A client that walked its own remembered names
+    /// for it is exactly R304's defect: after a rename the entry resolves to nothing and the visit
+    /// is lost, and once a new session takes the freed name it resolves to a STRANGER — so a
+    /// destroyed session would dump its client onto somebody else's work.
+    LastViewed {
+        /// Restrict the answer to a session no OTHER client is viewing (tmux `no-detached`).
+        unattached: bool,
+        /// Where to go when the client has viewed nothing else that survives.
+        fallback: Option<String>,
+    },
 }
 
-/// The session tmux `no-detached` switches to when `killed` is destroyed: the most-recent OTHER
-/// session that NO OTHER client is attached to ([`SessionInfo::attached`] `== 0`), or the first such
-/// session in list order when this client's `mru` history offers none, or `None` to DETACH when
-/// every other session is occupied by another client (or `killed` is the last session). The
-/// `attached == 0` filter is the whole difference from [`DetachOnDestroy::Off`]: `off` switches to
-/// any surviving session, `no-detached` refuses one another client is already viewing and leaves
-/// instead — so a destroyed shared workspace never dumps its client onto a colleague's session. The
-/// switching client is attached to `killed`, never to a candidate (one client, one session), so a
-/// candidate's non-zero count is always ANOTHER client — the count needs no self-exclusion here.
+/// The `list` neighbour `step` places from `killed` (wrapping), or `None` when there is no
+/// neighbour to name: `killed` is the only session, or it is not in `list` at all (already gone, so
+/// nothing to anchor on — a detach is the honest answer).
 ///
-/// The counts are as fresh as this client's last sessions poll (the [`SessionsMirror`] the poll
-/// refreshes on each attach/detach revision bump); a client that joined an otherwise-free candidate
-/// in the beat between that poll and this destroy is not yet reflected, so two clients could
-/// MOMENTARILY share — a bounded staleness the daemon's next poll corrects, not a lasting split.
-fn no_detached_successor(list: &[SessionInfo], killed: &str, mru: &[String]) -> Option<String> {
-    let is_free_other = |name: &str| -> bool {
-        name != killed
-            && list
-                .iter()
-                .any(|session| session.name == name && session.attached == 0)
-    };
-    // MRU-preferred (tmux picks the newest DETACHED session; sprag's client-local analog is visit
-    // recency), skipping any visited session another client has since joined.
-    if let Some(name) = mru.iter().find(|visited| is_free_other(visited.as_str())) {
-        return Some(name.clone());
-    }
-    // No visited session qualifies — the first UNATTACHED other session in list (creation) order.
-    list.iter()
-        .find(|session| session.name != killed && session.attached == 0)
-        .map(|session| session.name.clone())
-}
-
-fn destroy_successor(
-    policy: DetachOnDestroy,
-    list: &[SessionInfo],
-    killed: &str,
-    mru: &[String],
-) -> Option<String> {
-    let step: isize = match policy {
-        DetachOnDestroy::Detach => return None,
-        DetachOnDestroy::Off => {
-            // MRU-preferred: the most-recent OTHER visited session still live.
-            if let Some(last) = mru_live_other(mru, list, killed) {
-                return Some(last);
-            }
-            // No visited session survives — fall back to the `next` list neighbour, so `off` still
-            // SWITCHES whenever another session exists (detaching only when `killed` is the last).
-            1
-        }
-        // `no-detached` never falls through to a blind list neighbour (which could be occupied) — it
-        // picks only an UNATTACHED session or detaches, fully resolved by its own helper.
-        DetachOnDestroy::NoDetached => return no_detached_successor(list, killed, mru),
-        DetachOnDestroy::Next => 1,
-        DetachOnDestroy::Previous => -1,
-    };
+/// The order is the SIDEBAR's — the registry's own creation order, a stable `Vec` — so `next` moves
+/// to the row visually below and `previous` above. tmux orders by session NAME because it has no
+/// visible list; sprag has one, so its visible order is the more intuitive, honest analog. With
+/// `len >= 2` the ±1 wrap can never land back on `killed`, so the name returned is always a
+/// DIFFERENT, live session.
+fn list_neighbour(list: &[SessionInfo], killed: &str, step: isize) -> Option<String> {
     if list.len() < 2 {
         return None; // only `killed` (or empty): nothing to switch to.
     }
@@ -883,14 +892,47 @@ fn destroy_successor(
     Some(list[neighbour].name.clone())
 }
 
-/// Record `name` as the MOST-RECENTLY-used session in `stack` (most-recent-first, deduplicated):
-/// drop any existing entry, then push to the front. The client-local visit history a
-/// [`DetachOnDestroy::Off`] switch walks ([`destroy_successor`]) to pick the most-recent OTHER live
-/// session — and the natural home for a future "switch to the last session" hotkey (tmux
-/// `switch-client -l`). Bounded by the session count (the dedup keeps at most one entry per session).
-fn push_mru(stack: &mut Vec<String>, name: &str) {
-    stack.retain(|visited| visited != name);
-    stack.insert(0, name.to_owned());
+/// The first session in list order that is NOT `killed` and that no client is viewing
+/// ([`SessionInfo::attached`] `== 0`) — tmux `no-detached`'s fallback when this client has viewed
+/// nothing else that survives, and `None` when every other session is occupied (which is a DETACH:
+/// `no-detached` leaves rather than pile a second client onto a colleague's session).
+///
+/// The counts are as fresh as this client's last sessions poll, so a client that joined an
+/// otherwise-free candidate in the beat between that poll and this destroy is not yet reflected —
+/// a bounded staleness the daemon's next poll corrects. The MRU-preferred half of this policy does
+/// NOT have that limit: it is answered inside the daemon, off the attachment map itself.
+fn first_free_other(list: &[SessionInfo], killed: &str) -> Option<String> {
+    list.iter()
+        .find(|session| session.name != killed && session.attached == 0)
+        .map(|session| session.name.clone())
+}
+
+/// What this client should do when its own attached session `killed` is destroyed under `policy` —
+/// the tmux `detach-on-destroy` decision, resolved against the session list the user can see.
+///
+/// `off` and `no-detached` prefer the session this client was viewing before, which the DAEMON
+/// resolves (see [`Successor::LastViewed`]); this names what to do when there is no such session.
+/// `off` falls back to the `next` list neighbour rather than detaching — "off" means "don't leave
+/// if there is somewhere to go", so it detaches only when `killed` is truly the last session —
+/// while `no-detached` falls back only to an UNOCCUPIED session, and leaves rather than share one.
+fn destroy_successor(policy: DetachOnDestroy, list: &[SessionInfo], killed: &str) -> Successor {
+    match policy {
+        DetachOnDestroy::Detach => Successor::Detach,
+        DetachOnDestroy::Off => Successor::LastViewed {
+            unattached: false,
+            fallback: list_neighbour(list, killed, 1),
+        },
+        DetachOnDestroy::NoDetached => Successor::LastViewed {
+            unattached: true,
+            fallback: first_free_other(list, killed),
+        },
+        DetachOnDestroy::Next => {
+            list_neighbour(list, killed, 1).map_or(Successor::Detach, Successor::Named)
+        }
+        DetachOnDestroy::Previous => {
+            list_neighbour(list, killed, -1).map_or(Successor::Detach, Successor::Named)
+        }
+    }
 }
 
 /// The GUI's wire client of a `sprag-term` host. See the module docs.
@@ -962,12 +1004,6 @@ pub struct WireHost {
     /// a stale flag to fire a spurious second switch. Never set under the `Detach` policy — that path
     /// stays the poll thread's own immediate detach, unchanged.
     lost_session: Arc<AtomicBool>,
-    /// This client's session VISIT history, most-recent-first + deduplicated ([`push_mru`]) — the MRU
-    /// stack a [`DetachOnDestroy::Off`] switch walks ([`destroy_successor`]) for the most-recent OTHER
-    /// live session. Seeded with the boot session and pushed on every
-    /// [`attach_in_place`](WireHost::attach_in_place). `RefCell` because `WireHost` is UI-thread-only,
-    /// like [`session`](Self::session).
-    mru: RefCell<Vec<String>>,
     /// The repaint sink, kept as a reusable `Arc` so a session switch can hand a FRESH poll thread
     /// the same `on_change` (a `Box<dyn Fn>` could only be moved into the first thread). Send+Sync
     /// because the underlying [`RepaintSink`](pinion_core::RepaintSink) is, so it is shared across
@@ -1516,7 +1552,10 @@ impl WireHost {
         // R303: and it is what every read after it is scoped BY. `attach_and_follow` names the
         // session to attach and then drops the name — this client asks for "the session I am
         // viewing" from here on, so a rename of it moves this client with it instead of refusing it.
-        let attached = attach_and_follow(&mut conn, &session);
+        let attached = matches!(
+            attach_and_follow(&mut conn, Attaching::Named(&session)),
+            Landed::On(_),
+        );
         let seeds = boot_panes(&mut conn, spec.argv, cols, rows, spec.panes, created)?;
 
         // Subscribe-then-snapshot: read the change-notification baseline BEFORE the
@@ -1570,7 +1609,6 @@ impl WireHost {
             endpoint: endpoint.clone(),
             boot_dims: (cols, rows),
             lost_session: Arc::new(AtomicBool::new(false)),
-            mru: RefCell::new(vec![session.clone()]),
             on_change,
             quit,
             poll: RefCell::new(None),
@@ -1686,10 +1724,20 @@ impl WireHost {
     /// end state is coherent on either path. (So: reads-then-commit, not a strict all-or-nothing
     /// transaction — the recovery is what makes a post-commit failure safe.)
     ///
+    /// # The history ask, and why `Ok(None)` is not a failure
+    ///
+    /// [`Attaching::LastViewed`] asks the daemon to resolve the target, and "there is nowhere to go
+    /// back to" is one of its answers. It arrives at the ATTACH — the first thing this does, before
+    /// any read and long before any commit — so it returns `Ok(None)` with every mirror exactly as
+    /// it was, which is the same guarantee the reads-then-commit ordering already gives a failed
+    /// read. The caller has stopped the poll thread by then and must restart it (by re-attaching to
+    /// where it was), which is what [`switch_session`](HostClient::switch_session)'s own recovery
+    /// path already does.
+    ///
     /// # Errors
     /// Any read / connect against the target failing — the session is gone or the daemon will not
     /// give a poll connection — or, rarely, the poll thread failing to spawn after the commit.
-    fn attach_in_place(&self, session: &str) -> io::Result<()> {
+    fn attach_in_place(&self, to: Attaching<'_>) -> io::Result<Option<String>> {
         // Re-scope the request conn and gather the FULL view + poll baseline over it, all inside one
         // borrow and BEFORE mutating any mirror (so a failed read is a clean abort). Order mirrors
         // boot: revision baseline first (subscribe-then-snapshot), then the frames, then windows /
@@ -1705,6 +1753,7 @@ impl WireHost {
             activity,
             since0,
             attached,
+            session,
         ) = {
             let mut conn = self.conn.borrow_mut();
             // R-PR67: re-attach this client to the session it just switched to (tmux
@@ -1717,7 +1766,20 @@ impl WireHost {
             // exactly as a booted-into one — every read below is already on the attachment. A switch
             // that left this connection name-scoped would be a client that follows a rename until
             // the user switches sessions and then quietly stops.
-            let attached = attach_and_follow(&mut conn, session);
+            let (session, attached) = match attach_and_follow(&mut conn, to) {
+                // The daemon named where this client now is, and `conn` is on the attachment.
+                Landed::On(session) => (session, true),
+                // It says this client has viewed nothing else that survives. Nothing has been read
+                // and nothing written, so this is a clean, complete answer.
+                Landed::Nowhere => return Ok(None),
+                // Refused: a NAMED target carries on name-scoped (the pre-R303 degradation, where
+                // this client's reads work and a rename of its session detaches it); a history
+                // target has nothing to carry on with, because the refusal WAS its answer.
+                Landed::Refused => match to {
+                    Attaching::Named(session) => (session.to_owned(), false),
+                    Attaching::LastViewed { .. } => return Ok(None),
+                },
+            };
             let since0 = read_revision(&mut conn)?;
             let seeds = query_panes(&mut conn)?;
             let fetched = fetch_frames(&mut conn, &pane_ids_of(&seeds));
@@ -1742,6 +1804,7 @@ impl WireHost {
                 activity,
                 since0,
                 attached,
+                session,
             )
         };
         // A fresh poll connection scoped to the target (its own host handler thread) — connected
@@ -1753,7 +1816,7 @@ impl WireHost {
         // taught out of ([`HostEndpoint::context`](sprag_rpc::HostEndpoint::context)).
         let mut poll_conn = HostConn::connect(self.endpoint.path(), CONNECT_TIMEOUT)
             .map_err(|error| self.endpoint.context(&error))?;
-        scope_to_view(&mut poll_conn, session, attached);
+        scope_to_view(&mut poll_conn, &session, attached);
         // The fresh poll conn is a new connection of the SAME client (the old one was torn down by
         // the switch): re-announce the shared id so the daemon keeps grouping both under one client.
         shake_hands(&mut poll_conn, &self.client_id)?;
@@ -1773,17 +1836,72 @@ impl WireHost {
         if let Some(reading) = activity {
             store_activity(&self.activity, reading);
         }
-        store_session(&self.session, session.to_owned());
-        // Record the just-attached session as most-recently-used, for a `detach-on-destroy off`
-        // switch to walk (the current session lands at the MRU front, its predecessor next).
-        push_mru(&mut self.mru.borrow_mut(), session);
+        // The name the DAEMON answered, never the one we asked with. It is a label from here on
+        // (the scope is the attachment), and the poll thread refreshes it from `SESSION_SLOT` — set
+        // eagerly here only so the first paint after a switch is already right. The VISIT itself is
+        // recorded by the daemon, at the attach, keyed by the session's identity: a client that
+        // remembered names for that is R304's defect.
+        store_session(&self.session, session.clone());
         // A successful attach RESOLVES any "lost session" the poll flagged (the caller joined that
         // poll before this commit, so its flag is now settled): clear it, so a manual switch that
         // pre-empted the reconcile cannot leave a stale flag to fire a spurious second switch.
         self.lost_session.store(false, Ordering::Release);
         self.spawn_poll_for(poll_conn, since0)?;
         (self.on_change)(); // repaint the just-attached session at once, no poll-wake lag
-        Ok(())
+        Ok(Some(session))
+    }
+
+    /// Carry out a [`Successor`] — the ONE place a destroy decision becomes a switch, shared by the
+    /// own-kill and out-of-band triggers so the two can never perform the same plan differently.
+    ///
+    /// The poll thread has already been stopped by the caller, and every path here either starts a
+    /// fresh one (through [`attach_in_place`](Self::attach_in_place)) or quits.
+    ///
+    /// [`Successor::LastViewed`] is asked of the DAEMON, after the kill: it resolves by identity, so
+    /// the session that just died cannot be its answer (a dead id resolves to nothing) and neither
+    /// can an impostor of that name. `Ok(None)` — nowhere to go back to — takes the fallback the
+    /// policy named, which is what makes `off` "don't leave if there is somewhere to go".
+    fn follow(&self, successor: Successor) {
+        match successor {
+            Successor::Detach => self.quit.request_quit(),
+            Successor::Named(next) => self.switch_session(&next),
+            Successor::LastViewed {
+                unattached,
+                fallback,
+            } => match self.attach_in_place(Attaching::LastViewed { unattached }) {
+                Ok(Some(_)) => {}
+                Ok(None) => match fallback {
+                    Some(next) => self.switch_session(&next),
+                    None => self.quit.request_quit(),
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        target: "sprag_gui::wire",
+                        %error,
+                        "could not go back to the last session; taking the fallback",
+                    );
+                    match fallback {
+                        Some(next) => self.switch_session(&next),
+                        None => self.quit.request_quit(),
+                    }
+                }
+            },
+        }
+    }
+
+    /// Re-attach to `session` after a switch failed, and DETACH if even that will not work — the
+    /// recovery both [`switch_session`](HostClient::switch_session) and
+    /// [`switch_to_last_session`](HostClient::switch_to_last_session) need, and the reason a failed
+    /// switch never leaves a client with a stopped poll thread.
+    fn fall_back_to(&self, session: &str) {
+        if let Err(error) = self.attach_in_place(Attaching::Named(session)) {
+            tracing::error!(
+                target: "sprag_gui::wire",
+                %error,
+                "could not re-attach to the previous session either; detaching",
+            );
+            self.quit.request_quit();
+        }
     }
 
     /// Send an arrangement write and adopt the host's canonical answer — the ONE place this
@@ -2381,21 +2499,14 @@ impl HostClient for WireHost {
         if let Some(mut poll) = running {
             poll.stop();
         }
-        if let Err(error) = self.attach_in_place(name) {
+        if let Err(error) = self.attach_in_place(Attaching::Named(name)) {
             tracing::warn!(
                 target: "sprag_gui::wire",
                 session = name,
                 %error,
                 "session switch failed; staying on the previous session",
             );
-            if let Err(error) = self.attach_in_place(&previous) {
-                tracing::error!(
-                    target: "sprag_gui::wire",
-                    %error,
-                    "could not re-attach to the previous session either; detaching",
-                );
-                self.quit.request_quit();
-            }
+            self.fall_back_to(&previous);
         }
     }
 
@@ -2455,17 +2566,13 @@ impl HostClient for WireHost {
         // `name` from the list, so `next`/`previous` resolve against the list the user sees. `None`
         // means detach (the `on` default, or `name` is the last session). A kill of ANOTHER session
         // never switches this client.
-        let successor = is_own
-            .then(|| {
-                destroy_successor(
-                    detach_on_destroy(),
-                    &self.sessions(),
-                    name,
-                    &self.mru.borrow(),
-                )
-            })
-            .flatten();
-        if let Some(next) = successor {
+        let successor = if is_own {
+            destroy_successor(detach_on_destroy(), &self.sessions(), name)
+        } else {
+            // A kill of ANOTHER session never switches this client.
+            Successor::Detach
+        };
+        if is_own && successor != Successor::Detach {
             // switch-to-next. STOP the poll thread BEFORE the kill so the own-kill switch is
             // DETERMINISTIC and self-contained. Killing `name` bumps the scene revision, waking the
             // poll (still scoped to the dying session) into a re-query the host now REFUSES; under a
@@ -2474,15 +2581,15 @@ impl HostClient for WireHost {
             // RACE the switch we are about to do (a flag `attach_in_place` would have to clear again).
             // Joining the poll first means no flag is ever raised for our OWN kill, and no wasted
             // re-query/repaint on the dead scope. With the poll gone, kill, then switch:
-            // [`switch_session`] attaches to `next` and, if that fails (the successor died in the
-            // gap), falls back to the now-dead `name` and so detaches — the correct end state when
-            // there is nothing left to serve.
+            // [`switch_session`] attaches to the successor and, if that fails (it died in the gap),
+            // falls back to the now-dead `name` and so detaches — the correct end state when there
+            // is nothing left to serve.
             let running = self.poll.borrow_mut().take();
             if let Some(mut poll) = running {
                 poll.stop();
             }
             let _ = self.request("scene/invoke", params, "kill_session");
-            self.switch_session(&next);
+            self.follow(successor);
             return;
         }
         let _ = self.request("scene/invoke", params, "kill_session");
@@ -2517,30 +2624,46 @@ impl HostClient for WireHost {
     fn reconcile_lost_session(&self) {
         if self.lost_session.swap(false, Ordering::AcqRel) {
             let me = lock_session(&self.session).clone();
-            let successor = destroy_successor(
+            self.follow(destroy_successor(
                 detach_on_destroy(),
                 &self.sessions(),
                 &me,
-                &self.mru.borrow(),
-            );
-            match successor {
-                Some(next) => self.switch_session(&next),
-                None => self.quit.request_quit(),
-            }
+            ));
         }
     }
 
-    /// Switch to the LAST session — the most-recent OTHER session this client visited that is still
-    /// live (tmux `switch-client -l`), walking the MRU stack (`mru_live_other`). A no-op when the
-    /// client has visited no other surviving session (a fresh client that never switched, or all its
-    /// prior sessions are gone) — matching tmux, which also no-ops with no last session.
+    /// Switch to the LAST session — the session this client was viewing before this one, if it is
+    /// still there (tmux `switch-client -l`). A no-op when there is none (a fresh client that never
+    /// switched, or everything else it visited is gone) — matching tmux, which also no-ops.
+    ///
+    /// The pick is the DAEMON's, resolved by session identity, and this client keeps no history of
+    /// its own. It used to: a `Vec<String>` of names maintained by nothing, which R304 measured
+    /// walking straight into a stranger's session — the visited session had been renamed and a new
+    /// one had taken its name, so "take me back where I was" attached this client to a session it
+    /// had never seen, on the connection it types down.
+    ///
+    /// The poll thread is stopped FIRST, as for any switch, so nothing refreshes a mirror out from
+    /// under the swap; the cost of that is that a gesture with nowhere to go pays a re-attach to
+    /// where it already was, which is the same recovery a failed switch takes.
     fn switch_to_last_session(&self) {
-        let current = lock_session(&self.session).clone();
-        // Resolve into a local so the `mru` borrow is released before `switch_session` (which
-        // re-borrows `mru` mutably via `attach_in_place`'s `push_mru`).
-        let last = mru_live_other(&self.mru.borrow(), &self.sessions(), &current);
-        if let Some(last) = last {
-            self.switch_session(&last);
+        let previous = lock_session(&self.session).clone();
+        let running = self.poll.borrow_mut().take();
+        if let Some(mut poll) = running {
+            poll.stop();
+        }
+        match self.attach_in_place(Attaching::LastViewed { unattached: false }) {
+            Ok(Some(_)) => {}
+            // Nowhere to go back to, or the switch failed: either way this client stays where it
+            // was — and its poll thread has to be restarted, which re-attaching does.
+            Ok(None) => self.fall_back_to(&previous),
+            Err(error) => {
+                tracing::warn!(
+                    target: "sprag_gui::wire",
+                    %error,
+                    "could not switch to the last session; staying put",
+                );
+                self.fall_back_to(&previous);
+            }
         }
     }
 
@@ -4142,90 +4265,80 @@ mod tests {
         }
     }
 
-    /// The `next`/`previous` target is the LIST NEIGHBOUR (wrapping), or `None` (detach) for the
-    /// detach policy, the last remaining session, or a name already gone from the list. `mru` is
-    /// ignored by these policies (passed empty). REVERT-PROOF: a step of 0 or a missing wrap breaks
-    /// the neighbour/wrap rows; returning `Some` for the `Detach`, single-session, or absent-name
-    /// cases fails a `None` assertion — each of which would turn a safe detach into a wrong switch.
+    /// The `next`/`previous` target is the LIST NEIGHBOUR (wrapping), or a DETACH for the detach
+    /// policy, the last remaining session, or a name already gone from the list. REVERT-PROOF: a
+    /// step of 0 or a missing wrap breaks the neighbour/wrap rows; returning a `Named` for the
+    /// `Detach`, single-session, or absent-name cases fails a `Detach` assertion — each of which
+    /// would turn a safe detach into a wrong switch.
     #[test]
     fn destroy_successor_next_previous_is_the_wrapping_list_neighbour_or_a_detach() {
         let list = session_list(&["a", "b", "c"]);
+        let named = |name: &str| Successor::Named(name.to_owned());
         // Detach policy never switches.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Detach, &list, "b", &[]),
-            None
+            destroy_successor(DetachOnDestroy::Detach, &list, "b"),
+            Successor::Detach,
         );
         // Next: the row below, wrapping the last back to the first.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "a", &[]).as_deref(),
-            Some("b"),
+            destroy_successor(DetachOnDestroy::Next, &list, "a"),
+            named("b"),
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "c", &[]).as_deref(),
-            Some("a"),
+            destroy_successor(DetachOnDestroy::Next, &list, "c"),
+            named("a"),
         );
         // Previous: the row above, wrapping the first back to the last.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &list, "a", &[]).as_deref(),
-            Some("c"),
+            destroy_successor(DetachOnDestroy::Previous, &list, "a"),
+            named("c"),
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &list, "b", &[]).as_deref(),
-            Some("a"),
+            destroy_successor(DetachOnDestroy::Previous, &list, "b"),
+            named("a"),
         );
         // Nothing to switch to → detach: the last session, or a name already off the list.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &session_list(&["only"]), "only", &[]),
-            None,
+            destroy_successor(DetachOnDestroy::Next, &session_list(&["only"]), "only"),
+            Successor::Detach,
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "gone", &[]),
-            None
+            destroy_successor(DetachOnDestroy::Next, &list, "gone"),
+            Successor::Detach,
         );
     }
 
-    /// `off` prefers the MOST-RECENT OTHER visited session that is still live, then FALLS BACK to the
-    /// `next` list neighbour when none survives (so it still switches rather than detaching whenever
-    /// another session exists), then detaches only when `killed` is the last session. REVERT-PROOF:
-    /// remove the MRU walk and the first two rows drop to the list neighbour (b, not the MRU pick);
-    /// remove the `1` fallback (e.g. return None) and the "never visited another" row wrongly
-    /// detaches; keep the `len < 2` guard and the last-session row stays a detach.
+    /// `off` asks the DAEMON for the session this client was viewing before, and names the `next`
+    /// list neighbour as the fallback — so it still switches whenever another session exists, and
+    /// detaches only when `killed` is truly the last one.
+    ///
+    /// The PICK itself is not tested here and cannot be: it is resolved by session identity inside
+    /// the daemon (`AttachmentRegistry::last_viewed`, and end to end in `sprag-host`'s
+    /// `a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore`). That is the whole
+    /// change: this used to walk a `Vec<String>` of remembered names, which is what a re-issued name
+    /// captured. What is left here is the FALLBACK, which is a fact about the visible list.
+    ///
+    /// REVERT-PROOF: drop the `LastViewed` arm to a plain neighbour and the first row's ask is gone;
+    /// drop the `1` step and the fallback is no longer the row below; drop the `len < 2` guard and
+    /// the last-session row offers a fallback that cannot exist.
     #[test]
-    fn destroy_successor_off_prefers_the_mru_then_falls_back_to_the_neighbour() {
+    fn destroy_successor_off_asks_for_the_last_viewed_session_with_the_neighbour_as_fallback() {
         let list = session_list(&["a", "b", "c"]);
-        let mru = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
-        // MRU front is the current (killed) session; the next entry is the most-recent OTHER — pick
-        // it even though the LIST neighbour of "a" would be "b".
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Off, &list, "a", &mru(&["a", "c", "b"])).as_deref(),
-            Some("c"),
-            "off takes the most-recent other, not the list neighbour",
+            destroy_successor(DetachOnDestroy::Off, &list, "a"),
+            Successor::LastViewed {
+                unattached: false,
+                fallback: Some("b".to_owned()),
+            },
+            "off goes back where it was, and falls back to the list neighbour",
         );
-        // The most-recent other ("c") is dead (not in the list) → skip it, take the next live MRU
-        // entry ("b").
-        let live = session_list(&["a", "b"]);
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Off, &live, "a", &mru(&["a", "c", "b"])).as_deref(),
-            Some("b"),
-            "a dead MRU entry is skipped",
-        );
-        // Never visited another session (MRU holds only the killed one), but others exist → FALL
-        // BACK to the list neighbour rather than detach.
-        assert_eq!(
-            destroy_successor(DetachOnDestroy::Off, &list, "a", &mru(&["a"])).as_deref(),
-            Some("b"),
-            "off falls back to the neighbour when no visited session survives",
-        );
-        // Truly the last session → detach even under off.
-        assert_eq!(
-            destroy_successor(
-                DetachOnDestroy::Off,
-                &session_list(&["only"]),
-                "only",
-                &mru(&["only"])
-            ),
-            None,
-            "off detaches only when there is no other session",
+            destroy_successor(DetachOnDestroy::Off, &session_list(&["only"]), "only"),
+            Successor::LastViewed {
+                unattached: false,
+                fallback: None,
+            },
+            "with no other session there is no fallback, so `off` detaches after asking",
         );
     }
 
@@ -4244,132 +4357,61 @@ mod tests {
             .collect()
     }
 
-    /// `no-detached` switches ONLY to a session no other client is on (`attached == 0`),
-    /// MRU-preferred, and DETACHES rather than pile onto an occupied one — the whole point that
-    /// distinguishes it from `off`. REVERT-PROOF: drop the `attached == 0` filter and it degrades to
-    /// `off` (the all-watched row switches to "b" instead of detaching, and the occupied "b" is no
-    /// longer skipped); drop the MRU preference and the two-free row takes the list-order "b" not the
-    /// most-recent "c"; drop the list-order fallback and the empty-MRU row wrongly detaches. The
-    /// paired `off` assertions in the SAME worlds pin that only `no-detached` consults the count.
+    /// `no-detached` switches ONLY to a session no other client is on (`attached == 0`) — it asks
+    /// for the last viewed one NARROWED that way, and falls back to the first free session in list
+    /// order, detaching rather than pile onto an occupied one. That last part is the whole point
+    /// that distinguishes it from `off`, and it is pinned here by the paired `off` assertion in the
+    /// SAME world.
+    ///
+    /// REVERT-PROOF: drop the `unattached` flag and the ask degrades to `off`'s; drop the
+    /// `attached == 0` filter from the fallback and the all-watched row offers an occupied session
+    /// instead of detaching.
     #[test]
-    fn destroy_successor_no_detached_switches_only_to_a_free_session_else_detaches() {
-        let mru = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
-        // killed "a"; "b" held by another client, "c" free. MRU walks a (killed) → b (occupied,
-        // skipped) → c (free, picked) — the count overrides the more-recent-but-occupied "b".
+    fn destroy_successor_no_detached_asks_only_for_a_free_session_else_detaches() {
+        // killed "a"; "b" held by another client, "c" free.
         let one_free = attached_list(&[("a", 1), ("b", 1), ("c", 0)]);
         assert_eq!(
-            destroy_successor(
-                DetachOnDestroy::NoDetached,
-                &one_free,
-                "a",
-                &mru(&["a", "b", "c"])
-            )
-            .as_deref(),
-            Some("c"),
-            "no-detached skips the session another client is on and takes the free one",
+            destroy_successor(DetachOnDestroy::NoDetached, &one_free, "a"),
+            Successor::LastViewed {
+                unattached: true,
+                fallback: Some("c".to_owned()),
+            },
+            "no-detached asks for a free session and falls back to the first free one",
         );
-        // No MRU hint → still finds the free session by scanning list order.
-        assert_eq!(
-            destroy_successor(DetachOnDestroy::NoDetached, &one_free, "a", &[]).as_deref(),
-            Some("c"),
-            "no-detached falls back to the first free session in list order",
-        );
-        // Every OTHER session is watched by another client → DETACH (never share).
+        // Every OTHER session is watched by another client → nowhere to fall back to, so this
+        // DETACHES rather than share.
         let all_watched = attached_list(&[("a", 1), ("b", 2), ("c", 1)]);
         assert_eq!(
-            destroy_successor(
-                DetachOnDestroy::NoDetached,
-                &all_watched,
-                "a",
-                &mru(&["a", "b", "c"])
-            ),
-            None,
+            destroy_successor(DetachOnDestroy::NoDetached, &all_watched, "a"),
+            Successor::LastViewed {
+                unattached: true,
+                fallback: None,
+            },
             "no-detached leaves rather than pile onto an occupied session",
         );
-        // Contrast in the SAME world: `off` ignores the counts and switches onto the occupied "b".
+        // The CONTRAST, in the SAME world: `off` ignores the counts and falls back onto occupied
+        // "b" — so a filter that leaked into both policies fails here.
         assert_eq!(
-            destroy_successor(
-                DetachOnDestroy::Off,
-                &all_watched,
-                "a",
-                &mru(&["a", "b", "c"])
-            )
-            .as_deref(),
-            Some("b"),
+            destroy_successor(DetachOnDestroy::Off, &all_watched, "a"),
+            Successor::LastViewed {
+                unattached: false,
+                fallback: Some("b".to_owned()),
+            },
             "off ignores viewer counts; only no-detached respects them",
         );
-        // Two free sessions → the most-recent (MRU) free one wins over the list-order-earlier free.
-        let two_free = attached_list(&[("a", 1), ("b", 0), ("c", 0)]);
-        assert_eq!(
-            destroy_successor(
-                DetachOnDestroy::NoDetached,
-                &two_free,
-                "a",
-                &mru(&["a", "c", "b"])
-            )
-            .as_deref(),
-            Some("c"),
-            "the most-recent free session wins over the list-order-earlier free one",
-        );
-        // The last session → detach.
+        // The last session → nothing to fall back to.
         assert_eq!(
             destroy_successor(
                 DetachOnDestroy::NoDetached,
                 &attached_list(&[("only", 0)]),
-                "only",
-                &[]
+                "only"
             ),
-            None,
-            "no-detached detaches when there is no other session",
+            Successor::LastViewed {
+                unattached: true,
+                fallback: None,
+            },
         );
     }
-
-    /// `mru_live_other` — the tmux "last session" pick (and `off`'s MRU preference) — is the
-    /// most-recent OTHER visited session still live, skipping a since-dead entry, `None` when none
-    /// survives (the last-session no-op). REVERT-PROOF: drop the `!= current` guard and it returns
-    /// `current`; drop the liveness filter and it returns a dead session.
-    #[test]
-    fn mru_live_other_is_the_most_recent_live_other_session() {
-        let list = session_list(&["a", "b", "c"]);
-        let mru = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
-        // Most-recent OTHER (the MRU front is the current session) that is live.
-        assert_eq!(
-            mru_live_other(&mru(&["a", "c", "b"]), &list, "a").as_deref(),
-            Some("c"),
-        );
-        // The most-recent other ("c") is dead → skip to the next live MRU entry ("b").
-        assert_eq!(
-            mru_live_other(&mru(&["a", "c", "b"]), &session_list(&["a", "b"]), "a").as_deref(),
-            Some("b"),
-        );
-        // Never visited another (only the current session in the MRU) → None (last-session no-op).
-        assert_eq!(mru_live_other(&mru(&["a"]), &list, "a"), None);
-        // Every prior session has since died → None.
-        assert_eq!(
-            mru_live_other(&mru(&["a", "z"]), &session_list(&["a"]), "a"),
-            None,
-        );
-    }
-
-    /// [`push_mru`] keeps a most-recent-first, deduplicated visit stack: a fresh name goes to the
-    /// front; a repeat MOVES to the front (never a duplicate). REVERT-PROOF: drop the `retain` and
-    /// the repeat leaves a duplicate + a stale earlier entry, failing the dedup/order assertions.
-    #[test]
-    fn push_mru_dedups_and_moves_to_front() {
-        let mut stack = Vec::new();
-        push_mru(&mut stack, "a");
-        push_mru(&mut stack, "b");
-        push_mru(&mut stack, "c");
-        assert_eq!(stack, vec!["c", "b", "a"], "most-recent-first");
-        // Re-visiting "a" moves it to the front and leaves no duplicate.
-        push_mru(&mut stack, "a");
-        assert_eq!(
-            stack,
-            vec!["a", "c", "b"],
-            "a repeat moves to front, no dupe"
-        );
-    }
-
     /// A [`QuitSink`] that counts requests, so a test can assert the poll thread asked
     /// the shell to end (and did so across the thread boundary).
     #[derive(Default)]
