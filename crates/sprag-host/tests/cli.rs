@@ -946,6 +946,64 @@ fn the_cli_lists_attached_clients_and_shows_the_attached_count() {
     );
 }
 
+/// KILLING a session releases its viewers, as `sprag list-clients` and `sprag ls` report them —
+/// the operator-facing half of the same fact, over the real socket and the real CLI.
+///
+/// **This was measured WRONG at `2402e62`, and both surfaces lied**: after `sprag kill-session
+/// alpha`, `list-clients` went on printing `probe-kill: alpha` — a viewer of a session the registry
+/// no longer held — and once a NEW session took the freed name, `sprag ls` credited it with
+/// `(1 attached)` for a client that had never seen it. Nothing about the client was at fault; the
+/// attachment simply outlived the thing it named.
+///
+/// The connection is deliberately HELD open across the kill, because the release under test is the
+/// SESSION's death and not the connection's: letting the socket drop would release the attachment
+/// through `on_disconnect` and this test would pass with the kill path doing nothing at all.
+#[test]
+fn killing_a_session_releases_its_viewers_and_a_new_session_of_that_name_inherits_none() {
+    let (_host, sock) = spawn_host();
+    // A second session, so killing the first does not end the daemon.
+    assert!(sprag(&sock, &["new", "alpha"]).ok, "create alpha");
+    assert!(sprag(&sock, &["new", "keeper"]).ok, "create keeper");
+
+    let mut attacher = HostConn::connect(&sock, Duration::from_secs(5)).expect("attacher connects");
+    attacher
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "viewer" }))
+        .expect("client/hello accepted");
+    attacher
+        .call(
+            CLIENT_ATTACH_METHOD,
+            json!({ sprag_rpc::SESSION_PARAM: "alpha" }),
+        )
+        .expect("client/attach accepted");
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            sprag(&sock, &["list-clients"])
+                .stdout
+                .contains("viewer: alpha")
+        }),
+        "the control: while alpha lives, its viewer is listed",
+    );
+
+    assert!(sprag(&sock, &["kill-session", "alpha"]).ok, "kill alpha");
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            sprag(&sock, &["list-clients"]).stdout.trim().is_empty()
+        }),
+        "the killed session's viewer is released, not left naming a session that is gone: {}",
+        sprag(&sock, &["list-clients"]).stdout,
+    );
+
+    // The inheritance: a new session takes the freed name and must be credited with nobody.
+    assert!(sprag(&sock, &["new", "alpha"]).ok, "re-create alpha");
+    let ls = sprag(&sock, &["ls"]);
+    assert!(
+        !ls.stdout.contains("attached"),
+        "a fresh session of the retired name inherits no viewer: {}",
+        ls.stdout,
+    );
+    drop(attacher);
+}
+
 /// Poll `predicate` until it holds or `timeout` elapses. The CLI's per-client attachment reads
 /// depend on the daemon's async `on_disconnect`, so a populated/emptied assertion is polled, not
 /// asserted once.

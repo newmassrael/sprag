@@ -82,7 +82,7 @@ use crate::wire::{
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD,
     PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
     RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_WINDOW_ACTION,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSIONS_SLOT,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
     SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SwapAsk,
     WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
@@ -1008,6 +1008,23 @@ impl WorkspaceExternal {
                 // from the caller's argument: the last-window escalation reaches here with no name
                 // in hand, and one of the two paths guessing would be the one that leaked.
                 self.channels.close(removed.name());
+                // ...and RELEASE its viewers, beside the close and for the same reason: this is the
+                // one place a removed session's departure is published, so both things keyed by its
+                // NAME are unkeyed here rather than at each caller. Left behind, an attachment
+                // outlives its session and is then adopted by whatever next takes the name —
+                // measured at R303, both halves: `list-clients` naming a session the registry no
+                // longer held, and a new session of the same name reporting a viewer it never had.
+                if let Some(attachments) = &self.attachments {
+                    let released = lock(attachments).session_ended(removed.name());
+                    if released > 0 {
+                        tracing::debug!(
+                            target: "sprag_host",
+                            session = removed.name(),
+                            released,
+                            "released the viewers of a session that was killed",
+                        );
+                    }
+                }
                 self.announce();
             }
             KillOutcome::KilledServer(_drained) => {
@@ -1590,6 +1607,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
+                    SchemaField::new(SESSION_SLOT, "string"),
                     SchemaField::new(CLIENTS_SLOT, "list"),
                     SchemaField::new(GRID_WORK_SLOT, "object"),
                     SchemaField::new(WINDOWS_SLOT, "list"),
@@ -1928,6 +1946,13 @@ impl ExternalIntrospect for WorkspaceExternal {
                 infos.retain(SessionInfo::is_listable);
                 encoded_answer(&infos, "sessions")
             }
+            // The NAME of the session this request is scoped to. Read straight off the scope rather
+            // than re-derived: the scope resolved it once, at the door, under the registry lock, and
+            // the whole value of the slot is that it cannot disagree with what the same request's
+            // other slots answered about.
+            SESSION_SLOT => Some(IntrospectValue::Json(Value::String(
+                self.scope.session().to_owned(),
+            ))),
             // Every currently-attached client and the session it views — tmux `list-clients`.
             // Registry-WIDE like `sessions` (its subject is the set of clients), and filled from
             // the SAME dispatch-layer attachment map that fills each session's `attached` count.
@@ -2368,7 +2393,7 @@ mod tests {
             r#"{{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{{"session":"{session}"}}}}"#
         ))
         .expect("a well-formed request");
-        SessionScope::resolve(reg, &request).expect("a session that exists")
+        SessionScope::resolve(reg, &request, || None).expect("a session that exists")
     }
 
     /// A control surface over `reg` scoped to the DEFAULT session (what an unscoped request
@@ -4923,6 +4948,77 @@ mod tests {
                 IntrospectValue::Json(json!({"name": 42})),
             ),
             Err(InvokeError::TypeMismatch),
+        );
+    }
+
+    /// A kill RELEASES the dead session's viewers, driven through the real invoke rather than
+    /// through [`AttachmentRegistry::session_ended`] directly — a unit test on the method is not a
+    /// test that the caller calls it, and this caller is the only one there is.
+    ///
+    /// Two things are asserted, and the second is why it matters: the badge falls, and a NEW
+    /// session taking the freed name does NOT inherit the viewer. Measured at R303, the daemon did
+    /// both wrong — `sprag list-clients` named a dead session and `sprag ls` credited the impostor
+    /// with a viewer it never had.
+    ///
+    /// The kept session is the CONTROL: its viewer must survive, or "released the attachments"
+    /// would read the same as "dropped the whole registry".
+    #[test]
+    fn killing_a_session_releases_its_viewers_and_a_new_one_of_that_name_inherits_none() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+        lock(&reg).new_session(Some("keeper")).unwrap();
+        let attachments = Arc::new(Mutex::new(crate::AttachmentRegistry::default()));
+        {
+            let mut a = lock(&attachments);
+            for (client, session) in [("gui", "work"), ("tui", "work"), ("other", "keeper")] {
+                let conn = pinion_rpc::ConnId::allocate();
+                a.hello(conn, client.to_owned());
+                a.attach(conn, session.to_owned());
+            }
+        }
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            SessionScope::unscoped(&reg),
+            Arc::new(ChannelRegistry::default()),
+            None,
+            Some(Arc::clone(&attachments)),
+            None,
+            sampler(),
+        );
+        assert_eq!(lock(&attachments).attached_count("work"), 2, "two viewers");
+
+        assert_eq!(
+            ext.invoke(
+                KILL_SESSION_ACTION,
+                IntrospectValue::Json(json!({"name": "work"})),
+            ),
+            Ok(IntrospectValue::Json(Value::Null)),
+        );
+
+        assert_eq!(
+            lock(&attachments).attached_count("work"),
+            0,
+            "the killed session's viewers were released by the kill itself",
+        );
+        assert_eq!(
+            lock(&attachments).attached_count("keeper"),
+            1,
+            "control: a session that was NOT killed keeps its viewer",
+        );
+
+        // The inheritance. A fresh session takes the freed name; nobody is watching it.
+        lock(&reg).new_session(Some("work")).unwrap();
+        assert_eq!(
+            lock(&attachments).attached_count("work"),
+            0,
+            "a new session of the same name must inherit no viewer",
+        );
+        assert!(
+            lock(&attachments)
+                .clients()
+                .iter()
+                .all(|info| info.session == "keeper"),
+            "and list-clients names only sessions that exist",
         );
     }
 

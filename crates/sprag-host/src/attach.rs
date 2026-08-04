@@ -276,6 +276,36 @@ impl AttachmentRegistry {
         moved
     }
 
+    /// Release every client attached to `session` — what a session's DESTRUCTION does here.
+    ///
+    /// The twin of [`rename_session`](Self::rename_session), and the reason it exists is the same
+    /// one written there: an attachment names a session that must exist. A rename moves the name;
+    /// a kill leaves no name to move to, so the attachment ENDS.
+    ///
+    /// **Leaving it was a shipping defect, measured at R303**: after `kill-session alpha`,
+    /// `sprag list-clients` went on reporting a viewer of `alpha` — and when a NEW session took the
+    /// freed name, that session INHERITED the viewer, so `sprag ls` showed `alpha … (1 attached)`
+    /// for a session no client had ever seen. Two facts the daemon publishes, both wrong, with no
+    /// client at fault.
+    ///
+    /// It matters more now than it read then, because an attachment is an ADDRESS a client can
+    /// scope to ([`ScopeAsk::Attached`](sprag_rpc::ScopeAsk::Attached)): a stale one would hand the
+    /// impostor's panes to the client that was viewing the dead session — the very capture the
+    /// attached scope exists to make impossible. Releasing here is what keeps that promise total
+    /// rather than true only of renames.
+    ///
+    /// The client's reported SIZE is deliberately kept: it is a fact about that client's own
+    /// surface, not about the session that died, and a client that switches to another session must
+    /// arbitrate with it at once rather than after re-reporting.
+    ///
+    /// Returns how many attachments were released, so the caller can tell the death of a session
+    /// somebody was watching from one nobody was.
+    pub fn session_ended(&mut self, session: &str) -> usize {
+        let before = self.client_session.len();
+        self.client_session.retain(|_, viewing| viewing != session);
+        before - self.client_session.len()
+    }
+
     /// How many DISTINCT clients are currently attached to `session` — the wire
     /// [`SessionInfo::attached`](sprag_terminal::SessionInfo::attached) badge.
     #[must_use]
@@ -696,6 +726,66 @@ mod tests {
             reg.rename_session("ghost", "x"),
             0,
             "a session nobody views moves no attachment",
+        );
+    }
+
+    /// A session's DEATH releases its viewers — the twin of the rename above, and the half that was
+    /// missing. An attachment left behind names a session the registry no longer holds, and the
+    /// next session to take that name inherits the viewer.
+    #[test]
+    fn a_killed_sessions_viewers_are_released_and_cannot_be_inherited() {
+        let mut reg = AttachmentRegistry::default();
+        let (a, b, elsewhere) = (ConnId::allocate(), ConnId::allocate(), ConnId::allocate());
+        for (conn, client) in [(a, "client-a"), (b, "client-b"), (elsewhere, "client-c")] {
+            reg.hello(conn, client.to_owned());
+        }
+        reg.attach(a, "work".to_owned());
+        reg.attach(b, "work".to_owned());
+        reg.attach(elsewhere, "play".to_owned());
+        reg.size(
+            a,
+            ClientSize {
+                cols: 120,
+                rows: 40,
+            },
+        );
+
+        assert_eq!(reg.session_ended("work"), 2, "both viewers were released");
+        assert_eq!(reg.attached_count("work"), 0);
+        assert_eq!(
+            reg.attached_count("play"),
+            1,
+            "control: another session's viewer is untouched",
+        );
+        assert!(
+            reg.clients().iter().all(|info| info.session == "play"),
+            "and `list-clients` stops naming a session the registry no longer holds",
+        );
+
+        // THE INHERITANCE, which is what a lingering attachment actually costs: a NEW session takes
+        // the freed name and must find no viewers waiting for it.
+        assert_eq!(
+            reg.attached_count("work"),
+            0,
+            "a fresh session of the same name inherits nobody",
+        );
+
+        // The client's SIZE stays — it describes that client's surface, not the dead session — so a
+        // switch to another session arbitrates with it at once. Asserted through the public reading
+        // rather than the field: re-attaching `a` elsewhere must bring its area with it.
+        reg.attach(a, "play".to_owned());
+        assert!(
+            reg.sizes("play").contains(&ClientSize {
+                cols: 120,
+                rows: 40
+            }),
+            "a released client keeps the area it reported",
+        );
+
+        assert_eq!(
+            reg.session_ended("ghost"),
+            0,
+            "a session nobody views releases nothing",
         );
     }
 }
