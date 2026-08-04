@@ -10853,6 +10853,56 @@
         "ChannelRegistry::rename's stale-destination branch is reasoned, not driven by a test"
       ]
     },
+    "R303": {
+      "decision_summary": "A display client VIEWS a session; it does not re-send a name. The scope grammar gains an attachment arm, an attachment ends with its session, and the name the client paints becomes a mirror.",
+      "changes_bullets": [
+        "A display client's scope is its ATTACHMENT, not a session name: ScopeAsk gains an Attached arm ({\"attached\": true}), defined once in sprag-rpc for both ends of the wire, and refused whole in four named ways (NotAString / AttachedNotABool / TwoScopes / NotAttached).",
+        "An attachment now ENDS when its session is killed (AttachmentRegistry::session_ended, called where handle_session_kill publishes the departure) — a shipping defect: list-clients named a dead session and the next session of that name inherited its viewer.",
+        "A new SESSION_SLOT answers the name of the session a request is scoped to, and the client MIRRORS it on each poll wake, because a client that no longer holds a name still has to PAINT one (the sidebar row, the palette mark, the next/previous walk, sprag-tui's terminal title).",
+        "WIRE_PROTOCOL 5 to 6: the second bump caused by an added ARGUMENT, and the one with the worst skipped-bump failure yet — a pre-R303 daemon reads {\"attached\":true} as an ABSENT scope, i.e. the default session, for every read and every keystroke."
+      ],
+      "verification_bullets": [
+        "MEASURED FIRST at 2402e62: a real `sprag attach alpha --tui` EXITED on rename-session while a control renaming another session left it alive; a raw probe then showed the sharper half — after a new session took the retired name the same read SUCCEEDED, against a session the client never named, while list-clients still reported it on the renamed one.",
+        "Suite EXIT 0 / 45 targets / 1995 (R302 left 1982), clippy 0 no new suppression, fmt, doc gate 0/16, pixel smoke 136/0 on a REBUILT release set.",
+        "TEN revert-proofs each shown to DISCRIMINATE, plus one that did NOT: breaking SESSION_SLOT to answer the default left the live TUI test green because that fixture's client WAS on the default session; the claim was re-aimed at the socket test, where the viewed session is not the default.",
+        "Skew run BOTH directions against a parent-commit daemon, with a live rename as the control that moves: an unbumped client attached to `alpha` read DEFAULTWIN off the old daemon (the silent wrong target, measured), the same probe reads ALPHAWIN off this one, and both builds refuse the other by name.",
+        "The added per-wake read priced against three controls on one connection (release): session 14.97us / 43B, windows 17.14us, sessions 16.54us, panes 19.19us — the cheapest of the four."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "sprag-gui has no live driver for a rename: the seam is shared sprag-client code driven live by the TUI test, and the pixel smoke renames nothing.",
+        "The MRU stack still holds NAMES, so `switch-client -l` to a visited session whose name was retired and re-issued lands on the impostor — the same capture one verb over, visible and recoverable rather than silent, and with no cheap fix while an identity stays off the wire by R302's own decision.",
+        "The lock order the attached arm depends on (attachments then registry, never nested) is reasoned from the code shape and driven by nothing.",
+        "An MCP agent still scopes by name and cannot ask for an attachment, because it never attaches — the attached scope serves clients that attach, by construction."
+      ],
+      "publishable_decision_summary": "A display client VIEWS a session; it does not re-send a name. The scope grammar gains an attachment arm, an attachment ends with its session, and the name the client paints becomes a mirror.",
+      "publishable_changes_bullets": [
+        "A display client's scope is its ATTACHMENT, not a session name: ScopeAsk gains an Attached arm ({\"attached\": true}), defined once in sprag-rpc for both ends of the wire, and refused whole in four named ways (NotAString / AttachedNotABool / TwoScopes / NotAttached).",
+        "An attachment now ENDS when its session is killed (AttachmentRegistry::session_ended, called where handle_session_kill publishes the departure) — a shipping defect: list-clients named a dead session and the next session of that name inherited its viewer.",
+        "A new SESSION_SLOT answers the name of the session a request is scoped to, and the client MIRRORS it on each poll wake, because a client that no longer holds a name still has to PAINT one (the sidebar row, the palette mark, the next/previous walk, sprag-tui's terminal title).",
+        "WIRE_PROTOCOL 5 to 6: the second bump caused by an added ARGUMENT, and the one with the worst skipped-bump failure yet — a pre-R303 daemon reads {\"attached\":true} as an ABSENT scope, i.e. the default session, for every read and every keystroke."
+      ],
+      "publishable_verification_bullets": [
+        "MEASURED FIRST at 2402e62: a real `sprag attach alpha --tui` EXITED on rename-session while a control renaming another session left it alive; a raw probe then showed the sharper half — after a new session took the retired name the same read SUCCEEDED, against a session the client never named, while list-clients still reported it on the renamed one.",
+        "Suite EXIT 0 / 45 targets / 1995 (R302 left 1982), clippy 0 no new suppression, fmt, doc gate 0/16, pixel smoke 136/0 on a REBUILT release set.",
+        "TEN revert-proofs each shown to DISCRIMINATE, plus one that did NOT: breaking SESSION_SLOT to answer the default left the live TUI test green because that fixture's client WAS on the default session; the claim was re-aimed at the socket test, where the viewed session is not the default.",
+        "Skew run BOTH directions against a parent-commit daemon, with a live rename as the control that moves: an unbumped client attached to `alpha` read DEFAULTWIN off the old daemon (the silent wrong target, measured), the same probe reads ALPHAWIN off this one, and both builds refuse the other by name.",
+        "The added per-wake read priced against three controls on one connection (release): session 14.97us / 43B, windows 17.14us, sessions 16.54us, panes 19.19us — the cheapest of the four."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "sprag-gui has no live driver for a rename: the seam is shared sprag-client code driven live by the TUI test, and the pixel smoke renames nothing.",
+        "The MRU stack still holds NAMES, so `switch-client -l` to a visited session whose name was retired and re-issued lands on the impostor — the same capture one verb over, visible and recoverable rather than silent, and with no cheap fix while an identity stays off the wire by R302's own decision.",
+        "The lock order the attached arm depends on (attachments then registry, never nested) is reasoned from the code shape and driven by nothing.",
+        "An MCP agent still scopes by name and cannot ask for an attachment, because it never attaches — the attached scope serves clients that attach, by construction."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
