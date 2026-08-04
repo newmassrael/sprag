@@ -21,9 +21,9 @@ use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
-    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
-    project_slot_for,
+    RENAME_SESSION_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT,
+    cells_slot_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -2828,6 +2828,76 @@ fn a_filtered_wait_sleeps_through_output_where_the_scene_wait_does_not() {
         batch["next"].as_u64().is_some_and(|next| next > since),
         "with a cursor to resume from: {batch}",
     );
+}
+
+/// A client PARKED on the session it holds is woken BY THE RENAME ITSELF, and told the new name.
+///
+/// # Why this test exists, and what passed without it
+///
+/// Everything else about a rename is observable from the outside afterwards — the listing, the
+/// journal, the refusal on the retired name — and all of it passes even when the change is derived
+/// one request TOO LATE. The derive site runs after every dispatch and reads the shape at the
+/// address the REQUEST carried; a rename retires exactly that address, so reading it there records
+/// nothing and the rename lands only when some later request happens to be dispatched on the
+/// session. A client parked at the moment of the rename would sleep through it, and the very next
+/// `sprag events` would still show the record — which is why reverting the fix left the CLI test
+/// green, and why this is the assertion that had to be BUILT rather than registered.
+///
+/// It also pins the CHANNEL move: the wait below is parked in the channel keyed by the OLD name, and
+/// a rename that minted a fresh one instead of carrying this one across would leave it parked
+/// forever.
+#[test]
+fn a_rename_wakes_the_client_parked_on_the_name_it_moved() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    let mut waiter = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("a second connection to park the wait on");
+    let since = read_revision(&mut waiter);
+    waiter
+        .set_read_deadline(Some(Duration::from_secs(10)))
+        .expect("a deadline generous enough to be an answer, not a race");
+    // The filter is the question this event exists to answer: *tell me when the address I hold
+    // stops resolving*. It names the OLD name, which is the only one this client can know.
+    let waiting = std::thread::spawn(move || {
+        waiter.call(
+            EVENTS_WAIT_METHOD,
+            json!({
+                SINCE_PARAM: since,
+                "match": [{ "kind": "session_renamed", "session": "0" }],
+            }),
+        )
+    });
+    // Give the park time to register, then rename on ANOTHER connection.
+    std::thread::sleep(Duration::from_millis(300));
+    let _: Value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(RENAME_SESSION_ACTION),
+                "args": { "name": "prod" },
+            }),
+        )
+        .expect("rename the session over the wire");
+
+    let batch = waiting
+        .join()
+        .expect("the waiting thread")
+        .expect("the rename itself wakes the client parked on the name it moved");
+    let events = batch["events"].as_array().expect("an events array");
+    assert_eq!(events.len(), 1, "exactly the change asked for: {batch}");
+    assert_eq!(events[0]["type"], "session_renamed");
+    assert_eq!(
+        events[0]["session"], "0",
+        "the SUBJECT is the address this client held — filtering on the new name would leave \
+         exactly the client that needs this event unwoken: {batch}",
+    );
+    assert_eq!(
+        events[0]["name"], "prod",
+        "and the detail is the one fact no later read could recover: {batch}",
+    );
+    assert_eq!(batch["lost"], false, "nothing was dropped: {batch}");
 }
 
 /// A filter that cannot ever match is a caller MISTAKE, and the daemon says so at once rather than
