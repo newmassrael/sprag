@@ -71,7 +71,9 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use sprag_input::Modifiers;
-use sprag_terminal::{PaneDir, SplitDir};
+use sprag_terminal::{PaneDir, SplitDir, WindowStep};
+
+use crate::wire::SelectWindowAsk;
 
 /// tmux's own `repeat-time` default, and the one sprag takes when the options table is silent.
 ///
@@ -346,7 +348,11 @@ impl fmt::Display for KeySpec {
 /// Every variant is an action a CLIENT can carry out on its own focus. Nothing here needs the
 /// daemon to have a current pane, which is what keeps the vocabulary honest: an action sprag could
 /// not perform would be a binding that parsed and then did nothing.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// **Not `Copy`, since R305.** The vocabulary carries DATA now — `select-window -t <window>` names
+/// a window, because a window's name is its address and that is how `prefix 1` is expressed. A
+/// keystroke still cannot carry a target that says which PANE it acts on (`split-window`'s rule);
+/// what it can carry is where it is going.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum BoundAction {
     /// `detach-client` — give the terminal back and leave the session running.
     DetachClient,
@@ -414,6 +420,47 @@ pub enum BoundAction {
         /// the whole grammar is built, so the whole grammar is taken.
         on: Option<bool>,
     },
+    /// `new-window` — create a window in this session, born with a shell, and select it (tmux
+    /// `prefix c`).
+    ///
+    /// **The first arm of this vocabulary that CREATES anything.** Before R305 a key could
+    /// rearrange what was already there and nothing else, while the GUI's palette offered the whole
+    /// lifecycle and `sprag-tui` (which has no palette) offered none of it.
+    ///
+    /// It takes no arguments, where the CLI verb takes `{name?, cmd?, cwd?}`: each of those is a
+    /// string a keystroke cannot carry, and a binding that fixed one in the config file would make
+    /// every press produce the same name — the second one refused. Same rule as `split-window`'s
+    /// missing pane target.
+    NewWindow,
+    /// `select-window -n|-p|-t <name>` — make another window of this session current (tmux
+    /// `prefix n` / `prefix p`, and `select-window -t`).
+    ///
+    /// The RING is walked by the daemon ([`HostClient::select_window_toward`](crate::HostClient::select_window_toward)),
+    /// never by the client that pressed the key — the same authority split
+    /// [`SelectPaneToward`](Self::SelectPaneToward) states one level down, and for the same reason:
+    /// a client walking its own window mirror would be a second answer to `sprag select-window -n`,
+    /// derived from a list that can be a revision behind.
+    ///
+    /// The `-t` arm carries a NAME because a window's name is its address and a binding that names
+    /// one is how `prefix 1` is expressed. That is not the pane target `split-window` refuses: a
+    /// pane target would say WHICH PANE a keystroke acts on, where this says which window to go to,
+    /// which is the whole content of the verb.
+    SelectWindow {
+        /// Which window — a step along the ring, or one by name.
+        ask: SelectWindowAsk,
+    },
+    /// `kill-window` — end this session's CURRENT window and everything running in it; the
+    /// session's LAST window ends the SESSION (tmux `prefix &`).
+    ///
+    /// **BINDABLE AND UNBOUND BY DEFAULT**, and the reason is tmux's own default: `prefix &` is
+    /// `confirm-before -p "kill-window #W? (y/n)" kill-window`, so the key a tmux user has in their
+    /// fingers is guarded by a prompt. sprag has no `confirm-before` and `sprag-tui` has no prompt
+    /// surface, so shipping the spelling without the guard would hand those fingers a destructive
+    /// verb they expect to be asked about. Offering it to a user who ASKS for it is the honest half.
+    ///
+    /// It names no window, on [`NewWindow`](Self::NewWindow)'s rule: a keystroke acts where the user
+    /// is.
+    KillWindow,
 }
 
 /// tmux's spelling of "the next pane", which is the only `-t` target form a binding may carry.
@@ -488,13 +535,16 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 6] = [
+    pub const VOCABULARY: [&'static str; 9] = [
         "detach-client",
         "send-prefix",
         "split-window -h|-v [-b]",
         "select-pane -L|-R|-U|-D|-t :.+",
         "swap-pane -L|-R|-U|-D",
         "zoom-pane [-Z|-u]",
+        "new-window",
+        "select-window -n|-p|-t <window>",
+        "kill-window",
     ];
 
     /// Parse an action as the shell spells it — `split-window -h`, `detach-client`.
@@ -619,6 +669,40 @@ impl BoundAction {
                      user is",
                 )),
             },
+            // The two window verbs that take nothing, refused loudly for a flag rather than
+            // ignoring it: a user who wrote one meant something by it, and this vocabulary has no
+            // reading for it.
+            "new-window" | "kill-window" => {
+                if !flags.is_empty() {
+                    return Err(bad(
+                        "takes no arguments (a binding acts on the session and window the user is                          on, so it names neither)",
+                    ));
+                }
+                Ok(if verb == "new-window" {
+                    Self::NewWindow
+                } else {
+                    Self::KillWindow
+                })
+            }
+            // `select-pane`'s shape one level up: matched on the whole flag vector, because `-t
+            // <window>` is TWO words that mean one thing.
+            "select-window" => match flags.as_slice() {
+                ["-n"] => Ok(Self::SelectWindow {
+                    ask: SelectWindowAsk::Step(WindowStep::Next),
+                }),
+                ["-p"] => Ok(Self::SelectWindow {
+                    ask: SelectWindowAsk::Step(WindowStep::Previous),
+                }),
+                ["-n", "-p"] | ["-p", "-n"] => {
+                    Err(bad("-n and -p name one direction; give only one"))
+                }
+                ["-t", window] => Ok(Self::SelectWindow {
+                    ask: SelectWindowAsk::Named((*window).to_owned()),
+                }),
+                _ => Err(bad(
+                    "a binding steps along the window ring (-n/-p) or names one window (-t                      <window>)",
+                )),
+            },
             _ => Err(KeyError::UnknownAction(verb.to_owned())),
         }
     }
@@ -652,6 +736,13 @@ impl fmt::Display for BoundAction {
                 Some(true) => "zoom-pane -Z",
                 Some(false) => "zoom-pane -u",
             }),
+            Self::NewWindow => f.write_str("new-window"),
+            Self::KillWindow => f.write_str("kill-window"),
+            Self::SelectWindow { ask } => match ask {
+                SelectWindowAsk::Step(WindowStep::Next) => f.write_str("select-window -n"),
+                SelectWindowAsk::Step(WindowStep::Previous) => f.write_str("select-window -p"),
+                SelectWindowAsk::Named(window) => write!(f, "select-window -t {window}"),
+            },
         }
     }
 }
@@ -690,7 +781,7 @@ impl Bind {
     /// What it does.
     #[must_use]
     pub fn action(&self) -> BoundAction {
-        self.action
+        self.action.clone()
     }
 
     /// Whether it repeats — tmux's `-r`.
@@ -785,6 +876,33 @@ impl Default for Keymap {
                 // already has in their fingers. The TOGGLE form, so the same key both fills the
                 // window and gives the arrangement back.
                 bind("z", BoundAction::ZoomPane { on: None }),
+                // THE WINDOW LEVEL, on tmux's own three keys (R305). `c` is the key a tmux user
+                // presses more than any other after the splits, and before this round it was
+                // `Routed::Swallow` — it silently did nothing.
+                //
+                // `&` (kill-window) is deliberately NOT here: tmux's default for it is
+                // `confirm-before -p "kill-window #W? (y/n)" kill-window`, and sprag has neither
+                // that verb nor a prompt surface in `sprag-tui`. The action is BINDABLE, so a user
+                // who wants the key can say so; shipping the spelling without the guard would hand
+                // a tmux user's fingers a destructive verb they expect to be asked about.
+                bind("c", BoundAction::NewWindow),
+                // NOT repeating, where the arrows are: tmux marks `next-window`/`previous-window`
+                // `-r` and sprag does not, because a held window key walks a RING with no edge to
+                // stop at — three unintended repeats put the user two windows past where they meant
+                // to be, with a different pane set each time. The arrows repeat because a pane walk
+                // STOPS at the arrangement's edge.
+                bind(
+                    "n",
+                    BoundAction::SelectWindow {
+                        ask: SelectWindowAsk::Step(WindowStep::Next),
+                    },
+                ),
+                bind(
+                    "p",
+                    BoundAction::SelectWindow {
+                        ask: SelectWindowAsk::Step(WindowStep::Previous),
+                    },
+                ),
                 // tmux's own order (`Up Down Left Right`), and its own `-r`: holding the prefix
                 // table open is what makes `prefix Left Left Left` walk three panes instead of one.
                 repeating("ArrowUp", toward(PaneDir::Up)),
@@ -951,7 +1069,8 @@ impl Keymap {
     /// applied to one answer, it is part of the question.
     #[must_use]
     pub fn action(&self, table: KeyTable, name: &str, mods: Modifiers) -> Option<BoundAction> {
-        self.bound(table, name, mods).map(|bind| bind.action)
+        self.bound(table, name, mods)
+            .map(|bind| bind.action.clone())
     }
 
     /// The binding `name`+`mods` has in `table`, whole — the lookup [`route`](Self::route) uses,
@@ -1024,7 +1143,7 @@ impl Keymap {
     /// `repeat-time` all reach the binding and none reaches the pane.
     fn act(&self, bind: &Bind, now: Instant) -> Routed {
         Routed::Act {
-            action: bind.action,
+            action: bind.action.clone(),
             again: bind.repeat.then(|| now + self.repeat_time),
         }
     }
@@ -1074,7 +1193,7 @@ impl PrefixMode {
 /// Carries no key: a caller that asked about a keystroke still has it, and threading it back out
 /// would force one representation on two frontends that decode differently (termwiz `KeyEvent` in
 /// the terminal client, a pinion key name in the GUI).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Routed {
     /// Send it to the focused pane — the steady state.
     ToPane,
@@ -1352,9 +1471,32 @@ mod tests {
             ("zoom-pane", BoundAction::ZoomPane { on: None }),
             ("zoom-pane -Z", BoundAction::ZoomPane { on: Some(true) }),
             ("zoom-pane -u", BoundAction::ZoomPane { on: Some(false) }),
+            // THE WINDOW LEVEL (R305). Both steps AND a named window, because the three arms print
+            // through one `Display` and a parse that read `-n` and `-p` as the same step would
+            // round-trip its own answer.
+            ("new-window", BoundAction::NewWindow),
+            ("kill-window", BoundAction::KillWindow),
+            (
+                "select-window -n",
+                BoundAction::SelectWindow {
+                    ask: SelectWindowAsk::Step(WindowStep::Next),
+                },
+            ),
+            (
+                "select-window -p",
+                BoundAction::SelectWindow {
+                    ask: SelectWindowAsk::Step(WindowStep::Previous),
+                },
+            ),
+            (
+                "select-window -t logs",
+                BoundAction::SelectWindow {
+                    ask: SelectWindowAsk::Named("logs".to_owned()),
+                },
+            ),
         ];
         for (text, action) in cases {
-            assert_eq!(BoundAction::parse(text), Ok(action), "{text:?}");
+            assert_eq!(BoundAction::parse(text), Ok(action.clone()), "{text:?}");
             assert_eq!(
                 action.to_string(),
                 text,
@@ -1521,6 +1663,11 @@ mod tests {
             BoundAction::SelectNextPane,
             BoundAction::SelectPaneToward { dir: PaneDir::Left },
             BoundAction::ZoomPane { on: None },
+            BoundAction::NewWindow,
+            BoundAction::SelectWindow {
+                ask: SelectWindowAsk::Step(WindowStep::Next),
+            },
+            BoundAction::KillWindow,
         ];
         for action in every {
             let printed = action.to_string();
@@ -1556,6 +1703,41 @@ mod tests {
         }
     }
 
+    /// Every way the WINDOW verbs can be written wrong, each refused with a sentence that says what
+    /// the vocabulary actually is — and the three CONTROLS that keep the test from passing
+    /// vacuously (the well-formed spellings still parse).
+    ///
+    /// REVERT-PROOF: accept a flag on `new-window` and the first row passes silently; fold `-n -p`
+    /// into "the last one wins" and the ambiguity row stops refusing, which is the shape
+    /// `select-pane` and `zoom-pane` already refuse one level down.
+    #[test]
+    fn the_window_verbs_refuse_what_a_keystroke_cannot_carry() {
+        let bad = |text: &str| match BoundAction::parse(text) {
+            Err(KeyError::BadFlags { why, .. }) => why,
+            other => panic!("{text:?} should be refused for its flags, got {other:?}"),
+        };
+        // A keystroke acts on the window the user is on, so neither verb takes a target.
+        assert!(bad("new-window logs").contains("takes no arguments"));
+        assert!(bad("kill-window -t logs").contains("takes no arguments"));
+        // Two directions is a typo with two readings, so neither is guessed.
+        assert!(bad("select-window -n -p").contains("give only one"));
+        // A `-t` with nothing after it names no window.
+        assert!(bad("select-window -t").contains("names one window"));
+        assert!(bad("select-window").contains("steps along the window ring"));
+
+        // THE CONTROLS: the well-formed spellings parse, so the refusals above are about the
+        // grammar rather than about a verb the parser never learned.
+        for good in [
+            "new-window",
+            "kill-window",
+            "select-window -n",
+            "select-window -p",
+            "select-window -t logs",
+        ] {
+            assert!(BoundAction::parse(good).is_ok(), "{good:?} must parse");
+        }
+    }
+
     /// The defaults ARE tmux's table for the actions sprag's clients have — and the four rows that
     /// are NOT tmux's are the last four, which is why this asserts the whole list in order.
     ///
@@ -1588,6 +1770,21 @@ mod tests {
                 // tmux's KEY, spelled with sprag's own verb: tmux says `resize-pane -Z` and sprag's
                 // shell says `zoom-pane`, and this table is parsed from the string the shell takes.
                 "z zoom-pane",
+                // tmux's THREE WINDOW keys (R305), the first rows in this table that reach past the
+                // pane: `c` creates a window and selects it, `n`/`p` walk the ring. tmux's own keys
+                // and tmux's own verbs.
+                //
+                // NOT `-r`, where tmux marks its `next-window`/`previous-window` so: a held window
+                // key walks a ring with no edge to stop at, so three unintended repeats leave the
+                // user two windows away with a different pane set. The arrows above repeat because
+                // a pane walk STOPS at the arrangement's edge — the flag follows the shape of what
+                // is being walked, which is why it is not simply copied from tmux row by row.
+                //
+                // `&` (kill-window) is ABSENT on purpose: tmux guards it with `confirm-before`,
+                // which sprag does not have. `kill-window` is bindable; it is not bound.
+                "c new-window",
+                "n select-window -n",
+                "p select-window -p",
                 // tmux's four `-r` rows, read from `list-keys -T prefix` on tmux 3.2a. Its own
                 // spelling is `Up`/`Down`/`Left`/`Right`; sprag's key vocabulary is the WIRE's, so
                 // one keystroke has one name across the config, the CLI and both frontends.
@@ -2052,7 +2249,7 @@ mod tests {
             assert_eq!(
                 routed,
                 Routed::Act {
-                    action: left,
+                    action: left.clone(),
                     again: Some(at + DEFAULT_REPEAT_TIME),
                 },
                 "press {press} of a held prefix-arrow",

@@ -2130,14 +2130,17 @@ mod tests {
     #[test]
     fn unbinding_suppresses_a_default_and_only_a_default() {
         with_config(
-            Some("[[bind]]\nkey = \"c\"\naction = \"detach-client\"\n"),
+            // `k` rather than `c`: R305 bound `c` to `new-window`, and this half of the test needs a
+            // key the DEFAULT table does not mention. A key that quietly became a default would
+            // have made this assertion pass for the opposite reason.
+            Some("[[bind]]\nkey = \"k\"\naction = \"detach-client\"\n"),
             || {
-                unbind_key(KeyTable::Prefix, &key("c")).expect("unbinds");
+                unbind_key(KeyTable::Prefix, &key("k")).expect("unbinds");
                 let after = written();
                 assert!(!after.contains("[[bind]]"), "the binding went: {after:?}");
                 assert!(
                     !after.contains("[[unbind]]"),
-                    "`c` is not a default, so there is nothing to suppress: {after:?}"
+                    "`k` is not a default, so there is nothing to suppress: {after:?}"
                 );
                 // A DEFAULT does get recorded, because the layering would restore it otherwise.
                 unbind_key(KeyTable::Prefix, &key("o")).expect("unbinds");
@@ -2349,17 +2352,19 @@ mod tests {
     fn a_running_table_follows_the_file() {
         with_config(Some(""), || {
             let mut live = ClientConfig::load().expect("loads");
+            // `k`, for the reason `unbinding_suppresses_a_default_and_only_a_default` states: the
+            // first assertion is that the key is bound to NOTHING, and R305 gave `c` a default.
             assert_eq!(
                 live.keymap()
-                    .action(KeyTable::Prefix, "c", Modifiers::default()),
+                    .action(KeyTable::Prefix, "k", Modifiers::default()),
                 None
             );
 
-            bind_key(KeyTable::Prefix, &key("c"), action("detach-client"), false).expect("binds");
+            bind_key(KeyTable::Prefix, &key("k"), action("detach-client"), false).expect("binds");
             assert!(live.refresh().expect("re-reads"), "the table moved");
             assert_eq!(
                 live.keymap()
-                    .action(KeyTable::Prefix, "c", Modifiers::default()),
+                    .action(KeyTable::Prefix, "k", Modifiers::default()),
                 Some(crate::keymap::BoundAction::DetachClient),
             );
             // An unchanged file is not a change, so a caller never acts on an edit that was not one.
