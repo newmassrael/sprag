@@ -116,6 +116,11 @@ fn main() -> ExitCode {
             // survives because they read the window they are on rather than a fixed name — an
             // inheritance, stated here rather than left for the next author to discover.
             check_the_rename_key_asks_and_the_answer_reaches_the_daemon(&mut smoke, &mut report);
+            // Straight after the renames, and for their reason: the DEFAULT prefix is in force. It
+            // splits a pane and leaves BOTH standing with an uneven share — every later check
+            // reads the panes it finds rather than a fixed count or a fixed width, which is the
+            // same inheritance the rename check above states.
+            check_the_resize_key_moves_a_boundary_on_the_daemon(&mut smoke, &mut report);
             // HERE for the same reason as the keymap gate above: it needs exactly ONE pane, so the
             // pane the daemon reports and the grid this window paints are unambiguously the same
             // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
@@ -2538,6 +2543,162 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
         &format!("`prefix n` wrapped onto the session's first window ({walked:?})"),
         walked.is_ok(),
     );
+}
+
+/// **`prefix C-Left` moves a real boundary, through the shipped GUI binary.**
+///
+/// The keymap ARM is shared between the frontends, but the `perform` that runs it is each one's own
+/// code — so a round that drove only `sprag-tui`'s pty test would be inferring this client from a
+/// file it does not use. R305's finding, applied on the round that adds the verb rather than left
+/// for an audit to register.
+///
+/// It is judged on the DAEMON's pane widths, not on this window's tiles: a client that re-tiled its
+/// own surface while telling the daemon nothing would paint a picture that looks right over two
+/// children still running at the old width. And it is judged on a DIFFERENCE rather than on an
+/// absolute number, because the window here is whatever size the headless surface came up at.
+///
+/// The two directions are both driven, from the same pane, which is what makes the check
+/// discriminating: a client that grew whichever pane asked would move the widths the same way both
+/// times.
+fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session for the resize key", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the resize key", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the resize key", false);
+        return;
+    }
+    // The CURRENT WINDOW's tiled panes and their widths, which is the only set this verb can move.
+    // The pane LIST spans every window of the session, so a check that measured it would be
+    // reading panes no boundary here touches — and an earlier version of this check did, which is
+    // how its own baseline came from a moment before its split had reflowed anything.
+    let widths = |daemon: &mut HostConn| {
+        let leaves = tiled_leaves(daemon, &session);
+        let dims = pane_dims(daemon, &session);
+        leaves
+            .iter()
+            .filter_map(|id| dims.get(id).map(|(cols, _)| *cols))
+            .collect::<Vec<u64>>()
+    };
+    let before = widths(&mut daemon);
+
+    // A boundary needs two panes IN THIS WINDOW. `prefix %` is the shipped default, and the split
+    // selects the pane it opens.
+    let split = smoke.press(0, "b", true).is_ok() && smoke.press(0, "%", false).is_ok();
+    report.check("the GUI accepts `prefix %` to make a boundary", split);
+    let grew = smoke.wait_for(|s| {
+        let _ = s;
+        let now = widths(&mut daemon);
+        (now.len() > before.len()).then_some(now)
+    });
+    report.check(
+        &format!("the split reached this window on the daemon ({before:?} -> {grew:?})"),
+        grew.is_ok(),
+    );
+    if grew.is_err() {
+        return;
+    }
+    // SETTLED, not merely present: a leaf appears in the arrangement before the reflow has given
+    // every pane its share, so a baseline taken the instant the count changed can be a width no
+    // pane ends up with. Two equal reads in a row is the condition, and it is what makes the
+    // inverse assertion below mean anything.
+    let mut last: Option<Vec<u64>> = None;
+    let opened = smoke.wait_for(|s| {
+        let _ = s;
+        let now = widths(&mut daemon);
+        let settled = last.as_ref() == Some(&now);
+        last = Some(now.clone());
+        settled.then_some(now)
+    });
+    report.check(
+        &format!("the split's widths settled before the boundary is moved ({opened:?})"),
+        opened.is_ok(),
+    );
+    let Ok(opened) = opened else { return };
+
+    // `prefix C-Left` moves a boundary LEFT. WHICH boundary depends on where the split left the
+    // active pane, so the claim is the one that holds for every arrangement: a width moved, and the
+    // opposite key puts it back.
+    //
+    // It deliberately does NOT assert that one pane gave up what another took: stacked panes share
+    // their columns, so a sum over widths is not a conserved quantity. That claim is made where the
+    // arrangement is known, in the daemon's own tests and the CLI's.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "ArrowLeft", true).is_ok();
+    report.check("the GUI accepts `prefix C-Left`", pressed);
+    let moved = smoke.wait_for(|s| {
+        let _ = s;
+        let now = widths(&mut daemon);
+        (now.len() == opened.len() && now != opened).then_some(now)
+    });
+    report.check(
+        &format!("`prefix C-Left` moved a boundary on the daemon ({opened:?} -> {moved:?})"),
+        moved.is_ok(),
+    );
+    let Ok(moved) = moved else { return };
+
+    // WHICH leaf the boundary sits beside, learned rather than assumed — the arrangement here is
+    // whatever the checks before this one left, so a fixed index would be a fixture claim.
+    let Some(edge) = (0..opened.len()).find(|i| opened.get(*i) != moved.get(*i)) else {
+        report.check("a leaf beside the moved boundary can be named", false);
+        return;
+    };
+    let shrank = moved[edge] < opened[edge];
+    report.check(
+        &format!("`prefix C-Left` took cells from the leaf on the boundary's left (leaf {edge})"),
+        shrank,
+    );
+
+    // A key bound to NOTHING, to close whatever is open. This is not padding: `resize-pane` is
+    // `-r`, so the prefix table is still armed and a `prefix` typed now would be the SELF-SEND —
+    // the key would go to the shell and the arrow after it would follow. An unbound key is
+    // swallowed and ends the window whether one was open or not, which is the only disarm that is
+    // correct in both states. (The pty test found this first, one surface over.)
+    let _ = smoke.press(0, "k", false);
+
+    // THE DISCRIMINATOR: the opposite flag from the same pane moves the SAME boundary the OTHER
+    // way. A client that resized on any arrow, or one that grew whichever pane asked, would move
+    // that leaf the same way twice.
+    //
+    // It is a SIGN and not an exact inverse, and the reason was measured rather than assumed: the
+    // headless window is still settling while this check runs (it lost two columns between two of
+    // these presses in the run that found it), and every pane's width moves when the window does.
+    // The direction the boundary travelled is the claim that survives that; the exact arithmetic is
+    // asserted where the window is fixed, in the daemon's own tests and the CLI's.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "ArrowRight", true).is_ok();
+    report.check("the GUI accepts `prefix C-Right`", pressed);
+    let back = smoke.wait_for(|s| {
+        let _ = s;
+        let now = widths(&mut daemon);
+        (now.len() == moved.len() && now.get(edge) > moved.get(edge)).then_some(now)
+    });
+    report.check(
+        &format!("`prefix C-Right` moved the same boundary the other way ({moved:?} -> {back:?})"),
+        back.is_ok(),
+    );
+}
+
+/// The pane ids the CURRENT window TILES, in the arrangement's own order.
+///
+/// Read from the layout slot rather than the pane list because those answer different questions:
+/// `panes` says WHO the session holds, across every window and including floating ones, and
+/// `layout` says WHERE — which is the only set a boundary can move.
+fn tiled_leaves(daemon: &mut HostConn, session: &str) -> Vec<u64> {
+    daemon
+        .call(
+            "scene/query",
+            json!({ "path": "/sprag_mux/external/layout", "session": session }),
+        )
+        .ok()
+        .and_then(|layout| layout["tree"]["nodes"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|node| node["leaf"].as_u64())
+        .collect()
 }
 
 /// **`prefix ,` opens this client's name prompt, and what is typed into it renames the window ON
