@@ -10985,6 +10985,72 @@
         "Still unreachable from a key: new-session, kill-session, rename-session, rename-pane, break-pane, join-pane, move-pane, set-floating and resize-pane, all of which the daemon serves and the CLI has."
       ]
     },
+    "R306": {
+      "decision_summary": "a key can ask a question: the prompt surface both frontends lacked, and the window name grammar it needed",
+      "changes_bullets": [
+        "WindowName: the third name grammar, enforced at all three doors a window name enters by (new-window, rename-window, break-pane -n), with all-digits allowed because the registry mints 0/1/2.",
+        "rename_window ANSWERS the name it recorded, as rename_pane (R295) and rename_session (R302) already did; WIRE_PROTOCOL 8 -> 9, the first bump caused by a REFUSAL rather than an argument or an answer.",
+        "sprag_host::prompt: the ASK is a value (Line{subject,seed} / Confirm{question,consequence,verb,action}), Ask::of is the ONE place deciding which actions ask, and Subject::commit is the ONE implementation of what an answer does.",
+        "Line: a cursor-aware, GRAPHEME-stepping line editor with the readline chords (C-a/C-e/C-u/C-k/C-w) for a client with no text widget; it reports a byte offset, never a column, because width belongs to the surface that paints.",
+        "BoundAction gains rename-window / rename-session / rename-pane / confirm-before <action>; the guard is recursive over the same grammar and refuses to wrap an action that already asks.",
+        "Defaults: prefix , and prefix $ (tmux's own keys), prefix & = confirm-before kill-window (tmux's key WITH tmux's guard, which R305 had to ship unbound), prefix P (herdr's key, where tmux has no pane-rename verb).",
+        "HostClient::rename_window / rename_session / rename_pane — the seam both frontends lacked, so sprag-gui has a live rename driver for the first time (item 29's remaining head).",
+        "sprag-tui paints a one-row overlay rather than reserving a row: a reserved row would resize every OTHER attached client's panes, since this client's area is what the daemon arbitrates the window size from.",
+        "sprag-gui gets a modal name prompt beside its confirmation, and confirm.rs now guards a BOUND ACTION as well as a catalog command.",
+        "FIX: SHIFT is not a modifier on a printable character. winit reports Shift+5 as \"%\" WITH shift set and a pty reports \"%\" with none, so prefix % — a tmux default shipped since the keymap existed — did nothing in the GUI on a real keyboard.",
+        "FIX: the GUI prompt seeds its field with TextEditState::seed, so the caret starts at the END as the terminal client's does; set_text alone left it at zero and the first keystroke landed in front of the name."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2025 passed (R305 left 2014), clippy 0 with no new suppression, fmt, doc gate 0/16.",
+        "SIX revert-proofs each shown to DISCRIMINATE (the grammar at the rename door, the recorded answer, the key opening a prompt, the prompt owning the keyboard, the editor stepping by cluster, a guard refusing to guard a question), plus a CONTROL edit shown to stay green; two more proven separately (the shift fix in sprag-gui, and the caret seed, which the pixel smoke caught live).",
+        "A revert-proof FOUND A VACUOUS ASSERTION OF MY OWN: the wire test's blank-name refusals ran AFTER a rename had moved the scope's window name, so they were refused as Unknown rather than as a bad NAME and passed with the daemon's grammar deleted. Re-ordered, with the window list asserted between.",
+        "SKEW RUN both directions against a parent-commit daemon in its own worktree, socket and XDG dirs: the handshake refuses by number both ways (exit 1, remedy named), and the CONTROLS measure the defect — the parent daemon answered `renamed to ` to rename-window \"\" and then listed a window with no name at all, and stored `  main  ` padding and all, where the R306 daemon answers `main`.",
+        "A live sprag-tui over a real PTY renames a window from `prefix ,` and NOT ONE CHARACTER of the typed name reaches the shell — the gap measured before the round, where an unbound `,` was swallowed and the name ran as a command.",
+        "The pixel smoke drives `prefix ,` through the SHIPPED GUI binary, judges the DAEMON's window list, and asserts the seed was real: 151/0 on a rebuilt release set, nine checks new (was 142/0)."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Item 32 opens with what the prompt left: no MCP tool asks (an agent has no view, which is the same argument item 30 records for the visit history); the palette still advertises no keymap chord and gained three more rows to be silent about; the GUI's line prompt has no External verb of its own, so the smoke drives its field through pinion's; and `confirm-before` is bindable to any non-asking verb while only `kill-window` has a sentence written for it.",
+        "Item 31's head is CLOSED (rename-window is in the vocabulary and kill-window is bound with its guard); item 29's remaining head is closed (sprag-gui has a live rename driver). Bindable actions 10 -> 14 against herdr's 51.",
+        "The `rename-session` CLI keeps an old-daemon `null` fallback that the handshake has made unreachable — the same dead arm removed from `rename-window` here, one verb over, and it was REACHABLE when it was written.",
+        "A lone Escape in a terminal client depends on a parser timeout somebody else owns, which is why the editor takes C-c and C-g as well."
+      ],
+      "publishable_decision_summary": "a key can ask a question: the prompt surface both frontends lacked, and the window name grammar it needed",
+      "publishable_changes_bullets": [
+        "WindowName: the third name grammar, enforced at all three doors a window name enters by (new-window, rename-window, break-pane -n), with all-digits allowed because the registry mints 0/1/2.",
+        "rename_window ANSWERS the name it recorded, as rename_pane (R295) and rename_session (R302) already did; WIRE_PROTOCOL 8 -> 9, the first bump caused by a REFUSAL rather than an argument or an answer.",
+        "sprag_host::prompt: the ASK is a value (Line{subject,seed} / Confirm{question,consequence,verb,action}), Ask::of is the ONE place deciding which actions ask, and Subject::commit is the ONE implementation of what an answer does.",
+        "Line: a cursor-aware, GRAPHEME-stepping line editor with the readline chords (C-a/C-e/C-u/C-k/C-w) for a client with no text widget; it reports a byte offset, never a column, because width belongs to the surface that paints.",
+        "BoundAction gains rename-window / rename-session / rename-pane / confirm-before <action>; the guard is recursive over the same grammar and refuses to wrap an action that already asks.",
+        "Defaults: prefix , and prefix $ (tmux's own keys), prefix & = confirm-before kill-window (tmux's key WITH tmux's guard, which R305 had to ship unbound), prefix P (herdr's key, where tmux has no pane-rename verb).",
+        "HostClient::rename_window / rename_session / rename_pane — the seam both frontends lacked, so sprag-gui has a live rename driver for the first time (item 29's remaining head).",
+        "sprag-tui paints a one-row overlay rather than reserving a row: a reserved row would resize every OTHER attached client's panes, since this client's area is what the daemon arbitrates the window size from.",
+        "sprag-gui gets a modal name prompt beside its confirmation, and confirm.rs now guards a BOUND ACTION as well as a catalog command.",
+        "FIX: SHIFT is not a modifier on a printable character. winit reports Shift+5 as \"%\" WITH shift set and a pty reports \"%\" with none, so prefix % — a tmux default shipped since the keymap existed — did nothing in the GUI on a real keyboard.",
+        "FIX: the GUI prompt seeds its field with TextEditState::seed, so the caret starts at the END as the terminal client's does; set_text alone left it at zero and the first keystroke landed in front of the name."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2025 passed (R305 left 2014), clippy 0 with no new suppression, fmt, doc gate 0/16.",
+        "SIX revert-proofs each shown to DISCRIMINATE (the grammar at the rename door, the recorded answer, the key opening a prompt, the prompt owning the keyboard, the editor stepping by cluster, a guard refusing to guard a question), plus a CONTROL edit shown to stay green; two more proven separately (the shift fix in sprag-gui, and the caret seed, which the pixel smoke caught live).",
+        "A revert-proof FOUND A VACUOUS ASSERTION OF MY OWN: the wire test's blank-name refusals ran AFTER a rename had moved the scope's window name, so they were refused as Unknown rather than as a bad NAME and passed with the daemon's grammar deleted. Re-ordered, with the window list asserted between.",
+        "SKEW RUN both directions against a parent-commit daemon in its own worktree, socket and XDG dirs: the handshake refuses by number both ways (exit 1, remedy named), and the CONTROLS measure the defect — the parent daemon answered `renamed to ` to rename-window \"\" and then listed a window with no name at all, and stored `  main  ` padding and all, where the R306 daemon answers `main`.",
+        "A live sprag-tui over a real PTY renames a window from `prefix ,` and NOT ONE CHARACTER of the typed name reaches the shell — the gap measured before the round, where an unbound `,` was swallowed and the name ran as a command.",
+        "The pixel smoke drives `prefix ,` through the SHIPPED GUI binary, judges the DAEMON's window list, and asserts the seed was real: 151/0 on a rebuilt release set, nine checks new (was 142/0)."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Item 32 opens with what the prompt left: no MCP tool asks (an agent has no view, which is the same argument item 30 records for the visit history); the palette still advertises no keymap chord and gained three more rows to be silent about; the GUI's line prompt has no External verb of its own, so the smoke drives its field through pinion's; and `confirm-before` is bindable to any non-asking verb while only `kill-window` has a sentence written for it.",
+        "Item 31's head is CLOSED (rename-window is in the vocabulary and kill-window is bound with its guard); item 29's remaining head is closed (sprag-gui has a live rename driver). Bindable actions 10 -> 14 against herdr's 51.",
+        "The `rename-session` CLI keeps an old-daemon `null` fallback that the handshake has made unreachable — the same dead arm removed from `rename-window` here, one verb over, and it was REACHABLE when it was written.",
+        "A lone Escape in a terminal client depends on a parser timeout somebody else owns, which is why the editor takes C-c and C-g as well."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
