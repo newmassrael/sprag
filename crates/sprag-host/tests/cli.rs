@@ -2600,8 +2600,9 @@ fn the_cli_steps_a_direction_from_the_pane_it_names() {
     );
 
     // ...and from pane 0 the same flag crosses into 1. Same daemon, same instant, same flag: the
-    // only thing that differs is the origin.
-    let stepped = sprag(&sock, &["select-pane", "-R", "--from", "0"]);
+    // only thing that differs is the origin. Through `-t` as well, because the scope parse runs
+    // BEFORE this verb's own and a flag that takes a value is exactly what it could swallow.
+    let stepped = sprag(&sock, &["select-pane", "-t", "0", "-R", "--from", "0"]);
     assert!(stepped.ok, "--from: {}", stepped.stderr);
     assert_eq!(stepped.stdout.trim(), format!("selected {one}"));
 

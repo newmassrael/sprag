@@ -1683,6 +1683,23 @@ fn an_agent_steps_a_direction_from_a_pane_it_names_and_from_its_own() {
         stray.contains("needs 'dir'"),
         "an origin with nothing to be the origin OF is refused rather than ignored: {stray}",
     );
+    // A FILLED-IN DEFAULT asks for nothing. `from_here: false` beside an explicit origin is not
+    // "two origins", and beside a `pane` it is not "an origin with no direction" — it is a client
+    // that serialises every field of its argument struct, which is the same case `SelectAsk::parse`
+    // decided for an explicit null one layer down. The first draft of this round refused both.
+    let defaulted = server.call_tool(
+        "select_pane",
+        json!({ "dir": "left", "from": 2, "from_here": false }),
+    );
+    assert!(
+        defaulted.contains("left of pane 2"),
+        "from_here: false is absent, so the named origin stands: {defaulted}",
+    );
+    let plain = server.call_tool("select_pane", json!({ "pane": 2, "from_here": false }));
+    assert!(
+        plain.contains("The user is now on pane 2"),
+        "and it does not turn a plain select into a refusal either: {plain}",
+    );
     let ghost = server.call_tool_error("select_pane", json!({ "dir": "left", "from": 99 }));
     assert!(
         ghost.contains("no pane 99"),
@@ -1691,6 +1708,11 @@ fn an_agent_steps_a_direction_from_a_pane_it_names_and_from_its_own() {
     assert!(
         active_line(&server.call_tool("list_panes", json!({}))).contains("pane 2:"),
         "and none of the three refusals moved the user",
+    );
+    let nonsense = server.call_tool_error("select_pane", json!({ "dir": "left", "from_here": 1 }));
+    assert!(
+        nonsense.contains("must be true or false"),
+        "a value that is neither boolean nor absent has no reading: {nonsense}",
     );
 }
 

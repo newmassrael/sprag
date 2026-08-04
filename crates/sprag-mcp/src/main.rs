@@ -2217,23 +2217,24 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
 /// it is exact — a number looked up in one call can name a different pane by the next one, and this
 /// tool MOVES A PERSON'S CURSOR on the strength of it.
 fn select_origin(args: &Value) -> Result<Option<(u64, String)>, String> {
-    let given = |key: &str| args.get(key).filter(|value| !value.is_null());
-    match (given(SelectAsk::FROM_KEY), given(FROM_HERE_ARG)) {
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => Err(format!(
+    let named = args
+        .get(SelectAsk::FROM_KEY)
+        .filter(|value| !value.is_null());
+    match (named, asks_for_here(args)?) {
+        (None, false) => Ok(None),
+        (Some(_), true) => Err(format!(
             "'{}' and '{FROM_HERE_ARG}' both say where to step FROM; give one. '{}' names any \
              pane; '{FROM_HERE_ARG}: true' is the pane you are running in.",
             SelectAsk::FROM_KEY,
             SelectAsk::FROM_KEY,
         )),
-        (Some(_), None) => {
+        (Some(_), false) => {
             let target = pane_target_at(args, SelectAsk::FROM_KEY)?;
             let panes = query_panes()?;
             let pane = resolve_in(&panes, &target)?;
             Ok(Some((pane.id, render_pane_handle(pane))))
         }
-        (None, Some(Value::Bool(false))) => Ok(None),
-        (None, Some(Value::Bool(true))) => own_pane()
+        (None, true) => own_pane()
             .map(|id| Some((id, "the pane you are running in".to_owned())))
             .ok_or_else(|| {
                 format!(
@@ -2243,7 +2244,27 @@ fn select_origin(args: &Value) -> Result<Option<(u64, String)>, String> {
                     SelectAsk::FROM_KEY,
                 )
             }),
-        (None, Some(other)) => Err(format!(
+    }
+}
+
+/// Whether the caller asked to step from THIS server's own pane — the one reading of
+/// [`FROM_HERE_ARG`], so every gate that consults it agrees.
+///
+/// **`false` is ABSENT, not present.** It is the default of a boolean, so a client that fills every
+/// field of an argument struct in sends it while asking for nothing — and the first draft of this
+/// round refused `{dir, from: 2, from_here: false}` as "two origins" and `{pane: 1, from_here:
+/// false}` as "an origin with no direction", both of which have one obvious reading. That is
+/// [`SelectAsk::parse`]'s own rule about an explicit `null`, written into the wire grammar in this
+/// round and then contradicted one layer up in the same round.
+///
+/// # Errors
+///
+/// A value that is neither boolean nor null, which has no reading at all.
+fn asks_for_here(args: &Value) -> Result<bool, String> {
+    match args.get(FROM_HERE_ARG) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(here)) => Ok(*here),
+        Some(other) => Err(format!(
             "'{FROM_HERE_ARG}' must be true or false, not {other}"
         )),
     }
@@ -2259,8 +2280,18 @@ const FROM_HERE_ARG: &str = "from_here";
 /// survives: `{pane: 3, from: 5}` from an agent that meant "left of 5" would select 3 and report
 /// success. One sentence, naming what each argument does, costs a line here and saves that.
 fn forbid_origin(args: &Value) -> Result<(), String> {
-    for key in [SelectAsk::FROM_KEY, FROM_HERE_ARG] {
-        if args.get(key).is_some_and(|value| !value.is_null()) {
+    let asked = [
+        (
+            SelectAsk::FROM_KEY,
+            args.get(SelectAsk::FROM_KEY)
+                .is_some_and(|value| !value.is_null()),
+        ),
+        // Through the SAME reading the arm that honours it uses, so `from_here: false` — a filled-in
+        // default asking for nothing — is not refused here and accepted there.
+        (FROM_HERE_ARG, asks_for_here(args)?),
+    ];
+    for (key, given) in asked {
+        if given {
             return Err(format!(
                 "'{key}' says where a DIRECTION starts from, so it needs 'dir'. Give \
                  'dir' to step from that pane, or 'pane' alone to select a pane outright."
