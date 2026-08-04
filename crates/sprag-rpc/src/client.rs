@@ -103,7 +103,16 @@ pub const SESSION_PARAM: &str = "session";
 ///   snapshot cleanly, ignore the new key, and paint the whole arrangement while the daemon had
 ///   already reflowed the zoomed pane's PTY to the full window — so its grid would be the wrong
 ///   size for every pane on screen. The same wrong-answer-that-parses this number exists for.
-pub const WIRE_PROTOCOL: u32 = 4;
+/// * **5** — `select_pane` gained an ORIGIN (`{dir, from}`, R300): the pane a directional step is
+///   measured from, so an agent can ask for the pane next to a named one instead of joining a layout
+///   read to a select. **The first bump caused by an added ARGUMENT rather than an added or moved
+///   ANSWER.** An added answer key is absent-not-wrong to an old reader, which is why R299's
+///   `outcome` moved nothing; an argument is the opposite — R294 measured an old daemon ACCEPTING an
+///   argument it did not know and DROPPING it, and the request still parses. So a post-R300 client
+///   asking a pre-R300 daemon for "the pane left of pane 7" would be answered "the pane left of
+///   wherever the user happens to be", the user's cursor would move, and nothing anywhere would
+///   report a failure. The number turns that into the one sentence it should be.
+pub const WIRE_PROTOCOL: u32 = 5;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
