@@ -112,15 +112,22 @@ pub(crate) fn is_open() -> bool {
     use_prompt_modal().is_open()
 }
 
-/// Ask for `subject`'s new name, with `seed` already in the field.
+/// Ask for `subject`'s new name, with `seed` already in the field and the caret at its END.
 ///
-/// The seed is SELECTED-BY-CARET rather than cleared: it is the name the thing already has, so the
-/// common edit amends it. A user replacing it outright has `Ctrl+A` and the mouse, which is what a
-/// real field buys over the terminal client's `C-u`.
+/// The name is AMENDED, not replaced: it is what the thing is already called, so the common edit
+/// adds to it or fixes a character. A user starting over has `Ctrl+A` and the mouse, which is what a
+/// real field buys over the terminal client's `C-u` — and it is the opposite of the rival, whose
+/// `name_input_replace_on_type` destroys the seed on the first keystroke (herdr `9a4ce5e1`).
+///
+/// **`seed` and not `set_text`, and the pixel smoke is what found the difference.** `set_text`
+/// alone clamps the caret to its PREVIOUS offset — zero on a first edit — so the first character
+/// typed landed in FRONT of the name and the field held `z0` where `sprag-tui` held `0z`. pinion has
+/// the pair as one call (`TextEditState::seed`, R878) for exactly this reason; a client that wrote
+/// its own two lines was the ninth site to get it wrong.
 pub(crate) fn open(subject: Subject, seed: &str) {
     use_armed().set(Some(subject));
     use_refusal().set(None);
-    use_text_edit_state(PROMPT_FIELD_TAG).set_text(seed.to_owned());
+    use_text_edit_state(PROMPT_FIELD_TAG).seed(seed.to_owned());
     use_prompt_modal().open(vec![PROMPT_FIELD_TAG.to_owned()]);
 }
 

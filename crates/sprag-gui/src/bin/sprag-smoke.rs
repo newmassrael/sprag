@@ -111,6 +111,11 @@ fn main() -> ExitCode {
             // After the keymap gate, which leaves the shipped table in force — this check drives
             // the DEFAULT prefix, so it must not run while a user config has moved it.
             check_the_window_keys_reach_the_daemon(&mut smoke, &mut report);
+            // Straight after the window keys, and for the same reason: it drives the DEFAULT
+            // prefix. It RENAMES the current window and leaves it renamed, which every later check
+            // survives because they read the window they are on rather than a fixed name — an
+            // inheritance, stated here rather than left for the next author to discover.
+            check_the_rename_key_asks_and_the_answer_reaches_the_daemon(&mut smoke, &mut report);
             // HERE for the same reason as the keymap gate above: it needs exactly ONE pane, so the
             // pane the daemon reports and the grid this window paints are unambiguously the same
             // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
@@ -2535,6 +2540,107 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
     );
 }
 
+/// **`prefix ,` opens this client's name prompt, and what is typed into it renames the window ON
+/// THE DAEMON.**
+///
+/// The check that closes two things at once. The keymap ARM is shared between the frontends and the
+/// prompt's POLICY is shared, but the surface that paints a modal and forwards a key into a pinion
+/// field is this binary's own code — so a round that drove only `sprag-tui`'s pty test would be
+/// inferring this client from a file it does not use (R305's finding, applied on the round that
+/// recorded it). And it is the first live driver of a RENAME in `sprag-gui` at all, which is what
+/// item 29 was left holding.
+///
+/// Judged against the DAEMON's window list, never against this client's paint: a client that
+/// renamed nothing and painted the new name anyway would satisfy any check made on its own tree.
+fn check_the_rename_key_asks_and_the_answer_reaches_the_daemon(
+    smoke: &mut Smoke,
+    report: &mut Report,
+) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session for the rename key", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the rename key", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the rename key", false);
+        return;
+    }
+    let before = windows_of(&mut daemon, &session);
+    let Some(current) = before
+        .iter()
+        .find(|(_, current)| *current)
+        .map(|(name, _)| name.clone())
+    else {
+        report.check("the session has a current window to rename", false);
+        return;
+    };
+
+    // `prefix ,` — tmux's rename key, which before this round was `Routed::Swallow`.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, ",", false).is_ok();
+    report.check("the GUI accepts `prefix ,`", pressed);
+    let asked = smoke.wait_for_tag("sprag_prompt_panel");
+    report.check(
+        &format!("`prefix ,` opened the name prompt ({asked:?})"),
+        asked.is_ok(),
+    );
+    if asked.is_err() {
+        return;
+    }
+
+    // The field is focused HERE rather than left to the modal's own trap, for the reason
+    // [`Smoke::focus_pane`] already records: a `focus_request` needs a winit input tick to drain and
+    // there is none headless, so any focus sprag ASKS for never arrives.
+    let focused = smoke.focus_tag("sprag_prompt_field");
+    report.check("the prompt's field can hold the keyboard", focused);
+
+    // The CHARACTER goes through the field's own External, and that is the recorded rule rather
+    // than a shortcut: a headless run cannot make pinion's field accept a synthesised keystroke, so
+    // the fix is to drive the surface by intent instead of pressing harder (the palette's `open`
+    // verb exists for the same reason). What that leaves un-driven is one hop of pinion's, and
+    // every hop of SPRAG's is still a key — `prefix ,` above opened this prompt, and the `Enter`
+    // below is routed through `route_key` into `prompt::handle_key`, which is the code that reads
+    // the field, checks the grammar and calls the daemon.
+    let typed = smoke.invoke("sprag_prompt_field", "key", json!("z")) == Ok(Value::Bool(true));
+    report.check("the prompt's field takes a character", typed);
+    let held = smoke.query("sprag_prompt_field", "text");
+    report.check(
+        &format!("...and HOLDS it, seed and all ({held:?})"),
+        held == Ok(Value::String(format!("{current}z"))),
+    );
+    let answered = smoke.press(0, "Enter", false).is_ok();
+    report.check("the GUI accepts the `Enter` that answers", answered);
+    let wanted = format!("{current}z");
+    let renamed = smoke.wait_for(|s| {
+        let _ = s;
+        let now = windows_of(&mut daemon, &session);
+        now.iter()
+            .any(|(name, current)| *current && *name == wanted)
+            .then_some(now)
+    });
+    report.check(
+        &format!("the typed name reached the DAEMON as {wanted:?} ({renamed:?})"),
+        renamed.is_ok(),
+    );
+    // The AMENDED name is what proves the seed was real: the field opened holding the window's
+    // current name with the caret at its end, so one keystroke appends rather than replaces. A
+    // prompt that opened empty would have renamed the window to `z`.
+    report.check(
+        "...which is the window's OWN name with the keystroke appended, so the seed was real",
+        renamed.is_ok() && wanted != "z",
+    );
+    let closed = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_prompt_panel")).then_some(())
+    });
+    report.check(
+        "and answering closed the prompt, giving the keyboard back",
+        closed.is_ok(),
+    );
+}
+
 /// Every window of `session` and which one is current, straight off the daemon — the authority the
 /// window keys are judged against, since a client that painted a window the daemon does not hold
 /// would satisfy any check made on its own tree.
@@ -3119,9 +3225,16 @@ impl Smoke {
     /// not actually hold (one outside the active enumeration), so the call's own result is not
     /// evidence that anything moved.
     fn focus_pane(&mut self, i: usize) -> bool {
-        let tag = format!("sprag_gui.pane.{i}");
+        self.focus_tag(&format!("sprag_gui.pane.{i}"))
+    }
+
+    /// Put the within-app focus on `tag`, reading it back — [`focus_pane`](Self::focus_pane)
+    /// generalised, because a MODAL's field needs the same accommodation for the same reason: the
+    /// focus a modal REQUESTS when it opens rides on a `focus_request`, and nothing drains one
+    /// headlessly.
+    fn focus_tag(&mut self, tag: &str) -> bool {
         let _ = self.call("focus/set", json!({ "tag": tag }));
-        self.focused().as_deref() == Some(tag.as_str())
+        self.focused().as_deref() == Some(tag)
     }
 
     /// The tag holding the within-app focus, if any.

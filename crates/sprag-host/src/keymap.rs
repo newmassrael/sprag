@@ -1676,6 +1676,32 @@ mod tests {
                     ask: SelectWindowAsk::Named("logs".to_owned()),
                 },
             ),
+            // THE VERBS THAT ASK (R306). The three renames take no argument at all, so what a round
+            // trip pins here is that none of them GREW one: a `Display` that printed the name it was
+            // about would produce a string this parser refuses.
+            ("rename-window", BoundAction::RenameWindow),
+            ("rename-session", BoundAction::RenameSession),
+            ("rename-pane", BoundAction::RenamePane),
+            // The GUARD, whose spelling contains another action's — and this round trip is
+            // load-bearing rather than tidy: `sprag-gui` holds a guarded action AS this string
+            // (`confirm::Guarded::Bound`, because a reactive `Signal` must serialize and a
+            // `BoundAction` carries three types from two crates that have no serde), so a `Display`
+            // that drifted from `parse` would leave a user's `y` performing nothing at all.
+            (
+                "confirm-before kill-window",
+                BoundAction::ConfirmBefore {
+                    action: Box::new(BoundAction::KillWindow),
+                },
+            ),
+            (
+                "confirm-before split-window -h",
+                BoundAction::ConfirmBefore {
+                    action: Box::new(BoundAction::SplitWindow {
+                        dir: SplitDir::Horizontal,
+                        before: false,
+                    }),
+                },
+            ),
         ];
         for (text, action) in cases {
             assert_eq!(BoundAction::parse(text), Ok(action.clone()), "{text:?}");
@@ -1684,6 +1710,51 @@ mod tests {
                 text,
                 "and prints back as it was written"
             );
+        }
+    }
+
+    /// The three ASKING verbs take no argument, a guard refuses to guard another question, and
+    /// tmux's `command-prompt` is refused with the reason rather than as an unknown verb.
+    ///
+    /// One test for the three refusals because they are one decision seen from three sides: a name
+    /// is what the PROMPT asks for, so it cannot be in the binding — which is why there is no
+    /// `command-prompt` to put it in, and why a guard wrapping a prompt would be asking twice.
+    #[test]
+    fn the_asking_verbs_carry_no_name_and_no_prompt_guards_a_prompt() {
+        for action in ["rename-window main", "rename-session x", "rename-pane -t 3"] {
+            assert!(
+                matches!(BoundAction::parse(action), Err(KeyError::BadFlags { why, .. })
+                    if why.contains("the name is what the prompt asks for")),
+                "{action:?} must be refused with the reason",
+            );
+        }
+        // A guard on a verb that asks would put a question on top of a question.
+        for action in [
+            "confirm-before rename-window",
+            "confirm-before confirm-before kill-window",
+        ] {
+            assert!(
+                matches!(BoundAction::parse(action), Err(KeyError::BadFlags { why, .. })
+                    if why.contains("already asks a question")),
+                "{action:?} must be refused",
+            );
+        }
+        assert!(
+            matches!(BoundAction::parse("confirm-before"), Err(KeyError::BadFlags { why, .. })
+                if why.contains("needs an action to guard")),
+        );
+        // A pasted tmux line is told WHY, not that its verb is unknown — `UnknownAction` would send
+        // the user looking for a typo in a spelling that is correct for tmux.
+        let pasted = BoundAction::parse("command-prompt -I \"#W\" \"rename-window '%%'\"");
+        assert!(
+            matches!(&pasted, Err(KeyError::BadFlags { why, .. })
+                if why.contains("rename verbs ASK by themselves")),
+            "{pasted:?}",
+        );
+        // THE CONTROL: the verbs themselves parse bare, so the refusals above are about the
+        // ARGUMENT and not about the vocabulary missing the verb.
+        for action in ["rename-window", "rename-session", "rename-pane"] {
+            assert!(BoundAction::parse(action).is_ok(), "{action:?} parses bare");
         }
     }
 

@@ -373,6 +373,13 @@ impl Line {
     /// a key means. Control chords are read as chords (`C-a`, `C-e`, `C-u`, `C-k`, `C-w`) — the
     /// readline vocabulary every shell user's fingers already carry, which is also what the pane
     /// behind this prompt would have done with them.
+    ///
+    /// **`C-c` and `C-g` cancel as well as `Escape`, and in a TERMINAL client that is not a
+    /// convenience.** A lone `ESC` byte is the start of an escape SEQUENCE as far as any parser can
+    /// tell, so a key typed straight after it arrives as `Alt+<that key>` rather than as two
+    /// keystrokes — Escape cancels for a user who pauses, which is what cancelling looks like, but
+    /// it is the one gesture here that depends on a timeout somebody else owns. The two chords have
+    /// no such ambiguity, and a GUI's Escape has none either.
     pub fn typed(&mut self, name: &str, mods: Modifiers) -> Typed {
         if mods.ctrl {
             return match name {

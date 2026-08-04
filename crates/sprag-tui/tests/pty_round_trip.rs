@@ -1046,6 +1046,99 @@ fn the_window_keys_create_and_walk_the_sessions_windows() {
     );
 }
 
+/// **A NAME can be typed at this client, and the keystrokes that carry it never reach the shell.**
+///
+/// The gap R306 measured before writing anything: `prefix ,` was UNBOUND, so it was
+/// `Routed::Swallow` and the mode is one key long — which means the `build` and the `Enter` that a
+/// tmux user types next went to the PANE and the shell ran `build`. That is what the second
+/// assertion here is for, and it is the half that discriminates: a client that swallowed the `,`
+/// and did nothing else would still leave the window renamed by nobody and `build` in the shell.
+///
+/// The ESCAPE half is asserted last and in the same test, because the two are one property seen
+/// from both sides: while the prompt is up the keyboard is the prompt's, and the moment it closes
+/// the keyboard is the pane's again. Two tests would each pin half of that and neither would pin
+/// the transition.
+#[test]
+fn a_name_typed_at_the_prompt_renames_the_window_and_never_reaches_the_shell() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &sock;
+
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("0".to_owned(), true)],
+        "the session boots with one window, whose name is what the prompt will move",
+    );
+    let shell_before = pane_text_of(&mut conn, &session, 0);
+
+    // `prefix ,` — tmux's rename key. Then more text, one keystroke at a time, and `Enter`.
+    //
+    // The first pass AMENDS: the editor opens holding the window's current name with the cursor at
+    // its end, so what lands is `0-x` and not `-x`. That is the seed being REAL — a prompt that
+    // opened empty (or one that cleared on the first keystroke, which is what the rival does) would
+    // rename the window to `-x`, and it is also the assertion that proves the answer is not simply
+    // whatever was typed.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b",");
+    tui.type_bytes(b"-x\r");
+    wait_for("the amended name to reach the daemon's window list", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0-x".to_owned(), true)],
+        )
+    });
+
+    // ...and `C-u` is how a user starts over, which is the same chord the shell behind the prompt
+    // would have used. `-x` above also proves the answer never re-enters a parser: a leading dash
+    // is a NAME here, where tmux's `command-prompt` substitutes into a command line and has to
+    // quote to keep it from becoming a flag.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b",");
+    tui.type_bytes(b"\x15build\r");
+    wait_for(
+        "the replaced name to reach the daemon's window list",
+        || {
+            settled(
+                windows_of(&mut conn, &session),
+                &vec![("build".to_owned(), true)],
+            )
+        },
+    );
+
+    // ...and NOT the shell. `cat` echoes what it is given, so the pane's own text is the record of
+    // what got past the prompt: before this round, every one of those characters did.
+    let shell_after = pane_text_of(&mut conn, &session, 0);
+    assert_eq!(
+        shell_after, shell_before,
+        "the name was typed AT THE CLIENT: not one character of it reached the pane",
+    );
+
+    // CANCELLING gives the keyboard back, and the window keeps the name it has.
+    //
+    // `C-c` rather than `Escape`, and the reason is a property of terminals rather than of this
+    // client: a lone `\x1b` is the START of an escape sequence as far as any parser is concerned, so
+    // a byte typed straight after it arrives as `Alt+<that key>` instead of as two keystrokes.
+    // Escape does cancel — for a user who pauses, which is what a user cancelling does — but a TEST
+    // that typed it and then immediately typed again would be asserting the parser's timeout.
+    // `C-c` and `C-g` are one byte each and mean cancel at every shell prompt, which is why the
+    // editor takes all three.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b",");
+    tui.type_bytes(b"discarded\x03");
+    typing_follows(&mut tui, &mut conn, &session, 0);
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("build".to_owned(), true)],
+        "a cancelled prompt renames nothing, and the client is typing into the pane again",
+    );
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "and the client survived asking, answering and cancelling",
+    );
+}
+
 /// The ARRANGEMENT's pane order for `session`'s current window — the fact a swap moves and the pane
 /// LISTING does not.
 ///

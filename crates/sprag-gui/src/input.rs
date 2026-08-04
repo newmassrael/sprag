@@ -927,6 +927,59 @@ mod tests {
         );
     }
 
+    /// **A shifted character reaches its binding here, where a real keyboard sets the SHIFT flag the
+    /// synthesized presses above never do.**
+    ///
+    /// R306 measured the gap and it was a shipped defect: winit reports `Shift+5` as the W3C key
+    /// `"%"` with `shift_key()` ALSO set (`winit_modifiers_to_pinion`), while `sprag-tui` reads the
+    /// raw pty byte and reports `"%"` with no modifier at all — so an exact modifier comparison
+    /// matched the terminal client and not this one, and `prefix %` (a tmux default sprag has
+    /// shipped since the keymap existed) did nothing in the GUI on a real keyboard.
+    ///
+    /// Every existing test missed it for the same reason: [`press`] and the pixel smoke's
+    /// `scene/key` both synthesize the character WITHOUT the flag a keyboard sets. So this test
+    /// presses it the way winit does, which is the whole point of it.
+    ///
+    /// REVERT-PROOF: restore the exact `self.mods == mods` comparison in `KeySpec::matches` and the
+    /// split assertion fails while the sibling above still passes.
+    #[test]
+    fn a_shifted_character_reaches_its_binding_as_a_keyboard_sends_it() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("[options]\nprefix = \"C-a\"\n");
+            seed_terminal(host);
+            let before = panes();
+
+            // `Shift+5` as winit delivers it: the character, AND the modifier bit.
+            let shifted = Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            };
+            assert!(press(0, "a", ctrl()));
+            assert!(press(0, "%", shifted));
+            assert_eq!(
+                panes(),
+                before + 1,
+                "`prefix %` divides the pane when the shift flag rides along, as a keyboard sends it",
+            );
+
+            // THE CONTROL, which is what keeps the fix from being "ignore shift everywhere": a
+            // NAMED key's shift is a real modifier, so `S-ArrowLeft` (swap) and `ArrowLeft`
+            // (select) must stay two different bindings. Asserted through the table rather than
+            // through a pane count, because both of those act on the arrangement.
+            let keys = use_client_keys();
+            let armed = sprag_host::keymap::PrefixMode::AfterPrefix;
+            let bare = keys.route(armed, "ArrowLeft", sprag_input::Modifiers::default());
+            let with_shift = keys.route(armed, "ArrowLeft", to_input_mods(shifted));
+            assert_ne!(
+                bare, with_shift,
+                "a NAMED key's shift is a modifier a user really holds, and still tells two \
+                 bindings apart",
+            );
+        });
+    }
+
     /// **A `-n` binding acts in this frontend too, with no prefix — and the key never reaches the
     /// PTY.**
     ///
