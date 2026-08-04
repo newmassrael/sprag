@@ -125,11 +125,20 @@
 use std::collections::VecDeque;
 
 use serde_json::Value;
-use sprag_terminal::SessionRegistry;
+use sprag_terminal::{SessionId, SessionRegistry, WindowId};
 
 /// One window's structural fingerprint, as [`SessionShape::read`] takes it under the registry lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowShape {
+    /// The window's IDENTITY, which its name is only the ADDRESS of.
+    ///
+    /// It is what makes [`Event::WindowRenamed`] derivable at all. Without it a window's public
+    /// shape IS its name, so a rename is indistinguishable from a close plus a create — the
+    /// sentence this module's docs used to give as the reason there was no such variant, and which
+    /// was measured producing `window_created beta` + `window_closed alpha` for one
+    /// `rename-window`. It never reaches the wire (see [`SessionId`] for that boundary); it exists
+    /// so the DERIVATION can prefer the honest reading.
+    id: WindowId,
     /// The window's display name, which is also its address.
     name: String,
     /// Whether it is the session's current window.
@@ -184,12 +193,15 @@ struct WindowShape {
 pub struct SessionShape {
     /// This session's windows, in registry order.
     windows: Vec<WindowShape>,
-    /// Every session's name, registry-wide and in registry order.
+    /// Every session as `(identity, name)`, registry-wide and in registry order.
     ///
     /// Registry-wide because the `sessions` slot a woken client re-reads is registry-wide. It rides
     /// in the SCOPED session's shape because a bump reaches exactly the clients scoped to that
     /// session, so this log's reach is the wake's reach — no wider, and deliberately not narrower.
-    sessions: Vec<String>,
+    ///
+    /// The identity rides for [`WindowShape::id`]'s reason one level up: a session's public shape
+    /// is its name too, so a `Vec<String>` alone makes a rename look like a death and a birth.
+    sessions: Vec<(SessionId, String)>,
 }
 
 impl SessionShape {
@@ -199,7 +211,7 @@ impl SessionShape {
         let sessions = registry
             .sessions()
             .iter()
-            .map(|entry| entry.name().to_owned())
+            .map(|entry| (entry.id(), entry.name().to_owned()))
             .collect();
         let windows = registry.session(session).map_or_else(Vec::new, |entry| {
             let current = entry.current_window().name().to_owned();
@@ -207,6 +219,7 @@ impl SessionShape {
                 .windows()
                 .iter()
                 .map(|window| {
+                    let id = window.id();
                     let name = window.name().to_owned();
                     let layout = window.layout_revision();
                     let panes = {
@@ -228,6 +241,7 @@ impl SessionShape {
                         ids
                     };
                     WindowShape {
+                        id,
                         current: name == current,
                         name,
                         layout,
@@ -240,6 +254,23 @@ impl SessionShape {
         Self { windows, sessions }
     }
 
+    /// The window holding pane `id` in this shape, or `None` if no window does.
+    ///
+    /// The question a pane event asks before it decides whether a pane was BORN or merely ARRIVED,
+    /// and whether it DIED or merely LEFT — which is the whole of this round's correction. Each
+    /// window's pane list is sorted by id ([`SessionShape::read`]), so this is a binary search per
+    /// window and allocates nothing: the diff runs on every mutating dispatch and every keystroke
+    /// is one, so a map built per call would allocate at typing rate to answer a question about a
+    /// handful of windows.
+    fn window_of(&self, pane: u64) -> Option<&WindowShape> {
+        self.windows.iter().find(|window| {
+            window
+                .panes
+                .binary_search_by_key(&pane, |(id, _)| *id)
+                .is_ok()
+        })
+    }
+
     /// What moved between `self` (the older shape) and `next`.
     ///
     /// Order is deliberate and is the order a reader can apply without a contradiction in hand:
@@ -247,30 +278,64 @@ impl SessionShape {
     #[must_use]
     pub fn diff(&self, next: &Self) -> Vec<Event> {
         let mut events = Vec::new();
-        for name in &next.sessions {
-            if !self.sessions.contains(name) {
-                events.push(Event::SessionCreated(name.clone()));
+        // Matched by IDENTITY, not by name: a session whose name moved is the SAME session, and the
+        // `Vec<String>` this used to compare could only read that as one death and one birth.
+        for (id, name) in &next.sessions {
+            match self.sessions.iter().find(|(had, _)| had == id) {
+                None => events.push(Event::SessionCreated(name.clone())),
+                Some((_, had_name)) if had_name != name => events.push(Event::SessionRenamed {
+                    from: had_name.clone(),
+                    to: name.clone(),
+                }),
+                Some(_) => {}
             }
         }
-        for name in &self.sessions {
-            if !next.sessions.contains(name) {
+        for (id, name) in &self.sessions {
+            if !next.sessions.iter().any(|(next_id, _)| next_id == id) {
                 events.push(Event::SessionClosed(name.clone()));
             }
         }
         for window in &next.windows {
-            let had = self.windows.iter().find(|had| had.name == window.name);
+            // By identity for the sessions' reason, one level down.
+            let had = self.windows.iter().find(|had| had.id == window.id);
             let Some(had) = had else {
                 events.push(Event::WindowCreated(window.name.clone()));
                 // A new window's panes are not PaneCreated events: the window itself is the change,
                 // and a reader re-reading it gets the panes with it. Reporting both would have the
                 // reader apply the same fact twice, in an order this cannot promise.
+                //
+                // A pane that EXISTED BEFORE is a different matter and is reported: `break-pane`
+                // creates a window and moves a pane into it in one act, and a reader holding that
+                // pane has to learn it left the window it was in. The birth carries what is NEW; it
+                // cannot carry what merely arrived.
+                for (id, _) in &window.panes {
+                    if self.window_of(*id).is_some() {
+                        events.push(Event::PaneMoved {
+                            pane: *id,
+                            window: window.name.clone(),
+                        });
+                    }
+                }
                 continue;
             };
+            if had.name != window.name {
+                events.push(Event::WindowRenamed {
+                    from: had.name.clone(),
+                    to: window.name.clone(),
+                });
+            }
             if window.current && !had.current {
                 events.push(Event::WindowSelected(window.name.clone()));
             }
             for (id, name) in &window.panes {
                 match had.panes.iter().find(|(had_id, _)| had_id == id) {
+                    // Not in THIS window before. It is a birth only if it was in no window at all;
+                    // otherwise it MOVED, and saying `pane_created` for it would be the second half
+                    // of the contradiction the close half below used to write.
+                    None if self.window_of(*id).is_some() => events.push(Event::PaneMoved {
+                        pane: *id,
+                        window: window.name.clone(),
+                    }),
                     None => events.push(Event::PaneCreated(*id)),
                     // A pane present in BOTH shapes under a different name was renamed. This is
                     // exactly the derivation the module docs refuse for a WINDOW, and it comes out
@@ -289,7 +354,10 @@ impl SessionShape {
                 }
             }
             for (id, _) in &had.panes {
-                if !window.panes.iter().any(|(next_id, _)| next_id == id) {
+                // Gone from the SESSION, not merely from this window: a pane that left for another
+                // one is reported there as a move, and this loop reporting it dead as well is
+                // exactly the `pane_closed 7` + `pane_created 7` pair MEASURED in one batch.
+                if next.window_of(*id).is_none() {
                     events.push(Event::PaneClosed(*id));
                 }
             }
@@ -314,7 +382,7 @@ impl SessionShape {
             }
         }
         for had in &self.windows {
-            if !next.windows.iter().any(|window| window.name == had.name) {
+            if !next.windows.iter().any(|window| window.id == had.id) {
                 events.push(Event::WindowClosed(had.name.clone()));
             }
         }
@@ -346,16 +414,69 @@ pub enum Event {
     /// what the name now IS. That matters more here than elsewhere: a name is an ADDRESS, so a
     /// client holding one needs to know the moment it stops resolving.
     PaneRenamed(u64),
+    /// A pane LEFT one window for another — it neither died nor was born, and the two events that
+    /// used to say so in one batch (`pane_closed 7` then `pane_created 7`, MEASURED at `bc4ee37`)
+    /// contradicted each other about the same id.
+    ///
+    /// The subject is the pane, whose id survives the move. The `window` it names is the
+    /// DESTINATION, and it is here rather than left to a re-read because no slot serves it: `panes`
+    /// and `layout` answer for the SCOPED session's CURRENT window only, so a pane that moved out of
+    /// it is unreadable until the reader is told where it went. That is the same test every other
+    /// variant passes by carrying nothing — herdr's `pane.moved` carries `{pane_id}` and leaves the
+    /// question open.
+    PaneMoved {
+        /// The pane that moved.
+        pane: u64,
+        /// The name of the window it moved INTO.
+        window: String,
+    },
     /// A window (tmux's window, a tab) appeared under this name.
     WindowCreated(String),
     /// A window is gone from the session's window list.
     WindowClosed(String),
     /// The session's CURRENT window moved to this name.
     WindowSelected(String),
+    /// A window's NAME moved — the variant this module's docs used to explain the ABSENCE of.
+    ///
+    /// The explanation was right about the code and wrong about what to do: a window's public shape
+    /// was its name, so a rename could not be told from a close plus a create, and a
+    /// `rename-window` MEASURED as `window_created beta` + `window_closed alpha` — a reader tearing
+    /// down the window it holds and building a stranger. What changed is that a window now has an
+    /// IDENTITY the name is only the address of ([`WindowId`]).
+    ///
+    /// The subject is the name the window HAD, because that is the address a parked client holds
+    /// and filtered on; `to` is the one fact no slot can answer afterwards. See
+    /// [`Event::SessionRenamed`], which states the argument in full.
+    WindowRenamed {
+        /// The name the window answered to until now — this event's SUBJECT.
+        from: String,
+        /// What it answers to from now on.
+        to: String,
+    },
     /// A session appeared under this name.
     SessionCreated(String),
     /// A session is gone from the registry.
     SessionClosed(String),
+    /// A session's NAME moved — tmux `rename-session`.
+    ///
+    /// # Why the subject is the OLD name
+    ///
+    /// Every other variant here names its subject and refuses to carry a value, because a reader
+    /// re-reads the slot where that value is defined once. A rename is the case where re-reading
+    /// cannot answer: the old name is gone from the `sessions` list and nothing there says which of
+    /// the names now present is the one this reader had. So `to` rides — not as a second encoding
+    /// of a fact a slot serves, but as the only place the correspondence exists.
+    ///
+    /// And the SUBJECT is `from` because a subject is what a waiter FILTERS on. A client parked with
+    /// `{kind: session_renamed, session: "work"}` is asking *tell me when the address I hold stops
+    /// resolving* — the one question this event exists to answer, and one that a subject naming the
+    /// new name would leave unanswered for exactly the client that needs it.
+    SessionRenamed {
+        /// The name the session answered to until now — this event's SUBJECT.
+        from: String,
+        /// What it answers to from now on.
+        to: String,
+    },
     /// The pane ARRANGEMENT moved — a split, a divider drag, a float, a break or join — without the
     /// pane SET necessarily changing. Carries no subject because the arrangement is one object; a
     /// reader answers it by re-reading the layout slot, which is what it would do for any subject
@@ -422,11 +543,14 @@ impl Event {
             Self::PaneSelected(_) => EventKind::PaneSelected,
             Self::AgentStateChanged(_) => EventKind::PaneAgentStateChanged,
             Self::PaneJobChanged(_) => EventKind::PaneJobChanged,
+            Self::PaneMoved { .. } => EventKind::PaneMoved,
             Self::WindowCreated(_) => EventKind::WindowCreated,
             Self::WindowClosed(_) => EventKind::WindowClosed,
             Self::WindowSelected(_) => EventKind::WindowSelected,
+            Self::WindowRenamed { .. } => EventKind::WindowRenamed,
             Self::SessionCreated(_) => EventKind::SessionCreated,
             Self::SessionClosed(_) => EventKind::SessionClosed,
+            Self::SessionRenamed { .. } => EventKind::SessionRenamed,
             Self::LayoutUpdated => EventKind::LayoutUpdated,
         }
     }
@@ -442,13 +566,39 @@ impl Event {
             | Self::PaneSelected(id)
             | Self::AgentStateChanged(id)
             | Self::PaneJobChanged(id) => Some(Subject::Pane(*id)),
+            Self::PaneMoved { pane, .. } => Some(Subject::Pane(*pane)),
             Self::WindowCreated(name) | Self::WindowClosed(name) | Self::WindowSelected(name) => {
                 Some(Subject::Window(name.clone()))
             }
+            Self::WindowRenamed { from, .. } => Some(Subject::Window(from.clone())),
             Self::SessionCreated(name) | Self::SessionClosed(name) => {
                 Some(Subject::Session(name.clone()))
             }
+            Self::SessionRenamed { from, .. } => Some(Subject::Session(from.clone())),
             Self::LayoutUpdated => None,
+        }
+    }
+
+    /// The one fact this event carries BESIDE its subject, or `None` — which is the answer for
+    /// every variant but the three that move an address.
+    ///
+    /// The bar for riding here is not "a reader would like it": it is that **no slot can answer it
+    /// afterwards.** A rename's new name qualifies because the old name is gone from the list and
+    /// nothing there says which entry used to be it; a moved pane's destination window qualifies
+    /// because `panes` and `layout` serve the current window only. A process group, an agent
+    /// verdict and a pane's new NAME all fail that bar and so are not here — their slots define
+    /// them once, and a second encoding is a second thing that can drift.
+    ///
+    /// Paired with [`EventKind::detail_key`] exactly as [`subject`](Self::subject) is with
+    /// [`EventKind::subject_key`], and pinned by the same test.
+    #[must_use]
+    pub fn detail(&self) -> Option<Value> {
+        match self {
+            Self::PaneMoved { window, .. } => Some(Value::from(window.clone())),
+            Self::WindowRenamed { to, .. } | Self::SessionRenamed { to, .. } => {
+                Some(Value::from(to.clone()))
+            }
+            _ => None,
         }
     }
 
@@ -469,6 +619,9 @@ impl Event {
         object.insert("type".to_owned(), Value::from(kind.wire_str()));
         if let (Some(key), Some(subject)) = (kind.subject_key(), self.subject()) {
             object.insert(key.to_owned(), subject.wire_value());
+        }
+        if let (Some(key), Some(detail)) = (kind.detail_key(), self.detail()) {
+            object.insert(key.to_owned(), detail);
         }
         Value::Object(object)
     }
@@ -790,21 +943,31 @@ pub enum EventKind {
     PaneAgentStateChanged,
     /// [`Event::PaneJobChanged`].
     PaneJobChanged,
+    /// [`Event::PaneMoved`].
+    PaneMoved,
     /// [`Event::WindowCreated`].
     WindowCreated,
     /// [`Event::WindowClosed`].
     WindowClosed,
     /// [`Event::WindowSelected`].
     WindowSelected,
+    /// [`Event::WindowRenamed`].
+    WindowRenamed,
     /// [`Event::SessionCreated`].
     SessionCreated,
     /// [`Event::SessionClosed`].
     SessionClosed,
+    /// [`Event::SessionRenamed`].
+    SessionRenamed,
     /// [`Event::LayoutUpdated`].
     LayoutUpdated,
 }
 
 impl EventKind {
+    /// The wire key a RENAME's new name rides under — [`detail_key`](Self::detail_key)'s word for
+    /// both renaming kinds, spelled once so the two cannot drift apart.
+    pub const RENAME_DETAIL_KEY: &'static str = "name";
+
     /// Every kind, so a test can walk the whole vocabulary rather than the subset its author
     /// remembered.
     ///
@@ -818,11 +981,14 @@ impl EventKind {
         Self::PaneSelected,
         Self::PaneAgentStateChanged,
         Self::PaneJobChanged,
+        Self::PaneMoved,
         Self::WindowCreated,
         Self::WindowClosed,
         Self::WindowSelected,
+        Self::WindowRenamed,
         Self::SessionCreated,
         Self::SessionClosed,
+        Self::SessionRenamed,
         Self::LayoutUpdated,
     ];
 
@@ -841,11 +1007,14 @@ impl EventKind {
             Self::PaneSelected => "pane_selected",
             Self::PaneAgentStateChanged => "pane_agent_state_changed",
             Self::PaneJobChanged => "pane_job_changed",
+            Self::PaneMoved => "pane_moved",
             Self::WindowCreated => "window_created",
             Self::WindowClosed => "window_closed",
             Self::WindowSelected => "window_selected",
+            Self::WindowRenamed => "window_renamed",
             Self::SessionCreated => "session_created",
             Self::SessionClosed => "session_closed",
+            Self::SessionRenamed => "session_renamed",
             Self::LayoutUpdated => "layout_updated",
         }
     }
@@ -882,13 +1051,36 @@ impl EventKind {
             | Self::PaneRenamed
             | Self::PaneSelected
             | Self::PaneAgentStateChanged
-            | Self::PaneJobChanged => Some(Subject::PANE_KEY),
-            Self::WindowCreated | Self::WindowClosed | Self::WindowSelected => {
-                Some(Subject::WINDOW_KEY)
+            | Self::PaneJobChanged
+            | Self::PaneMoved => Some(Subject::PANE_KEY),
+            Self::WindowCreated
+            | Self::WindowClosed
+            | Self::WindowSelected
+            | Self::WindowRenamed => Some(Subject::WINDOW_KEY),
+            Self::SessionCreated | Self::SessionClosed | Self::SessionRenamed => {
+                Some(Subject::SESSION_KEY)
             }
-            Self::SessionCreated | Self::SessionClosed => Some(Subject::SESSION_KEY),
             // The arrangement is ONE object: see `Event::LayoutUpdated`.
             Self::LayoutUpdated => None,
+        }
+    }
+
+    /// The wire KEY this kind's [`detail`](Event::detail) rides under, or `None` for the kinds that
+    /// carry none — which is all but the three that move an address.
+    ///
+    /// A rename's is `name`, the same word the `rename_window` / `rename_session` ACTIONS spell the
+    /// new name with, so a reader moving between the request and the event meets one vocabulary. A
+    /// move's is `window`, which is the window key a window subject already rides under.
+    ///
+    /// Deliberately NOT a second subject: `{session: "work", name: "prod"}` says *the session you
+    /// know as `work`* and answers *it is `prod` now*. A filter constrains the subject only, so a
+    /// clause can ask about the address a client HOLDS and never about one it has not yet heard of.
+    #[must_use]
+    pub const fn detail_key(self) -> Option<&'static str> {
+        match self {
+            Self::WindowRenamed | Self::SessionRenamed => Some(Self::RENAME_DETAIL_KEY),
+            Self::PaneMoved => Some(Subject::WINDOW_KEY),
+            _ => None,
         }
     }
 }
@@ -1405,6 +1597,173 @@ mod tests {
         let _ = EventLog::new(0);
     }
 
+    /// A registry with one session and `panes` panes in its first window, for the derivation tests
+    /// below. Real panes over a real PTY, because the shape reads the pane pool and a stand-in pool
+    /// would be a second definition of what this derives from.
+    fn registry_with(panes: usize) -> (SessionRegistry, Vec<u64>) {
+        let registry = SessionRegistry::new((80, 24));
+        let pool = registry
+            .workspace_of(registry.default_session().name())
+            .expect("the default session always resolves");
+        let ids = (0..panes)
+            .map(|_| {
+                let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg("cat");
+                command.env("TERM", "dumb");
+                pool.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .spawn(command, "sh".to_owned(), 80, 24)
+                    .expect("a pane spawns")
+                    .0
+            })
+            .collect();
+        (registry, ids)
+    }
+
+    /// What the funnel would record for the change `mutate` makes to `registry`.
+    fn derived(
+        registry: &mut SessionRegistry,
+        mutate: impl FnOnce(&mut SessionRegistry),
+    ) -> Vec<Event> {
+        let session = registry.default_session().name().to_owned();
+        let before = SessionShape::read(registry, &session);
+        mutate(registry);
+        // The session may have been RENAMED by `mutate`, which is the case this whole pass is
+        // about: read the shape at the address it has now, exactly as the dispatch funnel does.
+        let now = registry
+            .name_of(before.sessions[0].0)
+            .unwrap_or(&session)
+            .to_owned();
+        let after = SessionShape::read(registry, &now);
+        before.diff(&after)
+    }
+
+    /// A WINDOW rename derives as ONE rename — where it used to derive as a create plus a close,
+    /// MEASURED against a live daemon at `bc4ee37` as `window_created beta` + `window_closed
+    /// alpha`. The controls are in the same test on purpose: a real create and a real close must
+    /// still say so, or this assertion would pass on a diff that reported nothing at all.
+    #[test]
+    fn a_window_rename_is_one_rename_and_a_real_close_is_still_a_close() {
+        let (mut registry, _) = registry_with(0);
+        let session = registry.default_session().name().to_owned();
+        registry.new_window(&session, Some("alpha")).unwrap();
+
+        let renamed = derived(&mut registry, |registry| {
+            registry.rename_window(&session, "alpha", "beta").unwrap();
+        });
+        assert_eq!(
+            renamed,
+            vec![Event::WindowRenamed {
+                from: "alpha".to_owned(),
+                to: "beta".to_owned(),
+            }],
+            "one rename — no birth, no death, and no LayoutUpdated either: nothing moved but a name",
+        );
+
+        // CONTROL 1 — a window that really appears is still a birth.
+        let created = derived(&mut registry, |registry| {
+            registry.new_window(&session, Some("gamma")).unwrap();
+        });
+        assert!(
+            created.contains(&Event::WindowCreated("gamma".to_owned())),
+            "a real create still reports one: {created:?}",
+        );
+
+        // CONTROL 2 — a window that really goes is still a death.
+        let killed = derived(&mut registry, |registry| {
+            registry.kill_window(&session, "gamma").unwrap();
+        });
+        assert!(
+            killed.contains(&Event::WindowClosed("gamma".to_owned())),
+            "a real close still reports one: {killed:?}",
+        );
+    }
+
+    /// A SESSION rename derives as one rename, and the identity is what makes it derivable: the
+    /// name is the only public shape a session has, so `Vec<String>` could only read this as one
+    /// session dying and another being born. Controls in the same test, for the reason above.
+    #[test]
+    fn a_session_rename_is_one_rename_and_a_real_kill_is_still_a_kill() {
+        let (mut registry, _) = registry_with(0);
+        let session = registry.default_session().name().to_owned();
+
+        let renamed = derived(&mut registry, |registry| {
+            registry.rename_session(&session, "prod").unwrap();
+        });
+        assert_eq!(
+            renamed,
+            vec![Event::SessionRenamed {
+                from: session.clone(),
+                to: "prod".to_owned(),
+            }],
+            "one rename, naming the address the client HELD and the one it answers to now",
+        );
+
+        // CONTROL 1 — a session that really appears is still a birth.
+        let created = derived(&mut registry, |registry| {
+            registry.new_session(Some("play")).unwrap();
+        });
+        assert_eq!(created, vec![Event::SessionCreated("play".to_owned())]);
+
+        // CONTROL 2 — and one that really goes is still a death.
+        let killed = derived(&mut registry, |registry| {
+            registry.kill_session("play").unwrap();
+        });
+        assert_eq!(killed, vec![Event::SessionClosed("play".to_owned())]);
+    }
+
+    /// A pane that changes WINDOW moved — it did not die and it was not born. The old derivation
+    /// wrote both halves into ONE batch (`pane_closed 1` then `pane_created 1`, measured live),
+    /// which contradicted itself about the same id.
+    #[test]
+    fn a_pane_that_changed_window_moved_and_a_real_close_is_still_a_close() {
+        let (mut registry, ids) = registry_with(2);
+        let session = registry.default_session().name().to_owned();
+        let moving = ids[1];
+        registry.new_window(&session, Some("other")).unwrap();
+
+        let moved = derived(&mut registry, |registry| {
+            registry
+                .join_pane(&session, sprag_terminal::PaneId(moving), "other")
+                .unwrap();
+        });
+        assert!(
+            moved.contains(&Event::PaneMoved {
+                pane: moving,
+                window: "other".to_owned(),
+            }),
+            "the move is reported as a move: {moved:?}",
+        );
+        assert!(
+            !moved.iter().any(|event| matches!(
+                event,
+                Event::PaneClosed(id) | Event::PaneCreated(id) if *id == moving
+            )),
+            "and NOT as a death or a birth — that pair is the defect this replaced: {moved:?}",
+        );
+
+        // CONTROL — a pane that really closes still reports it, so the assertion above is not
+        // passing on a derivation that stopped reporting panes at all.
+        let closed = derived(&mut registry, |registry| {
+            // The pane's OWN window by name: `workspace_of` answers the CURRENT one, which the
+            // `new_window` above moved — and a control that closes nothing proves nothing.
+            let reaped = registry
+                .window_workspace(&session, "0")
+                .expect("the window resolves")
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .close(sprag_terminal::PaneId(ids[0]));
+            // Bound so the workspace guard falls at the `;` and the reaped pane's blocking `Drop`
+            // (kill / wait / join the reader) runs OFF the lock — the crate's own discipline.
+            drop(reaped);
+        });
+        assert!(
+            closed.contains(&Event::PaneClosed(ids[0])),
+            "a real close still reports one: {closed:?}",
+        );
+    }
+
     /// One event of every kind — the RATCHET for the tests below.
     ///
     /// The match is on the KIND and is exhaustive, so a new [`EventKind`] does not compile until it
@@ -1422,6 +1781,18 @@ mod tests {
             EventKind::WindowSelected => Event::WindowSelected("two".to_owned()),
             EventKind::SessionCreated => Event::SessionCreated("work".to_owned()),
             EventKind::SessionClosed => Event::SessionClosed("work".to_owned()),
+            EventKind::PaneMoved => Event::PaneMoved {
+                pane: 7,
+                window: "two".to_owned(),
+            },
+            EventKind::WindowRenamed => Event::WindowRenamed {
+                from: "two".to_owned(),
+                to: "three".to_owned(),
+            },
+            EventKind::SessionRenamed => Event::SessionRenamed {
+                from: "work".to_owned(),
+                to: "prod".to_owned(),
+            },
             EventKind::LayoutUpdated => Event::LayoutUpdated,
         }
     }
@@ -1433,7 +1804,7 @@ mod tests {
         // `ALL` would silently not cover it. R275 cost a round to exactly this shape of silence.
         assert_eq!(
             EventKind::ALL.len(),
-            12,
+            15,
             "a kind was added or removed — update `ALL` and this count together",
         );
         for kind in EventKind::ALL {
@@ -1526,6 +1897,18 @@ mod tests {
             (
                 EventKind::SessionClosed,
                 json!({ "type": "session_closed", "session": "work" }),
+            ),
+            (
+                EventKind::PaneMoved,
+                json!({ "type": "pane_moved", "pane": 7, "window": "two" }),
+            ),
+            (
+                EventKind::WindowRenamed,
+                json!({ "type": "window_renamed", "window": "two", "name": "three" }),
+            ),
+            (
+                EventKind::SessionRenamed,
+                json!({ "type": "session_renamed", "session": "work", "name": "prod" }),
             ),
             (
                 EventKind::LayoutUpdated,
