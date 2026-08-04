@@ -1448,7 +1448,7 @@ fn select_pane_moves_the_session_and_list_panes_says_so() {
 
     let moved = server.call_tool("select_pane", json!({ "pane": 2 }));
     assert!(
-        moved.contains("Pane 2 is now the active pane"),
+        moved.contains("The user is now on pane 2"),
         "the tool reports the move it made: {moved}",
     );
     assert!(
@@ -1459,7 +1459,7 @@ fn select_pane_moves_the_session_and_list_panes_says_so() {
     // A re-select is a legitimate no-op, and it must not read as a failure to an agent.
     let again = server.call_tool("select_pane", json!({ "pane": 2 }));
     assert!(
-        again.contains("was already the active pane"),
+        again.contains("was already on pane 2; nothing moved"),
         "a re-select says nothing moved rather than claiming it did: {again}",
     );
 
@@ -1472,6 +1472,92 @@ fn select_pane_moves_the_session_and_list_panes_says_so() {
     assert!(
         active_line(&server.call_tool("list_panes", json!({}))).contains("pane 2:"),
         "and the refusal left the session where it was",
+    );
+}
+
+/// **The live gate for the DIRECTIONAL arm** — the head of debt item 23, and the reason it is a live
+/// test rather than only a unit one: the whole point of the argument is that the daemon resolves the
+/// direction against its own arrangement in the same step it moves, so a tool that assembled the
+/// answer from a layout read would pass every test of its wording and still join two instants.
+///
+/// The fixture is two panes side by side (a spawn appends to the arrangement's spine), the session
+/// starting on the first. Every press either moves a state the one before it established or holds an
+/// edge the one before it reached — R297's rule, learnt from a GUI test that pressed left twice
+/// against a fixture already on the leftmost pane and asserted nothing.
+#[test]
+fn select_pane_takes_a_direction_and_says_when_there_is_nothing_that_way() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
+    )
+    .expect("a second pane to move between");
+    let mut server = McpServer::spawn(&sock);
+    let active_line = |listed: &str| {
+        let marked: Vec<String> = listed
+            .lines()
+            .filter(|line| line.contains("(active)"))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(marked.len(), 1, "exactly one pane is active: {listed}");
+        marked[0].clone()
+    };
+    // ASSERTED, not assumed: the start is what makes the first press a test.
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 1:"),
+        "the session starts on its first pane",
+    );
+
+    let right = server.call_tool("select_pane", json!({ "dir": "right" }));
+    assert!(
+        right.contains("Moved the user one pane right") && right.contains("pane 2"),
+        "a direction moves and names where it landed IN THIS SURFACE'S numbers: {right}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 2:"),
+        "and the pane list — a different code path — agrees",
+    );
+
+    // At the far edge: honest, not a failure, and NOT the same sentence as a re-select. The user
+    // stays put, which is what a person pressing an arrow at the side of their layout expects.
+    let edge = server.call_tool("select_pane", json!({ "dir": "right" }));
+    assert!(
+        edge.contains("There is nothing to the right of pane 2") && edge.contains("edge of the"),
+        "the edge names the direction asked for and the pane still held: {edge}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 2:"),
+        "and nothing moved",
+    );
+
+    // Back left, so the fixture ends where a reader can see the walk was real in both directions.
+    let back = server.call_tool("select_pane", json!({ "dir": "left" }));
+    assert!(
+        back.contains("Moved the user one pane left") && back.contains("pane 1"),
+        "and the way back is a move again: {back}",
+    );
+
+    // The argument shape, as an agent meets it: exactly one naming per call, with a sentence saying
+    // what each one means — the daemon can only answer `Rejected`, which names neither.
+    let neither = server.call_tool_error("select_pane", json!({}));
+    assert!(
+        neither.contains("either 'pane'") && neither.contains("'dir'"),
+        "a call naming nothing is told what the two choices are: {neither}",
+    );
+    let both = server.call_tool_error("select_pane", json!({ "pane": 1, "dir": "left" }));
+    assert!(
+        both.contains("name the target two different ways"),
+        "and a call naming both is told they are alternatives: {both}",
+    );
+    let nonsense = server.call_tool_error("select_pane", json!({ "dir": "sideways" }));
+    assert!(
+        nonsense.contains("left, right, up, down"),
+        "an invented direction is answered with the vocabulary: {nonsense}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 1:"),
+        "and none of the three refusals moved the user",
     );
 }
 

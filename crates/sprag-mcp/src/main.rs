@@ -65,7 +65,9 @@
 //! `select_pane` is the one tool whose subject is the PERSON rather than a pane: it moves where the
 //! user's keystrokes go (H7's active pane), so an agent that has prepared something to look at can
 //! put them on it. `list_panes` marks that pane, which is also how an agent learns where a human is
-//! working before typing somewhere else.
+//! working before typing somewhere else. It takes a pane OR a DIRECTION, and the direction is what
+//! joins WHERE to the move: adjacency is a fact only the daemon holds atomically, so an agent that
+//! read `pane_layout` and then selected a number would assemble one action out of two instants.
 //!
 //! Each tool call bridges to the host wire via [`sprag_rpc::HostConn`], addressing panes with the
 //! [`sprag_host::wire`] path SSOT.
@@ -112,8 +114,8 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
     LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
-    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, TEXT_ACTION, find_slot_for, pane_processes_at,
-    regex_slot_for,
+    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, SelectHow, TEXT_ACTION, find_slot_for,
+    pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -737,11 +739,28 @@ fn tools_list() -> Value {
                     on, and what a pane command with no target acts on. Use it to put a human \
                     on the pane you want them to look at, after opening or preparing it. \
                     `list_panes` marks the active pane. This MOVES a person's cursor: prefer \
-                    it when you have something for them to see, not as a side effect.",
+                    it when you have something for them to see, not as a side effect. \
+                    Give EITHER `pane` (that pane) OR `dir` (one step that way through the \
+                    arrangement, like a tmux `select-pane -L`) — never both. `dir` moves \
+                    RELATIVE TO WHERE THE USER IS NOW, not relative to your own pane, and the \
+                    terminal resolves it against the live arrangement in the same step it \
+                    moves: reading `pane_layout` yourself and then selecting a number would \
+                    ask two questions at two moments and can land the user on a pane that \
+                    closed in between. The answer says what happened, including \"there is \
+                    nothing that way\" — which is a normal outcome at the edge of a layout, \
+                    not a failure.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "pane": pane_arg },
-                    "required": ["pane"],
+                    "properties": {
+                        "pane": pane_arg,
+                        "dir": {
+                            "type": "string",
+                            "enum": PaneDir::ALL.map(PaneDir::wire_str),
+                            "description": "Move one pane that way from the pane the user is \
+                                on. Use pane_layout to see the arrangement first if you need \
+                                to know what lies that way."
+                        }
+                    },
                     "additionalProperties": false
                 }
             }
@@ -1690,11 +1709,6 @@ fn tool_write_pane(args: &Value) -> Result<String, String> {
     ))
 }
 
-/// `select_pane` — move the SESSION's active pane, which every attached client follows.
-///
-/// The answer names what actually happened rather than echoing the request: the daemon reports
-/// whether the pane MOVED, and a re-select of the pane the session is already on is a legitimate
-/// no-op an agent should not read as a failure.
 /// `open_pane` — a pane of this agent's own, recorded as opened BY the agent's pane.
 ///
 /// # Why an agent gets a create verb when it does not get `move` / `swap` / `zoom`
@@ -2043,20 +2057,156 @@ fn relisted(here: Option<u64>) -> String {
     }
 }
 
+/// `select_pane` — move the SESSION's active pane, which every attached client follows.
+///
+/// The answer names what actually happened rather than echoing the request: the daemon reports
+/// whether the pane MOVED, and a re-select of the pane the session is already on is a legitimate
+/// no-op an agent should not read as a failure. (These three sentences sat above
+/// [`tool_open_pane`] for four rounds, glued to the front of ITS doc by a missing blank line — so
+/// this function had none at all and that one opened by describing a different verb.)
+///
+/// # Why a DIRECTION belongs on an agent's surface
+///
+/// Because without it an agent cannot ask for one at all without joining two instants.
+/// [`tool_pane_layout`] publishes the daemon's own adjacency and this tool took a NUMBER, so "put
+/// them on the pane to the left" was a layout read at one moment and a select at another — the torn
+/// read a pane NAME exists to prevent, rebuilt out of two correct tools. The wire arm has resolved
+/// directions under one lock since the placement verbs shipped; the only thing missing was this
+/// argument.
+///
+/// It also settles a question R285 answered the other way for the zoom (*an agent reads and types; a
+/// zoom is a thing you do FOR a human to look at*). A directional SELECT is not the zoom's case:
+/// this tool's whole subject is already the person, so the argument that declines an arrangement
+/// verb does not reach it. What an agent still cannot do is move a pane — that decision stays a
+/// person's.
+///
+/// # Whose position a direction is relative to, said out loud
+///
+/// The ACTIVE pane's — where the user is — not the agent's own. That is the daemon's arm
+/// ([`SELECT_PANE_ACTION`]) and the same semantics as the keybinding and the CLI verb, so one
+/// vocabulary means one thing on all three surfaces. An agent that meant "the pane next to MINE"
+/// would be asking a different question, and the tool description says which one this is rather than
+/// letting a caller assume.
 fn tool_select_pane(args: &Value) -> Result<String, String> {
-    let (number, id) = resolve_pane(args)?;
+    // Exactly one naming, the wire action's own rule — restated here because the daemon can only
+    // answer `Rejected` for a malformed one (`InvokeError::Rejected` carries no payload, upstream
+    // PINION-PR82), and "select nothing" / "select two things" have no obvious reading to guess.
+    let toward = match args.get("dir") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(word)) => Some(PaneDir::from_wire(word).ok_or_else(|| {
+            format!(
+                "'dir' must be one of {}, not {word:?}",
+                PaneDir::ALL.map(PaneDir::wire_str).join(", ")
+            )
+        })?),
+        Some(other) => return Err(format!("'dir' must be a direction word, not {other}")),
+    };
+    let named = args.get("pane").is_some_and(|pane| !pane.is_null());
+    let (action_args, asked, subject) = match (named, toward) {
+        (true, None) => {
+            // ONE listing, and it serves both halves: it resolves the caller's number-or-name AND
+            // names the pane the answer will be about. A `pane` request can only land on the pane it
+            // named or be refused, so there is nothing to re-read — reading again would name the
+            // subject at a second instant for no fact gained (the discipline [`resolve_pane`]
+            // documents, which this function cannot use because it needs the pane's NAME too).
+            let target = pane_target(args)?;
+            let panes = query_panes()?;
+            let pane = resolve_in(&panes, &target)?;
+            (
+                json!({ "pane": pane.id }),
+                None,
+                Some(render_pane_handle(pane)),
+            )
+        }
+        (false, Some(dir)) => (json!({ "dir": dir.wire_str() }), Some(dir), None),
+        (false, None) => {
+            return Err(
+                "select_pane needs either 'pane' (a NUMBER from list_panes, or a pane's NAME) or \
+                 'dir' (\"left\" / \"right\" / \"up\" / \"down\", one step from where the user is)"
+                    .to_owned(),
+            );
+        }
+        (true, Some(_)) => {
+            return Err(
+                "'pane' and 'dir' name the target two different ways; give one. 'pane' selects \
+                 THAT pane; 'dir' moves one pane that way from where the user is now."
+                    .to_owned(),
+            );
+        }
+    };
     let answer = host_call(
         "scene/invoke",
-        json!({ "path": mux_action_path(SELECT_PANE_ACTION), "args": { "pane": id } }),
+        json!({ "path": mux_action_path(SELECT_PANE_ACTION), "args": action_args }),
     )?;
-    if answer["changed"] == json!(true) {
-        Ok(format!(
-            "Pane {number} is now the active pane of this session."
-        ))
-    } else {
-        Ok(format!(
-            "Pane {number} was already the active pane; nothing moved."
-        ))
+    let how = SelectHow::read(&answer, asked);
+    // The daemon answers with an ID; this surface speaks NUMBERS and names. A DIRECTION is the one
+    // arm whose caller cannot know where it landed, so that one resolves the id from a listing read
+    // AFTER the action — the answer describes the state the action left. Its failure is NOT the
+    // call's failure ([`relisted`]'s rule): the user's cursor has already moved, and an "error" would
+    // send the caller to move it again.
+    let landed = answer["pane"].as_u64();
+    let here = subject.or_else(|| {
+        landed
+            .and_then(|id| query_panes().ok()?.into_iter().find(|pane| pane.id == id))
+            .map(|pane| render_pane_handle(&pane))
+    });
+    Ok(render_selection(
+        how,
+        asked,
+        here.as_deref(),
+        landed.unwrap_or_default(),
+    ))
+}
+
+/// How an answer NAMES the pane it is about on this surface: the number, plus the name if the pane
+/// has one — the two handles a caller can pass back.
+fn render_pane_handle(pane: &PaneInfo) -> String {
+    match &pane.name {
+        Some(name) => format!("pane {} ({name:?})", pane.number),
+        None => format!("pane {}", pane.number),
+    }
+}
+
+/// What `select_pane` tells the agent, as a pure function of the outcome — so all four sentences are
+/// pinned by unit tests, not only the ones a live daemon can be driven into.
+///
+/// `here` is the landed pane in this surface's own vocabulary ([`render_pane_handle`]), or [`None`]
+/// when the listing that would name it could not be read or no longer holds it — a pane that exited
+/// in the moment after the select. The `id` is the fallback subject for that case: a caller given an
+/// id can still find the pane with `list_panes`, where a caller given nothing cannot.
+///
+/// Every sentence says where the USER is now, because that is what this tool changes. The two
+/// "nothing happened" outcomes get distinct sentences with distinct remedies, which is the whole
+/// point of the daemon naming them: an edge means "look at the arrangement", a floating pane means
+/// "that pane is in no arrangement, so ask for one by name".
+fn render_selection(how: SelectHow, asked: Option<PaneDir>, here: Option<&str>, id: u64) -> String {
+    let subject = here.map_or_else(
+        || format!("the pane with id {id} (it is no longer in the pane listing — call list_panes)"),
+        str::to_owned,
+    );
+    match (how, asked) {
+        (SelectHow::Moved, Some(dir)) => format!(
+            "Moved the user one pane {}: they are now on {subject}.",
+            dir.wire_str()
+        ),
+        (SelectHow::Moved, None) => {
+            format!("The user is now on {subject} — the active pane of this session.")
+        }
+        (SelectHow::AtEdge, Some(dir)) => format!(
+            "There is nothing {} {subject}, so the user is still on it: that is the edge of the \
+             window. Call pane_layout to see what lies where.",
+            dir.beyond()
+        ),
+        (SelectHow::Untiled, _) => format!(
+            "The user is on {subject}, which is FLOATING: a floating pane is in no arrangement, so \
+             it has no neighbour in any direction. Name the pane you want with 'pane' instead, or \
+             ask the user to dock it."
+        ),
+        // A daemon that answered a word its request could not produce, and a plain re-select. Both
+        // are honestly "nothing moved", and neither is a reason to fail a call that succeeded.
+        (SelectHow::AlreadyActive | SelectHow::AtEdge, _) => {
+            format!("The user was already on {subject}; nothing moved.")
+        }
     }
 }
 
@@ -2945,6 +3095,92 @@ mod tests {
         // and the whole of it is the answer. A `pane` argument would make a caller ask per pane and
         // reassemble a shape the daemon already published in one piece.
         assert_eq!(required("pane_layout"), json!(null));
+        // `select_pane` requires NOTHING and takes exactly one of two things — the daemon's own rule
+        // for the same action. A JSON Schema cannot say "one of these two" without `oneOf`, which MCP
+        // clients render poorly, so the constraint is stated in the description and enforced in the
+        // tool; what a schema CAN do is publish the direction words, which is where an agent learns
+        // them.
+        assert_eq!(required("select_pane"), json!(null));
+        let select = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "select_pane")
+            .expect("select_pane is advertised")
+            .clone();
+        assert_eq!(
+            select["inputSchema"]["properties"]["dir"]["enum"],
+            json!(["left", "right", "up", "down"]),
+            "the words come from PaneDir, so a direction the daemon gains cannot go unadvertised",
+        );
+        // And the honesty an agent needs most: a direction moves from where the USER is, not from
+        // the agent's own pane. A caller that assumed otherwise would move a person somewhere
+        // surprising and read the answer as agreement.
+        let description = select["description"].as_str().unwrap();
+        assert!(
+            description.contains("RELATIVE TO WHERE THE USER IS NOW"),
+            "the tool must say whose position a direction is relative to: {description}",
+        );
+    }
+
+    /// All four outcomes as an AGENT reads them, plus the two degradations — a live daemon can be
+    /// driven into the first two and only awkwardly into the rest, which is why the rendering is a
+    /// pure function.
+    ///
+    /// The two "nothing moved" sentences must not be interchangeable: their remedies are opposite
+    /// (look at the arrangement / that pane is in no arrangement, so name one), and an agent that
+    /// read one for the other would either keep pressing at an edge or keep waiting for a float to
+    /// gain a neighbour.
+    #[test]
+    fn a_selection_reads_as_a_sentence_about_where_the_user_is_now() {
+        assert_eq!(
+            render_selection(SelectHow::Moved, None, Some("pane 2 (\"build\")"), 11),
+            "The user is now on pane 2 (\"build\") — the active pane of this session.",
+            "a NAME rides in the sentence, because that is the handle the caller can reuse",
+        );
+        assert_eq!(
+            render_selection(SelectHow::Moved, Some(PaneDir::Left), Some("pane 1"), 10),
+            "Moved the user one pane left: they are now on pane 1.",
+        );
+        assert_eq!(
+            render_selection(SelectHow::AlreadyActive, None, Some("pane 2"), 11),
+            "The user was already on pane 2; nothing moved.",
+        );
+        let edge = render_selection(SelectHow::AtEdge, Some(PaneDir::Up), Some("pane 1"), 10);
+        assert!(
+            edge.contains("There is nothing above pane 1")
+                && edge.contains("still on it")
+                && edge.contains("pane_layout"),
+            "an edge names the direction, says nobody moved, and points at the read that \
+             explains it: {edge}",
+        );
+        let floating = render_selection(SelectHow::Untiled, Some(PaneDir::Up), Some("pane 3"), 12);
+        assert!(
+            floating.contains("on pane 3, which is FLOATING")
+                && floating.contains("no arrangement")
+                && floating.contains("'pane'"),
+            "a floating pane gets the OTHER remedy — name the pane you want: {floating}",
+        );
+        assert_ne!(edge, floating, "two outcomes, two sentences");
+
+        // A pane that exited between the select and the listing that would name it: the move HAPPENED,
+        // so the answer says so and hands back the id a caller can still look up — never an error,
+        // which would send the caller to move a cursor that has already moved.
+        let vanished = render_selection(SelectHow::Moved, Some(PaneDir::Right), None, 42);
+        assert!(
+            vanished.contains("id 42") && vanished.contains("list_panes"),
+            "the fallback subject is the id, with the read that resolves it: {vanished}",
+        );
+    }
+
+    /// The handle an answer hands back is one a caller can pass to the next tool — a NUMBER, plus the
+    /// NAME when the pane has one, because that is the handle that survives a pane closing.
+    #[test]
+    fn a_pane_is_named_back_by_the_handles_a_caller_can_use() {
+        let mut pane = parse_pane_info(1, &json!({ "id": 11, "cols": 80, "rows": 24 }));
+        assert_eq!(render_pane_handle(&pane), "pane 2");
+        pane.name = Some("build".to_owned());
+        assert_eq!(render_pane_handle(&pane), "pane 2 (\"build\")");
     }
 
     #[test]
