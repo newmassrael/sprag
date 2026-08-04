@@ -1150,8 +1150,8 @@ fn handle_attach(
     // WHERE the client is going. The connection's scope is the target only when nothing else names
     // one — see `AttachAsk` — and the history arm is resolved by IDENTITY, which is the whole
     // reason it is answered here rather than remembered by the client.
-    let target = match ask {
-        AttachAsk::Scoped => Some((scope.session().to_owned(), scope.id())),
+    let (session, id) = match ask {
+        AttachAsk::Scoped => (scope.session().to_owned(), scope.id()),
         AttachAsk::LastViewed { unattached } => {
             // attachments THEN registry, the order `window::retile` takes and the one
             // `SessionScope::resolve` was written to keep. `name_of` answers liveness and the
@@ -1163,7 +1163,11 @@ fn handle_attach(
                 unattached,
             );
             match found {
-                Some((id, name)) => Some((name, id)),
+                // The name resolved a moment ago and the attach below is recorded under it. Nothing
+                // can have moved in between: every mutation of the registry runs on THIS dispatch
+                // thread (frames and the close signal share one FIFO), so the two lock acquisitions
+                // are consecutive in one thread's timeline rather than a window.
+                Some((id, name)) => (name, id),
                 // A client with nowhere to go back to has asked a legitimate question about an
                 // empty state, so it is ANSWERED, not refused: `null`, and the client stays where
                 // it is (tmux no-ops too). Refusing would make "no last session" indistinguishable
@@ -1171,9 +1175,6 @@ fn handle_attach(
                 None => return lifecycle_answer(request, Value::Null),
             }
         }
-    };
-    let Some((session, id)) = target else {
-        return lifecycle_answer(request, Value::Null);
     };
     // Bound and RELEASED before the arms run. A `lock(..)` written into the `match` scrutinee lives
     // for the whole match, and an arm below re-derives the window — which reads this same map. It
