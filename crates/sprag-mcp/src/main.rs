@@ -114,8 +114,8 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
     LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
-    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, SelectHow, TEXT_ACTION, find_slot_for,
-    pane_processes_at, regex_slot_for,
+    SELECT_PANE_ACTION, SINCE_PARAM, SPAWN_ACTION, SelectAsk, SelectHow, TEXT_ACTION,
+    find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -741,14 +741,15 @@ fn tools_list() -> Value {
                     `list_panes` marks the active pane. This MOVES a person's cursor: prefer \
                     it when you have something for them to see, not as a side effect. \
                     Give EITHER `pane` (that pane) OR `dir` (one step that way through the \
-                    arrangement, like a tmux `select-pane -L`) — never both. `dir` moves \
-                    RELATIVE TO WHERE THE USER IS NOW, not relative to your own pane, and the \
-                    terminal resolves it against the live arrangement in the same step it \
-                    moves: reading `pane_layout` yourself and then selecting a number would \
-                    ask two questions at two moments and can land the user on a pane that \
-                    closed in between. The answer says what happened, including \"there is \
-                    nothing that way\" — which is a normal outcome at the edge of a layout, \
-                    not a failure.",
+                    arrangement, like a tmux `select-pane -L`) — never both. By default `dir` \
+                    steps FROM WHERE THE USER IS NOW; add `from` (a pane number or name) or \
+                    `from_here: true` (the pane YOU are running in) to step from a pane you \
+                    choose instead. The terminal resolves the step against the live \
+                    arrangement in the same moment it moves: reading `pane_layout` yourself \
+                    and then selecting a number would ask two questions at two moments and can \
+                    land the user on a pane that closed in between. The answer says what \
+                    happened, including \"there is nothing that way\" — which is a normal \
+                    outcome at the edge of a layout, not a failure.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -756,9 +757,21 @@ fn tools_list() -> Value {
                         "dir": {
                             "type": "string",
                             "enum": PaneDir::ALL.map(PaneDir::wire_str),
-                            "description": "Move one pane that way from the pane the user is \
-                                on. Use pane_layout to see the arrangement first if you need \
-                                to know what lies that way."
+                            "description": "Move one pane that way. Use pane_layout to see the \
+                                arrangement first if you need to know what lies that way."
+                        },
+                        "from": {
+                            "description": "Which pane the `dir` step starts at — a NUMBER \
+                                (1-based, see list_panes) or a pane's NAME. Omit it to step \
+                                from the pane the user is on. Only with `dir`.",
+                            "type": ["integer", "string"]
+                        },
+                        "from_here": {
+                            "type": "boolean",
+                            "description": "Step from the pane YOU are running in, without \
+                                looking its number up (which could name a different pane by \
+                                the time you send it). Only with `dir`, and never together \
+                                with `from`."
                         }
                     },
                     "additionalProperties": false
@@ -1327,7 +1340,10 @@ fn render_arrangement_answer(
     }
     out.push_str(
         "\nPass a pane NUMBER (not an id) to read_pane, write_pane, send_keys or select_pane. \
-         Which pane the user is typing into right now is list_panes' answer, not this one.\n",
+         Which pane the user is typing into right now is list_panes' answer, not this one. \
+         To MOVE the user beside a pane, do not read a number from here and select it — that is \
+         two moments; call select_pane with 'dir' plus 'from' or 'from_here: true' and the \
+         terminal resolves it in one.\n",
     );
     out
 }
@@ -2082,11 +2098,23 @@ fn relisted(here: Option<u64>) -> String {
 ///
 /// # Whose position a direction is relative to, said out loud
 ///
-/// The ACTIVE pane's — where the user is — not the agent's own. That is the daemon's arm
-/// ([`SELECT_PANE_ACTION`]) and the same semantics as the keybinding and the CLI verb, so one
-/// vocabulary means one thing on all three surfaces. An agent that meant "the pane next to MINE"
-/// would be asking a different question, and the tool description says which one this is rather than
-/// letting a caller assume.
+/// The ACTIVE pane's by default — where the user is — which is the daemon's own default and the
+/// same semantics as the keybinding and the CLI verb, so one vocabulary means one thing on all three
+/// surfaces. `from` and `from_here` are how a caller asks the OTHER question, and they exist because
+/// this surface's caller is the one that most often means it: an agent lives in a pane and reasons
+/// about the panes around ITS OWN, where a keypress can only ever mean "from here".
+///
+/// # Why `from_here` is a separate argument and not a value of `from`
+///
+/// Because `from` carries this surface's pane handles, and both of them are already taken: a NUMBER
+/// is a position in `list_panes` and a STRING is a pane's name. A magic word like `"self"` would
+/// collide with a pane somebody named `self` — the exact ambiguity R295 forbade all-digit names to
+/// avoid — and resolving it "as a name first, then as the sentinel" is a silent wrong answer waiting
+/// for the day the name exists. A boolean cannot collide with either.
+///
+/// It is also the argument that costs NOTHING to answer: [`own_pane`] reads this process's own
+/// environment, so "the pane next to mine" is one call with no listing at all, where a number would
+/// have to be looked up first and could name a different pane by the time it is sent.
 fn tool_select_pane(args: &Value) -> Result<String, String> {
     // Exactly one naming, the wire action's own rule — restated here because the daemon can only
     // answer `Rejected` for a malformed one (`InvokeError::Rejected` carries no payload, upstream
@@ -2101,7 +2129,18 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
         })?),
         Some(other) => return Err(format!("'dir' must be a direction word, not {other}")),
     };
-    let named = args.get("pane").is_some_and(|pane| !pane.is_null());
+    let named = args
+        .get(SelectAsk::PANE_KEY)
+        .is_some_and(|pane| !pane.is_null());
+    // Read before the arms so a `from` handed to the `pane` arm is a REFUSAL rather than a silently
+    // ignored argument — the failure R294 measured an old daemon making, which this surface must not
+    // re-make one layer up.
+    let origin = if toward.is_some() {
+        select_origin(args)?
+    } else {
+        forbid_origin(args)?;
+        None
+    };
     let (action_args, asked, subject) = match (named, toward) {
         (true, None) => {
             // ONE listing, and it serves both halves: it resolves the caller's number-or-name AND
@@ -2118,18 +2157,28 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
                 Some(render_pane_handle(pane)),
             )
         }
-        (false, Some(dir)) => (json!({ "dir": dir.wire_str() }), Some(dir), None),
+        (false, Some(dir)) => (
+            SelectAsk::Toward {
+                dir,
+                from: origin.as_ref().map(|(id, _)| PaneId(*id)),
+            }
+            .to_args(),
+            Some(dir),
+            None,
+        ),
         (false, None) => {
             return Err(
                 "select_pane needs either 'pane' (a NUMBER from list_panes, or a pane's NAME) or \
-                 'dir' (\"left\" / \"right\" / \"up\" / \"down\", one step from where the user is)"
+                 'dir' (\"left\" / \"right\" / \"up\" / \"down\", one step from where the user \
+                 is — or from the pane you name with 'from' / 'from_here')"
                     .to_owned(),
             );
         }
         (true, Some(_)) => {
             return Err(
                 "'pane' and 'dir' name the target two different ways; give one. 'pane' selects \
-                 THAT pane; 'dir' moves one pane that way from where the user is now."
+                 THAT pane; 'dir' moves one pane that way. To step from a pane you choose, keep \
+                 'dir' and name it with 'from' instead of 'pane'."
                     .to_owned(),
             );
         }
@@ -2153,9 +2202,72 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
     Ok(render_selection(
         how,
         asked,
+        origin.as_ref().map(|(_, label)| label.as_str()),
         here.as_deref(),
         landed.unwrap_or_default(),
     ))
+}
+
+/// Which pane a `dir` step starts at, and how to SAY it — [`None`] for the default, the pane the
+/// user is on.
+///
+/// Two spellings because they are two different questions, not two syntaxes for one: `from` names a
+/// pane the caller picked out of the terminal, and `from_here` names the pane this server is running
+/// in. Only the first needs a listing; the second is our own identity ([`own_pane`]), which is why
+/// it is exact — a number looked up in one call can name a different pane by the next one, and this
+/// tool MOVES A PERSON'S CURSOR on the strength of it.
+fn select_origin(args: &Value) -> Result<Option<(u64, String)>, String> {
+    let given = |key: &str| args.get(key).filter(|value| !value.is_null());
+    match (given(SelectAsk::FROM_KEY), given(FROM_HERE_ARG)) {
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err(format!(
+            "'{}' and '{FROM_HERE_ARG}' both say where to step FROM; give one. '{}' names any \
+             pane; '{FROM_HERE_ARG}: true' is the pane you are running in.",
+            SelectAsk::FROM_KEY,
+            SelectAsk::FROM_KEY,
+        )),
+        (Some(_), None) => {
+            let target = pane_target_at(args, SelectAsk::FROM_KEY)?;
+            let panes = query_panes()?;
+            let pane = resolve_in(&panes, &target)?;
+            Ok(Some((pane.id, render_pane_handle(pane))))
+        }
+        (None, Some(Value::Bool(false))) => Ok(None),
+        (None, Some(Value::Bool(true))) => own_pane()
+            .map(|id| Some((id, "the pane you are running in".to_owned())))
+            .ok_or_else(|| {
+                format!(
+                    "'{FROM_HERE_ARG}' means the pane THIS server runs in, and it is not running \
+                     inside a sprag pane (no {PANE_ENV_VAR} published beside the socket it is \
+                     talking to). Name the pane to step from with '{}' instead.",
+                    SelectAsk::FROM_KEY,
+                )
+            }),
+        (None, Some(other)) => Err(format!(
+            "'{FROM_HERE_ARG}' must be true or false, not {other}"
+        )),
+    }
+}
+
+/// The `select_pane` argument that steps from the pane this server runs in — see [`select_origin`]
+/// for why it is a boolean of its own rather than a value of [`SelectAsk::FROM_KEY`].
+const FROM_HERE_ARG: &str = "from_here";
+
+/// Refuse an origin on a request that does not STEP — there is nothing for it to be the origin of.
+///
+/// The alternative is to ignore it, and ignoring an argument is how a caller's misunderstanding
+/// survives: `{pane: 3, from: 5}` from an agent that meant "left of 5" would select 3 and report
+/// success. One sentence, naming what each argument does, costs a line here and saves that.
+fn forbid_origin(args: &Value) -> Result<(), String> {
+    for key in [SelectAsk::FROM_KEY, FROM_HERE_ARG] {
+        if args.get(key).is_some_and(|value| !value.is_null()) {
+            return Err(format!(
+                "'{key}' says where a DIRECTION starts from, so it needs 'dir'. Give \
+                 'dir' to step from that pane, or 'pane' alone to select a pane outright."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// How an answer NAMES the pane it is about on this surface: the number, plus the name if the pane
@@ -2175,36 +2287,70 @@ fn render_pane_handle(pane: &PaneInfo) -> String {
 /// in the moment after the select. The `id` is the fallback subject for that case: a caller given an
 /// id can still find the pane with `list_panes`, where a caller given nothing cannot.
 ///
+/// `origin` is the pane the step was measured from, when the caller named one ([`select_origin`]).
+/// [`None`] means it stepped from where the user was, which is where they still are when nothing
+/// moved — so the two cases share a subject there and stop sharing one the moment an origin exists.
+///
 /// Every sentence says where the USER is now, because that is what this tool changes. The two
 /// "nothing happened" outcomes get distinct sentences with distinct remedies, which is the whole
 /// point of the daemon naming them: an edge means "look at the arrangement", a floating pane means
 /// "that pane is in no arrangement, so ask for one by name".
-fn render_selection(how: SelectHow, asked: Option<PaneDir>, here: Option<&str>, id: u64) -> String {
+///
+/// **With an origin, the nothing-happened sentences must name the ORIGIN and the user's pane
+/// separately**, because they are two panes: "there is nothing left of pane 3, so the user is still
+/// on pane 1" is two facts, and collapsing them would report an edge of the pane the user is on
+/// rather than of the pane the caller asked about.
+fn render_selection(
+    how: SelectHow,
+    asked: Option<PaneDir>,
+    origin: Option<&str>,
+    here: Option<&str>,
+    id: u64,
+) -> String {
     let subject = here.map_or_else(
         || format!("the pane with id {id} (it is no longer in the pane listing — call list_panes)"),
         str::to_owned,
     );
-    match (how, asked) {
-        (SelectHow::Moved, Some(dir)) => format!(
+    match (how, asked, origin) {
+        (SelectHow::Moved, Some(dir), None) => format!(
             "Moved the user one pane {}: they are now on {subject}.",
             dir.wire_str()
         ),
-        (SelectHow::Moved, None) => {
+        (SelectHow::Moved, Some(dir), Some(origin)) => format!(
+            "Moved the user one pane {} of {origin}: they are now on {subject}.",
+            dir.wire_str()
+        ),
+        (SelectHow::Moved, None, _) => {
             format!("The user is now on {subject} — the active pane of this session.")
         }
-        (SelectHow::AtEdge, Some(dir)) => format!(
+        (SelectHow::AtEdge, Some(dir), None) => format!(
             "There is nothing {} {subject}, so the user is still on it: that is the edge of the \
              window. Call pane_layout to see what lies where.",
             dir.beyond()
         ),
-        (SelectHow::Untiled, _) => format!(
+        (SelectHow::AtEdge, Some(dir), Some(origin)) => format!(
+            "There is nothing {} {origin}: that is the edge of the window, so the user is still on \
+             {subject}. Call pane_layout to see what lies where.",
+            dir.beyond()
+        ),
+        (SelectHow::Untiled, _, None) => format!(
             "The user is on {subject}, which is FLOATING: a floating pane is in no arrangement, so \
              it has no neighbour in any direction. Name the pane you want with 'pane' instead, or \
              ask the user to dock it."
         ),
+        (SelectHow::Untiled, _, Some(origin)) => format!(
+            "{origin} is FLOATING: a floating pane is in no arrangement, so it has no neighbour in \
+             any direction, and the user is still on {subject}. Name the pane you want with 'pane' \
+             instead, or ask the user to dock it."
+        ),
+        (SelectHow::AlreadyActive, Some(dir), Some(origin)) => format!(
+            "The user was already on {subject}, which is the pane one step {} of {origin}; nothing \
+             moved.",
+            dir.wire_str()
+        ),
         // A daemon that answered a word its request could not produce, and a plain re-select. Both
         // are honestly "nothing moved", and neither is a reason to fail a call that succeeded.
-        (SelectHow::AlreadyActive | SelectHow::AtEdge, _) => {
+        (SelectHow::AlreadyActive | SelectHow::AtEdge, _, _) => {
             format!("The user was already on {subject}; nothing moved.")
         }
     }
@@ -2647,23 +2793,29 @@ enum PaneTarget {
 
 /// The pane a tool's arguments name.
 fn pane_target(args: &Value) -> Result<PaneTarget, String> {
-    match args.get("pane") {
+    pane_target_at(args, SelectAsk::PANE_KEY)
+}
+
+/// [`pane_target`] for an argument spelled something other than `pane` — the origin of a directional
+/// select is a pane handle in every respect except its key, so it resolves through the same grammar
+/// and says the same things about a bad one.
+fn pane_target_at(args: &Value, key: &str) -> Result<PaneTarget, String> {
+    match args.get(key) {
         Some(Value::Number(n)) => {
             let n = n
                 .as_u64()
-                .ok_or("the 'pane' number must be a positive whole number")?;
+                .ok_or_else(|| format!("the '{key}' number must be a positive whole number"))?;
             usize::try_from(n)
                 .map(PaneTarget::Number)
-                .map_err(|_| "pane number out of range".to_owned())
+                .map_err(|_| format!("the '{key}' number is out of range"))
         }
         // A name is trimmed here as well as in the daemon, so `pane: " build "` resolves rather
         // than reporting that no pane is called that. This is the RESOLVER, not a second parse: it
         // applies no rule the daemon does not, and a name that breaks one simply matches nothing.
         Some(Value::String(name)) => Ok(PaneTarget::Name(name.trim().to_owned())),
-        _ => Err(
-            "missing required argument 'pane': a NUMBER (1-based, see list_panes) or a pane's NAME"
-                .to_owned(),
-        ),
+        _ => Err(format!(
+            "missing required argument '{key}': a NUMBER (1-based, see list_panes) or a pane's NAME"
+        )),
     }
 }
 
@@ -3113,13 +3265,37 @@ mod tests {
             json!(["left", "right", "up", "down"]),
             "the words come from PaneDir, so a direction the daemon gains cannot go unadvertised",
         );
-        // And the honesty an agent needs most: a direction moves from where the USER is, not from
-        // the agent's own pane. A caller that assumed otherwise would move a person somewhere
-        // surprising and read the answer as agreement.
+        // And the honesty an agent needs most: a bare direction moves from where the USER is, not
+        // from the agent's own pane. A caller that assumed otherwise would move a person somewhere
+        // surprising and read the answer as agreement — so the default is stated in capitals, and
+        // both ways of asking the OTHER question are named right beside it, because an agent that
+        // learns the default without the remedy is left believing the question cannot be asked.
         let description = select["description"].as_str().unwrap();
         assert!(
-            description.contains("RELATIVE TO WHERE THE USER IS NOW"),
-            "the tool must say whose position a direction is relative to: {description}",
+            description.contains("steps FROM WHERE THE USER IS NOW"),
+            "the tool must say whose position a bare direction is relative to: {description}",
+        );
+        for named in [SelectAsk::FROM_KEY, FROM_HERE_ARG] {
+            assert!(
+                description.contains(named),
+                "the description must name '{named}', the argument that changes that: \
+                 {description}",
+            );
+            assert!(
+                select["inputSchema"]["properties"][named].is_object(),
+                "and the schema must publish it, or no agent can send it",
+            );
+        }
+        assert_eq!(
+            select["inputSchema"]["properties"][SelectAsk::FROM_KEY]["type"],
+            json!(["integer", "string"]),
+            "an origin takes the same two handles a target does — a NUMBER or a NAME",
+        );
+        assert_eq!(
+            select["inputSchema"]["properties"][FROM_HERE_ARG]["type"],
+            json!("boolean"),
+            "and the agent's OWN pane is a boolean, because both string and integer already mean \
+             something else here",
         );
     }
 
@@ -3134,19 +3310,31 @@ mod tests {
     #[test]
     fn a_selection_reads_as_a_sentence_about_where_the_user_is_now() {
         assert_eq!(
-            render_selection(SelectHow::Moved, None, Some("pane 2 (\"build\")"), 11),
+            render_selection(SelectHow::Moved, None, None, Some("pane 2 (\"build\")"), 11),
             "The user is now on pane 2 (\"build\") — the active pane of this session.",
             "a NAME rides in the sentence, because that is the handle the caller can reuse",
         );
         assert_eq!(
-            render_selection(SelectHow::Moved, Some(PaneDir::Left), Some("pane 1"), 10),
+            render_selection(
+                SelectHow::Moved,
+                Some(PaneDir::Left),
+                None,
+                Some("pane 1"),
+                10
+            ),
             "Moved the user one pane left: they are now on pane 1.",
         );
         assert_eq!(
-            render_selection(SelectHow::AlreadyActive, None, Some("pane 2"), 11),
+            render_selection(SelectHow::AlreadyActive, None, None, Some("pane 2"), 11),
             "The user was already on pane 2; nothing moved.",
         );
-        let edge = render_selection(SelectHow::AtEdge, Some(PaneDir::Up), Some("pane 1"), 10);
+        let edge = render_selection(
+            SelectHow::AtEdge,
+            Some(PaneDir::Up),
+            None,
+            Some("pane 1"),
+            10,
+        );
         assert!(
             edge.contains("There is nothing above pane 1")
                 && edge.contains("still on it")
@@ -3154,7 +3342,13 @@ mod tests {
             "an edge names the direction, says nobody moved, and points at the read that \
              explains it: {edge}",
         );
-        let floating = render_selection(SelectHow::Untiled, Some(PaneDir::Up), Some("pane 3"), 12);
+        let floating = render_selection(
+            SelectHow::Untiled,
+            Some(PaneDir::Up),
+            None,
+            Some("pane 3"),
+            12,
+        );
         assert!(
             floating.contains("on pane 3, which is FLOATING")
                 && floating.contains("no arrangement")
@@ -3166,7 +3360,7 @@ mod tests {
         // A pane that exited between the select and the listing that would name it: the move HAPPENED,
         // so the answer says so and hands back the id a caller can still look up — never an error,
         // which would send the caller to move a cursor that has already moved.
-        let vanished = render_selection(SelectHow::Moved, Some(PaneDir::Right), None, 42);
+        let vanished = render_selection(SelectHow::Moved, Some(PaneDir::Right), None, None, 42);
         assert!(
             vanished.contains("id 42") && vanished.contains("list_panes"),
             "the fallback subject is the id, with the read that resolves it: {vanished}",
@@ -3533,7 +3727,10 @@ mod tests {
              \x20 pane 3: left=pane 1, up=pane 2\n\
              \n\
              Pass a pane NUMBER (not an id) to read_pane, write_pane, send_keys or select_pane. \
-             Which pane the user is typing into right now is list_panes' answer, not this one.\n",
+             Which pane the user is typing into right now is list_panes' answer, not this one. \
+             To MOVE the user beside a pane, do not read a number from here and select it — that \
+             is two moments; call select_pane with 'dir' plus 'from' or 'from_here: true' and the \
+             terminal resolves it in one.\n",
         );
     }
 

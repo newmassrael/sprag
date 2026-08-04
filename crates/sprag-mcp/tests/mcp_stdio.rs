@@ -1561,6 +1561,169 @@ fn select_pane_takes_a_direction_and_says_when_there_is_nothing_that_way() {
     );
 }
 
+/// The agent asks for the pane next to a pane it NAMES, and next to its OWN — the two questions a
+/// bare direction cannot ask, against a real daemon.
+///
+/// Both are paired with the SAME direction asked with no origin, and the pairs answer differently.
+/// That pairing is the test: an origin that the daemon dropped would leave every one of these
+/// sentences reading exactly like its control, which is precisely how an old daemon fails and why
+/// the wire protocol number moved.
+///
+/// `from_here` is the one an agent cannot reach any other way. The server resolves it from its OWN
+/// environment, so it costs no listing at all — and a NUMBER would have had to be looked up first,
+/// which is the positional handle a pane closing silently reassigns.
+#[test]
+fn an_agent_steps_a_direction_from_a_pane_it_names_and_from_its_own() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    for _ in 0..2 {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
+        )
+        .expect("two more panes, so an origin in the middle has two different sides");
+    }
+    // The server runs "inside" pane id 1 — the MIDDLE of the three, so its own left and right are
+    // both real panes and neither is where the user starts.
+    let mut server = McpServer::spawn_in_pane(&sock, 1);
+    let active_line = |listed: &str| {
+        let marked: Vec<String> = listed
+            .lines()
+            .filter(|line| line.contains("(active)"))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(marked.len(), 1, "exactly one pane is active: {listed}");
+        marked[0].clone()
+    };
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        active_line(&listed).contains("pane 1:"),
+        "ASSERTED, not assumed: the session starts on its first pane: {listed}",
+    );
+
+    // THE CONTROL: from where the user is (pane 1, the leftmost), left is the edge.
+    let control = server.call_tool("select_pane", json!({ "dir": "left" }));
+    assert!(
+        control.contains("There is nothing to the left of pane 1"),
+        "from the user's own pane, left is the edge: {control}",
+    );
+
+    // ...and from pane 2 the same word RESOLVES to pane 1 — which is where the user already is, so
+    // the answer is the fourth word from a direction, reachable only because an origin exists.
+    let already = server.call_tool("select_pane", json!({ "dir": "left", "from": 2 }));
+    assert!(
+        already.contains("already on pane 1") && already.contains("one step left of pane 2"),
+        "a step onto the pane the user is on is a no-op, not an edge: {already}",
+    );
+
+    // Now put them on the far side, so the same request MOVES them and the two sentences are
+    // separated by the fixture rather than by reading.
+    server.call_tool("select_pane", json!({ "pane": 3 }));
+    let named = server.call_tool("select_pane", json!({ "dir": "left", "from": 2 }));
+    assert!(
+        named.contains("Moved the user one pane left of pane 2")
+            && named.contains("they are now on pane 1"),
+        "an origin the caller NAMED, and both panes in the sentence: {named}",
+    );
+
+    // The agent's own pane, with no listing read at all: right of pane 2 (the server's pane id 1 is
+    // this listing's pane 2) is pane 3.
+    let mine = server.call_tool("select_pane", json!({ "dir": "right", "from_here": true }));
+    assert!(
+        mine.contains("Moved the user one pane right of the pane you are running in")
+            && mine.contains("they are now on pane 3"),
+        "the agent's OWN pane is an origin it never has to look up: {mine}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 3:"),
+        "and the pane list — a different code path — agrees",
+    );
+
+    // An origin at the window's edge: nothing moves, and the sentence names the ORIGIN and the
+    // user's pane SEPARATELY, because with an origin they are two different panes.
+    let edge = server.call_tool("select_pane", json!({ "dir": "left", "from": 1 }));
+    assert!(
+        edge.contains("There is nothing to the left of pane 1")
+            && edge.contains("the user is still on pane 3"),
+        "two panes, two facts: {edge}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 3:"),
+        "and the user really did stay",
+    );
+
+    // A NAME resolves as an origin exactly as it does as a target — the durable handle, on the
+    // argument that decides where a person's cursor goes.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(sprag_host::wire::RENAME_PANE_ACTION),
+            "args": { "pane": 0, "name": "build" },
+        }),
+    )
+    .expect("name the first pane");
+    let by_name = server.call_tool("select_pane", json!({ "dir": "right", "from": "build" }));
+    assert!(
+        by_name.contains("right of pane 1 (\"build\")") && by_name.contains("now on pane 2"),
+        "a named origin, named back: {by_name}",
+    );
+
+    // The argument shape an agent meets, with a sentence for each mistake — the daemon can answer
+    // only `Rejected`, which names none of them.
+    let both = server.call_tool_error(
+        "select_pane",
+        json!({ "dir": "left", "from": 1, "from_here": true }),
+    );
+    assert!(
+        both.contains("both say where to step FROM"),
+        "two origins is a caller bug, not a precedence to guess: {both}",
+    );
+    let stray = server.call_tool_error("select_pane", json!({ "pane": 1, "from": 2 }));
+    assert!(
+        stray.contains("needs 'dir'"),
+        "an origin with nothing to be the origin OF is refused rather than ignored: {stray}",
+    );
+    let ghost = server.call_tool_error("select_pane", json!({ "dir": "left", "from": 99 }));
+    assert!(
+        ghost.contains("no pane 99"),
+        "an origin that is not there names itself: {ghost}",
+    );
+    assert!(
+        active_line(&server.call_tool("list_panes", json!({}))).contains("pane 2:"),
+        "and none of the three refusals moved the user",
+    );
+}
+
+/// A server that is NOT inside a pane cannot step from one, and says which argument to use instead.
+///
+/// The same class as `open_pane`'s refusal one tool over: this surface's answer to "I don't know
+/// where you are" is a sentence naming the remedy, never a plausible pane.
+#[test]
+fn from_here_refuses_when_the_server_is_not_inside_a_pane() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SPAWN_ACTION), "args": {} }),
+    )
+    .expect("a second pane, so a step COULD have gone somewhere");
+    // No pane env: the ordinary spawn, which is an agent outside the terminal.
+    let mut server = McpServer::spawn(&sock);
+
+    let refused =
+        server.call_tool_error("select_pane", json!({ "dir": "right", "from_here": true }));
+    assert!(
+        refused.contains("not running inside a sprag pane") && refused.contains("'from'"),
+        "it says what it could not know and what to send instead: {refused}",
+    );
+    // THE CONTROL: the same call with an origin it CAN resolve works against the same server.
+    let named = server.call_tool("select_pane", json!({ "dir": "right", "from": 1 }));
+    assert!(
+        named.contains("Moved the user one pane right of pane 1"),
+        "so the refusal is about the origin, not about the tool: {named}",
+    );
+}
+
 // ----- the socket resolve -----
 
 /// The child's own `SPRAG_HOST_RPC_SOCK` beats an ancestor's — the precedence this suite's safety
@@ -1752,7 +1915,10 @@ fn the_layout_tool_answers_where_the_panes_are_and_which_one_is_next_to_which() 
              \x20 pane {nb}: left=pane {n0}, up=pane {nr}\n\
              \n\
              Pass a pane NUMBER (not an id) to read_pane, write_pane, send_keys or select_pane. \
-             Which pane the user is typing into right now is list_panes' answer, not this one.\n",
+             Which pane the user is typing into right now is list_panes' answer, not this one. To \
+             MOVE the user beside a pane, do not read a number from here and select it — that is \
+             two moments; call select_pane with 'dir' plus 'from' or 'from_here: true' and the \
+             terminal resolves it in one.\n",
             n0 = number(0),
             nr = number(right),
             nb = number(below),
