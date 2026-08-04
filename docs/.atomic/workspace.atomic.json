@@ -10801,6 +10801,58 @@
         "herdr was AHEAD on all three events and its identity model is why; sprag is ahead on deriving them and on a label that RESOLVES"
       ]
     },
+    "R302.1": {
+      "decision_summary": "The owner's debt question found the round's largest defect: a session name — the daemon's widest address — had no grammar, and the rename this round added made the hole reachable for a session that already exists. R295's rules are carried one level up, derived rather than copied.",
+      "changes_bullets": [
+        "SessionName: the grammar the daemon's WIDEST address had never had",
+        "parsed at BOTH mint sites (new_session, rename_session), not at restore",
+        "all-digits stays legal — a session has no ordinal to be confused with",
+        "the rename verb reports what the daemon RECORDED, never its argument",
+        "sprag new lists both refusals now that a second cause exists",
+        "the derive site re-measured against a control commit, corrected in place"
+      ],
+      "verification_bullets": [
+        "MEASURED on a live daemon at 9bca338: rename-session \"\" set the address to the empty string, a newline in a name printed as TWO rows of sprag ls, and x\\ty\\ESC[31m put an escape sequence into the reader's terminal",
+        "suite EXIT 0 / 45 / 1982, clippy 0 no new suppression, fmt, doc gate 0/16, pixel smoke 136/0 on a REBUILT release set",
+        "two more revert-proofs, each shown to DISCRIMINATE: dropping the parse, and answering the argument instead of the record",
+        "the derive site re-measured against a control commit built the same way: 1 pane 0.357 -> 0.257 us, 64 panes 3.084 -> 4.522 (+47%), 16 windows 4.018 -> 3.208",
+        "the inherited figures in the module were STALE by a factor of five on this box, and only a control commit could say so"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "the grammar is not enforced on a RESTORED snapshot: a legacy name still loads, and the remedy if it matters is a repair, not a refusal",
+        "SessionName is a grammar and not a stored type; a third mint site added later would have to remember to parse",
+        "ChannelRegistry::rename's stale-destination branch is reasoned, not driven by a test"
+      ],
+      "publishable_decision_summary": "The owner's debt question found the round's largest defect: a session name — the daemon's widest address — had no grammar, and the rename this round added made the hole reachable for a session that already exists. R295's rules are carried one level up, derived rather than copied.",
+      "publishable_changes_bullets": [
+        "SessionName: the grammar the daemon's WIDEST address had never had",
+        "parsed at BOTH mint sites (new_session, rename_session), not at restore",
+        "all-digits stays legal — a session has no ordinal to be confused with",
+        "the rename verb reports what the daemon RECORDED, never its argument",
+        "sprag new lists both refusals now that a second cause exists",
+        "the derive site re-measured against a control commit, corrected in place"
+      ],
+      "publishable_verification_bullets": [
+        "MEASURED on a live daemon at 9bca338: rename-session \"\" set the address to the empty string, a newline in a name printed as TWO rows of sprag ls, and x\\ty\\ESC[31m put an escape sequence into the reader's terminal",
+        "suite EXIT 0 / 45 / 1982, clippy 0 no new suppression, fmt, doc gate 0/16, pixel smoke 136/0 on a REBUILT release set",
+        "two more revert-proofs, each shown to DISCRIMINATE: dropping the parse, and answering the argument instead of the record",
+        "the derive site re-measured against a control commit built the same way: 1 pane 0.357 -> 0.257 us, 64 panes 3.084 -> 4.522 (+47%), 16 windows 4.018 -> 3.208",
+        "the inherited figures in the module were STALE by a factor of five on this box, and only a control commit could say so"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the grammar is not enforced on a RESTORED snapshot: a legacy name still loads, and the remedy if it matters is a repair, not a refusal",
+        "SessionName is a grammar and not a stored type; a third mint site added later would have to remember to parse",
+        "ChannelRegistry::rename's stale-destination branch is reasoned, not driven by a test"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
