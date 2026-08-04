@@ -1523,6 +1523,177 @@ fn an_attached_client_follows_a_rename_where_a_name_scoped_one_is_captured_by_an
     let _ = std::fs::remove_file(&sock);
 }
 
+/// **R304 over the REAL socket**: a client asks to go back where it was, and the daemon answers the
+/// session it actually VISITED — across a rename, and never the impostor wearing the freed name.
+///
+/// The one-verb-over twin of the test above, and the same three readings in the same order. What
+/// makes it a different claim: R303 fixed the session a client is VIEWING, where a hook at the
+/// rename can keep a name true; this is a session it HAS VIEWED, which no hook can reach — so the
+/// answer has to come from an identity the daemon kept.
+///
+/// The fixture is built so the two answers DISAGREE at every step: the visited session is renamed
+/// (so a remembered name resolves to nothing) AND a live impostor takes its name (so the remembered
+/// name resolves to a stranger). A history of names lands on `impostor`; a history of identities
+/// lands on `renamed`. Both are live, so nothing here can pass by accident.
+#[test]
+fn a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore() {
+    let (_host, sock) = spawn_host();
+    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    let new_session = |conn: &mut HostConn, name: &str| {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": name } }),
+        )
+        .expect("new_session answers");
+    };
+    new_session(&mut admin, "work");
+    new_session(&mut admin, "here");
+
+    // A display client that visits `work` and then moves to `here` — `attach_and_follow`'s exact
+    // sequence, twice, which is what a switch is.
+    let mut viewer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
+        .expect("client/hello is accepted");
+    let attach_to = |conn: &mut HostConn, session: &str| -> Value {
+        conn.scope_to(session.to_owned());
+        let landed = conn
+            .call(CLIENT_ATTACH_METHOD, json!({}))
+            .expect("client/attach is accepted");
+        conn.scope_to_attached();
+        landed
+    };
+    assert_eq!(
+        attach_to(&mut viewer, "work"),
+        json!("work"),
+        "an attach answers the session it landed on, which is what makes both arms one path",
+    );
+    attach_to(&mut viewer, "here");
+
+    // The visited session is renamed, and a NEW session takes the name it wore.
+    admin
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "work",
+                "path": mux_action_path(RENAME_SESSION_ACTION),
+                "args": { "name": "renamed" },
+            }),
+        )
+        .expect("rename_session answers");
+    new_session(&mut admin, "work");
+    assert!(
+        session_names(&mut admin).contains(&"work".to_owned()),
+        "the impostor is LIVE — a history of names would resolve straight onto it",
+    );
+
+    // The gesture: tmux `switch-client -l`, on the connection that is scoped to the attachment.
+    let go_back = |conn: &mut HostConn, unattached: bool| -> Value {
+        let mut params = serde_json::Map::new();
+        sprag_host::wire::AttachAsk::LastViewed { unattached }.write_into(&mut params);
+        conn.call(CLIENT_ATTACH_METHOD, Value::Object(params))
+            .expect("client/attach is accepted")
+    };
+    assert_eq!(
+        go_back(&mut viewer, false),
+        json!("renamed"),
+        "the session it VISITED, under the name that session has now — never the impostor",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "renamed"),
+        1,
+        "and it is really there: the daemon counts it on that session's badge",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "work"),
+        0,
+        "...and not on the stranger's",
+    );
+
+    // Going back is itself a visit, so the answer toggles — tmux's own `switch-client -l`.
+    assert_eq!(go_back(&mut viewer, false), json!("here"));
+
+    // A client with nowhere to go back to is ANSWERED, not refused: `null`, and it stays put.
+    let mut fresh =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("a fresh client connects");
+    fresh
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "fresh" }))
+        .expect("client/hello is accepted");
+    attach_to(&mut fresh, "here");
+    assert_eq!(
+        go_back(&mut fresh, false),
+        Value::Null,
+        "a client that never switched has no last session, and that is an answer",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "here"),
+        2,
+        "and a null answer moved nothing: it is still where it was",
+    );
+
+    // The `unattached` narrowing (tmux `detach-on-destroy no-detached`), answered from the daemon's
+    // own attachment map: `here` is where `viewer` went back to, and `fresh` is sitting on it, so
+    // the narrowed ask skips it for the next session in that client's history.
+    assert_eq!(
+        go_back(&mut viewer, true),
+        json!("renamed"),
+        "the narrowed ask skips the session another client is viewing",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// Every way an attach can name a target this daemon does not admit, as the SENTENCE an operator
+/// reads — over the socket, not through the grammar's own unit tests.
+///
+/// R303 registered exactly this gap for the scope's three new refusals: the wording was pinned by a
+/// unit test on `Display` and the DELIVERY of it to a reader was pinned by nothing. These are that
+/// item's lesson applied on the round that would otherwise repeat it.
+///
+/// The CONTROL is the last case: a well-typed `false` is not a fault, so a daemon that refused
+/// everything it did not understand would fail here rather than pass this test whole.
+#[test]
+fn a_malformed_attach_target_is_refused_with_the_sentence_that_says_which() {
+    let (_host, sock) = spawn_host();
+    let mut client = HostConn::connect(&sock, Duration::from_secs(5)).expect("the client connects");
+    client
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "malformed" }))
+        .expect("client/hello is accepted");
+
+    for (params, sentence) in [
+        (json!({ "last": 1 }), "params.last must be a boolean"),
+        (json!({ "last": null }), "params.last must be a boolean"),
+        (
+            json!({ "last": true, "unattached": "yes" }),
+            "params.unattached must be a boolean",
+        ),
+        (
+            json!({ "unattached": true }),
+            "params.unattached narrows params.last, which this request does not ask for",
+        ),
+    ] {
+        let refusal = client
+            .call(CLIENT_ATTACH_METHOD, params.clone())
+            .expect_err("a malformed target is refused");
+        assert!(
+            refusal.to_string().contains(sentence),
+            "{params} must be refused as {sentence:?}, not as {refusal}",
+        );
+    }
+
+    assert_eq!(
+        client
+            .call(CLIENT_ATTACH_METHOD, json!({ "last": false }))
+            .expect("the CONTROL: a well-typed no is an absent key"),
+        json!("0"),
+        "and it attaches to the connection's scope, which is the daemon's default session",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// Two WINDOWS in ONE session are independent, over a REAL socket — the tmux "windows" shape.
 ///
 /// A `new_window` is born with its own shell and BECOMES current, so the session's reads answer
