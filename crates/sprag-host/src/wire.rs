@@ -14,7 +14,7 @@
 
 use pinion_core::external::{SchemaArg, SchemaField};
 use serde_json::{Map, Value};
-use sprag_terminal::{PaneDir, PaneId};
+use sprag_terminal::{PaneDir, PaneId, WindowStep};
 
 use crate::{INPUT_TAG, MUX_TAG};
 
@@ -993,8 +993,94 @@ pub const SESSION_SLOT: &str = "session";
 pub const NEW_WINDOW_ACTION: &str = "new_window";
 
 /// The mux control external invoke action that makes a window current in the SCOPED session
-/// (`{window}`) — tmux `select-window`. Session state: every attached client follows.
+/// (`{window}` XOR `{relative}`) — tmux `select-window`, `next-window` and `previous-window` in one
+/// verb. Session state: every attached client follows.
+///
+/// It ANSWERS the window it landed on. A caller that named one already knew; a caller that STEPPED
+/// could not, and giving both arms the same answer is what lets a client learn where it went rather
+/// than infer it from a mirror (R295/R302/R304's rule, one level down).
 pub const SELECT_WINDOW_ACTION: &str = "select_window";
+
+/// The REQUEST grammar of [`SELECT_WINDOW_ACTION`] — [`SelectAsk`]'s twin one level up, and a
+/// separate type for the same reason that one is: the keys are spelled ONCE for the daemon, the CLI
+/// verb and the keybinding, and the XOR lives in the type so no code in this tree can build "a name
+/// and a direction".
+///
+/// # Two arms, not four
+///
+/// A pane walk is SPATIAL — four ways, and an edge at each end that the answer has to name. A
+/// window list is an ORDINAL RING: two ways, no ends, and the step always lands. That is why
+/// [`WindowStep`] is its own vocabulary rather than a reuse of [`PaneDir`], and why this ask has no
+/// origin key: a step is always measured from the window the session is CURRENTLY on, because that
+/// is the only thing "next" can mean for a ring the session itself walks.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SelectWindowAsk {
+    /// `{window}` — make the window with that NAME current. Refused if the session has none.
+    Named(String),
+    /// `{relative}` — one step along the ring from the current window, WRAPPING. Total: a session
+    /// always has a window, so this always lands somewhere and answers its name.
+    Step(WindowStep),
+}
+
+impl SelectWindowAsk {
+    /// The request key naming a window outright.
+    pub const WINDOW_KEY: &'static str = "window";
+    /// The request key naming which way to step along the ring.
+    pub const RELATIVE_KEY: &'static str = "relative";
+
+    /// The `args` object a client sends for this ask.
+    ///
+    /// The named arm emits exactly the bytes it emitted before the step existed, so the request
+    /// every client already sends is unchanged and a reader of a trace tells the two apart by eye
+    /// ([`SelectAsk::to_args`]'s rule).
+    #[must_use]
+    pub fn to_args(&self) -> Value {
+        let mut map = Map::new();
+        match self {
+            Self::Named(window) => {
+                map.insert(Self::WINDOW_KEY.to_owned(), Value::from(window.clone()));
+            }
+            Self::Step(step) => {
+                map.insert(Self::RELATIVE_KEY.to_owned(), Value::from(step.wire_str()));
+            }
+        }
+        Value::Object(map)
+    }
+
+    /// The ask an `args` value names, or [`None`] for anything this grammar does not admit — a key
+    /// of the wrong type, both namings, or neither.
+    ///
+    /// One [`None`] for every refusal, as [`SelectAsk::parse`] has and for the same stated reason:
+    /// the action answers one error for all of them, and the SURFACES say which one because each of
+    /// them knows what it sent.
+    #[must_use]
+    pub fn parse(args: &Value) -> Option<Self> {
+        let map = match args {
+            Value::Object(map) => Some(map),
+            Value::Null => None,
+            _ => return None,
+        };
+        // An explicit `null` reads as absent — the rule the sibling grammar states, so a caller
+        // filling in a whole argument struct asks what one omitting the halves asks.
+        let field = |key: &str| {
+            map.and_then(|map| map.get(key))
+                .filter(|value| !value.is_null())
+        };
+        let named = match field(Self::WINDOW_KEY) {
+            None => None,
+            Some(value) => Some(value.as_str()?.to_owned()),
+        };
+        let step = match field(Self::RELATIVE_KEY) {
+            None => None,
+            Some(value) => Some(WindowStep::from_wire(value.as_str()?)?),
+        };
+        match (named, step) {
+            (Some(window), None) => Some(Self::Named(window)),
+            (None, Some(step)) => Some(Self::Step(step)),
+            _ => None,
+        }
+    }
+}
 
 /// The mux control external invoke action that makes a pane ACTIVE in the scoped session's current
 /// window (`{pane?}` XOR `{dir?}`) — tmux `select-pane`. Answers `{pane, changed}`.
@@ -2458,6 +2544,30 @@ mod tests {
             "{}",
             BUMP,
         );
+
+        // The WINDOW select's grammar (R305), pinned beside the pane's because they are twins and a
+        // key that drifted between them would be invisible from either type alone. The named arm
+        // especially: it is the shape every client already sent, and a change there would move a
+        // request nobody edited.
+        assert_eq!(
+            serde_json::to_string(&SelectWindowAsk::Named("logs".to_owned()).to_args())
+                .expect("an ask renders"),
+            r#"{"window":"logs"}"#,
+            "{}",
+            BUMP,
+        );
+        for (step, rendered) in [
+            (WindowStep::Next, r#"{"relative":"next"}"#),
+            (WindowStep::Previous, r#"{"relative":"previous"}"#),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&SelectWindowAsk::Step(step).to_args())
+                    .expect("an ask renders"),
+                rendered,
+                "{}",
+                BUMP,
+            );
+        }
 
         // The swap's grammar, all four spellings: an origin present and absent on each arm, because
         // the origin is a FIELD of both here rather than a variant of its own.

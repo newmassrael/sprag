@@ -379,7 +379,14 @@ impl AttachAsk {
 ///   nothing reports. The reply's change (a session NAME where a bare ok used to be) needs no bump
 ///   of its own — an old client discards it — but it is what a new client reads to learn where it
 ///   landed, so a new client against an old daemon would also read a name that is not there.
-pub const WIRE_PROTOCOL: u32 = 7;
+/// * **8** — `select_window` gained a RELATIVE arm (`{relative: "next"|"previous"}`, R305), so a key
+///   can walk a session's windows and the daemon is the one that resolves the ring. The FOURTH bump
+///   caused by an added ARGUMENT, and it fails the way that class always does: a pre-R305 daemon
+///   does not read `relative`, finds no `window` key, and refuses the request as malformed — which
+///   is the LOUD half. The quiet half is the answer: `select_window` now answers the window it
+///   landed on where it used to answer `null`, so a new client reading that answer against an old
+///   daemon would learn nothing about where it went.
+pub const WIRE_PROTOCOL: u32 = 8;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
