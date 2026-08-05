@@ -54,7 +54,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use pinion_rpc::Request;
-use sprag_rpc::{ScopeAsk, ScopeFault};
+use sprag_rpc::{ScopeAsk, ScopeFault, WINDOW_PARAM};
 use sprag_terminal::{Session, SessionId, SessionRegistry, Workspace};
 
 use crate::external::lock;
@@ -97,6 +97,19 @@ pub enum ScopeError {
     NotAttached,
     /// The param is a well-formed name that no session carries.
     Unknown(String),
+    /// [`WINDOW_PARAM`] is present and is not a string.
+    WindowNotAString,
+    /// The window param is a well-formed name that the SCOPED SESSION holds no window under.
+    ///
+    /// It carries both names because either can be the mistake and a caller cannot tell which from
+    /// one of them: a window that has been renamed, and a window of a DIFFERENT session, are the
+    /// two ways to get here and they have different remedies.
+    UnknownWindow {
+        /// The session that was scoped.
+        session: String,
+        /// The window name it holds none under.
+        window: String,
+    },
 }
 
 impl From<ScopeFault> for ScopeError {
@@ -107,6 +120,7 @@ impl From<ScopeFault> for ScopeError {
             ScopeFault::NotAString => Self::NotAString,
             ScopeFault::AttachedNotABool => Self::AttachedNotABool,
             ScopeFault::TwoScopes => Self::TwoScopes,
+            ScopeFault::WindowNotAString => Self::WindowNotAString,
         }
     }
 }
@@ -126,14 +140,26 @@ impl fmt::Display for ScopeError {
                 "params.{ATTACHED_PARAM} asks for this client's session and it is attached to none",
             ),
             Self::Unknown(name) => write!(f, "no session named {name:?}"),
+            Self::WindowNotAString => {
+                write!(
+                    f,
+                    "params.{WINDOW_PARAM} must be a string (a window has a NAME, not a number)"
+                )
+            }
+            Self::UnknownWindow { session, window } => {
+                write!(f, "session {session:?} has no window named {window:?}")
+            }
         }
     }
 }
 
 impl std::error::Error for ScopeError {}
 
-/// The one session-and-window a request acts on: the session name, the NAME of the window that
-/// session is currently showing, and that window's pane pool.
+/// The one session-and-window a request acts on: the session name, the NAME of the window the
+/// request is about, and that window's pane pool.
+///
+/// Which window that is comes from the request: [`WINDOW_PARAM`] names one, and an absent key means
+/// the session's CURRENT window — the only thing it could mean before R311 and still the default.
 ///
 /// The window name and the pool are read off the SAME [`Window`](sprag_terminal::Window) at
 /// resolve time, so they cannot describe different windows — which is what lets the layout
@@ -219,16 +245,48 @@ impl SessionScope {
         request: &Request,
         attached: impl FnOnce() -> Option<String>,
     ) -> Result<Self, ScopeError> {
-        // Parsed BEFORE any lock: a malformed scope is refused without touching either registry,
-        // and the attached lookup below happens with nothing held.
+        // BOTH questions parsed BEFORE any lock: a malformed scope is refused without touching
+        // either registry, and the attached lookup below happens with nothing held. The window is
+        // read first so a request wrong in both ways is told about the key it is likelier to have
+        // got wrong — the session key predates this grammar and every caller already sends it.
+        let window = ScopeAsk::window(request.params.as_ref())?;
         let named = match ScopeAsk::parse(request.params.as_ref())? {
-            ScopeAsk::Default => return Ok(Self::of_default(&lock(registry))),
+            ScopeAsk::Default => {
+                let registry = lock(registry);
+                return Self::narrowed(registry.default_session(), window.as_deref());
+            }
             ScopeAsk::Named(name) => name,
             ScopeAsk::Attached => attached().ok_or(ScopeError::NotAttached)?,
         };
         let registry = lock(registry);
         let session = registry.session(&named).ok_or(ScopeError::Unknown(named))?;
-        Ok(Self::of_session(session))
+        Self::narrowed(session, window.as_deref())
+    }
+
+    /// `session`'s scope, narrowed to the window it NAMES — or to its current one for [`None`].
+    ///
+    /// The one place the window ask becomes a window, so the three [`ScopeAsk`] arms cannot come to
+    /// disagree about what narrowing means. It reads the name and the pool off the SAME
+    /// [`Window`](sprag_terminal::Window), which is [`of_session`](Self::of_session)'s whole
+    /// discipline applied to a window the request chose instead of the one the session is showing.
+    fn narrowed(session: &Session, window: Option<&str>) -> Result<Self, ScopeError> {
+        let Some(name) = window else {
+            return Ok(Self::of_session(session));
+        };
+        let window = session
+            .windows()
+            .iter()
+            .find(|window| window.name() == name)
+            .ok_or_else(|| ScopeError::UnknownWindow {
+                session: session.name().to_owned(),
+                window: name.to_owned(),
+            })?;
+        Ok(Self {
+            session: session.name().to_owned(),
+            id: session.id(),
+            window: window.name().to_owned(),
+            workspace: Arc::clone(window.workspace()),
+        })
     }
 
     /// The default session's scope, for a caller with no request to name one: the in-process
@@ -396,6 +454,94 @@ mod tests {
                 "a {bad} scope must be refused, not silently aliased to the default",
             );
         }
+    }
+
+    /// A request can NARROW itself to one window of its scoped session, and the narrowing composes
+    /// with every arm rather than replacing one — R311's whole seam in one test.
+    ///
+    /// The fixture is deliberately sitting on a DIFFERENT window from the one it asks for, so "the
+    /// narrowing worked" and "the session happened to be showing that window" cannot be confused:
+    /// `new_window` selects what it creates, so the current window is `win1` and the request names
+    /// the boot window `0`.
+    ///
+    /// REVERT-PROOF: drop the `window` read from `resolve` and both narrowed rows answer `win1`;
+    /// resolve the window against the CURRENT one rather than by name and the same two fail.
+    #[test]
+    fn a_request_can_narrow_itself_to_one_window_of_its_session() {
+        let reg = registry();
+        let default = lock(&reg).default_session().name().to_owned();
+        lock(&reg).new_window(&default, Some("win1")).unwrap();
+        let pool_of = |name: &str| {
+            let guard = lock(&reg);
+            let session = guard.session(&default).expect("the session");
+            let window = session
+                .windows()
+                .iter()
+                .find(|window| window.name() == name)
+                .expect("the window");
+            Arc::as_ptr(window.workspace())
+        };
+        let (boot, current) = (pool_of("0"), pool_of("win1"));
+        assert_ne!(
+            boot, current,
+            "the two windows really hold different pools, or nothing below discriminates",
+        );
+
+        // ABSENT ⇒ the CURRENT window, which is what every request meant before this key existed.
+        let wide = resolve(&reg, r#"{"session":"0"}"#).expect("the session resolves");
+        assert_eq!(wide.window(), "win1");
+        assert_eq!(Arc::as_ptr(wide.workspace()), current);
+
+        // NAMED ⇒ that window, name and pool read off the same `Window`.
+        for params in [r#"{"session":"0","window":"0"}"#, r#"{"window":"0"}"#] {
+            let narrow = resolve(&reg, params).expect("the window resolves");
+            assert_eq!(narrow.window(), "0", "{params}");
+            assert_eq!(
+                Arc::as_ptr(narrow.workspace()),
+                boot,
+                "{params} carries the NAMED window's pool, not the current one",
+            );
+            assert_eq!(narrow.session(), "0", "and the session is unchanged");
+        }
+    }
+
+    /// The two ways to get a window narrowing wrong, each with its own refusal — because the
+    /// remedies differ and a caller cannot tell them apart from one sentence.
+    ///
+    /// A window NUMBER is the likeliest mistake (tmux windows have numbers and sprag's have names),
+    /// which is why it is not folded into the session key's `NotAString`.
+    #[test]
+    fn a_window_narrowing_is_refused_by_name_and_by_type() {
+        let reg = registry();
+        assert!(
+            matches!(
+                resolve(&reg, r#"{"session":"0","window":"ghost"}"#),
+                Err(ScopeError::UnknownWindow { session, window })
+                    if session == "0" && window == "ghost"
+            ),
+            "an absent window is refused carrying BOTH names",
+        );
+        assert!(
+            matches!(
+                resolve(&reg, r#"{"session":"0","window":2}"#),
+                Err(ScopeError::WindowNotAString),
+            ),
+            "a window NUMBER is refused as a type error, not as an unknown name",
+        );
+        // The SENTENCES, pinned: a refusal a caller reads is a claim about the daemon.
+        assert_eq!(
+            resolve(&reg, r#"{"session":"0","window":"ghost"}"#)
+                .unwrap_err()
+                .to_string(),
+            r#"session "0" has no window named "ghost""#,
+        );
+        assert_eq!(
+            resolve(&reg, r#"{"window":2}"#).unwrap_err().to_string(),
+            "params.window must be a string (a window has a NAME, not a number)",
+        );
+        // CONTROL: the same requests without the bad key resolve, so the refusals are about the
+        // WINDOW key and not about the shape of the request.
+        assert!(resolve(&reg, r#"{"session":"0"}"#).is_ok());
     }
 
     #[test]

@@ -2927,6 +2927,28 @@ mod tests {
             "{}",
             BUMP,
         );
+        // The WINDOW narrowing (R311), which rides BESIDE whichever arm wrote the session rather
+        // than replacing one — so both spellings are pinned, and the absent one is pinned as
+        // writing nothing at all.
+        let mut narrowed = serde_json::Map::new();
+        sprag_rpc::ScopeAsk::Named("work".to_owned()).write_into(&mut narrowed);
+        sprag_rpc::ScopeAsk::write_window_into(Some("build"), &mut narrowed);
+        assert_eq!(
+            serde_json::to_string(&narrowed).expect("a scope renders"),
+            r#"{"session":"work","window":"build"}"#,
+            "{}",
+            BUMP,
+        );
+        let mut wide = serde_json::Map::new();
+        sprag_rpc::ScopeAsk::Attached.write_into(&mut wide);
+        sprag_rpc::ScopeAsk::write_window_into(None, &mut wide);
+        assert_eq!(
+            serde_json::to_string(&wide).expect("a scope renders"),
+            r#"{"attached":true}"#,
+            "{}",
+            BUMP,
+        );
+
         let mut target = serde_json::Map::new();
         sprag_rpc::AttachAsk::LastViewed { unattached: true }.write_into(&mut target);
         assert_eq!(

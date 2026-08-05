@@ -75,6 +75,24 @@ pub const LAST_PARAM: &str = "last";
 /// Meaningless on its own, and refused there ([`AttachFault::UnattachedWithoutLast`]).
 pub const UNATTACHED_PARAM: &str = "unattached";
 
+/// The `params` key narrowing a request to ONE WINDOW of the scoped session — `{"window": "build"}`.
+///
+/// ORTHOGONAL to the three [`ScopeAsk`] arms rather than a fourth one: they answer WHICH SESSION and
+/// this answers WHICH WINDOW OF IT, so it composes with every one of them (a display client can
+/// narrow its own attachment). Absent ⇒ the session's CURRENT window, which is what every request
+/// meant before this key existed.
+///
+/// # What it is FOR (R311)
+///
+/// `sprag_host::scope::Scope` has always carried a window NAME and that window's POOL, resolved off
+/// one `Window` under one lock — every read downstream is already per-window. What it lacked was a
+/// way for a request to ASK for one, so the scene a read is addressed through held only the CURRENT
+/// window's panes, and a pane one window over answered `NoExternalAtPath`. Meanwhile the WRITE verbs
+/// (`rename_pane`, `swap_pane`, `move_pane`) resolve a pane registry-wide and cross a window freely.
+/// **So an agent could rename and swap a pane it could not read** — measured, and an artifact of two
+/// addressing paths rather than a decision anyone took.
+pub const WINDOW_PARAM: &str = "window";
+
 /// WHICH session a request acts on, as the request ASKS for it — the scope grammar, defined ONCE
 /// for both ends of the wire.
 ///
@@ -135,6 +153,13 @@ pub enum ScopeFault {
     /// BOTH keys ask for a scope at once. They are different questions and there is no honest way
     /// to pick one, so neither is answered.
     TwoScopes,
+    /// [`WINDOW_PARAM`] is present and is not a string (`{"window": 3}`).
+    ///
+    /// Its own variant rather than [`NotAString`](Self::NotAString), because the two name different
+    /// keys and the sentence a surface renders has to say which one the caller got wrong. A window
+    /// NUMBER is the likeliest way to get it wrong — sprag windows have names and no numbers — so
+    /// this is the refusal a real caller meets.
+    WindowNotAString,
 }
 
 impl ScopeAsk {
@@ -153,6 +178,40 @@ impl ScopeAsk {
             Self::Attached => {
                 params.insert(ATTACHED_PARAM.to_owned(), Value::Bool(true));
             }
+        }
+    }
+
+    /// Write a WINDOW narrowing into a request's `params` — the ONE place a client spells one.
+    ///
+    /// A separate function rather than a field of the three arms, for [`WINDOW_PARAM`]'s reason: it
+    /// is an orthogonal question, so it composes with whichever arm wrote the session. [`None`]
+    /// writes NOTHING, so a request that does not narrow is unchanged byte for byte —
+    /// [`write_into`](Self::write_into)'s own rule.
+    pub fn write_window_into(window: Option<&str>, params: &mut serde_json::Map<String, Value>) {
+        if let Some(window) = window {
+            params.insert(WINDOW_PARAM.to_owned(), Value::String(window.to_owned()));
+        }
+    }
+
+    /// The WINDOW a request narrows itself to, or [`None`] for the scoped session's current one.
+    ///
+    /// Parsed here rather than beside the caller so the whole scope grammar has ONE home: a
+    /// resolver that read the session key from this type and the window key by hand would be two
+    /// places deciding what a params object asks for.
+    ///
+    /// `null` is REFUSED rather than read as absent, which is [`parse`](Self::parse)'s rule and for
+    /// its reason one level down: a window that reads as absent silently retargets the request at
+    /// whichever window the session happens to be showing, and "wrong data for reads" is exactly
+    /// what that rule exists to stop.
+    ///
+    /// # Errors
+    ///
+    /// [`ScopeFault::WindowNotAString`].
+    pub fn window(params: Option<&Value>) -> Result<Option<String>, ScopeFault> {
+        match params.and_then(|params| params.get(WINDOW_PARAM)) {
+            None => Ok(None),
+            Some(Value::String(name)) => Ok(Some(name.clone())),
+            Some(_) => Err(ScopeFault::WindowNotAString),
         }
     }
 
@@ -412,7 +471,18 @@ impl AttachAsk {
 ///   which is why it needs the number: an old client's `kill-pane` now DESTROYS a window (and
 ///   possibly the session) where the build it was compiled against destroyed one pane. Nothing in
 ///   the old answer could carry that, because the old answer was `null` for every case.
-pub const WIRE_PROTOCOL: u32 = 10;
+/// * **11** — a request can narrow itself to ONE WINDOW of its scoped session ([`WINDOW_PARAM`],
+///   R311). The FIFTH bump caused by an added ARGUMENT, and it fails the way that class always
+///   does — R294 measured an old daemon ACCEPTING an argument it does not know and DROPPING it,
+///   with the request still parsing. Here the drop is the worst kind: a post-R311 agent asking to
+///   read the pane called `buildout` in the window called `build` would be answered about
+///   WHICHEVER WINDOW the session happens to be showing, and the reply is a well-formed screenful
+///   of the wrong pane. There is no answer key to be absent-not-wrong about, because the argument's
+///   whole meaning is which panes the request can see.
+///   The other direction is refused by number and needs to be: an old client's reads were
+///   window-scoped by construction and a new daemon changes nothing for them, but a new client that
+///   sent the key and got the current window would report success about the wrong screen.
+pub const WIRE_PROTOCOL: u32 = 11;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
