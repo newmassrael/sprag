@@ -566,7 +566,11 @@ fn tools_list() -> Value {
                     where it went), `window_created`, `window_closed`, `window_selected`, \
                     `window_renamed`, `session_created`, `session_closed`, `session_renamed` (the \
                     session ITSELF was renamed: the `session` key is the name it had — the one you \
-                    were holding — and `name` is what it answers to now), `layout_updated` — each \
+                    were holding — and `name` is what it answers to now), `layout_updated`, \
+                    `windows_reordered` (a window changed PLACE in the session's order — the order \
+                    `list_panes`'s windows are listed in, and the one the window keys walk; it \
+                    names no window because a swap of two has two equally true readings, so \
+                    re-read the window list) — each \
                     naming its SUBJECT, not its new value, except the three that MOVE AN ADDRESS: a \
                     rename and a pane's move also carry the one fact no later read could recover. \
                     Follow up with agent_state, pane_processes or list_panes to read the subject a \

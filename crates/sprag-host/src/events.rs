@@ -391,7 +391,37 @@ impl SessionShape {
                 events.push(Event::WindowClosed(had.name.clone()));
             }
         }
+        // LAST, and the ONLY comparison in this function that reads a SEQUENCE where everything
+        // above reads a SET. Every loop here matches by identity with a `find`, so until this line
+        // a reorder of the window list produced NOTHING — measured, and pinned by
+        // `a_reorder_is_invisible_to_every_other_comparison_in_the_diff`.
+        //
+        // Last because it is the coarsest: a reader applying the batch in order learns which windows
+        // exist before it is told their order moved.
+        if self.window_order_moved(next) {
+            events.push(Event::WindowsReordered);
+        }
         events
+    }
+
+    /// Whether the SURVIVING windows sit in a different relative order in `next`.
+    ///
+    /// Restricted to the windows present in BOTH shapes, which is what keeps a create or a close —
+    /// each of which shifts every later window — from reading as a reorder. Only the relative order
+    /// of what survived counts, and that is exactly the fact [`Event::WindowsReordered`] names.
+    ///
+    /// One pass per side plus a zip: the diff runs on every mutating dispatch and every keystroke is
+    /// one, so the steady state (nothing moved) must be a walk over `u64`s and no allocation beyond
+    /// the two filtered lists. It is the same `find` per window the loops above already pay.
+    fn window_order_moved(&self, next: &Self) -> bool {
+        let surviving = |from: &Self, other: &Self| -> Vec<WindowId> {
+            from.windows
+                .iter()
+                .filter(|window| other.windows.iter().any(|peer| peer.id == window.id))
+                .map(|window| window.id)
+                .collect()
+        };
+        surviving(self, next) != surviving(next, self)
     }
 }
 
@@ -487,6 +517,22 @@ pub enum Event {
     /// reader answers it by re-reading the layout slot, which is what it would do for any subject
     /// this could name.
     LayoutUpdated,
+    /// The session's WINDOW ORDER moved — tmux `move-window`, and the order `select-window -n`
+    /// walks. The window SET is unchanged: a create or a close shifts every later window and is
+    /// reported as itself.
+    ///
+    /// # Why this names no window, which is a claim and is PROVED
+    ///
+    /// [`LayoutUpdated`](Self::LayoutUpdated) one level up: the subject is an arrangement, which is
+    /// one object with nothing to name — and here that is not merely a choice, it is the only honest
+    /// reading. `[A, B, C] → [B, A, C]` is produced by `move A after B` AND by `move B before A`,
+    /// and the two leave IDENTICAL state, so no derivation from state can say which window the user
+    /// moved. A subject is what a filter matches on, so a subject that is right half the time is
+    /// worse than none. `a_transposition_cannot_say_which_window_moved` runs both requests and
+    /// asserts the two shapes are equal, which is what makes this paragraph falsifiable.
+    ///
+    /// A reader answers it by re-reading the `windows` slot, whose ARRAY ORDER is the fact.
+    WindowsReordered,
     /// The window's ACTIVE pane moved to this one — tmux `select-pane`, and the pane-level twin of
     /// [`Event::WindowSelected`].
     ///
@@ -557,6 +603,7 @@ impl Event {
             Self::SessionClosed(_) => EventKind::SessionClosed,
             Self::SessionRenamed { .. } => EventKind::SessionRenamed,
             Self::LayoutUpdated => EventKind::LayoutUpdated,
+            Self::WindowsReordered => EventKind::WindowsReordered,
         }
     }
 
@@ -580,7 +627,7 @@ impl Event {
                 Some(Subject::Session(name.clone()))
             }
             Self::SessionRenamed { from, .. } => Some(Subject::Session(from.clone())),
-            Self::LayoutUpdated => None,
+            Self::LayoutUpdated | Self::WindowsReordered => None,
         }
     }
 
@@ -966,6 +1013,8 @@ pub enum EventKind {
     SessionRenamed,
     /// [`Event::LayoutUpdated`].
     LayoutUpdated,
+    /// [`Event::WindowsReordered`].
+    WindowsReordered,
 }
 
 impl EventKind {
@@ -995,6 +1044,7 @@ impl EventKind {
         Self::SessionClosed,
         Self::SessionRenamed,
         Self::LayoutUpdated,
+        Self::WindowsReordered,
     ];
 
     /// This kind's name on the wire — the `type` field of an event object, and the word a
@@ -1021,6 +1071,7 @@ impl EventKind {
             Self::SessionClosed => "session_closed",
             Self::SessionRenamed => "session_renamed",
             Self::LayoutUpdated => "layout_updated",
+            Self::WindowsReordered => "windows_reordered",
         }
     }
 
@@ -1065,8 +1116,9 @@ impl EventKind {
             Self::SessionCreated | Self::SessionClosed | Self::SessionRenamed => {
                 Some(Subject::SESSION_KEY)
             }
-            // The arrangement is ONE object: see `Event::LayoutUpdated`.
-            Self::LayoutUpdated => None,
+            // An arrangement is ONE object: see `Event::LayoutUpdated` and
+            // `Event::WindowsReordered`, which is the same argument one level up.
+            Self::LayoutUpdated | Self::WindowsReordered => None,
         }
     }
 
@@ -1448,6 +1500,7 @@ impl Default for SessionJournal {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use sprag_terminal::WindowPlace;
 
     use super::*;
 
@@ -1691,6 +1744,140 @@ mod tests {
         );
     }
 
+    /// A REORDER derives as one `windows_reordered`, and every control that must NOT produce one
+    /// is in the same test — because an assertion that a reorder is reported says nothing if the
+    /// event fires on a create, a close or a select as well.
+    ///
+    /// REVERT-PROOF: delete the `window_order_moved` call from `diff` and the first assertion
+    /// fails; make it compare the FULL window lists instead of the surviving ones and control 2
+    /// (the create) and control 3 (the close) both fail, because each shifts every later window.
+    #[test]
+    fn a_reorder_is_one_event_and_a_create_or_a_close_is_not_one() {
+        let (mut registry, _) = registry_with(0);
+        let session = registry.default_session().name().to_owned();
+        for name in ["alpha", "beta"] {
+            registry.new_window(&session, Some(name)).unwrap();
+        }
+
+        let moved = derived(&mut registry, |registry| {
+            assert_eq!(
+                registry.move_window(&session, "beta", &WindowPlace::First),
+                Ok(sprag_terminal::PlaceHow::Moved),
+            );
+        });
+        assert_eq!(
+            moved,
+            vec![Event::WindowsReordered],
+            "one reorder — no birth, no death, no rename and no select",
+        );
+
+        // CONTROL 1 — a move that changes nothing produces nothing, which is the property that
+        // makes this event worth parking on rather than a wake for every keystroke of the verb.
+        let still = derived(&mut registry, |registry| {
+            assert_eq!(
+                registry.move_window(&session, "beta", &WindowPlace::First),
+                Ok(sprag_terminal::PlaceHow::AlreadyThere),
+            );
+        });
+        assert!(
+            still.is_empty(),
+            "nothing moved, so nothing is reported: {still:?}"
+        );
+
+        // CONTROL 2 — a CREATE shifts nothing's relative order, so it is a birth and not a reorder.
+        let created = derived(&mut registry, |registry| {
+            registry.new_window(&session, Some("gamma")).unwrap();
+        });
+        assert!(
+            !created.contains(&Event::WindowsReordered),
+            "a new window at the back reorders nothing that survived: {created:?}",
+        );
+
+        // CONTROL 3 — and a CLOSE, which shifts every later window's INDEX, is not one either.
+        let killed = derived(&mut registry, |registry| {
+            registry.kill_window(&session, "beta").unwrap();
+        });
+        assert!(
+            killed.contains(&Event::WindowClosed("beta".to_owned())),
+            "the close is still reported: {killed:?}",
+        );
+        assert!(
+            !killed.contains(&Event::WindowsReordered),
+            "a close moves indices and moves no window PAST another: {killed:?}",
+        );
+    }
+
+    /// The funnel could see NOTHING of a reorder before this round, and this is the pin for that
+    /// sentence rather than a claim in a doc comment: every other comparison in `diff` matches by
+    /// identity with a `find`, so with the sequence check removed a move produces an EMPTY batch.
+    ///
+    /// Written as a positive assertion about the OTHER comparisons — a reorder changes no name, no
+    /// membership, no current window, no pane set and no layout revision — so it keeps meaning
+    /// something if the event is ever renamed.
+    #[test]
+    fn a_reorder_is_invisible_to_every_other_comparison_in_the_diff() {
+        let (mut registry, _) = registry_with(0);
+        let session = registry.default_session().name().to_owned();
+        for name in ["alpha", "beta"] {
+            registry.new_window(&session, Some(name)).unwrap();
+        }
+        let moved = derived(&mut registry, |registry| {
+            registry
+                .move_window(&session, "alpha", &WindowPlace::Last)
+                .expect("alpha moves to the back");
+        });
+        assert_eq!(
+            moved
+                .iter()
+                .filter(|event| **event != Event::WindowsReordered)
+                .count(),
+            0,
+            "a reorder is ONLY a reorder — the set-shaped comparisons see nothing: {moved:?}",
+        );
+    }
+
+    /// **The claim [`Event::WindowsReordered`] makes about itself, driven rather than argued**: a
+    /// transposition has TWO true readings, so no derivation from state can name the window the
+    /// user moved.
+    ///
+    /// `move alpha after beta` and `move beta before alpha` are different requests that leave the
+    /// SAME order. If the two shapes are equal, then any function of the shapes gives them the same
+    /// subject — so a subject would be wrong for one of the two callers, every time.
+    #[test]
+    fn a_transposition_cannot_say_which_window_moved() {
+        let order = |request: fn(&str, &mut SessionRegistry)| -> Vec<String> {
+            let (mut registry, _) = registry_with(0);
+            let session = registry.default_session().name().to_owned();
+            for name in ["alpha", "beta", "gamma"] {
+                registry.new_window(&session, Some(name)).unwrap();
+            }
+            request(&session, &mut registry);
+            registry
+                .session(&session)
+                .expect("the session")
+                .window_infos()
+                .into_iter()
+                .map(|info| info.name)
+                .collect()
+        };
+        let one = order(|session, registry| {
+            registry
+                .move_window(session, "alpha", &WindowPlace::After("beta".to_owned()))
+                .expect("alpha moves behind beta");
+        });
+        let other = order(|session, registry| {
+            registry
+                .move_window(session, "beta", &WindowPlace::Before("alpha".to_owned()))
+                .expect("beta moves in front of alpha");
+        });
+        assert_eq!(
+            one, other,
+            "two different requests, one resulting order — which is why the event names no window",
+        );
+        // And the fixture really is a transposition, not two no-ops that trivially agree.
+        assert_eq!(one, vec!["0", "beta", "alpha", "gamma"]);
+    }
+
     /// A SESSION rename derives as one rename, and the identity is what makes it derivable: the
     /// name is the only public shape a session has, so `Vec<String>` could only read this as one
     /// session dying and another being born. Controls in the same test, for the reason above.
@@ -1805,6 +1992,7 @@ mod tests {
                 to: "prod".to_owned(),
             },
             EventKind::LayoutUpdated => Event::LayoutUpdated,
+            EventKind::WindowsReordered => Event::WindowsReordered,
         }
     }
 
@@ -1844,7 +2032,7 @@ mod tests {
         // `ALL` would silently not cover it. R275 cost a round to exactly this shape of silence.
         assert_eq!(
             EventKind::ALL.len(),
-            15,
+            16,
             "a kind was added or removed — update `ALL` and this count together",
         );
         for kind in EventKind::ALL {
@@ -1953,6 +2141,10 @@ mod tests {
             (
                 EventKind::LayoutUpdated,
                 json!({ "type": "layout_updated" }),
+            ),
+            (
+                EventKind::WindowsReordered,
+                json!({ "type": "windows_reordered" }),
             ),
         ];
         assert_eq!(
