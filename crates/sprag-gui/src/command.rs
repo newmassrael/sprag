@@ -99,6 +99,14 @@ pub(crate) enum Command {
     /// they learn that the chords have a list. Found by auditing R308 rather than while writing it —
     /// a round about discoverability that left its own surface undiscoverable.
     ShowKeys,
+    /// Open the CHOOSER — go to any session, window or pane (`prefix s`, tmux `choose-tree`).
+    ///
+    /// [`ShowKeys`](Self::ShowKeys)' sibling and the same argument one noun over: a user who came
+    /// to the palette to find something by name is exactly the user who cannot name their other
+    /// session. The palette can only offer a row per session it MIRRORS
+    /// ([`SwitchSession`](Self::SwitchSession)); this row opens the surface that lists the windows
+    /// and panes inside them too.
+    ChooseTree,
     /// Open the find bar on the target pane (`Ctrl+Shift+F`).
     Find,
     /// Copy the active selection to the clipboard (`Ctrl+Shift+C`).
@@ -169,6 +177,10 @@ impl Command {
     pub(crate) fn title(&self) -> String {
         match self {
             Self::ShowKeys => "Show what the keys do".to_owned(),
+            // Named by the QUESTION rather than by the verb: `choose-tree` is what a tmux user
+            // types and is unfindable by anyone else, where "go to" is what the row does. The
+            // three nouns are in it so a query of `pane` or `window` lands here too.
+            Self::ChooseTree => "Go to a session, window or pane".to_owned(),
             Self::Find => "Find in scrollback".to_owned(),
             Self::Copy => "Copy selection".to_owned(),
             Self::Paste => "Paste into pane".to_owned(),
@@ -269,6 +281,7 @@ impl Command {
             Self::LastSession
             | Self::SwitchSession(_)
             | Self::ShowKeys
+            | Self::ChooseTree
             | Self::ZoomPane
             | Self::NewWindow
             | Self::SelectWindow(_)
@@ -290,6 +303,9 @@ impl Command {
     pub(crate) fn bound(&self) -> Option<BoundAction> {
         match self {
             Self::ShowKeys => Some(BoundAction::ListKeys),
+            // PAIRED, so the hint column DERIVES this row's chord from the keymap in force — which
+            // is the whole mechanism R308 built and R314's audit found a literal slipping past.
+            Self::ChooseTree => Some(BoundAction::ChooseTree),
             Self::ZoomPane => Some(BoundAction::ZoomPane { on: None }),
             Self::NewWindow => Some(BoundAction::NewWindow),
             Self::SelectWindow(name) => Some(BoundAction::SelectWindow {
@@ -360,7 +376,7 @@ impl Command {
         match self {
             // Showing a table asks nothing and changes nothing — the one row here that cannot be
             // regretted, which is stated rather than defaulted because this match has no `_` arm.
-            Self::ShowKeys => None,
+            Self::ShowKeys | Self::ChooseTree => None,
             // Named by what it RUNS, not by an index: "pane 2" is a display slot the user never
             // chose and cannot see, whereas the program in it is what they are looking at. Falls
             // back to the bare question when the label is empty (a pane whose command is unknown),
@@ -450,6 +466,7 @@ impl Command {
             Self::KillWindow(name) => slots.windows().iter().any(|window| &window.name == name),
             Self::KillSession(name) => slots.sessions().iter().any(|session| &session.name == name),
             Self::ShowKeys
+            | Self::ChooseTree
             | Self::Find
             | Self::Copy
             | Self::Paste
@@ -504,6 +521,10 @@ impl Command {
             // A table about the CLIENT's keyboard needs no pane at all: it is the one row here that
             // is not about the arrangement, which is also why it is offered on an empty window.
             Self::ShowKeys
+            // A chooser is about the whole DAEMON, so it needs a pane least of all — and it is the
+            // one row that is still useful on a window holding nothing, because it is how a user
+            // gets somewhere else.
+            | Self::ChooseTree
             // Creating a pane needs no pane: it goes into the CURRENT WINDOW, which exists whether
             // or not anything in it holds focus — the same reason `NewWindow` beside it needs none.
             | Self::NewPane
@@ -555,6 +576,22 @@ impl Command {
             // different tables — the discipline `crate::confirm`'s guarded arm already follows for
             // a bound action, applied from the palette end.
             Self::ShowKeys => crate::keyhelp::show(crate::keys::use_client_keys().help()),
+            // Through `Ask::of` — the ONE place that decides what a chooser is built from — rather
+            // than by calling `Pick::new` here with the same two arguments. ⚠ It was written the
+            // second way first, and the audit caught it: two spellings of one construction is
+            // exactly how a row and a chord come to open different lists, and the argument that
+            // would drift is the one that says WHERE THE PERSON IS.
+            Self::ChooseTree => {
+                if let Some(sprag_host::prompt::Ask::Choose { pick }) = sprag_host::prompt::Ask::of(
+                    &BoundAction::ChooseTree,
+                    slots.host(),
+                    // No pane: a chooser needs none (`BoundAction::needs_pane`), and a palette row
+                    // is activated with the focus on the palette itself.
+                    None,
+                ) {
+                    crate::chooser::show(*pick);
+                }
+            }
             Self::Find => {
                 if let Some(pane) = target {
                     crate::find::open(pane);
@@ -766,6 +803,9 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         Command::Paste,
         Command::SelectAll,
         Command::ShowKeys,
+        // Beside `ShowKeys` because the two are the same kind of row: the client answering a
+        // question about itself rather than acting on the arrangement.
+        Command::ChooseTree,
         Command::ToggleFloat,
         Command::ZoomPane,
         Command::BreakOut,

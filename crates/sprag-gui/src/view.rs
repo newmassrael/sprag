@@ -271,6 +271,21 @@ fn with_keyhelp(scene: Scene, theme: &Theme) -> Scene {
     Scene::Container(root)
 }
 
+/// Overlay the CHOOSER on `scene` when it is up (a no-op otherwise), on the key table's own terms
+/// and in the same place in the order: it is a modal like the palette, and it is BELOW the two
+/// questions because those ask whether to destroy something. The four are never up together — each
+/// swallows every key — so the order is a guarantee rather than a mechanism.
+fn with_chooser(scene: Scene, theme: &Theme) -> Scene {
+    let Some(panel) = crate::chooser::view_chooser(theme, (WINDOW_W, WINDOW_H)) else {
+        return scene;
+    };
+    let Scene::Container(mut root) = scene else {
+        return scene;
+    };
+    root.children.push(panel);
+    Scene::Container(root)
+}
+
 fn with_confirm(scene: Scene, theme: &Theme) -> Scene {
     let Some(panel) = crate::confirm::view_confirm(theme, (WINDOW_W, WINDOW_H)) else {
         return scene;
@@ -329,14 +344,17 @@ pub(crate) fn view_for_window(window_id: &str, state: ViewState, _frame: &Frame)
         // dismissed, a name can be typed and re-typed, and a destructive yes cannot be taken back.
         _ => with_confirm(
             with_prompt(
-                with_keyhelp(
-                    with_palette(
-                        crate::ctxmenu::overlay(
-                            with_find_bar(view_main(&tv, &theme), state.find, &theme),
-                            state.menu,
+                with_chooser(
+                    with_keyhelp(
+                        with_palette(
+                            crate::ctxmenu::overlay(
+                                with_find_bar(view_main(&tv, &theme), state.find, &theme),
+                                state.menu,
+                                &theme,
+                            ),
+                            state.palette,
                             &theme,
                         ),
-                        state.palette,
                         &theme,
                     ),
                     &theme,

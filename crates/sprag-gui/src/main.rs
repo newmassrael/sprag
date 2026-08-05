@@ -239,6 +239,7 @@
 mod a11y;
 mod active_pane;
 mod attention;
+mod chooser;
 mod clipboard_osc;
 mod command;
 mod confirm;
@@ -483,6 +484,7 @@ impl WidgetCore for TerminalViewer {
         externals.extend(palette::create_palette_externals());
         externals.extend(prompt::create_prompt_externals());
         externals.extend(keyhelp::create_keyhelp_externals());
+        externals.extend(chooser::create_chooser_externals());
         // ...and the destructive-command PROMPT the palette (and the window strip) arms instead of
         // acting: its captured sentence, its two answers, and its own modal `open` query. Registered
         // on the same terms, and readable over RPC while nothing is armed so "is this client asking
@@ -755,6 +757,12 @@ impl WidgetCore for TerminalViewer {
         // [`SlotView::reseed_pane_focus_if_idle`] for why it costs one input event and the op-site
         // seam does not.
         terminal.slots.reseed_pane_focus_if_idle();
+        // (2c) Keep an OPEN CHOOSER's rows live (R315). A no-op while it is closed, and one wire
+        // read per frame while it is up — the price of a list that shows a session another client
+        // made while somebody was reading it. It sits here rather than in the paint because it can
+        // move the cursor, and a view that mutated what it draws would repaint from a state one
+        // frame ahead of the one it was asked for.
+        chooser::refresh();
         // (2) Grow each occupied pane's scroll bound to its live scrollback depth, then
         // feed its OSC-8 hover-oracle the current link map (R-71, pinion R1405) and open
         // any click-activated URI. The link map comes from the SAME projection the view

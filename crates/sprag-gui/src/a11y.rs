@@ -96,6 +96,10 @@ fn modal_access_nodes(focused: Option<&str>) -> Vec<AccessNode> {
         focused,
         (crate::WINDOW_W, crate::WINDOW_H),
     ));
+    nodes.extend(crate::chooser::chooser_access_nodes(
+        focused,
+        (crate::WINDOW_W, crate::WINDOW_H),
+    ));
     nodes
 }
 

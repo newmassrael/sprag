@@ -305,6 +305,7 @@ fn action_label(action: &BoundAction) -> &'static str {
         BoundAction::NewWindow => "new-window",
         BoundAction::SelectWindow { .. } => "select-window",
         BoundAction::SwitchClient { .. } => "switch-client",
+        BoundAction::ChooseTree => "choose-tree",
         BoundAction::KillWindow => "kill-window",
         BoundAction::RenameWindow => "rename-window",
         // Both move forms label as the VERB: the place says WHERE, and where the window landed is
@@ -350,6 +351,10 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         // a surface of its own: it reaches no daemon and moves nothing. The table is read from the
         // live client keys, so a user who has just edited their config is shown what they wrote.
         BoundAction::ListKeys => crate::keyhelp::show(use_client_keys().help()),
+        // Reached only when `Ask::of` answered `None` — a daemon with an empty tree, which is a
+        // question with nothing to ask about. The chooser's real path is the `Ask::Choose` arm in
+        // `route_key`, exactly as the rename verbs' is.
+        BoundAction::ChooseTree => {}
         BoundAction::SplitWindow { dir, before } => {
             use_terminal().slots.split(active, dir, before);
         }
@@ -514,6 +519,14 @@ pub(crate) fn route_key(
     if crate::keyhelp::is_open() {
         return crate::keyhelp::handle_key(key, modifiers, (crate::WINDOW_W, crate::WINDOW_H));
     }
+    // THE CHOOSER, on the same terms as the three above and for the same reason: while this client
+    // is showing a person where they can go, no key may reach a pane behind the scrim. It is BELOW
+    // the two questions because neither can be armed while it is up — it swallows every key — and
+    // below the key table only because that one is the older surface; the four are never up
+    // together, so the order is a guarantee rather than a mechanism.
+    if crate::chooser::is_open() {
+        return crate::chooser::handle_key(key, modifiers);
+    }
     let Some(tag) = focused else {
         return false;
     };
@@ -598,6 +611,9 @@ pub(crate) fn route_key(
             ) {
                 Some(sprag_host::prompt::Ask::Line { subject, seed }) => {
                     crate::prompt::open(subject, &seed);
+                }
+                Some(sprag_host::prompt::Ask::Choose { pick }) => {
+                    crate::chooser::show(*pick);
                 }
                 Some(ask @ sprag_host::prompt::Ask::Confirm { .. }) => {
                     let sprag_host::prompt::Ask::Confirm { action, .. } = &ask else {

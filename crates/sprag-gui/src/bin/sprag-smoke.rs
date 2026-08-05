@@ -123,6 +123,10 @@ fn main() -> ExitCode {
             // prefix. It RENAMES the current window and leaves it renamed, which every later check
             // survives because they read the window they are on rather than a fixed name — an
             // inheritance, stated here rather than left for the next author to discover.
+            // Straight after the session keys, and it needs what they leave: this client back on
+            // the session it started from, with the DEFAULT prefix in force. It makes a session of
+            // its own to pick, leaves it standing, and puts this client back where it found it.
+            check_the_chooser_opens_and_a_picked_row_moves_this_client(&mut smoke, &mut report);
             check_the_rename_key_asks_and_the_answer_reaches_the_daemon(&mut smoke, &mut report);
             // Straight after the renames, and for their reason: the DEFAULT prefix is in force. It
             // splits a pane and leaves BOTH standing with an uneven share — every later check
@@ -2658,6 +2662,141 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
     });
     report.check(
         &format!("`prefix L` brought this client back to {home} ({back:?})"),
+        back.is_ok(),
+    );
+}
+
+/// **`prefix s` opens the CHOOSER through the shipped GUI binary, and the row a person picks is
+/// where this client lands** (R315).
+///
+/// The GUI half of what `sprag-tui`'s pty test drives, and it exists for the reason every one of
+/// these pairs does: the ask is decided once in `sprag_host::chooser`, and the SURFACE that paints
+/// it is each frontend's own code — a modal here, an overlay there. A shared decision proves
+/// nothing about a panel this binary draws.
+///
+/// **THE FIXTURE MAKES THE TWO READINGS DISAGREE.** A second session is made and the query is typed
+/// until only ITS row can be picked, so a chooser that committed whatever the cursor started on —
+/// which is the session this client is already viewing — fails here. The DAEMON's viewer badge is
+/// what is judged, never the paint: a client that drew a beautiful list and moved nobody would
+/// satisfy any assertion made on its own tree.
+///
+/// **What it leaves, stated**: this client back on the session it started from, and the session it
+/// visited still standing. It runs after the session-key check, which already leaves a second
+/// session for it to reach.
+fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
+    smoke: &mut Smoke,
+    report: &mut Report,
+) {
+    let Some(home) = smoke.attached_session() else {
+        report.check("the window names its session for the chooser", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the chooser", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to open the chooser", false);
+        return;
+    }
+    // A SECOND session to pick, made here rather than inherited: this check must discriminate on
+    // its own, and a fixture that depended on an earlier check's leftovers would pass or fail for
+    // that check's reasons.
+    let made = daemon.call(
+        "scene/invoke",
+        json!({ "path": "/sprag_mux/external/new_session", "args": { "name": "smoke-chosen" } }),
+    );
+    report.check(
+        &format!("a session exists for the chooser to offer ({made:?})"),
+        made.is_ok(),
+    );
+    report.check(
+        &format!("this client starts on the session it is viewing ({home})"),
+        attached_to(&mut daemon, &home) > 0,
+    );
+
+    // PAST THE REPEAT WINDOW FIRST — the key-table check's own note, and the reason is sharper
+    // here: the character this check presses is `s`, and inside an open repeat window the prefix
+    // table is still live, so `C-b` would be a self-send and the `s` behind it would arm the
+    // chooser at the wrong moment. R308 registered this hazard; R315's own `sprag-tui` test was
+    // caught by it.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "s", false).is_ok();
+    report.check("the GUI accepts `prefix s`", pressed);
+    let opened = smoke.wait_for_tag("sprag_chooser_panel");
+    report.check(
+        &format!("`prefix s` opened the chooser ({opened:?})"),
+        opened.is_ok(),
+    );
+    if opened.is_err() {
+        return;
+    }
+
+    // WHAT IT PAINTED, read off the strings the panel actually put on the screen — not off its
+    // accessible value and not off a tree this process could build for itself. The claim is that a
+    // shipped binary showed a person what is there, and only the painted tree can say that.
+    let text = opened
+        .as_ref()
+        .ok()
+        .and_then(|tags| tags.get("sprag_chooser_panel"))
+        .map(|painted| painted.text.join("\u{1f}"))
+        .unwrap_or_default();
+    report.check(
+        &format!("the panel painted its rows ({} chars)", text.len()),
+        !text.is_empty(),
+    );
+    report.check(
+        "...and it names a session this client is NOT on, which a name prompt could not",
+        text.contains("smoke-chosen"),
+    );
+    report.check(
+        "...and says how big it is, so two rows can be told apart",
+        text.contains("pane"),
+    );
+
+    // TYPE TO NARROW. Every character is the panel's — the pane behind it must not see them, which
+    // is judged on the DAEMON's pane list rather than on this client's paint.
+    let panes_before = daemon_panes(&mut daemon, &home);
+    for key in ["s", "m", "o", "k", "e", "-", "c"] {
+        let _ = smoke.press(0, key, false);
+    }
+    let panes_after = daemon_panes(&mut daemon, &home);
+    report.check(
+        &format!("no key reaches the panes behind it ({panes_before:?} -> {panes_after:?})"),
+        panes_before == panes_after,
+    );
+
+    // ...AND ENTER GOES THERE. Judged on the daemon's badges: OFF the session this client was on,
+    // and ON the one whose row survived the query.
+    let _ = smoke.press(0, "Enter", false);
+    let landed = smoke.wait_for(|s| {
+        let _ = s;
+        (attached_to(&mut daemon, "smoke-chosen") > 0 && attached_to(&mut daemon, &home) == 0)
+            .then_some(())
+    });
+    report.check(
+        &format!("a picked row moved this client to the session it named ({landed:?})"),
+        landed.is_ok(),
+    );
+    let gone = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_chooser_panel")).then_some(())
+    });
+    report.check(
+        &format!("...and the panel is gone, so the panes have the keyboard ({gone:?})"),
+        gone.is_ok(),
+    );
+
+    // BACK, so what follows inherits the session this check was handed. `prefix L` is the verb for
+    // exactly this and is already proved by the check above it.
+    let _ = smoke.press(0, "b", true);
+    let _ = smoke.press(0, "L", false);
+    let back = smoke.wait_for(|s| {
+        let _ = s;
+        (attached_to(&mut daemon, &home) > 0).then_some(())
+    });
+    report.check(
+        &format!("...and this check leaves the client where it found it ({back:?})"),
         back.is_ok(),
     );
 }
