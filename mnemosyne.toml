@@ -105,3 +105,12 @@ reason = "R296's atomic verification bullets were written after five commits and
 applied_in = "R296"
 content_hash_before = "deb55476c512eca59782a2d7b41722d6b27e170ce6445d9287acb2a792d2de39"
 content_hash_after = "c0e5123651b08344d031df849adeff12c6d767fc3529c567f3a987eefc50f839"
+
+[[publishable_override_ledger]]
+kind = "carry_forward"
+target_id = "R308"
+fields = ["publishable_carry_forward_bullets"]
+reason = "The audit carry-forward was written before the owner's debt question, which found TWO MORE — a LIVE DEFECT this round shipped (a pointer reaching a divider under the full-screen key table: the keystroke path was closed and the mouse was not, which is R306's paste leak one input class over) and a mechanism claim in a durable comment that was FALSE and had been copied from crate::prompt's scrim, wrong the same way since R306. Both FIXED in 1adeb45, both driven or corrected in place. The publishable half carries them; the audit half is left exactly as it was written, which is the honest record of what the round knew at the moment it reconciled."
+applied_in = "R308"
+content_hash_before = "b6d7d0e0b1cdd755b3b18f3866b044cb234bfe66eed2ca923c78b677f1ee2f9f"
+content_hash_after = "0a47c670d74de26dc76989a037c759cf957d0f98f28024186f6f9ce10ba04eae"
