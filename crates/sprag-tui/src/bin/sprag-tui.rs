@@ -442,11 +442,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
-                    // THE WINDOW LEVEL, reached from a key (R305). All three arms share one shape
-                    // and one repaint, because all three change WHICH WINDOW this client projects:
-                    // the pane set is replaced wholesale, so the screen is cleared rather than
-                    // differenced — every cell has a new author, which is the one case
-                    // `Clear::No` (a projection partitioning the same window) does not cover.
+                    // THE WINDOW LEVEL, reached from a key (R305), and the pane KILL that can
+                    // reach it (R309). All four arms share one shape and one repaint, because all
+                    // four can change WHICH WINDOW this client projects: the pane set is replaced
+                    // wholesale, so the screen is cleared rather than differenced — every cell has
+                    // a new author, which is the one case `Clear::No` (a projection partitioning
+                    // the same window) does not cover. `kill-pane` belongs here rather than beside
+                    // the zoom precisely because it MAY do that: closing a window's last pane ends
+                    // the window, and the client is then projecting a different one.
                     //
                     // None of them publishes a focus: the daemon selects the window it created or
                     // walked to, and `reconcile` follows the session's active pane onto this
@@ -455,11 +458,22 @@ fn run() -> Result<(), Box<dyn Error>> {
                     Command::Act(
                         action @ (BoundAction::NewWindow
                         | BoundAction::SelectWindow { .. }
+                        | BoundAction::KillPane
                         | BoundAction::KillWindow),
                     ) => {
                         match action {
                             BoundAction::NewWindow => {
                                 host.new_window();
+                            }
+                            // The pane the user is ON, which is the only one a keystroke can mean —
+                            // the zoom arm's rule. How far the kill cascaded is the daemon's answer
+                            // and this client does not read it: the reconcile below re-derives the
+                            // whole projection, which is the honest way for a display client to
+                            // learn that its window is gone.
+                            BoundAction::KillPane => {
+                                if let Some(pane) = focus {
+                                    host.kill_pane(pane);
+                                }
                             }
                             BoundAction::SelectWindow { ask } => match ask {
                                 SelectWindowAsk::Named(window) => host.select_window(&window),
@@ -475,7 +489,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     host.kill_window(&window);
                                 }
                             }
-                            _ => unreachable!("the match above admits only the three window arms"),
+                            _ => unreachable!("the match above admits only the four arms here"),
                         }
                         tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);

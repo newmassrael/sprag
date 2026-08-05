@@ -240,7 +240,8 @@ impl Command {
             // A kill deliberately advertises no chord even where one exists: this column is where
             // the eye looks for a shortcut, and what a destructive row WOULD say belongs on the
             // confirmation prompt instead — the only place a consequence can be read in time to
-            // change the outcome. `prefix &` is in the key table for anyone who goes looking.
+            // change the outcome. Both guarded keys (`prefix x` for the pane, `prefix &` for the
+            // window) are in the key table for anyone who goes looking.
             | Self::KillPane
             | Self::KillWindow(_)
             | Self::KillSession(_) => None,
@@ -331,6 +332,12 @@ impl Command {
                 // The two escalations compose, and the WINDOW one only escalates further when the
                 // window is also the session's last — the same chain `KillWindow` states one link
                 // further along, arrived at from the pane end.
+                //
+                // ⚠ UNTIL R309 THIS SENTENCE WAS A PROMISE THE DAEMON DID NOT KEEP: `close` simply
+                // removed the pane, so a user who answered "yes" to "this session's last window"
+                // was left with an empty window and a live session. The chain is real now
+                // (`SessionRegistry::close_pane`), which is what makes this line honest rather than
+                // merely well-intentioned.
                 consequence: match (
                     slots.occupied_slots().len() <= 1,
                     slots.windows().len() <= 1,
@@ -551,6 +558,9 @@ impl Command {
             }
             Self::KillPane => {
                 if let Some(pane) = target {
+                    // The cascade word is dropped here on purpose: this catalog already SAID what
+                    // would go, in the confirmation the user answered, and the arrangement they
+                    // end up looking at is re-read from the daemon like every other set change.
                     slots.close_pane(pane);
                 }
             }
@@ -1186,9 +1196,9 @@ mod tests {
             self.log.borrow_mut().new_panes += 1;
             Some(PaneId(99))
         }
-        fn kill_pane(&self, id: PaneId) -> bool {
+        fn kill_pane(&self, id: PaneId) -> Option<sprag_terminal::Ended> {
             self.log.borrow_mut().killed_panes.push(id);
-            true
+            Some(sprag_terminal::Ended::Pane)
         }
         fn pane_cells(&self, _id: PaneId, _off: usize) -> GridBuffer {
             GridBuffer::new(1, 1)

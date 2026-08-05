@@ -337,6 +337,7 @@ fn action_label(action: &BoundAction) -> &'static str {
         // out with the split's flags because the arrangement it produced is in the next frame.
         BoundAction::ResizePaneToward { .. } => "resize-pane",
         BoundAction::ZoomPane { .. } => "zoom-pane",
+        BoundAction::KillPane => "kill-pane",
         BoundAction::NewWindow => "new-window",
         BoundAction::SelectWindow { .. } => "select-window",
         BoundAction::KillWindow => "kill-window",
@@ -407,6 +408,14 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         // that already carries an arrangement change, exactly as the split above does.
         BoundAction::ZoomPane { on } => {
             use_terminal().slots.zoom_pane(active, on);
+        }
+        // The CASCADE is the daemon's (R309): closing the window's last pane ends the window, and
+        // this client learns that the way it learns every set change — the host announces and the
+        // mirror is re-read. So there is nothing to repaint here and nothing to decide: the answer
+        // says how far it went, and a display client acts on the arrangement rather than on the
+        // word.
+        BoundAction::KillPane => {
+            use_terminal().slots.close_pane(active);
         }
         // THE WINDOW LEVEL (R305). Nothing here repaints, for this function's standing reason: a
         // window change reaches the paint through the channels that already carry it — the host

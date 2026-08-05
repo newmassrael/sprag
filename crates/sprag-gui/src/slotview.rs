@@ -36,7 +36,7 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
+    Ended, LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
 };
 use sprag_vt::{ClipboardTarget, MouseProtocol};
 
@@ -426,11 +426,13 @@ impl SlotView {
         Some(outcome.zoomed)
     }
 
-    /// Close slot `slot`'s pane (tmux `kill-pane`), returning whether one was removed — `false` for
-    /// a hole. DESTRUCTIVE: the pane's child is killed and its scrollback goes with it. The asking
-    /// happens above, in [`confirm`](crate::confirm); this is the performer.
-    pub(crate) fn close_pane(&self, slot: usize) -> bool {
-        self.id(slot).is_some_and(|id| self.host.kill_pane(id))
+    /// Close slot `slot`'s pane (tmux `kill-pane`), answering how far the kill CASCADED — [`None`]
+    /// for a hole, or when the daemon refused. DESTRUCTIVE: the pane's child is killed and its
+    /// scrollback goes with it, and its window goes too when it was the last pane
+    /// ([`Ended`]). The asking happens above, in [`confirm`](crate::confirm); this is the
+    /// performer.
+    pub(crate) fn close_pane(&self, slot: usize) -> Option<Ended> {
+        self.host.kill_pane(self.id(slot)?)
     }
 
     /// Break slot `slot`'s pane out into a NEW window (tmux `break-pane`), returning the new

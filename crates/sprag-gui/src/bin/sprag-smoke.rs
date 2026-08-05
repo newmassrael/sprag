@@ -125,6 +125,11 @@ fn main() -> ExitCode {
             // leaves NOTHING behind — it opens a read-only panel and closes it — so unlike the two
             // above it hands the next check the arrangement it was given.
             check_the_key_table_opens_and_shows_the_table_in_force(&mut smoke, &mut report);
+            // AFTER the key table, which leaves what it was given, and BEFORE the checks that want
+            // exactly one pane — because this one REMOVES a pane, which is the state it hands on.
+            // The resize check above left two standing, so there is a sibling for the guarded kill
+            // to leave behind, which is what makes its no-consequence control non-vacuous.
+            check_the_guarded_kill_key_asks_and_a_yes_reaches_the_daemon(&mut smoke, &mut report);
             // HERE for the same reason as the keymap gate above: it needs exactly ONE pane, so the
             // pane the daemon reports and the grid this window paints are unambiguously the same
             // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
@@ -2703,6 +2708,89 @@ fn tiled_leaves(daemon: &mut HostConn, session: &str) -> Vec<u64> {
         .iter()
         .filter_map(|node| node["leaf"].as_u64())
         .collect()
+}
+
+/// **`prefix x` asks before it kills, the question names the escalation, and a yes takes the pane
+/// off the DAEMON** — R309, and the GUI half of the guarded key.
+///
+/// This closes a gap the debt register carried from R306: the pty test drives `prefix &` and answers
+/// both ways, so `sprag-tui`'s guarded arm is live — but `sprag-gui`'s `confirm::arm_bound` was
+/// reached by unit tests alone, and the two frontends' `perform` is each client's own code. The
+/// register said it was "one check away"; this is that check.
+///
+/// What only a live GUI can say, and a unit test cannot:
+///
+/// * the shipped binary turns `prefix x` into an ARMED confirmation with a sentence in it,
+/// * the CONSEQUENCE line reaches the surface an operator reads, carrying the escalation this
+///   client computed from the live arrangement rather than from a string in a config,
+/// * and answering it reaches the daemon, judged by the DAEMON's pane list.
+///
+/// It leaves the pane set one smaller than it found it and says so, which is item 15's hazard
+/// stated by the check that creates it.
+fn check_the_guarded_kill_key_asks_and_a_yes_reaches_the_daemon(
+    smoke: &mut Smoke,
+    report: &mut Report,
+) {
+    let Ok(before) = smoke.pane_count() else {
+        report.check("the smoke can count panes for the guarded kill", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the guarded kill", false);
+        return;
+    }
+    // PAST THE REPEAT WINDOW, on the hazard R308 measured: a check placed after a `-r` one inherits
+    // its armed prefix table, inside which `C-b` is `send-prefix` and the next key goes to the pane.
+    // Nothing enforces this, so every check that presses a prefix states it.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "x", false).is_ok();
+    report.check("the GUI accepts `prefix x`", pressed);
+
+    let prompt = smoke
+        .wait_for(|s| {
+            let text = s.query("sprag_confirm", "prompt").ok()?;
+            text.as_str().map(str::to_owned)
+        })
+        .ok();
+    report.check(
+        &format!("`prefix x` armed a question rather than killing (prompt: {prompt:?})"),
+        prompt.as_deref().is_some_and(|p| p.contains("Kill pane")),
+    );
+    // NOTHING DESTROYED BY THE ASKING — the half that discriminates a client which kills first and
+    // asks afterwards, which would satisfy every assertion below.
+    report.check(
+        "and nothing is destroyed by the asking",
+        smoke.pane_count().is_ok_and(|count| count == before),
+    );
+    if prompt.is_none() {
+        return;
+    }
+
+    // THE CONSEQUENCE LINE. With more than one pane in this window there is none, because nothing
+    // else is about to go — read as the CONTROL that this client is computing the escalation rather
+    // than always printing it. (The escalation's positive half is driven on a real pty in
+    // `sprag-tui`'s `the_pane_kill_key_says_what_it_will_take_and_takes_it`, where the harness can
+    // arrange a window down to its last pane without ending the run's own client.)
+    let consequence = smoke.query("sprag_confirm", "consequence").ok();
+    report.check(
+        &format!(
+            "a pane with siblings takes nothing else, and the question says so ({consequence:?})"
+        ),
+        consequence.is_some_and(|value| value.as_str().is_none()),
+    );
+
+    report.check(
+        "the armed kill is answerable over RPC",
+        smoke.invoke("sprag_confirm", "accept", Value::Null).is_ok(),
+    );
+    let shrunk = smoke.wait_for(|s| {
+        let count = s.pane_count().ok()?;
+        (count + 1 == before).then_some(count)
+    });
+    report.check(
+        &format!("a yes reached the daemon and the pane is gone ({shrunk:?})"),
+        shrunk.is_ok(),
+    );
 }
 
 /// **`prefix ?` opens this client's key table, and what it shows is the table in force.**
