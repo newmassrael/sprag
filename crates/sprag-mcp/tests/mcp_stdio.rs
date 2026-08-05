@@ -524,6 +524,30 @@ impl McpServer {
         }
     }
 
+    /// The `instructions` primer this server hands an agent at `initialize` — what an agent READS
+    /// before it calls anything, and therefore a claim under test like any other.
+    ///
+    /// Asked of the LIVE server rather than of the function that builds it: a test that called the
+    /// builder would be checking the string this binary would send, not the one it did.
+    fn primer(&mut self) -> String {
+        self.request(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "primer-probe", "version": "0" }
+            }),
+        )["result"]["instructions"]
+            .as_str()
+            .expect("the primer is a string")
+            .to_owned()
+    }
+
+    /// Call a tool WITHOUT judging the outcome — for a caller measuring which tools succeed.
+    fn call_tool_raw(&mut self, name: &str, args: Value) -> Value {
+        self.request("tools/call", json!({ "name": name, "arguments": args }))
+    }
+
     /// Call a tool that is expected to succeed, returning its text content.
     fn call_tool(&mut self, name: &str, args: Value) -> String {
         let response = self.request("tools/call", json!({ "name": name, "arguments": args }));
@@ -2180,6 +2204,119 @@ fn a_pane_name_reaches_another_window_and_a_number_does_not() {
         "Error: no pane is called \"nope\"; the session's named panes are \"buildout\" \
          (window 1). Call list_windows.",
     );
+}
+
+/// **WHICH tools a pane NAME reaches another window for — MEASURED, and pinned against the sentence
+/// that claims it.**
+///
+/// R311 widened the resolution on the tools it touched and left the rest window-local, and the
+/// first version of the primer claimed the widening WITHOUT QUALIFICATION — *"a pane NAME reaches
+/// ANY window of the session"* — which was false for half the roster and was pushed. The owner's
+/// debt question is what found it, the 22nd round running.
+///
+/// So the split is a fact under test rather than a sentence somebody keeps up to date: this drives
+/// every pane-addressed tool against a pane one window over and asserts BOTH lists, and the
+/// primer's own wording is checked against them. Moving a tool from one list to the other (which is
+/// the intended direction — the refusing half is a GAP, not a rule) fails here until the sentence
+/// moves with it.
+#[test]
+fn the_tools_a_name_reaches_another_window_for_are_the_ones_the_primer_names() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let far = mux_query_panes(&sock)
+        .first()
+        .copied()
+        .expect("the new window's birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "faraway" }),
+    );
+    mux_invoke(&sock, SELECT_WINDOW_ACTION, json!({ "window": "0" }));
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    // Every pane-addressed tool, with the arguments it needs, aimed at a pane one window over.
+    let calls: Vec<(&str, Value)> = vec![
+        ("read_pane", json!({ "pane": "faraway" })),
+        ("read_last_command", json!({ "pane": "faraway" })),
+        ("read_pane_links", json!({ "pane": "faraway" })),
+        ("find_in_pane", json!({ "pane": "faraway", "needle": "zz" })),
+        (
+            "regex_in_pane",
+            json!({ "pane": "faraway", "pattern": "zz" }),
+        ),
+        ("write_pane", json!({ "pane": "faraway", "text": "true" })),
+        (
+            "send_keys",
+            json!({ "pane": "faraway", "keys": ["Escape"] }),
+        ),
+        ("read_pane_images", json!({ "pane": "faraway" })),
+        ("pane_processes", json!({ "pane": "faraway" })),
+        ("agent_state", json!({ "pane": "faraway" })),
+        ("resize_pane", json!({ "pane": "faraway", "dir": "left" })),
+        (
+            "rename_pane",
+            json!({ "pane": "faraway", "name": "renamed" }),
+        ),
+    ];
+    let mut reaches: Vec<&str> = Vec::new();
+    let mut refuses: Vec<&str> = Vec::new();
+    for (name, args) in calls {
+        let answer = server.call_tool_raw(name, args);
+        let errored = answer["result"]["isError"] == json!(true);
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        if errored {
+            assert!(
+                text.contains("no pane is called"),
+                "{name} failed for some OTHER reason than the name not resolving: {text}",
+            );
+            refuses.push(name);
+        } else {
+            reaches.push(name);
+        }
+    }
+
+    assert_eq!(
+        reaches,
+        [
+            "read_pane",
+            "read_last_command",
+            "read_pane_links",
+            "find_in_pane",
+            "regex_in_pane",
+            "write_pane",
+            "send_keys",
+        ],
+        "these reach another window; refusing set was {refuses:?}",
+    );
+    assert!(
+        !refuses.is_empty(),
+        "if nothing refuses any more, the primer must stop saying anything does",
+    );
+
+    // The SENTENCE, checked against both measured lists — which is what makes it a claim under
+    // test rather than prose. Every reaching tool must be named in the reaching clause, and every
+    // refusing one in the refusing clause.
+    let primer = server.primer();
+    let (before, after) = primer
+        .split_once("the OTHER pane tools")
+        .expect("the primer draws the split");
+    for tool in &reaches {
+        assert!(
+            before.contains(&format!("`{tool}`")),
+            "the primer promises the reach and does not name `{tool}`",
+        );
+    }
+    for tool in &refuses {
+        assert!(
+            !before.contains(&format!("`{tool}`")),
+            "the primer names `{tool}` as reaching another window and it does not",
+        );
+    }
+    let _ = after;
 }
 
 /// An agent NAMES its work pane and then addresses it by that name while its NUMBER moves under it.

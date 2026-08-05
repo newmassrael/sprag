@@ -261,8 +261,11 @@ fn handle_initialize(message: &Value) -> Value {
             instead: every `pane` argument here takes a name as well as a number. \
             `list_panes` answers about YOUR WINDOW only. A sprag session holds several, and \
             `list_windows` is what tells you so — the other windows, their panes, and the names \
-            those panes carry. A pane NAME reaches ANY window of the session; a number reaches \
-            only yours. `list_sessions` answers what else this daemon holds, which is what the \
+            those panes carry. A pane NAME reaches ANOTHER window for `read_pane`, \
+            `read_last_command`, `read_pane_links`, `find_in_pane`, `regex_in_pane`, `write_pane` \
+            and `send_keys`; the OTHER pane tools still resolve a name inside your own window \
+            only, and say so by refusing. A pane NUMBER never reaches past your window. \
+            `list_sessions` answers what else this daemon holds, which is what the \
             session changes you can wait for are about. \
             READ a pane: `read_pane` (its screen and scrollback), `read_last_command` (just \
             the last command and its result), `read_pane_links` and `read_pane_images` (what \
@@ -1127,9 +1130,12 @@ fn tool_list_windows() -> Result<String, String> {
         out.push('\n');
     }
     out.push_str(
-        "A pane NAME reaches any window of this session — pass one as `pane` to read_pane, \
-         find_in_pane, write_pane or send_keys. A pane NUMBER means the Nth pane of YOUR window \
-         (list_panes) and reaches no further.\n",
+        "A pane NAME reaches another window for read_pane, read_last_command, read_pane_links, \
+         find_in_pane, regex_in_pane, write_pane and send_keys. The other pane tools \
+         (pane_processes, agent_state, read_pane_images, wait_for_output, resize_pane, \
+         rename_pane, swap_pane, select_pane, close_pane) resolve a name inside YOUR window only \
+         and refuse otherwise — a gap, not a rule. A pane NUMBER means the Nth pane of your \
+         window (list_panes) and never reaches further.\n",
     );
     Ok(out)
 }
