@@ -16,8 +16,9 @@
 //!
 //! ## What survives, and what cannot
 //!
-//! The SHAPE survives: sessions (their order IS the default), each session's windows and which
-//! is current, each window's [`LayoutTree`](crate::LayoutTree) arrangement, its float set, and —
+//! The SHAPE survives: sessions (their order IS the default), each session's windows IN THE ORDER
+//! THE USER ARRANGED THEM (R310 — the order `select-window -n` walks and `move-window` sets) and
+//! which is current, each window's [`LayoutTree`](crate::LayoutTree) arrangement, its float set, and —
 //! per pane — its id,
 //! working directory, launch label and size. The global pane-id high-water mark rides too, so a
 //! restore never reissues a retired id.
@@ -108,7 +109,9 @@ pub struct SessionSnapshot {
     /// The name of the current window — the one an attached client views. Restored via
     /// [`Session::select_window`](crate::Session); must name one of `windows`.
     pub current_window: String,
-    /// The session's windows, in creation order.
+    /// The session's windows, IN ORDER — which since R310 is the order the user arranged with
+    /// `move-window`, not the order they were created in. It is a user's decision now, so it is a
+    /// thing a restore has to bring back rather than a by-product of how the `Vec` was filled.
     pub windows: Vec<WindowSnapshot>,
 }
 
@@ -568,6 +571,56 @@ mod tests {
             .window_mut(session, window)
             .unwrap()
             .reconcile_layout(&panes);
+    }
+
+    /// The window ORDER survives a restart, which since R310 is a USER DECISION rather than the
+    /// order a `Vec` happened to fill in.
+    ///
+    /// Its own test rather than a line in the whole-shape round trip below, because the
+    /// discriminator is different: that one asserts every field came back, and a `Vec` restored in
+    /// creation order would satisfy it as long as the SET matched. Here the arranged order is
+    /// deliberately NOT the creation order, so a restore that rebuilt from births fails.
+    ///
+    /// REVERT-PROOF: sort `from_snapshot`'s window build by name and this fails while the whole
+    /// shape round trip below stays green.
+    #[test]
+    fn the_window_order_a_user_arranged_survives_a_restart() {
+        let mut reg = SessionRegistry::new((80, 24));
+        for name in ["a", "b", "c"] {
+            reg.new_window("0", Some(name)).expect("a window");
+        }
+        reg.move_window("0", "c", &crate::WindowPlace::First)
+            .expect("c moves to the front");
+        reg.select_window("0", "b").expect("sit on b");
+        let arranged: Vec<String> = reg
+            .session("0")
+            .expect("the session")
+            .windows()
+            .iter()
+            .map(|window| window.name().to_owned())
+            .collect();
+        assert_eq!(
+            arranged,
+            ["c", "0", "a", "b"],
+            "the fixture really is arranged out of creation order, or this test says nothing",
+        );
+
+        let snapshot = snapshot(&Arc::new(Mutex::new(reg)));
+        let (restored, _plan) =
+            SessionRegistry::from_snapshot(snapshot).expect("a well-formed snapshot");
+        let back: Vec<String> = restored
+            .session("0")
+            .expect("the session came back")
+            .windows()
+            .iter()
+            .map(|window| window.name().to_owned())
+            .collect();
+        assert_eq!(back, arranged, "the order the user arranged came back");
+        assert_eq!(
+            restored.session("0").unwrap().current_window().name(),
+            "b",
+            "and the window they were ON, which is stored by NAME and not by index",
+        );
     }
 
     /// THE load-bearing durability claim: a live registry's whole shape — two sessions, the

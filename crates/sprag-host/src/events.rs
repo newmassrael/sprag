@@ -60,6 +60,13 @@
 //!   record per batch of PTY output would evict this ring at output rate — destroying, for the
 //!   panes a reader actually cares about, the delivery guarantee the ring exists to give. That is a
 //!   deliberate divergence from the rivals that have such an event, priced rather than omitted.
+//! * [`Event::WindowsReordered`] is the first variant derived from a SEQUENCE rather than from a
+//!   set, and it was added the day something could produce it (R310's `move-window`). Every
+//!   comparison in [`SessionShape::diff`] before it matched by identity with a `find`, so a window
+//!   list that had been REARRANGED — same windows, same names, same current one — was a change the
+//!   funnel could not see at all. What pruned the list elsewhere added here: the order IS published
+//!   state (the `windows` slot is an array), so the difference is observable and the variant is
+//!   honest. What the derivation cannot do is ATTRIBUTE it, which is why this one names no subject.
 //! * [`Event::AgentStateChanged`] is NOT one of these, and is the exception that shows the rule. It
 //!   is not a difference in the state above — it is the settle waker's own verdict transition — so
 //!   it is EMITTED by that observer ([`SessionJournal::emit`]) rather than derived, and it was

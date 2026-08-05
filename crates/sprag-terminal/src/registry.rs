@@ -97,9 +97,14 @@ pub struct WindowId(pub u64);
 ///
 /// A direction rather than a target, and a SEPARATE vocabulary from [`PaneDir`] rather than a reuse
 /// of it, because the two walks are different kinds of question: a pane walk is spatial (four ways,
-/// an edge at each end), a window walk is ordinal (two ways, no ends). Spelling them with one type
+/// an edge at each end), a window WALK is ordinal (two ways, no ends). Spelling them with one type
 /// would let a caller ask for the window "to the left", which the registry would then have to
 /// refuse at runtime for a mistake the types can prevent.
+///
+/// "No ends" is a property of the WALK and not of the collection: the same two words spell a MOVE
+/// along the same order ([`WindowPlace::Step`]), and that one stops at the first and last window
+/// because the arrangement has them. The direction is shared; the wrap is a policy each verb states
+/// at its own site.
 ///
 /// # The serde derive is a CLIENT's own storage, not the wire
 ///
@@ -1497,7 +1502,10 @@ impl Session {
         self.id
     }
 
-    /// All windows, in creation order.
+    /// All windows, IN ORDER — the order `windows` publishes, `select-window -n` walks and
+    /// [`move_window`](Self::move_window) sets. It was creation order until R310 made it a user's
+    /// decision, and a caller that still reads it as "oldest first" is reading a fact that has not
+    /// been true since.
     #[must_use]
     pub fn windows(&self) -> &[Window] {
         &self.windows
@@ -1627,6 +1635,10 @@ impl Session {
     /// order the sidebar draws and the order `windows` publishes — so "the next one" is always
     /// defined and wrapping is what the ring means. tmux wraps for the same reason, and this
     /// session's own `Vec` order is what both ends already agree on.
+    ///
+    /// The same `Vec` order is a SEQUENCE to [`move_window`](Self::move_window), which stops at its
+    /// first and last rather than wrapping — one collection, two questions, and the wrap belongs to
+    /// the question rather than to the collection.
     ///
     /// TOTAL, and that is a property rather than an accident: a session always holds at least one
     /// window, so there is always somewhere to land. With ONE window it lands on itself and answers

@@ -2633,6 +2633,18 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
 
     // `prefix <` — the other way, which must put the order back. A key that did the same thing as
     // its twin would pass every assertion above and fail this one.
+    // ...and the STRIP the user looks at follows. Read off the tabs' own painted text, not asked
+    // of the daemon: this client is the one that DRAWS the order, so "the daemon moved it" and "the
+    // user can see it moved" are two claims and only the second is about this binary.
+    let painted = smoke.wait_for(|s| {
+        let tabs = s.tabs().ok()?;
+        (tabs == names(&moved)).then_some(tabs)
+    });
+    report.check(
+        &format!("the window strip PAINTS the new order ({painted:?})"),
+        painted.is_ok(),
+    );
+
     let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "<", false).is_ok();
     report.check("the GUI accepts `prefix <`", pressed);
     let back = smoke.wait_for(|s| {

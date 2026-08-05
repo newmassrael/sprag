@@ -1035,7 +1035,8 @@ pub const SELECT_WINDOW_ACTION: &str = "select_window";
 /// # Two arms, not four
 ///
 /// A pane walk is SPATIAL — four ways, and an edge at each end that the answer has to name. A
-/// window list is an ORDINAL RING: two ways, no ends, and the step always lands. That is why
+/// window list is an ORDINAL RING TO WALK: two ways, no ends, and the step always lands — where
+/// [`MOVE_WINDOW_ACTION`] treats the same order as a SEQUENCE with a front and a back. That is why
 /// [`WindowStep`] is its own vocabulary rather than a reuse of [`PaneDir`], and why this ask has no
 /// origin key: a step is always measured from the window the session is CURRENTLY on, because that
 /// is the only thing "next" can mean for a ring the session itself walks.
