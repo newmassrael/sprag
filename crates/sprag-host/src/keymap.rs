@@ -543,6 +543,24 @@ pub enum BoundAction {
         /// the whole grammar is built, so the whole grammar is taken.
         on: Option<bool>,
     },
+    /// `kill-pane` — end the focused pane and everything running in it; the window's LAST pane
+    /// ends the WINDOW, and so on up the chain (tmux `prefix x`).
+    ///
+    /// **The chain is what makes this a different verb from
+    /// [`KillWindow`](Self::KillWindow) rather than a smaller one.** A user pressing this is
+    /// usually closing one of several panes, and once in a while is ending their session without
+    /// having said the word "session" — which is exactly why it ships GUARDED (below) and why the
+    /// question [`prompt::Ask::of`](crate::prompt::Ask::of) builds off it names what is actually
+    /// about to go, read from the live arrangement rather than written into the binding.
+    ///
+    /// **Bound to `prefix x` as `confirm-before kill-pane`, which is tmux's own default**
+    /// (`bind-key x confirm-before -p "kill-pane #P? (y/n)" kill-pane`). [`KillWindow`](Self::KillWindow)
+    /// is shipped the same way on `prefix &`, for the reason stated there: a destructive key a
+    /// user's fingers already carry must arrive with the guard those fingers expect.
+    ///
+    /// It names no pane, on [`NewWindow`](Self::NewWindow)'s rule — a keystroke acts where the user
+    /// is.
+    KillPane,
     /// `new-window` — create a window in this session, born with a shell, and select it (tmux
     /// `prefix c`).
     ///
@@ -716,7 +734,7 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 15] = [
+    pub const VOCABULARY: [&'static str; 16] = [
         "detach-client",
         "send-prefix",
         "list-keys",
@@ -725,6 +743,7 @@ impl BoundAction {
         "swap-pane -L|-R|-U|-D",
         "resize-pane -L|-R|-U|-D [N]",
         "zoom-pane [-Z|-u]",
+        "kill-pane",
         "new-window",
         "select-window -n|-p|-t <window>",
         "kill-window",
@@ -759,7 +778,48 @@ impl BoundAction {
             | Self::ZoomPane { .. }
             | Self::NewWindow
             | Self::SelectWindow { .. }
+            | Self::KillPane
             | Self::KillWindow => false,
+        }
+    }
+
+    /// Whether carrying this out needs a pane the CLIENT can NAME.
+    ///
+    /// A keystroke means "the pane I am on", and a client whose focus is not on a pane has no such
+    /// pane — so an action that needs one must do NOTHING rather than act on a pane the user was
+    /// not looking at. [`prompt::Ask::of`](crate::prompt::Ask::of) reads this to decide whether to
+    /// open a question at all: a prompt with no subject is worse than no prompt, because the user
+    /// answers it and nothing happens.
+    ///
+    /// **It sees through the guard**, like [`reaches`](Self::reaches) and for the same reason:
+    /// `confirm-before kill-pane` needs exactly what `kill-pane` needs, and a wrapper that reported
+    /// `false` would ask "Kill this pane?" with no pane to kill.
+    ///
+    /// Exhaustive for [`asks`](Self::asks)' reason. The verbs that act on the focused pane WITHOUT
+    /// naming it are `false` here on purpose — `split-window`, `zoom-pane` and the directional
+    /// arms send no id and the DAEMON resolves its own active pane, which is the authority split
+    /// those arms' docs state. Only the two whose client-side signature takes a
+    /// [`PaneId`](sprag_terminal::PaneId) need
+    /// one here.
+    #[must_use]
+    pub fn needs_pane(&self) -> bool {
+        match self {
+            Self::RenamePane | Self::KillPane => true,
+            Self::ConfirmBefore { action } => action.needs_pane(),
+            Self::DetachClient
+            | Self::SendPrefix
+            | Self::ListKeys
+            | Self::SplitWindow { .. }
+            | Self::SelectNextPane
+            | Self::SelectPaneToward { .. }
+            | Self::SwapPaneToward { .. }
+            | Self::ResizePaneToward { .. }
+            | Self::ZoomPane { .. }
+            | Self::NewWindow
+            | Self::SelectWindow { .. }
+            | Self::KillWindow
+            | Self::RenameWindow
+            | Self::RenameSession => false,
         }
     }
 
@@ -787,6 +847,7 @@ impl BoundAction {
             | Self::SwapPaneToward { .. }
             | Self::ResizePaneToward { .. }
             | Self::ZoomPane { .. }
+            | Self::KillPane
             | Self::RenamePane => ActionSubject::Pane,
             Self::NewWindow | Self::SelectWindow { .. } | Self::KillWindow | Self::RenameWindow => {
                 ActionSubject::Window
@@ -837,6 +898,7 @@ impl BoundAction {
             | Self::ZoomPane { .. }
             | Self::NewWindow
             | Self::SelectWindow { .. }
+            | Self::KillPane
             | Self::KillWindow
             | Self::RenameWindow
             | Self::RenameSession
@@ -1036,19 +1098,20 @@ impl BoundAction {
                      takes are what a keystroke cannot carry",
                 )),
             },
-            // The two window verbs that take nothing, refused loudly for a flag rather than
+            // The three lifecycle verbs that take nothing, refused loudly for a flag rather than
             // ignoring it: a user who wrote one meant something by it, and this vocabulary has no
             // reading for it.
-            "new-window" | "kill-window" => {
+            "new-window" | "kill-window" | "kill-pane" => {
                 if !flags.is_empty() {
                     return Err(bad(
-                        "takes no arguments (a binding acts on the session and window the user is                          on, so it names neither)",
+                        "takes no arguments (a binding acts on the session, window and pane the \
+                         user is on, so it names none of them)",
                     ));
                 }
-                Ok(if verb == "new-window" {
-                    Self::NewWindow
-                } else {
-                    Self::KillWindow
+                Ok(match verb {
+                    "new-window" => Self::NewWindow,
+                    "kill-window" => Self::KillWindow,
+                    _ => Self::KillPane,
                 })
             }
             // The three verbs that ASK. Each takes no argument for the same reason `new-window`
@@ -1134,6 +1197,7 @@ impl fmt::Display for BoundAction {
                 Some(true) => "zoom-pane -Z",
                 Some(false) => "zoom-pane -u",
             }),
+            Self::KillPane => f.write_str("kill-pane"),
             Self::NewWindow => f.write_str("new-window"),
             Self::KillWindow => f.write_str("kill-window"),
             Self::RenameWindow => f.write_str("rename-window"),
@@ -1287,6 +1351,20 @@ impl Default for Keymap {
                 // already has in their fingers. The TOGGLE form, so the same key both fills the
                 // window and gives the arrangement back.
                 bind("z", BoundAction::ZoomPane { on: None }),
+                // `x` — tmux's key for `kill-pane`, WITH tmux's own guard, which tmux writes as
+                // `confirm-before -p "kill-pane #P? (y/n)" kill-pane` (R309). The guard is not
+                // decoration on the most-pressed destructive key in a multiplexer: this is the one
+                // verb whose blast radius is not visible from its NAME, because a window's last
+                // pane takes the window, and a session's last window takes the session. What the
+                // question says is DERIVED from the live arrangement
+                // ([`crate::prompt::Ask::of`]), so it names the escalation the user is actually
+                // about to cause rather than the one a config file guessed at.
+                bind(
+                    "x",
+                    BoundAction::ConfirmBefore {
+                        action: Box::new(BoundAction::KillPane),
+                    },
+                ),
                 // THE WINDOW LEVEL, on tmux's own three keys (R305). `c` is the key a tmux user
                 // presses more than any other after the splits, and before this round it was
                 // `Routed::Swallow` — it silently did nothing.
@@ -1950,6 +2028,7 @@ mod tests {
             // THE WINDOW LEVEL (R305). Both steps AND a named window, because the three arms print
             // through one `Display` and a parse that read `-n` and `-p` as the same step would
             // round-trip its own answer.
+            ("kill-pane", BoundAction::KillPane),
             ("new-window", BoundAction::NewWindow),
             ("kill-window", BoundAction::KillWindow),
             (
@@ -2190,12 +2269,12 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 16;
+    const ARMS: usize = 17;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
     ///
-    /// A sixteenth variant stops this compiling, and adding its line here makes
+    /// A seventeenth variant stops this compiling, and adding its line here makes
     /// [`one_of_every_action`] fail until an instance of it is written down. That is the pair the
     /// vocabulary, the subject and the reach tests all rest on: three properties that must hold for
     /// EVERY action, checked against a census the compiler forces to stay complete.
@@ -2210,19 +2289,20 @@ mod tests {
             BoundAction::SwapPaneToward { .. } => 6,
             BoundAction::ResizePaneToward { .. } => 7,
             BoundAction::ZoomPane { .. } => 8,
-            BoundAction::NewWindow => 9,
-            BoundAction::SelectWindow { .. } => 10,
-            BoundAction::KillWindow => 11,
-            BoundAction::RenameWindow => 12,
-            BoundAction::RenameSession => 13,
-            BoundAction::RenamePane => 14,
-            BoundAction::ConfirmBefore { .. } => 15,
+            BoundAction::KillPane => 9,
+            BoundAction::NewWindow => 10,
+            BoundAction::SelectWindow { .. } => 11,
+            BoundAction::KillWindow => 12,
+            BoundAction::RenameWindow => 13,
+            BoundAction::RenameSession => 14,
+            BoundAction::RenamePane => 15,
+            BoundAction::ConfirmBefore { .. } => 16,
         }
     }
 
     /// One value of every arm — the census the whole-vocabulary tests walk.
     ///
-    /// Panics if it is not complete, so a caller never silently tests fourteen of fifteen arms.
+    /// Panics if it is not complete, so a caller never silently tests sixteen of seventeen arms.
     fn one_of_every_action() -> Vec<BoundAction> {
         let every = vec![
             BoundAction::DetachClient,
@@ -2240,6 +2320,7 @@ mod tests {
                 cells: 5,
             },
             BoundAction::ZoomPane { on: None },
+            BoundAction::KillPane,
             BoundAction::NewWindow,
             BoundAction::SelectWindow {
                 ask: SelectWindowAsk::Step(WindowStep::Next),
@@ -2521,6 +2602,12 @@ mod tests {
                 // tmux's KEY, spelled with sprag's own verb: tmux says `resize-pane -Z` and sprag's
                 // shell says `zoom-pane`, and this table is parsed from the string the shell takes.
                 "z zoom-pane",
+                // tmux's `x`, WITH tmux's own guard (R309) — tmux writes it
+                // `confirm-before -p "kill-pane #P? (y/n)" kill-pane`. The guard is not politeness
+                // on this key: a window's last pane takes the WINDOW, and its session's last window
+                // takes the SESSION, so the one verb here whose blast radius its name does not
+                // carry is also the one a user presses most often.
+                "x confirm-before kill-pane",
                 // tmux's THREE WINDOW keys (R305), the first rows in this table that reach past the
                 // pane: `c` creates a window and selects it, `n`/`p` walk the ring. tmux's own keys
                 // and tmux's own verbs.

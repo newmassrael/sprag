@@ -435,18 +435,28 @@ mod tests {
         assert_eq!(unbound(&keymap), Vec::<String>::new());
         keymap.unbind(KeyTable::Prefix, "?").expect("? is bound");
         assert_eq!(unbound(&keymap), vec!["list-keys".to_owned()]);
-        // The GUARD's own control, and the reason `BoundAction::reaches` exists: `prefix &` is the
-        // only key that reaches two verbs, so dropping it must take BOTH out of reach. Counting
-        // outer verbs — what the first version of this did — reported `kill-window` unbound while
-        // the key was still there, and reports it unbound here too, so this pair discriminates.
+        // The GUARD's own control, and the reason `BoundAction::reaches` exists. There are TWO
+        // guarded keys now (`prefix &` is `confirm-before kill-window`, `prefix x` is
+        // `confirm-before kill-pane`), and taking them one at a time is a sharper control than the
+        // single unbind was: dropping the first must take its INNER verb out of reach while
+        // leaving the WRAPPER reachable by the other, which no `bound` flag computed from outer
+        // verbs alone could produce.
         keymap.unbind(KeyTable::Prefix, "&").expect("& is bound");
+        assert_eq!(
+            unbound(&keymap),
+            vec!["list-keys".to_owned(), "kill-window".to_owned()],
+            "the inner verb goes; `confirm-before` stays reachable through `prefix x`"
+        );
+        keymap.unbind(KeyTable::Prefix, "x").expect("x is bound");
         assert_eq!(
             unbound(&keymap),
             vec![
                 "list-keys".to_owned(),
+                "kill-pane".to_owned(),
                 "kill-window".to_owned(),
                 "confirm-before <action>".to_owned(),
-            ]
+            ],
+            "and with the last guard gone the wrapper itself is out of reach"
         );
     }
 

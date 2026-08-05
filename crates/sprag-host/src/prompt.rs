@@ -228,6 +228,14 @@ impl Ask {
     /// the user was not looking at.
     #[must_use]
     pub fn of(action: &BoundAction, host: &dyn HostClient, pane: Option<PaneId>) -> Option<Self> {
+        // NO SUBJECT, NO QUESTION — asked once here rather than per arm, and it SEES THROUGH THE
+        // GUARD, which is the half a per-arm check kept getting wrong: `confirm-before kill-pane`
+        // pressed with the focus outside a pane would otherwise ask "Kill this pane?", take the
+        // user's yes, and kill nothing, because both frontends' `perform` needs the same pane this
+        // question does not have.
+        if action.needs_pane() && pane.is_none() {
+            return None;
+        }
         let line = |subject: Subject| Self::Line {
             seed: subject.seed(host),
             subject,
@@ -237,7 +245,7 @@ impl Ask {
             BoundAction::RenameSession => Some(line(Subject::Session)),
             BoundAction::RenamePane => pane.map(|id| line(Subject::Pane(id))),
             BoundAction::ConfirmBefore { action } => {
-                let (question, consequence, verb) = confirm_question(action, host);
+                let (question, consequence, verb) = confirm_question(action, host, pane);
                 Some(Self::Confirm {
                     question,
                     consequence,
@@ -264,8 +272,38 @@ impl Ask {
 fn confirm_question(
     action: &BoundAction,
     host: &dyn HostClient,
+    pane: Option<PaneId>,
 ) -> (String, Option<String>, &'static str) {
     match action {
+        // `kill-pane` is the one guarded verb whose blast radius its own NAME does not carry: a
+        // window's last pane takes the window, and that window's session takes the session
+        // (`Ended`). So the consequence line walks the same chain the daemon will, off the live
+        // mirror, and says the FURTHEST thing that will happen — which is the fact a user needs
+        // before answering, and the one tmux's `confirm-before -p "kill-pane #P? (y/n)"` cannot
+        // state because its prompt is a fixed string in a config file.
+        BoundAction::KillPane => (
+            pane.map_or_else(
+                || "Kill this pane?".to_owned(),
+                |id| format!("Kill pane {}?", id.0),
+            ),
+            // `pane_ids` is the panes this client can RENDER — its own contract allows briefly
+            // omitting one it cannot draw yet, so this can over-state the escalation and never
+            // under-state it. That asymmetry is the right way round for a warning: a user told
+            // "this ends your session" about a kill that only ends a pane loses nothing, and the
+            // reverse loses their session. The GUI's catalog line reads the same fact the same way.
+            match (host.pane_ids().len() <= 1, host.windows().len() <= 1) {
+                (true, true) => Some(
+                    "It is this window's last pane and this session's last window, so the session \
+                     ends with it."
+                        .to_owned(),
+                ),
+                (true, false) => {
+                    Some("It is this window's last pane, so the window ends with it.".to_owned())
+                }
+                (false, _) => None,
+            },
+            "Kill",
+        ),
         BoundAction::KillWindow => {
             let windows = host.windows();
             let current = windows
@@ -555,6 +593,99 @@ mod tests {
                 ..Modifiers::default()
             },
         )
+    }
+
+    /// **The guarded kill names the escalation it actually has**, read off the live arrangement at
+    /// the moment the key is pressed — R309.
+    ///
+    /// This is what a binding cannot do. tmux writes the question into the config
+    /// (`confirm-before -p "kill-pane #P? (y/n)"`), so its prompt says the same words whether the
+    /// pane has ten siblings or is the last thing keeping the user's session alive. Here the
+    /// sentence is DERIVED, so the one press that ends a session says so.
+    ///
+    /// Driven against a real [`Host`](crate::Host) rather than a double: the fixture IS the claim
+    /// (how many panes, how many windows), and a double would be re-stating the arrangement this
+    /// function is supposed to read.
+    ///
+    /// REVERT-PROOF: drop the `pane_ids` condition and the two-pane case grows a consequence; drop
+    /// the `windows` condition and the last-pane case stops mentioning the session — the same pair
+    /// `sprag-gui`'s catalog line is proved with, because they are two readings of one chain.
+    #[test]
+    fn a_guarded_pane_kill_states_only_the_escalation_it_actually_has() {
+        let guarded = BoundAction::ConfirmBefore {
+            action: Box::new(BoundAction::KillPane),
+        };
+        let consequence =
+            |host: &crate::Host, pane: PaneId| match Ask::of(&guarded, host, Some(pane)) {
+                Some(Ask::Confirm { consequence, .. }) => consequence,
+                other => panic!("a guarded kill asks a yes/no: {other:?}"),
+            };
+
+        // TWO PANES: nothing else goes, whatever the window count.
+        let host = crate::Host::new((40, 6));
+        let first = host.new_pane().expect("a shell is born");
+        host.new_pane().expect("and a second");
+        assert_eq!(
+            consequence(&host, first),
+            None,
+            "a pane with a sibling takes nothing else down with it",
+        );
+
+        // ONE PANE, TWO WINDOWS: the window goes and the session does not.
+        let host = crate::Host::new((40, 6));
+        let alone = host.new_pane().expect("a shell is born");
+        host.new_window();
+        // `new_window` selects the window it made, so come back to the one holding the pane.
+        host.select_window("0");
+        let said = consequence(&host, alone).expect("the escalation is said");
+        assert!(
+            said.contains("last pane"),
+            "it names the pane escalation: {said}"
+        );
+        assert!(
+            !said.contains("session"),
+            "and does NOT claim the session ends while another window survives: {said}",
+        );
+
+        // ONE PANE, ONE WINDOW: both escalations, in one sentence.
+        let host = crate::Host::new((40, 6));
+        let only = host.new_pane().expect("a shell is born");
+        let said = consequence(&host, only).expect("the escalation is said");
+        assert!(
+            said.contains("last pane") && said.contains("last window") && said.contains("session"),
+            "the two escalations compose and name what actually ends: {said}",
+        );
+    }
+
+    /// A guarded kill with the focus OUTSIDE a pane asks NOTHING.
+    ///
+    /// The hole this closes is specific: both frontends need a [`PaneId`] to perform
+    /// `kill-pane`, so without one the question would be answered and nothing would happen — a
+    /// prompt that takes a user's "yes" and drops it. `RenamePane` has always refused this; the
+    /// GUARD had to be taught to see through itself to the verb, which is what
+    /// [`BoundAction::needs_pane`] does.
+    ///
+    /// REVERT-PROOF: make `needs_pane` answer `false` for the wrapper and this asks anyway.
+    #[test]
+    fn a_guarded_pane_kill_with_no_pane_focused_asks_nothing() {
+        let host = crate::Host::new((40, 6));
+        host.new_pane()
+            .expect("a pane exists, so this is not vacuous");
+        let guarded = BoundAction::ConfirmBefore {
+            action: Box::new(BoundAction::KillPane),
+        };
+        assert_eq!(Ask::of(&guarded, &host, None), None);
+        assert_eq!(
+            Ask::of(&BoundAction::RenamePane, &host, None),
+            None,
+            "the rename it borrows the rule from behaves the same",
+        );
+        // THE CONTROL: a verb that needs no pane still asks with the focus outside one, so the gate
+        // above is about the SUBJECT and not about refusing every keystroke.
+        assert!(
+            Ask::of(&BoundAction::RenameWindow, &host, None).is_some(),
+            "a window rename has its subject without a pane",
+        );
     }
 
     /// The cursor is a real cursor: text goes in where it is, and it moves both ways.
