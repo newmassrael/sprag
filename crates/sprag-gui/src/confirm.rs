@@ -223,7 +223,9 @@ pub(crate) fn is_open() -> bool {
 pub(crate) fn run_or_arm(command: Command, target: Option<usize>, slots: &SlotView) {
     match command.confirmation(target, slots) {
         Some(confirmation) => arm(Guarded::Command(command), target, confirmation),
-        None => command.run(target, slots),
+        // WHAT IT DID, shown (R316) — through the same surface a bare binding's outcome reaches,
+        // so a row and the key that reaches it say the same thing in the same place.
+        None => crate::message::show(&command.run(target, slots)),
     }
 }
 
@@ -281,7 +283,10 @@ fn accept(slots: &SlotView) -> Option<Command> {
     dismiss();
     match armed.guarded {
         Guarded::Command(command) => {
-            command.run(armed.target, slots);
+            // The answer to a guarded question is shown exactly as an unguarded row's is: the user
+            // said yes to something, and if it then found nothing to act on they are owed the
+            // sentence saying so.
+            crate::message::show(&command.run(armed.target, slots));
             Some(command)
         }
         // A bound action is carried out through the SAME `perform` a bare binding reaches, so a

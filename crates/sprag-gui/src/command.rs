@@ -76,6 +76,7 @@
 
 use sprag_host::ProjectAction;
 use sprag_host::keymap::{BoundAction, SwitchClientAsk};
+use sprag_host::report::Report;
 use sprag_host::wire::SelectWindowAsk;
 use sprag_terminal::{OrderStep, WindowPlace};
 
@@ -287,6 +288,18 @@ impl Command {
             | Self::SelectWindow(_)
             | Self::MoveWindow(_) => None,
         }
+    }
+
+    /// This row's outcome in the words its PAIRED BINDING would use, or a silent one when the row
+    /// has no pairing.
+    ///
+    /// The join [`bound`](Self::bound) already makes, doing a second job: a row and the key that
+    /// reaches it must not report differently, and the only way to guarantee that is for neither to
+    /// write a sentence. An unpaired row falls back to [`Report::on_screen`] — which is honest
+    /// rather than lossy, because the three arms that call this are exactly the three the pairing
+    /// covers, and a fourth added later without one would be caught by its own missing sentence.
+    fn reported(&self, say: fn(&BoundAction) -> Report) -> Report {
+        self.bound().as_ref().map_or_else(Report::on_screen, say)
     }
 
     /// The BOUND ACTION that does the same thing as this row, when the keymap has one.
@@ -558,6 +571,17 @@ impl Command {
     /// deliberately dropped: those are already the action's own tolerated no-ops, and neither surface
     /// has a place to report one that the surface itself does not.
     ///
+    /// ## What it ANSWERS (R316)
+    ///
+    /// A [`Report`], for [`crate::input::perform`]'s reason and with a sharper one of its own: the
+    /// rows this dispatch runs are built from MIRRORS, so a window named by a row can close between
+    /// the list being drawn and the row being activated — R315's stale-row class, one surface over.
+    /// The palette's own arms dropped exactly the three answers the keyboard's arms now read, which
+    /// is the round's own defect found inside the frontend that had just been fixed.
+    ///
+    /// The sentence is DERIVED through [`bound`](Self::bound), so a row and the key that reaches it
+    /// say the same thing — the pairing R308 built for the hint column, doing a second job.
+    ///
     /// ## Why there is no `needs_pane` gate at the top
     ///
     /// There was one, as a belt to [`catalog`]'s braces, while the palette was the only caller and so
@@ -570,12 +594,16 @@ impl Command {
     /// Nothing is lost by removing it, because every arm below that needs a pane destructures
     /// `target` itself and is therefore already total over its absence. The gate was never the guard
     /// — the arms were.
-    pub(crate) fn run(&self, target: Option<usize>, slots: &SlotView) {
+    #[must_use = "the caller shows it — see `crate::message`"]
+    pub(crate) fn run(&self, target: Option<usize>, slots: &SlotView) -> Report {
         match self {
             // Through the SAME path `prefix ?` takes, so a row and a chord cannot come to show
             // different tables — the discipline `crate::confirm`'s guarded arm already follows for
             // a bound action, applied from the palette end.
-            Self::ShowKeys => crate::keyhelp::show(crate::keys::use_client_keys().help()),
+            Self::ShowKeys => {
+                crate::keyhelp::show(crate::keys::use_client_keys().help());
+                Report::on_screen()
+            }
             // Through `Ask::of` — the ONE place that decides what a chooser is built from — rather
             // than by calling `Pick::new` here with the same two arguments. ⚠ It was written the
             // second way first, and the audit caught it: two spellings of one construction is
@@ -591,29 +619,35 @@ impl Command {
                 ) {
                     crate::chooser::show(*pick);
                 }
+                Report::on_screen()
             }
             Self::Find => {
                 if let Some(pane) = target {
                     crate::find::open(pane);
                 }
+                Report::on_screen()
             }
             Self::Copy => {
                 let _ = crate::selection::copy_selection();
+                Report::on_screen()
             }
             Self::Paste => {
                 if let Some(pane) = target {
                     let _ = crate::selection::paste_clipboard(pane);
                 }
+                Report::on_screen()
             }
             Self::SelectAll => {
                 if let Some(pane) = target {
                     crate::selection::select_all(pane);
                 }
+                Report::on_screen()
             }
             Self::ToggleFloat => {
                 if let Some(pane) = target {
                     crate::dock::toggle_pane_floating(pane);
                 }
+                Report::on_screen()
             }
             // The TOGGLE form (`on` absent), which is what a row activated twice has to mean: this
             // surface offers one row rather than a fill/restore pair, so the row is a switch.
@@ -621,21 +655,25 @@ impl Command {
                 if let Some(pane) = target {
                     slots.zoom_pane(pane, None);
                 }
+                Report::on_screen()
             }
             Self::BreakOut => {
                 if let Some(pane) = target {
                     slots.break_pane(pane, None);
                 }
+                Report::on_screen()
             }
             Self::JoinInto(name) => {
                 if let Some(pane) = target {
                     slots.join_pane(pane, name);
                 }
+                Report::on_screen()
             }
             Self::NewPane => {
                 // No target: the pane joins the CURRENT WINDOW, and the arrangement places it (the
                 // layout reconciles against the live pane set, so nothing here says where).
                 slots.new_pane();
+                Report::on_screen()
             }
             Self::KillPane => {
                 if let Some(pane) = target {
@@ -644,39 +682,55 @@ impl Command {
                     // end up looking at is re-read from the daemon like every other set change.
                     slots.close_pane(pane);
                 }
+                Report::on_screen()
             }
             Self::NewWindow => {
                 // Creates AND selects (the host action does both), like the strip's "+".
                 slots.new_window();
+                Report::on_screen()
             }
-            // A palette row is CHOSEN from a list of this client's own windows, so a name that is
-            // not there cannot be picked — which is why the landing is dropped here where the key
-            // path reports it. Same for the move below: the rows a person picked from are the
-            // order they are about to change.
-            Self::SelectWindow(name) => {
-                let _ = slots.select_window(name);
-            }
-            Self::MoveWindow(place) => {
-                let _ = slots.move_window(None, place);
-            }
+            // THE ROW NAMES A WINDOW OFF A MIRROR, so it can name one that has since closed —
+            // which is why this reports rather than dropping the landing. The sentence comes from
+            // the row's paired binding, so it is the same one `select-window -t <name>` says.
+            Self::SelectWindow(name) => match slots.select_window(name) {
+                Some(_) => Report::on_screen(),
+                None => self.reported(Report::no_such),
+            },
+            // The move's three not-moved words are a user's mistake as often as a no-op — already
+            // at that end, or anchored to the window itself — and a person who picked the row is
+            // owed the reason the order did not change.
+            Self::MoveWindow(place) => match slots.move_window(None, place) {
+                Some((_, sprag_terminal::PlaceHow::Moved)) => Report::on_screen(),
+                Some((_, _)) | None => self.reported(Report::nowhere),
+            },
             Self::NewSession => {
                 // Creates AND switches, like the rail's "+".
                 let _ = slots.new_session();
+                Report::on_screen()
             }
-            Self::SwitchSession(name) => slots.switch_session(name),
-            // The landing is dropped HERE and not in the key path beside it: a palette row is
-            // chosen from a list of sessions this client is already showing, so "there was nowhere
-            // to go" is a state the user just looked at. The keyboard's arm has no such list in
-            // front of it, which is why that one reports.
-            Self::LastSession => {
-                let _ = slots.switch_session_last();
+            Self::SwitchSession(name) => {
+                slots.switch_session(name);
+                Report::on_screen()
             }
+            // `None` here is R304's degraded half — nothing this client visited is still alive —
+            // and no list in front of the user says so, because the row is offered whether or not
+            // there is anywhere to go back to.
+            Self::LastSession => match slots.switch_session_last() {
+                Some(_) => Report::on_screen(),
+                None => self.reported(Report::nowhere),
+            },
             // Addressed by NAME, so what is killed is what the prompt named — never a row index
             // re-resolved against a list that moved in the meantime. Killing the last window ends
             // the session and killing the attached session detaches this client; both are stated on
             // the prompt (see [`Command::confirmation`]) rather than refused here.
-            Self::KillWindow(name) => slots.kill_window(name),
-            Self::KillSession(name) => slots.kill_session(name),
+            Self::KillWindow(name) => {
+                slots.kill_window(name);
+                Report::on_screen()
+            }
+            Self::KillSession(name) => {
+                slots.kill_session(name);
+                Report::on_screen()
+            }
             // PASTED at the pane's prompt, without a trailing newline: the user presses Enter. The
             // whole rationale (their shell runs it, so output/history/Ctrl-C behave; and a command
             // named by a file in a repository must not execute on a repository's say-so) lives on
@@ -685,6 +739,7 @@ impl Command {
                 if let Some(pane) = target {
                     let _ = slots.paste(pane, &action.command_line());
                 }
+                Report::on_screen()
             }
         }
     }
@@ -1797,7 +1852,7 @@ mod tests {
             .find(|command| matches!(command, Command::Declared(_)))
             .expect("the project's command is offered");
 
-        action.run(Some(0), &slots);
+        let _ = action.run(Some(0), &slots);
 
         let pasted = log.borrow().pasted.clone();
         assert_eq!(
@@ -1888,7 +1943,7 @@ mod tests {
             WindowPlace::Step(OrderStep::Next),
             WindowPlace::Step(OrderStep::Previous),
         ] {
-            Command::MoveWindow(place).run(Some(0), &slots);
+            let _ = Command::MoveWindow(place).run(Some(0), &slots);
         }
         assert_eq!(
             log.borrow().moved,
@@ -1958,6 +2013,43 @@ mod tests {
         assert_eq!(sessions_offered, MAX_SESSION_ROWS);
     }
 
+    /// **A palette row answers what it did, in its paired binding's words** (R316).
+    ///
+    /// The palette is a THIRD dispatcher — beside the keymap's and the confirmation's — and its
+    /// arms dropped exactly the three answers the keyboard's arms read, which the round's own audit
+    /// found after the frontends were fixed. The rows are built from MIRRORS, so a window named by
+    /// a row can close between the list being drawn and the row being activated.
+    ///
+    /// The two readings are made to DISAGREE: one row names a window the host has and one names a
+    /// window it does not, on the same fixture and through the same call.
+    ///
+    /// REVERT-PROOF: drop the `select_window` answer in `run` and the second assertion fails while
+    /// the first still passes — which is the whole shape of the defect.
+    #[test]
+    fn a_palette_row_that_finds_nothing_says_so() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+
+        assert_eq!(
+            Command::SelectWindow("build".to_owned())
+                .run(Some(0), &slots)
+                .says(),
+            None,
+            "a row naming a window that IS there is carried out and says nothing",
+        );
+        assert_eq!(
+            Command::SelectWindow("gone".to_owned())
+                .run(Some(0), &slots)
+                .says(),
+            Some("no window called \"gone\""),
+            "...and one naming a window that is not there says so, in the words              `select-window -t gone` uses",
+        );
+        assert_eq!(
+            Command::LastSession.run(None, &slots).says(),
+            Some("switch-client -l: nowhere to go"),
+            "a client that has visited nothing still alive has nowhere to go back to",
+        );
+    }
+
     #[test]
     fn running_a_command_drives_the_action_it_names() {
         // The routing itself: each command reaches the ONE host action it describes, with the
@@ -1965,14 +2057,14 @@ mod tests {
         // matching assertion below fails.
         let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
 
-        Command::SelectWindow("build".to_owned()).run(Some(0), &slots);
-        Command::NewWindow.run(Some(0), &slots);
-        Command::BreakOut.run(Some(0), &slots);
-        Command::ZoomPane.run(Some(0), &slots);
-        Command::JoinInto("build".to_owned()).run(Some(0), &slots);
-        Command::SwitchSession("work".to_owned()).run(None, &slots);
-        Command::NewSession.run(None, &slots);
-        Command::LastSession.run(None, &slots);
+        let _ = Command::SelectWindow("build".to_owned()).run(Some(0), &slots);
+        let _ = Command::NewWindow.run(Some(0), &slots);
+        let _ = Command::BreakOut.run(Some(0), &slots);
+        let _ = Command::ZoomPane.run(Some(0), &slots);
+        let _ = Command::JoinInto("build".to_owned()).run(Some(0), &slots);
+        let _ = Command::SwitchSession("work".to_owned()).run(None, &slots);
+        let _ = Command::NewSession.run(None, &slots);
+        let _ = Command::LastSession.run(None, &slots);
 
         let log = log.borrow();
         assert_eq!(log.selected_windows, vec!["build".to_owned()]);
@@ -2004,8 +2096,8 @@ mod tests {
         // on some other pane. REVERT-PROOF: drop the `needs_pane` guard in `run` and `break_pane`
         // is reached with whatever id the fallback picked.
         let (slots, log) = slots_with(&[("main", true)], &["0"], "0");
-        Command::BreakOut.run(None, &slots);
-        Command::ZoomPane.run(None, &slots);
+        let _ = Command::BreakOut.run(None, &slots);
+        let _ = Command::ZoomPane.run(None, &slots);
         assert!(log.borrow().broken_panes.is_empty());
         assert!(log.borrow().zoomed.is_empty());
     }
@@ -2190,8 +2282,8 @@ mod tests {
     fn a_kill_addresses_the_window_or_session_it_names() {
         let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
 
-        Command::KillWindow("build".to_owned()).run(Some(0), &slots);
-        Command::KillSession("work".to_owned()).run(Some(0), &slots);
+        let _ = Command::KillWindow("build".to_owned()).run(Some(0), &slots);
+        let _ = Command::KillSession("work".to_owned()).run(Some(0), &slots);
 
         let log = log.borrow();
         assert_eq!(
@@ -2379,14 +2471,14 @@ mod tests {
     fn the_pane_commands_reach_the_host_and_the_kill_is_slot_mapped() {
         let (slots, log) = slots_with_panes(&[("main", true)], &["0"], "0", 2);
 
-        Command::NewPane.run(None, &slots);
+        let _ = Command::NewPane.run(None, &slots);
         assert_eq!(
             log.borrow().new_panes,
             1,
             "a split reaches the host with no target — it goes into the current window"
         );
 
-        Command::KillPane.run(Some(1), &slots);
+        let _ = Command::KillPane.run(Some(1), &slots);
         assert_eq!(
             log.borrow().killed_panes,
             vec![PaneId(8)],
@@ -2394,7 +2486,7 @@ mod tests {
         );
 
         // Total over an absent target, like every other pane arm: nothing runs, nothing panics.
-        Command::KillPane.run(None, &slots);
+        let _ = Command::KillPane.run(None, &slots);
         assert_eq!(
             log.borrow().killed_panes.len(),
             1,
