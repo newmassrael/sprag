@@ -1018,6 +1018,51 @@ pub const SESSION_SLOT: &str = "session";
 /// client follows it, as tmux does.
 pub const NEW_WINDOW_ACTION: &str = "new_window";
 
+/// The REQUEST grammar of [`NEW_WINDOW_ACTION`]'s two window-level keys — [`SelectWindowAsk`]'s
+/// sibling, and a TYPE for the reason that one is: the keys are spelled ONCE for the daemon, the
+/// CLI verb and the agent surface, so no caller can invent a third spelling.
+///
+/// # Why it is a type, and why THIS round needed it to be
+///
+/// The shape pin (`the_wire_shape_is_what_this_protocol_number_stands_for`) renders the BYTES of
+/// every grammar this project owns as a type, and that is what keeps [`WIRE_PROTOCOL`] from being a
+/// number nobody remembers to move. A key spelled at a `json!` call site is invisible to it —
+/// which is exactly the hole R300 found for `select_pane`'s origin, and which this round's own
+/// audit found again here: `detached` bumped the protocol 11 → 12 and reverting the bump left the
+/// whole suite green, because nothing looked at what a client SENDS.
+///
+/// The BIRTH SPEC (`cmd` / `cols` / `rows` / `cwd`) is deliberately NOT here: it predates this,
+/// it is shared verbatim with [`SPAWN_ACTION`], and pulling it in would move a grammar this round
+/// has no reason to touch. What is here is what this round added.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowBirthAsk(pub sprag_terminal::WindowBirth);
+
+impl WindowBirthAsk {
+    /// The request key that leaves the session on the window it is already on.
+    pub const DETACHED_KEY: &'static str = DETACHED_KEY;
+    /// The request key naming the pane whose occupant asked for the window.
+    pub const OPENED_BY_KEY: &'static str = WINDOW_OPENED_BY_KEY;
+
+    /// The `args` keys a client sends for this ask, merged into whatever else the request carries.
+    ///
+    /// A key is emitted only when it says something: the default birth emits NOTHING, so a caller
+    /// that wants what every caller wanted before these keys existed sends exactly the bytes it
+    /// sent then. That is what makes the addition additive on the wire — and what makes the SKEW
+    /// hazard precise rather than general: only a request that ASKS for a detached window can be
+    /// misanswered by a daemon that drops the key.
+    #[must_use]
+    pub fn to_args(&self) -> serde_json::Map<String, Value> {
+        let mut map = serde_json::Map::new();
+        if self.0.detached {
+            map.insert(Self::DETACHED_KEY.to_owned(), Value::Bool(true));
+        }
+        if let Some(opener) = self.0.opened_by {
+            map.insert(Self::OPENED_BY_KEY.to_owned(), Value::from(opener.0));
+        }
+        map
+    }
+}
+
 /// The [`NEW_WINDOW_ACTION`] request key that leaves the session on the window it is already on —
 /// tmux's `new-window -d`. Absent (or `false`) selects the new window, which is what every caller
 /// did before this key existed and what tmux's own default is.
@@ -2793,6 +2838,43 @@ mod tests {
             })
             .expect("a window serialises"),
             r#"{"name":"0","current":true}"#,
+            "{}",
+            BUMP,
+        );
+        // The CLAIMED form too. An additive `Option` that is `None` in the pinned value is
+        // INVISIBLE to this pin — so pinning only the unclaimed window would have let the new key's
+        // spelling move without a word. Found by auditing this round's own addition.
+        assert_eq!(
+            serde_json::to_string(&WindowInfo {
+                name: "agentwork".to_owned(),
+                current: false,
+                opened_by: Some(PaneId(7)),
+            })
+            .expect("a claimed window serialises"),
+            r#"{"name":"agentwork","current":false,"opened_by":7}"#,
+            "{}",
+            BUMP,
+        );
+        // And the REQUEST grammar this round added — the side R300 found this pin blind to. The
+        // DEFAULT birth must render EMPTY: that is what makes the addition additive, and a version
+        // of it that emitted `{"detached":false}` would change every existing caller's bytes.
+        assert_eq!(
+            serde_json::to_string(&WindowBirthAsk::default().to_args())
+                .expect("a default birth serialises"),
+            "{}",
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &WindowBirthAsk(sprag_terminal::WindowBirth {
+                    detached: true,
+                    opened_by: Some(PaneId(7)),
+                })
+                .to_args()
+            )
+            .expect("a detached birth serialises"),
+            r#"{"detached":true,"opened_by":7}"#,
             "{}",
             BUMP,
         );

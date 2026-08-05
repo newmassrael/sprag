@@ -120,7 +120,7 @@ use sprag_host::wire::{
     PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION,
     ResizeAsk, ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM,
     SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow,
-    TEXT_ACTION, WINDOWS_SLOT, find_slot_for, pane_processes_at, regex_slot_for,
+    TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -1221,6 +1221,12 @@ fn tool_list_windows() -> Result<String, String> {
     let current = current_window_name();
     let mine = own_pane();
     let panes = query_session_panes()?;
+    // Read from the SAME listing the names came from, so a window's provenance and its place in
+    // the order describe one instant.
+    let opened_by: std::collections::HashMap<String, Option<u64>> = query_windows()?
+        .into_iter()
+        .map(|window| (window.name, window.opened_by.map(|pane| pane.0)))
+        .collect();
     let mut out = format!("{} window(s) in this sprag session:\n", names.len());
     for name in &names {
         let here: Vec<&PaneInfo> = panes
@@ -1243,6 +1249,18 @@ fn tool_list_windows() -> Result<String, String> {
             out.push_str(&format!(" ({})", marks.join(", ")));
         }
         out.push_str(&format!(": {} pane(s)", here.len()));
+        // WHOSE the window is, so an agent can see at a glance which ones it may close or rename —
+        // `list_panes`' provenance line, one level up, and the answer to the question the two gated
+        // window verbs raise. A window a PERSON made says nothing, because that is every window in
+        // the ordinary case and a line on all of them would be noise.
+        if let Some(opener) = opened_by.get(name.as_str()).copied().flatten() {
+            let who = if Some(opener) == mine {
+                " — opened by YOU (yours to close_window and rename_window)".to_owned()
+            } else {
+                format!(" — opened by {}", opener_subject(opener))
+            };
+            out.push_str(&who);
+        }
         let named: Vec<String> = here
             .iter()
             .filter_map(|pane| pane.name.as_deref().map(|n| format!("{n:?}")))
@@ -1364,10 +1382,15 @@ fn tool_open_window(args: &Value) -> Result<String, String> {
         Some(Value::Null) | None => None,
         Some(other) => return Err(format!("'name' must be a string, not {other}")),
     };
-    let mut action_args = json!({
-        sprag_host::wire::DETACHED_KEY: true,
-        sprag_host::wire::WINDOW_OPENED_BY_KEY: opener,
-    });
+    // Through the grammar TYPE — see `WindowBirthAsk`. DETACHED is not a choice this tool offers:
+    // an agent's window is always born quiet, and `select_window` is how it asks for the screen.
+    let mut action_args = Value::Object(
+        WindowBirthAsk(sprag_terminal::WindowBirth {
+            detached: true,
+            opened_by: Some(PaneId(opener)),
+        })
+        .to_args(),
+    );
     if let Some(name) = &name {
         action_args["name"] = json!(name);
     }
@@ -3450,9 +3473,9 @@ fn render_selection(
             ),
         };
         return format!(
-            "{moved} The USER is in window {current} and did not move — this surface has no verb \
-             that changes which window a person is looking at, so they will land on that pane the \
-             next time they switch to window {window} themselves."
+            "{moved} The USER is in window {current} and did not move: this sets which pane THAT \
+             window is on, not which window somebody is looking at. Call select_window \
+             {{\"window\": {window:?}}} to take them there, and they will land on that pane."
         );
     }
     match (how, asked, origin) {

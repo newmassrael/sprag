@@ -3191,3 +3191,89 @@ fn an_agent_cannot_close_the_last_window_of_a_session() {
         "and the window is still there — a refusal that had already acted is worse than none",
     );
 }
+
+/// **THE WINDOW RATCHET: every tool the roster declares a `window` argument for is safe to point at
+/// a PERSON's window — and the list is DERIVED FROM THE ROSTER, not written here.**
+///
+/// R312 built the same shape for the pane address and a revert-proof then showed its first version
+/// was too weak. This is its window-level twin, and the property is different: a window verb aimed
+/// at a person's window must either be HARMLESS (a read, a select — moving somebody is allowed and
+/// `select_pane` has always been) or refuse on AUTHORSHIP. What must not happen is a destructive
+/// verb going through, which is what `close_window` and `rename_window` would do without
+/// `Window::opened_by` — and what herdr's `tab.close` does today (`app/api/tabs.rs:225` gates only
+/// on a worktree-group confirmation, read at `9a4ce5e1`).
+///
+/// A tool added later with a `window` argument is checked the day it appears.
+#[test]
+fn every_window_tool_is_safe_to_point_at_a_persons_window() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let theirs = mux_current_window(&sock);
+    // A SECOND window the agent owns, so the fixture can tell "refuses everything" from "refuses a
+    // person's" — the discrimination the whole gate is about.
+    server.call_tool("open_window", json!({ "name": "mine" }));
+
+    let sample = |argument: &str| -> Option<Value> {
+        Some(match argument {
+            "window" => json!(theirs),
+            "name" => json!("renamed-by-an-agent"),
+            "relative" => json!("next"),
+            _ => return None,
+        })
+    };
+
+    let roster = server.request("tools/list", json!({}));
+    let mut checked: Vec<String> = Vec::new();
+    for tool in roster["result"]["tools"].as_array().expect("a roster") {
+        let name = tool["name"]
+            .as_str()
+            .expect("every tool is named")
+            .to_owned();
+        if tool["inputSchema"]["properties"].get("window").is_none() {
+            continue;
+        }
+        let mut args = serde_json::Map::new();
+        args.insert("window".to_owned(), json!(theirs));
+        for required in tool["inputSchema"]["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let argument = required.as_str().expect("a required argument is named");
+            let value = sample(argument).unwrap_or_else(|| {
+                panic!(
+                    "{name} requires an argument this ratchet has no sample for ({argument:?}). \
+                     Add one — a skipped tool is a tool this test believes it covered."
+                )
+            });
+            args.insert(argument.to_owned(), value);
+        }
+        let answer = server.call_tool_raw(&name, Value::Object(args));
+        let errored = answer["result"]["isError"] == json!(true);
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            !errored || text.contains("was opened by a person, not by you"),
+            "{name} aimed at a person's window neither succeeded harmlessly nor refused on \
+             AUTHORSHIP: {text}",
+        );
+        checked.push(name);
+    }
+
+    // ⚠ AND THE WINDOW IS STILL THERE. Without this the assertion above passes on a tool that
+    // destroyed it and said so cheerfully — which is exactly the failure the gate exists for.
+    let left = server.call_tool("list_windows", json!({}));
+    assert!(
+        left.contains(&format!("window {theirs}")),
+        "the person's window survived every verb pointed at it: {left}",
+    );
+
+    for wanted in ["select_window", "close_window", "rename_window"] {
+        assert!(
+            checked.iter().any(|name| name == wanted),
+            "the roster no longer declares a `window` argument for {wanted}: {checked:?}",
+        );
+    }
+}

@@ -192,9 +192,9 @@ use sprag_host::wire::{
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
     RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
     SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
-    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
-    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
-    session_activity_at,
+    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk,
+    ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at, project_slot_for,
+    regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -4204,7 +4204,15 @@ fn windows(args: Vec<String>) -> io::Result<()> {
         } else {
             ""
         };
-        println!("{name}{marker}");
+        // WHO ASKED for it, when anybody did — an operator's view of the fact R313 records, and the
+        // answer to "where did this window come from?" for a person who did not make it. Absent for
+        // a window nobody claims, which is every window a person made: a line on all of them would
+        // be noise, and the interesting case is the one that is not theirs.
+        let opened_by = match window["opened_by"].as_u64() {
+            Some(opener) => format!("  opened by pane {opener}"),
+            None => String::new(),
+        };
+        println!("{name}{marker}{opened_by}");
     }
     Ok(())
 }
@@ -4239,12 +4247,18 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
     }
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
-    let mut action_args = json!({});
+    // Through the grammar TYPE, not a key spelled here: `WindowBirthAsk` is the one place these
+    // keys are written down, so the CLI, the agent surface and the daemon cannot come to spell them
+    // three ways — and it is what the wire's shape pin holds the protocol number against.
+    let mut action_args = Value::Object(
+        WindowBirthAsk(sprag_terminal::WindowBirth {
+            detached,
+            opened_by: None,
+        })
+        .to_args(),
+    );
     if let Some(name) = &name {
         action_args["name"] = json!(name);
-    }
-    if detached {
-        action_args[sprag_host::wire::DETACHED_KEY] = json!(true);
     }
     let answer = conn.call(
         "scene/invoke",
