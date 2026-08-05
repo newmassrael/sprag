@@ -904,6 +904,14 @@ pub enum SessionError {
     /// name different things: a caller that collapsed them would tell a user their SESSION name was
     /// blank while they were renaming a window.
     MalformedWindow(WindowNameError),
+    /// The window addressed tiles no pane with that id
+    /// ([`SessionRegistry::close_pane`](SessionRegistry::close_pane)).
+    ///
+    /// Separate from [`Unknown`](Self::Unknown) rather than folded into it, on
+    /// [`MalformedWindow`](Self::MalformedWindow)'s rule: that variant carries a NAME, and a pane
+    /// is addressed by an ID. Quoting `"7"` as a name would describe an address grammar this
+    /// registry does not have.
+    UnknownPane(PaneId),
 }
 
 impl std::fmt::Display for SessionError {
@@ -913,6 +921,7 @@ impl std::fmt::Display for SessionError {
             Self::Unknown(name) => write!(f, "no session named {name:?}"),
             Self::Malformed(error) => error.fmt(f),
             Self::MalformedWindow(error) => error.fmt(f),
+            Self::UnknownPane(id) => write!(f, "that window tiles no pane with id {}", id.0),
         }
     }
 }
@@ -970,6 +979,154 @@ impl std::fmt::Display for PaneMoveError {
 
 impl std::error::Error for PaneMoveError {}
 
+/// How far a kill's CASCADE reached — the one word the three destructive verbs answer with.
+///
+/// A mux is nested (`pane ⊂ window ⊂ session ⊂ server`) and every kill can escalate up that chain:
+/// a window's last pane takes the WINDOW, a session's last window takes the SESSION, and the last
+/// session takes the SERVER. Which link it stopped at is a fact only the performer holds, and
+/// before this type each of the three verbs answered `null` — so `sprag kill-window 0` printed
+/// `killed 0` whether it had ended a window or the whole session the caller was attached to.
+///
+/// **DERIVED, never written down twice.** Each outcome type below reports its own link with an
+/// exhaustive [`ended`](PaneKillOutcome::ended) and defers the rest to the outcome it escalated
+/// into, so the chain is spelled once per link and a fifth level could not be added without every
+/// arm being revisited. That is the same shape `SwapHow` and `ResizeHow` keep for their answers —
+/// named rather than linked, because those live in `sprag-host`'s wire module and this crate does
+/// not depend on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ended {
+    /// Only the pane: its window still tiles others.
+    Pane,
+    /// The pane WAS its window's last, so the window went with it — and its session survives.
+    Window,
+    /// ...and that window was its session's last, so the session went too. Every client attached
+    /// to it is released ([`SessionRegistry::kill_session`]'s own escalation, reached from below).
+    Session,
+    /// ...and that session was the last, so the SERVER ends.
+    ///
+    /// The one answer that races its own delivery: ending the daemon is what the caller is told
+    /// about, so the reply may be severed by the exit instead of arriving. A caller must read a
+    /// severed connection as this outcome rather than as a failure — which is what `sprag`'s own
+    /// `server_gone` arm has always done, and why this variant does not make that arm redundant.
+    Server,
+}
+
+impl Ended {
+    /// The wire spelling — the word [`crate::registry`]'s three kill actions put in their answer.
+    ///
+    /// An exhaustive match rather than a table, for the keymap's own flag table's reason: a fifth
+    /// variant then fails to COMPILE here instead of rendering as something a reader has to guess.
+    #[must_use]
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Pane => "pane",
+            Self::Window => "window",
+            Self::Session => "session",
+            Self::Server => "server",
+        }
+    }
+
+    /// The [`Ended`] a wire word names, or [`None`] for anything that is not one.
+    ///
+    /// The inverse of [`as_wire`](Self::as_wire) and DERIVED from it, so a render and a parse
+    /// cannot drift while every test still passes — the shape R296 found copy-pasted between a
+    /// search slot and a wait, and R299 found in the CLI's third copy of the direction table.
+    ///
+    /// A client reads this to learn what it just destroyed. **[`None`] is not "nothing happened"**:
+    /// a daemon older than the wire protocol that introduced this word answers these actions with
+    /// `null`, and the honest reading of that is "it was killed and this daemon cannot say how
+    /// far" — never [`Ended::Pane`], which would report a surviving window that may already be
+    /// gone. That is why the handshake refuses the skew rather than leaving it to each reader.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        [Self::Pane, Self::Window, Self::Session, Self::Server]
+            .into_iter()
+            .find(|ended| ended.as_wire() == word)
+    }
+
+    /// The link this one escalates INTO, or [`None`] at the top of the chain.
+    ///
+    /// The nesting written as a TOTAL function rather than as an ordered array, which is what lets
+    /// [`beyond`](Self::beyond) walk it: the three `ALL`-style array literals this tree already
+    /// carries are each a completeness hole no compiler checks, and a fifth mux level left out of
+    /// one would render as silence. Left out of THIS, it fails to compile.
+    #[must_use]
+    pub fn escalation(self) -> Option<Self> {
+        match self {
+            Self::Pane => Some(Self::Window),
+            Self::Window => Some(Self::Session),
+            Self::Session => Some(Self::Server),
+            Self::Server => None,
+        }
+    }
+
+    /// The clause a surface adds after the thing the caller NAMED, when the kill reached past it —
+    /// [`None`] when it stopped exactly there.
+    ///
+    /// ONE wording for every surface (`sprag kill-pane`, `sprag kill-window`, `sprag kill-session`,
+    /// the MCP tool, whatever a frontend shows), which is `ResizeHow::why`'s rule: a sentence
+    /// copied per surface is the shape this project keeps finding drifted. It takes what the caller
+    /// named because the SAME answer means different news to different verbs — `Ended::Session`
+    /// tells `kill-pane` that two things it did not name are gone and tells `kill-session` that
+    /// exactly what was asked for happened.
+    #[must_use]
+    pub fn beyond(self, named: Self) -> Option<String> {
+        let mut level = named;
+        let mut clauses: Vec<&'static str> = Vec::new();
+        // Walks UP from what was NAMED looking for what was REACHED, and answers nothing if it runs
+        // off the top without finding it. The `?` is what makes that second half true: an earlier
+        // version broke out of the loop instead and KEPT what it had collected, so
+        // `Ended::Window.beyond(Ended::Session)` — a kill that reached less far than the caller
+        // named, which the daemon never produces but a client parses off a wire — answered *"the
+        // server went with it"*. A sentence about a thing that is still running is the one answer
+        // worse than silence, and a test written before reading this loop again is what caught it.
+        while level != self {
+            let next = level.escalation()?;
+            clauses.push(next.as_wire());
+            level = next;
+        }
+        let mut said = clauses.into_iter();
+        let first = said.next()?;
+        let mut sentence = format!("the {first} went with it");
+        for also in said {
+            sentence.push_str(&format!(", and the {also}"));
+        }
+        Some(sentence)
+    }
+}
+
+impl std::fmt::Display for Ended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.as_wire())
+    }
+}
+
+/// What a [`close_pane`](SessionRegistry::close_pane) did — the chain's bottom link, and the one
+/// this registry was missing.
+///
+/// Like the two below it, it carries the reaped owners so the CALLER drops them off the registry
+/// lock.
+pub enum PaneKillOutcome {
+    /// The pane was removed and its window still tiles others; the reaped [`Pane`] rides here to
+    /// drop off-lock.
+    Pane(Box<Pane>),
+    /// It was the window's LAST pane, so the WINDOW went with it — and the escalation's own
+    /// [`WindowKillOutcome`] rides here, so the caller handles it exactly as a `kill_window`
+    /// result and the two paths cannot drift.
+    Window(WindowKillOutcome),
+}
+
+impl PaneKillOutcome {
+    /// How far this kill's cascade reached — this link, or the one it escalated into.
+    #[must_use]
+    pub fn ended(&self) -> Ended {
+        match self {
+            Self::Pane(_) => Ended::Pane,
+            Self::Window(window) => window.ended(),
+        }
+    }
+}
+
 /// What a [`kill_session`](SessionRegistry::kill_session) did — carrying the reaped owners so the
 /// CALLER drops them (running each pane's blocking [`PanePty`](crate::PanePty) `Drop`: kill,
 /// wait, join the reader) OUTSIDE the registry lock. That is the discipline the `close` action
@@ -989,6 +1146,17 @@ pub enum KillOutcome {
     KilledServer(Vec<Pane>),
 }
 
+impl KillOutcome {
+    /// How far this kill's cascade reached — the chain's top two links.
+    #[must_use]
+    pub fn ended(&self) -> Ended {
+        match self {
+            Self::Removed(_) => Ended::Session,
+            Self::KilledServer(_) => Ended::Server,
+        }
+    }
+}
+
 /// What a [`kill_window`](SessionRegistry::kill_window) did.
 ///
 /// Like [`KillOutcome`], it carries the reaped panes so the CALLER drops them (running each
@@ -1002,6 +1170,17 @@ pub enum WindowKillOutcome {
     /// caller handles it exactly as a [`kill_session`](SessionRegistry::kill_session) result (a
     /// non-last session removed, or the last one drained and the daemon ended).
     Session(KillOutcome),
+}
+
+impl WindowKillOutcome {
+    /// How far this kill's cascade reached — this link, or the one it escalated into.
+    #[must_use]
+    pub fn ended(&self) -> Ended {
+        match self {
+            Self::Removed(_) => Ended::Window,
+            Self::Session(session) => session.ended(),
+        }
+    }
 }
 
 /// A window's public identity for a display client — the mux `windows` slot and the tabbed
@@ -2596,6 +2775,86 @@ impl SessionRegistry {
             .find(|s| s.name == session)
             .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
             .swap_panes(a, b)
+    }
+
+    /// Close `pane` of the window named `window` in the session named `session` — tmux
+    /// `kill-pane`, and the THIRD of this registry's three doors out of a window's pane pool.
+    ///
+    /// # A window does not outlive its panes
+    ///
+    /// Closing a window's LAST pane ends the WINDOW, which ends the SESSION when it was that
+    /// session's last window, which ends the SERVER when that was the last session. The chain is
+    /// not re-implemented here: the last-pane arm delegates to
+    /// [`kill_window`](Self::kill_window), which already states the rest of it, so the two paths
+    /// cannot drift and `kill-pane` on a session's last pane is `kill-session` by another route —
+    /// exactly as `kill-window` on the last window already was.
+    ///
+    /// **The other two doors already kept this invariant and this one did not.**
+    /// [`break_pane`](Self::break_pane) REFUSES to empty a window
+    /// ([`PaneMoveError::LastPane`]) and [`join_pane`](Self::join_pane) CLOSES a source window its
+    /// move emptied. Before R309 a `close` simply removed the pane, leaving a window that tiled
+    /// nothing: listed by the `windows` slot, drawn as a void by both frontends, reported as
+    /// `no panes tiled` by `sprag layout`, and — when it was the session's only window — a session
+    /// still holding its name and still answering `-t` while `sprag ls` no longer showed it.
+    ///
+    /// The inherited justification for that was *"exactly as a window whose panes all ran `exit`
+    /// does"*, and it does not hold: a window of EXITED panes still has panes, showing their last
+    /// screens and their statuses, which is the whole point of keeping them
+    /// ([`PanePty::is_eof`](crate::PanePty::is_eof) reaps nothing). An emptied window has nothing.
+    /// The two states are not alike, and the product's own GUI already told users this cascade
+    /// happened.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] carrying the session name if none exists, or the window name if
+    /// the session has no such window; [`SessionError::UnknownPane`] if that window tiles no pane
+    /// with `pane`'s id. Every check runs BEFORE anything is removed, so a refusal kills nothing.
+    ///
+    /// The reaped owners ride back in the outcome so the caller drops them (running each pane's
+    /// blocking [`PanePty`](crate::PanePty) `Drop`) OFF the registry lock — the discipline every
+    /// kill in this file keeps.
+    pub fn close_pane(
+        &mut self,
+        session: &str,
+        window: &str,
+        pane: PaneId,
+    ) -> Result<PaneKillOutcome, SessionError> {
+        let sidx = self
+            .sessions
+            .iter()
+            .position(|s| s.name == session)
+            .ok_or_else(|| SessionError::Unknown(session.to_owned()))?;
+        let widx = self.sessions[sidx]
+            .windows
+            .iter()
+            .position(|w| w.name == window)
+            .ok_or_else(|| SessionError::Unknown(window.to_owned()))?;
+        // Membership and the last-pane question are ONE answer read under ONE pool lock: asking
+        // "is it the last?" and then closing would be two reads with a gap in which a concurrent
+        // spawn could make the escalation wrong in the direction that destroys a window somebody
+        // just put a pane in.
+        let pool = Arc::clone(self.sessions[sidx].windows[widx].workspace());
+        let taken = {
+            let mut pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
+            if !pool.panes().iter().any(|held| held.id() == pane) {
+                return Err(SessionError::UnknownPane(pane));
+            }
+            // The last one is NOT taken out here: `kill_window` drains the window itself, so
+            // removing it first would hand the escalation an already-empty pool and split the
+            // reaped panes across two owners.
+            (pool.panes().len() > 1)
+                .then(|| pool.close(pane).expect("membership was just established"))
+        };
+        match taken {
+            // NOT reconciled here, unlike `break_pane`'s source window. That one heals inside the
+            // registry because the pane lands in ANOTHER window whose tree must be right before the
+            // call returns; this one leaves a window whose tree heals on its next read, which is
+            // what a close has always done. Adding the heal here was measured to emit a second
+            // journal record (`LayoutUpdated`) for every pane close — doubling the records the
+            // event ring is sized against, for an arrangement the reader re-derives anyway.
+            Some(taken) => Ok(PaneKillOutcome::Pane(Box::new(taken))),
+            None => Ok(PaneKillOutcome::Window(self.kill_window(session, window)?)),
+        }
     }
 
     /// Kill the window named `window` of the session named `session` — tmux `kill-window`.
@@ -4322,6 +4581,193 @@ mod tests {
             .expect("the window exists");
         let pool = lock(&ws);
         pool.panes().iter().map(Pane::id).collect()
+    }
+
+    /// **A window does not outlive its panes, and the answer says how far the kill went** — the
+    /// whole chain in one test, one link per step, each step controlled by the step before it.
+    ///
+    /// This is R309's thesis. Before it, `close` removed the pane and stopped: the window stayed,
+    /// tiling nothing, and when it was the session's only window the SESSION stayed too — holding
+    /// its name, answering `-t`, and hidden from `sprag ls`. The other two doors out of a pane pool
+    /// already kept the invariant ([`SessionRegistry::break_pane`] refuses to empty a window,
+    /// [`SessionRegistry::join_pane`] closes one its move emptied); this one did not.
+    ///
+    /// REVERT-PROOF: make the last-pane arm call `Workspace::close` like the others and the second
+    /// step answers `Ended::Pane` with the window still there; drop the `> 1` from the pool check
+    /// and the FIRST step kills a window that still tiles a sibling, which is the direction that
+    /// destroys somebody's work.
+    #[test]
+    fn a_window_does_not_outlive_its_panes_and_the_kill_says_how_far_it_went() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, Some("logs")).unwrap();
+        let pair = spawn_into(&reg, "0", 2);
+        let alone = spawn_into(&reg, "logs", 1);
+
+        // ONE OF TWO: the pane goes and nothing else does. The control for every step below —
+        // without it, a `close_pane` that killed the window every time would pass them all.
+        assert!(matches!(
+            reg.close_pane(&default, "0", pair[0]).unwrap(),
+            PaneKillOutcome::Pane(_),
+        ));
+        assert_eq!(
+            pool_ids(&reg, "0"),
+            vec![pair[1]],
+            "its sibling is untouched"
+        );
+        assert_eq!(
+            reg.session(&default).unwrap().windows().len(),
+            2,
+            "and the window it lived in is still there",
+        );
+
+        // THE WINDOW'S LAST: the window goes with it. The session survives because another window
+        // does — which is what makes this `Ended::Window` and not `Ended::Session`.
+        let outcome = reg.close_pane(&default, "logs", alone[0]).unwrap();
+        assert_eq!(outcome.ended(), Ended::Window);
+        assert!(matches!(
+            outcome,
+            PaneKillOutcome::Window(WindowKillOutcome::Removed(_)),
+        ));
+        let windows = reg.session(&default).unwrap().windows().len();
+        assert_eq!(
+            windows, 1,
+            "the emptied window is gone, not left tiling nothing"
+        );
+
+        // THE SESSION'S LAST WINDOW'S LAST PANE, with another session alive: the session goes and
+        // the daemon does not. Two escalations composing, reached from the pane end.
+        reg.new_session(Some("work")).unwrap();
+        let last = reg.close_pane(&default, "0", pair[1]).unwrap();
+        assert_eq!(last.ended(), Ended::Session);
+        assert!(
+            reg.session(&default).is_none(),
+            "the session went with its last window, which went with its last pane",
+        );
+
+        // AND THE LAST SESSION: the top of the chain.
+        let work_panes = {
+            let ws = reg
+                .window_workspace("work", "0")
+                .expect("work holds a window");
+            let spawned = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24);
+            spawned.expect("a shell is born")
+        };
+        assert_eq!(
+            reg.close_pane("work", "0", work_panes).unwrap().ended(),
+            Ended::Server,
+            "the last session's last window's last pane ends the server",
+        );
+    }
+
+    /// Every refusal `close_pane` has, each shown to kill NOTHING — the half a cascade makes
+    /// dangerous, because a wrong target here does not lose a pane, it can lose a session.
+    #[test]
+    fn close_pane_refuses_without_killing_anything() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 1);
+
+        assert!(matches!(
+            reg.close_pane("ghost", "0", ids[0]),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+        assert!(matches!(
+            reg.close_pane(&default, "ghost", ids[0]),
+            Err(SessionError::Unknown(name)) if name == "ghost",
+        ));
+        assert!(matches!(
+            reg.close_pane(&default, "0", PaneId(9999)),
+            Err(SessionError::UnknownPane(PaneId(9999))),
+        ));
+        assert_eq!(
+            pool_ids(&reg, "0"),
+            ids,
+            "not one of the three moved a pane"
+        );
+        assert_eq!(
+            reg.session(&default).unwrap().windows().len(),
+            1,
+            "and none of them took the window",
+        );
+    }
+
+    /// A pane addressed in the WRONG window of the right session is refused rather than found —
+    /// `close_pane` takes a window because the wire action is window-scoped, and a resolver that
+    /// searched the session would silently widen what `sprag kill-pane -t X` reaches.
+    #[test]
+    fn close_pane_does_not_reach_into_another_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        reg.new_window(&default, Some("logs")).unwrap();
+        let elsewhere = spawn_into(&reg, "logs", 1);
+        spawn_into(&reg, "0", 1);
+
+        assert!(matches!(
+            reg.close_pane(&default, "0", elsewhere[0]),
+            Err(SessionError::UnknownPane(_)),
+        ));
+        assert_eq!(
+            pool_ids(&reg, "logs"),
+            elsewhere,
+            "the pane is still where it was",
+        );
+    }
+
+    /// The chain's SENTENCE: what a surface says after a kill, for every pair of "what the caller
+    /// named" and "what it reached".
+    ///
+    /// One wording for the CLI's three verbs and the MCP tool, which is why it is derived from
+    /// [`Ended::escalation`] rather than tabulated per surface. The diagonal is the control: a kill
+    /// that stopped where it was aimed adds nothing, so a caller who typed `kill-session` and ended
+    /// a session reads no consequence clause at all.
+    #[test]
+    fn the_kill_sentence_names_every_level_past_the_one_the_caller_asked_for() {
+        assert_eq!(Ended::Pane.beyond(Ended::Pane), None);
+        assert_eq!(Ended::Window.beyond(Ended::Window), None);
+        assert_eq!(Ended::Session.beyond(Ended::Session), None);
+        assert_eq!(Ended::Server.beyond(Ended::Server), None);
+
+        assert_eq!(
+            Ended::Window.beyond(Ended::Pane).as_deref(),
+            Some("the window went with it"),
+        );
+        assert_eq!(
+            Ended::Session.beyond(Ended::Pane).as_deref(),
+            Some("the window went with it, and the session"),
+        );
+        assert_eq!(
+            Ended::Server.beyond(Ended::Pane).as_deref(),
+            Some("the window went with it, and the session, and the server"),
+        );
+        assert_eq!(
+            Ended::Session.beyond(Ended::Window).as_deref(),
+            Some("the session went with it"),
+        );
+        assert_eq!(
+            Ended::Server.beyond(Ended::Session).as_deref(),
+            Some("the server went with it"),
+        );
+
+        // TOTAL DOWNWARD TOO. An answer BELOW what was named cannot happen — the daemon only ever
+        // escalates — but a client parses this word off a wire, so the function must not loop or
+        // invent a clause if one ever arrives. It walks up, finds the top, and says nothing.
+        assert_eq!(Ended::Pane.beyond(Ended::Server), None);
+        assert_eq!(Ended::Window.beyond(Ended::Session), None);
+    }
+
+    /// The wire word round-trips, and an unknown one is [`None`] rather than a guess.
+    ///
+    /// The `None` half is the one that matters: a daemon too old to cascade answers with no word at
+    /// all, and a reader that defaulted to `Ended::Pane` would tell a user their session survived a
+    /// kill that ended it.
+    #[test]
+    fn every_ended_word_round_trips_and_an_unknown_one_is_refused() {
+        for word in [Ended::Pane, Ended::Window, Ended::Session, Ended::Server] {
+            assert_eq!(Ended::from_wire(word.as_wire()), Some(word));
+        }
+        assert_eq!(Ended::from_wire("everything"), None);
+        assert_eq!(Ended::from_wire(""), None);
     }
 
     /// `break-pane` moves the pane WHOLE into a new window (same id — not re-spawned), selects the
