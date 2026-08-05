@@ -364,7 +364,9 @@ fn tools_list() -> Value {
                 "description": "Draw WHERE the panes sit — the window's arrangement as a tree of \
                     divisions, which pane (if any) is zoomed to fill the window, which panes are \
                     floated out of the tiling, and WHICH PANE IS NEXT TO WHICH in each direction. \
-                    `list_panes` answers WHO is in this terminal; this answers WHERE, so it is what \
+                    `list_panes` answers WHO is in YOUR WINDOW; this answers WHERE they sit in \
+                    it — both are about that one window, and `list_windows` is what tells you the \
+                    session has others. This answers WHERE, so it is what \
                     to call before choosing a pane by position (\"the pane to the right of mine\", \
                     \"the one below\"). It also marks the pane YOU are running in, which is what \
                     makes a direction mean anything. The neighbour table is the daemon's own \
@@ -1194,7 +1196,14 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>) -> String {
     if panes.is_empty() {
         return "This sprag terminal has no panes.".to_owned();
     }
-    let mut out = format!("{} pane(s) in this sprag terminal:\n", panes.len());
+    // "in this window", not "in this terminal": a session holds several and this lists ONE of
+    // them. The old wording described one window's worth as the whole thing, which is a wrong
+    // answer that reads as complete — measured at `dac6ef7` on a 2-window, 3-pane session, where
+    // it said "1 pane(s) in this sprag terminal".
+    let mut out = format!(
+        "{} pane(s) in this window (list_windows for the session's others):\n",
+        panes.len()
+    );
     for pane in panes {
         out.push_str(&pane_summary(pane, panes, here));
     }
@@ -1531,7 +1540,7 @@ fn render_arrangement_answer(
     };
 
     let mut out = format!(
-        "How this sprag terminal's panes are arranged (revision {}):\n\n",
+        "How YOUR WINDOW's panes are arranged (revision {}):\n\n",
         snapshot.revision
     );
     out.push_str(&arrangement::render(snapshot, &label));
@@ -4627,7 +4636,7 @@ mod tests {
 
         assert_eq!(
             render_arrangement_answer(&snapshot, &pool(&[40, 41, 42, 43]), Some(41)),
-            "How this sprag terminal's panes are arranged (revision 5):\n\
+            "How YOUR WINDOW's panes are arranged (revision 5):\n\
              \n\
              50% left|right\n\
              ├─ pane 1 (id 40)\n\

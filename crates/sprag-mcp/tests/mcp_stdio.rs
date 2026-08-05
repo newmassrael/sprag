@@ -1942,7 +1942,7 @@ fn the_layout_tool_answers_where_the_panes_are_and_which_one_is_next_to_which() 
     assert_eq!(
         drawing,
         format!(
-            "How this sprag terminal's panes are arranged (revision {revision}):\n\
+            "How YOUR WINDOW's panes are arranged (revision {revision}):\n\
              \n\
              50% left|right\n\
              ├─ pane {n0} (id 0)\n\
@@ -2025,7 +2025,7 @@ fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
         "it names the pane's NUMBER and where it opened: {opened}",
     );
     assert!(
-        opened.contains("2 pane(s) in this sprag terminal:"),
+        opened.contains("2 pane(s) in this window (list_windows for the session's others):"),
         "and re-lists every pane, so the caller's map of numbers is repaired in the same \
          answer: {opened}",
     );
@@ -2071,7 +2071,8 @@ fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
         "the close names what it ended, in both vocabularies, and says the map moved: {closed}",
     );
     assert!(
-        closed.contains("  pane 2: id=2 ") && closed.contains("2 pane(s) in this sprag terminal:"),
+        closed.contains("  pane 2: id=2 ")
+            && closed.contains("2 pane(s) in this window (list_windows for the session's others):"),
         "and the re-listing PROVES it moved — the pane that was 3 is now 2: {closed}",
     );
 
@@ -2086,7 +2087,7 @@ fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
         "closing the last pane says so instead: {last}",
     );
     assert!(
-        last.contains("1 pane(s) in this sprag terminal:"),
+        last.contains("1 pane(s) in this window (list_windows for the session's others):"),
         "and only the person's pane is left: {last}",
     );
 }
