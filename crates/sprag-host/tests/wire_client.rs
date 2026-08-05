@@ -1805,6 +1805,26 @@ fn a_client_steps_along_the_session_ring_the_daemon_walks_from_where_it_is() {
         "and neither refusal moved anybody: both clients stepped onto beta and are still there",
     );
 
+    // A CONNECTION THAT NEVER ATTACHED steps from its SCOPE — the one arm of the walk that is about
+    // the ATTACHMENT MAP rather than about the list, and the branch `step_along`'s unit test cannot
+    // reach. It said hello (so the host knows its client) and never sent `client/attach`, so
+    // `session_of` answers nothing and the scope is where a plain attach would have put it.
+    //
+    // Scoped to `alpha` and stepping forward, so the answer (`beta`) differs from BOTH the scope
+    // itself and the session the other two clients are on — a fallback to the wrong thing could not
+    // produce it.
+    let mut fresh =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("a fresh client connects");
+    fresh
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "fresh" }))
+        .expect("client/hello is accepted");
+    fresh.scope_to("alpha".to_owned());
+    assert_eq!(
+        step(&mut fresh, sprag_terminal::OrderStep::Next),
+        json!("beta"),
+        "a client with no attachment steps from the session its requests are scoped to",
+    );
+
     let _ = std::fs::remove_file(&sock);
 }
 

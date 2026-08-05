@@ -436,8 +436,13 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
                     slots.switch_session_toward(step);
                 }
                 SwitchClientAsk::LastViewed => slots.switch_to_last_session(),
+                // The ANSWERING form, which is what `sprag-tui` calls for this same arm. Both
+                // discard the landing (a keystroke has nowhere to paint a refusal), but calling two
+                // different methods for one action is how two frontends come to disagree — and the
+                // non-answering one cannot tell a bad name from a good one even if a caller wanted
+                // to know.
                 SwitchClientAsk::Named(session) => {
-                    slots.switch_session(&session);
+                    slots.switch_session_named(&session);
                 }
                 SwitchClientAsk::Ask => {}
             }

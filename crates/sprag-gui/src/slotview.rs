@@ -590,6 +590,18 @@ impl SlotView {
         self.reseed_pane_focus();
     }
 
+    /// Switch to the session NAMED, answering the name the daemon recorded — `switch-client -t
+    /// <session>`'s arm, and the same method `sprag-tui` calls for it.
+    ///
+    /// [`switch_session`](Self::switch_session)'s answering twin. A keystroke has nowhere to paint
+    /// a refusal so this caller drops the answer, but one action calls one method: two spellings of
+    /// one act across two frontends is how they come to disagree.
+    pub(crate) fn switch_session_named(&self, name: &str) -> Option<String> {
+        let landed = self.host.switch_session_named(name);
+        self.reseed_pane_focus();
+        landed
+    }
+
     /// Step one session along the DAEMON's order (tmux `switch-client -n` / `-p`, bound to
     /// `prefix )` / `prefix (` and `C-S-PageDown` / `C-S-PageUp`), answering where it landed.
     ///
