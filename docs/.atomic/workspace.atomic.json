@@ -11193,6 +11193,50 @@
         "THE GUI'S ROW HEIGHT IS A CONSTANT IN PIXELS, so a user's font size and the panel's rows can disagree — the terminal client measures in cells and cannot. Same class as the chord column's characters-to-pixels conversion beside it."
       ]
     },
+    "R309": {
+      "decision_summary": "A window does not outlive its panes, and a kill says what it ENDED: one cascade with three entrances, one derived word, and the same fact said before the act (a guarded prefix x whose question names the escalation), during it (the daemon walks pane to window to session to server) and after it (every kill prints every level past the one the caller typed).",
+      "changes_bullets": [
+        "SessionRegistry::close_pane is the third door out of a pane pool and the one that had no rule: a window's last pane now ends the WINDOW, delegating to kill_window rather than re-implementing the chain, so kill-pane on a session's last pane is kill-session by another route.",
+        "Ended (pane/window/session/server) is derived by an exhaustive ended() on each outcome type, and all three kill actions answer {ended} where they answered null; WIRE_PROTOCOL 9 to 10.",
+        "kill-pane joins BoundAction on tmux's prefix x as confirm-before kill-pane, and prompt::Ask::of computes the consequence line from the live arrangement, which a binding-embedded prompt cannot do."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2083 tests (R308 left 2074); clippy 0 with no suppression; fmt; doc gate 0/16; pixel smoke 175/0 on a rebuilt release set, six checks new, run twice.",
+        "Seven revert-proofs each shown to DISCRIMINATE with a control after each, including two driven through the live TUI and one through the shipped GUI binary.",
+        "Skew run both directions on one script: the parent-commit daemon left the empty window and said killed pane 1; the new one said killed pane 1 - the window went with it; each client is refused by number against the other's daemon."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Ended::beyond was wrong downward and a test caught it: it kept the clauses it had collected when it ran off the top, so an answer below the level named said the server went with it.",
+        "Ask::of opened a subjectless question for confirm-before kill-pane with the focus outside a pane; BoundAction::needs_pane now sees through the guard.",
+        "An inherited check was unsound under load and is FIXED not registered: the wait-for-output test waited for its fixture's first line and asserted about its sixtieth.",
+        "herdr got the cascade first and it is stated first; sprag goes past them on the derived event (their pane close removes a tab and emits no tab.closed), on the answer, and on a guard that is not conditional on a worktree group."
+      ],
+      "publishable_decision_summary": "A window does not outlive its panes, and a kill says what it ENDED: one cascade with three entrances, one derived word, and the same fact said before the act (a guarded prefix x whose question names the escalation), during it (the daemon walks pane to window to session to server) and after it (every kill prints every level past the one the caller typed).",
+      "publishable_changes_bullets": [
+        "SessionRegistry::close_pane is the third door out of a pane pool and the one that had no rule: a window's last pane now ends the WINDOW, delegating to kill_window rather than re-implementing the chain, so kill-pane on a session's last pane is kill-session by another route.",
+        "Ended (pane/window/session/server) is derived by an exhaustive ended() on each outcome type, and all three kill actions answer {ended} where they answered null; WIRE_PROTOCOL 9 to 10.",
+        "kill-pane joins BoundAction on tmux's prefix x as confirm-before kill-pane, and prompt::Ask::of computes the consequence line from the live arrangement, which a binding-embedded prompt cannot do."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2083 tests (R308 left 2074); clippy 0 with no suppression; fmt; doc gate 0/16; pixel smoke 175/0 on a rebuilt release set, six checks new, run twice.",
+        "Seven revert-proofs each shown to DISCRIMINATE with a control after each, including two driven through the live TUI and one through the shipped GUI binary.",
+        "Skew run both directions on one script: the parent-commit daemon left the empty window and said killed pane 1; the new one said killed pane 1 - the window went with it; each client is refused by number against the other's daemon."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Ended::beyond was wrong downward and a test caught it: it kept the clauses it had collected when it ran off the top, so an answer below the level named said the server went with it.",
+        "Ask::of opened a subjectless question for confirm-before kill-pane with the focus outside a pane; BoundAction::needs_pane now sees through the guard.",
+        "An inherited check was unsound under load and is FIXED not registered: the wait-for-output test waited for its fixture's first line and asserted about its sixtieth.",
+        "herdr got the cascade first and it is stated first; sprag goes past them on the derived event (their pane close removes a tab and emits no tab.closed), on the answer, and on a guard that is not conditional on a worktree group."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
