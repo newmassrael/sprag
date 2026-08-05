@@ -11539,6 +11539,70 @@
         "herdr is AHEAD on the DETACHED DEFAULT and this round only catches up: TabCreateParams carries `focus: bool` with serde(default), so a herdr tab is created without taking the screen unless the caller asks. I wrote the opposite into the design doc and their source refuted it before it reached a commit."
       ]
     },
+    "R314": {
+      "decision_summary": "A session is reachable from where you already are: the keys that switch a client's session join the ONE vocabulary, and the DAEMON walks the ring. Measured first, and the first measurement was WRONG - a grep for AttachAsk::LastViewed said 'tests only', where switch_to_last_session is a production method sprag-gui drives. The real defect was sharper: sprag-gui held a PRIVATE SessionChord table of three hard-coded chords that sprag list-keys could not name, a config file could not unbind, and sprag-tui did not have at all - and its step walked this client's sessions POLL MIRROR and attached BY NAME, R304's defect one door over. R308's finding and R304's finding meeting at the same three keys.",
+      "changes_bullets": [
+        "OrderStep (was WindowStep): one type names a direction along an order; the ends are the caller's, and three orders in this tree disagree about them.",
+        "AttachAsk::Step(OrderStep) on client/attach ({\"step\":\"next\"|\"previous\"}) - the session ring walked by the DAEMON from the client's own attachment, over sprag_host::host::listable_sessions, the one builder the `sessions` slot and `sprag ls` also paint from. WIRE_PROTOCOL 12 -> 13.",
+        "The attach grammar (AttachAsk / AttachFault / LAST_PARAM / UNATTACHED_PARAM / STEP_PARAM) MOVED from sprag-rpc to sprag_host::wire: sprag-rpc only DEFINED it (unlike ScopeAsk, which HostConn genuinely uses) and is seam-only by construction, so it could not see OrderStep and a step would have needed a second spelling of \"next\".",
+        "BoundAction::SwitchClient { ask: SwitchClientAsk } - switch-client -n|-p|-l|-t [<session>]; ARMS 19 -> 20, VOCABULARY 17 -> 18. Defaults: tmux's prefix ( / prefix ) / prefix L, plus C-S-PageUp / C-S-PageDown in the ROOT table, which until now shipped empty.",
+        "sprag-gui's private SessionChord table DELETED, with cycle_session and its session_neighbour mirror walk: three hard-coded chords sprag list-keys could not name, a config could not unbind, and sprag-tui did not have. The step among them read this client's sessions POLL MIRROR and attached BY NAME.",
+        "Subject::SwitchTo - switch-client -t with the name left off ASKS which session (MoveWindowBefore's rule), seeds EMPTY, checks against SessionName, commits through switch_session_named.",
+        "HostClient gains switch_session_toward / switch_session_last / switch_session_named, each answering the session it LANDED on; WireHost routes all four switches through ONE switch_to sequence, so a gesture with nowhere to go can no longer leave the client without a poll thread.",
+        "sprag-tui reaches another session for the FIRST TIME; both frontends perform the action.",
+        "The GUI palette's two session rows are PAIRED with switch-client so their hint DERIVES, and a ratchet walks the catalog: no hint may name a chord nothing acts on."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2130 tests (baseline at 88a3939 was exit 0 / 46 / 2121, measured the same way); clippy 0 with no suppression; doc gate 0/16.",
+        "Pixel smoke 183/0 -> 191/0, RUN TWICE (the recorded -r repeat-window hazard), eight checks new, driving prefix ) and prefix L through the shipped GUI binary and judging on the daemon's per-session viewer badge rather than on pixels.",
+        "Skew BOTH DIRECTIONS against a parent-commit (88a3939, protocol 12) daemon built in a worktree, with a control isolating the one differing fact: a raw probe declaring 12 gets {\"step\":\"next\"} SILENTLY DROPPED and is answered with the session it was already on - indistinguishable from a legitimate one-session wrap - while {\"last\":true} on the same connection answers null, so the difference is the daemon not knowing the key; the same probe declaring 13 is refused at the handshake by number. Against the new daemon: 12 is refused by number, 13 steps (alpha -> beta), goes back (-l -> alpha) and refuses \"sideways\" by sentence.",
+        "A live sprag-tui on a real pseudoterminal drives prefix ) / prefix ( / prefix L across three sessions and a bound switch-client -t through a refusal and a landing; revert-proofed (replacing -l with a step FAILS it) with a control (reordering the arms stays GREEN).",
+        "The palette ratchet proved by REINSTATING the exact defect the round shipped."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "CUT, measured not assumed: `sprag attach --last` cannot exist - new_gui_client_id mints a client id per PROCESS, so a fresh attach has no visit history and --last would always answer null. Its honest counterpart, switch-client -c <other client>, needs the daemon to re-point a client it does not drive.",
+        "CUT, stated: Ctrl+Shift+L is GONE from sprag-gui. KeySpec::matches masks Shift off a CHARACTER key (R306) and folds an ASCII letter's case under Ctrl, so a C-S-L binding also takes Ctrl-L - the shell's clear-screen - from every pane in every client. The verb keeps prefix L and stays bindable.",
+        "NOT BUILT, with a cause: no MCP tool (an MCP caller is not an attached client and has no attachment to move); prefix s stays unbound (tmux's choose-tree is a chooser and this is a name prompt).",
+        "NOT CONSOLIDATED, and it is a finding: sprag-client's list_neighbour still walks a mirror, because it steps from a session that has just been DESTROYED - only a mirror taken before the death knows where it sat, so the daemon cannot answer it.",
+        "MEASURED, so a protection is not overclaimed: a paneless session is unreachable on a live daemon (the boot session gets a pane whether or not `--` names one, and R309 ends a session whose last pane goes), so the listable order and the raw order coincide today.",
+        "OPEN: the asking arm ships bindable and UNBOUND; item 30's client id-keying question and `sprag list-clients` publishing where a client was last are untouched."
+      ],
+      "publishable_decision_summary": "A session is reachable from where you already are: the keys that switch a client's session join the ONE vocabulary, and the DAEMON walks the ring. Measured first, and the first measurement was WRONG - a grep for AttachAsk::LastViewed said 'tests only', where switch_to_last_session is a production method sprag-gui drives. The real defect was sharper: sprag-gui held a PRIVATE SessionChord table of three hard-coded chords that sprag list-keys could not name, a config file could not unbind, and sprag-tui did not have at all - and its step walked this client's sessions POLL MIRROR and attached BY NAME, R304's defect one door over. R308's finding and R304's finding meeting at the same three keys.",
+      "publishable_changes_bullets": [
+        "OrderStep (was WindowStep): one type names a direction along an order; the ends are the caller's, and three orders in this tree disagree about them.",
+        "AttachAsk::Step(OrderStep) on client/attach ({\"step\":\"next\"|\"previous\"}) - the session ring walked by the DAEMON from the client's own attachment, over sprag_host::host::listable_sessions, the one builder the `sessions` slot and `sprag ls` also paint from. WIRE_PROTOCOL 12 -> 13.",
+        "The attach grammar (AttachAsk / AttachFault / LAST_PARAM / UNATTACHED_PARAM / STEP_PARAM) MOVED from sprag-rpc to sprag_host::wire: sprag-rpc only DEFINED it (unlike ScopeAsk, which HostConn genuinely uses) and is seam-only by construction, so it could not see OrderStep and a step would have needed a second spelling of \"next\".",
+        "BoundAction::SwitchClient { ask: SwitchClientAsk } - switch-client -n|-p|-l|-t [<session>]; ARMS 19 -> 20, VOCABULARY 17 -> 18. Defaults: tmux's prefix ( / prefix ) / prefix L, plus C-S-PageUp / C-S-PageDown in the ROOT table, which until now shipped empty.",
+        "sprag-gui's private SessionChord table DELETED, with cycle_session and its session_neighbour mirror walk: three hard-coded chords sprag list-keys could not name, a config could not unbind, and sprag-tui did not have. The step among them read this client's sessions POLL MIRROR and attached BY NAME.",
+        "Subject::SwitchTo - switch-client -t with the name left off ASKS which session (MoveWindowBefore's rule), seeds EMPTY, checks against SessionName, commits through switch_session_named.",
+        "HostClient gains switch_session_toward / switch_session_last / switch_session_named, each answering the session it LANDED on; WireHost routes all four switches through ONE switch_to sequence, so a gesture with nowhere to go can no longer leave the client without a poll thread.",
+        "sprag-tui reaches another session for the FIRST TIME; both frontends perform the action.",
+        "The GUI palette's two session rows are PAIRED with switch-client so their hint DERIVES, and a ratchet walks the catalog: no hint may name a chord nothing acts on."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2130 tests (baseline at 88a3939 was exit 0 / 46 / 2121, measured the same way); clippy 0 with no suppression; doc gate 0/16.",
+        "Pixel smoke 183/0 -> 191/0, RUN TWICE (the recorded -r repeat-window hazard), eight checks new, driving prefix ) and prefix L through the shipped GUI binary and judging on the daemon's per-session viewer badge rather than on pixels.",
+        "Skew BOTH DIRECTIONS against a parent-commit (88a3939, protocol 12) daemon built in a worktree, with a control isolating the one differing fact: a raw probe declaring 12 gets {\"step\":\"next\"} SILENTLY DROPPED and is answered with the session it was already on - indistinguishable from a legitimate one-session wrap - while {\"last\":true} on the same connection answers null, so the difference is the daemon not knowing the key; the same probe declaring 13 is refused at the handshake by number. Against the new daemon: 12 is refused by number, 13 steps (alpha -> beta), goes back (-l -> alpha) and refuses \"sideways\" by sentence.",
+        "A live sprag-tui on a real pseudoterminal drives prefix ) / prefix ( / prefix L across three sessions and a bound switch-client -t through a refusal and a landing; revert-proofed (replacing -l with a step FAILS it) with a control (reordering the arms stays GREEN).",
+        "The palette ratchet proved by REINSTATING the exact defect the round shipped."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "CUT, measured not assumed: `sprag attach --last` cannot exist - new_gui_client_id mints a client id per PROCESS, so a fresh attach has no visit history and --last would always answer null. Its honest counterpart, switch-client -c <other client>, needs the daemon to re-point a client it does not drive.",
+        "CUT, stated: Ctrl+Shift+L is GONE from sprag-gui. KeySpec::matches masks Shift off a CHARACTER key (R306) and folds an ASCII letter's case under Ctrl, so a C-S-L binding also takes Ctrl-L - the shell's clear-screen - from every pane in every client. The verb keeps prefix L and stays bindable.",
+        "NOT BUILT, with a cause: no MCP tool (an MCP caller is not an attached client and has no attachment to move); prefix s stays unbound (tmux's choose-tree is a chooser and this is a name prompt).",
+        "NOT CONSOLIDATED, and it is a finding: sprag-client's list_neighbour still walks a mirror, because it steps from a session that has just been DESTROYED - only a mirror taken before the death knows where it sat, so the daemon cannot answer it.",
+        "MEASURED, so a protection is not overclaimed: a paneless session is unreachable on a live daemon (the boot session gets a pane whether or not `--` names one, and R309 ends a session whose last pane goes), so the listable order and the raw order coincide today.",
+        "OPEN: the asking arm ships bindable and UNBOUND; item 30's client id-keying question and `sprag list-clients` publishing where a client was last are untouched."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
