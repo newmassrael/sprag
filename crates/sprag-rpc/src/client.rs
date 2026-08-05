@@ -384,7 +384,20 @@ impl ScopeAsk {
 ///   The other direction is refused by number and needs to be: an old client never sends the key,
 ///   so a new daemon changes nothing for it, but a new client whose step was dropped would report
 ///   that it had moved.
-pub const WIRE_PROTOCOL: u32 = 13;
+/// * **14** — a client can send a CHOOSER's pick, a path of identities
+///   (`{"goto": {"session": N, "window": N?, "pane": N?}}` on [`CLIENT_ATTACH_METHOD`],
+///   `sprag_host::wire::AttachAsk::Goto`, R315), and the daemon publishes the tree those identities
+///   come from (`sprag_host::wire::TREE_SLOT`). The EIGHTH bump caused by an added ARGUMENT, and
+///   the silent drop it prevents is version 13's with a longer reach: a pre-R315 daemon reads no
+///   `goto` key, so the attach falls through to the connection's SCOPE. A person picks another
+///   session's pane out of a list, the daemon re-attaches them where they already were, and the
+///   reply carries that same session name — so the answer is INDISTINGUISHABLE from picking the row
+///   they were on. The tree slot alone would not need a number (an unknown query path is refused by
+///   address, loudly); the pick does, and the two ship together.
+///   The other direction is refused by number and needs to be, for the usual reason: an old client
+///   never sends the key and never reads the slot, so a new daemon changes nothing for it — but a
+///   new client whose pick was dropped would report that it had gone somewhere.
+pub const WIRE_PROTOCOL: u32 = 14;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

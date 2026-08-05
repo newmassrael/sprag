@@ -14,7 +14,7 @@
 
 use pinion_core::external::{SchemaArg, SchemaField};
 use serde_json::{Map, Value};
-use sprag_terminal::{OrderStep, PaneDir, PaneId, PlaceHow, WindowPlace};
+use sprag_terminal::{OrderStep, PaneDir, PaneId, PlaceHow, SessionId, WindowId, WindowPlace};
 
 use crate::{INPUT_TAG, MUX_TAG};
 
@@ -324,6 +324,25 @@ pub const UNATTACHED_PARAM: &str = "unattached";
 /// direction along a different order. A third spelling of "next" cannot appear in one of them alone.
 pub const STEP_PARAM: &str = "step";
 
+/// The [`CLIENT_ATTACH_METHOD`] `params` key carrying a CHOOSER's pick — a path of IDENTITIES down
+/// the tree [`TREE_SLOT`] published: `{"goto": {"session": 3, "window": 7, "pane": 2}}` (R315).
+/// What it is FOR is on [`AttachAsk::Goto`].
+pub const GOTO_PARAM: &str = "goto";
+
+/// The [`GOTO_PARAM`] member naming the picked SESSION — a [`sprag_terminal::SessionId`], and the
+/// one member that is not optional. A goto with no session names no target at all.
+pub const GOTO_SESSION_PARAM: &str = "session";
+
+/// The [`GOTO_PARAM`] member naming the picked WINDOW — a [`sprag_terminal::WindowId`]. Absent when
+/// a SESSION row was picked, which means *wherever that session is currently looking*.
+pub const GOTO_WINDOW_PARAM: &str = "window";
+
+/// The [`GOTO_PARAM`] member naming the picked PANE — a [`sprag_terminal::PaneId`]. Absent unless a
+/// PANE row was picked, and refused without a window ([`AttachFault::GotoPaneWithoutWindow`]): a
+/// pane id is registry-unique, but a pick that did not say which window it came from is a path this
+/// grammar cannot check WHOLE, which is the one thing it exists to do.
+pub const GOTO_PANE_PARAM: &str = "pane";
+
 /// WHICH session a [`CLIENT_ATTACH_METHOD`] moves its client to, as the request ASKS for it —
 /// defined ONCE for both ends of the wire, beside every other ask grammar in this module.
 ///
@@ -347,6 +366,8 @@ pub const STEP_PARAM: &str = "step";
 ///   daemon: see the arm's own doc.
 /// * [`Step`](Self::Step) — *the next one along*, tmux `switch-client -n` / `-p`. The caller could
 ///   name it and must not: see the arm's own doc.
+/// * [`Goto`](Self::Goto) — *the row I just picked*, a path of IDENTITIES. The caller could name it
+///   and must not, for a reason one step stronger than the step's: see the arm's own doc.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AttachAsk {
     /// No attach key at all ⇒ attach to whatever this connection is scoped to.
@@ -397,6 +418,46 @@ pub enum AttachAsk {
     /// wrapped onto itself, which is what [`sprag_terminal::SessionRegistry::select_window_relative`]
     /// does one level down.
     Step(OrderStep),
+    /// `{"goto": {"session": 3, "window": 7, "pane": 2}}` ⇒ the row a CHOOSER picked, as a path of
+    /// IDENTITIES down the tree [`TREE_SLOT`] published (R315).
+    ///
+    /// # Why a pick cannot be a name, and cannot be a position either
+    ///
+    /// This is [`LastViewed`](Self::LastViewed)'s argument with the client on the other side of it.
+    /// There the daemon holds the past; here the CLIENT does — a chooser paints a list and then
+    /// waits for a person to read it, so what comes back is a fact that was true when it was drawn.
+    /// R304's rule covers both: *a fact about the present can be kept true by a hook where the
+    /// change is published; a fact about the past cannot.*
+    ///
+    /// * A picked NAME resolves to whatever holds it NOW. R304 measured that landing: a client went
+    ///   back to a session it had never seen, because a new one had taken the freed name.
+    /// * A picked POSITION resolves to whatever sits there now — R295's rule one level down, and
+    ///   what the rival's chooser commits by at two of its three levels
+    ///   (`NavigatorTarget::Workspace { ws_idx }`, herdr `9a4ce5e1`).
+    /// * A picked IDENTITY resolves to that same thing under whatever it is called now, or to
+    ///   NOTHING — and nothing is an answer, which is the whole difference. It is the one form that
+    ///   can be REFUSED.
+    ///
+    /// # It is checked WHOLE before anything moves
+    ///
+    /// A path whose window has gone refuses the attach as well, rather than landing the client on
+    /// the session and stopping. This grammar's own rule ([`AttachFault`]) is that a target that
+    /// cannot be read must not fall back to one, and here the fallback would be a place the user did
+    /// not pick.
+    ///
+    /// # What it changes for everybody else
+    ///
+    /// Attaching moves THIS client. Selecting a window or a pane moves the SESSION, which every
+    /// other client viewing it sees — tmux's `choose-tree` has exactly this property, because
+    /// `select-window` is a session verb there too. Stated rather than discovered.
+    Goto {
+        /// The picked session. Not optional: a goto names a target or it is not one.
+        session: SessionId,
+        /// The picked window, or [`None`] for a SESSION row — *wherever that session is looking*.
+        window: Option<WindowId>,
+        /// The picked pane, or [`None`]. Refused without a window.
+        pane: Option<PaneId>,
+    },
 }
 
 /// Why a params object does not name an attach target this grammar admits. Every arm refuses the
@@ -422,6 +483,20 @@ pub enum AttachFault {
     /// rather than resolved by precedence — [`AttachFault`]'s own rule, and the one that keeps a
     /// caller from learning a silent ordering it would then depend on.
     TwoTargets,
+    /// [`GOTO_PARAM`] is present and is not an object (`{"goto": 3}`).
+    ///
+    /// Refused rather than read as a bare session id, which is the shorthand that would be
+    /// convenient and wrong: a path that can be spelled two ways is a path two decoders come to
+    /// disagree about, and this grammar's whole job is to be checkable WHOLE.
+    GotoNotAnObject,
+    /// [`GOTO_PARAM`] carries no [`GOTO_SESSION_PARAM`]. A goto names a target or it is not one.
+    GotoWithoutSession,
+    /// A [`GOTO_PARAM`] member is present and is not a non-negative integer — carrying WHICH member,
+    /// because "a goto id is malformed" is three sentences pretending to be one.
+    GotoIdNotANumber(&'static str),
+    /// [`GOTO_PANE_PARAM`] is present without [`GOTO_WINDOW_PARAM`]. See that key for why a pane id
+    /// alone is refused even though it is registry-unique.
+    GotoPaneWithoutWindow,
 }
 
 impl AttachAsk {
@@ -445,6 +520,25 @@ impl AttachAsk {
                     STEP_PARAM.to_owned(),
                     Value::String(step.wire_str().to_owned()),
                 );
+            }
+            Self::Goto {
+                session,
+                window,
+                pane,
+            } => {
+                let mut path = Map::new();
+                path.insert(GOTO_SESSION_PARAM.to_owned(), Value::from(session.0));
+                // Written only when the pick HAD one, so a session row's goto is
+                // `{"session": N}` and nothing else — the same "omit what was not asked for" rule
+                // `unattached` follows one arm up, and what keeps the three row kinds one grammar
+                // instead of one grammar with two holes in it.
+                if let Some(window) = window {
+                    path.insert(GOTO_WINDOW_PARAM.to_owned(), Value::from(window.0));
+                }
+                if let Some(pane) = pane {
+                    path.insert(GOTO_PANE_PARAM.to_owned(), Value::from(pane.0));
+                }
+                params.insert(GOTO_PARAM.to_owned(), Value::Object(path));
             }
         }
     }
@@ -480,12 +574,47 @@ impl AttachAsk {
             }
             Some(_) => return Err(AttachFault::StepNotAString),
         };
-        match (last, unattached, step) {
-            (true, _, Some(_)) => Err(AttachFault::TwoTargets),
-            (true, unattached, None) => Ok(Self::LastViewed { unattached }),
-            (false, true, _) => Err(AttachFault::UnattachedWithoutLast),
-            (false, false, Some(step)) => Ok(Self::Step(step)),
-            (false, false, None) => Ok(Self::Scoped),
+        let goto = match params.and_then(|params| params.get(GOTO_PARAM)) {
+            None => None,
+            Some(Value::Object(path)) => {
+                // ONE reader for the three members, so a missing bound check cannot be written into
+                // two of them and left out of the third. `as_u64` is what refuses a negative, a
+                // float and a string in one place — an id is a counter, and no other JSON number is
+                // one.
+                let id = |key: &'static str| match path.get(key) {
+                    None => Ok(None),
+                    Some(value) => value
+                        .as_u64()
+                        .map(Some)
+                        .ok_or(AttachFault::GotoIdNotANumber(key)),
+                };
+                let session = id(GOTO_SESSION_PARAM)?.ok_or(AttachFault::GotoWithoutSession)?;
+                let window = id(GOTO_WINDOW_PARAM)?;
+                let pane = id(GOTO_PANE_PARAM)?;
+                if window.is_none() && pane.is_some() {
+                    return Err(AttachFault::GotoPaneWithoutWindow);
+                }
+                Some(Self::Goto {
+                    session: SessionId(session),
+                    window: window.map(WindowId),
+                    pane: pane.map(PaneId),
+                })
+            }
+            Some(_) => return Err(AttachFault::GotoNotAnObject),
+        };
+        // TWO targets is no target, whichever pair asks — the rule `TwoTargets` already states, now
+        // over three keys instead of two. Written as one match over the whole tuple rather than as
+        // a chain of early returns, so a fourth target arm cannot be added without deciding what it
+        // means beside each of these.
+        match (last, unattached, step, goto) {
+            (true, _, Some(_), _) | (true, _, _, Some(_)) | (_, _, Some(_), Some(_)) => {
+                Err(AttachFault::TwoTargets)
+            }
+            (true, unattached, None, None) => Ok(Self::LastViewed { unattached }),
+            (false, true, _, _) => Err(AttachFault::UnattachedWithoutLast),
+            (false, false, Some(step), None) => Ok(Self::Step(step)),
+            (false, false, None, Some(goto)) => Ok(goto),
+            (false, false, None, None) => Ok(Self::Scoped),
         }
     }
 }
@@ -549,6 +678,28 @@ pub use sprag_rpc::{INVALID_PARAMS, PROTOCOL_FIELD, PROTOCOL_PARAM, WIRE_PROTOCO
 /// Served rather than left to convention: a scope param an agent cannot enumerate is one it
 /// must guess at, and the whole point of the scene-as-data surface is that a peer ASKS.
 pub const SESSIONS_SLOT: &str = "sessions";
+
+/// The mux control external query slot: the whole registry as a NAVIGABLE TREE — every session,
+/// its windows and their panes, each carrying the IDENTITY a chooser commits by (R315).
+///
+/// Registry-WIDE like [`SESSIONS_SLOT`] and for its stated reason: the subject is the set of
+/// scopes, so scoping it to the caller's own session would answer a question nobody asked. It
+/// DESCENDS where [`WINDOWS_SLOT`] and [`PANES_SLOT`] are scoped, which is what a chooser needs and
+/// what neither of those can give it — a client cannot see another session's windows at all today.
+///
+/// # Why it is a second slot rather than a wider `sessions`
+///
+/// [`SESSIONS_SLOT`] is read on every poll wake by every attached client. This is read when a
+/// person presses one key. Widening the first would make the commonest question in the mux pay for
+/// every window's pane pool — the trade R282 already made once, in the other direction, when it
+/// split the `/proc` walk OUT of `sessions`.
+///
+/// # ONE READ
+///
+/// The whole tree comes back in one answer. A chooser that asked per session would assemble a list
+/// whose levels disagreed, which is the torn read this project has removed twice; see
+/// [`sprag_terminal::TreeSession`] for the exact bound one call gives and the one it does not.
+pub const TREE_SLOT: &str = "tree";
 
 /// The mux control external query FAMILY: every session's live ACTIVITY — where it is working, on
 /// what branch, and what it is serving — with the AGE of the sample they were all taken in.
@@ -1854,7 +2005,7 @@ pub const RENAME_WINDOW_ACTION: &str = "rename_window";
 ///
 /// The change funnel reports it as ONE [`Event::SessionRenamed`](crate::events::Event::SessionRenamed)
 /// rather than a death and a birth, which is what a session's IDENTITY
-/// ([`SessionId`](sprag_terminal::SessionId)) exists for.
+/// ([`SessionId`]) exists for.
 pub const RENAME_SESSION_ACTION: &str = "rename_session";
 
 /// The mux control external invoke action that kills a window of the SCOPED session (`{window?}`)
@@ -3354,6 +3505,54 @@ mod tests {
             assert_eq!(
                 serde_json::to_string(&target).expect("a target renders"),
                 bytes,
+                "{}",
+                BUMP,
+            );
+        }
+
+        // The GOTO arm (R315) — ALL THREE DEPTHS, because the wire grammar's whole content is which
+        // members are present: a session pick that wrote `"window":null` would be a different
+        // request, and a pane pick that dropped its window is one this daemon refuses outright.
+        for (ask, bytes) in [
+            (
+                AttachAsk::Goto {
+                    session: SessionId(3),
+                    window: None,
+                    pane: None,
+                },
+                r#"{"goto":{"session":3}}"#,
+            ),
+            (
+                AttachAsk::Goto {
+                    session: SessionId(3),
+                    window: Some(WindowId(7)),
+                    pane: None,
+                },
+                r#"{"goto":{"session":3,"window":7}}"#,
+            ),
+            (
+                AttachAsk::Goto {
+                    session: SessionId(3),
+                    window: Some(WindowId(7)),
+                    pane: Some(PaneId(2)),
+                },
+                r#"{"goto":{"session":3,"window":7,"pane":2}}"#,
+            ),
+        ] {
+            let mut target = serde_json::Map::new();
+            ask.write_into(&mut target);
+            assert_eq!(
+                serde_json::to_string(&target).expect("a target renders"),
+                bytes,
+                "{}",
+                BUMP,
+            );
+            // ...and it READS BACK as itself, which the two arms above are not checked for and
+            // this one needs: those carry a flag and a word, and this carries three numbers whose
+            // ORDER a hand-written reader could transpose without any test noticing.
+            assert_eq!(
+                AttachAsk::parse(Some(&Value::Object(target))),
+                Ok(ask),
                 "{}",
                 BUMP,
             );

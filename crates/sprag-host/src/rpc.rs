@@ -46,9 +46,10 @@ use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
     AttachAsk, AttachFault, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM,
     CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD,
-    EVENTS_WAIT_METHOD, INVALID_PARAMS, LAST_PARAM, NEEDLE_PARAM, PANE_PARAM,
-    PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM,
-    SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM, UNATTACHED_PARAM, WIRE_PROTOCOL,
+    EVENTS_WAIT_METHOD, GOTO_PANE_PARAM, GOTO_PARAM, GOTO_SESSION_PARAM, GOTO_WINDOW_PARAM,
+    INVALID_PARAMS, LAST_PARAM, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM,
+    PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM,
+    TREE_SLOT, UNATTACHED_PARAM, WIRE_PROTOCOL,
 };
 use serde_json::Value;
 use sprag_terminal::{OrderStep, SessionInfo};
@@ -1148,6 +1149,11 @@ fn handle_attach(
         Ok(ask) => ask,
         Err(fault) => return lifecycle_invalid(request, attach_fault_sentence(fault)),
     };
+    // What a CHOOSER's pick still has to do after the attach — its window and its pane. Declared
+    // here because it is resolved with the target below and carried out after the attach: those two
+    // moments cannot be one, since a client that never said hello must not select a window for
+    // everybody else.
+    let mut goto: Option<crate::host::Landing> = None;
     // WHERE the client is going. The connection's scope is the target only when nothing else names
     // one — see `AttachAsk` — and the history arm is resolved by IDENTITY, which is the whole
     // reason it is answered here rather than remembered by the client.
@@ -1207,6 +1213,43 @@ fn handle_attach(
                 None => return lifecycle_answer(request, Value::Null),
             }
         }
+        // A CHOOSER'S PICK. Resolved WHOLE here and carried out below, with the attach in between —
+        // so a path whose window or pane has gone refuses without moving the client, and a path
+        // that resolves cannot half-land.
+        AttachAsk::Goto {
+            session,
+            window,
+            pane,
+        } => {
+            let Some(resolved) = crate::host::resolve_goto(state.registry(), session, window, pane)
+            else {
+                // REFUSED, where the two arms above ANSWER `null`. The difference is what the
+                // request asked: "take me back" and "take me one along" are questions about a set
+                // that can legitimately be empty, and this names a specific place the caller was
+                // just looking at. A caller told `null` here would have to guess whether its pick
+                // was stale or its grammar was wrong.
+                return lifecycle_invalid(
+                    request,
+                    format!(
+                        "the {TREE_SLOT} row that was picked is gone (it named session {}{}{})",
+                        session.0,
+                        window
+                            .map(|id| format!(", window {}", id.0))
+                            .unwrap_or_default(),
+                        pane.map(|id| format!(", pane {}", id.0))
+                            .unwrap_or_default(),
+                    ),
+                );
+            };
+            // The id came back resolved, so this cannot fail — and asking the registry for it at
+            // the moment of use is the step arm's own rule, kept rather than shortcut.
+            let Some(id) = lock(state.registry()).id_of(&resolved.session) else {
+                return lifecycle_answer(request, Value::Null);
+            };
+            let name = resolved.session.clone();
+            goto = Some(resolved);
+            (name, id)
+        }
     };
     // Bound and RELEASED before the arms run. A `lock(..)` written into the `match` scrutinee lives
     // for the whole match, and an arm below re-derives the window — which reads this same map. It
@@ -1217,6 +1260,19 @@ fn handle_attach(
     // one it asked with. For the history arm the caller cannot know it; for the scoped arm it is
     // what makes both arms one path in the client.
     let landed = || lifecycle_answer(request, Value::String(session.clone()));
+    // The rest of a chooser's pick — its window and its pane. AFTER the attach and only when the
+    // attach took, which is why `NoClient` below is reached with nothing moved: a connection that
+    // never said hello is not a client, and selecting a window is a change every OTHER viewer of
+    // that session sees.
+    if !matches!(outcome, AttachOutcome::NoClient)
+        && let Some(landing) = goto.as_ref()
+        && landing.window.is_some()
+    {
+        crate::host::land_goto(state.registry(), landing);
+        // The SESSION's window moved, so everybody watching it is told — the same announcement
+        // `select_window` makes, because this IS that verb reached by another door.
+        window_moved(state, &session);
+    }
     match outcome {
         AttachOutcome::NoClient => lifecycle_invalid(
             request,
@@ -1262,8 +1318,28 @@ fn attach_fault_sentence(fault: AttachFault) -> String {
             let words: Vec<&str> = OrderStep::ALL.iter().map(|s| s.wire_str()).collect();
             format!("params.{STEP_PARAM} must be {}", words.join(" or "))
         }
+        // It no longer names the two keys, because there are three of them now and naming a pair
+        // would be a sentence that is wrong for one of the three ways to reach it.
         AttachFault::TwoTargets => format!(
-            "params.{STEP_PARAM} and params.{LAST_PARAM} each name a different session; ask for one",
+            "params.{LAST_PARAM}, params.{STEP_PARAM} and params.{GOTO_PARAM} each name a different \
+             session; ask for one",
+        ),
+        AttachFault::GotoNotAnObject => format!(
+            "params.{GOTO_PARAM} must be an object naming what was picked \
+             ({{{GOTO_SESSION_PARAM}, {GOTO_WINDOW_PARAM}?, {GOTO_PANE_PARAM}?}})",
+        ),
+        AttachFault::GotoWithoutSession => {
+            format!("params.{GOTO_PARAM}.{GOTO_SESSION_PARAM} is required: a goto names a target")
+        }
+        // The member is NAMED. Three ids can be malformed and a caller told only that "an id" was
+        // has to guess which — the same reason `ScopeError` says which key it is talking about.
+        AttachFault::GotoIdNotANumber(member) => format!(
+            "params.{GOTO_PARAM}.{member} must be an identity from the {TREE_SLOT} slot (a \
+             non-negative whole number)",
+        ),
+        AttachFault::GotoPaneWithoutWindow => format!(
+            "params.{GOTO_PARAM}.{GOTO_PANE_PARAM} needs params.{GOTO_PARAM}.{GOTO_WINDOW_PARAM}: a \
+             pick is checked as a whole path",
         ),
     }
 }
@@ -1719,6 +1795,7 @@ mod tests {
     // use for it.
     use crate::external::lock;
     use crate::wire::EVENTS_CHANGED_METHOD;
+    use serde_json::json;
     use sprag_terminal::{CommandBuilder, PaneId};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
@@ -1733,6 +1810,78 @@ mod tests {
 
     /// The name of the session a boot pane lands in and an unscoped request resolves to.
     const BOOT: &str = "0";
+
+    /// **Every way a chooser's pick can be malformed has its OWN sentence** (R315), and each one
+    /// names the member it is talking about.
+    ///
+    /// The parse and the sentence are checked together because separating them is how a fault
+    /// variant comes to exist with no wording: `AttachFault` is exhaustive at
+    /// [`attach_fault_sentence`], so a new arm cannot compile without a sentence — and nothing
+    /// makes that sentence TRUE about the thing that was wrong. The pairs below are what does.
+    ///
+    /// REVERT-PROOF: fold any two arms onto one sentence and the pair naming the other fails; drop
+    /// the `pane`-without-`window` check and that request parses as a goto instead of refusing.
+    #[test]
+    fn a_malformed_pick_is_refused_with_a_sentence_naming_what_is_wrong() {
+        let refused = |params: Value| match AttachAsk::parse(Some(&params)) {
+            Err(fault) => attach_fault_sentence(fault),
+            Ok(ask) => panic!("{params} must be refused, and it parsed as {ask:?}"),
+        };
+        assert_eq!(
+            refused(json!({ "goto": 3 })),
+            "params.goto must be an object naming what was picked ({session, window?, pane?})",
+        );
+        assert_eq!(
+            refused(json!({ "goto": {} })),
+            "params.goto.session is required: a goto names a target",
+        );
+        // The MEMBER is named, and it is a different member in each of the three.
+        for member in ["session", "window", "pane"] {
+            let mut path = serde_json::Map::new();
+            path.insert("session".to_owned(), Value::from(1));
+            path.insert("window".to_owned(), Value::from(1));
+            path.insert(member.to_owned(), Value::String("seven".to_owned()));
+            let why = refused(json!({ "goto": Value::Object(path) }));
+            assert!(
+                why.contains(&format!("params.goto.{member} must be an identity")),
+                "the sentence names {member}: {why}",
+            );
+        }
+        // A NEGATIVE and a FLOAT are refused by the same rule, because an identity is a counter.
+        assert!(
+            refused(json!({ "goto": { "session": -1 } })).contains("non-negative whole number"),
+        );
+        assert!(refused(json!({ "goto": { "session": 1.5 } })).contains("whole number"));
+        assert_eq!(
+            refused(json!({ "goto": { "session": 1, "pane": 2 } })),
+            "params.goto.pane needs params.goto.window: a pick is checked as a whole path",
+        );
+        // TWO TARGETS IS NO TARGET — the rule `TwoTargets` already had over two keys, now over
+        // three, and each PAIR is checked because a match that admitted one of them would be a
+        // silent precedence a caller could come to depend on.
+        for pair in [
+            json!({ "goto": { "session": 1 }, "last": true }),
+            json!({ "goto": { "session": 1 }, "step": "next" }),
+            json!({ "last": true, "step": "next" }),
+        ] {
+            assert!(
+                refused(pair.clone()).contains("each name a different session; ask for one"),
+                "{pair} names two targets",
+            );
+        }
+        // THE CONTROL: the well-formed pick this file's own handler acts on still parses, so the
+        // refusals above are about the grammar rather than about the key being unknown.
+        assert_eq!(
+            AttachAsk::parse(Some(
+                &json!({ "goto": { "session": 1, "window": 2, "pane": 3 } })
+            )),
+            Ok(AttachAsk::Goto {
+                session: sprag_terminal::SessionId(1),
+                window: Some(sprag_terminal::WindowId(2)),
+                pane: Some(PaneId(3)),
+            }),
+        );
+    }
 
     /// Host state with one initial pane running `script`, wired the way a wire
     /// server boots: the pane's `on_dirty` bumps its SESSION's [`SceneRevision`], so

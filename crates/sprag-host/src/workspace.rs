@@ -86,7 +86,7 @@ use crate::wire::{
     RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
     SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
     SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -1796,6 +1796,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(PANES_SLOT, "list"),
                     SchemaField::new(LAYOUT_SLOT, "tree"),
                     SchemaField::new(SESSIONS_SLOT, "list"),
+                    SchemaField::new(TREE_SLOT, "list"),
                     SchemaField::new(SESSION_SLOT, "string"),
                     SchemaField::new(CLIENTS_SLOT, "list"),
                     SchemaField::new(GRID_WORK_SLOT, "object"),
@@ -2119,6 +2120,16 @@ impl ExternalIntrospect for WorkspaceExternal {
                 let infos: Vec<SessionInfo> =
                     crate::host::listable_sessions(&self.registry, self.attachments.as_deref());
                 encoded_answer(&infos, "sessions")
+            }
+            // The same sessions, DESCENDING: every window and every pane, each carrying the identity
+            // a chooser commits by (R315). Registry-WIDE for `sessions`' reason, and a SECOND slot
+            // rather than a wider first one because that one is polled and this one is pressed —
+            // see `TREE_SLOT`. It shares that slot's listability rule through one predicate, so a
+            // chooser cannot offer a session `sprag ls` denies exists.
+            TREE_SLOT => {
+                let tree: Vec<sprag_terminal::TreeSession> =
+                    crate::host::listable_tree(&self.registry, self.attachments.as_deref());
+                encoded_answer(&tree, "tree")
             }
             // The NAME of the session this request is scoped to. Read straight off the scope rather
             // than re-derived: the scope resolved it once, at the door, under the registry lock, and

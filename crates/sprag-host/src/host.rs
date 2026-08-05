@@ -52,9 +52,9 @@ use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, CommandBuilder, DividerStep, Ended, HistoryLimitSource, LayoutSnapshot,
     LayoutWire, OrderStep, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle,
-    PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionInfo, SessionRegistry, Snapshot,
-    SnapshotError, SplitDir, SplitSide, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile,
-    with_ratio,
+    PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionId, SessionInfo, SessionRegistry,
+    Snapshot, SnapshotError, SplitDir, SplitSide, WindowId, WindowInfo, WindowPlace, Workspace,
+    ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1067,6 +1067,42 @@ pub trait HostClient {
     /// daemon's recorded spelling, never the caller's argument.
     fn switch_session_named(&self, name: &str) -> Option<String>;
 
+    /// The whole registry as a NAVIGABLE TREE — what a chooser draws its rows from (R315).
+    ///
+    /// [`sessions`](Self::sessions) one question wider, and a SEPARATE call for the reason
+    /// [`crate::wire::TREE_SLOT`] states: the flat list is polled by every attached client and this
+    /// is built when somebody presses a key.
+    ///
+    /// A MIRROR READ, deliberately, and it is sound for exactly [`crate::prompt`]'s rule 3: a row
+    /// is text on a screen, and what a pick commits is the IDENTITY the daemon resolves again. A
+    /// stale row cannot send anybody anywhere — it can only be refused.
+    ///
+    /// Defaulted to EMPTY rather than to the in-process host's one session, and that is not
+    /// laziness: an in-process host has one session with one window, so a chooser over it would be
+    /// a list with one useful row. The frontends that have one are the wire clients, which
+    /// override this.
+    fn tree(&self) -> Vec<sprag_terminal::TreeSession> {
+        Vec::new()
+    }
+
+    /// Go where a chooser's row points — attach to its session, and select its window and pane if
+    /// it named them. Answers the session name the client LANDED on (R315).
+    ///
+    /// [`switch_session_named`](Self::switch_session_named)'s counterpart for a pick rather than a
+    /// typed name, and the difference is the whole point: [`None`] here means *that row is gone*,
+    /// an answer a name cannot give because a name that something else has taken RESOLVES. See
+    /// [`crate::wire::AttachAsk::Goto`].
+    ///
+    /// The daemon carries all three levels out under its own locks after checking the path whole,
+    /// so a client never half-lands — and never resolves a level itself, which would be the second
+    /// answer to `select-window` this project removes wherever it appears.
+    ///
+    /// Defaulted to [`None`] for the in-process arm, which has no chooser to answer.
+    fn goto(&self, target: crate::chooser::Target) -> Option<String> {
+        let _ = target;
+        None
+    }
+
     /// Create a fresh session on the host (born with a shell, tmux `new-session`) and switch this
     /// client to it, returning its name. The "+" of a session sidebar.
     fn new_session(&self) -> String;
@@ -1743,6 +1779,8 @@ pub(crate) fn reconciled_layout(
 /// [`SessionRegistry::session_infos_live`] releases the registry before this takes the attachment
 /// map. Fusing them would nest one inside the other and pick a side in an ordering the rest of the
 /// host has no need to constrain.
+///
+/// Its DESCENDING twin is [`listable_tree`], which applies the same rule to the same sessions.
 pub(crate) fn listable_sessions(
     registry: &Arc<Mutex<SessionRegistry>>,
     attachments: Option<&Mutex<AttachmentRegistry>>,
@@ -1756,6 +1794,137 @@ pub(crate) fn listable_sessions(
     }
     infos.retain(SessionInfo::is_listable);
     infos
+}
+
+/// The NAVIGABLE TREE a human list shows — [`listable_sessions`] one question wider (R315).
+///
+/// Same rule, same two owners, same sequential locks. It exists beside that function rather than
+/// replacing it because the two are read at different rates: the flat list is polled by every
+/// attached client, and this is built when somebody presses a key.
+pub(crate) fn listable_tree(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    attachments: Option<&Mutex<AttachmentRegistry>>,
+) -> Vec<sprag_terminal::TreeSession> {
+    let mut tree = SessionRegistry::tree(registry);
+    if let Some(attachments) = attachments {
+        let attachments = lock(attachments);
+        for session in &mut tree {
+            session.attached = attachments.attached_count(&session.name);
+        }
+    }
+    // THE SAME RULE THE LISTING APPLIES, read off the same predicate rather than re-stated: a
+    // chooser that offered the resting anchor would send a user somewhere `sprag ls` denies exists.
+    // The counterpart of `listable_sessions`'s `retain`, and it must stay one rule — the two
+    // surfaces answer the same question about the same sessions.
+    tree.retain(|session| {
+        SessionInfo {
+            name: session.name.clone(),
+            windows: session.windows.len(),
+            panes: session
+                .windows
+                .iter()
+                .map(|window| window.panes.len())
+                .sum(),
+            default: session.default,
+            attached: session.attached,
+        }
+        .is_listable()
+    });
+    tree
+}
+
+/// Resolve a chooser's PICK against the live registry, moving NOTHING (R315).
+///
+/// Two acquisitions, sequential and never nested: the registry names the session and the window
+/// ([`SessionRegistry::locate`]), then the window's own pool is asked whether it still holds the
+/// pane. [`None`] is *that place is gone* — the answer only an IDENTITY can give, and the reason
+/// this is a separate step from [`land_goto`]: a path with a dead level must refuse the ATTACH too,
+/// rather than leaving a client somewhere it did not pick.
+pub(crate) fn resolve_goto(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    session: SessionId,
+    window: Option<WindowId>,
+    pane: Option<PaneId>,
+) -> Option<Landing> {
+    let located = lock(registry).locate(session, window)?;
+    let window = match located.window {
+        None => None,
+        Some(found) => {
+            // The registry lock is RELEASED by now (`locate` borrowed it for the line above and the
+            // guard is dropped with the temporary), so this pool lock is sequential with it.
+            if let Some(pane) = pane
+                && !lock(&found.pool)
+                    .panes()
+                    .iter()
+                    .any(|held| held.id() == pane)
+            {
+                return None;
+            }
+            Some(found.name)
+        }
+    };
+    Some(Landing {
+        session: located.session,
+        window,
+        pane,
+    })
+}
+
+/// Carry a resolved [`Landing`]'s window and pane out — the half that MOVES something.
+///
+/// Called only after the attach has succeeded, so a client that never said hello cannot select a
+/// window for everybody else. Both steps go through the same name-addressed verbs `sprag
+/// select-window` and `sprag select-pane` reach, which is what keeps a pick from being a second
+/// answer to either.
+///
+/// Nothing here can fail in a way a caller acts on: the path was resolved a moment ago on THIS
+/// dispatch thread, which is the only thread that mutates the registry (see `handle_attach`'s own
+/// statement of it). A window that went in between leaves the client attached where it picked,
+/// looking at whatever that session is looking at — the honest degradation, and one no answer shape
+/// could improve on.
+pub(crate) fn land_goto(registry: &Arc<Mutex<SessionRegistry>>, landing: &Landing) {
+    let Some(window) = landing.window.as_deref() else {
+        return;
+    };
+    if lock(registry)
+        .select_window(&landing.session, window)
+        .is_err()
+    {
+        return;
+    }
+    let Some(pane) = landing.pane else {
+        return;
+    };
+    // POOL then REGISTRY, `select_pane`'s own order one screen up: the pane list is read under the
+    // workspace lock and the selection is made under the registry's, never nested.
+    let panes: Vec<PaneId> = {
+        let Some(pool) = lock(registry)
+            .window(&landing.session, window)
+            .map(|window| Arc::clone(window.workspace()))
+        else {
+            return;
+        };
+        lock(&pool).panes().iter().map(Pane::id).collect()
+    };
+    let mut registry = lock(registry);
+    if let Some(window) = registry.window_mut(&landing.session, window) {
+        window.reconcile_layout(&panes);
+        window.select_pane(pane, &panes);
+    }
+}
+
+/// A chooser's pick, RESOLVED — the names to act through, with nothing moved yet.
+///
+/// It holds names rather than the ids it was built from, because what is left to do is expressed in
+/// the name-addressed verbs every other caller uses. The ids did their whole job at the door: they
+/// answered *is that still the thing you were looking at*, which is the one question a name cannot.
+pub(crate) struct Landing {
+    /// The picked session's name NOW — never the one a client might have painted.
+    pub(crate) session: String,
+    /// The picked window's name now, or [`None`] for a session row.
+    pub(crate) window: Option<String>,
+    /// The picked pane, checked against its window's live pool.
+    pub(crate) pane: Option<PaneId>,
 }
 
 /// Install a client's settled arrangement, then answer with the canonical one — the ONE
