@@ -62,6 +62,7 @@ pub mod keymap;
 pub mod notify;
 pub mod options;
 pub mod pane;
+pub mod pane_address;
 pub mod plugins;
 pub mod project;
 pub mod prompt;
