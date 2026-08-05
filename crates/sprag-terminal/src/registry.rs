@@ -100,7 +100,17 @@ pub struct WindowId(pub u64);
 /// an edge at each end), a window walk is ordinal (two ways, no ends). Spelling them with one type
 /// would let a caller ask for the window "to the left", which the registry would then have to
 /// refuse at runtime for a mistake the types can prevent.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// # The serde derive is a CLIENT's own storage, not the wire
+///
+/// `sprag-gui` holds a bound action in a reactive `Signal`, whose value type carries pinion's
+/// serialization bound — the same reason [`crate::PaneId`] and `sprag_host::prompt::Subject` derive
+/// it. **The WIRE spelling is [`wire_str`](Self::wire_str) and nothing else**, so the derive is
+/// pinned to the same two words with `rename_all`: one vocabulary, however it is written down. A
+/// variant whose serde name and wire word disagreed would be a second spelling of exactly the thing
+/// [`from_wire`](Self::from_wire) exists to keep single.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum WindowStep {
     /// The window AFTER the current one, wrapping past the last onto the first.
     Next,
@@ -141,6 +151,132 @@ impl WindowStep {
             Self::Next => "next",
             Self::Previous => "previous",
         }
+    }
+}
+
+/// WHERE a window should sit in its session's order — tmux `move-window`, and the request half of
+/// [`Session::move_window`].
+///
+/// # A ring to WALK, a sequence to ARRANGE
+///
+/// [`WindowStep`]'s docs call this collection an ORDINAL RING with no ends, and that is true of a
+/// WALK: attention comes back round, so `select-window -n` past the last window lands on the first.
+/// It is false of the ARRANGEMENT. The list is drawn as a strip with a first tab and a last tab
+/// (`sprag-gui`'s window strip) and published as an ARRAY whose order is the fact — so the order has
+/// ends, and a move STOPS at them where a walk wraps. One collection, two questions, and each states
+/// its own policy at its own site.
+///
+/// # Why an anchor is a NAME and never an index
+///
+/// [`Before`](Self::Before) and [`After`](Self::After) name a window. The obvious alternative — and
+/// the one the rival took — is an insertion INDEX (`herdr`'s `tab.move {tab_id, insert_index}`,
+/// `src/app/api/tabs.rs:179` at `9a4ce5e1`), which the client computes from a list it read earlier.
+/// That is [`crate::PaneName`]'s reason one level up: a position silently comes to mean a different
+/// slot the moment anything else moves, and the caller cannot tell. A name is resolved under the
+/// registry's own lock at the instant the move happens, so the request either means what it said or
+/// is refused.
+///
+/// [`First`](Self::First) and [`Last`](Self::Last) exist because they are the two anchors that need
+/// NO name: without them a caller wanting the front would have to READ the window list first, which
+/// is the round trip `select_pane {dir, from}` removed for panes.
+///
+/// The serde derive is [`WindowStep`]'s — a client's own storage for a bound action, never the
+/// wire. The wire grammar is `sprag_host::wire::MoveWindowAsk`, which spells a place as top-level
+/// request KEYS (`place` / `before` / `after`) rather than as this enum's tagging, and is the only
+/// form a daemon parses.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowPlace {
+    /// The FRONT of the order — tmux `move-window -t 0`.
+    First,
+    /// The BACK of the order.
+    Last,
+    /// ONE place along the order, NOT wrapping: a window already at the end it is asked to move
+    /// toward is [`PlaceHow::AlreadyThere`].
+    ///
+    /// Spelled with [`WindowStep`] rather than a second pair of direction words, because it IS the
+    /// same direction — the one `select-window -n` walks. What differs between the two verbs is the
+    /// WRAP, which is a policy, and each states its own.
+    Step(WindowStep),
+    /// Immediately BEFORE the named window — the drop-target reading of a drag.
+    Before(String),
+    /// Immediately AFTER the named window.
+    After(String),
+}
+
+impl WindowPlace {
+    /// The window this place is anchored to, or [`None`] for the two that need no name.
+    ///
+    /// The one place the anchored arms are collapsed, so a caller that must resolve an anchor
+    /// (the registry, the CLI's own pre-flight) cannot handle one arm and forget the other.
+    #[must_use]
+    pub fn anchor(&self) -> Option<&str> {
+        match self {
+            Self::Before(window) | Self::After(window) => Some(window.as_str()),
+            Self::First | Self::Last | Self::Step(_) => None,
+        }
+    }
+}
+
+/// WHAT HAPPENED to a [`WindowPlace`] request — the answer half of [`Session::move_window`].
+///
+/// Four words where the rival has a `bool`. `herdr`'s `Workspace::move_tab` (`src/workspace.rs:619`
+/// at `9a4ce5e1`) answers `false` for a source out of range, an insert index out of range AND a move
+/// that would change nothing — and its handler then reports SUCCESS with the tab list and emits no
+/// event, so a caller cannot tell "done" from "nothing happened". That is exactly the collapse R301
+/// removed from this project's own swap.
+///
+/// A window that does not exist, or an anchor that does not, is NOT in here: it is a
+/// [`SessionError::Unknown`] refusal, on R301's rule that a request which "succeeded" against
+/// something absent is a sentence rather than an answer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlaceHow {
+    /// The order changed.
+    Moved,
+    /// The request was well formed and the window is ALREADY in that place.
+    AlreadyThere,
+    /// The session holds ONE window, so there is no arrangement to change. Distinct from
+    /// [`AlreadyThere`](Self::AlreadyThere) — which is also true of a lone window — because the
+    /// CAUSE is what a user needs: "this session has one window" is actionable where "already
+    /// first" invites pressing the key again.
+    Alone,
+    /// The anchor named the window being moved (`move-window alpha --before alpha`).
+    Itself,
+}
+
+impl PlaceHow {
+    /// Every outcome, for a caller that must be exhaustive over the vocabulary.
+    ///
+    /// ⚠ **An array literal no compiler checks** — the residual [`WindowStep::ALL`] and
+    /// [`PaneDir::ALL`] already carry, stated here rather than hidden: a fifth variant left out of
+    /// it would fail to PARSE silently while [`wire_str`](Self::wire_str) still compiled. Rust has
+    /// no stable way to derive it, and the honest form is to say so at the array.
+    pub const ALL: [Self; 4] = [Self::Moved, Self::AlreadyThere, Self::Alone, Self::Itself];
+
+    /// This outcome's wire word — the ONE place each is spelled.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Moved => "moved",
+            Self::AlreadyThere => "already_there",
+            Self::Alone => "alone",
+            Self::Itself => "itself",
+        }
+    }
+
+    /// Read an outcome off the wire, [`None`] for anything else — DERIVED from
+    /// [`wire_str`](Self::wire_str) rather than tabulated beside it, so a parse and a render cannot
+    /// drift while every test still passes.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|how| how.wire_str() == word)
+    }
+
+    /// Whether the order actually moved — the one bit every caller wants, named once so no surface
+    /// re-derives it by comparing against a word.
+    #[must_use]
+    pub const fn changed(self) -> bool {
+        matches!(self, Self::Moved)
     }
 }
 
@@ -1511,6 +1647,81 @@ impl Session {
         self.windows[self.current_window].name.as_str()
     }
 
+    /// Move the window named `name` to `place` in this session's order — tmux `move-window`.
+    ///
+    /// # One frame, one arithmetic, one test for "nothing moved"
+    ///
+    /// Every arm below computes a destination index in the list **with the moved window already
+    /// removed**, which is the one frame in which all five mean the same thing. Re-inserting at that
+    /// index restores the original list if and only if it equals the window's own index — so
+    /// [`PlaceHow::AlreadyThere`] falls out of a SINGLE comparison rather than a per-arm edge case,
+    /// and the `source < insert` correction the rival's `move_tab` carries (`herdr`
+    /// `src/workspace.rs:619`) is the frame change written once here.
+    ///
+    /// The window the session is ON follows by IDENTITY, not by recomputing an index: an index is
+    /// WHERE a window is, and where it is, is exactly what this function changes (R302's rule).
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no window of this session carries `name`, or if a
+    /// [`WindowPlace::Before`] / [`WindowPlace::After`] anchor names none. The order is unchanged.
+    /// An anchor is resolved BEFORE the one-window check, so a request naming something absent is
+    /// refused however the session happens to be arranged.
+    pub fn move_window(
+        &mut self,
+        name: &str,
+        place: &WindowPlace,
+    ) -> Result<PlaceHow, SessionError> {
+        let from = self
+            .windows
+            .iter()
+            .position(|window| window.name == name)
+            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+        let anchor = match place.anchor() {
+            None => None,
+            Some(anchor) => Some(
+                self.windows
+                    .iter()
+                    .position(|window| window.name == anchor)
+                    .ok_or_else(|| SessionError::Unknown(anchor.to_owned()))?,
+            ),
+        };
+        if anchor == Some(from) {
+            return Ok(PlaceHow::Itself);
+        }
+        let len = self.windows.len();
+        if len == 1 {
+            return Ok(PlaceHow::Alone);
+        }
+        // The anchor's index in the list WITHOUT the moved window. Every arm below works in that
+        // frame; `anchor != from` is settled above, so neither subtraction can underflow.
+        let without = |anchor: usize| if anchor > from { anchor - 1 } else { anchor };
+        let to = match place {
+            WindowPlace::First => 0,
+            // `len - 1` is the last index of the shortened list, which is where "the back" is.
+            WindowPlace::Last => len - 1,
+            // Saturating and clamping are the ENDS, not defensive padding: a window already at the
+            // front asked to move further front computes its own index back, which the comparison
+            // below reads as `AlreadyThere`. That is why this verb needs no wrap arm.
+            WindowPlace::Step(WindowStep::Previous) => from.saturating_sub(1),
+            WindowPlace::Step(WindowStep::Next) => (from + 1).min(len - 1),
+            WindowPlace::Before(_) => without(anchor.expect("Before carries an anchor")),
+            WindowPlace::After(_) => without(anchor.expect("After carries an anchor")) + 1,
+        };
+        if to == from {
+            return Ok(PlaceHow::AlreadyThere);
+        }
+        let current = self.windows[self.current_window].id;
+        let window = self.windows.remove(from);
+        self.windows.insert(to, window);
+        self.current_window = self
+            .windows
+            .iter()
+            .position(|window| window.id == current)
+            .expect("a move takes no window out of the session, so the current one is still here");
+        Ok(PlaceHow::Moved)
+    }
+
     /// Rename the window named `name` to `new` — tmux `rename-window`. Answers the name that was
     /// RECORDED.
     ///
@@ -2651,6 +2862,22 @@ impl SessionRegistry {
             .to_owned())
     }
 
+    /// Move the window named `name` of the session named `session` to `place` — tmux
+    /// `move-window`. See [`Session::move_window`] for the arithmetic and for why an anchor is a
+    /// name.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] for an unknown session, an unknown window, or an unknown anchor.
+    pub fn move_window(
+        &mut self,
+        session: &str,
+        name: &str,
+        place: &WindowPlace,
+    ) -> Result<PlaceHow, SessionError> {
+        self.session_named_mut(session)?.move_window(name, place)
+    }
+
     /// Rename the window named `name` of the session named `session` to `new` — tmux
     /// `rename-window`. Answers the name that was RECORDED. See [`Session::rename_window`].
     ///
@@ -3704,6 +3931,239 @@ mod tests {
         // rather than a refactor.
         assert_eq!(WindowStep::Next.wire_str(), "next");
         assert_eq!(WindowStep::Previous.wire_str(), "previous");
+    }
+
+    /// Build a session holding windows `0 a b c` with the session sitting on `0`, and answer
+    /// `(registry, session)`.
+    ///
+    /// The session is put back on the FIRST window deliberately: `new_window` selects what it
+    /// creates, so a fixture that left it on `c` could not tell "the current window followed its own
+    /// window across the move" from "the current index happened not to change".
+    fn four_windows() -> (SessionRegistry, String) {
+        let mut reg = SessionRegistry::new((80, 24));
+        let session = reg.default_session().name().to_owned();
+        for name in ["a", "b", "c"] {
+            reg.new_window(&session, Some(name)).expect("a window");
+        }
+        reg.select_window(&session, "0").expect("start at the top");
+        (reg, session)
+    }
+
+    /// The order a session's windows are IN, which is the order `windows` publishes and
+    /// `select-window -n` walks.
+    fn order(reg: &SessionRegistry, session: &str) -> Vec<String> {
+        reg.session(session)
+            .expect("the session")
+            .window_infos()
+            .into_iter()
+            .map(|info| info.name)
+            .collect()
+    }
+
+    /// Every arm of [`WindowPlace`] against the SAME four-window fixture, so the five destinations
+    /// are told apart by where the window lands rather than by five separate setups.
+    ///
+    /// REVERT-PROOF: drop the `if anchor > from` frame correction in `move_window` and the two
+    /// forward-anchored rows land one window early; swap `First`/`Last` and the first two rows fail.
+    #[test]
+    fn a_window_moves_to_every_place_the_grammar_can_name() {
+        let cases: [(WindowPlace, [&str; 4]); 6] = [
+            (WindowPlace::First, ["b", "0", "a", "c"]),
+            (WindowPlace::Last, ["0", "a", "c", "b"]),
+            (
+                WindowPlace::Step(WindowStep::Previous),
+                ["0", "b", "a", "c"],
+            ),
+            (WindowPlace::Step(WindowStep::Next), ["0", "a", "c", "b"]),
+            // Anchored BACKWARD (the anchor sits before the moved window) and FORWARD (after it):
+            // the two directions exercise the two halves of the frame correction.
+            (WindowPlace::Before("0".to_owned()), ["b", "0", "a", "c"]),
+            (WindowPlace::After("c".to_owned()), ["0", "a", "c", "b"]),
+        ];
+        for (place, want) in cases {
+            let (mut reg, session) = four_windows();
+            assert_eq!(
+                reg.move_window(&session, "b", &place),
+                Ok(PlaceHow::Moved),
+                "{place:?} moves window b",
+            );
+            assert_eq!(order(&reg, &session), want, "where {place:?} put b");
+            assert_eq!(
+                reg.session(&session).unwrap().current_window().name(),
+                "0",
+                "{place:?} moved a window, not the user",
+            );
+        }
+    }
+
+    /// The three words that are NOT `Moved`, each with the request that produces it — the
+    /// discrimination the rival's `bool` cannot make.
+    #[test]
+    fn a_move_that_changes_nothing_says_which_nothing_it_was() {
+        let (mut reg, session) = four_windows();
+        for (place, want) in [
+            (WindowPlace::First, PlaceHow::AlreadyThere),
+            (
+                WindowPlace::Step(WindowStep::Previous),
+                PlaceHow::AlreadyThere,
+            ),
+            (WindowPlace::Before("a".to_owned()), PlaceHow::AlreadyThere),
+            (WindowPlace::Before("0".to_owned()), PlaceHow::Itself),
+            (WindowPlace::After("0".to_owned()), PlaceHow::Itself),
+        ] {
+            assert_eq!(
+                reg.move_window(&session, "0", &place),
+                Ok(want),
+                "{place:?}"
+            );
+            assert_eq!(
+                order(&reg, &session),
+                ["0", "a", "b", "c"],
+                "{place:?} left the order alone",
+            );
+        }
+        // The same ends from the other side, so a clamp that stuck the wrong way is caught.
+        for place in [WindowPlace::Last, WindowPlace::Step(WindowStep::Next)] {
+            assert_eq!(
+                reg.move_window(&session, "c", &place),
+                Ok(PlaceHow::AlreadyThere),
+                "{place:?} on the window already at the back",
+            );
+        }
+
+        // ONE window: every place is `Alone`, which is a different sentence from "already first"
+        // even though that is also true. The CAUSE is what the user can act on.
+        let mut lone = SessionRegistry::new((80, 24));
+        let only = lone.default_session().name().to_owned();
+        for place in [
+            WindowPlace::First,
+            WindowPlace::Last,
+            WindowPlace::Step(WindowStep::Next),
+            WindowPlace::Step(WindowStep::Previous),
+        ] {
+            assert_eq!(
+                lone.move_window(&only, "0", &place),
+                Ok(PlaceHow::Alone),
+                "{place:?} in a session holding one window",
+            );
+        }
+    }
+
+    /// A window that does not exist, and an ANCHOR that does not, are REFUSALS rather than
+    /// outcomes — R301's rule that a request which "succeeded" against something absent is a
+    /// sentence, not an answer.
+    ///
+    /// The lone-session row is the one that discriminates the ORDER of the two checks: an anchor
+    /// resolved after the one-window shortcut would answer `Alone` to a request naming a window
+    /// that is not there.
+    #[test]
+    fn a_move_refuses_a_window_or_an_anchor_that_does_not_exist() {
+        let (mut reg, session) = four_windows();
+        assert_eq!(
+            reg.move_window(&session, "nosuch", &WindowPlace::First),
+            Err(SessionError::Unknown("nosuch".to_owned())),
+        );
+        assert_eq!(
+            reg.move_window(&session, "a", &WindowPlace::Before("nosuch".to_owned())),
+            Err(SessionError::Unknown("nosuch".to_owned())),
+            "the ANCHOR is named in the refusal, not the window that was to move",
+        );
+        assert!(
+            reg.move_window("nosuch", "a", &WindowPlace::First).is_err(),
+            "an unknown session refuses before anything else is read",
+        );
+        assert_eq!(order(&reg, &session), ["0", "a", "b", "c"]);
+
+        let mut lone = SessionRegistry::new((80, 24));
+        let only = lone.default_session().name().to_owned();
+        assert_eq!(
+            lone.move_window(&only, "0", &WindowPlace::After("nosuch".to_owned())),
+            Err(SessionError::Unknown("nosuch".to_owned())),
+            "an absent anchor is refused even where the session has nothing to rearrange",
+        );
+    }
+
+    /// The window the session is ON follows its own window across a move, and is NOT the index it
+    /// used to be — which is the whole reason the current window is tracked by IDENTITY here.
+    ///
+    /// REVERT-PROOF: keep `self.current_window` untouched across the `remove`/`insert` and this
+    /// fails on the first assertion (the session would be sitting on `a`).
+    #[test]
+    fn the_current_window_follows_its_own_window_across_a_move() {
+        let (mut reg, session) = four_windows();
+        reg.select_window(&session, "c").expect("sit on the last");
+        assert_eq!(
+            reg.move_window(&session, "c", &WindowPlace::First),
+            Ok(PlaceHow::Moved),
+        );
+        assert_eq!(order(&reg, &session), ["c", "0", "a", "b"]);
+        assert_eq!(
+            reg.session(&session).unwrap().current_window().name(),
+            "c",
+            "the user moved the window they were ON and stayed on it",
+        );
+
+        // And a move of somebody ELSE past the current window keeps the user where they were, which
+        // an index left alone would get wrong in the opposite direction.
+        reg.select_window(&session, "a").expect("sit in the middle");
+        assert_eq!(
+            reg.move_window(&session, "b", &WindowPlace::First),
+            Ok(PlaceHow::Moved),
+        );
+        assert_eq!(order(&reg, &session), ["b", "c", "0", "a"]);
+        assert_eq!(reg.session(&session).unwrap().current_window().name(), "a");
+    }
+
+    /// The walk and the arrangement are ONE order: a move changes what `select-window -n` visits
+    /// next, which is the property that makes this verb worth having at all.
+    #[test]
+    fn a_move_changes_the_order_the_ring_walks() {
+        let (mut reg, session) = four_windows();
+        assert_eq!(
+            reg.select_window_relative(&session, WindowStep::Next),
+            Ok("a".to_owned()),
+        );
+        reg.select_window(&session, "0").expect("back to the top");
+        reg.move_window(&session, "c", &WindowPlace::After("0".to_owned()))
+            .expect("c moves in behind 0");
+        assert_eq!(order(&reg, &session), ["0", "c", "a", "b"]);
+        assert_eq!(
+            reg.select_window_relative(&session, WindowStep::Next),
+            Ok("c".to_owned()),
+            "the ring walks the order the move left behind",
+        );
+    }
+
+    /// The four outcome words are ONE vocabulary, read and written by the same table.
+    #[test]
+    fn a_place_outcome_round_trips_through_its_wire_word() {
+        for how in PlaceHow::ALL {
+            assert_eq!(PlaceHow::from_wire(how.wire_str()), Some(how));
+        }
+        assert_eq!(PlaceHow::from_wire("shuffled"), None);
+        assert_eq!(PlaceHow::Moved.wire_str(), "moved");
+        assert_eq!(PlaceHow::AlreadyThere.wire_str(), "already_there");
+        assert_eq!(PlaceHow::Alone.wire_str(), "alone");
+        assert_eq!(PlaceHow::Itself.wire_str(), "itself");
+        assert!(PlaceHow::Moved.changed());
+        for how in PlaceHow::ALL
+            .into_iter()
+            .filter(|how| *how != PlaceHow::Moved)
+        {
+            assert!(!how.changed(), "{how:?} changed nothing");
+        }
+    }
+
+    /// The anchor collapse is total: exactly the two anchored arms carry a name.
+    #[test]
+    fn only_the_anchored_places_name_a_window() {
+        assert_eq!(WindowPlace::Before("a".to_owned()).anchor(), Some("a"));
+        assert_eq!(WindowPlace::After("a".to_owned()).anchor(), Some("a"));
+        assert_eq!(WindowPlace::First.anchor(), None);
+        assert_eq!(WindowPlace::Last.anchor(), None);
+        for step in WindowStep::ALL {
+            assert_eq!(WindowPlace::Step(step).anchor(), None);
+        }
     }
 
     /// Killing a NON-last session removes it; killing the DEFAULT (first) re-points the default
