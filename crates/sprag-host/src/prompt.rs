@@ -691,6 +691,65 @@ mod tests {
         )
     }
 
+    /// **`switch-client -t` with the name LEFT OFF asks which session; every other arm acts at
+    /// once.**
+    ///
+    /// The one arm R314 added that needs a surface, and nothing drove it until this existed.
+    ///
+    /// Driven against a real [`Host`](crate::Host), like the kill test below and for its reason:
+    /// what is checked here is the SHAPE of the question and which actions ask at all, and a double
+    /// would be re-stating the decision [`Ask::of`] is supposed to make. What an ANSWER does is a
+    /// different claim and is driven end to end instead — `sprag-tui`'s
+    /// `a_bound_switch_client_asks_which_session_and_the_answer_moves_the_client`, on a real
+    /// pseudoterminal against a real daemon, where a landing can actually be observed.
+    ///
+    /// REVERT-PROOF: give the ASKING arm a seed and the empty-seed assertion fails; make any
+    /// carried arm ask and the last loop fails, because a binding that names its target must act.
+    #[test]
+    fn switch_client_with_no_name_asks_for_one_and_every_other_arm_acts() {
+        use crate::keymap::SwitchClientAsk;
+        let host = crate::Host::new((40, 6));
+        let asking = BoundAction::SwitchClient {
+            ask: SwitchClientAsk::Ask,
+        };
+        let Some(Ask::Line { subject, seed }) = Ask::of(&asking, &host, None) else {
+            panic!("`switch-client -t` with no name must open a line ask");
+        };
+        assert_eq!(subject, Subject::SwitchTo);
+        assert_eq!(
+            seed, "",
+            "EMPTY: seeding the session the client is already on would make Enter a no-op",
+        );
+        assert_eq!(subject.question(), "(switch-client)");
+        // The grammar is the DAEMON's; this calls the same parse so the sentence can arrive while
+        // the user is still holding the keyboard.
+        assert!(subject.check("work").is_ok());
+        assert!(
+            subject.check("").is_err(),
+            "an empty session name is refused by the same parse the daemon applies",
+        );
+        // THE CONTROL, and the whole reason `-t` may be left blank at all: an arm that CARRIES its
+        // target acts at once, so a config that fixed a name does not stop to ask for one. Written
+        // as a loop over the other three, because the claim is about all of them.
+        for carried in [
+            SwitchClientAsk::Named("work".to_owned()),
+            SwitchClientAsk::LastViewed,
+            SwitchClientAsk::Step(sprag_terminal::OrderStep::Next),
+        ] {
+            let action = BoundAction::SwitchClient {
+                ask: carried.clone(),
+            };
+            assert!(
+                Ask::of(&action, &host, None).is_none(),
+                "{carried:?} carries its whole content and must not ask",
+            );
+            assert!(
+                !action.asks(),
+                "...and `asks` agrees, which is what stops a confirm-before wrapping it",
+            );
+        }
+    }
+
     /// **The guarded kill names the escalation it actually has**, read off the live arrangement at
     /// the moment the key is pressed — R309.
     ///

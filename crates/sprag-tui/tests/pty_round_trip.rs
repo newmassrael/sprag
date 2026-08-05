@@ -3516,6 +3516,100 @@ fn a_root_binding_acts_with_no_prefix_and_the_key_never_reaches_the_pane() {
     );
 }
 
+/// **A bound `switch-client -t` ASKS which session, and the answer moves this client** — R314's
+/// asking arm, end to end on a real pseudoterminal.
+///
+/// The arm ships BINDABLE AND UNBOUND (tmux's `prefix s` is a chooser and this is a name prompt, so
+/// its key is not taken), which is exactly why this test binds it from a config file: an arm nobody
+/// can reach is an arm nobody drives, and R314 wrote this after finding the whole chain —
+/// `Ask::of` → `Subject::SwitchTo` → `commit` → `switch_session_named` — driven by NOTHING.
+///
+/// THE FIXTURE MAKES THE TWO OUTCOMES DISAGREE. A wrong answer (`ghost`, which no session carries)
+/// must leave the client exactly where it is, and a right one (`elsewhere`) must move it — so a
+/// prompt that committed whatever was typed, and one that committed nothing at all, both fail.
+///
+/// The pane's own text is the second record: `cat` echoes what it is given, so a name that reached
+/// the shell would be visible there. That is the assertion the rename prompt's test makes for its
+/// own key, made again here because a NEW ask arm gets the guarantee only if it routes the same way.
+#[test]
+fn a_bound_switch_client_asks_which_session_and_the_answer_moves_the_client() {
+    let config = ConfigHome::new("[[bind]]\nkey = \"s\"\naction = \"switch-client -t\"\n");
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    let _ = &sock;
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "elsewhere" } }),
+    )
+    .expect("new_session answers");
+
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    let shell_before = pane_text_of(&mut conn, &session, 0);
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "the client starts on the session it booted into",
+    );
+
+    // A WRONG answer first, so a prompt that moved the client on any answer fails here rather than
+    // passing the happy path below. The PROMPT ITSELF is waited for, because the assertion after it
+    // ("the client did not move") is satisfied by nothing happening at all — the vacuous shape this
+    // project has been caught by four times.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"s");
+    wait_for("the bound key to open the switch prompt", || {
+        shows(&mut tui, "(switch-client)")
+    });
+    tui.type_bytes(b"ghost\r");
+    wait_for(
+        "the daemon's refusal to be painted under the prompt",
+        || shows(&mut tui, "no session is called \"ghost\""),
+    );
+    wait_for(
+        "the refused answer to leave the client where it was",
+        || settled(attached(&mut conn, &session), &1),
+    );
+    assert_eq!(
+        attached(&mut conn, "elsewhere"),
+        0,
+        "and it certainly did not land on the other session",
+    );
+
+    // ⚠ THE PROMPT IS STILL OPEN, holding what was typed — this module's stated rule ("a user who
+    // has to retype a name they just typed has been told off rather than helped"), and the reason
+    // the next answer starts with `C-u`. Written the other way round first, the second attempt
+    // pressed the prefix INTO the open editor and the screen read `ghostselsewhere`: the product
+    // behaved exactly as documented and the TEST was wrong. Asserted here rather than worked
+    // around silently.
+    wait_for("the refused text to still be in the editor", || {
+        shows(&mut tui, "ghost")
+    });
+
+    // ...and the RIGHT answer moves it. `C-u` clears; the seed is EMPTY for this subject, so what
+    // lands is exactly what is typed after it.
+    tui.type_bytes(b"\x15elsewhere\r");
+    wait_for("the answered prompt to move this client", || {
+        settled(attached(&mut conn, "elsewhere"), &1)
+    });
+    assert_eq!(
+        attached(&mut conn, &session),
+        0,
+        "...and off the one it was on: a switch LEAVES as well as arrives",
+    );
+
+    // NOT the shell. Every character of both answers was the client's.
+    assert_eq!(
+        pane_text_of(&mut conn, &session, 0),
+        shell_before,
+        "the session names were typed AT THE CLIENT: not one character reached the pane",
+    );
+}
+
 /// **R314 THROUGH THE SHIPPED TUI, on a real pseudoterminal: a session is reachable from the
 /// keyboard, at the front that had NO way to reach one at all.**
 ///
