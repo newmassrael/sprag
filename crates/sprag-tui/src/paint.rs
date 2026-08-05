@@ -43,6 +43,7 @@ use pinion_core::{
 };
 use sprag_grid::ProjectionToken;
 use sprag_host::PaneAgent;
+use sprag_host::chooser::Pick;
 use sprag_host::keyhelp::{KeyHelp, Row, Scroll};
 use sprag_terminal::PaneId;
 use sprag_terminal::tiling::{Divider, Rect};
@@ -328,6 +329,100 @@ pub fn help_changes(area: Rect, help: &KeyHelp, scroll: Scroll) -> Vec<Change> {
     // the same decision the yes/no prompt makes.
     changes.push(Change::CursorVisibility(CursorVisibility::Hidden));
     changes
+}
+
+/// Paint the CHOOSER over the screen — the query row, then the rows it narrows to (R315).
+///
+/// [`help_changes`]' twin, and the two share their shape deliberately: both take the whole screen,
+/// both keep the panes underneath from showing through by painting blanks, and both put the
+/// client's own line in reverse video so a reader can tell what is sprag speaking from what is
+/// their own workspace. What this adds is a SELECTED row, which is the only thing on either surface
+/// a keystroke moves.
+///
+/// Which rows exist, what they say and which one is picked are all [`Pick`]'s — this decides the
+/// indent, the marker column and what happens when the list is taller than the screen.
+#[must_use]
+pub fn chooser_changes(area: Rect, pick: &Pick, refusal: Option<&str>) -> Vec<Change> {
+    if area.is_empty() {
+        return Vec::new();
+    }
+    let width = usize::from(area.cols);
+    let viewport = help_viewport(area);
+    let rows = pick.visible();
+    // The window is scrolled to KEEP THE SELECTION ON SCREEN rather than to a stored offset, so a
+    // filter that moves the cursor twenty rows down cannot leave a person looking at a list whose
+    // picked row is somewhere else. There is no second scroll state to go stale.
+    let at = pick.cursor_at().unwrap_or(0);
+    let offset = at.saturating_sub(viewport.saturating_sub(1)).max(
+        // ...and when the whole list fits, the top is the top.
+        rows.len().saturating_sub(viewport).min(at),
+    );
+    let mut changes = Vec::new();
+    let mut header_attrs = CellAttributes::default();
+    header_attrs.set_reverse(true);
+    changes.push(Change::AllAttributes(header_attrs));
+    changes.push(Change::CursorPosition {
+        x: Position::Absolute(usize::from(area.col)),
+        y: Position::Absolute(usize::from(area.row)),
+    });
+    // The QUERY is the header, because it is what a keystroke edits — and it says how to leave, for
+    // `help_changes`' reason: a surface that owns the keyboard has to say how to give it back.
+    push_clipped(
+        &mut changes,
+        &match refusal {
+            // Two spaces, so the refusal reads as a second clause — `prompt_changes`' rule, and the
+            // same reason: this row has no colour of its own to separate them with.
+            Some(why) => format!("(choose-tree) {}  {why}", pick.query().text()),
+            None => format!(
+                "(choose-tree) {}   Esc to close, {} row{}",
+                pick.query().text(),
+                rows.len(),
+                if rows.len() == 1 { "" } else { "s" },
+            ),
+        },
+        width,
+    );
+    for line in 0..viewport {
+        let row = rows.get(offset + line);
+        let mut attrs = CellAttributes::default();
+        // The SELECTION is reverse video, the one decoration this surface has that a monochrome
+        // terminal still shows. A colour would be prettier and is not available: this paints into
+        // whatever terminal the user attached with.
+        if row.is_some_and(|row| row.target == pick.cursor()) {
+            attrs.set_reverse(true);
+        }
+        changes.push(Change::AllAttributes(attrs));
+        changes.push(Change::CursorPosition {
+            x: Position::Absolute(usize::from(area.col)),
+            y: Position::Absolute(usize::from(area.row) + line + 1),
+        });
+        push_clipped(
+            &mut changes,
+            &row.map_or_else(String::new, |row| chooser_row_text(row)),
+            width,
+        );
+    }
+    // The caret would mark the query, which is where typing goes — but the thing a person is
+    // watching is the SELECTED ROW, and two markers on one screen is one too many. Hidden, as the
+    // help view and the yes/no prompt both are.
+    changes.push(Change::CursorVisibility(CursorVisibility::Hidden));
+    changes
+}
+
+/// One chooser [`Row`](sprag_host::chooser::Row) as this surface lays it out.
+///
+/// The indent is TWO SPACES per level and the marker is `*`, both this surface's decisions: a depth
+/// is a number in the shared type precisely so a terminal that cannot draw box characters and a GUI
+/// that can are not forced to agree. The marker names where the client already IS, which is the one
+/// row a person is orienting from.
+fn chooser_row_text(row: &sprag_host::chooser::Row) -> String {
+    format!(
+        "{}{} {}  {}",
+        "  ".repeat(usize::from(row.depth)),
+        if row.here { "*" } else { " " },
+        row.label,
+        row.detail,
+    )
 }
 
 /// How many rows of the help view fit on `area` — the screen less its header row.

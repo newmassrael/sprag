@@ -112,6 +112,7 @@ use std::time::Instant;
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
+use sprag_host::chooser::Pick;
 use sprag_host::keyhelp::{KeyHelp, Pressed, Scroll};
 use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed, SwitchClientAsk};
 use sprag_host::prompt::{Ask, Line, Subject, Typed};
@@ -120,8 +121,8 @@ use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
     Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, agent_window_title,
-    cursor_changes, divider_changes, help_changes, help_viewport, prompt_changes, tile,
-    title_change, wire_key, with_ratio,
+    chooser_changes, cursor_changes, divider_changes, help_changes, help_viewport, prompt_changes,
+    tile, title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -624,6 +625,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                         | BoundAction::RenameSession
                         | BoundAction::RenamePane
                         | BoundAction::MoveWindowBefore
+                        // ...and a `choose-tree` whose daemon answered an empty tree, which is the
+                        // same shape one level up: a question with nothing to ask about.
+                        | BoundAction::ChooseTree
                         | BoundAction::ConfirmBefore { .. },
                     ) => {}
                     Command::Act(BoundAction::SelectNextPane) => {
@@ -663,10 +667,21 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // A yes/no has nowhere to put text, so only the line takes it — and the row is
                     // redrawn either way, which costs one idempotent repaint and means this arm has
                     // no second opinion about which questions are on screen.
-                    if let Asking::Line { line, refusal, .. } = open
-                        && line.pasted(&text) == Typed::Edited
-                    {
-                        *refusal = None;
+                    match open {
+                        Asking::Line { line, refusal, .. } => {
+                            if line.pasted(&text) == Typed::Edited {
+                                *refusal = None;
+                            }
+                        }
+                        // The chooser's QUERY takes it, because a pasted session name is exactly
+                        // what somebody would paste into a chooser — and because the alternative is
+                        // the leak this whole arm exists to close.
+                        Asking::Choose { pick, refusal } => {
+                            if pick.pasted(&text) == Typed::Edited {
+                                *refusal = None;
+                            }
+                        }
+                        Asking::Confirm { .. } => {}
                     }
                     paint_prompt(&mut screen, screen_area, open)?;
                 }
@@ -697,7 +712,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             //
             // Found by the debt audit, not by a test: the arm below had no idea an overlay existed,
             // and the round that added a full-screen one is the round that had to notice.
-            Some(InputEvent::Mouse(event)) if !matches!(overlay, Overlay::Showing(_)) => {
+            Some(InputEvent::Mouse(event))
+                if !matches!(
+                    overlay,
+                    Overlay::Showing(_) | Overlay::Asking(Asking::Choose { .. })
+                ) =>
+            {
                 for edge in pointer.edges(&event) {
                     // A divider DRAG outranks everything below, and it is claimed on the PRESS
                     // rather than recognised on each move: once a drag is under way the pointer
@@ -964,12 +984,7 @@ fn paint(
     match overlay {
         Overlay::None => {}
         Overlay::Asking(asking) => {
-            screen.add_changes(prompt_changes(
-                screen_area,
-                &asking.question(),
-                asking.answer(),
-                asking.caret(),
-            ));
+            screen.add_changes(asking_changes(screen_area, asking));
         }
         Overlay::Showing(showing) => {
             screen.add_changes(help_changes(screen_area, showing.help(), showing.scroll()));
@@ -1374,6 +1389,19 @@ enum Asking {
         /// What to do on `y`.
         action: BoundAction,
     },
+    /// A LIST is being picked from (R315) — the third kind of question, and the only one that
+    /// takes the whole screen.
+    ///
+    /// It sits in [`Asking`] rather than beside [`Showing`] even though it LOOKS like the help
+    /// view, and the reason is what the two are: the help view is a thing to read and this is a
+    /// question to answer. Everything the loop does with a question — route every key to it, give
+    /// the keyboard back when it closes, run what it authorised — is already written once here.
+    Choose {
+        /// The open chooser: rows, query and the picked row, all `sprag_host::chooser`'s.
+        pick: Box<Pick>,
+        /// The daemon's refusal, standing until the next keystroke — the picked row is gone.
+        refusal: Option<String>,
+    },
 }
 
 /// What answering did.
@@ -1410,6 +1438,10 @@ impl Asking {
                 },
                 action: *action,
             },
+            Ask::Choose { pick } => Self::Choose {
+                pick,
+                refusal: None,
+            },
         }
     }
 
@@ -1425,6 +1457,9 @@ impl Asking {
                 None => subject.question().to_owned(),
             },
             Self::Confirm { question, .. } => question.clone(),
+            // The chooser paints its own surface (`chooser_changes`), so this is never asked of it
+            // — see `asking_changes`, which is the one place that decides.
+            Self::Choose { .. } => String::new(),
         }
     }
 
@@ -1432,7 +1467,7 @@ impl Asking {
     fn answer(&self) -> &str {
         match self {
             Self::Line { line, .. } => line.text(),
-            Self::Confirm { .. } => "",
+            Self::Confirm { .. } | Self::Choose { .. } => "",
         }
     }
 
@@ -1440,7 +1475,7 @@ impl Asking {
     fn caret(&self) -> Option<usize> {
         match self {
             Self::Line { line, .. } => Some(line.cursor()),
-            Self::Confirm { .. } => None,
+            Self::Confirm { .. } | Self::Choose { .. } => None,
         }
     }
 
@@ -1463,6 +1498,30 @@ impl Asking {
             Self::Confirm { action, .. } => match name.as_str() {
                 "y" | "Y" => Answered::Perform(action.clone()),
                 _ => Answered::Closed,
+            },
+            // A PICK. The keys are `Pick::typed`'s — shared with the other frontend for the same
+            // reason the line editor's are — and what an answer DOES is `Pick::commit`'s. What this
+            // arm decides is only what happens to the surface afterwards, which is the surface's
+            // half of that split.
+            Self::Choose { pick, refusal } => match pick.typed(&name, key.mods()) {
+                Typed::Ignored => Answered::Asking,
+                Typed::Edited => {
+                    // The standing refusal was about a row the cursor has left.
+                    *refusal = None;
+                    Answered::Asking
+                }
+                Typed::Cancel => Answered::Closed,
+                // The chooser STAYS OPEN on a refusal, exactly as the name prompt does and for its
+                // stated reason: a person whose row went while they were reading has lost nothing
+                // but that row, and closing the list would make them press the key again to find
+                // out what else is there.
+                Typed::Commit => match pick.commit(host) {
+                    Ok(()) => Answered::Closed,
+                    Err(why) => {
+                        *refusal = Some(why);
+                        Answered::Asking
+                    }
+                },
             },
             Self::Line {
                 subject,
@@ -1509,14 +1568,27 @@ fn paint_prompt(
     screen_area: Rect,
     asking: &Asking,
 ) -> Result<(), Box<dyn Error>> {
-    screen.add_changes(prompt_changes(
-        screen_area,
-        &asking.question(),
-        asking.answer(),
-        asking.caret(),
-    ));
+    screen.add_changes(asking_changes(screen_area, asking));
     screen.flush()?;
     Ok(())
+}
+
+/// What an open question LOOKS like — the ONE place the three kinds pick their surface.
+///
+/// Two callers must agree: the row-only fast path above, and [`paint`]'s own last act. They held
+/// one `prompt_changes` call each until a question arrived that is not a row, and two call sites
+/// each deciding would be two answers to "what is on the screen right now" — the exact shape that
+/// wiped the prompt off a repainting screen once already.
+fn asking_changes(screen_area: Rect, asking: &Asking) -> Vec<termwiz::surface::Change> {
+    match asking {
+        Asking::Choose { pick, refusal } => chooser_changes(screen_area, pick, refusal.as_deref()),
+        Asking::Line { .. } | Asking::Confirm { .. } => prompt_changes(
+            screen_area,
+            &asking.question(),
+            asking.answer(),
+            asking.caret(),
+        ),
+    }
 }
 
 /// Paint the help view over the screen, and nothing else.

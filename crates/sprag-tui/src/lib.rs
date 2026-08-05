@@ -45,7 +45,7 @@ pub use key::{WireKey, wire_key};
 // callers ask a terminal frontend where a pane goes, and the answer's address is not their concern.
 pub use mouse::MouseEdges;
 pub use paint::{
-    PaintCache, PanePaint, agent_window_title, cell_attributes, cursor_changes, divider_changes,
-    help_changes, help_viewport, pane_changes, prompt_changes, title_change,
+    PaintCache, PanePaint, agent_window_title, cell_attributes, chooser_changes, cursor_changes,
+    divider_changes, help_changes, help_viewport, pane_changes, prompt_changes, title_change,
 };
 pub use sprag_terminal::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};
