@@ -11661,6 +11661,58 @@
         "The tree is a fresh read per keypress and per frame while the chooser is open; nothing bounds a very large registry"
       ]
     },
+    "R316": {
+      "decision_summary": "a client says where it is and what it just did",
+      "changes_bullets": [
+        "`sprag_host::report::Report` — the value a bound action's dispatch produces. `#[must_use]`, two states (silent / one line), and the ONLY silent constructor is `Report::on_screen()`, so a key that changes nothing cannot be written by omission. The sentences are DERIVED from the vocabulary: `no {kind} called \"{name}\"` reads `BoundAction::names` and `{spelling}: nowhere to go` reads the action's own `Display`.",
+        "`BoundAction::names() -> Option<(ActionSubject, &str)>` — what a binding NAMES, which is NOT its grouping `subject()`. A test caught the difference before it shipped: `switch-client` is filed under the CLIENT, so the first draft said *no client called \"ghost\"*.",
+        "`sprag_host::status::Status` + `sprag_tui::Split` — the terminal cut into the rectangle the panes fill and the row the client speaks in. `sprag-tui` reserves its bottom row permanently and REPORTS the smaller area to the daemon, so the arbitrated window is the space the panes actually have.",
+        "Three host answers now cross back that did not: `select_window` answers the window it landed on (the daemon always sent it; the client discarded it), `select_toward` answers whether the focus MOVED rather than a `PaneId` no caller read, and five outcome-bearing trait methods are `#[must_use]` — `Option` is not, which is the whole mechanism of the defect.",
+        "`switch_to_last_session` DELETED — one act had two methods, and the `()`-answering one was what the GUI called while `sprag-tui` called the answering twin.",
+        "`display-time` joins the options table (tmux's default 750, measured on this box); `sprag-gui` grows a message strip overlay with an `AriaRole::Status` live region."
+      ],
+      "verification_bullets": [
+        "MEASURED FIRST BY RUNNING THE SHIPPED BINARIES at `a7938b0`: a live `sprag-tui` on a real pty with `prefix g` bound to `switch-client -t ghost` came back with the screen BYTE-FOR-BYTE UNCHANGED — identical to an UNBOUND key's. The control that CAN move it is `prefix s`, whose chooser paints. Re-measured on the fixed build: the row reads `no session called \"ghost\"` 250 ms after the press and is back to `[2] 0:0*` once `display-time` expires.",
+        "Suite EXIT 0 / 46 targets / 2178 passed (baseline 2149). Clippy 0 with no suppression. Doc gate 0/16. Pixel smoke 215/0, RUN TWICE on the final tree (baseline 202; twelve new checks drive two bindings through the shipped GUI binary and judge on the daemon's viewer badge).",
+        "SEVEN REVERT-PROOFS, each with a control that came back RED, plus a harmless-edit control that stayed GREEN. One came back GREEN when it should have been red and that was the finding: the load-bearing half of the wire client's select is the `?` on a REFUSED request, not the `as_str()` beside it — recorded on the method rather than left as a wrong claim.",
+        "`WIRE_PROTOCOL` STAYS 14, measured the strongest way there is: the diff touches neither `sprag-host/src/wire.rs` nor the `sprag-rpc` crate at all.",
+        "THE TESTS FOUND THREE DEFECTS THE DESIGN DID NOT: the status row filling the bottom-right cell SCROLLED the whole screen away; the row was drawn AFTER the cursor, so the terminal's one cursor sat on it instead of in the focused pane; and the client's surface was sized to the PANE rectangle, which clamps an absolute cursor move so the row painted one line high and the terminal's real bottom row was never written."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "THE DEBT QUESTION, asked before the push, found the round's own defect one surface further in — the 27th round running that the first answer was NO. `sprag-gui`'s PALETTE is a third dispatcher and its arms dropped exactly the three answers the keyboard's arms had just been given. FIXED not registered: `Command::run` answers a `Report`, and the sentence comes from the row's paired `BoundAction` so a row and the key that reaches it cannot word it differently.",
+        "herdr `9a4ce5e1` is AHEAD ON HAVING A REPORT SURFACE AT ALL and the entry says so first: `ToastNotification` with three kinds, per-kind durations, a configurable position, in-app vs OS-native delivery and a mobile banner. sprag has one row and one strip and no OS notification. Where sprag goes past them is the MECHANISM: `execute_tui_navigate_action` dispatches 45 `NavigateAction` variants, returns `()` and emits ZERO toasts; `SwitchWorkspace(idx)` and `SwitchTab(idx)` are `if let Some(..) { }` with NO else; and `accept_navigator_selection_from` answers a `bool` that ALL THREE production callers discard (only a `#[cfg(test)]` assert reads it). They have no status line: `render_status_line` appears in their tree only as a string literal inside a parser test fixture.",
+        "STILL OPEN: the status row is NOT optional (no tmux `status off`) and that is a decision — an option that turns off the only surface a refusal can reach would put the silence back; the GUI's strip is not clickable and has no OS-native notification path; a message is CLIENT-LOCAL, so `sprag display-message -t <client>` does not exist and the daemon has no way to speak to a person; and `Report` has no severity, so a refusal and a note are painted the same."
+      ],
+      "publishable_decision_summary": "a client says where it is and what it just did",
+      "publishable_changes_bullets": [
+        "`sprag_host::report::Report` — the value a bound action's dispatch produces. `#[must_use]`, two states (silent / one line), and the ONLY silent constructor is `Report::on_screen()`, so a key that changes nothing cannot be written by omission. The sentences are DERIVED from the vocabulary: `no {kind} called \"{name}\"` reads `BoundAction::names` and `{spelling}: nowhere to go` reads the action's own `Display`.",
+        "`BoundAction::names() -> Option<(ActionSubject, &str)>` — what a binding NAMES, which is NOT its grouping `subject()`. A test caught the difference before it shipped: `switch-client` is filed under the CLIENT, so the first draft said *no client called \"ghost\"*.",
+        "`sprag_host::status::Status` + `sprag_tui::Split` — the terminal cut into the rectangle the panes fill and the row the client speaks in. `sprag-tui` reserves its bottom row permanently and REPORTS the smaller area to the daemon, so the arbitrated window is the space the panes actually have.",
+        "Three host answers now cross back that did not: `select_window` answers the window it landed on (the daemon always sent it; the client discarded it), `select_toward` answers whether the focus MOVED rather than a `PaneId` no caller read, and five outcome-bearing trait methods are `#[must_use]` — `Option` is not, which is the whole mechanism of the defect.",
+        "`switch_to_last_session` DELETED — one act had two methods, and the `()`-answering one was what the GUI called while `sprag-tui` called the answering twin.",
+        "`display-time` joins the options table (tmux's default 750, measured on this box); `sprag-gui` grows a message strip overlay with an `AriaRole::Status` live region."
+      ],
+      "publishable_verification_bullets": [
+        "MEASURED FIRST BY RUNNING THE SHIPPED BINARIES at `a7938b0`: a live `sprag-tui` on a real pty with `prefix g` bound to `switch-client -t ghost` came back with the screen BYTE-FOR-BYTE UNCHANGED — identical to an UNBOUND key's. The control that CAN move it is `prefix s`, whose chooser paints. Re-measured on the fixed build: the row reads `no session called \"ghost\"` 250 ms after the press and is back to `[2] 0:0*` once `display-time` expires.",
+        "Suite EXIT 0 / 46 targets / 2178 passed (baseline 2149). Clippy 0 with no suppression. Doc gate 0/16. Pixel smoke 215/0, RUN TWICE on the final tree (baseline 202; twelve new checks drive two bindings through the shipped GUI binary and judge on the daemon's viewer badge).",
+        "SEVEN REVERT-PROOFS, each with a control that came back RED, plus a harmless-edit control that stayed GREEN. One came back GREEN when it should have been red and that was the finding: the load-bearing half of the wire client's select is the `?` on a REFUSED request, not the `as_str()` beside it — recorded on the method rather than left as a wrong claim.",
+        "`WIRE_PROTOCOL` STAYS 14, measured the strongest way there is: the diff touches neither `sprag-host/src/wire.rs` nor the `sprag-rpc` crate at all.",
+        "THE TESTS FOUND THREE DEFECTS THE DESIGN DID NOT: the status row filling the bottom-right cell SCROLLED the whole screen away; the row was drawn AFTER the cursor, so the terminal's one cursor sat on it instead of in the focused pane; and the client's surface was sized to the PANE rectangle, which clamps an absolute cursor move so the row painted one line high and the terminal's real bottom row was never written."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "THE DEBT QUESTION, asked before the push, found the round's own defect one surface further in — the 27th round running that the first answer was NO. `sprag-gui`'s PALETTE is a third dispatcher and its arms dropped exactly the three answers the keyboard's arms had just been given. FIXED not registered: `Command::run` answers a `Report`, and the sentence comes from the row's paired `BoundAction` so a row and the key that reaches it cannot word it differently.",
+        "herdr `9a4ce5e1` is AHEAD ON HAVING A REPORT SURFACE AT ALL and the entry says so first: `ToastNotification` with three kinds, per-kind durations, a configurable position, in-app vs OS-native delivery and a mobile banner. sprag has one row and one strip and no OS notification. Where sprag goes past them is the MECHANISM: `execute_tui_navigate_action` dispatches 45 `NavigateAction` variants, returns `()` and emits ZERO toasts; `SwitchWorkspace(idx)` and `SwitchTab(idx)` are `if let Some(..) { }` with NO else; and `accept_navigator_selection_from` answers a `bool` that ALL THREE production callers discard (only a `#[cfg(test)]` assert reads it). They have no status line: `render_status_line` appears in their tree only as a string literal inside a parser test fixture.",
+        "STILL OPEN: the status row is NOT optional (no tmux `status off`) and that is a decision — an option that turns off the only surface a refusal can reach would put the silence back; the GUI's strip is not clickable and has no OS-native notification path; a message is CLIENT-LOCAL, so `sprag display-message -t <client>` does not exist and the daemon has no way to speak to a person; and `Report` has no severity, so a refusal and a note are painted the same."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
