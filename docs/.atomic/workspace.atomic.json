@@ -11117,6 +11117,80 @@
         "The palette advertises no chord and has no resize rows; R307 widens that hole by eight keys."
       ]
     },
+    "R308": {
+      "decision_summary": "What the keys do is a thing the keys can show: one derived view of the keymap in force, painted by both frontends and printed by the CLI, that also names every action no key reaches.",
+      "changes_bullets": [
+        "what the keys do had NO answer inside sprag: neither frontend showed a binding, so a user had to leave the terminal and run sprag list-keys in a shell — the one moment they cannot — and the only place in the product that displayed a chord was the GUI palette's five hardcoded strings",
+        "sprag_host::keyhelp renders a keymap in force as ROWS, derived from the two authorities that already existed: BoundAction's Display (the canonical spelling list-keys prints and parse reads back) and BoundAction::VOCABULARY, \"the ONE enumeration\" — nothing in the module writes down the name of an action, a flag or a key",
+        "the view answers TWO questions: what your keys do, grouped by BoundAction::subject (an exhaustive match, so a verb added later must state its group), and what else you could bind — the whole vocabulary, each form marked when no key reaches its verb",
+        "list-keys joins the vocabulary as a bindable action on tmux's own prefix ?, so the key that opens the table appears in the table it opens and is rebindable by the same file as everything else",
+        "BoundAction::reaches sees THROUGH a guard: prefix & is confirm-before kill-window and reaches both, which a test measured before it existed — the first version reported kill-window unbound while the key that kills the window sat three lines above",
+        "both frontends paint it: sprag-tui gets a full-screen overlay and sprag-gui a modal, and sprag-tui's two overlay Options became ONE exclusive Overlay so a question and the key table cannot both be up",
+        "KeyHelp::pressed decides what each key MEANS (arrows and j/k, PageUp/PageDown with less's b/f, Home/End, q/Escape/Enter) so two clients cannot drift, and Shift is ignored on a character key — the shipped defect R306 measured on prefix %",
+        "sprag list-keys -N is the third surface, on tmux's own flag, so the paste-back form every script filters on stays a contract rather than being reshaped for readability",
+        "the GUI palette's hint column now READS THE USER'S TABLE: Command::bound is the one place the catalog and the keymap meet, a rebound key teaches itself, and a row whose verb nothing reaches advertises nothing — the entry four register items carried while three rounds added keys it could not show",
+        "herdr has had this surface for longer and its own has DRIFTED: keybind_help.rs is a hand-written list of help_entry calls naming 43 of the 47 bindable actions in its Keybinds struct, so a herdr user pressing their help key is never told the four swap_pane bindings exist"
+      ],
+      "verification_bullets": [
+        "suite EXIT 0 / 46 targets / 2073 tests (R307 left 2043); clippy 0 with no suppression; fmt; doc gate 0/16",
+        "pixel smoke 169/0 on a REBUILT release set (ten checks new, was 159/0), driving prefix ? through the shipped sprag-gui binary and reading the rows the panel actually PAINTED",
+        "a live sprag-tui on a real pseudoterminal with a real config.toml: the rows show C-a because the file moved the prefix, never C-b — the discriminator a unit test seeded with defaults could not make",
+        "a second live pty test whose pane PRINTS underneath, because the first version of that claim was VACUOUS: a resize does not drive it (a terminal keeps glyphs nobody writes over, which is R306's own recorded finding) and the revert-proof passed until the gesture became output landing in the cells the table covers",
+        "SEVEN revert-proofs each shown to DISCRIMINATE with a CONTROL shown green after each: the chord in force, the TUI's keyboard ownership, the TUI's repaint path, the palette hint's derivation, both directions of the CLI's -N contract, and the usage line",
+        "a live CLI test: -N grouped and showing the chord in force, the paste-back form asserted byte-shaped as before, and the unbound mark moving with the file",
+        "WIRE_PROTOCOL STAYS 9 and it is MEASURED, not asserted: git diff over the whole round touches neither crates/sprag-host/src/wire.rs nor crates/sprag-rpc at all, so there is no daemon-too-old case to have",
+        "a CONFIG skew run both ways: a parent-commit sprag reading a config that binds list-keys names the verb and lists what it does have, which is what the vocabulary is for"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "THE CLIENT'S OWN RESERVED CHORDS ARE NOT IN THE TABLE. Ctrl+Shift+P opens the palette and Ctrl+Shift+F the find bar, and neither is in the keymap, so neither can be in a view derived from it. A GUI user pressing ? learns nothing about the chord that opens the surface they would otherwise use to find things. It is a second table, not a missing row, and merging them is a design question rather than a line.",
+        "THE PALETTE ROW WAS MISSING AND THE AUDIT FOUND IT — a round about discoverability shipped its answer behind a key and left this client's own by-name surface with no way to reach it. FIXED, not registered.",
+        "THE USAGE LINE WENT STALE ON THE ROUND THAT ADDED THE FLAG, which is exactly what that const's own doc warns about. FIXED and pinned; the general gap (nothing checks that USAGE lists what the binary does) stands and needs a verb enumeration this binary has not got.",
+        "NO MCP TOOL READS THE TABLE. An agent presses no keys, and the keymap is a CLIENT's file the daemon never reads, so there is nothing on the wire for a tool to ask. Stated so it is not mistaken for an oversight; it changes the day an agent drives a frontend rather than the daemon.",
+        "A TUI USER IS TOLD NOTHING AT BOOT. prefix ? has to be known, exactly as tmux's does, and sprag-tui has no palette to discover it in. Parity, not a gap — worth re-deciding if a first-run hint ever exists.",
+        "THE SMOKE CHECK BEFORE THIS ONE LEAVES A REPEAT WINDOW OPEN, and that is a hazard nothing had noticed a check could leave: inside it C-b is send-prefix, so a prefix pressed by the next check goes to the pane. Item 15's \"a check leaves a state for whatever follows it\" on a new resource; this check waits past repeat-time and says why.",
+        "THE GUI'S ROW HEIGHT IS A CONSTANT, so a user's font size and the panel's rows can disagree — the terminal client measures in cells and cannot. It is the same class as the chord column's characters-to-pixels conversion beside it."
+      ],
+      "publishable_decision_summary": "What the keys do is a thing the keys can show: one derived view of the keymap in force, painted by both frontends and printed by the CLI, that also names every action no key reaches.",
+      "publishable_changes_bullets": [
+        "what the keys do had NO answer inside sprag: neither frontend showed a binding, so a user had to leave the terminal and run sprag list-keys in a shell — the one moment they cannot — and the only place in the product that displayed a chord was the GUI palette's five hardcoded strings",
+        "sprag_host::keyhelp renders a keymap in force as ROWS, derived from the two authorities that already existed: BoundAction's Display (the canonical spelling list-keys prints and parse reads back) and BoundAction::VOCABULARY, \"the ONE enumeration\" — nothing in the module writes down the name of an action, a flag or a key",
+        "the view answers TWO questions: what your keys do, grouped by BoundAction::subject (an exhaustive match, so a verb added later must state its group), and what else you could bind — the whole vocabulary, each form marked when no key reaches its verb",
+        "list-keys joins the vocabulary as a bindable action on tmux's own prefix ?, so the key that opens the table appears in the table it opens and is rebindable by the same file as everything else",
+        "BoundAction::reaches sees THROUGH a guard: prefix & is confirm-before kill-window and reaches both, which a test measured before it existed — the first version reported kill-window unbound while the key that kills the window sat three lines above",
+        "both frontends paint it: sprag-tui gets a full-screen overlay and sprag-gui a modal, and sprag-tui's two overlay Options became ONE exclusive Overlay so a question and the key table cannot both be up",
+        "KeyHelp::pressed decides what each key MEANS (arrows and j/k, PageUp/PageDown with less's b/f, Home/End, q/Escape/Enter) so two clients cannot drift, and Shift is ignored on a character key — the shipped defect R306 measured on prefix %",
+        "sprag list-keys -N is the third surface, on tmux's own flag, so the paste-back form every script filters on stays a contract rather than being reshaped for readability",
+        "the GUI palette's hint column now READS THE USER'S TABLE: Command::bound is the one place the catalog and the keymap meet, a rebound key teaches itself, and a row whose verb nothing reaches advertises nothing — the entry four register items carried while three rounds added keys it could not show",
+        "herdr has had this surface for longer and its own has DRIFTED: keybind_help.rs is a hand-written list of help_entry calls naming 43 of the 47 bindable actions in its Keybinds struct, so a herdr user pressing their help key is never told the four swap_pane bindings exist"
+      ],
+      "publishable_verification_bullets": [
+        "suite EXIT 0 / 46 targets / 2073 tests (R307 left 2043); clippy 0 with no suppression; fmt; doc gate 0/16",
+        "pixel smoke 169/0 on a REBUILT release set (ten checks new, was 159/0), driving prefix ? through the shipped sprag-gui binary and reading the rows the panel actually PAINTED",
+        "a live sprag-tui on a real pseudoterminal with a real config.toml: the rows show C-a because the file moved the prefix, never C-b — the discriminator a unit test seeded with defaults could not make",
+        "a second live pty test whose pane PRINTS underneath, because the first version of that claim was VACUOUS: a resize does not drive it (a terminal keeps glyphs nobody writes over, which is R306's own recorded finding) and the revert-proof passed until the gesture became output landing in the cells the table covers",
+        "SEVEN revert-proofs each shown to DISCRIMINATE with a CONTROL shown green after each: the chord in force, the TUI's keyboard ownership, the TUI's repaint path, the palette hint's derivation, both directions of the CLI's -N contract, and the usage line",
+        "a live CLI test: -N grouped and showing the chord in force, the paste-back form asserted byte-shaped as before, and the unbound mark moving with the file",
+        "WIRE_PROTOCOL STAYS 9 and it is MEASURED, not asserted: git diff over the whole round touches neither crates/sprag-host/src/wire.rs nor crates/sprag-rpc at all, so there is no daemon-too-old case to have",
+        "a CONFIG skew run both ways: a parent-commit sprag reading a config that binds list-keys names the verb and lists what it does have, which is what the vocabulary is for"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "THE CLIENT'S OWN RESERVED CHORDS ARE NOT IN THE TABLE. Ctrl+Shift+P opens the palette and Ctrl+Shift+F the find bar, and neither is in the keymap, so neither can be in a view derived from it. A GUI user pressing ? learns nothing about the chord that opens the surface they would otherwise use to find things. It is a second table, not a missing row, and merging them is a design question rather than a line.",
+        "THE PALETTE ROW WAS MISSING AND THE AUDIT FOUND IT — a round about discoverability shipped its answer behind a key and left this client's own by-name surface with no way to reach it. FIXED, not registered.",
+        "THE USAGE LINE WENT STALE ON THE ROUND THAT ADDED THE FLAG, which is exactly what that const's own doc warns about. FIXED and pinned; the general gap (nothing checks that USAGE lists what the binary does) stands and needs a verb enumeration this binary has not got.",
+        "NO MCP TOOL READS THE TABLE. An agent presses no keys, and the keymap is a CLIENT's file the daemon never reads, so there is nothing on the wire for a tool to ask. Stated so it is not mistaken for an oversight; it changes the day an agent drives a frontend rather than the daemon.",
+        "A TUI USER IS TOLD NOTHING AT BOOT. prefix ? has to be known, exactly as tmux's does, and sprag-tui has no palette to discover it in. Parity, not a gap — worth re-deciding if a first-run hint ever exists.",
+        "THE SMOKE CHECK BEFORE THIS ONE LEAVES A REPEAT WINDOW OPEN, and that is a hazard nothing had noticed a check could leave: inside it C-b is send-prefix, so a prefix pressed by the next check goes to the pane. Item 15's \"a check leaves a state for whatever follows it\" on a new resource; this check waits past repeat-time and says why.",
+        "THE GUI'S ROW HEIGHT IS A CONSTANT, so a user's font size and the panel's rows can disagree — the terminal client measures in cells and cannot. It is the same class as the chord column's characters-to-pixels conversion beside it."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
