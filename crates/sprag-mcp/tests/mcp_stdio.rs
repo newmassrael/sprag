@@ -2314,13 +2314,24 @@ fn the_whole_roster_reaches_a_pane_one_window_over() {
             }
         }
         let answer = server.call_tool_raw(&name, Value::Object(args));
+        let errored = answer["result"]["isError"] == json!(true);
         let text = answer["result"]["content"][0]["text"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        // ⚠ THE FIRST VERSION OF THIS ASSERTION WAS TOO WEAK, and a revert-proof is what found it:
+        // it checked only that the sentence was not "no pane is called", so a tool that resolved
+        // the NAME and then sent the request WITHOUT the window — which reaches the wrong window's
+        // scene and fails some other way — passed. Dropping the window out of `pane_params` left
+        // this green while the whole round's mechanism was gone.
+        //
+        // So the assertion is total: the call SUCCEEDS, or it refuses on AUTHORSHIP (R294's gate,
+        // which is about who opened the pane and not about where it is). Any other error means the
+        // request did not arrive at the pane the caller named.
         assert!(
-            !text.contains("no pane is called"),
-            "{name} cannot resolve a pane NAME one window over: {text}",
+            !errored || text.contains("not by you"),
+            "{name} did not reach a pane one window over — it must succeed, or refuse on \
+             authorship, and it did neither: {text}",
         );
         checked.push(name);
     }
@@ -2858,4 +2869,125 @@ fn an_agent_sizes_the_pane_it_opened_and_no_other() {
         json!({ "pane": "build", "dir": "left", "cells": 0 }),
     );
     assert!(zero.contains("1 or more"), "{zero}");
+}
+
+/// An agent reads a FAR window's ARRANGEMENT by naming a pane in it — and the drawing hands back
+/// the handles that reach it, never numbers that would land somewhere else.
+///
+/// `pane_layout` takes the same `pane` argument every other tool takes rather than a second
+/// `window` grammar: an agent that has just been told about a pane one window over
+/// (`list_windows`, `wait_for_change`) asks about that window with the vocabulary it already has.
+#[test]
+fn the_arrangement_of_another_window_is_read_by_naming_a_pane_in_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let far = mux_query_panes(&sock)
+        .first()
+        .copied()
+        .expect("the new window's birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "faraway" }),
+    );
+    // TWO panes over there, so the far drawing has a SPLIT in it — a one-pane window would render
+    // identically whichever window was read, and the assertion below would prove nothing.
+    mux_invoke(
+        &sock,
+        SPLIT_ACTION,
+        json!({ "pane": far, "dir": "horizontal" }),
+    );
+    mux_invoke(&sock, SELECT_WINDOW_ACTION, json!({ "window": "0" }));
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    // The caller's OWN window first — the control, and it must NOT look like the far one.
+    let mine = server.call_tool("pane_layout", json!({}));
+    assert!(
+        mine.contains("How YOUR WINDOW's panes are arranged") && mine.contains("pane 1 (id 0)"),
+        "the unnarrowed drawing is still the caller's own window: {mine}",
+    );
+    assert!(
+        !mine.contains("faraway"),
+        "and it does not hold the far pane, or the two drawings could not be told apart: {mine}",
+    );
+
+    let over_there = server.call_tool("pane_layout", json!({ "pane": "faraway" }));
+    assert!(
+        over_there.contains("How WINDOW 1's panes are arranged"),
+        "naming a pane draws ITS window: {over_there}",
+    );
+    assert!(
+        over_there.contains("name=\"faraway\""),
+        "and the far pane is in the drawing: {over_there}",
+    );
+    assert!(
+        over_there.contains("its panes carry no numbers here; address them by NAME"),
+        "which says why there are no numbers rather than leaving a reader to wonder: {over_there}",
+    );
+    // ⚠ THE POINT. A number in a far window's drawing would be read straight back as `pane: N` and
+    // land on a DIFFERENT pane — the positional confusion the whole name grammar exists to remove.
+    assert!(
+        !over_there.contains("pane 1 (id"),
+        "no numbers for a window that is not the caller's: {over_there}",
+    );
+    assert_ne!(mine, over_there, "two windows, two drawings");
+}
+
+/// **A LIVE PANE ONE WINDOW OVER IS NOT "GONE" — a shipped defect, measured, in code R311 did not
+/// touch.**
+///
+/// `pane_processes` and `wait_for_change` both read something REGISTRY- or SESSION-wide and named
+/// its rows against ONE window's listing, so every row belonging to another window came out as
+/// *"pane ? (id N, gone since the pane list was read)"*. Measured through the shipped server
+/// against a real two-window daemon at `e7be5eb`, the answer read:
+///
+/// ```text
+/// pane ? (id 1, gone since the pane list was read) on /dev/pts/13, child process 1208219
+///   running (job 1208219): 1208219 bash /bin/bash
+/// ```
+///
+/// — the tty and the pid of a pane it had just called gone, in the same breath. The residual
+/// sentence was written for a genuine race (a pane that exits between two reads) and had come to
+/// fire for the ordinary case on any multi-window session.
+///
+/// Driven live rather than only unit-pinned, because the unit fixture is one this round wrote and
+/// the failure was in what a real daemon's registry-wide reading looks like from one window.
+#[test]
+fn a_running_pane_in_another_window_is_not_reported_as_gone() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    let far = mux_query_panes(&sock)
+        .first()
+        .copied()
+        .expect("the new window's birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "faraway" }),
+    );
+    mux_invoke(&sock, SELECT_WINDOW_ACTION, json!({ "window": "0" }));
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    // The fixture must really be two windows, and the far pane must really be running something.
+    let windows = server.call_tool("list_windows", json!({}));
+    assert!(
+        windows.contains("window 1") && windows.contains("\"faraway\""),
+        "the fixture holds a NAMED pane one window over: {windows}",
+    );
+
+    let running = server.call_tool("pane_processes", json!({}));
+    assert!(
+        running.contains(&format!("pane id {far} (window 1)")),
+        "a pane one window over is named by WHERE IT IS: {running}",
+    );
+    assert!(
+        !running.contains(&format!("pane ? (id {far}")),
+        "and never as gone — it is running, and this answer says so two lines down: {running}",
+    );
+    // The CONTROL: the caller's OWN pane is still numbered, so the fix did not simply stop
+    // numbering everything.
+    assert!(
+        running.contains("pane 1 (id 0)"),
+        "your own window still numbers its panes: {running}",
+    );
 }

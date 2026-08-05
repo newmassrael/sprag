@@ -5829,3 +5829,94 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
         "the usage must claim exactly the reach the verbs were just measured to have: {usage}",
     );
 }
+
+/// The round's claim end to end at the CLI: an operator NAMES a pane in one window, then works on
+/// it from another — writing to it, reading it back, searching it and asking what it runs.
+///
+/// The middle step is the whole of it. A test that named a pane and read it in the SAME window
+/// would pass on the build this round replaces, so the fixture puts the pane one window over and
+/// asserts it is not among the caller's own before anything is claimed.
+#[test]
+fn an_operator_works_on_a_named_pane_in_another_window() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new-window", "-t", "0"]).ok);
+    let far = sprag(&sock, &["panes", "-t", "0"])
+        .stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split(':').next().map(str::to_owned))
+        .expect("the new window's birth pane");
+    assert!(sprag(&sock, &["rename-pane", &far, "buildout", "-t", "0"]).ok);
+    assert!(sprag(&sock, &["select-window", "0", "-t", "0"]).ok);
+
+    // ⚠ THE FIXTURE MUST DISCRIMINATE — see the ratchet above.
+    let here = sprag(&sock, &["panes", "-t", "0"]).stdout;
+    assert!(
+        !here.lines().any(|row| row.starts_with(&format!("{far}:"))),
+        "`buildout` must be in ANOTHER window or nothing below discriminates: {here}",
+    );
+
+    // WRITE to it by name, from a window that does not hold it.
+    assert!(
+        sprag(
+            &sock,
+            &["send-keys", "buildout", "-l", "R312-MARKER", "-t", "0"]
+        )
+        .ok
+    );
+    assert!(sprag(&sock, &["send-keys", "buildout", "Enter", "-t", "0"]).ok);
+
+    // READ it back by name. Polled rather than slept on: the pane's child echoes when it echoes.
+    let mut screen = String::new();
+    for _ in 0..200 {
+        screen = sprag(&sock, &["capture-pane", "buildout", "-t", "0"]).stdout;
+        if screen.contains("R312-MARKER") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        screen.contains("R312-MARKER"),
+        "the write and the read both reached a pane one window over: {screen:?}",
+    );
+
+    // SEARCH it by name, and the answer names the pane the caller asked about.
+    let found = sprag(
+        &sock,
+        &["find", "R312-MARKER", "--pane", "buildout", "-t", "0"],
+    );
+    assert!(found.ok, "find by name: {}", found.stderr);
+    assert!(
+        found.stdout.contains("R312-MARKER"),
+        "and it found the line: {}",
+        found.stdout,
+    );
+
+    // Ask WHAT IT RUNS by name — a registry-wide reading, narrowed client-side.
+    let running = sprag(&sock, &["processes", "buildout"]);
+    assert!(running.ok, "processes by name: {}", running.stderr);
+    assert!(
+        running.stdout.contains(&format!("{far}: ")),
+        "and it narrowed to that pane: {}",
+        running.stdout,
+    );
+
+    // And the CONTROL that says the narrowing is real rather than the whole listing: the caller's
+    // OWN pane is not in it. Without this the assertion above passes on a verb that ignores `pane`.
+    assert!(
+        !running.stdout.contains("\n0: "),
+        "the narrowing is real — pane 0 is the caller's own and must not be here: {}",
+        running.stdout,
+    );
+
+    // A NUMBER still never leaves the caller's window... except that a CLI number is a registry
+    // id, which never moves, so it reaches too — and that is the self-contradiction this round
+    // removed: `zoom-pane <far>` used to succeed while `capture-pane <far>` refused the same pane.
+    let by_id = sprag(&sock, &["capture-pane", &far, "-t", "0"]);
+    assert!(by_id.ok, "an id reaches as far as a name: {}", by_id.stderr);
+    assert!(by_id.stdout.contains("R312-MARKER"), "{}", by_id.stdout);
+    assert!(
+        sprag(&sock, &["zoom-pane", &far, "-t", "0"]).ok,
+        "and the verb that ALWAYS reached still does — the two agree now",
+    );
+}
