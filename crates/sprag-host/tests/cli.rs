@@ -564,11 +564,11 @@ fn a_refused_agent_report_names_the_pane_and_not_the_wire() {
         assert!(!run.ok, "{verb} for a pane that is not there fails");
         assert_eq!(
             run.stderr.trim(),
-            format!(
-                "sprag: {verb}: the daemon refused pane 999 — either no pane 999 exists on it \
-                 (check `sprag panes`), or this host runs no agent detector. All it could say \
-                 was \"InvokeRejected\""
-            ),
+            // The refusal is the RESOLVER's now, and it is exact: before R312 the pane half of
+            // this reached the daemon, came back as a payload-less `Rejected`, and had to be
+            // rendered as a two-way guess (upstream PINION-PR82). Resolving the pane first
+            // answers one half locally and leaves the other half to say only what it means.
+            format!("sprag: {verb}: no pane 999 in the default session (panes: [0])"),
             "the refusal is the sentence a person reads",
         );
     }
@@ -1509,11 +1509,12 @@ fn the_cli_find_narrows_to_one_pane_and_rejects_an_absent_one() {
         absent.stderr,
     );
 
-    // A non-numeric --pane is rejected locally, before any request reaches the daemon.
+    // A non-numeric `--pane` is a NAME now, so it is resolved rather than rejected by shape — and
+    // the refusal names what IS in the session, which a local shape check could never do.
     let bad = sprag(&sock, &["find", "shared marker", "--pane", "abc"]);
-    assert!(!bad.ok, "a non-numeric pane id fails");
+    assert!(!bad.ok, "a name no pane carries fails");
     assert!(
-        bad.stderr.contains("is not a pane id"),
+        bad.stderr.contains("no pane is called \"abc\""),
         "with a clear message: {}",
         bad.stderr,
     );
@@ -1672,7 +1673,7 @@ fn the_cli_waits_for_output_a_pane_has_not_printed_yet() {
 
     // And the argument checks the caller can act on, each named.
     let no_pane = sprag(&sock, &["wait-for-output", "anything"]);
-    assert!(!no_pane.ok && no_pane.stderr.contains("--pane N is required"));
+    assert!(!no_pane.ok && no_pane.stderr.contains("--pane is required"));
     let no_needle = sprag(&sock, &["wait-for-output", "--pane", "0"]);
     assert!(!no_needle.ok && no_needle.stderr.contains("a search needle is required"));
 }
@@ -2336,10 +2337,12 @@ fn the_cli_splits_lists_and_kills_panes_over_the_socket() {
         "the window is empty, so the bare form really acted on the pane the session was on",
     );
 
-    // Argument errors are still local, before any request goes out.
-    let junk = sprag(&sock, &["kill-pane", "nope"]);
+    // SHAPE errors are still local, before any request goes out. Note what is NOT one any more:
+    // `kill-pane nope` used to fail here as "pane id must be a number", and `nope` is a NAME now —
+    // which can only be told apart from a real pane BY ASKING, so that check is necessarily remote.
+    let junk = sprag(&sock, &["kill-pane", "1", "2"]);
     assert!(
-        !junk.ok && junk.stderr.contains("pane id"),
+        !junk.ok && junk.stderr.contains("unexpected argument"),
         "arg error: {}",
         junk.stderr,
     );
@@ -3323,7 +3326,7 @@ fn the_cli_steps_a_direction_from_the_pane_it_names() {
     let ghost = sprag(&sock, &["select-pane", "-L", "--from", "9999"]);
     assert!(!ghost.ok, "an unknown origin is refused");
     assert!(
-        ghost.stderr.contains("9999") && ghost.stderr.contains("step from"),
+        ghost.stderr.contains("9999") && ghost.stderr.contains("--from"),
         "and names it as the ORIGIN, not as the target: {}",
         ghost.stderr,
     );
@@ -3384,7 +3387,8 @@ fn split_window_refuses_a_half_stated_placement_and_honours_the_bare_form() {
         (vec!["split-window", "0"], "needs an axis"),
         (vec!["split-window", "-b"], "needs -h or -v"),
         (vec!["split-window", "-h", "-v", "0"], "only one"),
-        (vec!["split-window", "nope"], "neither a flag nor a pane id"),
+        // `nope` is a NAME now, so the missing thing is the AXIS — the same answer `0` gets.
+        (vec!["split-window", "nope"], "needs an axis"),
     ] {
         let run = sprag(&sock, &args);
         assert!(!run.ok, "{args:?} is refused, not guessed at");
@@ -3402,11 +3406,12 @@ fn split_window_refuses_a_half_stated_placement_and_honours_the_bare_form() {
 
     // A pane the window does not hold is the daemon's refusal, not the parser's — and it too
     // must leave nothing behind.
+    // A pane the SESSION does not hold is refused by the resolver, naming what it does hold.
     let missing = sprag(&sock, &["split-window", "-v", "9999"]);
     assert!(!missing.ok, "an unreachable target is refused");
     assert!(
-        missing.stderr.contains("9999") && missing.stderr.contains("tiling"),
-        "and the refusal names the pane and the reason: {}",
+        missing.stderr.contains("9999") && missing.stderr.contains("panes: [0]"),
+        "and the refusal names the pane and what IS there: {}",
         missing.stderr,
     );
     assert_eq!(
@@ -5622,5 +5627,205 @@ fn the_usage_line_names_the_flag_list_keys_takes() {
         run.stderr.contains("list-keys [-N]"),
         "the usage names the notes form, or a user cannot find it: {}",
         run.stderr,
+    );
+}
+
+/// **THE CLI RATCHET: every verb the USAGE says takes a PANE accepts a NAME, and reaches a pane one
+/// window over — and the list of verbs is DERIVED FROM THE USAGE, not written here.**
+///
+/// # Why the usage is the source
+///
+/// The usage text is the CLI's own published claim about which verbs take a pane. Before R312 that
+/// claim was false for every one of them: measured against a live two-window daemon at `e7be5eb`,
+/// **no CLI verb accepted a pane's NAME at all**, and the refusals came in SIX different sentences
+/// (`pane id "x" must be a number` / `"x" is not a pane id` / `"x" is neither a direction flag nor
+/// a pane id` / `"x" is neither a flag nor a pane id` / `"x" is neither -t nor a pane id` /
+/// `--pane "x" is not a pane id (a number)`). Worse, the CLI contradicted itself about whether a
+/// pane existed: `zoom-pane 1` / `rename-pane 1` / `swap-pane 1 0` succeeded against a pane one
+/// window over while `capture-pane 1` / `agent 1` / `select-pane 1` refused it, on the same daemon
+/// at the same instant.
+///
+/// Deriving the list means a verb ADDED to the usage with a PANE is checked the day it is added,
+/// and a verb that resolves its pane against one window fails here by name.
+///
+/// # What it asserts
+///
+/// That the ADDRESS RESOLVES — never that the verb succeeds. `resize-pane` legitimately refuses a
+/// window nothing is watching (measured with a control: it refuses the caller's OWN window
+/// identically), and `split-window` refuses a target with no axis. What must not happen is a
+/// refusal about the SPELLING, which is what all six sentences above were.
+#[test]
+fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
+    let (_host, sock) = spawn_host();
+
+    // A fixture per verb, ALL BUILT UP FRONT, and that is not tidiness: these verbs REACH, so
+    // `kill-pane` ends the far pane's window, `join-pane` and `swap-pane` move panes into the
+    // caller's own, and any of those would leave a later check measuring nothing. Each verb gets
+    // its own window and its own name, so no verb can disturb another's.
+    let build = |sock: &Path, name: &str| {
+        assert!(sprag(sock, &["new-window", "-t", "0"]).ok);
+        let listed = sprag(sock, &["panes", "-t", "0"]).stdout;
+        let rows: Vec<&str> = listed.lines().collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "a new window is born with exactly one pane, or this fixture is looking at the wrong \
+             window: {listed}",
+        );
+        let far = rows[0].split(':').next().expect("a pane id").to_owned();
+        assert!(sprag(sock, &["rename-pane", &far, name, "-t", "0"]).ok);
+        // The pane PRINTS, so `wait-for-output` has something to see: it parks with no deadline by
+        // design, and a ratchet that hung on it would be measuring nothing at all.
+        assert!(sprag(sock, &["send-keys", name, "-l", "marker", "-t", "0"]).ok);
+        assert!(sprag(sock, &["send-keys", name, "Enter", "-t", "0"]).ok);
+        far
+    };
+
+    // A sample per ARGUMENT SHAPE the usage spells, so a verb built from shapes already here needs
+    // no edit — and one that introduces a new shape fails loudly naming it. Failing closed is the
+    // point: a silently skipped verb is a verb this ratchet believes it covered.
+    let extra = |verb: &str| -> Vec<&'static str> {
+        match verb {
+            "find" | "wait-for-output" => vec!["marker"],
+            "join-pane" => vec!["0"],
+            "move-pane" => vec!["-h", "0"],
+            "select-pane" | "swap-pane" | "resize-pane" => vec!["-L"],
+            "split-window" => vec!["-h"],
+            "rename-pane" => vec!["renamed"],
+            "send-keys" => vec!["Escape"],
+            "report-agent" => vec!["working"],
+            "break-pane" | "processes" | "kill-pane" | "zoom-pane" | "capture-pane" | "agent"
+            | "release-agent" | "events" => vec![],
+            other => panic!(
+                "the usage says {other:?} takes a PANE and this ratchet has no other arguments for \
+                 it. Add them — a skipped verb is a verb this test believes it covered."
+            ),
+        }
+    };
+
+    // Every verb the usage spells with a PANE, and HOW it takes one (positionally or behind
+    // `--pane`). Parsed from the usage rather than listed, so the two cannot drift.
+    //
+    // The usage groups a run of verbs as `sprag <A | B | C> [-t SESSION]`, and a single verb's own
+    // alternatives as `report-agent <working|blocked|idle>`. Both put a `|` inside `<…>`, so depth
+    // alone cannot tell them apart — what does is WHERE the group opens: immediately after
+    // `sprag ` it lists verbs, anywhere else it lists one verb's arguments.
+    let usage = sprag(&sock, &["--help"]).stderr;
+    let flat = usage.replace('\n', " ");
+    let mut forms: Vec<String> = Vec::new();
+    for run in flat.split("sprag ").skip(1) {
+        let run = run.trim();
+        let Some(group) = run.strip_prefix('<') else {
+            forms.push(run.to_owned());
+            continue;
+        };
+        let mut current = String::new();
+        let mut depth = 0_i32;
+        // `[` counts as well as `<`: `split-window [-h|-v [-b] [PANE]]` puts a `|` inside square
+        // brackets, and reading `-v` as a verb is what a bracket-blind split does.
+        for ch in group.chars() {
+            match ch {
+                '<' | '[' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' if depth == 0 => break,
+                '>' | ']' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                '|' if depth == 0 => forms.push(std::mem::take(&mut current)),
+                _ => current.push(ch),
+            }
+        }
+        forms.push(current);
+    }
+    let mut verbs: Vec<(String, bool)> = Vec::new();
+    for form in &forms {
+        let form = form.trim();
+        let Some(verb) = form.split_whitespace().next() else {
+            continue;
+        };
+        let verb = verb.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+        if verb.is_empty() || form.contains("PANE is a pane's id") {
+            continue;
+        }
+        if form.contains("PANE")
+            && !form.starts_with("PANE")
+            && !verbs.iter().any(|(known, _)| known == verb)
+        {
+            verbs.push((verb.to_owned(), form.contains("--pane PANE")));
+        }
+    }
+    assert!(
+        !verbs.is_empty(),
+        "the usage parse found no pane-taking verb at all: {usage}",
+    );
+
+    // Build them all, then step back to window 0 — and prove the fixtures really are ELSEWHERE,
+    // because "reaches another window" is trivially true on a one-window daemon, which is the
+    // mistake R311's first skew probe made.
+    let names: Vec<String> = (0..verbs.len()).map(|n| format!("far-{n}")).collect();
+    let ids: Vec<String> = names.iter().map(|name| build(&sock, name)).collect();
+    assert!(sprag(&sock, &["select-window", "0", "-t", "0"]).ok);
+    let here = sprag(&sock, &["panes", "-t", "0"]).stdout;
+    for id in &ids {
+        assert!(
+            !here.lines().any(|row| row.starts_with(&format!("{id}:"))),
+            "window 0 must hold none of the fixtures, or nothing below discriminates: {here}",
+        );
+    }
+
+    let mut checked: Vec<String> = Vec::new();
+    for ((verb, flagged), name) in verbs.iter().zip(&names) {
+        let mut args: Vec<&str> = vec![verb];
+        if *flagged {
+            args.extend(extra(verb));
+            args.extend(["--pane", name]);
+        } else {
+            args.push(name);
+            args.extend(extra(verb));
+        }
+        args.extend(["-t", "0"]);
+        let run = sprag(&sock, &args);
+        assert!(
+            !run.stderr.contains("no pane is called")
+                && !run.stderr.contains("must be a number")
+                && !run.stderr.contains("is not a pane id")
+                && !run.stderr.contains("neither"),
+            "`sprag {}` cannot resolve a pane NAME one window over: {}",
+            args.join(" "),
+            run.stderr,
+        );
+        checked.push(verb.clone());
+    }
+
+    // The ratchet is worth nothing if it walked an empty usage, and naming the verbs the
+    // measurement found refusing is what makes it a regression pin rather than a shape test.
+    for wanted in [
+        "capture-pane",
+        "send-keys",
+        "agent",
+        "select-pane",
+        "zoom-pane",
+        "rename-pane",
+        "swap-pane",
+        "resize-pane",
+        "processes",
+        "find",
+        "wait-for-output",
+    ] {
+        assert!(
+            checked.iter().any(|verb| verb == wanted),
+            "the usage no longer spells a PANE for {wanted}, so this ratchet stopped covering it: \
+             {checked:?}",
+        );
+    }
+
+    // And the usage's own SENTENCE about what a PANE is, checked against what was just measured.
+    assert!(
+        usage.contains("PANE is a pane's id")
+            && usage.contains("Either spelling reaches any WINDOW of the session"),
+        "the usage must claim exactly the reach the verbs were just measured to have: {usage}",
     );
 }

@@ -78,7 +78,7 @@
 //! sprag agent [-t SESSION] [PANE]                 what the AI agent in each pane is doing
 //! sprag report-agent STATE [--pane N] [--source S]  say what the agent in a pane is DOING
 //!                          [--name AGENT] [--seq N]  (the pane defaults to $SPRAG_PANE)
-//! sprag release-agent [-t SESSION] [--pane N]      hand the pane back to screen inference
+//! sprag release-agent [-t SESSION] [--pane PANE]      hand the pane back to screen inference
 //! sprag install-hooks [AGENT…] [--yes] [--dry-run]  wire an agent's OWN config to report-agent,
 //! sprag uninstall-hooks [AGENT…] [--yes] [--dry-run]  so it says what it is doing instead of
 //! sprag list-hooks                         being guessed at. Writes under $HOME, so it ASKS:
@@ -156,6 +156,9 @@ use serde_json::{Value, json};
 use sprag_host::events::EventKind;
 use sprag_host::hooks::{self, HookError, Target};
 use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
+use sprag_host::pane_address::{
+    NamedPane, PaneAddress, PaneListing, ambiguous_pane_name, unknown_pane_name_with,
+};
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, ENDED_KEY, FULL_TEXT_SLOT,
@@ -272,7 +275,7 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let mut name: Option<String> = None;
     let mut session: Option<String> = None;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -283,13 +286,9 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
                 );
             }
             "--pane" => {
-                let value = it
-                    .next()
-                    .ok_or_else(|| bad("run: --pane needs a pane id".to_owned()))?;
                 pane = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| bad(format!("run: --pane {value:?} is not a pane id")))?,
+                    it.next()
+                        .ok_or_else(|| bad("run: --pane needs a pane id or NAME".to_owned()))?,
                 );
             }
             _ if name.is_none() => name = Some(arg),
@@ -304,11 +303,9 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
     let scoped = |path: String| scoped_params(session.as_deref(), path);
 
     // Resolve the pane to read the project of.
-    let pane = match pane {
-        Some(only) => {
-            require_pane(&mut conn, session.as_deref(), only, "run")?;
-            only
-        }
+    let site = resolve_optional_pane(&mut conn, session.as_deref(), pane.as_deref(), "run")?;
+    let pane = match &site {
+        Some(site) => site.id,
         None => *pane_ids(&mut conn, session.as_deref())?
             .first()
             .ok_or_else(|| bad("run: the window holds no pane".to_owned()))?,
@@ -825,8 +822,8 @@ fn bad_input(message: &str) -> io::Error {
 const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n\
          \x20             | attach NAME [--no-wait | --tui | --remote HOST]\n\
          \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
-         \x20             | find NEEDLE [-t SESSION] [--pane N] [--regex]\n\
-         \x20             | wait-for-output --pane N NEEDLE [-t SESSION] [--regex]\n\
+         \x20             | find NEEDLE [-t SESSION] [--pane PANE] [--regex]\n\
+         \x20             | wait-for-output --pane PANE NEEDLE [-t SESSION] [--regex]\n\
          \x20             | rename-session [-t SESSION] NEW\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window <NAME|-n|-p>\n\
@@ -847,16 +844,19 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20             | rename-pane PANE <NAME | --clear>\n\
          \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
          \x20             | agent [PANE]> [-t SESSION]\n\
-         \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane N]\n\
+         \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane PANE]\n\
          \x20             [--source S] [--name AGENT] [--seq N]\n\
-         \x20      sprag release-agent [-t SESSION] [--pane N]\n\
+         \x20      sprag release-agent [-t SESSION] [--pane PANE]\n\
          \x20      sprag <install-hooks | uninstall-hooks> [AGENT…] [--yes] [--dry-run]\n\
          \x20      sprag list-hooks\n\
-         \x20      sprag events [-t SESSION] [--since N] [-f]\n\
+         \x20      sprag events [-t SESSION] [--since N] [-f [--pane PANE] [--kind KIND]…]\n\
          \x20      sprag <list-keys [-N] | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
          \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
          \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]\n\
-         \x20      sprag <--version | --help>";
+         \x20      sprag <--version | --help>\n\
+         \x20\n\
+         \x20PANE is a pane's id (see `sprag panes`) or its NAME (`sprag rename-pane`).\n\
+         \x20Either spelling reaches any WINDOW of the session, and neither crosses a session.";
 
 fn print_usage() {
     eprintln!("{USAGE}");
@@ -1116,15 +1116,27 @@ fn find(args: Vec<String>) -> io::Result<()> {
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
     }
-    let scoped = |path: String| scoped_params(session.as_deref(), path);
-    let mut panes = pane_ids(&mut conn, session.as_deref())?;
-    if let Some(only) = only {
-        require_pane(&mut conn, session.as_deref(), only, "find")?;
-        panes.retain(|pane| *pane == only);
-    }
+    // Narrowed to ONE named pane, or every pane of the caller's own window. The narrowed form
+    // resolves session-wide (a name reaches any window), and the sweep does not: searching every
+    // window would change what an unnarrowed `sprag find` means for every caller that has one.
+    let only = resolve_optional_pane(&mut conn, session.as_deref(), only.as_deref(), "find")?;
+    let panes: Vec<(Option<String>, u64)> = match &only {
+        Some(site) => vec![(site.window.clone(), site.id)],
+        None => pane_ids(&mut conn, session.as_deref())?
+            .into_iter()
+            .map(|id| (None, id))
+            .collect(),
+    };
     let mut truncated = false;
-    for pane in panes {
-        let answer: Value = conn.call("scene/query", scoped(pane_input_path(pane, &slot)))?;
+    for (window, pane) in panes {
+        let answer: Value = conn.call(
+            "scene/query",
+            windowed_params(
+                session.as_deref(),
+                pane_input_path(pane, &slot),
+                window.as_deref(),
+            ),
+        )?;
         let found: PaneFind = serde_json::from_value(answer).unwrap_or_default();
         // A refused pattern is the same refusal for every pane, so report it once and stop rather
         // than repeating it per pane or printing nothing and exiting 0 as if it had searched.
@@ -1182,15 +1194,17 @@ fn wait_for_output(args: Vec<String>) -> io::Result<()> {
         regex,
     } = find_args_named(args, "wait-for-output")?;
     let pane = pane.ok_or_else(|| {
-        bad_input("wait-for-output: --pane N is required (a wait names the pane it watches)")
+        bad_input("wait-for-output: --pane is required (a wait names the pane it watches)")
     })?;
     let mut conn = connect(None)?;
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
     }
-    // Checked before the park for the reason the daemon checks it too: a wait on a pane that is not
-    // there cannot be answered and cannot fail, so it would read as "it has not happened yet".
-    require_pane(&mut conn, session.as_deref(), pane, "wait-for-output")?;
+    // Resolved before the park for the reason the daemon checks it too: a wait on a pane that is
+    // not there cannot be answered and cannot fail, so it would read as "it has not happened yet".
+    // The park itself is SESSION-wide at the daemon (`handle_output_wait` checks the pane against
+    // the session, not a window), so this only ever needed the name to resolve that far.
+    let pane = resolve_pane(&mut conn, session.as_deref(), &pane, "wait-for-output")?.id;
     // The park's contract is to block; a deadline here would turn "not yet" into an error.
     conn.set_read_deadline(None)?;
     // The scope is spelled the one way this file spells it (`scoped_only`), then the wait's own two
@@ -1238,8 +1252,9 @@ fn wait_for_output(args: Vec<String>) -> io::Result<()> {
 struct FindArgs {
     needle: String,
     session: Option<String>,
-    /// The one pane to search, or `None` to sweep the whole window.
-    pane: Option<u64>,
+    /// The one pane to search as the caller SPELLED it — an id or a NAME — or `None` to sweep the
+    /// whole window. Unresolved here because resolution needs a connection, and this parse has none.
+    pane: Option<String>,
     /// Read the needle as a REGULAR EXPRESSION rather than literal text — which sends a different
     /// QUERY, not the same one with a flag: the two are separate languages and the host keeps them
     /// at separate addresses (`sprag_host::wire::REGEX_FIELD`).
@@ -1277,14 +1292,10 @@ fn find_args_named(args: Vec<String>, verb: &str) -> io::Result<FindArgs> {
                 );
             }
             "--pane" => {
-                let value = it
-                    .next()
-                    .ok_or_else(|| bad(format!("{verb}: --pane needs a pane id")))?;
-                pane = Some(value.parse::<u64>().map_err(|_| {
-                    bad(format!(
-                        "{verb}: --pane {value:?} is not a pane id (a number)"
-                    ))
-                })?);
+                pane = Some(
+                    it.next()
+                        .ok_or_else(|| bad(format!("{verb}: --pane needs a pane id or NAME")))?,
+                );
             }
             "--regex" => regex = true,
             _ if needle.is_none() => needle = Some(arg),
@@ -1932,6 +1943,19 @@ fn scoped_invoke(session: Option<&str>, path: String, args: Value) -> Value {
     params
 }
 
+/// [`scoped_invoke`] for a resolved pane, carrying the window it lives in.
+///
+/// Every pane-addressed INVOKE goes through here, not only the ones that need it. Measured at
+/// `e7be5eb`: `rename_pane` / `swap_pane` / `zoom_pane` resolve REGISTRY-wide at the daemon and
+/// `select_pane` / `close` / `split` resolve against the SCOPE's window — so a client that tried to
+/// remember which is which would be keeping a second copy of the daemon's rule, free to drift.
+/// Sending the window always is correct for both: the registry-wide actions do not consult it.
+fn site_invoke(session: Option<&str>, site: &PaneSite, path: String, args: Value) -> Value {
+    let mut params = site_params(session, site, path);
+    params["args"] = args;
+    params
+}
+
 /// Split a PANE-subject subcommand's args into its OPTIONAL `-t SESSION` scope and everything else,
 /// which the verb then parses itself.
 ///
@@ -1997,38 +2021,216 @@ fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> 
         .collect())
 }
 
-/// Refuse cleanly if the scoped session's current window holds no pane `pane`, naming what IS
-/// there — the pane-command pre-flight, and the pane-level peer of [`require_session`].
+/// A pane this CLI has RESOLVED — which pane, and which window of the scoped session holds it.
 ///
-/// An absent pane is an ERROR rather than an empty result for the same reason `find --pane`'s is:
-/// the caller named a specific pane, and answering as if it were merely quiet would be an answer to
-/// a question they did not ask. It matters most for the verbs that address a pane's OWN external by
-/// path ([`send_keys`], [`capture_pane`]) — there a wrong id is an unknown ADDRESS, whose raw
-/// refusal says nothing about panes.
+/// # Why a type, and why it has no public constructor
 ///
-/// The sentence that used to end here — "unlike the mux actions' pane-level `Rejected`" — was
-/// **false, and R283 measured it false**: a mux action's `Rejected` carries no payload at all, so
-/// `sprag report-agent --pane 999` reached the operator as `scene/invoke
-/// /sprag_mux/external/report_agent: host rpc error: InvokeRejected`. It is not pane-level; it is
-/// not any level. See [`agent_refusal`] for what those two verbs say now, and
-/// `claudedocs/PINION-PR82-*` for why they still cannot say only one thing.
-fn require_pane(
+/// Before R312 every pane verb parsed its own argument and pre-flighted against the scoped
+/// session's CURRENT WINDOW (a `require_pane` this round deleted, because a helper that can only
+/// see one window is the defect and keeping it would let a verb grow back into it). That produced two measured defects at
+/// `e7be5eb`, both of them on the same daemon at the same instant:
+///
+/// ```text
+/// sprag zoom-pane 1     -> pane 1 fills its window          SUCCEEDS
+/// sprag rename-pane 1 z -> pane 1 is now "z"                SUCCEEDS
+/// sprag capture-pane 1  -> no pane 1 in 0 (panes: [0])      REFUSES
+/// sprag select-pane 1   -> no pane 1 in the current window  REFUSES
+/// ```
+///
+/// — because the succeeding verbs are REGISTRY-WIDE mux actions and the refusing ones went through
+/// a window-local pre-flight. And no verb took a pane's NAME at all, in SIX different sentences.
+///
+/// A pane id is registry-unique and never reused, so it has no positional hazard and there was
+/// never a reason for a read to see fewer panes than a write. Resolution is therefore SESSION-wide
+/// for both spellings, and a `PaneSite` can only come out of [`resolve_pane`] — so a verb cannot
+/// address a pane without having looked it up, which is the one way seven parses could not grow
+/// back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PaneSite {
+    /// The pane's id — what every action and every pane-addressed path takes.
+    id: u64,
+    /// The window holding it, or [`None`] when that is the scope's CURRENT window.
+    ///
+    /// `None` rather than always naming the window, deliberately: it keeps "narrowed" and "not
+    /// narrowed" distinguishable, which is what the version-skew probe measures.
+    window: Option<String>,
+}
+
+/// Resolve a pane argument — a NAME or an id — anywhere in the scoped SESSION.
+///
+/// The NAME half is the daemon's own grammar, read through
+/// [`PaneAddress`] so the CLI and the agent surface split
+/// digits from names by one rule, and refused through
+/// [`unknown_pane_name_with`] so they refuse in
+/// one sentence. The ID half stays a number because that is what `sprag panes` prints and what the
+/// daemon's logs say.
+fn resolve_pane(
     conn: &mut HostConn,
     session: Option<&str>,
-    pane: u64,
+    raw: &str,
     command: &str,
-) -> io::Result<()> {
-    let panes = pane_ids(conn, session)?;
-    if panes.contains(&pane) {
-        return Ok(());
+) -> io::Result<PaneSite> {
+    let here = pane_ids(conn, session)?;
+    let address = PaneAddress::parse(raw);
+    // A pane of the CURRENT window resolves without reading any further — the ordinary case, and
+    // one query, exactly as before this verb could reach past the window.
+    if let PaneAddress::Number(id) = &address
+        && here.contains(id)
+    {
+        return Ok(PaneSite {
+            id: *id,
+            window: None,
+        });
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!(
-            "{command}: no pane {pane} in {} (panes: {panes:?})",
-            scope_name(session)
-        ),
-    ))
+    let elsewhere = session_panes(conn, session)?;
+    match &address {
+        PaneAddress::Number(id) => elsewhere
+            .iter()
+            .find(|(_, pane, _)| pane == id)
+            .map(|(window, id, _)| PaneSite {
+                id: *id,
+                window: Some(window.clone()),
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "{command}: no pane {id} in {} (panes: {:?})",
+                        scope_name(session),
+                        elsewhere.iter().map(|(_, id, _)| *id).collect::<Vec<_>>(),
+                    ),
+                )
+            }),
+        PaneAddress::Name(name) => {
+            let named: Vec<NamedPane> = elsewhere
+                .iter()
+                .filter_map(|(window, _, held)| {
+                    Some(NamedPane::new(held.as_deref()?, window.clone()))
+                })
+                .collect();
+            let mut bearers = elsewhere
+                .iter()
+                .filter(|(_, _, held)| held.as_deref() == Some(name.as_str()));
+            let found = bearers.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "{command}: {}",
+                        unknown_pane_name_with(name, &named, PaneListing::SpragPanes),
+                    ),
+                )
+            })?;
+            if bearers.next().is_some() {
+                // Unreachable through correct requests (the daemon holds names unique) and refused
+                // rather than guessed for the agent surface's reason: a plausible answer against
+                // the wrong pane is the failure a name exists to remove.
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "{command}: {}",
+                        ambiguous_pane_name(
+                            name,
+                            &named
+                                .iter()
+                                .filter(|pane| pane.name == *name)
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                ));
+            }
+            Ok(PaneSite {
+                id: found.1,
+                window: (found.0 != current_window(conn, session)?).then(|| found.0.clone()),
+            })
+        }
+    }
+}
+
+/// Resolve an OPTIONAL pane argument — absent means the verb's own default (the active pane), which
+/// every caller of this already handled as [`None`].
+fn resolve_optional_pane(
+    conn: &mut HostConn,
+    session: Option<&str>,
+    raw: Option<&str>,
+    command: &str,
+) -> io::Result<Option<PaneSite>> {
+    raw.map(|raw| resolve_pane(conn, session, raw, command))
+        .transpose()
+}
+
+/// Every pane of the scoped SESSION as `(window, id, name)`, in the session's window order (R310).
+///
+/// Read window by window because the daemon has no session-wide pane slot and should not grow one
+/// for this: the `panes` slot IS a window's listing (it is what a display client projects), and
+/// R311 gave a REQUEST the ability to name its window rather than inventing a second listing free
+/// to disagree with the first.
+fn session_panes(
+    conn: &mut HostConn,
+    session: Option<&str>,
+) -> io::Result<Vec<(String, u64, Option<String>)>> {
+    let mut out = Vec::new();
+    for window in window_names(conn, session)? {
+        let listed: Value = conn.call(
+            "scene/query",
+            windowed_params(session, mux_action_path(PANES_SLOT), Some(&window)),
+        )?;
+        for pane in listed.as_array().into_iter().flatten() {
+            let Some(id) = pane["id"].as_u64() else {
+                continue;
+            };
+            out.push((window.clone(), id, pane["name"].as_str().map(str::to_owned)));
+        }
+    }
+    Ok(out)
+}
+
+/// The scoped session's window names, in the order the session arranges them.
+fn window_names(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<String>> {
+    let listed: Value = conn.call(
+        "scene/query",
+        scoped_params(session, mux_action_path(WINDOWS_SLOT)),
+    )?;
+    Ok(listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|window| Some(window["name"].as_str()?.to_owned()))
+        .collect())
+}
+
+/// The scoped session's CURRENT window, which is what a [`PaneSite`] with no window means.
+fn current_window(conn: &mut HostConn, session: Option<&str>) -> io::Result<String> {
+    let listed: Value = conn.call(
+        "scene/query",
+        scoped_params(session, mux_action_path(WINDOWS_SLOT)),
+    )?;
+    Ok(listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|window| window["current"].as_bool().unwrap_or(false))
+        .and_then(|window| window["name"].as_str())
+        .unwrap_or_default()
+        .to_owned())
+}
+
+/// [`scoped_params`] carrying a WINDOW as well — the one place a CLI request learns which window to
+/// act in, so a verb added later cannot forget it and quietly become window-local again.
+fn windowed_params(session: Option<&str>, path: String, window: Option<&str>) -> Value {
+    let mut params = scoped_params(session, path);
+    if let (Value::Object(map), Some(window)) = (&mut params, window) {
+        map.insert(
+            sprag_rpc::WINDOW_PARAM.to_owned(),
+            Value::String(window.to_owned()),
+        );
+    }
+    params
+}
+
+/// [`windowed_params`] for a resolved pane — what every pane-addressed query and invoke sends.
+fn site_params(session: Option<&str>, site: &PaneSite, path: String) -> Value {
+    windowed_params(session, path, site.window.as_deref())
 }
 
 /// Read a scene SLOT, translating "this daemon has no such address" into a sentence about the
@@ -2140,9 +2342,8 @@ fn agent_refusal(command: &str, pane: u64, fault: &RpcFault) -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "{command}: the daemon refused pane {pane} — either no pane {pane} exists on it \
-             (check `sprag panes`), or this host runs no agent detector. All it could say was \
-             {:?}",
+            "{command}: the daemon refused pane {pane} — the pane RESOLVED, so what is left is \
+             that this host runs no agent detector. All it could say was {:?}",
             // The fault's own rendering, which prefers the `data` the peer attached over the
             // JSON-RPC category in `message`. That is what makes the gap VISIBLE rather than
             // described: the operator reads the exact token the wire carried, and it is a Rust
@@ -2177,7 +2378,7 @@ fn agent_refusal(command: &str, pane: u64, fault: &RpcFault) -> io::Error {
 fn report_agent(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "report-agent")?;
     let mut state: Option<String> = None;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     let mut source: Option<String> = None;
     let mut name: Option<String> = None;
     let mut seq: Option<u64> = None;
@@ -2238,8 +2439,17 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
             },
         ));
     }
-    let pane = pane.map_or_else(|| own_pane("report-agent"), Ok)?;
     let mut conn = connect_scoped(session.as_deref())?;
+    let site = resolve_optional_pane(
+        &mut conn,
+        session.as_deref(),
+        pane.as_deref(),
+        "report-agent",
+    )?;
+    let pane = match &site {
+        Some(site) => site.id,
+        None => own_pane("report-agent")?,
+    };
     let mut params = serde_json::json!({
         "id": pane,
         "state": state,
@@ -2258,11 +2468,19 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
     let answer: Value = conn
         .try_call(
             "scene/invoke",
-            scoped_invoke(
-                session.as_deref(),
-                mux_action_path(REPORT_AGENT_ACTION),
-                params,
-            ),
+            match &site {
+                Some(site) => site_invoke(
+                    session.as_deref(),
+                    site,
+                    mux_action_path(REPORT_AGENT_ACTION),
+                    params,
+                ),
+                None => scoped_invoke(
+                    session.as_deref(),
+                    mux_action_path(REPORT_AGENT_ACTION),
+                    params,
+                ),
+            },
         )
         .map_err(|error| match error {
             CallError::Fault(fault) => agent_refusal("report-agent", pane, &fault),
@@ -2299,7 +2517,7 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
 /// the case a hook cannot cover, because a killed process runs no hook.
 fn release_agent(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "release-agent")?;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -2315,16 +2533,33 @@ fn release_agent(args: Vec<String>) -> io::Result<()> {
             }
         }
     }
-    let pane = pane.map_or_else(|| own_pane("release-agent"), Ok)?;
     let mut conn = connect_scoped(session.as_deref())?;
+    let site = resolve_optional_pane(
+        &mut conn,
+        session.as_deref(),
+        pane.as_deref(),
+        "release-agent",
+    )?;
+    let pane = match &site {
+        Some(site) => site.id,
+        None => own_pane("release-agent")?,
+    };
     let answer: Value = conn
         .try_call(
             "scene/invoke",
-            scoped_invoke(
-                session.as_deref(),
-                mux_action_path(RELEASE_AGENT_ACTION),
-                serde_json::json!({ "id": pane }),
-            ),
+            match &site {
+                Some(site) => site_invoke(
+                    session.as_deref(),
+                    site,
+                    mux_action_path(RELEASE_AGENT_ACTION),
+                    serde_json::json!({ "id": pane }),
+                ),
+                None => scoped_invoke(
+                    session.as_deref(),
+                    mux_action_path(RELEASE_AGENT_ACTION),
+                    serde_json::json!({ "id": pane }),
+                ),
+            },
         )
         .map_err(|error| match error {
             CallError::Fault(fault) => agent_refusal("release-agent", pane, &fault),
@@ -2635,17 +2870,14 @@ fn own_pane(command: &str) -> io::Result<u64> {
     })
 }
 
-/// The `--pane N` value for a verb that takes one.
-fn named_pane(it: &mut impl Iterator<Item = String>, command: &str) -> io::Result<u64> {
-    let value = it
-        .next()
-        .ok_or_else(|| bad_input(&format!("{command}: --pane needs a pane id")))?;
-    value.parse::<u64>().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{command}: --pane {value:?} is not a pane id"),
-        )
-    })
+/// The `--pane` value for a verb that takes one, as the caller SPELLED it — an id or a NAME.
+///
+/// Not parsed into a number here: telling a name from an id is
+/// [`PaneAddress`]'s decision, and resolving one needs a
+/// connection this parse does not have. A verb calls [`resolve_pane`] once it is connected.
+fn named_pane(it: &mut impl Iterator<Item = String>, command: &str) -> io::Result<String> {
+    it.next()
+        .ok_or_else(|| bad_input(&format!("{command}: --pane needs a pane id or NAME")))
 }
 
 /// `panes [-t SESSION]`: one line per pane of the scoped session's CURRENT window — tmux
@@ -2816,19 +3048,21 @@ fn layout(args: Vec<String>) -> io::Result<()> {
 /// identical to one that does not. Tolerance zero, so a one-shot human command waits for its own
 /// fresh walk rather than printing something held for a display poll.
 fn processes(args: Vec<String>) -> io::Result<()> {
-    let mut wanted: Option<u64> = None;
+    let mut asked: Option<String> = None;
     for arg in args {
-        if wanted.is_some() {
+        if asked.is_some() {
             return Err(bad_input(&format!(
                 "processes: unexpected argument {arg:?} (processes [PANE])"
             )));
         }
-        wanted = Some(
-            arg.parse::<u64>()
-                .map_err(|_| bad_input(&format!("processes: {arg:?} is not a pane id")))?,
-        );
+        asked = Some(arg);
     }
     let mut conn = connect(None)?;
+    // The READING is registry-wide (this verb takes no `-t` for that reason) and the NARROWING is
+    // client-side, so resolving a name in the default session is what makes `sprag processes
+    // buildout` mean anything.
+    let wanted =
+        resolve_optional_pane(&mut conn, None, asked.as_deref(), "processes")?.map(|site| site.id);
     let reading = query_slot(
         &mut conn,
         &mux_action_path(&pane_processes_at(0)),
@@ -2848,7 +3082,7 @@ fn processes(args: Vec<String>) -> io::Result<()> {
         && rows.is_empty()
     {
         // The caller ASKED about that pane, so silence would be the wrong answer — the same rule
-        // `require_pane` follows for every verb that takes a target.
+        // [`resolve_pane`] follows for every verb that takes a target.
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
@@ -2906,7 +3140,7 @@ fn processes(args: Vec<String>) -> io::Result<()> {
 /// to do about it. So a named pane also prints the rule's remedy: the id is what an `[[agent]]` block
 /// in `config.toml` redefines or disables, which is what makes a mis-detected pane fixable without a
 /// release. A named pane with no agent says so explicitly rather than printing nothing — the caller
-/// asked about that pane, which is [`require_pane`]'s rule, and "no manifest claims this" is a real
+/// asked about that pane, which is [`resolve_pane`]'s rule, and "no manifest claims this" is a real
 /// answer that is NOT the same as "idle" (D3: those are opposite instructions to a person).
 ///
 /// The rule is never re-derived here. It is the value the daemon's detector produced, carried on the
@@ -2925,25 +3159,19 @@ fn processes(args: Vec<String>) -> io::Result<()> {
 /// stderr because it qualifies the answer rather than being part of it.
 fn agent(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "agent")?;
-    let mut wanted: Option<u64> = None;
+    let mut asked: Option<String> = None;
     for arg in rest {
-        if wanted.is_some() {
+        if asked.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("agent: unexpected argument {arg:?} (agent [-t SESSION] [PANE])"),
             ));
         }
-        wanted = Some(arg.parse::<u64>().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("agent: {arg:?} is neither -t nor a pane id"),
-            )
-        })?);
+        asked = Some(arg);
     }
     let mut conn = connect_scoped(session.as_deref())?;
-    if let Some(pane) = wanted {
-        require_pane(&mut conn, session.as_deref(), pane, "agent")?;
-    }
+    let site = resolve_optional_pane(&mut conn, session.as_deref(), asked.as_deref(), "agent")?;
+    let wanted = site.as_ref().map(|site| site.id);
     // FIRST, and on stderr. Every line below was produced by a ruleset that is not the user's, so
     // the caveat has to arrive before the readings it qualifies — and a script slicing `ID: STATE`
     // out of stdout must not have to skip a sentence to find them.
@@ -2958,9 +3186,15 @@ fn agent(args: Vec<String>) -> io::Result<()> {
              that file"
         );
     }
+    // The listing is read in the RESOLVED pane's window, so `sprag agent buildout` answers about a
+    // pane one window over — where a sibling agent most often is, since an agent's work pane and a
+    // person's reading pane are why a session has more than one window.
     let listed: Value = conn.call(
         "scene/query",
-        scoped_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+        match &site {
+            Some(site) => site_params(session.as_deref(), site, mux_action_path(PANES_SLOT)),
+            None => scoped_params(session.as_deref(), mux_action_path(PANES_SLOT)),
+        },
     )?;
     for entry in listed.as_array().into_iter().flatten() {
         let id = entry["id"].as_u64().unwrap_or_default();
@@ -3043,9 +3277,9 @@ fn events(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "events")?;
     let mut since: Option<u64> = None;
     let mut follow = false;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     let mut kinds: Vec<String> = Vec::new();
-    let usage = "events [-t SESSION] [--since N] [-f [--pane ID] [--kind KIND]…]";
+    let usage = "events [-t SESSION] [--since N] [-f [--pane ID|NAME] [--kind KIND]…]";
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -3060,13 +3294,9 @@ fn events(args: Vec<String>) -> io::Result<()> {
                     })?);
             }
             "--pane" => {
-                let value = it
-                    .next()
-                    .ok_or_else(|| bad("events: --pane needs a pane id".to_owned()))?;
                 pane = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| bad(format!("events: --pane {value:?} is not a pane id")))?,
+                    it.next()
+                        .ok_or_else(|| bad("events: --pane needs a pane id or NAME".to_owned()))?,
                 );
             }
             "--kind" => {
@@ -3092,9 +3322,15 @@ fn events(args: Vec<String>) -> io::Result<()> {
             "events: --pane / --kind narrow what to WAIT for, so they need -f ({usage})"
         )));
     }
-    let filter = sprag_host::events::EventFilter::narrowing_wire(pane, &kinds);
-
     let mut conn = connect_scoped(session.as_deref())?;
+    // Resolved through the one resolver, so `--pane buildout` narrows to the pane called that
+    // wherever it lives — the journal is the SESSION's, so a filter that could only name panes of
+    // one window was narrower than the stream it filters.
+    let filter = sprag_host::events::EventFilter::narrowing_wire(
+        resolve_optional_pane(&mut conn, session.as_deref(), pane.as_deref(), "events")?
+            .map(|site| site.id),
+        &kinds,
+    );
     // A cursor the caller did not give is NOW, not zero: `events -f` means "tell me what happens",
     // and replaying a daemon's whole history first would bury that under a backlog nobody asked
     // for. `--since 0` is how a caller asks for the backlog, and it is the only way to get it.
@@ -3245,7 +3481,7 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
     let mut command: Option<Vec<String>> = None;
     let mut dir: Option<&'static str> = None;
     let mut before = false;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -3272,11 +3508,7 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
                         "split-window: unexpected argument {other:?} (a command goes after `--`)"
                     )));
                 }
-                pane = Some(other.parse::<u64>().map_err(|_| {
-                    bad(format!(
-                        "split-window: {other:?} is neither a flag nor a pane id"
-                    ))
-                })?);
+                pane = Some(other.to_owned());
             }
         }
     }
@@ -3306,16 +3538,29 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
         Some(command) => json!({ "cmd": command }),
         None => json!({}),
     };
+    let mut conn = connect_scoped(session.as_deref())?;
+    // Resolved before the request so a NAME divides the pane it names, and so the window the split
+    // must happen in is known: `split` resolves against the SCOPE's window at the daemon, which is
+    // what its own docs say ("it exited, it is floating, or it is another window's").
+    let target = match &placement {
+        Some((_, Some(pane))) => Some(resolve_pane(
+            &mut conn,
+            session.as_deref(),
+            pane,
+            "split-window",
+        )?),
+        _ => None,
+    };
     // A directional split is a DIFFERENT action from an append, not the same one with a flag: the
     // daemon divides a pane the caller names, and refuses when it cannot reach it.
-    let action = match placement {
-        Some((dir, pane)) => {
+    let action = match &placement {
+        Some((dir, _)) => {
             let map = action_args.as_object_mut().expect("json! built an object");
             // Absent `pane` is the action's own "the active pane" default, so the bare form sends
             // no target rather than the CLI resolving one — the daemon holds the fact, and a
             // client that read it back to send it would be racing whoever moved it.
-            if let Some(pane) = pane {
-                map.insert("pane".to_owned(), json!(pane));
+            if let Some(site) = &target {
+                map.insert("pane".to_owned(), json!(site.id));
             }
             map.insert("dir".to_owned(), json!(dir));
             if before {
@@ -3325,10 +3570,17 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
         }
         None => SPAWN_ACTION,
     };
-    let mut conn = connect_scoped(session.as_deref())?;
     let answer = conn.call(
         "scene/invoke",
-        scoped_invoke(session.as_deref(), mux_action_path(action), action_args),
+        match &target {
+            Some(site) => site_invoke(
+                session.as_deref(),
+                site,
+                mux_action_path(action),
+                action_args,
+            ),
+            None => scoped_invoke(session.as_deref(), mux_action_path(action), action_args),
+        },
     );
     match answer {
         Ok(answer) => match answer.as_u64() {
@@ -3345,11 +3597,11 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
         // of the two to be the caller's own mistake, so it is named first.
         Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            match (placement, &command) {
-                (Some((_, Some(pane))), _) => format!(
-                    "split-window: pane {pane} is not in the window's tiling (it exited, it is \
-                     floating, or it belongs to another window), or the pane's command could not \
-                     be run"
+            match (&placement, &command) {
+                (Some((_, Some(_))), _) => format!(
+                    "split-window: pane {} is not in its window's tiling (it exited, or it is \
+                     floating), or the pane's command could not be run",
+                    target.map(|site| site.id).unwrap_or_default(),
                 ),
                 // The bare form named no pane, so the refusal is about the window rather than
                 // about a target the caller chose.
@@ -3383,10 +3635,7 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
     let mut rest = rest.into_iter();
     // Absent ⇒ the active pane, which the DAEMON resolves (`CLOSE_ACTION`): a CLI that read it
     // back to send it would be racing whoever moved it between the two calls.
-    let pane = rest
-        .next()
-        .map(|arg| parse_pane_id(Some(arg), "kill-pane"))
-        .transpose()?;
+    let asked = rest.next();
     if let Some(other) = rest.next() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3394,17 +3643,27 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
         ));
     }
     let mut conn = connect_scoped(session.as_deref())?;
+    let site = resolve_optional_pane(&mut conn, session.as_deref(), asked.as_deref(), "kill-pane")?;
     let answer = conn.call(
         "scene/invoke",
-        scoped_invoke(
-            session.as_deref(),
-            mux_action_path(CLOSE_ACTION),
-            pane.map_or_else(|| json!({}), |pane| json!({ "id": pane })),
-        ),
+        match &site {
+            Some(site) => site_invoke(
+                session.as_deref(),
+                site,
+                mux_action_path(CLOSE_ACTION),
+                json!({ "id": site.id }),
+            ),
+            // Absent means the active pane, which the DAEMON resolves: reading it back to send it
+            // would race whoever moved it between the two calls.
+            None => scoped_invoke(session.as_deref(), mux_action_path(CLOSE_ACTION), json!({})),
+        },
     );
-    let named = pane.map_or_else(
+    let named = site.as_ref().map_or_else(
         || "the active pane".to_owned(),
-        |pane| format!("pane {pane}"),
+        |site| match &site.window {
+            Some(window) => format!("pane {} (window {window})", site.id),
+            None => format!("pane {}", site.id),
+        },
     );
     match answer {
         Ok(answer) => {
@@ -3415,11 +3674,13 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
             println!("killed {named} (server ended)");
             Ok(())
         }
-        // The session was pre-flighted, so the only refusal left is an unknown pane.
+        // The pane was RESOLVED, so "no such pane" is no longer among the causes: what is left is
+        // the window declining to close it — which is the state, not the address.
         Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "kill-pane: no such pane ({named}) in {}",
+                "kill-pane: {} in {} could not be closed (it may already be gone)",
+                named,
                 scope_name(session.as_deref())
             ),
         )),
@@ -3483,7 +3744,7 @@ fn killed_sentence(named: &str, answer: &Value, level: Ended) -> String {
 fn resize_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "resize-pane")?;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     let mut cols: Option<u64> = None;
     let mut rows: Option<u64> = None;
     let mut toward: Option<(PaneDir, Option<u16>)> = None;
@@ -3521,7 +3782,7 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
                 let cells = other.parse::<u16>().unwrap_or(1);
                 toward = toward.map(|(dir, _)| (dir, Some(cells)));
             }
-            _ if pane.is_none() => pane = Some(parse_pane_id(Some(arg), "resize-pane")?),
+            _ if pane.is_none() => pane = Some(arg),
             other => return Err(bad(format!("resize-pane: unexpected argument {other:?}"))),
         }
     }
@@ -3533,14 +3794,7 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
                     .to_owned(),
             ));
         }
-        return resize_toward(
-            session.as_deref(),
-            ResizeAsk {
-                pane: pane.map(PaneId),
-                dir,
-                cells: cells.unwrap_or(ResizeAsk::CELLS_DEFAULT),
-            },
-        );
+        return resize_toward(session.as_deref(), pane.as_deref(), dir, cells);
     }
     // No pane id ⇒ the active one, resolved by the daemon exactly as `kill-pane`'s is.
     let (Some(cols), Some(rows)) = (cols, rows) else {
@@ -3550,31 +3804,42 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
         ));
     };
     let mut conn = connect_scoped(session.as_deref())?;
+    let site = resolve_optional_pane(
+        &mut conn,
+        session.as_deref(),
+        pane.as_deref(),
+        "resize-pane",
+    )?;
+    let pane = site.as_ref().map(|site| site.id);
     conn.call(
         "scene/invoke",
-        scoped_invoke(
-            session.as_deref(),
-            mux_action_path(RESIZE_ACTION),
-            pane.map_or_else(
-                || json!({ "cols": cols, "rows": rows }),
-                |pane| json!({ "id": pane, "cols": cols, "rows": rows }),
+        match &site {
+            Some(site) => site_invoke(
+                session.as_deref(),
+                site,
+                mux_action_path(RESIZE_ACTION),
+                json!({ "id": site.id, "cols": cols, "rows": rows }),
             ),
-        ),
+            None => scoped_invoke(
+                session.as_deref(),
+                mux_action_path(RESIZE_ACTION),
+                json!({ "cols": cols, "rows": rows }),
+            ),
+        },
     )
     .map(|_: Value| ())
-    // The session was pre-flighted, so a refusal is an unknown pane or a winsize the kernel
-    // declined — reported together because the wire does not distinguish them.
+    // The pane was RESOLVED, so a refusal is the kernel declining the winsize — the disjunction
+    // that used to lead with "no such pane" had a half this verb can no longer produce.
     .map_err(|error| {
         if error.kind() == io::ErrorKind::Other {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "resize-pane: no such pane ({}) in {}, or {cols}x{rows} was refused",
+                    "resize-pane: {cols}x{rows} was refused for {}",
                     pane.map_or_else(
                         || "the active pane".to_owned(),
                         |pane| format!("pane {pane}")
                     ),
-                    scope_name(session.as_deref())
                 ),
             )
         } else {
@@ -3596,12 +3861,29 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
 /// Split out rather than inlined because it is a different wire action with a different answer, and
 /// folding two request/answer pairs into one flat function is how a verb ends up with a refusal
 /// sentence that names the wrong thing.
-fn resize_toward(session: Option<&str>, ask: ResizeAsk) -> io::Result<()> {
+fn resize_toward(
+    session: Option<&str>,
+    pane: Option<&str>,
+    dir: PaneDir,
+    cells: Option<u16>,
+) -> io::Result<()> {
     let mut conn = connect_scoped(session)?;
-    let answer: Value = match conn.try_call(
-        "scene/invoke",
-        scoped_invoke(session, mux_action_path(RESIZE_PANE_ACTION), ask.to_args()),
-    ) {
+    let site = resolve_optional_pane(&mut conn, session, pane, "resize-pane")?;
+    let ask = ResizeAsk {
+        pane: site.as_ref().map(|site| PaneId(site.id)),
+        dir,
+        cells: cells.unwrap_or(ResizeAsk::CELLS_DEFAULT),
+    };
+    let params = match &site {
+        Some(site) => site_invoke(
+            session,
+            site,
+            mux_action_path(RESIZE_PANE_ACTION),
+            ask.to_args(),
+        ),
+        None => scoped_invoke(session, mux_action_path(RESIZE_PANE_ACTION), ask.to_args()),
+    };
+    let answer: Value = match conn.try_call("scene/invoke", params) {
         Ok(answer) => answer,
         // The session was pre-flighted, so a refusal is one of the two things the daemon refuses
         // for. Which one is this end's to guess, because `InvokeError::Rejected` carries no payload
@@ -3647,14 +3929,19 @@ fn resize_refusal(ask: ResizeAsk, session: Option<&str>, fault: &RpcFault) -> io
         io::Error::new(
             io::ErrorKind::NotFound,
             format!(
-                "resize-pane refused: {} in {}, or nothing is watching that window — a cell has no \
-                 length until a client reports an area or `window-size manual` plus `sprag \
-                 resize-window` pins one",
+                "resize-pane refused: {} — a cell has no length until a client reports an area \
+                 or `window-size manual` plus `sprag resize-window` pins one",
                 ask.pane.map_or_else(
-                    || "the current window holds no panes".to_owned(),
-                    |pane| format!("there is no pane {}", pane.0)
+                    || format!("{} holds no pane to size", scope_name(session)),
+                    // Two causes, both of them still possible. The third the sentence used to
+                    // lead with — "there is no pane N" — cannot happen any more: the pane was
+                    // RESOLVED before this request went out.
+                    |pane| format!(
+                        "pane {} is floating or has no boundary that way, or nothing is watching \
+                         that window",
+                        pane.0
+                    )
                 ),
-                scope_name(session)
             ),
         )
     })
@@ -3708,7 +3995,7 @@ fn resize_sentence(how: ResizeHow, ask: ResizeAsk, pane: u64, cells: u16) -> Str
 fn send_keys(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "send-keys")?;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     let mut literal = false;
     let mut tokens: Vec<String> = Vec::new();
     let mut it = rest.into_iter();
@@ -3717,11 +4004,11 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
             "-l" | "--literal" => literal = true,
             // Everything after `--` is payload, so a literal `-l` or a key named `-t` can be sent.
             "--" => tokens.extend(it.by_ref()),
-            _ if pane.is_none() => pane = Some(parse_pane_id(Some(arg), "send-keys")?),
+            _ if pane.is_none() => pane = Some(arg),
             _ => tokens.push(arg),
         }
     }
-    let pane = pane.ok_or_else(|| bad("send-keys needs a pane id".to_owned()))?;
+    let pane = pane.ok_or_else(|| bad("send-keys needs a pane id or NAME".to_owned()))?;
     if tokens.is_empty() {
         return Err(bad(format!(
             "send-keys needs at least one {}",
@@ -3729,9 +4016,11 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
         )));
     }
     let mut conn = connect_scoped(session.as_deref())?;
-    // This verb addresses the PANE's own external, so a wrong id is an unknown ADDRESS rather than
-    // a pane-level refusal — pre-flight it so the error is about panes.
-    require_pane(&mut conn, session.as_deref(), pane, "send-keys")?;
+    // This verb addresses the PANE's own external, which is reached through a WINDOW — so it is
+    // resolved rather than pre-flighted, and a wrong id is still an error about panes rather than
+    // an unknown address.
+    let site = resolve_pane(&mut conn, session.as_deref(), &pane, "send-keys")?;
+    let pane = site.id;
     for token in &tokens {
         let (path, action_args) = if literal {
             (TEXT_ACTION, json!({ "text": token }))
@@ -3745,7 +4034,12 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
         };
         conn.call(
             "scene/invoke",
-            scoped_invoke(session.as_deref(), pane_input_path(pane, path), action_args),
+            site_invoke(
+                session.as_deref(),
+                &site,
+                pane_input_path(pane, path),
+                action_args,
+            ),
         )
         .map(|_: Value| ())
         .map_err(|error| {
@@ -3825,25 +4119,29 @@ fn parse_key_token(token: &str) -> io::Result<(String, (bool, bool, bool))> {
 fn capture_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "capture-pane")?;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     for arg in rest {
         match arg.as_str() {
             // tmux's "print to stdout", which is the only thing this can do; see the doc above.
             "-p" | "--print" => {}
-            _ if pane.is_none() => pane = Some(parse_pane_id(Some(arg), "capture-pane")?),
+            _ if pane.is_none() => pane = Some(arg),
             other => return Err(bad(format!("capture-pane: unexpected argument {other:?}"))),
         }
     }
-    let pane = pane.ok_or_else(|| bad("capture-pane needs a pane id".to_owned()))?;
+    let pane = pane.ok_or_else(|| bad("capture-pane needs a pane id or NAME".to_owned()))?;
     let mut conn = connect_scoped(session.as_deref())?;
-    // Pre-flighted like `send-keys` and for the same reason: this addresses the pane's OWN
-    // external, so a wrong id would surface as an unknown address rather than as "no such pane".
-    // Printing nothing and exiting 0 would be worse still — it would claim the pane exists and had
-    // said nothing.
-    require_pane(&mut conn, session.as_deref(), pane, "capture-pane")?;
+    // Resolved rather than pre-flighted: this addresses the pane's OWN external, and that path is
+    // reached THROUGH a window — so a pane one window over answered `NoExternalAtPath` until the
+    // request learned to say which window. A wrong id still surfaces as "no such pane" rather than
+    // as an unknown address, which is what the pre-flight was for and what the resolver keeps.
+    let site = resolve_pane(&mut conn, session.as_deref(), &pane, "capture-pane")?;
     let answer: Value = conn.call(
         "scene/query",
-        scoped_params(session.as_deref(), pane_input_path(pane, FULL_TEXT_SLOT)),
+        site_params(
+            session.as_deref(),
+            &site,
+            pane_input_path(site.id, FULL_TEXT_SLOT),
+        ),
     )?;
     let text = answer.as_str().unwrap_or_default();
     print!("{text}");
@@ -4112,8 +4410,8 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "select-pane")?;
     let mut dir: Option<PaneDir> = None;
-    let mut pane: Option<u64> = None;
-    let mut from: Option<u64> = None;
+    let mut pane: Option<String> = None;
+    let mut from: Option<String> = None;
     let mut rest = rest.into_iter();
     while let Some(arg) = rest.next() {
         let flag = sprag_host::keymap::direction_of(&arg);
@@ -4132,13 +4430,8 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
                         "select-pane: {FROM_FLAG} names one pane to step from; give only one"
                     )));
                 }
-                let value = rest
-                    .next()
-                    .ok_or_else(|| bad(format!("select-pane: {FROM_FLAG} needs a pane id")))?;
-                from = Some(value.parse::<u64>().map_err(|_| {
-                    bad(format!(
-                        "select-pane: {FROM_FLAG} takes a pane id, not {value:?}"
-                    ))
+                from = Some(rest.next().ok_or_else(|| {
+                    bad(format!("select-pane: {FROM_FLAG} needs a pane id or NAME"))
                 })?);
             }
             None => {
@@ -4147,14 +4440,31 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
                         "select-pane: unexpected argument {arg:?} (one pane id, or one direction)"
                     )));
                 }
-                pane = Some(arg.parse::<u64>().map_err(|_| {
-                    bad(format!(
-                        "select-pane: {arg:?} is neither a direction flag nor a pane id"
-                    ))
-                })?);
+                pane = Some(arg);
             }
         }
     }
+    // Resolved BEFORE the arms so a name is a pane wherever it lives, and so the window the
+    // request must be narrowed to is known: `select_pane` resolves against the SCOPE's window at
+    // the daemon (measured), and a direction is walked within one window — the origin's.
+    let mut conn = connect_scoped(session.as_deref())?;
+    let target = resolve_optional_pane(
+        &mut conn,
+        session.as_deref(),
+        pane.as_deref(),
+        "select-pane",
+    )?;
+    // The label carries WHICH argument named the pane, because the two roles refuse differently
+    // and the daemon cannot tell them apart for us (`InvokeError::Rejected` has no payload).
+    let origin = resolve_optional_pane(
+        &mut conn,
+        session.as_deref(),
+        from.as_deref(),
+        "select-pane --from",
+    )?;
+    let site = target.clone().or_else(|| origin.clone());
+    let pane = target.as_ref().map(|site| site.id);
+    let from = origin.as_ref().map(|site| site.id);
     let ask = match (pane, dir) {
         (Some(pane), None) if from.is_none() => SelectAsk::Pane(PaneId(pane)),
         (Some(_), None) => {
@@ -4180,15 +4490,22 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
             )));
         }
     };
-    let mut conn = connect_scoped(session.as_deref())?;
     let answer = conn
         .call(
             "scene/invoke",
-            scoped_invoke(
-                session.as_deref(),
-                mux_action_path(SELECT_PANE_ACTION),
-                ask.to_args(),
-            ),
+            match &site {
+                Some(site) => site_invoke(
+                    session.as_deref(),
+                    site,
+                    mux_action_path(SELECT_PANE_ACTION),
+                    ask.to_args(),
+                ),
+                None => scoped_invoke(
+                    session.as_deref(),
+                    mux_action_path(SELECT_PANE_ACTION),
+                    ask.to_args(),
+                ),
+            },
         )
         .map_err(|error| {
             if error.kind() == io::ErrorKind::Other {
@@ -4197,10 +4514,12 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
                     // Which pane the daemon could not find is this end's to say, because
                     // `InvokeError::Rejected` carries no payload (upstream PINION-PR82) and only the
                     // caller knows whether the id it sent was a target or an origin.
+                    // Both panes RESOLVED, so "no such pane" is no longer among the causes: what
+                    // is left is the arrangement refusing the step.
                     match (pane, from) {
-                        (Some(pane), _) => format!("no pane {pane} in the current window"),
+                        (Some(pane), _) => format!("pane {pane} cannot be selected here"),
                         (None, Some(from)) => {
-                            format!("no pane {from} in the current window to step from")
+                            format!("pane {from} is not in an arrangement to step from")
                         }
                         (None, None) => "this session's current window holds no panes".to_owned(),
                     },
@@ -4669,7 +4988,7 @@ fn scoped_window_action(
 fn rename_pane(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "rename-pane")?;
     let mut rest = rest.into_iter();
-    let pane = parse_pane_id(rest.next(), "rename-pane")?;
+    let asked = required_pane(rest.next(), "rename-pane")?;
     let new = rest.next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -4683,17 +5002,20 @@ fn rename_pane(args: Vec<String>) -> io::Result<()> {
         ));
     }
     let clearing = new == "--clear";
+    let mut conn = connect_scoped(session.as_deref())?;
+    let site = resolve_pane(&mut conn, session.as_deref(), &asked, "rename-pane")?;
+    let pane = site.id;
     let action_args = if clearing {
         json!({ "pane": pane })
     } else {
         json!({ "pane": pane, "name": new })
     };
-    let mut conn = connect_scoped(session.as_deref())?;
     let answer: Value = conn
         .call(
             "scene/invoke",
-            scoped_invoke(
+            site_invoke(
                 session.as_deref(),
+                &site,
                 mux_action_path(RENAME_PANE_ACTION),
                 action_args,
             ),
@@ -4730,19 +5052,19 @@ fn rename_pane(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// A required positional PANE id — a non-negative integer, how sprag addresses a pane on the wire
-/// (unique across the whole daemon). tmux names a pane `window.index`; sprag's global id is enough.
-fn parse_pane_id(arg: Option<String>, command: &str) -> io::Result<u64> {
-    let raw = arg.ok_or_else(|| {
+/// A required positional PANE argument, as the caller SPELLED it — an id (unique across the whole
+/// daemon; tmux names a pane `window.index` and sprag's global id is enough) or a NAME.
+///
+/// It does not parse a number, and that is the change R312 made: this used to answer
+/// `pane id "buildout" must be a number`, one of SIX different sentences the CLI had for the same
+/// refusal, none of which accepted the address every other surface takes. Which spelling this is
+/// belongs to [`PaneAddress`], and resolving it needs a
+/// connection this parse does not have — so the token travels and [`resolve_pane`] decides.
+fn required_pane(arg: Option<String>, command: &str) -> io::Result<String> {
+    arg.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{command} needs a pane id"),
-        )
-    })?;
-    raw.parse::<u64>().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{command}: pane id {raw:?} must be a number"),
+            format!("{command} needs a pane id or NAME"),
         )
     })
 }
@@ -4753,10 +5075,13 @@ fn parse_pane_id(arg: Option<String>, command: &str) -> io::Result<u64> {
 fn break_pane(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "break-pane")?;
     let mut rest = rest.into_iter();
-    let pane = parse_pane_id(rest.next(), "break-pane")?;
+    let asked = required_pane(rest.next(), "break-pane")?;
     let name = rest.next();
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
+    // Registry-wide at the daemon (a break derives the source window from the pane's id), so this
+    // needs the NAME to resolve and no window narrowing.
+    let pane = resolve_pane(&mut conn, Some(&session), &asked, "break-pane")?.id;
     let mut action_args = json!({ "pane": pane });
     if let Some(name) = &name {
         action_args["name"] = json!(name);
@@ -4790,7 +5115,7 @@ fn break_pane(args: Vec<String>) -> io::Result<()> {
 fn join_pane(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "join-pane")?;
     let mut rest = rest.into_iter();
-    let pane = parse_pane_id(rest.next(), "join-pane")?;
+    let asked = required_pane(rest.next(), "join-pane")?;
     let window = rest.next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -4799,6 +5124,9 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
     })?;
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
+    // Registry-wide at the daemon for [`break_pane`]'s reason: both windows are derived from the
+    // pane's id, so this needs the NAME to resolve and no window narrowing.
+    let pane = resolve_pane(&mut conn, Some(&session), &asked, "join-pane")?.id;
     let answer = conn.call(
         "scene/invoke",
         json!({ "session": session, "path": mux_action_path(JOIN_PANE_ACTION), "args": { "pane": pane, "window": window } }),
@@ -4834,7 +5162,7 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "move-pane")?;
     let mut dir: Option<&'static str> = None;
     let mut before = false;
-    let mut panes: Vec<u64> = Vec::new();
+    let mut panes: Vec<String> = Vec::new();
     for arg in rest {
         match arg.as_str() {
             "-h" | "-v" => {
@@ -4854,16 +5182,12 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
                 if panes.len() == 2 {
                     return Err(bad(format!("move-pane: unexpected argument {other:?}")));
                 }
-                panes.push(other.parse::<u64>().map_err(|_| {
-                    bad(format!(
-                        "move-pane: {other:?} is neither a flag nor a pane id"
-                    ))
-                })?);
+                panes.push(other.to_owned());
             }
         }
     }
-    let (&pane, &target) = match panes.as_slice() {
-        [pane, target] => (pane, target),
+    let (asked, asked_target) = match panes.as_slice() {
+        [pane, target] => (pane.clone(), target.clone()),
         _ => {
             return Err(bad(
                 "move-pane needs the pane to move and the pane to put it beside".to_owned(),
@@ -4875,12 +5199,16 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
     // at all — the pane is already in a window, so `join-pane` is the verb for "somewhere in there".
     let dir = dir.ok_or_else(|| {
         bad(format!(
-            "move-pane: pane {pane} needs an axis to land on beside pane {target} — -h (right) or \
-             -v (below); use join-pane to append into a window instead"
+            "move-pane: pane {asked} needs an axis to land on beside pane {asked_target} — \
+             -h (right) or -v (below); use join-pane to append into a window instead"
         ))
     })?;
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
+    // Registry-wide at the daemon: BOTH windows are derived from the two pane ids (R284), so this
+    // needs only the names to resolve.
+    let pane = resolve_pane(&mut conn, Some(&session), &asked, "move-pane")?.id;
+    let target = resolve_pane(&mut conn, Some(&session), &asked_target, "move-pane")?.id;
     let answer = conn.call(
         "scene/invoke",
         json!({
@@ -4938,7 +5266,7 @@ fn swap_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "swap-pane")?;
     let mut dir: Option<PaneDir> = None;
-    let mut panes: Vec<u64> = Vec::new();
+    let mut panes: Vec<String> = Vec::new();
     for arg in rest {
         // The ONE flag parser ([`keymap::direction_of`](sprag_host::keymap::direction_of)), not a
         // table of this verb's own: until R299 both this and `select-pane` mapped a flag straight to
@@ -4956,18 +5284,21 @@ fn swap_pane(args: Vec<String>) -> io::Result<()> {
                 if panes.len() == 2 {
                     return Err(bad(format!("swap-pane: unexpected argument {other:?}")));
                 }
-                panes.push(other.parse::<u64>().map_err(|_| {
-                    bad(format!(
-                        "swap-pane: {other:?} is neither a flag nor a pane id"
-                    ))
-                })?);
+                panes.push(other.to_owned());
             }
         }
     }
     // The two shapes, and exactly one of them — the wire refuses "both" and "neither" as malformed,
     // so the CLI names the mistake here rather than letting it read as a daemon refusal. The ask is
     // a TYPE, so the combinations below are the only ones expressible past this point.
-    let ask = match (panes.as_slice(), dir) {
+    let mut conn = connect_scoped(session.as_deref())?;
+    // Resolved BEFORE the shapes below, so a NAME is a pane in whichever window holds it — the
+    // daemon's swap is registry-wide (measured), so nothing here needs narrowing.
+    let mut resolved = Vec::new();
+    for asked in &panes {
+        resolved.push(resolve_pane(&mut conn, session.as_deref(), asked, "swap-pane")?.id);
+    }
+    let ask = match (resolved.as_slice(), dir) {
         ([pane, with], None) => SwapAsk::With {
             pane: Some(PaneId(*pane)),
             with: PaneId(*with),
@@ -4995,7 +5326,6 @@ fn swap_pane(args: Vec<String>) -> io::Result<()> {
             ));
         }
     };
-    let mut conn = connect_scoped(session.as_deref())?;
     let answer = conn
         .call(
             "scene/invoke",
@@ -5093,7 +5423,7 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = target_and_rest(args, "zoom-pane")?;
     let mut on: Option<bool> = None;
-    let mut pane: Option<u64> = None;
+    let mut pane: Option<String> = None;
     for arg in rest {
         match arg.as_str() {
             flag @ ("-u" | "-Z") => {
@@ -5104,25 +5434,23 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
                 }
                 on = Some(flag == "-Z");
             }
-            other if pane.is_none() => {
-                pane = Some(other.parse::<u64>().map_err(|_| {
-                    bad(format!(
-                        "zoom-pane: {other:?} is neither a flag nor a pane id"
-                    ))
-                })?);
-            }
+            other if pane.is_none() => pane = Some(other.to_owned()),
             other => return Err(bad(format!("zoom-pane: unexpected argument {other:?}"))),
         }
     }
+    let mut conn = connect(None)?;
+    require_session(&mut conn, &session)?;
+    // Registry-wide at the daemon (measured: a bare `zoom_pane` reaches a pane one window over),
+    // so this needs only the name to resolve.
     let mut args = json!({});
-    if let Some(pane) = pane {
-        args["pane"] = json!(pane);
+    if let Some(site) =
+        resolve_optional_pane(&mut conn, Some(&session), pane.as_deref(), "zoom-pane")?
+    {
+        args["pane"] = json!(site.id);
     }
     if let Some(on) = on {
         args["on"] = json!(on);
     }
-    let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
     let answer = conn.call(
         "scene/invoke",
         json!({ "session": session, "path": mux_action_path(ZOOM_PANE_ACTION), "args": args }),
@@ -5342,8 +5670,10 @@ mod tests {
         // and wrong for the common one.
         let refused = resize_refusal(ask, None, &fault(json!("InvokeRejected"))).to_string();
         assert!(
-            refused.contains("there is no pane 0") && refused.contains("nothing is watching"),
-            "a real refusal keeps the verb's own words: {refused}",
+            refused.contains("pane 0 is floating or has no boundary that way")
+                && refused.contains("nothing is watching"),
+            "a real refusal keeps the verb's own disjunction — both halves of which are still \
+             possible, unlike the \"there is no pane 0\" it used to lead with: {refused}",
         );
     }
 
