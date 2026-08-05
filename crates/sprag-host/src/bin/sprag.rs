@@ -845,7 +845,7 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20      sprag <install-hooks | uninstall-hooks> [AGENT…] [--yes] [--dry-run]\n\
          \x20      sprag list-hooks\n\
          \x20      sprag events [-t SESSION] [--since N] [-f]\n\
-         \x20      sprag <list-keys | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
+         \x20      sprag <list-keys [-N] | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
          \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
          \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]\n\
          \x20      sprag <--version | --help>";

@@ -5459,3 +5459,23 @@ fn list_keys_notes_form_reads_as_a_table_and_leaves_the_paste_back_form_alone() 
         bad.stderr,
     );
 }
+
+/// The usage line names the flag `list-keys` grew, because nothing else makes it.
+///
+/// `USAGE`'s own doc says why this test exists at all: it is a SECOND list of what this binary does,
+/// and *"a second list is exactly what nothing checks — `sprag bind-key` held one that was stale for
+/// eight rounds"*. R308 added `-N` and did not update it, which the round's own audit caught. This
+/// is the assertion that would have caught it instead, and it is deliberately narrow: it pins the
+/// flag this round added rather than claiming to police the whole list, which would need a verb
+/// enumeration this binary does not have.
+#[test]
+fn the_usage_line_names_the_flag_list_keys_takes() {
+    let absent = socket_path();
+    let run = sprag_env(&absent, &["--nonsense"], &[]);
+    assert!(!run.ok, "an unknown verb is refused: {}", run.stdout);
+    assert!(
+        run.stderr.contains("list-keys [-N]"),
+        "the usage names the notes form, or a user cannot find it: {}",
+        run.stderr,
+    );
+}
