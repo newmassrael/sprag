@@ -903,6 +903,20 @@ mod tests {
         fn switch_session(&self, name: &str) {
             self.switched.borrow_mut().push(name.to_owned());
         }
+        /// Records the DIRECTION as the daemon's own wire word, so a test reads what would have
+        /// crossed the wire rather than a name this double invented.
+        fn switch_session_toward(&self, step: sprag_terminal::OrderStep) -> Option<String> {
+            self.switched.borrow_mut().push(step.wire_str().to_owned());
+            None
+        }
+        fn switch_session_last(&self) -> Option<String> {
+            self.switched.borrow_mut().push("last".to_owned());
+            None
+        }
+        fn switch_session_named(&self, name: &str) -> Option<String> {
+            self.switched.borrow_mut().push(name.to_owned());
+            Some(name.to_owned())
+        }
         fn new_session(&self) -> String {
             *self.created.borrow_mut() += 1;
             "new".to_owned()

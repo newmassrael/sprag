@@ -89,17 +89,17 @@ use sprag_grid::ProjectionToken;
 use sprag_host::ClientSize;
 use sprag_host::wire::ActivityWire;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
-    CLOSE_ACTION, DROP_FILE_ACTION, ENDED_KEY, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
-    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOUSE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
-    RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT,
-    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION,
-    SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOW_SIZE_SLOT,
-    WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
-    session_activity_at,
+    AGENT_MANIFESTS_SLOT, AttachAsk, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION,
+    CLIPBOARD_WRITE_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, ENDED_KEY, FOCUS_ACTION, FULL_TEXT_SLOT,
+    GLOBAL_COMMANDS_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
+    LAYOUT_SLOT, MOUSE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, ResizeAsk,
+    ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE,
+    SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
+    project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -107,8 +107,8 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{
-    AttachAsk, CLIENT_ATTACH_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn, HostEndpoint,
-    ROWS_PARAM, new_gui_client_id,
+    CLIENT_ATTACH_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn, HostEndpoint, ROWS_PARAM,
+    new_gui_client_id,
 };
 use sprag_terminal::{
     Ended, LayoutSnapshot, LayoutWire, OrderStep, PaneDir, PaneExit, PaneId, PlaceHow, SessionInfo,
@@ -715,11 +715,21 @@ fn send_attach(conn: &mut HostConn, ask: AttachAsk) -> Landed {
     }
 }
 
-/// Which session a client is asking to be moved to — the two ways it can name one.
+/// Which session a client is asking to be moved to — the ways it can name one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Attaching<'a> {
     /// A session by NAME: the sidebar's row, a `-t` target, a session just created.
     Named(&'a str),
+    /// One step along the daemon's session order from wherever this client is — tmux
+    /// `switch-client -n` / `-p` (R314).
+    ///
+    /// Like [`LastViewed`](Self::LastViewed) and unlike [`Named`](Self::Named), the client sends a
+    /// DIRECTION and reads back a name. It could resolve this itself off its `sessions` mirror, and
+    /// that is exactly the second answer the daemon's walk exists to prevent: the mirror is a poll
+    /// behind, so a client that stepped in it and then attached BY NAME would aim at a row that may
+    /// have moved — R304's defect, reached by a different route. See
+    /// [`sprag_host::wire::AttachAsk::Step`].
+    Step(OrderStep),
     /// The session this client was viewing BEFORE this one, resolved by the daemon (tmux
     /// `switch-client -l`). The client cannot name it, and R304 measured what happens when it
     /// tries — see [`AttachAsk::LastViewed`].
@@ -769,6 +779,10 @@ fn attach_and_follow(conn: &mut HostConn, to: Attaching<'_>) -> Landed {
         Attaching::LastViewed { unattached } => {
             send_attach(conn, AttachAsk::LastViewed { unattached })
         }
+        // Names its own target, so like the history arm it needs no scope of its own — a client
+        // asking for "the next one" must not have to say where it currently is, and saying so
+        // would be a name where the daemon already holds an identity.
+        Attaching::Step(step) => send_attach(conn, AttachAsk::Step(step)),
         // The scope IS the target here: the daemon reads `{"attached": true}` as this client's own
         // attachment and re-attaches it to itself, which is a no-op that answers the one thing the
         // caller needs — what that session is called now.
@@ -1799,8 +1813,13 @@ impl WireHost {
                 // target has nothing to carry on with, because the refusal WAS its answer.
                 Landed::Refused => match to {
                     Attaching::Named(session) => (session.to_owned(), false),
-                    // Neither of these has a name to carry on with: the refusal WAS the answer.
-                    Attaching::LastViewed { .. } | Attaching::Attached => return Ok(None),
+                    // None of these has a name to carry on with: the refusal WAS the answer. The
+                    // step arm belongs here rather than beside `Named` for the reason it exists —
+                    // it never held a name, and inventing one off the mirror is the second answer
+                    // the daemon's walk was built to prevent.
+                    Attaching::LastViewed { .. } | Attaching::Step(_) | Attaching::Attached => {
+                        return Ok(None);
+                    }
                 },
             };
             let since0 = read_revision(&mut conn)?;
@@ -1939,6 +1958,56 @@ impl WireHost {
         match self.attach_in_place(Attaching::Attached) {
             Ok(Some(_)) => {}
             Ok(None) | Err(_) => self.fall_back_to(previous),
+        }
+    }
+
+    /// THE switch sequence — stop the poll thread, re-attach where `to` says, and answer where this
+    /// client LANDED. Every session switch this client makes goes through here.
+    ///
+    /// The poll thread is stopped FIRST, joined, so it can never refresh a mirror out from under
+    /// the swap; `spawn_poll_for` (inside [`attach_in_place`](Self::attach_in_place)) installs the
+    /// replacement. `take()` is bound to a local so the `self.poll` borrow is released before the
+    /// blocking join — sound today either way (the joined thread never re-borrows `self.poll`), but
+    /// it removes an `already borrowed` hazard should a future join path touch it.
+    ///
+    /// **A gesture that turns out to have nowhere to go still pays that teardown**, which is why
+    /// [`resume`](Self::resume) exists and why the `None` arm cannot simply return: the client is
+    /// staying where it was, and where it was has no poll thread any more. Missing that is a client
+    /// that stops updating after a key that "did nothing" — the reason this is ONE function rather
+    /// than the sequence written at each of the four call sites.
+    ///
+    /// TRACKED BOUND (responsiveness): this runs SYNCHRONOUSLY on the UI thread (the reducer) and
+    /// does a thread join plus several blocking RPCs (connect + a read per pane), and `HostConn` has
+    /// no read timeout — so a daemon that accepts but never answers freezes the GUI for the
+    /// duration. A per-gesture path, not a per-frame one, and the daemon is local; the broader fix
+    /// (a `HostConn` read deadline) is a `WireHost`-wide concern, not this seam's.
+    fn switch_to(&self, to: Attaching<'_>) -> Option<String> {
+        let previous = lock_session(&self.session).clone();
+        let running = self.poll.borrow_mut().take();
+        if let Some(mut poll) = running {
+            poll.stop();
+        }
+        match self.attach_in_place(to) {
+            Ok(landed @ Some(_)) => landed,
+            // The daemon answered that there is nowhere to go (a ring with nothing in it, or no
+            // last session), or refused a target that has no name to fall back on. Either way this
+            // client stays where it was and its poll thread has to come back.
+            Ok(None) => {
+                self.resume(&previous);
+                None
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "sprag_gui::wire",
+                    %error,
+                    "session switch failed; staying on the previous session",
+                );
+                // `fall_back_to` and not `resume`: the attach may already have moved this client's
+                // attachment before the read failed, so "where I am" is the wrong question and only
+                // the NAME says which session the user was on.
+                self.fall_back_to(&previous);
+                None
+            }
         }
     }
 
@@ -2654,26 +2723,36 @@ impl HostClient for WireHost {
         if name == lock_session(&self.session).as_str() {
             return;
         }
-        let previous = lock_session(&self.session).clone();
-        // Tear the current poll thread down BEFORE re-pointing anything: joined first, it cannot
-        // race the mirror swap. `spawn_poll_for` (inside `attach_in_place`) installs the replacement.
-        // Bind `take()` to a local FIRST so the `self.poll` borrow is released before the blocking
-        // `stop()`/join: a `borrow_mut()` temporary inside the `if let` would live across the whole
-        // body. Sound today (the joined thread never re-borrows `self.poll`), but this removes a
-        // needless `already borrowed` hazard should a future join path touch it.
-        let running = self.poll.borrow_mut().take();
-        if let Some(mut poll) = running {
-            poll.stop();
+        self.switch_to(Attaching::Named(name));
+    }
+
+    /// The ring is the DAEMON's, so this sends a DIRECTION and reads back the name it landed on —
+    /// see the trait method. It does not short-circuit the way
+    /// [`switch_session`](HostClient::switch_session) does: a step cannot know in advance that it
+    /// wraps onto the session it started from, and the daemon answering that name IS the answer.
+    fn switch_session_toward(&self, step: OrderStep) -> Option<String> {
+        self.switch_to(Attaching::Step(step))
+    }
+
+    /// The history is the DAEMON's ([`AttachAsk::LastViewed`]) and this client keeps none of its
+    /// own. It used to: a `Vec<String>` of names maintained by nothing, which R304 measured walking
+    /// straight into a stranger's session — the visited session had been renamed and a new one had
+    /// taken its name, so "take me back where I was" attached this client to a session it had never
+    /// seen, on the connection it types down.
+    fn switch_session_last(&self) -> Option<String> {
+        self.switch_to(Attaching::LastViewed { unattached: false })
+    }
+
+    /// [`switch_session`](HostClient::switch_session)'s answering form, for a caller that has to
+    /// tell a user whether their typed name landed. It keeps that method's short-circuit, so
+    /// asking for the session you are already on answers that session rather than paying a
+    /// re-attach.
+    fn switch_session_named(&self, name: &str) -> Option<String> {
+        let here = lock_session(&self.session).clone();
+        if name == here {
+            return Some(here);
         }
-        if let Err(error) = self.attach_in_place(Attaching::Named(name)) {
-            tracing::warn!(
-                target: "sprag_gui::wire",
-                session = name,
-                %error,
-                "session switch failed; staying on the previous session",
-            );
-            self.fall_back_to(&previous);
-        }
+        self.switch_to(Attaching::Named(name))
     }
 
     /// Create a fresh session on the host (born with a shell at the boot size — it reflows to this
@@ -2805,27 +2884,10 @@ impl HostClient for WireHost {
     ///
     /// The poll thread is stopped FIRST, as for any switch, so nothing refreshes a mirror out from
     /// under the swap; the cost of that is that a gesture with nowhere to go pays a re-attach to
-    /// where it already was, which is the same recovery a failed switch takes.
+    /// where it already was, which is the same recovery a failed switch takes
+    /// (this client's one switch sequence).
     fn switch_to_last_session(&self) {
-        let previous = lock_session(&self.session).clone();
-        let running = self.poll.borrow_mut().take();
-        if let Some(mut poll) = running {
-            poll.stop();
-        }
-        match self.attach_in_place(Attaching::LastViewed { unattached: false }) {
-            Ok(Some(_)) => {}
-            // Nowhere to go back to, or the ask failed: either way this client stays where it
-            // was — and its poll thread has to be restarted, which resuming does.
-            Ok(None) => self.resume(&previous),
-            Err(error) => {
-                tracing::warn!(
-                    target: "sprag_gui::wire",
-                    %error,
-                    "could not switch to the last session; staying put",
-                );
-                self.resume(&previous);
-            }
-        }
+        self.switch_session_last();
     }
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {

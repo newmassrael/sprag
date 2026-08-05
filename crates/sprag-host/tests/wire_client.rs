@@ -1656,6 +1656,158 @@ fn a_client_goes_back_to_the_session_it_visited_not_to_the_name_it_wore() {
     let _ = std::fs::remove_file(&sock);
 }
 
+/// **R314 over the REAL socket**: a client asks for *the next session* and the DAEMON walks the
+/// ring — from where that client actually is, answering the name it landed on.
+///
+/// THREE sessions and the client starts in the MIDDLE, deliberately: from there `next` and
+/// `previous` name different rows, so a walk that ignored the direction — or one that always
+/// answered the first or the last — could not pass. The origin is never sent: the client says
+/// only which way, and the daemon reads its own attachment map for where.
+///
+/// ⚠ **What this test deliberately does NOT claim.** The walk is over
+/// `sprag_host::host::listable_sessions`, the same builder the `sessions` slot paints from, so a
+/// step can only land where a list would show. That is unobservable HERE and it was measured
+/// rather than assumed: a daemon gives its boot session a pane whether or not `--` names one, and
+/// R309 ends a session whose last pane goes — so every session a live daemon holds is listable and
+/// the two orders coincide. The distinction is kept because the two must not be able to come
+/// apart, and it is driven where the state can actually be built (`rpc::tests::step_along`, and
+/// `sessions_hides_the_empty_anchor_and_lists_a_worked_session` for the paneless anchor).
+#[test]
+fn a_client_steps_along_the_session_ring_the_daemon_walks_from_where_it_is() {
+    let (_host, sock) = spawn_host();
+    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    let new_session = |conn: &mut HostConn, name: &str| {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": name } }),
+        )
+        .expect("new_session answers");
+    };
+    for name in ["alpha", "beta"] {
+        new_session(&mut admin, name);
+    }
+    // The ring the daemon will walk, read the way a user reads it. Named here so the assertions
+    // below are about THIS order rather than about an order the test assumed.
+    assert_eq!(
+        session_names(&mut admin),
+        vec!["0".to_owned(), "alpha".to_owned(), "beta".to_owned()],
+        "the boot session, then the two created ones, in the registry's own order",
+    );
+
+    let mut viewer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
+        .expect("client/hello is accepted");
+    let attach_to = |conn: &mut HostConn, session: &str| -> Value {
+        conn.scope_to(session.to_owned());
+        let landed = conn
+            .call(CLIENT_ATTACH_METHOD, json!({}))
+            .expect("client/attach is accepted");
+        conn.scope_to_attached();
+        landed
+    };
+    let step = |conn: &mut HostConn, step: sprag_terminal::OrderStep| -> Value {
+        let mut params = serde_json::Map::new();
+        sprag_host::wire::AttachAsk::Step(step).write_into(&mut params);
+        conn.call(CLIENT_ATTACH_METHOD, Value::Object(params))
+            .expect("client/attach is accepted")
+    };
+    attach_to(&mut viewer, "alpha");
+
+    // From the MIDDLE of three the two directions DISAGREE, which is what makes these two lines
+    // discriminate rather than merely pass.
+    assert_eq!(
+        step(&mut viewer, sprag_terminal::OrderStep::Next),
+        json!("beta"),
+    );
+    assert_eq!(
+        step(&mut viewer, sprag_terminal::OrderStep::Previous),
+        json!("alpha"),
+        "and back: the ring is walked from where the client NOW is, never from a fixed origin",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "alpha"),
+        1,
+        "the client really moved — the daemon counts it on that session's badge",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "beta"),
+        0,
+        "...and not on the one it left",
+    );
+
+    // BOTH WRAPS, from the two ends.
+    attach_to(&mut viewer, "beta");
+    assert_eq!(
+        step(&mut viewer, sprag_terminal::OrderStep::Next),
+        json!("0"),
+        "past the last is the first",
+    );
+    assert_eq!(
+        step(&mut viewer, sprag_terminal::OrderStep::Previous),
+        json!("beta"),
+        "before the first is the last",
+    );
+
+    // A SECOND CLIENT steps from ITS OWN attachment, not from the first one's — the fact that
+    // makes the origin the attachment map rather than anything the request carries.
+    let mut other =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("a second client connects");
+    other
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "other" }))
+        .expect("client/hello is accepted");
+    attach_to(&mut other, "alpha");
+    // Each connection is scoped to its OWN attachment (`scope_to_attached`), so this slot reads
+    // where that client is — the disagreement the assertion after it rests on.
+    let where_it_is = |conn: &mut HostConn| -> Option<String> {
+        conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(SESSION_SLOT) }),
+        )
+        .ok()?
+        .as_str()
+        .map(str::to_owned)
+    };
+    assert_ne!(
+        where_it_is(&mut viewer),
+        where_it_is(&mut other),
+        "the two clients are on DIFFERENT sessions, so the next assertion discriminates",
+    );
+    assert_eq!(
+        step(&mut other, sprag_terminal::OrderStep::Next),
+        json!("beta"),
+        "the second client steps from alpha, where IT is, not from beta where the first one is",
+    );
+
+    // Every malformed target is refused rather than resolved — over the socket, where a caller
+    // learns it from a sentence.
+    let refused = |conn: &mut HostConn, params: Value| -> String {
+        match conn.call(CLIENT_ATTACH_METHOD, params) {
+            Err(error) => error.to_string(),
+            Ok(answer) => panic!("expected a refusal, got {answer}"),
+        }
+    };
+    let sentence = refused(&mut viewer, json!({ "step": "sideways" }));
+    assert!(
+        sentence.contains("next") && sentence.contains("previous"),
+        "the refusal names the two words a caller may use: {sentence}",
+    );
+    let both = refused(&mut viewer, json!({ "step": "next", "last": true }));
+    assert!(
+        both.contains("ask for one"),
+        "two targets is no target: {both}",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "beta"),
+        2,
+        "and neither refusal moved anybody: both clients stepped onto beta and are still there",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// A client can re-attach to WHERE IT ALREADY IS without naming it, and is told what that session
 /// is called now — the `{"attached": true}` attach, over the socket, across a rename.
 ///

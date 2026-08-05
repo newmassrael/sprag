@@ -2109,30 +2109,15 @@ impl ExternalIntrospect for WorkspaceExternal {
             // one slot whose subject is the set of scopes, so scoping it to the caller's own
             // session would answer a question nobody asked.
             SESSIONS_SLOT => {
-                // One ENRICHED builder ([`SessionRegistry::session_infos_live`]) shared with the
-                // in-process arm, serialised here the way `windows` serialises its `WindowInfo`s —
-                // so neither the shape NOR what `windows`/`default`/`cwd`/`branch` mean can drift
-                // between the wire path and the in-process one. `_live` is two-phase (registry then
-                // workspace lock, never nested) so reading each session's cwd + git branch stays off
-                // the registry lock. `default` says where an UNSCOPED request lands — not "is it
-                // current", nothing is current here.
-                let mut infos: Vec<SessionInfo> =
-                    SessionRegistry::session_infos_live(&self.registry);
-                // Fill the per-session attached count HOST-side: it is dispatch-layer state the
-                // registry cannot know (a session has no idea who is watching it). `None` off a
-                // daemon leaves every `attached` at the structural 0. One brief lock, no nesting
-                // with the registry lock (already released by `session_infos_live`).
-                if let Some(attachments) = &self.attachments {
-                    let attachments = lock(attachments);
-                    for info in &mut infos {
-                        info.attached = attachments.attached_count(&info.name);
-                    }
-                }
-                // Drop the resting empty anchor (and any paneless, unattached session): a human
-                // session list shows working sessions + those a client is viewing, matching
-                // `tmux ls` at rest. Applied HERE, after `attached` is filled, because that is the
-                // one place both facts the rule needs are known (see `SessionInfo::is_listable`).
-                infos.retain(SessionInfo::is_listable);
+                // ONE builder ([`crate::host::listable_sessions`]) shared with the in-process arm
+                // and with `switch-client`'s ring walk, serialised here the way `windows`
+                // serialises its `WindowInfo`s — so neither the shape, nor what
+                // `windows`/`default` mean, nor WHICH SESSIONS APPEAR can drift between the three.
+                // It fills the per-session attached count (dispatch-layer state the registry cannot
+                // know) and drops the resting empty anchor. `default` says where an UNSCOPED
+                // request lands — not "is it current", nothing is current here.
+                let infos: Vec<SessionInfo> =
+                    crate::host::listable_sessions(&self.registry, self.attachments.as_deref());
                 encoded_answer(&infos, "sessions")
             }
             // The NAME of the session this request is scoped to. Read straight off the scope rather

@@ -1032,6 +1032,41 @@ pub trait HostClient {
     /// no-op; the wire client carries the real switch.
     fn switch_session(&self, name: &str);
 
+    /// Move this client one step along the DAEMON's session order and answer where it LANDED —
+    /// tmux `switch-client -n` / `-p` (R314). [`None`] if there was nowhere to go or the switch
+    /// failed.
+    ///
+    /// # Why it takes a direction and answers a name
+    ///
+    /// [`switch_session`](Self::switch_session)'s twin for a caller that cannot name its target,
+    /// and it must not be able to: the ring is walked by the daemon over the list a user SEES, so
+    /// a client resolving it against its own `sessions` mirror would be a second answer derived
+    /// from a poll that can be a revision behind — the authority split
+    /// [`select_window_toward`](Self::select_window_toward) states one level down. The answer is
+    /// the name the daemon LANDED on, which is the only way the caller learns where it went.
+    ///
+    /// A one-session ring answers that same session: the ring wrapped, and that is not a failure.
+    fn switch_session_toward(&self, step: OrderStep) -> Option<String>;
+
+    /// Move this client back to the session it was viewing BEFORE this one and answer where it
+    /// LANDED — tmux `switch-client -l` (R304's ask, given a driver by R314). [`None`] when this
+    /// client has viewed nothing else that is still alive.
+    ///
+    /// The history is the DAEMON's and is keyed by session IDENTITY, which is why a client cannot
+    /// answer this itself: a remembered NAME resolves to nothing after a rename and to A STRANGER
+    /// once a new session takes the freed one. See [`crate::wire::AttachAsk::LastViewed`].
+    fn switch_session_last(&self) -> Option<String>;
+
+    /// Attach this client to the session named `name` and answer the name the daemon RECORDED —
+    /// tmux `switch-client -t <session>`. [`None`] if no session carries that name, or the switch
+    /// failed.
+    ///
+    /// [`switch_session`](Self::switch_session)'s answering form, and the one a PROMPT needs: a
+    /// user who typed a name is owed either the session they asked for or the sentence saying no
+    /// session is called that. The name comes back rather than being echoed for R295's rule — the
+    /// daemon's recorded spelling, never the caller's argument.
+    fn switch_session_named(&self, name: &str) -> Option<String>;
+
     /// Create a fresh session on the host (born with a shell, tmux `new-session`) and switch this
     /// client to it, returning its name. The "+" of a session sidebar.
     fn new_session(&self) -> String;
@@ -1686,6 +1721,41 @@ pub(crate) fn reconciled_layout(
         // `LayoutSnapshot::projection` a fact rather than a join of two readings.
         zoomed: window.zoomed(),
     })
+}
+
+/// Every session a HUMAN LIST shows, in the registry's own order, with each row's viewer count
+/// filled in — the ONE place [`SessionInfo::is_listable`] is applied.
+///
+/// The rule needs two facts held by two different owners: the pane count is the registry's and the
+/// attachment count is the dispatch layer's, so the filter can only run where both are known.
+/// That sentence was already on `is_listable`, and three callers were each doing the sequence by
+/// hand — the wire `sessions` slot, the in-process [`HostClient::sessions`] arm, and, from R314,
+/// the `switch-client` ring walk. **The order this answers is the order a user SEES**, so a step
+/// along it cannot land on a session no list would show; that is the whole reason the walk shares
+/// this function rather than the registry's raw `sessions()`.
+///
+/// `attachments` is [`None`] for an in-process host, which owns no clients: every `attached` stays
+/// at the structural `0` and a session lists on its pane count alone.
+///
+/// # Locking
+///
+/// The two locks are taken SEQUENTIALLY and never nested —
+/// [`SessionRegistry::session_infos_live`] releases the registry before this takes the attachment
+/// map. Fusing them would nest one inside the other and pick a side in an ordering the rest of the
+/// host has no need to constrain.
+pub(crate) fn listable_sessions(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    attachments: Option<&Mutex<AttachmentRegistry>>,
+) -> Vec<SessionInfo> {
+    let mut infos = SessionRegistry::session_infos_live(registry);
+    if let Some(attachments) = attachments {
+        let attachments = lock(attachments);
+        for info in &mut infos {
+            info.attached = attachments.attached_count(&info.name);
+        }
+    }
+    infos.retain(SessionInfo::is_listable);
+    infos
 }
 
 /// Install a client's settled arrangement, then answer with the canonical one — the ONE
@@ -2740,13 +2810,10 @@ impl HostClient for Host {
     /// default. Not narrowed to the default even though this arm only renders that one: the list's
     /// whole purpose is to enumerate the scopes a switcher could name.
     fn sessions(&self) -> Vec<SessionInfo> {
-        let mut infos = SessionRegistry::session_infos_live(&self.registry);
-        // Same human-facing filter the wire `sessions` slot applies (the SSOT rule), so the
-        // in-process arm and the daemon cannot disagree on whether the resting anchor lists. An
-        // in-process host has no attachment map, so `attached` stays 0 and a session lists on its
-        // pane count alone — the empty anchor drops, a working session stays.
-        infos.retain(SessionInfo::is_listable);
-        infos
+        // The SAME builder the wire `sessions` slot and the `switch-client` ring walk use, so no
+        // two of the three can disagree about whether the resting anchor lists. An in-process host
+        // owns no clients, hence the `None`: a session lists on its pane count alone here.
+        listable_sessions(&self.registry, None)
     }
 
     /// Read this host's own sampler — the SAME one the wire `session_activity` family serves from
@@ -2779,6 +2846,27 @@ impl HostClient for Host {
     /// re-pointable client projection to switch (see the trait method's note). Switching sessions
     /// is a wire-client capability; a test / debug in-process host stays on its default.
     fn switch_session(&self, _name: &str) {}
+
+    /// [`None`]: this arm has one session it can render and no attachment to move, so there is no
+    /// ring to walk — the same reason [`switch_session`](HostClient::switch_session) is a no-op.
+    /// Answering the current session instead would be the worse lie of the two: a key would report
+    /// a move that never happened.
+    fn switch_session_toward(&self, _step: OrderStep) -> Option<String> {
+        None
+    }
+
+    /// [`None`]: an in-process host keeps no visit history because it has no client to keep one
+    /// for — the history is the DAEMON's, keyed by identity
+    /// ([`crate::wire::AttachAsk::LastViewed`]).
+    fn switch_session_last(&self) -> Option<String> {
+        None
+    }
+
+    /// [`None`]: [`switch_session`](HostClient::switch_session)'s answering form over an arm that
+    /// cannot switch, so there is never a landing to report.
+    fn switch_session_named(&self, _name: &str) -> Option<String> {
+        None
+    }
 
     /// No-op returning the current (default) session: the in-process debug host cannot show a
     /// freshly-created session (it renders only the default — see

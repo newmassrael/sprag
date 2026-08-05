@@ -1237,6 +1237,15 @@ mod tests {
             String::new()
         }
         fn switch_session(&self, _name: &str) {}
+        fn switch_session_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {
+            None
+        }
+        fn switch_session_last(&self) -> Option<String> {
+            None
+        }
+        fn switch_session_named(&self, _name: &str) -> Option<String> {
+            None
+        }
         fn new_session(&self) -> String {
             String::new()
         }

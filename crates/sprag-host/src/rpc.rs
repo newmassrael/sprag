@@ -48,9 +48,10 @@ use crate::wire::{
     CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD,
     EVENTS_WAIT_METHOD, INVALID_PARAMS, LAST_PARAM, NEEDLE_PARAM, PANE_PARAM,
     PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM, PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM,
-    SINCE_PARAM, SUBSCRIPTION_PARAM, UNATTACHED_PARAM, WIRE_PROTOCOL,
+    SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM, UNATTACHED_PARAM, WIRE_PROTOCOL,
 };
 use serde_json::Value;
+use sprag_terminal::{OrderStep, SessionInfo};
 
 /// The long-lived host state threaded through the serve loop: the booted [`Host`]
 /// (the single [`SessionRegistry`] owner), the background plugin-run registry, pinion's
@@ -1175,6 +1176,37 @@ fn handle_attach(
                 None => return lifecycle_answer(request, Value::Null),
             }
         }
+        AttachAsk::Step(step) => {
+            // WHERE the step is measured FROM: this client's own attachment, which lives in the map
+            // below and nowhere else. A connection that never attached has none and steps from its
+            // SCOPE — where a plain attach would have put it — so there is one rule and no refusal.
+            let here = lock(state.attachments())
+                .session_of(conn)
+                .unwrap_or_else(|| scope.session())
+                .to_owned();
+            // THE ORDER THE USER CAN SEE, built by the one function that applies the listability
+            // rule (`sprag ls` and the GUI's session rail paint this same list). Walking the
+            // registry's raw order instead would step a user onto the resting anchor — a session no
+            // list shows, holding nothing, that they could not find their way back from by looking.
+            //
+            // Sequential locks, never nested: the read above released the map before this runs, and
+            // nothing can move between them because every registry mutation runs on THIS dispatch
+            // thread — the argument the history arm above states in full.
+            let listed =
+                crate::host::listable_sessions(state.registry(), Some(state.attachments()));
+            let Some(landed) = step_along(&listed, &here, step) else {
+                // Nothing a human list would show, so nowhere to step to. ANSWERED, not refused,
+                // for the history arm's reason one line up: the client stays where it is.
+                return lifecycle_answer(request, Value::Null);
+            };
+            // The name came out of a list read a moment ago on this same thread, so this resolve
+            // cannot fail for a session that was there — and if the registry is the authority on
+            // what exists, asking it again at the moment of use is what keeps that honest.
+            match lock(state.registry()).id_of(&landed) {
+                Some(id) => (landed, id),
+                None => return lifecycle_answer(request, Value::Null),
+            }
+        }
     };
     // Bound and RELEASED before the arms run. A `lock(..)` written into the `match` scrutinee lives
     // for the whole match, and an arm below re-derives the window — which reads this same map. It
@@ -1223,7 +1255,44 @@ fn attach_fault_sentence(fault: AttachFault) -> String {
             "params.{UNATTACHED_PARAM} narrows params.{LAST_PARAM}, which this request does not ask \
              for",
         ),
+        AttachFault::StepNotAString => format!("params.{STEP_PARAM} must be a string"),
+        // It names the two words rather than saying "invalid": the vocabulary is two long and a
+        // caller who mistyped one of them is one character from a working request.
+        AttachFault::StepUnknown => {
+            let words: Vec<&str> = OrderStep::ALL.iter().map(|s| s.wire_str()).collect();
+            format!("params.{STEP_PARAM} must be {}", words.join(" or "))
+        }
+        AttachFault::TwoTargets => format!(
+            "params.{STEP_PARAM} and params.{LAST_PARAM} each name a different session; ask for one",
+        ),
     }
+}
+
+/// The session one `step` along `listed` from the one called `here`, WRAPPING — the arithmetic
+/// behind `switch-client -n` / `-p`, and [`None`] only when `listed` is empty.
+///
+/// **An attached client's own session is always in `listed`**, and that is a theorem rather than a
+/// case handled here: [`SessionInfo::is_listable`] is `panes > 0 || attached > 0`, and a client
+/// being attached to a session is the second disjunct. The second arm below is therefore reachable
+/// only from a connection that never attached and is scoped to a session no human list shows.
+///
+/// That origin sits OUTSIDE the ring and enters it at the near END — and that is NOT the ordinary
+/// arithmetic with a made-up index, which is what the first version of this tried. No index `at`
+/// satisfies both directions: landing on the first going forward needs `at == len - 1`, and landing
+/// on the last going back needs `at == 0`. Written as the two ends it actually means.
+fn step_along(listed: &[SessionInfo], here: &str, step: OrderStep) -> Option<String> {
+    let len = listed.len();
+    if len == 0 {
+        return None;
+    }
+    let landed = match listed.iter().position(|info| info.name == here) {
+        Some(at) => (at as isize + step.offset()).rem_euclid(len as isize) as usize,
+        None => match step {
+            OrderStep::Next => 0,
+            OrderStep::Previous => len - 1,
+        },
+    };
+    Some(listed[landed].name.clone())
 }
 
 /// One item on the dispatch owner's FIFO: a frame to dispatch, or a connection-closed signal.
@@ -4655,5 +4724,101 @@ mod tests {
             cells_frame_typed(&state, 20).cells,
             "a scrollback offset changes the projected buffer",
         );
+    }
+
+    /// A [`SessionInfo`] row carrying only what [`step_along`] reads, so the fixture cannot
+    /// accidentally agree with the walk through some other field.
+    fn row(name: &str) -> SessionInfo {
+        SessionInfo {
+            name: name.to_owned(),
+            windows: 1,
+            panes: 1,
+            default: false,
+            attached: 0,
+        }
+    }
+
+    /// The `switch-client -n` / `-p` walk: one step along the list a HUMAN SEES, wrapping at both
+    /// ends, and the same list forwards and back.
+    ///
+    /// The fixture is THREE sessions and the origin is the MIDDLE one, deliberately: with two, a
+    /// `next` and a `previous` land on the same row, so a walk that ignored the direction entirely
+    /// would pass — the vacuous-fixture shape R303 was caught by. `assert_ne!` on the two answers
+    /// pins that this fixture can tell them apart.
+    ///
+    /// REVERT-PROOF: drop the `rem_euclid` and the two wrap lines fail; use
+    /// `OrderStep::offset`'s sign the other way round and every line flips.
+    #[test]
+    fn a_step_walks_the_listed_order_and_wraps_at_both_ends() {
+        let listed = [row("0"), row("work"), row("play")];
+        let step = |here: &str, step| step_along(&listed, here, step);
+        assert_ne!(
+            step("work", OrderStep::Next),
+            step("work", OrderStep::Previous),
+            "the fixture DISAGREES about the two directions, so the assertions below discriminate",
+        );
+        assert_eq!(step("work", OrderStep::Next).as_deref(), Some("play"));
+        assert_eq!(step("work", OrderStep::Previous).as_deref(), Some("0"));
+        assert_eq!(
+            step("play", OrderStep::Next).as_deref(),
+            Some("0"),
+            "past the last is the first",
+        );
+        assert_eq!(
+            step("0", OrderStep::Previous).as_deref(),
+            Some("play"),
+            "before the first is the last",
+        );
+    }
+
+    /// The two ends of the walk that are not ordinary steps.
+    ///
+    /// An origin the list does not hold is reachable only from a connection that never attached —
+    /// an ATTACHED session is listable by definition ([`SessionInfo::is_listable`] is
+    /// `panes > 0 || attached > 0`) — and it enters the ring at the near end rather than being
+    /// refused. An EMPTY list has nowhere to go and answers `None`, which the caller turns into
+    /// `null` and the client into "stay put".
+    ///
+    /// ⚠ **THIS TEST ALREADY EARNED ITS KEEP.** The first version of `step_along` claimed both ends
+    /// fell out of the ordinary arithmetic with the origin taken as index `len`; that is false
+    /// (`next` then lands on the SECOND row, not the first), and this is what said so.
+    ///
+    /// REVERT-PROOF: swap the two arms of the `None` branch and both `anchor` lines fail; an empty
+    /// list without the guard panics on `rem_euclid(0)` rather than answering `None`.
+    #[test]
+    fn an_origin_outside_the_list_enters_at_the_near_end_and_an_empty_list_answers_nothing() {
+        let listed = [row("0"), row("work"), row("play")];
+        assert_eq!(
+            step_along(&listed, "anchor", OrderStep::Next).as_deref(),
+            Some("0"),
+            "next from outside the ring is its FIRST member",
+        );
+        assert_eq!(
+            step_along(&listed, "anchor", OrderStep::Previous).as_deref(),
+            Some("play"),
+            "and previous is its LAST",
+        );
+        assert_eq!(
+            step_along(&[], "0", OrderStep::Next),
+            None,
+            "nothing a human list shows is nowhere to step to",
+        );
+    }
+
+    /// A ONE-session ring wraps onto itself, and that is an ANSWER rather than an error.
+    ///
+    /// Pinned because the alternative is tempting and wrong: refusing here would make the
+    /// commonest state on a fresh daemon (one session) report a failure for a key that behaved
+    /// exactly as a ring should.
+    #[test]
+    fn a_one_session_ring_answers_that_session() {
+        let listed = [row("0")];
+        for step in OrderStep::ALL {
+            assert_eq!(
+                step_along(&listed, "0", step).as_deref(),
+                Some("0"),
+                "{step:?}"
+            );
+        }
     }
 }

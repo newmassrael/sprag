@@ -60,21 +60,6 @@ pub const SESSION_PARAM: &str = "session";
 /// reads it. What it is FOR is on [`ScopeAsk::Attached`].
 pub const ATTACHED_PARAM: &str = "attached";
 
-/// The [`CLIENT_ATTACH_METHOD`] `params` key asking to be moved to the session this client was
-/// viewing BEFORE this one — `{"last": true}`, tmux `switch-client -l`. What it is FOR is on
-/// [`AttachAsk::LastViewed`].
-///
-/// It is an ATTACH key, not a scope key: it says where the client is going, where [`SESSION_PARAM`]
-/// and [`ATTACHED_PARAM`] say which session a request is about. They can appear together on one
-/// attach without ambiguity for that reason — the scope is the target only when nothing else names
-/// one.
-pub const LAST_PARAM: &str = "last";
-
-/// The [`CLIENT_ATTACH_METHOD`] `params` key narrowing [`LAST_PARAM`] to a session NO OTHER client
-/// is viewing — tmux `detach-on-destroy no-detached`'s "most recently used detached session".
-/// Meaningless on its own, and refused there ([`AttachFault::UnattachedWithoutLast`]).
-pub const UNATTACHED_PARAM: &str = "unattached";
-
 /// The `params` key narrowing a request to ONE WINDOW of the scoped session — `{"window": "build"}`.
 ///
 /// ORTHOGONAL to the three [`ScopeAsk`] arms rather than a fourth one: they answer WHICH SESSION and
@@ -257,112 +242,6 @@ impl ScopeAsk {
     }
 }
 
-/// WHICH session a [`CLIENT_ATTACH_METHOD`] moves its client to, as the request ASKS for it —
-/// defined ONCE for both ends of the wire, like [`ScopeAsk`] beside it.
-///
-/// The two arms are two ways of naming a target, and only one of them is a name:
-///
-/// * [`Scoped`](Self::Scoped) — the session this connection is SCOPED to ([`ScopeAsk`]). Every
-///   attach before R304 meant this, and it is still what a client sends to go somewhere it can
-///   name: `scope_to(name)` then attach.
-/// * [`LastViewed`](Self::LastViewed) — *the session I was viewing before this one*, tmux
-///   `switch-client -l`. The caller cannot name it, because the only honest answer is held by the
-///   daemon: see the type's own doc.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AttachAsk {
-    /// No attach key at all ⇒ attach to whatever this connection is scoped to.
-    #[default]
-    Scoped,
-    /// `{"last": true}` ⇒ the most recent OTHER session this client has viewed that is still live.
-    /// `{"last": true, "unattached": true}` narrows it to one no other client is viewing.
-    ///
-    /// # Why a client cannot ask this by name
-    ///
-    /// It could hold the name itself — and that is precisely the defect R304 measured. A visit
-    /// history of NAMES is a set of addresses nobody maintains: after `rename-session` the entry
-    /// resolves to nothing (the visit is silently lost), and once a NEW session takes the freed
-    /// name it resolves to A STRANGER — so "take me back where I was" attaches the client to a
-    /// session it has never seen, on the connection it types down.
-    ///
-    /// The daemon's copy is keyed by session IDENTITY, which is why it can be right: an id that
-    /// resolves is that same session under whatever it is called now, and an id that does not is a
-    /// session that is gone. The general rule, and the reason the ATTACHMENT does not need this
-    /// while the history does: a fact about the PRESENT can be kept true by a hook where the change
-    /// is published; a fact about the PAST cannot, because its subject may no longer exist to be
-    /// updated.
-    ///
-    /// `unattached` is tmux `detach-on-destroy no-detached`'s "most recently used DETACHED session":
-    /// it is answered from the daemon's own attachment map, exactly, where a client filtering its
-    /// own session list reads a poll mirror that can be a beat behind.
-    LastViewed {
-        /// Skip a session another client is already viewing.
-        unattached: bool,
-    },
-}
-
-/// Why a params object does not name an attach target this grammar admits. Every arm refuses the
-/// request WHOLE: an attach whose target cannot be read must not fall back to one, because the
-/// fallback would be *the session the client is already on* — a switch that silently does nothing
-/// and reports success.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttachFault {
-    /// [`LAST_PARAM`] is present and is not a boolean (`{"last": 1}`).
-    LastNotABool,
-    /// [`UNATTACHED_PARAM`] is present and is not a boolean.
-    UnattachedNotABool,
-    /// [`UNATTACHED_PARAM`] is present without [`LAST_PARAM`] — a filter with no subject. Refused
-    /// rather than ignored: a caller that wrote it meant to narrow something, and quietly attaching
-    /// it to the connection's scope would answer a question it did not ask.
-    UnattachedWithoutLast,
-}
-
-impl AttachAsk {
-    /// Write this ask into an attach request's `params` map — the ONE place a client spells it.
-    ///
-    /// [`Scoped`](Self::Scoped) writes NOTHING, so the request every client sent before this
-    /// grammar existed is unchanged byte for byte ([`ScopeAsk::write_into`]'s rule, and for the
-    /// same reason). `unattached` is written only when it is asked for, so the commonest
-    /// `switch-client -l` is `{"last": true}` and nothing else.
-    pub fn write_into(&self, params: &mut serde_json::Map<String, Value>) {
-        match self {
-            Self::Scoped => {}
-            Self::LastViewed { unattached } => {
-                params.insert(LAST_PARAM.to_owned(), Value::Bool(true));
-                if *unattached {
-                    params.insert(UNATTACHED_PARAM.to_owned(), Value::Bool(true));
-                }
-            }
-        }
-    }
-
-    /// The target an attach request's `params` names — the ONE place these keys are read.
-    ///
-    /// `false` reads as ABSENT on both keys, exactly as [`ScopeAsk`] reads `{"attached": false}`:
-    /// a well-typed "no" says what omitting the key says, so a client that fills in a whole struct
-    /// asks what one that omits it asks. Every other type is refused, including `null` — the
-    /// divergence [`ScopeAsk::parse`] documents applies here for the stronger reason: an
-    /// unreadable attach target that fell back to the connection's scope would be a `switch-client`
-    /// that left the client exactly where it was and said it had moved.
-    ///
-    /// # Errors
-    ///
-    /// [`AttachFault`], one variant per way a target can be malformed.
-    pub fn parse(params: Option<&Value>) -> Result<Self, AttachFault> {
-        let flag = |key: &str, fault: AttachFault| match params.and_then(|params| params.get(key)) {
-            None => Ok(false),
-            Some(Value::Bool(asked)) => Ok(*asked),
-            Some(_) => Err(fault),
-        };
-        let last = flag(LAST_PARAM, AttachFault::LastNotABool)?;
-        let unattached = flag(UNATTACHED_PARAM, AttachFault::UnattachedNotABool)?;
-        match (last, unattached) {
-            (true, unattached) => Ok(Self::LastViewed { unattached }),
-            (false, false) => Ok(Self::Scoped),
-            (false, true) => Err(AttachFault::UnattachedWithoutLast),
-        }
-    }
-}
-
 /// The SHAPE this build speaks — the number both ends of the wire compare before either acts on
 /// the other's bytes.
 ///
@@ -430,9 +309,9 @@ impl AttachAsk {
 ///   user never opened it on, and both ends would report success. There is no answer key to be
 ///   absent-not-wrong here; the argument's whole meaning is which session gets written to.
 /// * **7** — a client can ask to be attached to the session it was viewing BEFORE this one
-///   ([`AttachAsk::LastViewed`], R304), and [`CLIENT_ATTACH_METHOD`] answers the name it landed on.
+///   (`AttachAsk::LastViewed`, R304), and [`CLIENT_ATTACH_METHOD`] answers the name it landed on.
 ///   The THIRD bump caused by an added ARGUMENT, and it fails the same silent way: a pre-R304
-///   daemon does not read [`LAST_PARAM`], so the attach falls through to the connection's SCOPE —
+///   daemon does not read `last`, so the attach falls through to the connection's SCOPE —
 ///   which for a display client is its own attachment. The client asks to go back where it was, the
 ///   daemon re-attaches it to where it already is and answers success, and the gesture is a no-op
 ///   nothing reports. The reply's change (a session NAME where a bare ok used to be) needs no bump
@@ -493,7 +372,19 @@ impl AttachAsk {
 ///   never sends the key and a new daemon treats its absence as `false`, which is exactly what that
 ///   client already got — but a new client that sent it and was ignored would report a quiet window
 ///   that is not quiet.
-pub const WIRE_PROTOCOL: u32 = 12;
+/// * **13** — a client can ask to be moved one step along the DAEMON's session order
+///   (`{"step": "next"|"previous"}` on [`CLIENT_ATTACH_METHOD`], `sprag_host::wire::AttachAsk::Step`,
+///   R314). The SEVENTH bump caused by an added ARGUMENT, and it is the same silent drop version 7
+///   describes, one target wider: a pre-R314 daemon reads no `step` key, so the attach falls through
+///   to the connection's SCOPE — which for a display client is its own attachment. A user presses
+///   `prefix )`, the daemon re-attaches the client to the session it is already on, the reply
+///   carries that same name, and the ANSWER IS INDISTINGUISHABLE from a legitimate one-session
+///   wrap. Nothing on either side can tell the two apart, which is why this needs the number rather
+///   than a check.
+///   The other direction is refused by number and needs to be: an old client never sends the key,
+///   so a new daemon changes nothing for it, but a new client whose step was dropped would report
+///   that it had moved.
+pub const WIRE_PROTOCOL: u32 = 13;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
@@ -1351,75 +1242,6 @@ mod tests {
             ScopeAsk::parse(None),
             Ok(ScopeAsk::Default),
             "a request with no params at all asks for the default",
-        );
-    }
-
-    /// [`AttachAsk`]'s half of the same claim: one grammar, both directions, for every target an
-    /// attach can name.
-    ///
-    /// The scope is written into the SAME params object, because that is how these travel on the
-    /// wire — a display client's attach carries `{"attached": true}` from its connection and
-    /// `{"last": true}` from the gesture, and the two must not read each other. A parse that took
-    /// the scope keys for its own would fail on the last line here.
-    #[test]
-    fn every_attach_target_round_trips_beside_a_scope() {
-        for ask in [
-            AttachAsk::Scoped,
-            AttachAsk::LastViewed { unattached: false },
-            AttachAsk::LastViewed { unattached: true },
-        ] {
-            let mut params = serde_json::Map::new();
-            ScopeAsk::Attached.write_into(&mut params);
-            ask.write_into(&mut params);
-            assert_eq!(
-                AttachAsk::parse(Some(&Value::Object(params.clone()))),
-                Ok(ask),
-                "{ask:?}",
-            );
-            assert_eq!(
-                ScopeAsk::parse(Some(&Value::Object(params))),
-                Ok(ScopeAsk::Attached),
-                "and the scope beside it is untouched by {ask:?}",
-            );
-        }
-    }
-
-    /// Every way an attach target can be malformed, each its own refusal — and the two CONTROLS
-    /// that keep the test from passing vacuously: a well-typed `false` on each key is an absent
-    /// key, not a fault.
-    #[test]
-    fn each_malformed_attach_target_is_its_own_refusal() {
-        let parse = |params: Value| AttachAsk::parse(Some(&params));
-        assert_eq!(parse(json!({"last": 1})), Err(AttachFault::LastNotABool));
-        assert_eq!(
-            parse(json!({"last": null})),
-            Err(AttachFault::LastNotABool),
-            "null is refused here for the reason `AttachAsk::parse` states: the fallback would be \
-             the session the client is already on",
-        );
-        assert_eq!(
-            parse(json!({"last": true, "unattached": "yes"})),
-            Err(AttachFault::UnattachedNotABool),
-        );
-        assert_eq!(
-            parse(json!({"unattached": true})),
-            Err(AttachFault::UnattachedWithoutLast),
-            "a filter with no subject is refused, never quietly attached to the scope",
-        );
-        assert_eq!(
-            parse(json!({"last": false})),
-            Ok(AttachAsk::Scoped),
-            "the CONTROL: a well-typed no is an absent key",
-        );
-        assert_eq!(
-            parse(json!({"last": true, "unattached": false})),
-            Ok(AttachAsk::LastViewed { unattached: false }),
-            "the second CONTROL: an explicit unnarrowed ask is the plain one",
-        );
-        assert_eq!(
-            AttachAsk::parse(None),
-            Ok(AttachAsk::Scoped),
-            "an attach with no params at all goes where the connection is scoped",
         );
     }
 

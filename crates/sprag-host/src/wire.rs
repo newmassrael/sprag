@@ -300,17 +300,195 @@ pub use sprag_rpc::{
     ROWS_PARAM,
 };
 
-/// [`CLIENT_ATTACH_METHOD`]'s own TARGET grammar ([`sprag_rpc::AttachAsk`]) — `{"last": true}`,
-/// optionally narrowed by `{"unattached": true}`, asking to be moved to the session this client was
-/// viewing BEFORE this one (tmux `switch-client -l`).
+/// The [`CLIENT_ATTACH_METHOD`] `params` key asking to be moved to the session this client was
+/// viewing BEFORE this one — `{"last": true}`, tmux `switch-client -l`. What it is FOR is on
+/// [`AttachAsk::LastViewed`].
 ///
-/// Re-exported for the same one-spelling reason as the keys above, and read through the grammar
-/// rather than key by key so their interaction is decided in one place. It is deliberately NOT a
-/// scope key: a scope says which session a request is ABOUT, and these say where the client is
-/// GOING — which is why they can travel in the same params object as [`ATTACHED_PARAM`] without
-/// either reading the other. What the target means, and why a client cannot hold the answer itself,
-/// is on [`sprag_rpc::AttachAsk::LastViewed`].
-pub use sprag_rpc::{AttachAsk, AttachFault, LAST_PARAM, UNATTACHED_PARAM};
+/// It is an ATTACH key, not a scope key: it says where the client is going, where [`SESSION_PARAM`]
+/// and [`ATTACHED_PARAM`] say which session a request is about. They can appear together on one
+/// attach without ambiguity for that reason — the scope is the target only when nothing else names
+/// one.
+pub const LAST_PARAM: &str = "last";
+
+/// The [`CLIENT_ATTACH_METHOD`] `params` key narrowing [`LAST_PARAM`] to a session NO OTHER client
+/// is viewing — tmux `detach-on-destroy no-detached`'s "most recently used detached session".
+/// Meaningless on its own, and refused there ([`AttachFault::UnattachedWithoutLast`]).
+pub const UNATTACHED_PARAM: &str = "unattached";
+
+/// The [`CLIENT_ATTACH_METHOD`] `params` key asking for the session one STEP along the daemon's
+/// order from the one this client is on — `{"step": "next"}` / `{"step": "previous"}`, tmux
+/// `switch-client -n` / `-p` (R314). What it is FOR is on [`AttachAsk::Step`].
+///
+/// Its two words are [`OrderStep`]'s own, read with [`OrderStep::from_wire`] — the same pair
+/// `select_window`'s [`SelectWindowAsk::Step`] takes one level down, because it is the same
+/// direction along a different order. A third spelling of "next" cannot appear in one of them alone.
+pub const STEP_PARAM: &str = "step";
+
+/// WHICH session a [`CLIENT_ATTACH_METHOD`] moves its client to, as the request ASKS for it —
+/// defined ONCE for both ends of the wire, beside every other ask grammar in this module.
+///
+/// # Why it lives here and [`sprag_rpc::ScopeAsk`] does not
+///
+/// It sat in `sprag-rpc` beside the scope until R314, on the stated reason that both are wire
+/// grammars. That reason is real for the SCOPE — [`sprag_rpc::HostConn`] holds a `ScopeAsk` field
+/// and merges it into every request it sends, so the transport crate genuinely uses it — and it was
+/// never true of this one, which that crate only DEFINED. The cost showed up the moment a target
+/// needed a TYPE: `sprag-rpc` is seam-only by construction and cannot see [`OrderStep`], so an
+/// attach step would have had to spell its own two words. One vocabulary, so it moved to where the
+/// vocabulary is.
+///
+/// The three arms are three ways of naming a target and only one of them is a name:
+///
+/// * [`Scoped`](Self::Scoped) — the session this connection is SCOPED to ([`sprag_rpc::ScopeAsk`]).
+///   Every attach before R304 meant this, and it is still what a client sends to go somewhere it
+///   can name: `scope_to(name)` then attach.
+/// * [`LastViewed`](Self::LastViewed) — *the session I was viewing before this one*, tmux
+///   `switch-client -l`. The caller cannot name it, because the only honest answer is held by the
+///   daemon: see the arm's own doc.
+/// * [`Step`](Self::Step) — *the next one along*, tmux `switch-client -n` / `-p`. The caller could
+///   name it and must not: see the arm's own doc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AttachAsk {
+    /// No attach key at all ⇒ attach to whatever this connection is scoped to.
+    #[default]
+    Scoped,
+    /// `{"last": true}` ⇒ the most recent OTHER session this client has viewed that is still live.
+    /// `{"last": true, "unattached": true}` narrows it to one no other client is viewing.
+    ///
+    /// # Why a client cannot ask this by name
+    ///
+    /// It could hold the name itself — and that is precisely the defect R304 measured. A visit
+    /// history of NAMES is a set of addresses nobody maintains: after `rename-session` the entry
+    /// resolves to nothing (the visit is silently lost), and once a NEW session takes the freed
+    /// name it resolves to A STRANGER — so "take me back where I was" attaches the client to a
+    /// session it has never seen, on the connection it types down.
+    ///
+    /// The daemon's copy is keyed by session IDENTITY, which is why it can be right: an id that
+    /// resolves is that same session under whatever it is called now, and an id that does not is a
+    /// session that is gone. The general rule, and the reason the ATTACHMENT does not need this
+    /// while the history does: a fact about the PRESENT can be kept true by a hook where the change
+    /// is published; a fact about the PAST cannot, because its subject may no longer exist to be
+    /// updated.
+    ///
+    /// `unattached` is tmux `detach-on-destroy no-detached`'s "most recently used DETACHED session":
+    /// it is answered from the daemon's own attachment map, exactly, where a client filtering its
+    /// own session list reads a poll mirror that can be a beat behind.
+    LastViewed {
+        /// Skip a session another client is already viewing.
+        unattached: bool,
+    },
+    /// `{"step": "next"}` / `{"step": "previous"}` ⇒ one step along the DAEMON's session order from
+    /// the session this client is attached to, wrapping — tmux `switch-client -n` / `-p` (R314).
+    ///
+    /// # Why the client sends a direction and not a name
+    ///
+    /// Unlike [`LastViewed`](Self::LastViewed), a client COULD answer this itself: it polls the
+    /// session list, so it could find its own row and take the next one. That is the second answer
+    /// [`SelectWindowAsk::Step`] exists to prevent one level down, and the argument is the same
+    /// — a mirror is a revision behind, so `switch-client -n` and `sprag ls` could disagree about
+    /// what comes next, and the client would then attach BY NAME to a row that has since moved.
+    ///
+    /// It is also the only arm whose origin the client cannot state: the step is measured from the
+    /// client's ATTACHMENT, which lives in the daemon's attachment map, not from the connection's
+    /// scope. A connection that never attached steps from its scope instead — where a plain attach
+    /// would have put it — so there is one rule and no refusal to write.
+    ///
+    /// **A one-session daemon answers that same session**, and that is not an error: the ring
+    /// wrapped onto itself, which is what [`sprag_terminal::SessionRegistry::select_window_relative`]
+    /// does one level down.
+    Step(OrderStep),
+}
+
+/// Why a params object does not name an attach target this grammar admits. Every arm refuses the
+/// request WHOLE: an attach whose target cannot be read must not fall back to one, because the
+/// fallback would be *the session the client is already on* — a switch that silently does nothing
+/// and reports success.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachFault {
+    /// [`LAST_PARAM`] is present and is not a boolean (`{"last": 1}`).
+    LastNotABool,
+    /// [`UNATTACHED_PARAM`] is present and is not a boolean.
+    UnattachedNotABool,
+    /// [`UNATTACHED_PARAM`] is present without [`LAST_PARAM`] — a filter with no subject. Refused
+    /// rather than ignored: a caller that wrote it meant to narrow something, and quietly attaching
+    /// it to the connection's scope would answer a question it did not ask.
+    UnattachedWithoutLast,
+    /// [`STEP_PARAM`] is present and is not a string (`{"step": 1}`).
+    StepNotAString,
+    /// [`STEP_PARAM`] is a string [`OrderStep::from_wire`] does not know (`{"step": "sideways"}`).
+    StepUnknown,
+    /// [`STEP_PARAM`] and [`LAST_PARAM`] are both asked for. TWO targets is no target: they name
+    /// different sessions and nothing here may choose between them, so the request is refused
+    /// rather than resolved by precedence — [`AttachFault`]'s own rule, and the one that keeps a
+    /// caller from learning a silent ordering it would then depend on.
+    TwoTargets,
+}
+
+impl AttachAsk {
+    /// Write this ask into an attach request's `params` map — the ONE place a client spells it.
+    ///
+    /// [`Scoped`](Self::Scoped) writes NOTHING, so the request every client sent before this
+    /// grammar existed is unchanged byte for byte ([`sprag_rpc::ScopeAsk::write_into`]'s rule, and
+    /// for the same reason). `unattached` is written only when it is asked for, so the commonest
+    /// `switch-client -l` is `{"last": true}` and nothing else.
+    pub fn write_into(&self, params: &mut Map<String, Value>) {
+        match self {
+            Self::Scoped => {}
+            Self::LastViewed { unattached } => {
+                params.insert(LAST_PARAM.to_owned(), Value::Bool(true));
+                if *unattached {
+                    params.insert(UNATTACHED_PARAM.to_owned(), Value::Bool(true));
+                }
+            }
+            Self::Step(step) => {
+                params.insert(
+                    STEP_PARAM.to_owned(),
+                    Value::String(step.wire_str().to_owned()),
+                );
+            }
+        }
+    }
+
+    /// The target an attach request's `params` names — the ONE place these keys are read.
+    ///
+    /// `false` reads as ABSENT on both booleans, exactly as [`sprag_rpc::ScopeAsk`] reads
+    /// `{"attached": false}`: a well-typed "no" says what omitting the key says, so a client that
+    /// fills in a whole struct asks what one that omits it asks. Every other type is refused,
+    /// including `null` — the divergence `ScopeAsk::parse` documents applies here for the stronger
+    /// reason: an unreadable attach target that fell back to the connection's scope would be a
+    /// `switch-client` that left the client exactly where it was and said it had moved.
+    ///
+    /// [`STEP_PARAM`] has no such "well-typed no": a step is a WORD, so absent is the only way to
+    /// not ask for one, and every string that is not one of [`OrderStep`]'s two is a fault rather
+    /// than a fallback.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachFault`], one variant per way a target can be malformed.
+    pub fn parse(params: Option<&Value>) -> Result<Self, AttachFault> {
+        let flag = |key: &str, fault: AttachFault| match params.and_then(|params| params.get(key)) {
+            None => Ok(false),
+            Some(Value::Bool(asked)) => Ok(*asked),
+            Some(_) => Err(fault),
+        };
+        let last = flag(LAST_PARAM, AttachFault::LastNotABool)?;
+        let unattached = flag(UNATTACHED_PARAM, AttachFault::UnattachedNotABool)?;
+        let step = match params.and_then(|params| params.get(STEP_PARAM)) {
+            None => None,
+            Some(Value::String(word)) => {
+                Some(OrderStep::from_wire(word).ok_or(AttachFault::StepUnknown)?)
+            }
+            Some(_) => return Err(AttachFault::StepNotAString),
+        };
+        match (last, unattached, step) {
+            (true, _, Some(_)) => Err(AttachFault::TwoTargets),
+            (true, unattached, None) => Ok(Self::LastViewed { unattached }),
+            (false, true, _) => Err(AttachFault::UnattachedWithoutLast),
+            (false, false, Some(step)) => Ok(Self::Step(step)),
+            (false, false, None) => Ok(Self::Scoped),
+        }
+    }
+}
 
 /// The filtered CHANGE WAIT, re-exported from the client that writes it for the same one-spelling
 /// reason as the vocabulary above: [`EVENTS_WAIT_METHOD`] blocks until a change matching the caller's
@@ -2785,6 +2963,107 @@ mod tests {
         assert!(pane_input_path(7, KEY_ACTION).starts_with("/pane_7/"));
     }
 
+    /// [`AttachAsk`]'s round trip: one grammar, both directions, for EVERY target an attach can
+    /// name.
+    ///
+    /// The scope is written into the SAME params object, because that is how these travel on the
+    /// wire — a display client's attach carries `{"attached": true}` from its connection and
+    /// `{"last": true}` (or `{"step": …}`) from the gesture, and the two must not read each other.
+    /// A parse that took the scope keys for its own would fail on the last line of each pass.
+    #[test]
+    fn every_attach_target_round_trips_beside_a_scope() {
+        for ask in [
+            AttachAsk::Scoped,
+            AttachAsk::LastViewed { unattached: false },
+            AttachAsk::LastViewed { unattached: true },
+            AttachAsk::Step(OrderStep::Next),
+            AttachAsk::Step(OrderStep::Previous),
+        ] {
+            let mut params = Map::new();
+            sprag_rpc::ScopeAsk::Attached.write_into(&mut params);
+            ask.write_into(&mut params);
+            assert_eq!(
+                AttachAsk::parse(Some(&Value::Object(params.clone()))),
+                Ok(ask),
+                "{ask:?}",
+            );
+            assert_eq!(
+                sprag_rpc::ScopeAsk::parse(Some(&Value::Object(params))),
+                Ok(sprag_rpc::ScopeAsk::Attached),
+                "and the scope beside it is untouched by {ask:?}",
+            );
+        }
+    }
+
+    /// Every way an attach target can be malformed, each its own refusal — and the CONTROLS that
+    /// keep the test from passing vacuously: a well-typed `false` on each boolean key is an absent
+    /// key, not a fault.
+    ///
+    /// REVERT-PROOF for the step half: fold `StepUnknown` into `StepNotAString` and the
+    /// `"sideways"` line fails; let a `step` beside a `last` resolve by precedence instead of
+    /// refusing and the `TwoTargets` line fails; read `{"step": false}` as absent (the booleans'
+    /// rule) and the `StepNotAString` line fails.
+    #[test]
+    fn each_malformed_attach_target_is_its_own_refusal() {
+        let parse = |params: Value| AttachAsk::parse(Some(&params));
+        assert_eq!(parse(json!({"last": 1})), Err(AttachFault::LastNotABool));
+        assert_eq!(
+            parse(json!({"last": null})),
+            Err(AttachFault::LastNotABool),
+            "null is refused here for the reason `AttachAsk::parse` states: the fallback would be \
+             the session the client is already on",
+        );
+        assert_eq!(
+            parse(json!({"last": true, "unattached": "yes"})),
+            Err(AttachFault::UnattachedNotABool),
+        );
+        assert_eq!(
+            parse(json!({"unattached": true})),
+            Err(AttachFault::UnattachedWithoutLast),
+            "a filter with no subject is refused, never quietly attached to the scope",
+        );
+        assert_eq!(
+            parse(json!({"step": 1})),
+            Err(AttachFault::StepNotAString),
+            "a step is a WORD; there is no well-typed no to read as absent",
+        );
+        assert_eq!(
+            parse(json!({"step": false})),
+            Err(AttachFault::StepNotAString),
+            "and a boolean is not one either, unlike the two keys above it",
+        );
+        assert_eq!(
+            parse(json!({"step": "sideways"})),
+            Err(AttachFault::StepUnknown),
+            "a string that is not one of the two words is its OWN refusal, not a type error",
+        );
+        assert_eq!(
+            parse(json!({"last": true, "step": "next"})),
+            Err(AttachFault::TwoTargets),
+            "two targets is no target: nothing here may choose between them",
+        );
+        assert_eq!(
+            parse(json!({"last": false})),
+            Ok(AttachAsk::Scoped),
+            "the CONTROL: a well-typed no is an absent key",
+        );
+        assert_eq!(
+            parse(json!({"last": true, "unattached": false})),
+            Ok(AttachAsk::LastViewed { unattached: false }),
+            "the second CONTROL: an explicit unnarrowed ask is the plain one",
+        );
+        assert_eq!(
+            parse(json!({"last": false, "step": "previous"})),
+            Ok(AttachAsk::Step(OrderStep::Previous)),
+            "the third CONTROL: a step beside an explicit no-last is ONE target, not two",
+        );
+        assert_eq!(
+            AttachAsk::parse(None),
+            Ok(AttachAsk::Scoped),
+            "an attach with no params at all goes where the connection is scoped",
+        );
+    }
+
     /// THE SHAPE PIN — what keeps [`WIRE_PROTOCOL`] from being a number nobody remembers to move.
     ///
     /// A hand-maintained protocol version fails on the day someone changes a shape and forgets to
@@ -3014,18 +3293,18 @@ mod tests {
             BUMP,
         );
 
-        // The ATTACH TARGET grammar (`sprag_rpc::AttachAsk`, R304), pinned beside the scope because
+        // The ATTACH TARGET grammar ([`AttachAsk`], R304 + R314), pinned beside the scope because
         // the two travel in ONE params object and a key that started colliding would be invisible
-        // from either type alone. All three arms, and `Scoped` writing nothing for the same reason
+        // from either type alone. EVERY arm, and `Scoped` writing nothing for the same reason
         // `Default` does.
         //
-        // Its skew failure is the scope's, one level quieter: an old daemon finds no `last` key,
-        // falls through to the connection's scope — the client's OWN attachment — and answers
-        // success, so the gesture is a switch that did nothing and said it had moved.
+        // Its skew failure is the scope's, one level quieter: an old daemon finds no `last` (or no
+        // `step`) key, falls through to the connection's scope — the client's OWN attachment — and
+        // answers success, so the gesture is a switch that did nothing and said it had moved.
         let mut target = serde_json::Map::new();
-        sprag_rpc::AttachAsk::Scoped.write_into(&mut target);
+        AttachAsk::Scoped.write_into(&mut target);
         assert!(target.is_empty(), "{}", BUMP);
-        sprag_rpc::AttachAsk::LastViewed { unattached: false }.write_into(&mut target);
+        AttachAsk::LastViewed { unattached: false }.write_into(&mut target);
         assert_eq!(
             serde_json::to_string(&target).expect("a target renders"),
             r#"{"last":true}"#,
@@ -3055,13 +3334,30 @@ mod tests {
         );
 
         let mut target = serde_json::Map::new();
-        sprag_rpc::AttachAsk::LastViewed { unattached: true }.write_into(&mut target);
+        AttachAsk::LastViewed { unattached: true }.write_into(&mut target);
         assert_eq!(
             serde_json::to_string(&target).expect("a target renders"),
             r#"{"last":true,"unattached":true}"#,
             "{}",
             BUMP,
         );
+
+        // The STEP arm (R314). BOTH words, because the pin's job is the BYTES: a step written as
+        // `{"step":"prev"}` would parse here and be dropped by every daemon, and one arm rendered
+        // correctly says nothing about the other.
+        for (step, bytes) in [
+            (OrderStep::Next, r#"{"step":"next"}"#),
+            (OrderStep::Previous, r#"{"step":"previous"}"#),
+        ] {
+            let mut target = serde_json::Map::new();
+            AttachAsk::Step(step).write_into(&mut target);
+            assert_eq!(
+                serde_json::to_string(&target).expect("a target renders"),
+                bytes,
+                "{}",
+                BUMP,
+            );
+        }
 
         // The REQUEST half. Both arms, because an argument added to either is a request an older
         // daemon accepts, silently drops, and answers about something else.

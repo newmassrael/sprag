@@ -2902,6 +2902,24 @@ impl SessionRegistry {
             .map(|session| session.name.as_str())
     }
 
+    /// The IDENTITY of the session with this name, or `None` if none carries it.
+    ///
+    /// [`name_of`](Self::name_of)'s inverse, and the direction a caller needs when it has resolved
+    /// a session the way a USER named it and must now record something under the thing that does
+    /// not move: an attachment (`sprag_host`'s `client/attach`) is keyed by id precisely so a later
+    /// rename does not silently point it at whoever takes the freed name (R302/R304).
+    ///
+    /// A NAME is not an identity, which is why this is fallible and why the answer is taken at the
+    /// moment of use rather than carried: between reading a list and acting on a row, the registry
+    /// is still the authority on what exists.
+    #[must_use]
+    pub fn id_of(&self, name: &str) -> Option<SessionId> {
+        self.sessions
+            .iter()
+            .find(|session| session.name == name)
+            .map(|session| session.id)
+    }
+
     /// The session named `name`, mutably, or [`SessionError::Unknown`] — the resolution the
     /// window wrappers below share, so "no such session" is one refusal carrying its name.
     fn session_named_mut(&mut self, name: &str) -> Result<&mut Session, SessionError> {
