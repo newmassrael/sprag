@@ -46,7 +46,7 @@ use std::time::Instant;
 use pinion_core::reactive::Owner;
 use sprag_host::config::ClientConfig;
 use sprag_host::keyhelp::KeyHelp;
-use sprag_host::keymap::{KeySpec, PrefixMode, Routed};
+use sprag_host::keymap::{BoundAction, KeySpec, PrefixMode, Routed};
 
 /// `Owner::cache` key for this client's keymap holder.
 const CLIENT_KEYS_KEY: &str = "sprag_gui.keys";
@@ -150,6 +150,21 @@ impl ClientKeys {
     /// borrow held across that would outlive the one place the table can be re-read.
     pub(crate) fn prefix(&self) -> KeySpec {
         self.file.borrow().keymap().prefix().clone()
+    }
+
+    /// The chord that reaches `action` in the table in force, or [`None`] when no key does.
+    ///
+    /// What the palette's hint column shows, and the reason that column stopped being five hardcoded
+    /// strings (R308): a rebound key now teaches itself and an unbound one advertises nothing.
+    ///
+    /// **No re-read, unlike [`help`](Self::help), and that is deliberate**: this is called once per
+    /// painted row, on every frame the palette is open, and re-reading the file per row would turn a
+    /// list into a directory walk. It does not need one either — the palette re-reads through
+    /// [`report`](Self::report) when it OPENS, which is the same reason that consumer exists (see
+    /// [`reread`](Self::reread)), so the table these rows are drawn from is the table that was on
+    /// disk when the list was frozen.
+    pub(crate) fn chord_of(&self, action: &BoundAction) -> Option<String> {
+        self.file.borrow().keymap().chord_of(action)
     }
 
     /// The table as a view a client can PAINT — what `list-keys` shows on the screen (R308).

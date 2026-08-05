@@ -75,6 +75,8 @@
 //! is the arm's job and not a gate at the top.
 
 use sprag_host::ProjectAction;
+use sprag_host::keymap::BoundAction;
+use sprag_host::wire::SelectWindowAsk;
 
 use crate::slotview::SlotView;
 
@@ -189,15 +191,27 @@ impl Command {
     ///
     /// * For a built-in, the keyboard CHORD that runs it without the palette. A palette that lists a
     ///   command it shares with a chord should teach that chord, or it trains the user to keep
-    ///   opening the palette for something one keystroke already does. (These strings are the DISPLAY
-    ///   form of the bindings [`crate::input`] recognizes — there is no chord table to derive them
-    ///   from, so a renamed binding must be renamed here too.)
+    ///   opening the palette for something one keystroke already does.
+    /// * For a command the KEYMAP also names ([`Command::bound`]), that chord is READ OFF THE
+    ///   USER'S OWN TABLE (R308) — so a rebound key teaches itself and an unbound one advertises
+    ///   nothing. Until R308 this column held five hardcoded strings and its own doc said *"there
+    ///   is no chord table to derive them from, so a renamed binding must be renamed here too"*;
+    ///   [`sprag_host::keyhelp`] is that table, and the debt register carried the gap under four
+    ///   separate items while three consecutive rounds added keys this column could not show.
+    ///   The remaining literals are this CLIENT's own reserved chords, which no keymap holds and
+    ///   which therefore have nowhere else to be read from.
     /// * For a PROJECT action, the COMMAND LINE it would run. That is not decoration: a project's
     ///   config arrives with a repository, so a row saying only "Run the tests" would be asking the
     ///   user to trust a label. Showing `cargo test` is what makes the offer honest.
     ///
     /// `None` for a command with neither.
     pub(crate) fn hint(&self) -> Option<String> {
+        // THE KEYMAP FIRST, so a user's own table wins over anything written here. A command the
+        // keymap names has no literal to fall back to and answers `None` when nothing is bound to
+        // it — a hint for a chord the user does not have is worse than no hint at all.
+        if let Some(action) = self.bound() {
+            return crate::keys::use_client_keys().chord_of(&action);
+        }
         match self {
             Self::Find => Some("Ctrl+Shift+F".to_owned()),
             Self::Copy => Some("Ctrl+Shift+C".to_owned()),
@@ -206,24 +220,60 @@ impl Command {
             Self::LastSession => Some("Ctrl+Shift+L".to_owned()),
             Self::Declared(action) => Some(action.command_line()),
             Self::SelectAll
-            // No chord, for `NewPane`'s reason rather than for want of one: this row's key is a
-            // keymap PREFIX binding (`prefix z`, rebindable in `config.toml`) and so is the split's
-            // (`prefix %`). This column shows the client's own chords; that the keymap's bindings
-            // are absent from it is a standing shape, not one this row invents.
-            | Self::ZoomPane
+            // NO KEYMAP COUNTERPART, and for these that is a fact about the commands rather than a
+            // gap: `New pane` is a directionless APPEND (this client rearranges with a pointer, so
+            // it needs none), where every split a key can name carries a direction — advertising
+            // `prefix %` here would teach a chord that does something else.
+            | Self::NewPane
             | Self::BreakOut
             | Self::JoinInto(_)
-            | Self::NewPane
-            | Self::NewWindow
-            | Self::SelectWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
-            // A kill deliberately advertises no chord: there is none, and this column is also where
-            // the eye looks for one. What it WOULD say is on the confirmation prompt instead, which
-            // is the only place a consequence can be read in time to change the outcome.
+            // A kill deliberately advertises no chord even where one exists: this column is where
+            // the eye looks for a shortcut, and what a destructive row WOULD say belongs on the
+            // confirmation prompt instead — the only place a consequence can be read in time to
+            // change the outcome. `prefix &` is in the key table for anyone who goes looking.
             | Self::KillPane
             | Self::KillWindow(_)
             | Self::KillSession(_) => None,
+            // Answered above, off the live keymap — never from here.
+            Self::ZoomPane | Self::NewWindow | Self::SelectWindow(_) => None,
+        }
+    }
+
+    /// The BOUND ACTION that does the same thing as this row, when the keymap has one.
+    ///
+    /// The join between the two vocabularies this client holds — its catalog and the user's keymap —
+    /// and the only place they are put side by side. Exhaustive rather than defaulted for the reason
+    /// [`Command::confirmation`] gives one property over: a command added later has to STATE whether
+    /// a key can reach it, and "no chord" is the answer that silently stops teaching one.
+    ///
+    /// A pairing is only made where the two do the SAME thing. `New pane` and `split-window -h` are
+    /// not paired even though both create a pane, because the palette's takes no direction and the
+    /// binding's must; `Kill window <name>` and `kill-window` are not paired because the row names a
+    /// window and a keystroke can only ever mean the current one.
+    pub(crate) fn bound(&self) -> Option<BoundAction> {
+        match self {
+            Self::ZoomPane => Some(BoundAction::ZoomPane { on: None }),
+            Self::NewWindow => Some(BoundAction::NewWindow),
+            Self::SelectWindow(name) => Some(BoundAction::SelectWindow {
+                ask: SelectWindowAsk::Named(name.clone()),
+            }),
+            Self::Find
+            | Self::Copy
+            | Self::Paste
+            | Self::SelectAll
+            | Self::ToggleFloat
+            | Self::BreakOut
+            | Self::JoinInto(_)
+            | Self::NewPane
+            | Self::KillPane
+            | Self::NewSession
+            | Self::SwitchSession(_)
+            | Self::LastSession
+            | Self::KillWindow(_)
+            | Self::KillSession(_)
+            | Self::Declared(_) => None,
         }
     }
 
@@ -814,6 +864,95 @@ pub(crate) fn menu_rows(slots: &SlotView) -> Vec<MenuRow> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The hint column teaches the chord IN FORCE, and moves when the user moves it.
+    ///
+    /// Three assertions and the second two are the CONTROL: a column that still held
+    /// `"prefix z"` — or any literal — would satisfy the first and fail both of the others, which is
+    /// exactly the state this column was in for the three rounds before R308.
+    #[test]
+    fn the_zoom_row_teaches_the_chord_the_user_actually_has() {
+        let owner = pinion_core::reactive::Owner::new();
+        owner.run(|| {
+            let (config, _keys) = crate::keys::test_support::Config::seeded("");
+            assert_eq!(
+                Command::ZoomPane.hint().as_deref(),
+                Some("C-b z"),
+                "the default table's chord, spelled as the user presses it",
+            );
+            drop(config);
+        });
+        let owner = pinion_core::reactive::Owner::new();
+        owner.run(|| {
+            let (config, _keys) =
+                crate::keys::test_support::Config::seeded("[options]\nprefix = \"C-a\"\n");
+            assert_eq!(
+                Command::ZoomPane.hint().as_deref(),
+                Some("C-a z"),
+                "a rebound prefix must move the hint, or the row teaches a key nobody has",
+            );
+            drop(config);
+        });
+        let owner = pinion_core::reactive::Owner::new();
+        owner.run(|| {
+            let (config, _keys) =
+                crate::keys::test_support::Config::seeded("[[unbind]]\nkey = \"z\"\n");
+            assert_eq!(
+                Command::ZoomPane.hint(),
+                None,
+                "a row whose verb nothing reaches must advertise nothing",
+            );
+            drop(config);
+        });
+    }
+
+    /// A row the keymap cannot express keeps its own chord, and one it should not teach keeps none.
+    #[test]
+    fn the_client_chords_and_the_deliberate_silences_are_unchanged() {
+        let owner = pinion_core::reactive::Owner::new();
+        owner.run(|| {
+            let (config, _keys) = crate::keys::test_support::Config::seeded("");
+            assert_eq!(
+                Command::Find.hint().as_deref(),
+                Some("Ctrl+Shift+F"),
+                "a reserved chord of this client's has nowhere else to be read from",
+            );
+            assert_eq!(
+                Command::NewPane.hint(),
+                None,
+                "a directionless append must not advertise a directional split's key",
+            );
+            assert_eq!(
+                Command::KillWindow("w".to_owned()).hint(),
+                None,
+                "a destructive row states its consequence on the prompt, not as a shortcut",
+            );
+            drop(config);
+        });
+    }
+
+    /// Only rows that do the SAME thing as a binding are paired with one.
+    #[test]
+    fn the_join_pairs_a_row_with_the_binding_that_does_the_same_thing() {
+        assert_eq!(
+            Command::NewWindow.bound(),
+            Some(sprag_host::keymap::BoundAction::NewWindow),
+        );
+        assert_eq!(
+            Command::SelectWindow("logs".to_owned()).bound(),
+            Some(sprag_host::keymap::BoundAction::SelectWindow {
+                ask: sprag_host::wire::SelectWindowAsk::Named("logs".to_owned()),
+            }),
+            "the row names a window and so does the binding it is paired with",
+        );
+        assert_eq!(
+            Command::KillWindow("logs".to_owned()).bound(),
+            None,
+            "a row that names a window is not the keystroke that can only mean the current one",
+        );
+        assert_eq!(Command::NewPane.bound(), None);
+    }
+
     use std::cell::RefCell;
     use std::rc::Rc;
 
