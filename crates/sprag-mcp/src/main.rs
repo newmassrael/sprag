@@ -112,7 +112,7 @@ use serde_json::{Value, json};
 use sprag_host::events::EventFilter;
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, CLOSE_ACTION, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
+    AGENT_MANIFESTS_SLOT, CLOSE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
     LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire,
     RENAME_PANE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION, SINCE_PARAM,
     SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk, SwapHow, TEXT_ACTION,
@@ -123,7 +123,7 @@ use sprag_rpc::{
     CallError, HostConn, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PATTERN_PARAM,
 };
-use sprag_terminal::{LayoutSnapshot, PaneDir, PaneId, arrangement};
+use sprag_terminal::{Ended, LayoutSnapshot, PaneDir, PaneId, arrangement};
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
 /// descendants) — [`sprag_host`]'s socket policy path key.
@@ -2039,13 +2039,32 @@ fn tool_close_pane(args: &Value) -> Result<String, String> {
     // this run actually held: closing the last pane moves nothing, and telling a caller its map has
     // shifted when it has not is the same defect as staying silent when it has.
     let renumbered = pane.number < panes.len();
-    host_call(
+    let answer = host_call(
         "scene/invoke",
         json!({ "path": mux_action_path(CLOSE_ACTION), "args": { "id": pane.id } }),
     )?;
+    // How far the close CASCADED (R309). An agent has to be told this without being asked, because
+    // it is the one outcome of this tool that changes what its OTHER tools can still reach: a
+    // window that went takes its panes' numbering with it, and a session that went takes every
+    // sibling pane this agent was reading. The word is the daemon's — a caller that counted the
+    // listing above would be describing the state before the kill.
+    //
+    // ⚠ NOT REACHABLE THROUGH THIS TOOL TODAY, and that is written down rather than left for a
+    // reader to work out: the gate above refuses a pane this agent did not open, and the daemon's
+    // `close` acts within the scope's CURRENT window — so the agent's own pane is always a sibling
+    // of the one being closed, and the answer is always `Ended::Pane`. It is read anyway because
+    // the alternative is a tool that stays silent the day either of those two facts changes, which
+    // is precisely the failure this round exists to fix one layer down. The `Ended::Pane` path IS
+    // covered: `an_agent_closes_only_what_it_opened` pins a sentence with no clause in it.
+    let beyond = Ended::from_wire(answer[ENDED_KEY].as_str().unwrap_or_default())
+        .and_then(|ended| ended.beyond(Ended::Pane))
+        // Worded away from the renumbering sentence below, which also says "last pane" and means
+        // last by NUMBER: these are two different facts and a reader must not have to guess which.
+        .map(|clause| format!("Its window held no other pane, so {clause}. "));
     Ok(format!(
-        "Closed pane {number} (id {}), which you had opened. {}\n\n{}",
+        "Closed pane {number} (id {}), which you had opened. {}{}\n\n{}",
         pane.id,
+        beyond.unwrap_or_default(),
         if renumbered {
             "The panes after it have MOVED UP a number:"
         } else {

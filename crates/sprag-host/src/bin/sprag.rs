@@ -156,7 +156,7 @@ use sprag_host::hooks::{self, HookError, Target};
 use sprag_host::keymap::{BoundAction, KeySpec, KeyTable};
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, FULL_TEXT_SLOT,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, ENDED_KEY, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOVE_PANE_ACTION, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM,
     PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
@@ -172,7 +172,7 @@ use sprag_rpc::{
     CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, HOST_SOCKET, HostConn, HostEndpoint,
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
-use sprag_terminal::{LayoutSnapshot, PaneDir, PaneId, WindowStep, arrangement};
+use sprag_terminal::{Ended, LayoutSnapshot, PaneDir, PaneId, WindowStep, arrangement};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -1769,8 +1769,8 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
     })?;
     let mut conn = connect(None)?;
     match kill_one(&mut conn, &name) {
-        Ok(()) => {
-            println!("killed {name}");
+        Ok(answer) => {
+            println!("{}", killed_sentence(&name, &answer, Ended::Session));
             Ok(())
         }
         // Killing the LAST session ends the daemon; its reply can be cut off by the exit at any
@@ -1823,7 +1823,9 @@ fn kill_server(args: Vec<String>) -> io::Result<()> {
         .collect();
     for name in &names {
         match kill_one(&mut conn, name) {
-            Ok(()) => {}
+            // The cascade word is discarded here on purpose: this verb is ending every session, so
+            // "the server went too" is the thing it was asked to do rather than news.
+            Ok(_ended) => {}
             // The last kill ended the daemon; the connection is gone (an EOF, or a broken pipe /
             // reset if the exit raced our next write), and so is the server — done, not an error.
             Err(error) if server_gone(&error) => break,
@@ -1850,13 +1852,16 @@ fn server_gone(error: &io::Error) -> bool {
     )
 }
 
-/// Issue one `kill_session {name}` — the shared call behind both kill commands.
-fn kill_one(conn: &mut HostConn, name: &str) -> io::Result<()> {
+/// Issue one `kill_session {name}` — the shared call behind both kill commands — and hand back the
+/// daemon's answer, which carries how far the kill CASCADED ([`ENDED_KEY`]).
+///
+/// `kill-server` discards it (it is killing every session by construction, so "the server went too"
+/// is not news); `kill-session` renders it.
+fn kill_one(conn: &mut HostConn, name: &str) -> io::Result<Value> {
     conn.call(
         "scene/invoke",
         json!({ "path": mux_action_path(KILL_SESSION_ACTION), "args": { "name": name } }),
     )
-    .map(|_: Value| ())
 }
 
 /// Split a window subcommand's args into its required `-t SESSION` target and any trailing
@@ -3357,8 +3362,14 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
 
 /// `kill-pane [-t SESSION] PANE`: close the pane with id PANE — tmux `kill-pane`.
 ///
+/// **It CASCADES** (R309): a window's last pane ends the window, whose session's last window ends
+/// the session, whose being the last session ends the daemon. The printed sentence names every
+/// level past the pane, which is the whole reason this verb stopped answering `null` — an operator
+/// typing a PANE verb can end their session, and until R309 was told `killed pane 3` either way.
+///
 /// Closing the LAST live pane drains the daemon, so the reply can be cut short by its exit; that is
-/// success, the same `server_gone` reading `kill-session` and `kill-window` make.
+/// success, the same `server_gone` reading `kill-session` and `kill-window` make — and it is why the
+/// `server` word races its own delivery rather than being guaranteed.
 fn kill_pane(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "kill-pane")?;
     let mut rest = rest.into_iter();
@@ -3388,8 +3399,8 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
         |pane| format!("pane {pane}"),
     );
     match answer {
-        Ok(_) => {
-            println!("killed {named}");
+        Ok(answer) => {
+            println!("{}", killed_sentence(&named, &answer, Ended::Pane));
             Ok(())
         }
         Err(error) if server_gone(&error) => {
@@ -3405,6 +3416,35 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
             ),
         )),
         Err(error) => Err(error),
+    }
+}
+
+/// What a kill PRINTS: the thing the caller named, plus what the cascade took past it.
+///
+/// The three kill verbs share this, because they share one chain — a pane's kill can reach the
+/// window, the session and the server, and every level above the one the user typed is news they
+/// did not ask for and must be told. Before R309 all three printed a bare `killed <thing>` and the
+/// daemon answered `null`, so `sprag kill-window 0` said the same words whether it had ended a
+/// window or the session the caller was attached to.
+///
+/// `named` is the LEVEL the verb acts at, not a guess about the answer: it is what makes one
+/// renderer able to say the right thing for three verbs. The extra clauses come from
+/// [`Ended::beyond`], never from a table here — the rule
+/// [`ResizeHow::why`](sprag_host::wire::ResizeHow::why) already set for five sentences across two
+/// surfaces.
+///
+/// An answer with NO `ended` key can only come from a daemon older than the cascade, which
+/// `client/hello` refuses by number. Rendered as the bare subject rather than guessed at, on
+/// [`Ended::from_wire`]'s rule: reporting the cheapest link would tell somebody their session
+/// survived a kill that ended it.
+fn killed_sentence(named: &str, answer: &Value, level: Ended) -> String {
+    let reached = answer
+        .get(ENDED_KEY)
+        .and_then(Value::as_str)
+        .and_then(Ended::from_wire);
+    match reached.and_then(|reached| reached.beyond(level)) {
+        Some(beyond) => format!("killed {named} — {beyond}"),
+        None => format!("killed {named}"),
     }
 }
 
@@ -4236,8 +4276,8 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
     );
     let target = window.as_deref().unwrap_or("the current window");
     match answer {
-        Ok(_) => {
-            println!("killed {target}");
+        Ok(answer) => {
+            println!("{}", killed_sentence(target, &answer, Ended::Window));
             Ok(())
         }
         // Killing the LAST window ends the session, and the last session ends the daemon: the reply
@@ -5233,6 +5273,65 @@ mod tests {
                 assert!(!resize_sentence(how, ask(dir, 3), 3, 1).is_empty());
             }
         }
+    }
+
+    /// **Every kill prints what its cascade actually reached**, and an answer that cannot say so
+    /// prints the bare subject rather than a guess — R309.
+    ///
+    /// One renderer for three verbs, so the LEVEL each one names is the only thing that differs.
+    /// The last block is the one that matters most: a daemon older than the cascade answers these
+    /// actions with no word at all, and a reader that defaulted to the cheapest link would tell
+    /// somebody their session survived a kill that ended it. It says less instead of saying wrong.
+    #[test]
+    fn a_kill_prints_every_level_it_ended_and_never_guesses_one() {
+        let answer = |word: &str| json!({ "ended": word });
+
+        assert_eq!(
+            killed_sentence("pane 3", &answer("pane"), Ended::Pane),
+            "killed pane 3",
+            "a kill that stopped where it was aimed says nothing more",
+        );
+        assert_eq!(
+            killed_sentence("pane 3", &answer("window"), Ended::Pane),
+            "killed pane 3 — the window went with it",
+        );
+        assert_eq!(
+            killed_sentence("pane 3", &answer("session"), Ended::Pane),
+            "killed pane 3 — the window went with it, and the session",
+        );
+        assert_eq!(
+            killed_sentence("pane 3", &answer("server"), Ended::Pane),
+            "killed pane 3 — the window went with it, and the session, and the server",
+        );
+
+        // The SAME word, a different verb, a different sentence — which is why the renderer takes
+        // the level the caller typed rather than deriving it from the answer alone.
+        assert_eq!(
+            killed_sentence("logs", &answer("session"), Ended::Window),
+            "killed logs — the session went with it",
+        );
+        assert_eq!(
+            killed_sentence("work", &answer("session"), Ended::Session),
+            "killed work",
+            "a kill-session that ended a session did exactly what was asked",
+        );
+        assert_eq!(
+            killed_sentence("work", &answer("server"), Ended::Session),
+            "killed work — the server went with it",
+        );
+
+        // A DAEMON THAT CANNOT SAY. Both shapes: the pre-R309 `null`, and a word from some future
+        // build this one does not know.
+        assert_eq!(
+            killed_sentence("pane 3", &Value::Null, Ended::Pane),
+            "killed pane 3",
+            "a daemon too old to cascade is not reported as one that cascaded no further",
+        );
+        assert_eq!(
+            killed_sentence("pane 3", &answer("everything"), Ended::Pane),
+            "killed pane 3",
+            "and neither is a word this build has never heard of",
+        );
     }
 
     /// The usage text names every flag `select-pane` PARSES — held against the flag constants
