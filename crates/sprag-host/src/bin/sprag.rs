@@ -382,15 +382,50 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
 /// up elsewhere is what hid R235's defect — a `send-prefix` binding stranded on an abandoned key,
 /// visible only when the two were printed together.
 fn list_keys(args: Vec<String>) -> io::Result<()> {
-    if let Some(unexpected) = args.first() {
+    // `-N` is tmux's own flag for "the readable form", and this takes it for the same reason: the
+    // paste-back shape below is a contract (every line after the first is a command), so the view a
+    // person reads has to be a SECOND form rather than a change to the first. The rows are the
+    // frontends' own — [`sprag_host::keyhelp`] — so the three surfaces cannot come to say different
+    // things about one table, and this one needs no daemon and no terminal.
+    let notes = args.first().is_some_and(|arg| arg == "-N");
+    let unexpected = if notes { args.get(1) } else { args.first() };
+    if let Some(unexpected) = unexpected {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("list-keys: unexpected argument {unexpected:?} (it takes none)"),
+            format!("list-keys: unexpected argument {unexpected:?} (it takes [-N])"),
         ));
     }
     let keymap = sprag_host::config::keymap().map_err(|error| {
         io::Error::new(io::ErrorKind::InvalidData, format!("list-keys: {error}"))
     })?;
+    if notes {
+        let help = sprag_host::keyhelp::KeyHelp::of(&keymap);
+        for row in help.rows() {
+            // The COLUMN is this surface's decision and the WORDS are not: a binding gets its chord
+            // padded out so the actions line up in a pipe, and everything else prints the row's own
+            // text. Padded in CHARACTERS, exactly as the paste-back form below is and for the same
+            // reason — a key spec is a user's string, and `%` is not the only thing anyone binds.
+            match row {
+                sprag_host::keyhelp::Row::Bind {
+                    chord,
+                    action,
+                    repeat,
+                } => {
+                    let pad = " ".repeat(help.chord_width().saturating_sub(chord.chars().count()));
+                    let mark = if *repeat {
+                        sprag_host::keyhelp::KeyHelp::REPEAT
+                    } else {
+                        "  "
+                    };
+                    println!("  {chord}{pad}  {mark} {action}");
+                }
+                sprag_host::keyhelp::Row::Blank => println!(),
+                sprag_host::keyhelp::Row::Heading(_) => println!("{row}"),
+                sprag_host::keyhelp::Row::Vocabulary { .. } => println!("  {row}"),
+            }
+        }
+        return Ok(());
+    }
     println!("prefix {}", keymap.prefix());
     // Each line carries its own `-T`, exactly as tmux's does, rather than the tables being printed
     // under headings: every line after the first is then a `bind-key` command a user can paste back,
