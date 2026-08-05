@@ -356,35 +356,53 @@ fn version_answers_without_a_daemon() {
     );
 }
 
-/// A session the LISTING hides is still one the CLI can address — R281.
+/// A session does NOT outlive its last pane, and `kill-pane` says so — R309.
 ///
-/// The two are different questions and the pre-flight used to answer the second with the first.
-/// `sessions` is the human listing and drops a resting empty anchor (`SessionInfo::is_listable`:
-/// no panes, nobody attached), which is a session the daemon holds, serves, and refuses to let
-/// anyone re-create. Scanning that list for an ADDRESS made the anchor unreachable from its own
-/// CLI — `panes -t 0` answered `no session named "0"` while `new 0` answered `a session named "0"
-/// already exists`, both true, both about the same daemon.
+/// # What this test used to say, and why it says the opposite now
 ///
-/// Both halves are asserted, and the first is what makes the second sharp: the listing must go on
-/// hiding it (this is not "show the anchor"), while every scoped command must go on reaching it.
+/// It was `a_session_the_listing_hides_is_still_addressable` (R281), and it built exactly this
+/// state: two sessions, then `kill-pane` on the boot anchor's only pane. The anchor was then a
+/// session holding a window holding nothing — `SessionInfo::is_listable` hid it (no panes, nobody
+/// attached) while the daemon went on serving it and refusing to let anyone re-create the name. The
+/// bug it pinned the fix for was that the CLI's pre-flight scanned the HUMAN listing for an
+/// ADDRESS, so `panes -t 0` answered `no session named "0"` while `new 0` answered `a session named
+/// "0" already exists` — both true, both about the same daemon.
+///
+/// R309 removes the state rather than the disagreement: closing a window's last pane ends the
+/// WINDOW, and a session's last window ends the SESSION. So the anchor is GONE, and the two answers
+/// can no longer disagree because there is nothing left for them to disagree about. The scope
+/// resolver is untouched — it is still not the listing — it simply has no hidden session to reach.
+///
+/// **`new 0` succeeding is the assertion that carries the round**, and it is the one the old test
+/// could not make: it tells a hidden session apart from an absent one. A cascade that merely
+/// stopped listing the anchor would pass every other line here.
 #[test]
-fn a_session_the_listing_hides_is_still_addressable() {
+fn a_session_does_not_outlive_its_last_pane() {
     let (_host, sock) = spawn_host();
 
-    // A second session, so emptying the anchor cannot drain the last one and end the daemon.
+    // A second session, so ending the anchor cannot drain the last one and stop the daemon this
+    // test still has to talk to.
     assert!(sprag(&sock, &["new", "work"]).ok, "a second session");
-    // Empty the boot anchor. Nothing is attached in this harness, so it now satisfies neither
-    // half of `is_listable` and drops out of the listing.
+
+    let killed = sprag(&sock, &["kill-pane", "0", "-t", "0"]);
     assert!(
-        sprag(&sock, &["kill-pane", "0", "-t", "0"]).ok,
-        "the anchor's only pane is closed",
+        killed.ok,
+        "the anchor's only pane is closed: {}",
+        killed.stderr
+    );
+    // The SENTENCE, not just the exit code: the whole point is that a user who typed a PANE verb is
+    // told their session went. Before R309 this printed `killed pane 0` and the session survived.
+    assert_eq!(
+        killed.stdout.trim(),
+        "killed pane 0 — the window went with it, and the session",
+        "the kill names every level its cascade reached",
     );
 
     let listed = sprag(&sock, &["ls"]);
     assert!(listed.ok, "ls succeeded: {}", listed.stderr);
     assert!(
         !listed.stdout.contains("0:"),
-        "the resting anchor stays HIDDEN — the listing rule is unchanged: {}",
+        "the anchor is not listed: {}",
         listed.stdout,
     );
     assert!(
@@ -393,22 +411,31 @@ fn a_session_the_listing_hides_is_still_addressable() {
         listed.stdout,
     );
 
-    // ...and it is addressable anyway, because the daemon's scope resolver — not the listing —
-    // is what decides that.
+    // ...and it is not there to be addressed either, which is the half that changed.
     let scoped = sprag(&sock, &["panes", "-t", "0"]);
     assert!(
-        scoped.ok,
-        "a scoped command reaches the hidden anchor: {}",
-        scoped.stderr,
+        !scoped.ok,
+        "the ended session is not addressable: {}",
+        scoped.stdout
     );
     assert!(
-        scoped.stdout.trim().is_empty(),
-        "and it honestly holds no panes: {}",
-        scoped.stdout,
+        scoped.stderr.contains("no session named"),
+        "and it is refused as absent rather than as empty: {}",
+        scoped.stderr,
     );
 
-    // The refusal a real unknown name gets is unchanged, so this did not buy addressability by
-    // accepting everything.
+    // THE DISCRIMINATOR. A session merely hidden still holds its name; one that ENDED gives it
+    // back. This is the exact contradiction the old defect was made of, asserted from the other
+    // side: the two answers now agree.
+    let reborn = sprag(&sock, &["new", "0"]);
+    assert!(
+        reborn.ok,
+        "the name is free again, so the session really ended: {}",
+        reborn.stderr,
+    );
+
+    // The refusal a real unknown name gets is unchanged, so nothing here bought its answers by
+    // refusing everything.
     let ghost = sprag(&sock, &["panes", "-t", "ghost"]);
     assert!(!ghost.ok, "an unknown session still fails");
     assert!(
@@ -624,6 +651,15 @@ fn the_cli_kill_window_on_the_last_window_ends_the_session() {
         run.ok,
         "kill-window on the last window succeeded: {}",
         run.stderr
+    );
+    // ...AND SAYS SO (R309). Until then this printed `killed the current window` whether it had
+    // ended a window or the session the caller was attached to — the same words for the two
+    // outcomes a person most needs told apart. The escalation is the daemon's word, rendered by the
+    // renderer `kill-pane` and `kill-session` share.
+    assert_eq!(
+        run.stdout.trim(),
+        "killed the current window — the session went with it",
+        "the kill names the level past the one that was asked for",
     );
 
     let ls = sprag(&sock, &["ls"]);
@@ -1502,6 +1538,20 @@ fn the_cli_waits_for_output_a_pane_has_not_printed_yet() {
     // visible) and the CLI has no visible-only read at all, so a screen-only comparison is not
     // available here; the assertion that reads the six rows directly is the unit test in
     // `sprag_host::rpc`, and this one measures the DISTANCE instead.
+    //
+    // ⚠ AND IT HAS TO WAIT FOR THE TAIL FIRST. The boot program is
+    // `sleep 1; printf marker; seq 1 60; exec cat`, so the wait above is released by the FIRST line
+    // and everything measured below is printed AFTER it — a check that reads the last line having
+    // waited for the first one races its own fixture. Seen failing once in a full-suite run
+    // (`the pane kept 1 lines`) and passing three times in isolation, which is the signature of a
+    // check that is unsound under load rather than of a defect in the verb. Waiting with the same
+    // verb the test already trusts is what makes the distance a fact rather than a hope.
+    let tail = sprag(&sock, &["wait-for-output", "--pane", "0", "60"]);
+    assert!(
+        tail.ok,
+        "the pane finished printing before the distance is measured: {}",
+        tail.stderr,
+    );
     let captured = sprag(&sock, &["capture-pane", "0", "-p"]);
     assert!(captured.ok, "capture-pane succeeded: {}", captured.stderr);
     let lines = captured.stdout.lines().count();

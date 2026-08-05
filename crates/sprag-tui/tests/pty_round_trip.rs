@@ -423,6 +423,19 @@ fn painted(tui: &mut Tui, want: &str) -> Result<(), String> {
     Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
 }
 
+/// `Ok` when SOME row of the client's screen contains `want`, else the whole screen.
+///
+/// [`painted`] pins the TOP row exactly, which is right for a pane's own output. A prompt is drawn
+/// on the LAST row, and how far down that is depends on the harness's terminal height — so a test
+/// that named the row would be asserting the geometry rather than the sentence. What matters here
+/// is that the user can read it.
+fn shows(tui: &mut Tui, want: &str) -> Result<(), String> {
+    if tui.rows().iter().any(|row| row.contains(want)) {
+        return Ok(());
+    }
+    Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+}
+
 // ----- the client, on a pseudoterminal -----
 
 /// A live `sprag-tui` on a pseudoterminal, plus everything needed to drive it and to see what it
@@ -1214,6 +1227,102 @@ fn the_kill_key_asks_and_only_a_yes_takes_the_window() {
         tui.liveness(),
         "running",
         "and the client survived destroying a window it was projecting",
+    );
+}
+
+/// **`prefix x` ASKS, and what it asks NAMES THE WINDOW IT IS ABOUT TO TAKE** — R309.
+///
+/// tmux's key with tmux's own guard, one level below `prefix &`. The two halves this drives that no
+/// unit test can:
+///
+/// 1. **The sentence a user actually reads is the one the live arrangement produces.** With a
+///    sibling pane the question is bare; with the pane alone in its window the SAME key adds a line
+///    saying the window ends. tmux cannot do this — its prompt is a fixed string in the binding —
+///    and it is the whole reason the guard is worth shipping rather than just the verb.
+/// 2. **The cascade reaches the daemon through a keystroke.** The second kill leaves the window
+///    with nothing, and the daemon's own window list is what says the window is gone — read from
+///    the daemon, never from the client that pressed the key.
+///
+/// The NO half runs first and discriminates: a client that killed and asked afterwards would pass a
+/// yes-only test.
+#[test]
+fn the_pane_kill_key_says_what_it_will_take_and_takes_it() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &sock;
+
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+
+    // A second window, so emptying this one cannot end the session the test still has to read.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"c");
+    wait_for("a second window to exist", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        )
+    });
+    // Two panes in the window the keys will act on.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    wait_for("a second pane in this window", || {
+        settled(pane_ids(&mut conn, &session).len(), &2)
+    });
+    let pair = pane_ids(&mut conn, &session);
+
+    // WITH A SIBLING: the question is asked and says nothing about a window, because nothing else
+    // is about to go. Answered NO.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"x");
+    wait_for("the question to be on screen", || {
+        shows(&mut tui, "Kill pane")
+    });
+    assert!(
+        shows(&mut tui, "last pane").is_err(),
+        "a pane with a sibling is not described as its window's last: {:?}",
+        tui.rows(),
+    );
+    tui.type_bytes(b"n");
+    // The pane the SPLIT made, which is the one the session is on and therefore the one a refused
+    // kill leaves the keyboard pointed at. `pane` here is an id, not an index.
+    typing_follows(&mut tui, &mut conn, &session, pair[1]);
+    assert_eq!(
+        pane_ids(&mut conn, &session),
+        pair,
+        "a refused kill takes nothing, and the keyboard is the pane's again",
+    );
+
+    // ...and YES takes exactly the one pane, leaving the window.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"x");
+    wait_for("the question again", || shows(&mut tui, "Kill pane"));
+    tui.type_bytes(b"y");
+    wait_for("the answered kill to reach the daemon", || {
+        settled(pane_ids(&mut conn, &session).len(), &1)
+    });
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        "one pane went and the window it was in did not",
+    );
+
+    // NOW THE LAST ONE. The same key, and the question grows the line the arrangement earned.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"x");
+    wait_for("the question to name the escalation", || {
+        shows(&mut tui, "last pane")
+    });
+    tui.type_bytes(b"y");
+    wait_for("the window to go with its last pane", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), true)],
+        )
+    });
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "and the client survived destroying the window it was projecting",
     );
 }
 
