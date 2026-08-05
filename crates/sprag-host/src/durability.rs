@@ -303,6 +303,7 @@ mod tests {
                     manual_size: None,
                     active: None,
                     zoomed: None,
+                    opened_by: None,
                 }],
             }],
         }

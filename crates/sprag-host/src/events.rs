@@ -1507,6 +1507,7 @@ impl Default for SessionJournal {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use sprag_terminal::WindowBirth;
     use sprag_terminal::WindowPlace;
 
     use super::*;
@@ -1718,7 +1719,9 @@ mod tests {
     fn a_window_rename_is_one_rename_and_a_real_close_is_still_a_close() {
         let (mut registry, _) = registry_with(0);
         let session = registry.default_session().name().to_owned();
-        registry.new_window(&session, Some("alpha")).unwrap();
+        registry
+            .new_window(&session, Some("alpha"), WindowBirth::default())
+            .unwrap();
 
         let renamed = derived(&mut registry, |registry| {
             registry.rename_window(&session, "alpha", "beta").unwrap();
@@ -1734,7 +1737,9 @@ mod tests {
 
         // CONTROL 1 — a window that really appears is still a birth.
         let created = derived(&mut registry, |registry| {
-            registry.new_window(&session, Some("gamma")).unwrap();
+            registry
+                .new_window(&session, Some("gamma"), WindowBirth::default())
+                .unwrap();
         });
         assert!(
             created.contains(&Event::WindowCreated("gamma".to_owned())),
@@ -1763,7 +1768,9 @@ mod tests {
         let (mut registry, _) = registry_with(0);
         let session = registry.default_session().name().to_owned();
         for name in ["alpha", "beta"] {
-            registry.new_window(&session, Some(name)).unwrap();
+            registry
+                .new_window(&session, Some(name), WindowBirth::default())
+                .unwrap();
         }
 
         let moved = derived(&mut registry, |registry| {
@@ -1793,7 +1800,9 @@ mod tests {
 
         // CONTROL 2 — a CREATE shifts nothing's relative order, so it is a birth and not a reorder.
         let created = derived(&mut registry, |registry| {
-            registry.new_window(&session, Some("gamma")).unwrap();
+            registry
+                .new_window(&session, Some("gamma"), WindowBirth::default())
+                .unwrap();
         });
         assert!(
             !created.contains(&Event::WindowsReordered),
@@ -1826,7 +1835,9 @@ mod tests {
         let (mut registry, _) = registry_with(0);
         let session = registry.default_session().name().to_owned();
         for name in ["alpha", "beta"] {
-            registry.new_window(&session, Some(name)).unwrap();
+            registry
+                .new_window(&session, Some(name), WindowBirth::default())
+                .unwrap();
         }
         let moved = derived(&mut registry, |registry| {
             registry
@@ -1856,7 +1867,9 @@ mod tests {
             let (mut registry, _) = registry_with(0);
             let session = registry.default_session().name().to_owned();
             for name in ["alpha", "beta", "gamma"] {
-                registry.new_window(&session, Some(name)).unwrap();
+                registry
+                    .new_window(&session, Some(name), WindowBirth::default())
+                    .unwrap();
             }
             request(&session, &mut registry);
             registry
@@ -1926,7 +1939,9 @@ mod tests {
         let (mut registry, ids) = registry_with(2);
         let session = registry.default_session().name().to_owned();
         let moving = ids[1];
-        registry.new_window(&session, Some("other")).unwrap();
+        registry
+            .new_window(&session, Some("other"), WindowBirth::default())
+            .unwrap();
 
         let moved = derived(&mut registry, |registry| {
             registry

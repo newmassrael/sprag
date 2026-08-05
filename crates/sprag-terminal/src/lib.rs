@@ -53,8 +53,8 @@ pub use processes::{
 };
 pub use registry::{
     Ended, KillOutcome, PaneKillOutcome, PaneMoveError, PlaceHow, Session, SessionError, SessionId,
-    SessionInfo, SessionRegistry, Window, WindowId, WindowInfo, WindowKillOutcome, WindowPlace,
-    WindowStep, ZoomOutcome,
+    SessionInfo, SessionRegistry, Window, WindowBirth, WindowId, WindowInfo, WindowKillOutcome,
+    WindowPlace, WindowStep, ZoomOutcome,
 };
 pub use remote::SshRemote;
 pub use sampled::{Reading, Sampled};

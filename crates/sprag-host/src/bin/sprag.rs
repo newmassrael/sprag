@@ -43,7 +43,9 @@
 //!                                         select-pane spells --from
 //!
 //! sprag windows -t SESSION                list a session's windows (name, and which is current)
-//! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
+//! sprag new-window -t SESSION [-d] [name]  create + select a window, born with a shell; print its
+//!                                          name. -d creates it WITHOUT selecting (tmux -d), so a
+//!                                          caller can make a place to work without moving anyone
 //! sprag select-window -t SESSION <NAME|-n|-p>  make NAME current, or step along the window ring
 //! sprag move-window -t SESSION [NAME] <--first|--last|-n|-p|--before W|--after W>
 //!                                          move a window's PLACE in the session's order
@@ -847,7 +849,7 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20             | wait-for-output --pane PANE NEEDLE [-t SESSION] [--regex]\n\
          \x20             | rename-session [-t SESSION] NEW\n\
          \x20             | kill-session NAME | kill-server [--purge]>\n\
-         \x20      sprag <windows | new-window [name] | select-window <NAME|-n|-p>\n\
+         \x20      sprag <windows | new-window [-d] [name] | select-window <NAME|-n|-p>\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
          \x20             | move-window [window]\n\
          \x20                 <--first | --last | -n | -p | --before W | --after W>\n\
@@ -4211,7 +4213,23 @@ fn windows(args: Vec<String>) -> io::Result<()> {
 /// name it got (the registry allocates the lowest free one when none is given).
 fn new_window(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "new-window")?;
-    let name = rest.into_iter().next();
+    // `-d` is tmux's, and it is the only flag this verb has: create the window and LEAVE the
+    // session where it is. Parsed positionally-blind so `new-window -d logs` and `new-window logs
+    // -d` are the same command, which is what a person types.
+    let mut detached = false;
+    let mut name = None;
+    for arg in rest {
+        match arg.as_str() {
+            "-d" | "--detached" => detached = true,
+            _ if name.is_none() => name = Some(arg),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("new-window: unexpected argument {other:?}"),
+                ));
+            }
+        }
+    }
     // The grammar, parsed with the daemon's own function before the request is built — see
     // [`rename_window`] for why that is one authority with two callers rather than two authorities.
     // It is also what keeps the refusal below a single cause.
@@ -4221,10 +4239,13 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
     }
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
-    let action_args = match &name {
-        Some(name) => json!({ "name": name }),
-        None => json!({}),
-    };
+    let mut action_args = json!({});
+    if let Some(name) = &name {
+        action_args["name"] = json!(name);
+    }
+    if detached {
+        action_args[sprag_host::wire::DETACHED_KEY] = json!(true);
+    }
     let answer = conn.call(
         "scene/invoke",
         json!({ "session": session, "path": mux_action_path(NEW_WINDOW_ACTION), "args": action_args }),
@@ -4232,7 +4253,14 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
     match answer {
         Ok(answer) => match answer.as_str() {
             Some(created) => {
-                println!("{created}");
+                // WHICH window the session is on afterwards is the thing `-d` changes, so the line
+                // says it. A verb whose only observable difference is invisible in its own output
+                // is one a script cannot check and a person cannot learn from.
+                if detached {
+                    println!("{created} (not selected)");
+                } else {
+                    println!("{created}");
+                }
                 Ok(())
             }
             None => Err(io::Error::other("new-window did not answer with a name")),

@@ -1345,6 +1345,7 @@ mod tests {
                 .map(|(name, current)| WindowInfo {
                     name: (*name).to_owned(),
                     current: *current,
+                    opened_by: None,
                 })
                 .collect(),
             sessions: sessions.iter().map(|s| (*s).to_owned()).collect(),
@@ -1370,6 +1371,7 @@ mod tests {
             windows: vec![WindowInfo {
                 name: "main".to_owned(),
                 current: true,
+                opened_by: None,
             }],
             sessions: vec!["0".to_owned()],
             current: "0".to_owned(),
@@ -1396,6 +1398,7 @@ mod tests {
             windows: vec![WindowInfo {
                 name: "main".to_owned(),
                 current: true,
+                opened_by: None,
             }],
             sessions: vec!["0".to_owned()],
             current: "0".to_owned(),

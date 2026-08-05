@@ -285,6 +285,33 @@ impl PlaceHow {
     }
 }
 
+/// How a window is BORN — whether it takes the screen, and who asked for it.
+///
+/// # Why a type rather than two arguments
+///
+/// Because they are one decision made at one moment, and because the pair is about to be spelled
+/// by four callers (the wire action, the CLI's `-d`, the agent surface's `open_window`, and the
+/// registry's own default). Two positional `Option`s of different meaning next to each other is
+/// exactly the list a later field gets inserted into wrongly — a window's restore takes a whole
+/// snapshot for the same reason.
+///
+/// [`Default`] is the behaviour every caller had before this existed: take the screen, claim
+/// nothing. So a caller that says nothing is unchanged, which is what makes the wire addition
+/// additive and what an old client keeps getting from a new daemon.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowBirth {
+    /// Leave the session on the window it is already on — tmux's `new-window -d`.
+    ///
+    /// The default is `false` because that is tmux's and because it is what every sprag caller
+    /// did before the flag existed. It matters most for a caller that is not a person: a surface
+    /// that created a window for its own work and took the user's screen doing it has done
+    /// something nobody asked for, every time.
+    pub detached: bool,
+    /// The pane whose occupant asked for this window, or [`None`] for one nobody claims.
+    /// See [`Window::opened_by`].
+    pub opened_by: Option<PaneId>,
+}
+
 /// One window: a named layout unit owning a pane pool, how its tiled panes are ARRANGED,
 /// and which of them a client has FLOATED out of the tiling.
 ///
@@ -356,6 +383,18 @@ pub struct Window {
     /// that re-projected its whole tiling because the user pressed `select-pane -L` would be
     /// answering the wrong question.
     active: Option<PaneId>,
+    /// The pane whose occupant ASKED for this window, or [`None`] for one nobody claims — which
+    /// is every window a person made and every window born with a session.
+    ///
+    /// [`Pane::opened_by`]'s fact one level up, and it exists for that field's reason: it is what
+    /// lets a surface hand an agent a DESTRUCTIVE window verb without handing it a person's
+    /// windows. R294 established the split — the daemon PUBLISHES who asked, and the agent-facing
+    /// surface applies the policy — so nothing here refuses anything; `sprag kill-window` is an
+    /// operator's verb and an operator means it.
+    ///
+    /// Fixed at birth and never moved, exactly as a pane's is: a provenance that could change is
+    /// not a provenance, and a gate resting on one that moved would be acting on something else.
+    opened_by: Option<PaneId>,
     /// The pane filling this window on its own, or `None` while none is — tmux's zoom.
     ///
     /// # The invariant, which is the whole design
@@ -405,6 +444,8 @@ impl Window {
             active: None,
             // A window with nothing in it has nothing to fill itself with.
             zoomed: None,
+            // Stamped by the caller that asked for it, if any — see the field.
+            opened_by: None,
         }
     }
 
@@ -464,6 +505,10 @@ impl Window {
             layout_revision: 0,
             active: snapshot.active,
             zoomed: snapshot.zoomed,
+            // Restored on `manual_size`'s argument, not `homes`': who asked for a window is a FACT
+            // about the window, and a reboot is exactly when nobody is left to ask. A window an
+            // agent made that came back unclaimed would become a window it could no longer tidy up.
+            opened_by: snapshot.opened_by,
         })
     }
 
@@ -478,6 +523,13 @@ impl Window {
     #[must_use]
     pub const fn id(&self) -> WindowId {
         self.id
+    }
+
+    /// The pane whose occupant asked for this window, or [`None`] for one nobody claims.
+    /// See the [field](Self::opened_by) for what rests on it.
+    #[must_use]
+    pub const fn opened_by(&self) -> Option<PaneId> {
+        self.opened_by
     }
 
     /// The window's pane pool — the `Arc<Mutex<Workspace>>` the host hands to the scene
@@ -1347,6 +1399,18 @@ pub struct WindowInfo {
     pub name: String,
     /// Whether this is the session's current window (the active tab).
     pub current: bool,
+    /// The pane whose occupant ASKED for this window ([`Window::opened_by`]), or `None` for one
+    /// nobody claims — which is every window a person made.
+    ///
+    /// Published for [`crate::workspace::PaneInfo::opened_by`]'s reason, verbatim: an agent-facing
+    /// surface refuses a DESTRUCTIVE verb on a window its caller did not open, and it can only
+    /// apply that policy if the daemon states the fact. The daemon states it and refuses nothing —
+    /// R294's split, one level up.
+    ///
+    /// `#[serde(default)]` keeps the addition additive, the rule every other published field
+    /// follows: a client older than this key reads a window as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by: Option<PaneId>,
 }
 
 /// A session's public identity for a display client — the registry-WIDE mux `sessions` slot and a
@@ -1528,6 +1592,7 @@ impl Session {
             .map(|window| WindowInfo {
                 name: window.name.clone(),
                 current: window.name == current,
+                opened_by: window.opened_by,
             })
             .collect()
     }
@@ -1570,9 +1635,10 @@ impl Session {
     ///
     /// The window is born EMPTY here; the host births its first pane (the D4 seam — a birth
     /// pane must carry the daemon's `on_pane_exit` death-signal, which the pinion-free registry
-    /// does not hold). Selecting it is the tmux behaviour and is session state: every client
+    /// does not hold). Selecting it is the tmux DEFAULT and is session state: every client
     /// attached to this session follows the current window, so a `new-window` moves them all,
-    /// exactly as tmux does.
+    /// exactly as tmux does — unless [`WindowBirth::detached`] says otherwise, which is tmux's
+    /// `-d` and the form a caller that is not a person uses.
     ///
     /// # Errors
     ///
@@ -1585,7 +1651,11 @@ impl Session {
     /// The grammar is checked BEFORE the duplicate, so a caller wrong in two ways is told about
     /// the one it can act on: a name that cannot be a window's is not made usable by picking a
     /// free one. [`rename_window`](Self::rename_window) orders it the same way.
-    pub fn new_window(&mut self, name: Option<&str>) -> Result<String, SessionError> {
+    pub fn new_window(
+        &mut self,
+        name: Option<&str>,
+        born: WindowBirth,
+    ) -> Result<String, SessionError> {
         let name = match name {
             Some(name) => {
                 let name = WindowName::parse(name).map_err(SessionError::MalformedWindow)?;
@@ -1603,8 +1673,15 @@ impl Session {
             .unwrap_or_else(PoisonError::into_inner)
             .sibling();
         let id = self.mint_window();
-        self.windows.push(Window::new(&name, pool, id));
-        self.current_window = self.windows.len() - 1;
+        let mut window = Window::new(&name, pool, id);
+        window.opened_by = born.opened_by;
+        self.windows.push(window);
+        // DETACHED leaves the session where it is — tmux's `-d`. Creating a place and SHOWING it
+        // are two acts and only the second is about the person, which is what lets a caller that
+        // is not a person make itself a workbench without taking the screen.
+        if !born.detached {
+            self.current_window = self.windows.len() - 1;
+        }
         Ok(name)
     }
 
@@ -2842,8 +2919,9 @@ impl SessionRegistry {
         &mut self,
         session: &str,
         name: Option<&str>,
+        born: WindowBirth,
     ) -> Result<String, SessionError> {
-        self.session_named_mut(session)?.new_window(name)
+        self.session_named_mut(session)?.new_window(name, born)
     }
 
     /// Make the window named `name` current in the session named `session` — tmux
@@ -3468,7 +3546,8 @@ mod tests {
     fn window_pids_gathers_every_pane_across_all_windows() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, None).unwrap(); // a second window in the default session
+        reg.new_window(&default, None, WindowBirth::default())
+            .unwrap(); // a second window in the default session
         let pools: Vec<_> = reg
             .default_session()
             .windows()
@@ -3867,7 +3946,8 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let session = reg.default_session().name().to_owned();
         for name in ["a", "b"] {
-            reg.new_window(&session, Some(name)).expect("a window");
+            reg.new_window(&session, Some(name), WindowBirth::default())
+                .expect("a window");
         }
         // Three windows: "0" (the boot window), "a", "b" — and `new_window` selected the last.
         reg.select_window(&session, "0")
@@ -3955,7 +4035,8 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let session = reg.default_session().name().to_owned();
         for name in ["a", "b", "c"] {
-            reg.new_window(&session, Some(name)).expect("a window");
+            reg.new_window(&session, Some(name), WindowBirth::default())
+                .expect("a window");
         }
         reg.select_window(&session, "0").expect("start at the top");
         (reg, session)
@@ -4584,7 +4665,8 @@ mod tests {
         assert_eq!(a.0, 0);
 
         assert_eq!(
-            reg.new_window(&default, None).unwrap(),
+            reg.new_window(&default, None, WindowBirth::default())
+                .unwrap(),
             "1",
             "lowest free name"
         );
@@ -4611,6 +4693,110 @@ mod tests {
         );
     }
 
+    /// A DETACHED window is created and the session stays where it was — tmux's `new-window -d`,
+    /// and the whole reason a caller that is not a person can make itself a place to work.
+    ///
+    /// The fixture makes the two answers DISAGREE: the session starts on a window that is not the
+    /// one being created, so "current is unchanged" and "current is the new window" are different
+    /// strings. A one-window fixture would make the assertion vacuous the moment the default
+    /// flipped.
+    #[test]
+    fn a_detached_window_is_created_without_taking_the_session_off_the_one_it_is_on() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let attached = WindowBirth::default();
+        let detached = WindowBirth {
+            detached: true,
+            ..WindowBirth::default()
+        };
+
+        // The CONTROL first: the default still selects, so this test cannot pass by the flag
+        // having no effect either way.
+        assert_eq!(
+            reg.new_window(&default, Some("loud"), attached).unwrap(),
+            "loud"
+        );
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "loud",
+            "the default is tmux's: a new window takes the screen",
+        );
+
+        assert_eq!(
+            reg.new_window(&default, Some("quiet"), detached).unwrap(),
+            "quiet"
+        );
+        let session = reg.session(&default).unwrap();
+        assert_eq!(
+            session.current_window().name(),
+            "loud",
+            "a detached window leaves the session exactly where it was",
+        );
+        assert!(
+            session.windows().iter().any(|w| w.name() == "quiet"),
+            "and it was really created: {:?}",
+            session
+                .windows()
+                .iter()
+                .map(Window::name)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// A window records WHO ASKED, it survives a snapshot round trip, and a window nobody claims
+    /// stays unclaimed — [`Pane::opened_by`]'s three facts, one level up.
+    ///
+    /// The provenance is what an agent-facing surface refuses a destructive window verb on, so a
+    /// restore that dropped it would hand back a window its author could no longer tidy up.
+    #[test]
+    fn a_window_records_who_asked_for_it_and_a_restore_brings_that_back() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let asker = PaneId(7);
+        reg.new_window(
+            &default,
+            Some("agentwork"),
+            WindowBirth {
+                detached: true,
+                opened_by: Some(asker),
+            },
+        )
+        .unwrap();
+
+        let session = reg.session(&default).unwrap();
+        let claimed = session
+            .windows()
+            .iter()
+            .find(|w| w.name() == "agentwork")
+            .expect("just created");
+        assert_eq!(claimed.opened_by(), Some(asker));
+        // THE CONTROL: the boot window is nobody's, so "records the asker" is not "records
+        // something for every window".
+        assert_eq!(
+            session
+                .windows()
+                .iter()
+                .find(|w| w.name() == "0")
+                .expect("the boot window")
+                .opened_by(),
+            None,
+            "a window a person made is claimed by nobody",
+        );
+
+        // Through the SNAPSHOT — the round trip a reboot makes.
+        let snap = crate::snapshot::snapshot(&std::sync::Arc::new(std::sync::Mutex::new(reg)));
+        let stored = snap.sessions[0]
+            .windows
+            .iter()
+            .find(|w| w.name == "agentwork")
+            .expect("the window is in the snapshot");
+        assert_eq!(
+            stored.opened_by,
+            Some(asker),
+            "who asked survives a reboot, or a restored window is one its author cannot tidy up",
+        );
+    }
+
     /// With no name the registry allocates the lowest free integer, tmux-style; an explicit
     /// name is stepped over, and a duplicate is refused with nothing added.
     #[test]
@@ -4618,21 +4804,29 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
 
-        assert_eq!(reg.new_window(&default, None).unwrap(), "1");
-        reg.new_window(&default, Some("3")).unwrap();
         assert_eq!(
-            reg.new_window(&default, None).unwrap(),
+            reg.new_window(&default, None, WindowBirth::default())
+                .unwrap(),
+            "1"
+        );
+        reg.new_window(&default, Some("3"), WindowBirth::default())
+            .unwrap();
+        assert_eq!(
+            reg.new_window(&default, None, WindowBirth::default())
+                .unwrap(),
             "2",
             "fills the gap"
         );
         assert_eq!(
-            reg.new_window(&default, None).unwrap(),
+            reg.new_window(&default, None, WindowBirth::default())
+                .unwrap(),
             "4",
             "then continues"
         );
 
         assert_eq!(
-            reg.new_window(&default, Some("3")).unwrap_err(),
+            reg.new_window(&default, Some("3"), WindowBirth::default())
+                .unwrap_err(),
             SessionError::Duplicate("3".to_owned()),
             "a taken window name is refused",
         );
@@ -4643,7 +4837,7 @@ mod tests {
         );
         // An unknown session is Unknown, not Duplicate.
         assert!(matches!(
-            reg.new_window("ghost", None),
+            reg.new_window("ghost", None, WindowBirth::default()),
             Err(SessionError::Unknown(name)) if name == "ghost",
         ));
     }
@@ -4660,7 +4854,8 @@ mod tests {
     fn a_name_that_cannot_be_an_address_is_repaired_by_the_restore_and_not_refused() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, Some("keep")).unwrap();
+        reg.new_window(&default, Some("keep"), WindowBirth::default())
+            .unwrap();
         let ws = reg.workspace_of(&default).expect("a current window");
         lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let mut snap = crate::snapshot::snapshot(&Arc::new(Mutex::new(reg)));
@@ -4714,7 +4909,8 @@ mod tests {
         let default = default_name(&reg);
 
         assert_eq!(
-            reg.new_window(&default, Some("  build  ")).unwrap(),
+            reg.new_window(&default, Some("  build  "), WindowBirth::default())
+                .unwrap(),
             "build",
             "new-window trims and answers what it stored",
         );
@@ -4735,7 +4931,11 @@ mod tests {
         );
 
         for (door, refused) in [
-            ("new", reg.new_window(&default, Some("  ")).unwrap_err()),
+            (
+                "new",
+                reg.new_window(&default, Some("  "), WindowBirth::default())
+                    .unwrap_err(),
+            ),
             (
                 "rename",
                 reg.rename_window(&default, "main", "").unwrap_err(),
@@ -4781,7 +4981,8 @@ mod tests {
     fn select_window_moves_the_current_and_refuses_unknown() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, Some("work")).unwrap();
+        reg.new_window(&default, Some("work"), WindowBirth::default())
+            .unwrap();
         assert_eq!(
             reg.session(&default).unwrap().current_window().name(),
             "work"
@@ -4807,7 +5008,8 @@ mod tests {
     fn rename_window_renames_refuses_a_duplicate_and_allows_a_noop() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
 
         reg.rename_window(&default, "0", "editor").unwrap();
         let names = |reg: &SessionRegistry| -> Vec<String> {
@@ -4893,9 +5095,11 @@ mod tests {
     fn no_two_sessions_or_windows_share_an_identity() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         reg.new_session(Some("play")).unwrap();
-        reg.new_window("play", Some("1")).unwrap();
+        reg.new_window("play", Some("1"), WindowBirth::default())
+            .unwrap();
 
         let sessions: HashSet<_> = reg.sessions().iter().map(Session::id).collect();
         assert_eq!(sessions.len(), 2, "two sessions, two identities");
@@ -4919,8 +5123,10 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
         // Windows "0", "1", "2"; a live pane in "1" so its kill actually drains something.
-        reg.new_window(&default, Some("1")).unwrap();
-        reg.new_window(&default, Some("2")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
+        reg.new_window(&default, Some("2"), WindowBirth::default())
+            .unwrap();
         let ws1 = {
             reg.select_window(&default, "1").unwrap();
             reg.workspace_of(&default).unwrap()
@@ -5005,7 +5211,8 @@ mod tests {
         let default = default_name(&reg);
         // Windows "0","a","b","c" (indices 0..3); make "c" (index 3) current.
         for name in ["a", "b", "c"] {
-            reg.new_window(&default, Some(name)).unwrap();
+            reg.new_window(&default, Some(name), WindowBirth::default())
+                .unwrap();
         }
         reg.select_window(&default, "c").unwrap();
         assert_eq!(reg.session(&default).unwrap().current_window().name(), "c");
@@ -5036,7 +5243,8 @@ mod tests {
     fn kill_window_refuses_an_unknown_session_or_window() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
 
         assert!(matches!(
             reg.kill_window("ghost", "0"),
@@ -5091,7 +5299,8 @@ mod tests {
     fn a_window_does_not_outlive_its_panes_and_the_kill_says_how_far_it_went() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, Some("logs")).unwrap();
+        reg.new_window(&default, Some("logs"), WindowBirth::default())
+            .unwrap();
         let pair = spawn_into(&reg, "0", 2);
         let alone = spawn_into(&reg, "logs", 1);
 
@@ -5190,7 +5399,8 @@ mod tests {
     fn close_pane_does_not_reach_into_another_window() {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
-        reg.new_window(&default, Some("logs")).unwrap();
+        reg.new_window(&default, Some("logs"), WindowBirth::default())
+            .unwrap();
         let elsewhere = spawn_into(&reg, "logs", 1);
         spawn_into(&reg, "0", 1);
 
@@ -5335,7 +5545,8 @@ mod tests {
 
         // Two panes now; an explicit name that is taken is refused.
         let more = spawn_into(&reg, "0", 1)[0];
-        reg.new_window(&default, Some("keep")).unwrap();
+        reg.new_window(&default, Some("keep"), WindowBirth::default())
+            .unwrap();
         assert_eq!(
             reg.break_pane(&default, more, Some("keep")).unwrap_err(),
             PaneMoveError::DuplicateWindow("keep".to_owned()),
@@ -5366,7 +5577,8 @@ mod tests {
         let default = default_name(&reg);
         let src = spawn_into(&reg, "0", 2);
         let (a, b) = (src[0], src[1]);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         let c = spawn_into(&reg, "1", 1)[0];
         // Selecting "1" then back to "0" leaves current on "0" — the join must not move it.
         reg.select_window(&default, "0").unwrap();
@@ -5399,7 +5611,8 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
         let a = spawn_into(&reg, "0", 1)[0];
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         let b = spawn_into(&reg, "1", 1)[0];
         // Current is the SOURCE window "0" (index 0).
         reg.select_window(&default, "0").unwrap();
@@ -5434,9 +5647,11 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
         let a = spawn_into(&reg, "0", 1)[0]; // source at index 0
-        reg.new_window(&default, Some("1")).unwrap(); // destination at index 1
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap(); // destination at index 1
         spawn_into(&reg, "1", 1);
-        reg.new_window(&default, Some("2")).unwrap(); // index 2
+        reg.new_window(&default, Some("2"), WindowBirth::default())
+            .unwrap(); // index 2
         spawn_into(&reg, "2", 1);
         // Current is "2" (index 2), ABOVE the source "0" that the join will close.
         reg.select_window(&default, "2").unwrap();
@@ -5465,7 +5680,8 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
         let a = spawn_into(&reg, "0", 1)[0];
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         spawn_into(&reg, "1", 1);
 
         // The pane already lives in "0", so joining it INTO "0" is a no-op move.
@@ -5553,7 +5769,8 @@ mod tests {
         let default = default_name(&reg);
         let src = spawn_into(&reg, "0", 2);
         let (a, b) = (src[0], src[1]);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         let dst = spawn_into(&reg, "1", 2);
         let (c, d) = (dst[0], dst[1]);
         reg.select_window(&default, "0").unwrap();
@@ -5585,7 +5802,8 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
         let a = spawn_into(&reg, "0", 1)[0];
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         let b = spawn_into(&reg, "1", 1)[0];
         reg.select_window(&default, "0").unwrap();
 
@@ -5676,7 +5894,8 @@ mod tests {
         let default = default_name(&reg);
         let src = spawn_into(&reg, "0", 2);
         let (a, b) = (src[0], src[1]);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         let dst = spawn_into(&reg, "1", 3);
         let (c, d, e) = (dst[0], dst[1], dst[2]);
         assert_eq!(tiled(&mut reg, "1"), vec![c, d, e]);
@@ -5708,7 +5927,8 @@ mod tests {
         let default = default_name(&reg);
         let src = spawn_into(&reg, "0", 2);
         let (a, b) = (src[0], src[1]);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         let dst = spawn_into(&reg, "1", 2);
         let (c, d) = (dst[0], dst[1]);
 
@@ -6083,7 +6303,8 @@ mod tests {
         let mut reg = SessionRegistry::new((80, 24));
         let default = default_name(&reg);
         spawn_into(&reg, "0", 2);
-        reg.new_window(&default, Some("1")).unwrap();
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
         let far = spawn_into(&reg, "1", 2);
         let (c, d) = (far[0], far[1]);
         // The session is CURRENT on "1"; select "0" so the far panes are in a non-current window.

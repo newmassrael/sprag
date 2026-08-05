@@ -1627,7 +1627,7 @@ fn main() -> ExitCode {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for _ in 1..windows {
                 registry
-                    .new_window("0", None)
+                    .new_window("0", None, sprag_terminal::WindowBirth::default())
                     .expect("create a window in the boot session");
             }
         }

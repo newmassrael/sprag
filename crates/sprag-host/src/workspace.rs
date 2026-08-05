@@ -63,7 +63,8 @@ use pinion_core::external::{
 use serde_json::{Map, Value, json};
 use sprag_terminal::{
     CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneId, PaneKillOutcome,
-    SessionInfo, SessionRegistry, SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
+    SessionInfo, SessionRegistry, SplitDir, SplitSide, SshRemote, WindowBirth, WindowKillOutcome,
+    Workspace,
 };
 
 use crate::attach::ClientSize;
@@ -77,15 +78,15 @@ use crate::window::{SizeRequest, WindowSize};
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
-    DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
-    MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
-    PANES_SLOT, PROJECT_FIELD, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
-    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
-    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk, WINDOW_SIZE_SLOT,
-    WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    DETACHED_KEY, DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT,
+    JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION,
+    MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD, PaneProcessesWire, RELEASE_AGENT_ACTION,
+    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -1075,15 +1076,21 @@ impl WorkspaceExternal {
         }
     }
 
-    /// `new_window {name?, cmd?, cols?, rows?}` action: create a window in THIS request's session,
-    /// born with a shell, SELECT it, and answer with its name — tmux `new-window`.
+    /// `new_window {name?, detached?, opened_by?, cmd?, cols?, rows?}` action: create a window in
+    /// THIS request's session, born with a shell, select it unless `detached`, and answer with its
+    /// name — tmux `new-window` and its `-d`.
     ///
-    /// The window is created + selected under the registry lock, then its pool (now the current
-    /// window's) is cloned OUT and the birth pane spawned OFF the lock — the exact
-    /// [`new_session`](Self::new_session) pattern one level down, so the same death-signal and
-    /// change-notification wiring applies and no fork runs under the registry lock. A runtime
-    /// fork/exec failure leaves the window empty (logged, non-fatal); a malformed birth spec is
-    /// rejected before anything is created.
+    /// The window is created under the registry lock, then its pool is cloned OUT and the birth
+    /// pane spawned OFF the lock — the exact [`new_session`](Self::new_session) pattern one level
+    /// down, so the same death-signal and change-notification wiring applies and no fork runs
+    /// under the registry lock. A runtime fork/exec failure leaves the window empty (logged,
+    /// non-fatal); a malformed birth spec is rejected before anything is created.
+    ///
+    /// ⚠ **The pool is looked up BY NAME, not as "the current window's".** It used to be the
+    /// latter, which was correct only because `new_window` always selected what it created — so
+    /// the moment `detached` existed, that lookup would have spawned the birth pane into the
+    /// window the user was already on. A silent wrong answer: a `-d` window would come back EMPTY
+    /// and the person's window would grow a pane nobody asked for.
     fn new_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
         let name = match map.get("name") {
@@ -1091,22 +1098,21 @@ impl WorkspaceExternal {
             Some(Value::String(name)) => Some(name.as_str()),
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
+        let born = self.parse_window_birth(map)?;
         // Validate the birth spec BEFORE creating anything (uniform with `new_session`).
         let spec = Self::parse_spawn(map)?;
         let (created, pool) = {
             let mut registry = lock(&self.registry);
             let created = registry
-                .new_window(self.scope.session(), name)
+                .new_window(self.scope.session(), name, born)
                 .map_err(|error| {
                     tracing::debug!(target: "sprag_host", %error, "refused to create a window");
                     // A taken window name is well-formed and simply cannot be honored.
                     InvokeError::Rejected
                 })?;
-            // `new_window` selected the new window, so the scoped session's current-window pool IS
-            // the new window's — clone it out to birth off-lock.
             let pool = registry
-                .workspace_of(self.scope.session())
-                .expect("the scoped session resolves; new_window just selected the new window");
+                .window_workspace(self.scope.session(), &created)
+                .expect("the scoped session resolves; new_window just created that window");
             (created, pool)
         };
         // Both `None` for `new_session`'s stated reasons one level down: a WINDOW's birth pane is
@@ -1123,6 +1129,29 @@ impl WorkspaceExternal {
         }
         self.announce();
         Ok(IntrospectValue::Json(Value::String(created)))
+    }
+
+    /// Read [`WindowBirth`] out of a `new_window` request — whether the window takes the screen,
+    /// and who asked for it.
+    ///
+    /// Both keys are ADDITIVE and both default to what every caller did before they existed
+    /// (`detached: false`, no opener), so a client that sends neither is unchanged. A key of the
+    /// WRONG TYPE is refused rather than defaulted: `detached: "true"` is a caller that believes it
+    /// asked for something, and honouring it as `false` would take the screen it asked to be left
+    /// alone — the one failure this flag exists to prevent.
+    fn parse_window_birth(&self, map: &Map<String, Value>) -> Result<WindowBirth, InvokeError> {
+        let detached = match map.get(DETACHED_KEY) {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(detached)) => *detached,
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        // The pane half goes through [`parse_opener`], the SAME function a pane's provenance uses
+        // — so a stale `SPRAG_PANE` is refused at the window level for the reason it is refused at
+        // the pane level, and there is one rule rather than two that agree today.
+        Ok(WindowBirth {
+            detached,
+            opened_by: self.parse_opener(map)?,
+        })
     }
 
     /// `select_window {window}` action: make a window current in THIS request's session — tmux
@@ -5296,7 +5325,9 @@ mod tests {
     fn select_window_moves_the_current_window() {
         let reg = registry();
         let (mut ext, rev) = control(&reg);
-        lock(&reg).new_window("0", Some("logs")).unwrap(); // current is now "logs"
+        lock(&reg)
+            .new_window("0", Some("logs"), WindowBirth::default())
+            .unwrap(); // current is now "logs"
         let before = rev.current();
 
         assert_eq!(
@@ -5379,7 +5410,9 @@ mod tests {
             ),
             Ok(IntrospectValue::Json(json!({"name": "main"}))),
         );
-        lock(&reg).new_window("0", Some("logs")).unwrap();
+        lock(&reg)
+            .new_window("0", Some("logs"), WindowBirth::default())
+            .unwrap();
         // Renaming "logs" onto the taken name "main" is refused.
         assert_eq!(
             ext.invoke(
@@ -5462,7 +5495,9 @@ mod tests {
     fn kill_window_removes_a_non_last_window_over_the_wire() {
         let reg = registry();
         let (mut ext, rev) = control(&reg);
-        lock(&reg).new_window("0", Some("logs")).unwrap(); // current = "logs"; two windows
+        lock(&reg)
+            .new_window("0", Some("logs"), WindowBirth::default())
+            .unwrap(); // current = "logs"; two windows
         let before = rev.current();
 
         assert_eq!(
@@ -5560,7 +5595,9 @@ mod tests {
     fn the_windows_slot_lists_the_scoped_sessions_windows_and_marks_current() {
         let reg = registry();
         lock(&reg).new_session(Some("work")).unwrap();
-        lock(&reg).new_window("work", Some("logs")).unwrap(); // work: "0", "logs"(current)
+        lock(&reg)
+            .new_window("work", Some("logs"), WindowBirth::default())
+            .unwrap(); // work: "0", "logs"(current)
 
         let (default_ext, _d) = control(&reg);
         assert_eq!(

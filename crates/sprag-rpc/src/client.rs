@@ -482,7 +482,18 @@ impl AttachAsk {
 ///   The other direction is refused by number and needs to be: an old client's reads were
 ///   window-scoped by construction and a new daemon changes nothing for them, but a new client that
 ///   sent the key and got the current window would report success about the wrong screen.
-pub const WIRE_PROTOCOL: u32 = 11;
+/// * **12** — a window can be born WITHOUT taking the screen (`detached`, R313). The SIXTH bump
+///   caused by an added ARGUMENT, and the drop is the sharpest of the class so far because the
+///   thing dropped is a promise about SOMEBODY ELSE: measured at `37d3971`, a daemon that does not
+///   know the key accepts it, creates the window, and SELECTS it anyway — so every client attached
+///   to that session is moved, and the answer (the new window's name) is byte-identical to the one
+///   a detached create would have given. A caller that asked for a quiet workbench has taken over
+///   the user's screen with nothing in the reply to say so.
+///   The other direction is refused by number and needs to be for the usual reason: an old client
+///   never sends the key and a new daemon treats its absence as `false`, which is exactly what that
+///   client already got — but a new client that sent it and was ignored would report a quiet window
+///   that is not quiet.
+pub const WIRE_PROTOCOL: u32 = 12;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

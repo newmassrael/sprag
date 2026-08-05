@@ -170,6 +170,23 @@ pub struct WindowSnapshot {
     /// what the daemons that wrote it could express.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zoomed: Option<PaneId>,
+    /// The pane whose occupant ASKED for this window ([`Window::opened_by`](crate::Window::opened_by)),
+    /// or `None` for one nobody claims.
+    ///
+    /// Restored on [`manual_size`](Self::manual_size)'s argument, not `homes`': who asked for a
+    /// window is a FACT about the window, where a float's home is a client's pixels. It matters
+    /// across a reboot for one concrete reason — an agent-facing surface refuses to close a window
+    /// the caller did not open, so a window that came back unclaimed would be one its author could
+    /// no longer tidy up, and the litter it exists to prevent would survive every restart.
+    ///
+    /// It travels in [`opened_by`](Self::opened_by)'s own terms, exactly as
+    /// [`PaneSnapshot::opened_by`] does: the id names a pane of the SAME snapshot, re-spawned under
+    /// its old id, and an opener that failed to come back simply names nothing.
+    ///
+    /// `#[serde(default)]` on the same additive terms: an older snapshot loads as `None`, which is
+    /// the unclaimed window the daemons that wrote it could only have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by: Option<PaneId>,
 }
 
 /// One pane's restore facts: enough to re-spawn a shell where the pane was and address it by its
@@ -262,6 +279,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
         manual_size: Option<(u16, u16)>,
         active: Option<PaneId>,
         zoomed: Option<PaneId>,
+        opened_by: Option<PaneId>,
         pool: Arc<Mutex<crate::workspace::Workspace>>,
     }
     struct SessSkel {
@@ -292,6 +310,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                             manual_size: w.manual_size(),
                             active: w.active_pane(),
                             zoomed: w.zoomed(),
+                            opened_by: w.opened_by(),
                             pool: Arc::clone(w.workspace()),
                         }
                     })
@@ -331,6 +350,7 @@ pub fn snapshot(registry: &Arc<Mutex<SessionRegistry>>) -> Snapshot {
                         manual_size: w.manual_size,
                         active: w.active,
                         zoomed: w.zoomed,
+                        opened_by: w.opened_by,
                     }
                 })
                 .collect(),
@@ -537,6 +557,7 @@ pub(crate) fn pane_snapshot(pane: &Pane) -> PaneSnapshot {
 mod tests {
     use super::*;
     use crate::SessionRegistry;
+    use crate::WindowBirth;
 
     // The live-pane helpers below (real PTYs, cwd via /proc) are used only by the Linux-gated
     // round-trip test; gate them too so a non-Linux build under `-D warnings` sees no dead code.
@@ -587,7 +608,8 @@ mod tests {
     fn the_window_order_a_user_arranged_survives_a_restart() {
         let mut reg = SessionRegistry::new((80, 24));
         for name in ["a", "b", "c"] {
-            reg.new_window("0", Some(name)).expect("a window");
+            reg.new_window("0", Some(name), WindowBirth::default())
+                .expect("a window");
         }
         reg.move_window("0", "c", &crate::WindowPlace::First)
             .expect("c moves to the front");
@@ -975,6 +997,7 @@ mod tests {
             manual_size: None,
             active: None,
             zoomed: None,
+            opened_by: None,
         }
     }
 

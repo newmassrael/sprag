@@ -2508,7 +2508,9 @@ impl HostClient for Host {
         let created = {
             let mut registry = lock(&self.registry);
             let session = registry.default_session().name().to_owned();
-            registry.new_window(&session, None)
+            // Attached, and by nobody: this is the in-process arm's "the user pressed a key",
+            // which is exactly the caller `WindowBirth::default` describes.
+            registry.new_window(&session, None, sprag_terminal::WindowBirth::default())
         };
         let Ok(name) = created else {
             // The default session always resolves and the allocated name is free by construction,
@@ -3740,6 +3742,7 @@ mod tests {
                     manual_size: None,
                     active: None,
                     zoomed: None,
+                    opened_by: None,
                 }],
             }],
         };
@@ -3803,6 +3806,7 @@ mod tests {
                     manual_size: None,
                     active: None,
                     zoomed: None,
+                    opened_by: None,
                 }],
             }],
         };
@@ -3876,6 +3880,7 @@ mod tests {
                     manual_size: None,
                     active: None,
                     zoomed: None,
+                    opened_by: None,
                 }],
             }],
         };

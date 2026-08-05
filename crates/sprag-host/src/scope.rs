@@ -377,6 +377,7 @@ impl fmt::Debug for SessionScope {
 mod tests {
     use super::*;
     use pinion_rpc::parse_request;
+    use sprag_terminal::WindowBirth;
 
     fn registry() -> Arc<Mutex<SessionRegistry>> {
         Arc::new(Mutex::new(SessionRegistry::new((80, 24))))
@@ -470,7 +471,9 @@ mod tests {
     fn a_request_can_narrow_itself_to_one_window_of_its_session() {
         let reg = registry();
         let default = lock(&reg).default_session().name().to_owned();
-        lock(&reg).new_window(&default, Some("win1")).unwrap();
+        lock(&reg)
+            .new_window(&default, Some("win1"), WindowBirth::default())
+            .unwrap();
         let pool_of = |name: &str| {
             let guard = lock(&reg);
             let session = guard.session(&default).expect("the session");
@@ -565,7 +568,9 @@ mod tests {
         let reg = registry();
         let default = lock(&reg).default_session().name().to_owned();
         // A second window, which `new_window` also makes current.
-        lock(&reg).new_window(&default, Some("win1")).unwrap();
+        lock(&reg)
+            .new_window(&default, Some("win1"), WindowBirth::default())
+            .unwrap();
 
         let scope = resolve(&reg, r#"{"path":""}"#).expect("the default");
         assert_eq!(scope.session(), default);

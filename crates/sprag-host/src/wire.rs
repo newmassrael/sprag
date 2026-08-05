@@ -1018,6 +1018,28 @@ pub const SESSION_SLOT: &str = "session";
 /// client follows it, as tmux does.
 pub const NEW_WINDOW_ACTION: &str = "new_window";
 
+/// The [`NEW_WINDOW_ACTION`] request key that leaves the session on the window it is already on —
+/// tmux's `new-window -d`. Absent (or `false`) selects the new window, which is what every caller
+/// did before this key existed and what tmux's own default is.
+///
+/// # Why a window can be born without taking the screen
+///
+/// Because CREATING a place and SHOWING it are two acts, and only the second is about the person.
+/// While they were one act, a caller that is not a person could not make itself a workbench without
+/// taking over the user's screen — which is exactly the intrusion R294's authorship gate exists to
+/// prevent one level down, arriving through the level above it.
+///
+/// **This key is why `WIRE_PROTOCOL` moved.** A daemon older than a client that sends it ACCEPTS it
+/// and DROPS it (measured at `37d3971`: the window was created and selected anyway), so a caller
+/// that believed it had opened a quiet window has moved every attached client, with nothing in the
+/// answer to say so. An added ARGUMENT is invisible to `client/hello`; only the version is not.
+pub const DETACHED_KEY: &str = "detached";
+
+/// The [`NEW_WINDOW_ACTION`] request key naming the pane whose occupant asked for the window
+/// ([`sprag_terminal::Window::opened_by`]) — [`SPAWN_ACTION`]'s key of the same name, one level up,
+/// parsed by the same function so a stale pane id is refused the same way.
+pub const WINDOW_OPENED_BY_KEY: &str = "opened_by";
+
 /// The mux control external invoke action that makes a window current in the SCOPED session
 /// (`{window}` XOR `{relative}`) — tmux `select-window`, `next-window` and `previous-window` in one
 /// verb. Session state: every attached client follows.
@@ -2767,6 +2789,7 @@ mod tests {
             serde_json::to_string(&WindowInfo {
                 name: "0".to_owned(),
                 current: true,
+                opened_by: None,
             })
             .expect("a window serialises"),
             r#"{"name":"0","current":true}"#,
