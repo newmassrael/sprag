@@ -67,7 +67,7 @@ use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
     NEW_WINDOW_ACTION, RENAME_PANE_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION, SPAWN_ACTION,
-    SPLIT_ACTION, ZOOM_PANE_ACTION,
+    SPLIT_ACTION, SelectAsk, ZOOM_PANE_ACTION,
 };
 use sprag_rpc::HostConn;
 
@@ -2206,21 +2206,31 @@ fn a_pane_name_reaches_another_window_and_a_number_does_not() {
     );
 }
 
-/// **WHICH tools a pane NAME reaches another window for — MEASURED, and pinned against the sentence
-/// that claims it.**
+/// **THE RATCHET: every tool the roster declares a `pane` argument for resolves a NAME in ANOTHER
+/// window — and the list is DERIVED FROM THE ROSTER, not written here.**
 ///
-/// R311 widened the resolution on the tools it touched and left the rest window-local, and the
-/// first version of the primer claimed the widening WITHOUT QUALIFICATION — *"a pane NAME reaches
-/// ANY window of the session"* — which was false for half the roster and was pushed. The owner's
-/// debt question is what found it, the 22nd round running.
+/// # Why the list is derived
 ///
-/// So the split is a fact under test rather than a sentence somebody keeps up to date: this drives
-/// every pane-addressed tool against a pane one window over and asserts BOTH lists, and the
-/// primer's own wording is checked against them. Moving a tool from one list to the other (which is
-/// the intended direction — the refusing half is a GAP, not a rule) fails here until the sentence
-/// moves with it.
+/// R311 widened seven tools and its primer claimed all of them; the owner's debt question found it
+/// after the push. The fix was a test — with a HAND-WRITTEN list of twelve tools. Measuring at
+/// `e7be5eb` showed that list was itself incomplete: **eleven tools refused, not the five the debt
+/// register recorded**, and the two the list omitted (`agent_explain`, `wait_for_change`) were
+/// exactly the two the corrected sentence forgot. A hand-written list of what to check is the same
+/// class of defect one level up, so this walks `tools/list` and takes every tool whose own
+/// `inputSchema` declares a `pane` property.
+///
+/// A tool added later with a `pane` argument is therefore checked the day it appears, and a tool
+/// that resolves its pane against the caller's own window fails here by name.
+///
+/// # What it asserts, and why not "succeeds"
+///
+/// That the ADDRESS RESOLVES — never that the call succeeds. Four of these verbs are gated on
+/// authorship (R294): a pane a person opened is refused by `close_pane`, `rename_pane`,
+/// `swap_pane` and `resize_pane` whatever window it is in, and that is the correct answer. What
+/// must not happen is the refusal being about the NAME, which is what "no pane is called
+/// \"faraway\"" was for eleven tools — a true sentence about the wrong subject.
 #[test]
-fn the_tools_a_name_reaches_another_window_for_are_the_ones_the_primer_names() {
+fn the_whole_roster_reaches_a_pane_one_window_over() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
     let far = mux_query_panes(&sock)
@@ -2235,88 +2245,129 @@ fn the_tools_a_name_reaches_another_window_for_are_the_ones_the_primer_names() {
     mux_invoke(&sock, SELECT_WINDOW_ACTION, json!({ "window": "0" }));
     let mut server = McpServer::spawn_in_pane(&sock, 0);
 
-    // Every pane-addressed tool, with the arguments it needs, aimed at a pane one window over.
-    let calls: Vec<(&str, Value)> = vec![
-        ("read_pane", json!({ "pane": "faraway" })),
-        ("read_last_command", json!({ "pane": "faraway" })),
-        ("read_pane_links", json!({ "pane": "faraway" })),
-        ("find_in_pane", json!({ "pane": "faraway", "needle": "zz" })),
-        (
-            "regex_in_pane",
-            json!({ "pane": "faraway", "pattern": "zz" }),
-        ),
-        ("write_pane", json!({ "pane": "faraway", "text": "true" })),
-        (
-            "send_keys",
-            json!({ "pane": "faraway", "keys": ["Escape"] }),
-        ),
-        ("read_pane_images", json!({ "pane": "faraway" })),
-        ("pane_processes", json!({ "pane": "faraway" })),
-        ("agent_state", json!({ "pane": "faraway" })),
-        ("resize_pane", json!({ "pane": "faraway", "dir": "left" })),
-        (
-            "rename_pane",
-            json!({ "pane": "faraway", "name": "renamed" }),
-        ),
-    ];
-    let mut reaches: Vec<&str> = Vec::new();
-    let mut refuses: Vec<&str> = Vec::new();
-    for (name, args) in calls {
-        let answer = server.call_tool_raw(name, args);
-        let errored = answer["result"]["isError"] == json!(true);
+    // ⚠ THE FIXTURE MUST DISCRIMINATE. A one-window daemon would make "reaches another window"
+    // trivially true — which is verbatim the mistake R311's first skew probe made. Assert the two
+    // panes really are in different windows before believing anything below.
+    let windows = server.call_tool("list_windows", json!({}));
+    assert!(
+        windows.contains("window 0 (current, you are here)") && windows.contains("window 1"),
+        "the fixture must hold TWO windows or nothing below discriminates: {windows}",
+    );
+
+    // A sample value per ARGUMENT NAME, not per tool — so a tool added later out of arguments that
+    // already appear here needs no edit, and one that introduces a NEW argument fails loudly
+    // naming it. Failing closed is the point: a silent skip would be a tool this ratchet believes
+    // it covered.
+    let sample = |argument: &str| -> Option<Value> {
+        Some(match argument {
+            "pane" => json!("faraway"),
+            "needle" | "pattern" | "text" => json!("zz"),
+            "keys" => json!(["Escape"]),
+            "name" => json!("faraway"),
+            "dir" => json!("left"),
+            "with" => json!("faraway"),
+            "timeout_seconds" => json!(1),
+            _ => return None,
+        })
+    };
+
+    let roster = server.request("tools/list", json!({}));
+    let tools = roster["result"]["tools"]
+        .as_array()
+        .expect("the roster is a list")
+        .clone();
+    let mut checked: Vec<String> = Vec::new();
+    for tool in &tools {
+        let name = tool["name"]
+            .as_str()
+            .expect("every tool is named")
+            .to_owned();
+        let schema = &tool["inputSchema"]["properties"];
+        if schema.get(SelectAsk::PANE_KEY).is_none() {
+            continue;
+        }
+        // Every argument the tool REQUIRES, plus the pane. A tool with no `required` list gets the
+        // pane alone, which is the shape most reads have.
+        let mut args = serde_json::Map::new();
+        args.insert(SelectAsk::PANE_KEY.to_owned(), json!("faraway"));
+        for required in tool["inputSchema"]["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let argument = required.as_str().expect("a required argument is named");
+            let value = sample(argument).unwrap_or_else(|| {
+                panic!(
+                    "{name} requires an argument this ratchet has no sample for ({argument:?}). \
+                     Add one to `sample` — a skipped tool is a tool this test believes it covered."
+                )
+            });
+            args.insert(argument.to_owned(), value);
+        }
+        // `wait_for_output` needs a search language and would otherwise park for its full default
+        // minute; `wait_for_change` is bounded the same way. Both take these as OPTIONAL arguments,
+        // so the required-set above does not carry them.
+        if name.starts_with("wait_for") {
+            args.insert("timeout_seconds".to_owned(), json!(1));
+            if name == "wait_for_output" {
+                args.insert("needle".to_owned(), json!("zz"));
+            }
+        }
+        let answer = server.call_tool_raw(&name, Value::Object(args));
         let text = answer["result"]["content"][0]["text"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        if errored {
-            assert!(
-                text.contains("no pane is called"),
-                "{name} failed for some OTHER reason than the name not resolving: {text}",
-            );
-            refuses.push(name);
-        } else {
-            reaches.push(name);
-        }
+        assert!(
+            !text.contains("no pane is called"),
+            "{name} cannot resolve a pane NAME one window over: {text}",
+        );
+        checked.push(name);
     }
 
-    assert_eq!(
-        reaches,
-        [
-            "read_pane",
-            "read_last_command",
-            "read_pane_links",
-            "find_in_pane",
-            "regex_in_pane",
-            "write_pane",
-            "send_keys",
-        ],
-        "these reach another window; refusing set was {refuses:?}",
+    // The ratchet is worth nothing if it walked an empty list, and it must cover the tools the
+    // measurement at `e7be5eb` found REFUSING — naming them here is what makes this a regression
+    // pin for that specific defect rather than a shape test that would pass on an empty roster.
+    for wanted in [
+        "read_pane",
+        "read_pane_images",
+        "pane_processes",
+        "agent_state",
+        "agent_explain",
+        "resize_pane",
+        "rename_pane",
+        "close_pane",
+        "select_pane",
+        "swap_pane",
+        "wait_for_output",
+        "wait_for_change",
+        "pane_layout",
+    ] {
+        assert!(
+            checked.iter().any(|name| name == wanted),
+            "the roster no longer declares a `pane` argument for {wanted}, so this ratchet stopped \
+             covering it: checked {checked:?}",
+        );
+    }
+    assert!(
+        checked.len() >= 13,
+        "the ratchet walked too few tools to be measuring anything: {checked:?}",
+    );
+
+    // The PRIMER's claim, checked against what was just measured — the sentence R311 got wrong is
+    // now a claim under test rather than prose somebody keeps up to date.
+    let primer = server.primer();
+    assert!(
+        primer.contains(
+            "A pane NAME reaches ANY window of this session, at EVERY tool here that \
+                         takes a `pane`"
+        ),
+        "the primer must claim exactly the reach the roster was just measured to have: {primer}",
     );
     assert!(
-        !refuses.is_empty(),
-        "if nothing refuses any more, the primer must stop saying anything does",
+        !primer.contains("resolve a name inside your own window"),
+        "and it must not still describe a split that no longer exists: {primer}",
     );
-
-    // The SENTENCE, checked against both measured lists — which is what makes it a claim under
-    // test rather than prose. Every reaching tool must be named in the reaching clause, and every
-    // refusing one in the refusing clause.
-    let primer = server.primer();
-    let (before, after) = primer
-        .split_once("the OTHER pane tools")
-        .expect("the primer draws the split");
-    for tool in &reaches {
-        assert!(
-            before.contains(&format!("`{tool}`")),
-            "the primer promises the reach and does not name `{tool}`",
-        );
-    }
-    for tool in &refuses {
-        assert!(
-            !before.contains(&format!("`{tool}`")),
-            "the primer names `{tool}` as reaching another window and it does not",
-        );
-    }
-    let _ = after;
 }
 
 /// An agent NAMES its work pane and then addresses it by that name while its NUMBER moves under it.
@@ -2420,8 +2471,9 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
 
     let renamed = server.call_tool("rename_pane", json!({ "pane": "build", "name": "tests" }));
     assert!(
-        renamed.starts_with("Pane 2 is now called \"tests\"."),
-        "a rename reports the name that was RECORDED: {renamed}",
+        renamed.starts_with("pane 2 is now called \"tests\".")
+            && renamed.contains("a name reaches any window of this session"),
+        "a rename reports the name that was RECORDED, and why to use it: {renamed}",
     );
     let gone = server.call_tool_error("read_pane", json!({ "pane": "build" }));
     assert!(
@@ -2431,7 +2483,7 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
 
     let cleared = server.call_tool("rename_pane", json!({ "pane": "tests" }));
     assert!(
-        cleared.starts_with("Pane 2 has no name now;"),
+        cleared.starts_with("pane 2 has no name now;"),
         "and a rename with no name takes it away: {cleared}",
     );
     assert!(
@@ -2756,7 +2808,7 @@ fn an_agent_sizes_the_pane_it_opened_and_no_other() {
     let refused = server.call_tool_error("resize_pane", json!({ "pane": 1, "dir": "right" }));
     assert!(
         refused.contains("pane 1 was opened by a person, not by you")
-            && refused.contains("how big their panes are is their arrangement"),
+            && refused.contains("How big their panes are is their arrangement"),
         "it says why, and the reason is the SIZE rather than the placement: {refused}",
     );
     assert_eq!(

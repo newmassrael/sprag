@@ -110,6 +110,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use sprag_host::events::EventFilter;
+use sprag_host::pane_address::{
+    NamedPane, PaneListing, ambiguous_pane_name, unknown_pane_name_with,
+};
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
@@ -261,10 +264,10 @@ fn handle_initialize(message: &Value) -> Value {
             instead: every `pane` argument here takes a name as well as a number. \
             `list_panes` answers about YOUR WINDOW only. A sprag session holds several, and \
             `list_windows` is what tells you so — the other windows, their panes, and the names \
-            those panes carry. A pane NAME reaches ANOTHER window for `read_pane`, \
-            `read_last_command`, `read_pane_links`, `find_in_pane`, `regex_in_pane`, `write_pane` \
-            and `send_keys`; the OTHER pane tools still resolve a name inside your own window \
-            only, and say so by refusing. A pane NUMBER never reaches past your window. \
+            those panes carry. A pane NAME reaches ANY window of this session, at EVERY tool here \
+            that takes a `pane`: name a pane once and you can read it, search it, type into it, \
+            wait on it and ask about its agent wherever it is. A pane NUMBER never reaches past \
+            your window — it means the Nth row of `list_panes`, and `list_panes` is yours. \
             `list_sessions` answers what else this daemon holds, which is what the \
             session changes you can wait for are about. \
             READ a pane: `read_pane` (its screen and scrollback), `read_last_command` (just \
@@ -367,9 +370,10 @@ fn tools_list() -> Value {
                 "description": "Draw WHERE the panes sit — the window's arrangement as a tree of \
                     divisions, which pane (if any) is zoomed to fill the window, which panes are \
                     floated out of the tiling, and WHICH PANE IS NEXT TO WHICH in each direction. \
-                    `list_panes` answers WHO is in YOUR WINDOW; this answers WHERE they sit in \
-                    it — both are about that one window, and `list_windows` is what tells you the \
-                    session has others. This answers WHERE, so it is what \
+                    `list_panes` answers WHO is in YOUR WINDOW; this answers WHERE they sit. With \
+                    no argument it draws YOUR window; name a pane (by NAME) in ANOTHER window and \
+                    it draws THAT window instead, so a pane you learned about from `list_windows` \
+                    is one call from its arrangement. This answers WHERE, so it is what \
                     to call before choosing a pane by position (\"the pane to the right of mine\", \
                     \"the one below\"). It also marks the pane YOU are running in, which is what \
                     makes a direction mean anything. The neighbour table is the daemon's own \
@@ -377,7 +381,11 @@ fn tools_list() -> Value {
                     so you never have to work it out from the shape. Which pane the USER is \
                     currently typing into is NOT here: that changes on a keystroke and belongs to \
                     `list_panes`, which marks it.",
-                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg.clone() },
+                    "additionalProperties": false
+                }
             },
             {
                 "name": "pane_processes",
@@ -921,7 +929,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "list_panes" => tool_list_panes(),
         "list_windows" => tool_list_windows(),
         "list_sessions" => tool_list_sessions(),
-        "pane_layout" => tool_pane_layout(),
+        "pane_layout" => tool_pane_layout(&args),
         "pane_processes" => tool_pane_processes(&args),
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
@@ -954,16 +962,25 @@ fn handle_tools_call(message: &Value) -> Value {
 
 // ---- Tools ---------------------------------------------------------------------
 
-/// One pane as the host's pane-list reports it, plus its display number.
+/// One pane as the host's pane-list reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PaneInfo {
-    number: usize,
     id: u64,
     /// The name a PERSON (or this pane's opener) gave it, `None` for a pane nobody named.
     ///
-    /// The one STABLE handle on this surface. [`number`](Self::number) is positional and moves
-    /// when an earlier pane closes; the [`id`](Self::id) never moves but is an integer, so it
-    /// cannot share the `pane` argument with a number. A name is a string, so it can — see
-    /// [`pane_target`].
+    /// The one STABLE handle on this surface. A pane's NUMBER is positional and moves when an
+    /// earlier pane closes; the [`id`](Self::id) never moves but is an integer, so it cannot share
+    /// the `pane` argument with a number. A name is a string, so it can — see [`pane_target_at`].
+    ///
+    /// # There is deliberately no `number` field
+    ///
+    /// A number is a property of a LISTING, not of a pane: it means "the Nth row of `list_panes`",
+    /// and `list_panes` answers about ONE window. A row that carried its own number could be read
+    /// out of a listing it does not belong to and would then name a different pane with a straight
+    /// face — which is exactly what happened when R311 began reading OTHER windows' pane lists,
+    /// numbering each from its own window's index. So a number is only ever formed by
+    /// [`numbered`], from a position in a slice the caller is holding, and a pane one window over
+    /// simply has none.
     name: Option<String>,
     title: String,
     command: String,
@@ -1016,6 +1033,7 @@ struct PaneInfo {
 /// (`sprag_client::agent_phrase`, shared by both frontends so they cannot drift); this surface's reader
 /// is a program that will branch on the value, so it gets the vocabulary and the tool description
 /// teaches what each token means.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct AgentInfo {
     /// `working` / `blocked` / `idle` — never absent, because the whole object is absent for a pane
     /// with no known state.
@@ -1059,6 +1077,7 @@ fn parse_agent_info(entry: &Value) -> Option<AgentInfo> {
 /// One inline image a pane shows, as an agent reads it (R1404 Stage 5): its id, pixel size, and the
 /// grid cell it is anchored at. The RGBA is not carried — a summary an agent uses to know an image
 /// is present, not to reconstruct it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ImageInfo {
     id: u64,
     width: u64,
@@ -1130,12 +1149,10 @@ fn tool_list_windows() -> Result<String, String> {
         out.push('\n');
     }
     out.push_str(
-        "A pane NAME reaches another window for read_pane, read_last_command, read_pane_links, \
-         find_in_pane, regex_in_pane, write_pane and send_keys. The other pane tools \
-         (pane_processes, agent_state, read_pane_images, wait_for_output, resize_pane, \
-         rename_pane, swap_pane, select_pane, close_pane) resolve a name inside YOUR window only \
-         and refuse otherwise — a gap, not a rule. A pane NUMBER means the Nth pane of your \
-         window (list_panes) and never reaches further.\n",
+        "A pane NAME reaches ANY window of this session, at every tool here that takes a `pane`. A \
+         pane NUMBER means the Nth pane of YOUR window (list_panes) and never reaches further, so \
+         a pane listed above is addressable by its name and not by a number. Ask pane_layout how \
+         another window is arranged by naming a pane in it.\n",
     );
     Ok(out)
 }
@@ -1210,8 +1227,8 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>) -> String {
         "{} pane(s) in this window (list_windows for the session's others):\n",
         panes.len()
     );
-    for pane in panes {
-        out.push_str(&pane_summary(pane, panes, here));
+    for (index, pane) in panes.iter().enumerate() {
+        out.push_str(&pane_summary(numbered(index), pane, panes, here));
     }
     out
 }
@@ -1220,7 +1237,7 @@ fn render_pane_list(panes: &[PaneInfo], here: Option<u64>) -> String {
 /// signal the pane raised. Each sub-line is emitted ONLY when its signal is present, so a resting
 /// pane is just the header (mirrors the additive wire). Split out as a pure function so the
 /// invisible-state lines (mouse / focus) are unit-testable without a live host.
-fn pane_summary(pane: &PaneInfo, panes: &[PaneInfo], here: Option<u64>) -> String {
+fn pane_summary(number: usize, pane: &PaneInfo, panes: &[PaneInfo], here: Option<u64>) -> String {
     let title = if pane.title.is_empty() {
         "(none)".to_owned()
     } else {
@@ -1237,8 +1254,8 @@ fn pane_summary(pane: &PaneInfo, panes: &[PaneInfo], here: Option<u64>) -> Strin
         None => String::new(),
     };
     let mut out = format!(
-        "  pane {}:{name} id={} {}x{} command={} title={}{active}\n",
-        pane.number, pane.id, pane.cols, pane.rows, pane.command, title
+        "  pane {number}:{name} id={} {}x{} command={} title={}{active}\n",
+        pane.id, pane.cols, pane.rows, pane.command, title
     );
     // Surface an attention notification on its own indented line, so an agent scanning the
     // list sees which sibling raised one (OSC 9 / 777;notify / 99).
@@ -1288,8 +1305,8 @@ fn pane_summary(pane: &PaneInfo, panes: &[PaneInfo], here: Option<u64>) -> Strin
         let who = if Some(opener) == here {
             "you (yours to close)".to_owned()
         } else {
-            match panes.iter().find(|p| p.id == opener) {
-                Some(p) => format!("pane {}", p.number),
+            match panes.iter().position(|p| p.id == opener) {
+                Some(index) => format!("pane {}", numbered(index)),
                 None => format!("pane id {opener}, not in this window"),
             }
         };
@@ -1361,18 +1378,36 @@ fn mouse_phrase(token: &str) -> String {
 /// TRANSLATES an identity — a pane's id and its number name the same pane — and its only failure
 /// mode is a pane missing from one of the two sets, which is visible and said out loud. The moving
 /// fact, which pane the user is typing into, is deliberately NOT here: it is `list_panes`'s answer.
-fn tool_pane_layout() -> Result<String, String> {
-    let panes = query_panes()?;
+fn tool_pane_layout(args: &Value) -> Result<String, String> {
+    // `pane` names a WINDOW here, by naming something in it — the same address every other tool
+    // takes rather than a second `window` grammar beside it. An agent that has just been told about
+    // a pane one window over (`list_windows`, `wait_for_change`) can ask how that window sits
+    // without first learning a different vocabulary, and there is one thing to get right.
+    let elsewhere = resolve_optional_pane_ref(args)?.filter(|pane| pane.window.is_some());
+    let (panes, window) = match &elsewhere {
+        // The far window's panes carry NO numbers on this surface (they are not `list_panes`'s
+        // rows), so the drawing names them by id and by name — see [`render_arrangement_answer`].
+        Some(pane) => (
+            query_window_panes(pane.window.as_deref().unwrap_or_default())?,
+            pane.window.clone(),
+        ),
+        None => (query_panes()?, None),
+    };
     let answer = host_call(
         "scene/query",
-        json!({ "path": mux_action_path(LAYOUT_SLOT) }),
+        windowed_params(mux_action_path(LAYOUT_SLOT), window.as_deref()),
     )?;
     // Through the SSOT type, never by walking the served arena by hand: it is a flat arena whose
     // nodes name their children by index, and a second reader of that encoding is a second thing
     // that can come to disagree with the daemon about what it means.
     let snapshot: LayoutSnapshot = serde_json::from_value(answer)
         .map_err(|error| format!("the host's arrangement did not parse: {error}"))?;
-    Ok(render_arrangement_answer(&snapshot, &panes, own_pane()))
+    Ok(render_arrangement_answer(
+        &snapshot,
+        &panes,
+        own_pane(),
+        window.as_deref(),
+    ))
 }
 
 /// `pane_processes`: WHAT EACH PANE IS RUNNING — the job that owns its terminal, every process in
@@ -1398,18 +1433,9 @@ fn tool_pane_layout() -> Result<String, String> {
 /// different pane. This translates an IDENTITY (a pane's id and its number name the same pane); it
 /// does not assemble one fact from two instants.
 fn tool_pane_processes(args: &Value) -> Result<String, String> {
-    // The target is PARSED here and RESOLVED against the listing below — never resolved by a helper
-    // that reads its own. This function's whole discipline is that its two reads are ordered and
-    // their residual is said out loud; a third read hidden inside the argument parse would break it
-    // silently, resolving the caller's `pane` at an instant neither of the two below describes.
-    let target = match args.get("pane") {
-        None | Some(Value::Null) => None,
-        Some(_) => Some(pane_target(args)?),
-    };
-    let panes = query_panes()?;
-    let wanted = target
-        .map(|target| resolve_in(&panes, &target).map(|pane| pane.number))
-        .transpose()?;
+    let wanted = resolve_optional_pane_ref(args)?;
+    let here = query_panes()?;
+    let session = query_session_panes()?;
     let answer = host_call(
         "scene/query",
         json!({ "path": mux_action_path(&pane_processes_at(0)) }),
@@ -1418,36 +1444,63 @@ fn tool_pane_processes(args: &Value) -> Result<String, String> {
     // disagree with the daemon about what a field means.
     let wire: PaneProcessesWire = serde_json::from_value(answer)
         .map_err(|error| format!("the host's process reading did not parse: {error}"))?;
-    if let Some(number) = wanted
-        && !panes.iter().any(|pane| pane.number == number)
-    {
-        return Err(format!(
-            "no pane {number} (this terminal has {} pane(s); call list_panes)",
-            panes.len()
-        ));
+    Ok(render_processes_answer(
+        &wire,
+        &here,
+        &session,
+        wanted.as_ref(),
+    ))
+}
+
+/// How a process row NAMES the pane it belongs to.
+///
+/// # The sentence this exists to stop saying
+///
+/// The reading is REGISTRY-WIDE and the numbering is one window's, so before R312 every row whose
+/// pane lived in another window was rendered *"pane ? (id 1, gone since the pane list was read)"* —
+/// **measured on a live two-window daemon, in the same line that went on to report that pane's tty
+/// and its child's pid.** The residual sentence was written for a real race (a pane that exits
+/// between the two reads) and had come to fire for the ordinary case instead, telling an agent that
+/// a running pane was gone.
+///
+/// So a row is named against BOTH listings, and the three answers are three different facts: this
+/// window numbers it, another window holds it, or nothing does — and only the last is the race.
+fn process_row_subject(id: u64, here: &[PaneInfo], session: &[(String, PaneInfo)]) -> String {
+    if let Some(index) = here.iter().position(|pane| pane.id == id) {
+        return format!("pane {} (id {id})", numbered(index));
     }
-    Ok(render_processes_answer(&wire, &panes, wanted))
+    match session
+        .iter()
+        .find(|(_, pane)| pane.id == id)
+        .map(|(window, _)| window)
+    {
+        Some(window) => format!("pane id {id} (window {window})"),
+        // The residual of the reads, said rather than smoothed over — and now it means what it
+        // says, because every window has been looked in.
+        None => format!("pane ? (id {id}, gone since the pane list was read)"),
+    }
 }
 
 /// The text [`tool_pane_processes`] returns, as a pure function of what was read — so every shape is
 /// testable without a live host, and the integration test can pin what an agent actually receives.
 ///
-/// `wanted` is the 1-based pane number the caller asked about, or `None` for all of them.
+/// `wanted` is the pane the caller asked about, or `None` for all of them. `here` numbers the
+/// caller's own window and `session` says which window holds every other row — see
+/// [`process_row_subject`] for why both are needed.
 fn render_processes_answer(
     wire: &PaneProcessesWire,
-    panes: &[PaneInfo],
-    wanted: Option<usize>,
+    here: &[PaneInfo],
+    session: &[(String, PaneInfo)],
+    wanted: Option<&PaneRef>,
 ) -> String {
-    let number_of = |id: u64| panes.iter().find(|p| p.id == id).map(|p| p.number);
     let rows: Vec<_> = wire
         .panes
         .iter()
-        .filter(|row| match wanted {
-            // A row whose pane the list no longer holds cannot match a NUMBER, so a narrowed answer
-            // simply does not include it; the unnarrowed answer says it is there and unnameable.
-            Some(number) => number_of(row.id) == Some(number),
-            None => true,
-        })
+        // Narrowed by the pane's ID, never by its number. An id is registry-unique and never
+        // reused, so the instant the caller's `pane` was resolved at and the instant this reading
+        // was taken at cannot disagree about which pane is meant — which is what lets the resolver
+        // make a read of its own without reintroducing a torn read.
+        .filter(|row| wanted.is_none_or(|pane| pane.id() == row.id))
         .collect();
     let mut out = format!(
         "What each pane is running, sampled {} ms ago:\n\n",
@@ -1458,11 +1511,7 @@ fn render_processes_answer(
         return out;
     }
     for row in rows {
-        let name = number_of(row.id).map_or_else(
-            // The residual of the two reads, said rather than smoothed over.
-            || format!("pane ? (id {}, gone since the pane list was read)", row.id),
-            |number| format!("pane {number} (id {})", row.id),
-        );
+        let name = process_row_subject(row.id, here, session);
         let device = row
             .tty
             .as_deref()
@@ -1515,9 +1564,19 @@ fn render_arrangement_answer(
     snapshot: &LayoutSnapshot,
     panes: &[PaneInfo],
     here: Option<u64>,
+    window: Option<&str>,
 ) -> String {
     let entry_of = |pane: PaneId| panes.iter().find(|p| p.id == pane.0);
-    let number_of = |pane: PaneId| entry_of(pane).map(|p| p.number);
+    // A NUMBER exists only for the caller's OWN window: it is `list_panes`'s row index, and
+    // `list_panes` answers about that window. Drawing another window's arrangement therefore names
+    // its panes by id and by name — the two handles that mean the same thing everywhere — rather
+    // than by positions that would be read straight back as `pane: N` and land somewhere else.
+    let number_of = |pane: PaneId| {
+        window
+            .is_none()
+            .then(|| panes.iter().position(|p| p.id == pane.0).map(numbered))
+            .flatten()
+    };
     // The DRAWING's naming. Both integers, always: the number is what this surface's tools take, and
     // the id is what the same arrangement is called by `sprag layout`, the daemon's logs and the
     // user's own CLI — so an agent reporting to a human, and a human checking the agent, are not
@@ -1542,13 +1601,26 @@ fn render_arrangement_answer(
             Some(name) => format!(" name={name:?}"),
             None => String::new(),
         };
-        format!("pane {} (id {pane}){named}{mine}", entry.number)
+        match number_of(pane) {
+            Some(number) => format!("pane {number} (id {pane}){named}{mine}"),
+            // No number, so the answer offers the handles that DO reach this window: the name if
+            // the pane has one, and the id otherwise. It says so rather than leaving a reader to
+            // wonder why the numbers stopped.
+            None => format!("pane id {pane}{named}{mine}"),
+        }
     };
 
-    let mut out = format!(
-        "How YOUR WINDOW's panes are arranged (revision {}):\n\n",
-        snapshot.revision
-    );
+    let mut out = match window {
+        Some(window) => format!(
+            "How WINDOW {window}'s panes are arranged (revision {}) — not your window, so its \
+             panes carry no numbers here; address them by NAME:\n\n",
+            snapshot.revision
+        ),
+        None => format!(
+            "How YOUR WINDOW's panes are arranged (revision {}):\n\n",
+            snapshot.revision
+        ),
+    };
     out.push_str(&arrangement::render(snapshot, &label));
 
     // Adjacency, from the arrangement just read — the SAME derivation `select-pane -L` moves by,
@@ -1623,6 +1695,19 @@ fn short_name(pane: PaneId, number_of: &impl Fn(PaneId) -> Option<usize>) -> Str
 /// `None` is a fine answer, and several ordinary situations produce it: an agent not inside a pane
 /// at all, and a process that has OUTLIVED its pane (its id names a pane the pool no longer holds,
 /// so the mark lands nowhere — see [`render_arrangement_answer`]).
+/// The pane this server runs in, RESOLVED — so an origin that means "here" is the same kind of
+/// thing as an origin the caller named, and the two arms of [`select_origin`] answer one type.
+fn own_pane_ref() -> Option<PaneRef> {
+    let id = own_pane()?;
+    let panes = query_panes().ok()?;
+    let index = panes.iter().position(|pane| pane.id == id)?;
+    Some(PaneRef {
+        number: Some(numbered(index)),
+        window: None,
+        info: panes[index].clone(),
+    })
+}
+
 fn own_pane() -> Option<u64> {
     let sock = host_sock()?;
     // The address half, compared as a PATH rather than as text, so the two spellings of one socket
@@ -1648,7 +1733,7 @@ fn tool_read_pane(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
     let value = host_call(
         "scene/query",
-        pane_params(&pane, pane_input_path(pane.id, FULL_TEXT_SLOT)),
+        pane_params(&pane, pane_input_path(pane.id(), FULL_TEXT_SLOT)),
     )?;
     let text = value
         .as_str()
@@ -1667,7 +1752,7 @@ fn tool_read_last_command(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
     let value = host_call(
         "scene/query",
-        pane_params(&pane, pane_input_path(pane.id, LAST_COMMAND_SLOT)),
+        pane_params(&pane, pane_input_path(pane.id(), LAST_COMMAND_SLOT)),
     )?;
     if value.is_null() {
         return Ok(
@@ -1696,7 +1781,7 @@ fn tool_read_pane_links(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
     let value = host_call(
         "scene/query",
-        pane_params(&pane, pane_input_path(pane.id, LINKS_SLOT)),
+        pane_params(&pane, pane_input_path(pane.id(), LINKS_SLOT)),
     )?;
     let runs = value
         .as_array()
@@ -1723,15 +1808,19 @@ fn tool_read_pane_images(args: &Value) -> Result<String, String> {
     // The target is parsed, then resolved against the listing THIS call reads — never through a
     // helper that queries on its own. Two queries here would resolve the caller's `pane` against
     // one instant and read the pane at another, which is the torn read a NAME exists to prevent.
-    let target = pane_target(args)?;
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &target)?;
-    let number = pane.number;
-    if pane.images.is_empty() {
-        return Ok("This pane shows no inline images.".to_owned());
+    let pane = resolve_pane_ref(args)?;
+    // The images ride on the resolved pane, from the reading that resolved it. Reading the listing
+    // a second time here is what made this tool window-local: it queried the CALLER's window and
+    // asked it about a pane one window over.
+    if pane.info.images.is_empty() {
+        return Ok(format!("{} shows no inline images.", pane.subject()));
     }
-    let mut out = format!("{} image(s) in pane {number}:\n", pane.images.len());
-    for img in &pane.images {
+    let mut out = format!(
+        "{} image(s) in {}:\n",
+        pane.info.images.len(),
+        pane.subject()
+    );
+    for img in &pane.info.images {
         out.push_str(&format!(
             "  image #{}: {}x{} px at cell ({}, {})\n",
             img.id, img.width, img.height, img.col, img.row
@@ -1782,7 +1871,7 @@ fn tool_regex_in_pane(args: &Value) -> Result<String, String> {
 fn search_pane(pane: &PaneRef, slot: &str, wanted: &str) -> Result<String, String> {
     let value = host_call(
         "scene/query",
-        pane_params(pane, pane_input_path(pane.id, slot)),
+        pane_params(pane, pane_input_path(pane.id(), slot)),
     )?;
     let found: PaneFind =
         serde_json::from_value(value).map_err(|error| format!("malformed find answer: {error}"))?;
@@ -1797,9 +1886,9 @@ fn search_pane(pane: &PaneRef, slot: &str, wanted: &str) -> Result<String, Strin
             // searched a sibling window and found nothing is owed which screen was searched.
             Some(window) => format!(
                 "no matches for {wanted:?} in pane {} (window {window})",
-                pane.id
+                pane.id()
             ),
-            None => format!("no matches for {wanted:?} in pane {}", pane.id),
+            None => format!("no matches for {wanted:?} in pane {}", pane.id()),
         });
     }
     let mut out = String::new();
@@ -1836,10 +1925,10 @@ fn search_pane(pane: &PaneRef, slot: &str, wanted: &str) -> Result<String, Strin
 ///
 /// ## One reading of the listing, and one search language per call
 ///
-/// The pane is parsed with [`pane_target`] and resolved with [`resolve_in`] against the ONE listing
-/// this call reads — never through a resolver with a query of its own, which is the torn read R295
-/// paid for. `needle` and `pattern` are separate arguments because they are separate languages,
-/// exactly as `find_in_pane` and `regex_in_pane` are separate tools.
+/// The pane comes from [`resolve_pane_ref`], the one resolver — so what crosses from the resolving
+/// read to the wait is an ID, which never moves. `needle` and `pattern` are separate arguments
+/// because they are separate languages, exactly as `find_in_pane` and `regex_in_pane` are separate
+/// tools.
 fn tool_wait_for_output(args: &Value) -> Result<String, String> {
     let timeout = match args.get("timeout_seconds") {
         None => Duration::from_secs(60),
@@ -1873,11 +1962,11 @@ fn tool_wait_for_output(args: &Value) -> Result<String, String> {
             );
         }
     };
-    // Parsed first, resolved against the one listing below — the R295 rule.
-    let target = pane_target(args)?;
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &target)?;
-    let (number, id) = (pane.number, pane.id);
+    // Through the one resolver, so this wait reaches as far as the daemon's does. Measured:
+    // `handle_output_wait` checks the pane against `scope.session()`, not against a window, so the
+    // park was ALWAYS session-wide and only the client's name lookup was narrow.
+    let pane = resolve_pane_ref(args)?;
+    let (subject, id) = (pane.subject(), pane.id());
 
     let sock = host_sock().ok_or_else(|| {
         "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
@@ -1927,14 +2016,14 @@ fn tool_wait_for_output(args: &Value) -> Result<String, String> {
             ) =>
         {
             return Ok(format!(
-                "pane {number} has not printed {wanted:?} yet (waited {}s; nothing failed). Call \
+                "{subject} has not printed {wanted:?} yet (waited {}s; nothing failed). Call \
                  again to keep waiting, or read the pane to see what it IS doing.",
                 timeout.as_secs()
             ));
         }
         Err(CallError::Transport(error)) => {
             return Err(format!(
-                "the wait on pane {number} did not complete: {error}. This is NOT 'it has not \
+                "the wait on {subject} did not complete: {error}. This is NOT 'it has not \
                  happened yet' — the terminal could not be reached."
             ));
         }
@@ -1947,7 +2036,7 @@ fn tool_wait_for_output(args: &Value) -> Result<String, String> {
     if let Some(error) = found.error {
         return Err(format!("invalid pattern {wanted:?}: {error}"));
     }
-    let mut out = format!("pane {number} printed {wanted:?}:\n");
+    let mut out = format!("{subject} printed {wanted:?}:\n");
     for line in &found.lines {
         out.push_str(&format!("{}: {}\n", line.line, line.text));
     }
@@ -1959,7 +2048,7 @@ fn tool_wait_for_output(args: &Value) -> Result<String, String> {
 
 fn tool_write_pane(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
-    let id = pane.id;
+    let id = pane.id();
     let text = args
         .get("text")
         .and_then(Value::as_str)
@@ -2086,9 +2175,10 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     // still tell the caller that — a call that answered "error" would leave a pane running that its
     // opener does not know it has, which is the litter this whole design exists to prevent.
     let panes = query_panes().unwrap_or_default();
-    let born = panes.iter().find(|p| p.id == id);
+    let born = panes.iter().position(|p| p.id == id);
+    let row = born.map(|index| &panes[index]);
     let number = born
-        .map(|p| p.number.to_string())
+        .map(|index| numbered(index).to_string())
         // The pane was born — the host answered with its id — so a listing that no longer holds it
         // means it has ALREADY gone (a shell that exec'd and exited), or could not be re-read.
         // Reported with the id that always addresses it, never guessed at.
@@ -2100,14 +2190,14 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
     // the argument and records nothing, so it neither refuses the client nor honours it. Saying
     // "close_pane will let you close it" from the request alone would be a promise this tool would
     // then break, and the caller would find out only when its cleanup was refused.
-    let ours = born.is_some_and(|p| p.opened_by == Some(opener));
+    let ours = row.is_some_and(|p| p.opened_by == Some(opener));
     // And whether the NAME landed, read back off the pane for the same reason and with the same
     // hazard: an additive ARGUMENT an old daemon drops is a silent no-op, where an additive FIELD an
     // old client ignores is harmless. The two are not symmetric, which is the general shape R294's
     // skew run produced — so every argument this tool sends is checked in the answer, not assumed.
     // Compared against the TRIMMED name the daemon would have stored, since that is what it records.
     let named = name.as_ref().map(|asked| {
-        let landed = born.and_then(|p| p.name.as_deref()) == Some(asked.trim());
+        let landed = row.and_then(|p| p.name.as_deref()) == Some(asked.trim());
         (asked.trim().to_owned(), landed)
     });
     Ok(opened_answer(
@@ -2182,44 +2272,75 @@ fn opened_answer(
 /// gate answered about another at the second — the torn read this surface's other joins are
 /// written to avoid. What can still change afterwards is whether the pane is there at all, and the
 /// daemon answers that.
-fn tool_close_pane(args: &Value) -> Result<String, String> {
-    // The TARGET is parsed before the listing and resolved against it, rather than resolved by a
-    // helper that would read its own: a `pane` given as a NAME has to be looked up, and looking it
-    // up separately would make the gate below answer about the listing's second reading while the
-    // caller named the pane in its first. `resolve_in` is that lookup with no read of its own.
-    let target = pane_target(args)?;
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &target)?;
-    let number = pane.number;
+/// Refuse a pane this agent did not open — R294's authorship gate, in the ONE place that applies it.
+///
+/// # Why it is a function and not four copies
+///
+/// `close_pane`, `rename_pane`, `swap_pane` and `resize_pane` all ask the same question of the same
+/// argument, and before R312 each asked it against a listing IT had read: the gate could only see
+/// the caller's own window, so the four verbs refused a far pane with a sentence about names rather
+/// than about ownership. The provenance now travels on the resolved pane
+/// ([`PaneRef::info`]) from the reading that resolved it, so the gate is one rule with four callers
+/// and it reaches exactly as far as the resolver does.
+///
+/// `verb` is the tool's own name and `consequence` the clause that says why the pane is not the
+/// agent's to touch — the two halves that differ between the four, so nothing else can.
+fn require_own_pane(pane: &PaneRef, verb: &str, consequence: &str) -> Result<(), String> {
     let mine = own_pane();
-    match pane.opened_by {
-        Some(opener) if Some(opener) == mine => {}
-        Some(opener) => {
-            return Err(format!(
-                "pane {number} was opened by {}, not by you, so close_pane will not close it. \
-                 Only a pane you opened yourself is yours to close.",
-                short_name(PaneId(opener), &|id| panes
-                    .iter()
-                    .find(|p| p.id == id.0)
-                    .map(|p| p.number)),
-            ));
-        }
-        None => {
-            return Err(format!(
-                "pane {number} was opened by a person, not by you, so close_pane will not close \
-                 it — it may hold work nobody else can get back. Only a pane you opened yourself \
-                 with open_pane is yours to close.",
-            ));
-        }
+    match pane.info.opened_by {
+        Some(opener) if Some(opener) == mine => Ok(()),
+        Some(opener) => Err(format!(
+            "{} was opened by {}, not by you, so {verb} will not touch it. {consequence}",
+            pane.subject(),
+            opener_subject(opener),
+        )),
+        None => Err(format!(
+            "{} was opened by a person, not by you, so {verb} will not touch it. {consequence} \
+             Only a pane you opened yourself with open_pane is yours.",
+            pane.subject(),
+        )),
     }
-    // Whether anything was NUMBERED AFTER the pane being closed, read from the listing the gate
-    // just used. The renumbering sentence below is a claim about this run, so it is decided by what
-    // this run actually held: closing the last pane moves nothing, and telling a caller its map has
-    // shifted when it has not is the same defect as staying silent when it has.
-    let renumbered = pane.number < panes.len();
+}
+
+/// How a refusal names the pane that DID open the subject — by number when the caller's own window
+/// holds the opener, else by id, because a number means nothing outside the listing it indexes.
+///
+/// It reads the listing itself, and that is safe here for the reason the whole surface now rests
+/// on: what crosses between the two instants is an ID, which never moves. The number it prints is
+/// the CURRENT one, which is the one the caller would type next.
+fn opener_subject(opener: u64) -> String {
+    let panes = query_panes().unwrap_or_default();
+    short_name(PaneId(opener), &|id| {
+        panes.iter().position(|p| p.id == id.0).map(numbered)
+    })
+}
+
+fn tool_close_pane(args: &Value) -> Result<String, String> {
+    // Through the ONE resolver, so a pane this agent opened in another window is closable by the
+    // name it was opened with — and so the gate below reads the provenance of the pane the caller
+    // actually named, from the reading that resolved it.
+    let pane = resolve_pane_ref(args)?;
+    let mine = own_pane();
+    require_own_pane(
+        &pane,
+        "close_pane",
+        "It may hold work nobody else can get back.",
+    )?;
+    // Whether anything is NUMBERED AFTER the pane being closed. The renumbering sentence below is a
+    // claim about this run, so it is decided by what this run actually holds: closing the last pane
+    // moves nothing, and telling a caller its map has shifted when it has not is the same defect as
+    // staying silent when it has. A pane in ANOTHER window renumbers nothing here at all, which is
+    // the third answer the sentence now has to give.
+    let renumbered = match pane.number {
+        Some(number) => Some(number < query_panes()?.len()),
+        None => None,
+    };
     let answer = host_call(
         "scene/invoke",
-        json!({ "path": mux_action_path(CLOSE_ACTION), "args": { "id": pane.id } }),
+        with_args(
+            pane_params(&pane, mux_action_path(CLOSE_ACTION)),
+            json!({ "id": pane.id() }),
+        ),
     )?;
     // How far the close CASCADED (R309). An agent has to be told this without being asked, because
     // it is the one outcome of this tool that changes what its OTHER tools can still reach: a
@@ -2240,13 +2361,15 @@ fn tool_close_pane(args: &Value) -> Result<String, String> {
         // last by NUMBER: these are two different facts and a reader must not have to guess which.
         .map(|clause| format!("Its window held no other pane, so {clause}. "));
     Ok(format!(
-        "Closed pane {number} (id {}), which you had opened. {}{}\n\n{}",
-        pane.id,
+        "Closed {} (id {}), which you had opened. {}{}\n\n{}",
+        pane.subject(),
+        pane.id(),
         beyond.unwrap_or_default(),
-        if renumbered {
-            "The panes after it have MOVED UP a number:"
-        } else {
-            "It was the last pane, so the others keep their numbers:"
+        match renumbered {
+            Some(true) => "The panes after it have MOVED UP a number:",
+            Some(false) => "It was the last pane, so the others keep their numbers:",
+            // It was not in your window, so your numbering never held it.
+            None => "It was in another window, so YOUR numbering is unchanged:",
         },
         // NOT `?`: the destructive part already happened. A re-read that fails here is a broken
         // connection, not a failed close, and returning an error for it would tell the caller its
@@ -2276,37 +2399,19 @@ fn tool_close_pane(args: &Value) -> Result<String, String> {
 /// ONE listing, so the pane the caller named and the pane the gate answered about are the same pane
 /// at the same instant.
 fn tool_rename_pane(args: &Value) -> Result<String, String> {
-    let target = pane_target(args)?;
     let new = match args.get("name") {
         Some(Value::String(name)) => Some(name.clone()),
         Some(Value::Null) | None => None,
         Some(other) => return Err(format!("'name' must be a string, not {other}")),
     };
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &target)?;
-    let number = pane.number;
-    let mine = own_pane();
-    match pane.opened_by {
-        Some(opener) if Some(opener) == mine => {}
-        Some(opener) => {
-            return Err(format!(
-                "pane {number} was opened by {}, not by you, so rename_pane will not rename it. \
-                 Its name is what a person reads on that pane.",
-                short_name(PaneId(opener), &|id| panes
-                    .iter()
-                    .find(|p| p.id == id.0)
-                    .map(|p| p.number)),
-            ));
-        }
-        None => {
-            return Err(format!(
-                "pane {number} was opened by a person, not by you, so rename_pane will not \
-                 rename it — its name is what THEY read on it. Only a pane you opened yourself \
-                 with open_pane is yours to name.",
-            ));
-        }
-    }
-    let mut action_args = json!({ "pane": pane.id });
+    let pane = resolve_pane_ref(args)?;
+    let subject = pane.subject();
+    require_own_pane(
+        &pane,
+        "rename_pane",
+        "Its name is what a person reads on that pane.",
+    )?;
+    let mut action_args = json!({ "pane": pane.id() });
     if let Some(new) = &new {
         action_args["name"] = json!(new);
     }
@@ -2315,30 +2420,42 @@ fn tool_rename_pane(args: &Value) -> Result<String, String> {
     // caller to address the pane by a string that does not resolve.
     let answer = host_call_kinded(
         "scene/invoke",
-        json!({ "path": mux_action_path(RENAME_PANE_ACTION), "args": action_args }),
+        with_args(
+            pane_params(&pane, mux_action_path(RENAME_PANE_ACTION)),
+            action_args,
+        ),
     )
     .map_err(|why| match &new {
         Some(new) => refusal_sentence(
             &why,
             &format!(
-                "could not name pane {number} {new:?}: the name may already be taken by another \
+                "could not name {subject} {new:?}: the name may already be taken by another \
                  pane, or be blank, over 80 bytes, all digits, or contain a control character. \
-                 Call list_panes to see which names are in use."
+                 Call list_windows to see which names are in use across the session."
             ),
         ),
         None => why.0,
     })?;
     match answer.get("name").and_then(Value::as_str) {
         Some(recorded) => Ok(format!(
-            "Pane {number} is now called {recorded:?}. Pass that as `pane` instead of the number, \
-             which will shift if an earlier pane closes."
+            "{subject} is now called {recorded:?}. Pass that as `pane` instead of a number — a \
+             name reaches any window of this session and a number never leaves yours."
         )),
         // Total over the clear AND over a daemon older than the recorded-name answer: either way
         // the pane has no name this tool can promise, which is the honest thing to say.
-        None => Ok(format!(
-            "Pane {number} has no name now; address it by its number ({number}), which will shift \
-             if an earlier pane closes."
-        )),
+        None => match pane.number {
+            Some(number) => Ok(format!(
+                "{subject} has no name now; address it by its number ({number}), which will shift \
+                 if an earlier pane closes."
+            )),
+            // A pane one window over has no number on this surface, so taking its name away leaves
+            // NOTHING this surface can address it with. That is said, because the caller's next
+            // call would otherwise fail for a reason it could not see.
+            None => Ok(format!(
+                "{subject} has no name now. It is in another window, so it has no number here \
+                 either — nothing on this surface can address it until it is named again."
+            )),
+        },
     }
 }
 
@@ -2424,30 +2541,37 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
         forbid_origin(args)?;
         None
     };
-    let (action_args, asked, subject) = match (named, toward) {
+    // The fourth member is the WINDOW the request must be narrowed to. Measured at `e7be5eb`:
+    // `select_pane` resolves against the SCOPE's window, so a bare request naming a pane one window
+    // over is `Rejected` — and the same request with `window=` answers `already_active`. It sets
+    // THAT window's active pane and leaves the user's current window alone, which is the honest
+    // meaning of selecting a pane you are not looking at.
+    let (action_args, asked, subject, window) = match (named, toward) {
         (true, None) => {
             // ONE listing, and it serves both halves: it resolves the caller's number-or-name AND
             // names the pane the answer will be about. A `pane` request can only land on the pane it
             // named or be refused, so there is nothing to re-read — reading again would name the
             // subject at a second instant for no fact gained (the discipline [`resolve_pane`]
             // documents, which this function cannot use because it needs the pane's NAME too).
-            let target = pane_target(args)?;
-            let panes = query_panes()?;
-            let pane = resolve_in(&panes, &target)?;
+            let pane = resolve_pane_ref(args)?;
             (
-                json!({ "pane": pane.id }),
+                json!({ "pane": pane.id() }),
                 None,
-                Some(render_pane_handle(pane)),
+                Some(render_pane_handle(&pane)),
+                pane.window.clone(),
             )
         }
         (false, Some(dir)) => (
             SelectAsk::Toward {
                 dir,
-                from: origin.as_ref().map(|(id, _)| PaneId(*id)),
+                from: origin.as_ref().map(|(pane, _)| PaneId(pane.id())),
             }
             .to_args(),
             Some(dir),
             None,
+            // A direction is walked WITHIN a window, so the origin is what says which one — and
+            // with no origin it is the caller's own, exactly as before.
+            origin.as_ref().and_then(|(pane, _)| pane.window.clone()),
         ),
         (false, None) => {
             return Err(
@@ -2468,7 +2592,10 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
     };
     let answer = host_call(
         "scene/invoke",
-        json!({ "path": mux_action_path(SELECT_PANE_ACTION), "args": action_args }),
+        with_args(
+            windowed_params(mux_action_path(SELECT_PANE_ACTION), window.as_deref()),
+            action_args,
+        ),
     )?;
     let how = SelectHow::read(&answer, asked);
     // The daemon answers with an ID; this surface speaks NUMBERS and names. A DIRECTION is the one
@@ -2478,16 +2605,25 @@ fn tool_select_pane(args: &Value) -> Result<String, String> {
     // send the caller to move it again.
     let landed = answer["pane"].as_u64();
     let here = subject.or_else(|| {
-        landed
-            .and_then(|id| query_panes().ok()?.into_iter().find(|pane| pane.id == id))
-            .map(|pane| render_pane_handle(&pane))
+        let panes = query_panes().ok()?;
+        let index = panes.iter().position(|pane| Some(pane.id) == landed)?;
+        Some(render_pane_handle(&PaneRef {
+            number: Some(numbered(index)),
+            window: None,
+            info: panes[index].clone(),
+        }))
     });
+    let current = current_window_name();
     Ok(render_selection(
         how,
         asked,
         origin.as_ref().map(|(_, label)| label.as_str()),
         here.as_deref(),
         landed.unwrap_or_default(),
+        window
+            .as_deref()
+            .zip(current.as_deref())
+            .filter(|(window, current)| window != current),
     ))
 }
 
@@ -2543,49 +2679,31 @@ fn tool_swap_pane(args: &Value) -> Result<String, String> {
     let named = args
         .get(SwapAsk::WITH_KEY)
         .is_some_and(|with| !with.is_null());
-    let target = pane_target(args)?;
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &target)?;
-    let subject = render_pane_handle(pane);
-    let mine = own_pane();
-    match pane.opened_by {
-        Some(opener) if Some(opener) == mine => {}
-        Some(opener) => {
-            return Err(format!(
-                "{subject} was opened by {}, not by you, so swap_pane will not move it. Only a \
-                 pane you opened yourself is yours to place.",
-                short_name(PaneId(opener), &|id| panes
-                    .iter()
-                    .find(|p| p.id == id.0)
-                    .map(|p| p.number)),
-            ));
-        }
-        None => {
-            return Err(format!(
-                "{subject} was opened by a person, not by you, so swap_pane will not move it — \
-                 where their panes sit is their arrangement. Only a pane you opened yourself with \
-                 open_pane is yours to place. (To put the user ON a pane instead of moving one, \
-                 use select_pane.)"
-            ));
-        }
-    }
+    let pane = resolve_pane_ref(args)?;
+    let subject = render_pane_handle(&pane);
+    require_own_pane(
+        &pane,
+        "swap_pane",
+        "Where their panes sit is their arrangement. (To put the user ON a pane instead of moving \
+         one, use select_pane.)",
+    )?;
     // Exactly one partner, the wire action's own rule — restated here because the daemon can only
     // answer `Rejected` for a malformed request (`InvokeError::Rejected` carries no payload,
     // upstream PINION-PR82), and neither mistake has a reading worth guessing.
     let (ask, partner) = match (named, toward) {
         (true, None) => {
-            let with = resolve_in(&panes, &pane_target_at(args, SwapAsk::WITH_KEY)?)?;
+            let with = resolve_pane_ref_at(args, SwapAsk::WITH_KEY)?;
             (
                 SwapAsk::With {
-                    pane: Some(PaneId(pane.id)),
-                    with: PaneId(with.id),
+                    pane: Some(PaneId(pane.id())),
+                    with: PaneId(with.id()),
                 },
-                Some(render_pane_handle(with)),
+                Some(render_pane_handle(&with)),
             )
         }
         (false, Some(dir)) => (
             SwapAsk::Toward {
-                pane: Some(PaneId(pane.id)),
+                pane: Some(PaneId(pane.id())),
                 dir,
             },
             None,
@@ -2612,7 +2730,13 @@ fn tool_swap_pane(args: &Value) -> Result<String, String> {
     };
     let answer = host_call(
         "scene/invoke",
-        json!({ "path": mux_action_path(SWAP_PANE_ACTION), "args": ask.to_args() }),
+        // No window narrowing, and that is measured rather than assumed: `swap_pane` resolves
+        // REGISTRY-wide at the daemon, so it swaps a pane one window over with no scope help. The
+        // directional arm walks the SUBJECT's own window, which is where the subject is.
+        with_args(
+            pane_params(&pane, mux_action_path(SWAP_PANE_ACTION)),
+            ask.to_args(),
+        ),
     )?;
     let how = SwapHow::read(&answer, toward);
     // The daemon answers with IDS; this surface speaks numbers and names. A DIRECTION is the arm
@@ -2628,10 +2752,19 @@ fn tool_swap_pane(args: &Value) -> Result<String, String> {
     // re-read, because a close is the one verb that renumbers.)
     let partner = partner.or_else(|| {
         let with = answer["b"].as_u64()?;
-        panes
-            .iter()
-            .find(|pane| pane.id == with)
-            .map(render_pane_handle)
+        // The subject's OWN window is the one a direction walks, so that is the listing the
+        // partner is named from — and a partner of a far pane gets the same handle its subject
+        // did, an id and a name, because neither has a number on this surface.
+        let sibling = match &pane.window {
+            Some(window) => query_window_panes(window).ok()?,
+            None => query_panes().ok()?,
+        };
+        let index = sibling.iter().position(|row| row.id == with)?;
+        Some(render_pane_handle(&PaneRef {
+            number: pane.window.is_none().then(|| numbered(index)),
+            window: pane.window.clone(),
+            info: sibling[index].clone(),
+        }))
     });
     Ok(render_swap(how, toward, &subject, partner.as_deref()))
 }
@@ -2692,38 +2825,24 @@ fn tool_resize_pane(args: &Value) -> Result<String, String> {
                 )
             })?,
     };
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &pane_target(args)?)?;
-    let subject = render_pane_handle(pane);
-    let mine = own_pane();
-    match pane.opened_by {
-        Some(opener) if Some(opener) == mine => {}
-        Some(opener) => {
-            return Err(format!(
-                "{subject} was opened by {}, not by you, so resize_pane will not move its \
-                 boundary. Only a pane you opened yourself is yours to size.",
-                short_name(PaneId(opener), &|id| panes
-                    .iter()
-                    .find(|p| p.id == id.0)
-                    .map(|p| p.number)),
-            ));
-        }
-        None => {
-            return Err(format!(
-                "{subject} was opened by a person, not by you, so resize_pane will not move its \
-                 boundary — how big their panes are is their arrangement. Only a pane you opened \
-                 yourself with open_pane is yours to size."
-            ));
-        }
-    }
+    let pane = resolve_pane_ref(args)?;
+    let subject = render_pane_handle(&pane);
+    require_own_pane(
+        &pane,
+        "resize_pane",
+        "How big their panes are is their arrangement.",
+    )?;
     let ask = ResizeAsk {
-        pane: Some(PaneId(pane.id)),
+        pane: Some(PaneId(pane.id())),
         dir,
         cells,
     };
     let answer = host_call(
         "scene/invoke",
-        json!({ "path": mux_action_path(RESIZE_PANE_ACTION), "args": ask.to_args() }),
+        with_args(
+            pane_params(&pane, mux_action_path(RESIZE_PANE_ACTION)),
+            ask.to_args(),
+        ),
     )?;
     let how = ResizeHow::from_wire(answer[OUTCOME_KEY].as_str().unwrap_or_default())
         .unwrap_or(ResizeHow::Resized);
@@ -2800,7 +2919,7 @@ fn render_swap(
 /// in. Only the first needs a listing; the second is our own identity ([`own_pane`]), which is why
 /// it is exact — a number looked up in one call can name a different pane by the next one, and this
 /// tool MOVES A PERSON'S CURSOR on the strength of it.
-fn select_origin(args: &Value) -> Result<Option<(u64, String)>, String> {
+fn select_origin(args: &Value) -> Result<Option<(PaneRef, String)>, String> {
     let named = args
         .get(SelectAsk::FROM_KEY)
         .filter(|value| !value.is_null());
@@ -2813,13 +2932,12 @@ fn select_origin(args: &Value) -> Result<Option<(u64, String)>, String> {
             SelectAsk::FROM_KEY,
         )),
         (Some(_), false) => {
-            let target = pane_target_at(args, SelectAsk::FROM_KEY)?;
-            let panes = query_panes()?;
-            let pane = resolve_in(&panes, &target)?;
-            Ok(Some((pane.id, render_pane_handle(pane))))
+            let pane = resolve_pane_ref_at(args, SelectAsk::FROM_KEY)?;
+            let label = render_pane_handle(&pane);
+            Ok(Some((pane, label)))
         }
-        (None, true) => own_pane()
-            .map(|id| Some((id, "the pane you are running in".to_owned())))
+        (None, true) => own_pane_ref()
+            .map(|pane| Some((pane, "the pane you are running in".to_owned())))
             .ok_or_else(|| {
                 format!(
                     "'{FROM_HERE_ARG}' means the pane THIS server runs in, and it is not running \
@@ -2887,10 +3005,10 @@ fn forbid_origin(args: &Value) -> Result<(), String> {
 
 /// How an answer NAMES the pane it is about on this surface: the number, plus the name if the pane
 /// has one — the two handles a caller can pass back.
-fn render_pane_handle(pane: &PaneInfo) -> String {
-    match &pane.name {
-        Some(name) => format!("pane {} ({name:?})", pane.number),
-        None => format!("pane {}", pane.number),
+fn render_pane_handle(pane: &PaneRef) -> String {
+    match &pane.info.name {
+        Some(name) => format!("{} ({name:?})", pane.subject()),
+        None => pane.subject(),
     }
 }
 
@@ -2921,11 +3039,37 @@ fn render_selection(
     origin: Option<&str>,
     here: Option<&str>,
     id: u64,
+    elsewhere: Option<(&str, &str)>,
 ) -> String {
     let subject = here.map_or_else(
         || format!("the pane with id {id} (it is no longer in the pane listing — call list_panes)"),
         str::to_owned,
     );
+    // ANOTHER WINDOW's select is a different sentence, and getting this wrong would have been the
+    // round's own false claim. Every wording below says where the USER is, because that is what
+    // this tool changes in the ordinary case — but a window has its OWN active pane, and setting
+    // one the user is not looking at moves nobody. Measured: the daemon answers the far select
+    // happily with `window=`, and the user's current window does not change.
+    if let Some((window, current)) = elsewhere {
+        let moved = match how {
+            SelectHow::Moved => format!("Window {window}'s active pane is now {subject}."),
+            SelectHow::AlreadyActive => {
+                format!("Window {window}'s active pane was already {subject}; nothing moved.")
+            }
+            SelectHow::AtEdge => format!(
+                "Nothing lies that way in window {window}, so its active pane is still {subject}."
+            ),
+            SelectHow::Untiled => format!(
+                "{subject} is FLOATING, so it is in no arrangement and has no neighbour in any \
+                 direction; window {window}'s active pane is unchanged."
+            ),
+        };
+        return format!(
+            "{moved} The USER is in window {current} and did not move — this surface has no verb \
+             that changes which window a person is looking at, so they will land on that pane the \
+             next time they switch to window {window} themselves."
+        );
+    }
     match (how, asked, origin) {
         (SelectHow::Moved, Some(dir), None) => format!(
             "Moved the user one pane {}: they are now on {subject}.",
@@ -2973,7 +3117,7 @@ fn render_selection(
 
 fn tool_send_keys(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
-    let id = pane.id;
+    let id = pane.id();
     let keys: Vec<String> = match args.get("keys") {
         Some(Value::Array(items)) => items
             .iter()
@@ -3009,31 +3153,40 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
 /// is not an agent" and "this agent is waiting" are opposite instructions — and an omission would
 /// leave a reader to infer which by counting lines.
 fn tool_agent_state(args: &Value) -> Result<String, String> {
-    let panes = query_panes()?;
-    if panes.is_empty() {
-        return Ok("This sprag terminal has no panes.".to_owned());
-    }
-    let selected: Vec<&PaneInfo> = match args.get("pane") {
-        Some(_) => {
-            // Resolved against the listing ALREADY READ above, for [`tool_read_pane_images`]'
-            // reason — a resolver with a query of its own would name one instant's pane and answer
-            // about another's.
-            vec![resolve_in(&panes, &pane_target(args)?)?]
+    // Through the ONE resolver, so "is the agent in `buildout` done?" is answerable about a pane
+    // one window over — which is where a sibling agent most often is, since an agent's work pane
+    // and a person's reading pane are the reason a session has more than one window at all.
+    let selected: Vec<PaneRef> = match resolve_optional_pane_ref(args)? {
+        Some(pane) => vec![pane],
+        None => {
+            let panes = query_panes()?;
+            if panes.is_empty() {
+                return Ok("This sprag terminal has no panes.".to_owned());
+            }
+            panes
+                .into_iter()
+                .enumerate()
+                .map(|(index, info)| PaneRef {
+                    number: Some(numbered(index)),
+                    window: None,
+                    info,
+                })
+                .collect()
         }
-        None => panes.iter().collect(),
     };
     let mut out = String::new();
     for pane in selected {
-        match &pane.agent {
+        match &pane.info.agent {
             Some(agent) => out.push_str(&format!(
-                "  pane {}: id={} {}\n",
-                pane.number,
-                pane.id,
+                "  {}: id={} {}\n",
+                pane.subject(),
+                pane.id(),
                 agent_line(agent)
             )),
             None => out.push_str(&format!(
-                "  pane {}: id={} no agent (no manifest claims this pane — not the same as idle)\n",
-                pane.number, pane.id
+                "  {}: id={} no agent (no manifest claims this pane — not the same as idle)\n",
+                pane.subject(),
+                pane.id()
             )),
         }
     }
@@ -3221,23 +3374,17 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
     // actually printed.
     //
     // Read only when a pane subject is present: a window or session change pays nothing for it.
-    let panes: Vec<PaneInfo> = if events.iter().any(|event| event["pane"].is_u64()) {
-        conn.call(
-            "scene/query",
-            json!({ "path": mux_action_path(PANES_SLOT) }),
-        )
-        .map_err(|e| e.to_string())?
-        .as_array()
-        .ok_or("the host pane list was not an array")?
-        .iter()
-        .enumerate()
-        .map(|(index, pane)| parse_pane_info(index, pane))
-        .collect()
+    //
+    // BOTH listings, for [`process_row_subject`]'s reason: the journal is the SESSION's, so an
+    // event about a pane in another window would otherwise be reported as gone when it is simply
+    // elsewhere — the same false sentence, in the tool an agent reads to find out what changed.
+    let (here, session) = if events.iter().any(|event| event["pane"].is_u64()) {
+        (query_panes()?, query_session_panes()?)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
-    out.push_str(&render_events(events, &panes));
+    out.push_str(&render_events(events, &here, &session));
     Ok(out)
 }
 
@@ -3279,7 +3426,7 @@ fn wait_filter(args: &Value) -> Result<Option<Value>, String> {
     // refused in the one sentence this surface already says for it.
     let pane = match args.get("pane") {
         None | Some(Value::Null) => None,
-        Some(_) => Some(resolve_pane_id(args)?),
+        Some(_) => Some(resolve_pane_ref(args)?.id()),
     };
     Ok(EventFilter::narrowing_wire(pane, &kinds))
 }
@@ -3291,7 +3438,7 @@ fn wait_filter(args: &Value) -> Result<Option<Value>, String> {
 /// interesting case is the RESIDUAL between them — a pane in the batch that is no longer in the
 /// list — and that is not reachable through a live daemon on demand. Inline in the caller it was
 /// testable by nothing at all.
-fn render_events(events: &[Value], panes: &[PaneInfo]) -> String {
+fn render_events(events: &[Value], here: &[PaneInfo], session: &[(String, PaneInfo)]) -> String {
     let mut out = String::new();
     for event in events {
         let kind = event["type"].as_str().unwrap_or("?");
@@ -3304,20 +3451,10 @@ fn render_events(events: &[Value], panes: &[PaneInfo]) -> String {
                 // Both integers travel: the number is what this surface's tools take, and the id is
                 // what `sprag panes`, the daemon's logs and the user's own CLI call the same pane,
                 // so an agent reporting to a human and a human checking the agent hold one picture.
-                match panes
-                    .iter()
-                    .find(|pane| pane.id == id)
-                    .map(|pane| pane.number)
-                {
-                    Some(number) => out.push_str(&format!("  {kind}: pane {number} (id {id})\n")),
-                    // The residual of the two reads, said rather than smoothed over — and
-                    // `pane_closed` is the one event that reaches it every time, correctly:
-                    // numbering a pane that is gone would hand the caller a number that now belongs
-                    // to a DIFFERENT pane.
-                    None => out.push_str(&format!(
-                        "  {kind}: pane ? (id {id}, gone since the pane list was read)\n"
-                    )),
-                }
+                out.push_str(&format!(
+                    "  {kind}: {}\n",
+                    process_row_subject(id, here, session)
+                ));
             }
             (_, Some(name), _) => out.push_str(&format!("  {kind}: window {name}\n")),
             (_, _, Some(name)) => out.push_str(&format!("  {kind}: session {name}\n")),
@@ -3342,29 +3479,26 @@ fn render_events(events: &[Value], panes: &[PaneInfo]) -> String {
 /// every answer here is prefixed by [`manifest_caveat`] when there is one. The `sprag agent` verb
 /// does the same thing for a person; this is the same fact reaching the reader that acts on it.
 fn tool_agent_explain(args: &Value) -> Result<String, String> {
-    // ONE reading of the listing, for [`tool_read_pane_images`]' reason.
-    let target = pane_target(args)?;
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &target)?;
-    let number = pane.number;
+    // Through the ONE resolver, and the agent's verdict rides on the pane it resolved — so this
+    // answers about a sibling agent wherever it is working, which is the question the tool exists
+    // for. Its twin `agent_state` reaches the same way and for the same reason.
+    let pane = resolve_pane_ref(args)?;
+    let subject = pane.subject();
     // In front of EVERY branch below, and most of all the one that says no manifest claims this
     // pane: that sentence is also what an unparsed claim looks like from here, and sending a reader
     // off to write an `[[agent]]` block they have already written is the trap this closes.
     let mut out = manifest_caveat().unwrap_or_default();
-    let Some(agent) = &pane.agent else {
+    let Some(agent) = &pane.info.agent else {
         out.push_str(&format!(
-            "pane {number} (id={}) has no agent state: no agent manifest claims this pane, so no \
+            "{subject} (id={}) has no agent state: no agent manifest claims this pane, so no \
              rule was even consulted for it. That is what an ordinary shell looks like. If this pane \
              IS running an agent sprag does not know, add an `[[agent]]` block to sprag's config.toml \
              with a fingerprint that matches its screen or title.\n",
-            pane.id
+            pane.id()
         ));
         return Ok(out);
     };
-    out.push_str(&format!(
-        "pane {number} (id={}) is {}",
-        pane.id, agent.state
-    ));
+    out.push_str(&format!("{subject} (id={}) is {}", pane.id(), agent.state));
     match &agent.name {
         Some(name) => out.push_str(&format!(", detected as `{name}`")),
         None => out.push_str(
@@ -3407,14 +3541,13 @@ enum PaneTarget {
     Name(String),
 }
 
-/// The pane a tool's arguments name.
-fn pane_target(args: &Value) -> Result<PaneTarget, String> {
-    pane_target_at(args, SelectAsk::PANE_KEY)
-}
-
-/// [`pane_target`] for an argument spelled something other than `pane` — the origin of a directional
-/// select is a pane handle in every respect except its key, so it resolves through the same grammar
-/// and says the same things about a bad one.
+/// The pane a tool's arguments name, under the `key` that names it — `pane` for almost every tool,
+/// and a swap's `with` or a directional select's `from` for the two that take a second one. Those
+/// are pane handles in every respect except their key, so they parse through the same grammar and
+/// say the same things about a bad one.
+///
+/// **Reached only through [`resolve_pane_ref_at`].** A tool that parsed a target and looked it up
+/// itself would be looking in one window, which is how eleven of eighteen came to be window-local.
 fn pane_target_at(args: &Value, key: &str) -> Result<PaneTarget, String> {
     match args.get(key) {
         Some(Value::Number(n)) => {
@@ -3435,56 +3568,58 @@ fn pane_target_at(args: &Value, key: &str) -> Result<PaneTarget, String> {
     }
 }
 
-/// Find the pane a caller named in ONE reading of the listing.
+/// Find the pane a caller named in ONE reading of ONE window's listing, answering its position and
+/// its row.
 ///
-/// Every resolution goes through here so a number and a name are looked up against the same
-/// instant, and so a caller that needs both the pane's number and its id gets them from one read.
-/// Before names existed the two were separate lookups (`pane_number` then `pane_id_for`), which was
-/// harmless while both were pure arithmetic on one listing and stops being harmless the moment one
-/// of them has to query.
-fn resolve_in<'a>(panes: &'a [PaneInfo], target: &PaneTarget) -> Result<&'a PaneInfo, String> {
+/// **Private to [`resolve_pane_ref`] by discipline, and by the ratchet that enforces it.** A tool
+/// that called this against a listing of its own would be window-local — which is exactly how
+/// eleven of the eighteen pane-addressed tools came to refuse a pane one window over, measured at
+/// `e7be5eb`. `the_whole_roster_reaches_a_pane_one_window_over` drives every tool the roster
+/// declares a `pane` argument for and fails the moment one of them stops going through the
+/// resolver.
+fn resolve_in<'a>(
+    panes: &'a [PaneInfo],
+    target: &PaneTarget,
+) -> Result<(usize, &'a PaneInfo), String> {
     match target {
-        PaneTarget::Number(number) => panes.iter().find(|p| p.number == *number).ok_or_else(|| {
-            format!(
-                "no pane {number}; this terminal has {} pane(s). Call list_panes.",
-                panes.len()
-            )
-        }),
+        PaneTarget::Number(number) => panes
+            .iter()
+            .enumerate()
+            .find(|(index, _)| numbered(*index) == *number)
+            .ok_or_else(|| {
+                format!(
+                    "no pane {number}; this terminal has {} pane(s). Call list_panes.",
+                    panes.len()
+                )
+            }),
         PaneTarget::Name(name) => pane_by_name(panes, name),
     }
 }
 
-/// Resolve a tool's `pane` argument against one reading of the live listing, answering the pane's
-/// 1-based NUMBER (what an answer says back to the caller) and its host ID (what the wire takes).
-///
-/// **The only resolver here that reads.** A tool that needs the listing for anything else parses
-/// with [`pane_target`] and resolves with [`resolve_in`] against the listing it already has — never
-/// through a helper with a query of its own, which would name the caller's pane at one instant and
-/// answer about it at another. That hazard is not hypothetical: a first version of the name lookup
-/// put a query behind the argument parse and quietly gave four tools two readings each, which is
-/// the torn read a NAME exists to prevent, reintroduced by the feature that prevents it.
-fn resolve_pane(args: &Value) -> Result<(usize, u64), String> {
-    let target = pane_target(args)?;
-    let panes = query_panes()?;
-    let pane = resolve_in(&panes, &target)?;
-    Ok((pane.number, pane.id))
+/// The 1-based NUMBER of the row at `index` of a listing — the one arithmetic that turns a position
+/// into what a caller types, spelled once so the surface cannot come to disagree with itself about
+/// whether the first pane is 0 or 1.
+const fn numbered(index: usize) -> usize {
+    index + 1
 }
 
-/// Resolve a tool's `pane` argument to a host pane id (one list query).
-fn resolve_pane_id(args: &Value) -> Result<u64, String> {
-    resolve_pane(args).map(|(_, id)| id)
-}
-
-/// A pane this surface has resolved, and WHICH WINDOW it lives in.
+/// A pane this surface has resolved: WHICH pane, WHICH WINDOW, and everything the listing said
+/// about it — all from the one reading that resolved it.
 ///
 /// The window is [`None`] for a pane of the caller's own window, which is every pane a NUMBER can
 /// name and most panes a name does. It is `Some` only for a pane a NAME reached one window over —
-/// and it is what every read below must carry, because a read is addressed through the SCENE and
-/// the scene holds one window ([`sprag_rpc::WINDOW_PARAM`]).
+/// and it is what every request below must carry, because both a scene READ and the mux actions
+/// that resolve against the scope are answered for ONE window ([`sprag_rpc::WINDOW_PARAM`]).
+///
+/// # It carries the pane's INFO, and that is what keeps the read whole
+///
+/// R311 needed the pane's NUMBER in a write's answer and wrote a second resolver beside this one —
+/// a second query behind a single argument parse, which is verbatim the torn read this module's
+/// own docs warn about. The lesson generalises: any fact a tool wants about the pane it just
+/// resolved must come from the reading that resolved it, or the tool names one pane and answers
+/// about another. So the whole row rides along and there is nothing left to go back for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PaneRef {
-    /// The pane's host id — what the wire takes.
-    id: u64,
     /// Its 1-based number in `list_panes`, or [`None`] for a pane in ANOTHER window.
     ///
     /// `None` rather than the position within that other window, deliberately: a number on this
@@ -3493,16 +3628,23 @@ struct PaneRef {
     number: Option<usize>,
     /// The window it lives in, or [`None`] for the caller's own.
     window: Option<String>,
+    /// The listing row, read in the SAME query that resolved this pane.
+    info: PaneInfo,
 }
 
 impl PaneRef {
+    /// The pane's host id — what the wire takes.
+    fn id(&self) -> u64 {
+        self.info.id
+    }
+
     /// How an ANSWER names this pane — its number when the caller could have used one, else its
     /// id and the window it is in, which is the only honest handle for a pane one window over.
     fn subject(&self) -> String {
         match (&self.number, &self.window) {
             (Some(number), _) => format!("pane {number}"),
-            (None, Some(window)) => format!("pane id {} (window {window})", self.id),
-            (None, None) => format!("pane id {}", self.id),
+            (None, Some(window)) => format!("pane id {} (window {window})", self.id()),
+            (None, None) => format!("pane id {}", self.id()),
         }
     }
 }
@@ -3522,13 +3664,20 @@ impl PaneRef {
 /// false**, measured against a real daemon. Meanwhile `rename_pane` and `swap_pane` crossed a
 /// window freely, because a write is a mux action and a read is a scene path.
 fn resolve_pane_ref(args: &Value) -> Result<PaneRef, String> {
-    let target = pane_target(args)?;
+    resolve_pane_ref_at(args, SelectAsk::PANE_KEY)
+}
+
+/// [`resolve_pane_ref`] for an argument spelled something other than `pane` — a swap's partner and
+/// a directional select's origin are pane handles in every respect except their key, so they
+/// resolve through the same grammar and reach as far.
+fn resolve_pane_ref_at(args: &Value, key: &str) -> Result<PaneRef, String> {
+    let target = pane_target_at(args, key)?;
     let here = query_panes()?;
     match resolve_in(&here, &target) {
-        Ok(pane) => Ok(PaneRef {
-            id: pane.id,
-            number: Some(pane.number),
+        Ok((index, pane)) => Ok(PaneRef {
+            number: Some(numbered(index)),
             window: None,
+            info: pane.clone(),
         }),
         // Only a NAME looks further: a number that missed named no pane of the window it is defined
         // against, and looking elsewhere would answer about a pane the caller did not ask for.
@@ -3539,13 +3688,26 @@ fn resolve_pane_ref(args: &Value) -> Result<PaneRef, String> {
                 elsewhere => {
                     let (window, pane) = pane_by_name_in_session(&elsewhere, name)?;
                     Ok(PaneRef {
-                        id: pane.id,
                         number: None,
                         window: Some(window),
+                        info: pane.clone(),
                     })
                 }
             },
         },
+    }
+}
+
+/// [`resolve_pane_ref`] for an OPTIONAL `pane` argument — absent (or `null`) answers [`None`],
+/// which every tool here reads as "the pane I am in" or "all of them" depending on what it does.
+///
+/// Spelled once because the absent-means-default check is where a tool most easily forgets to go
+/// through the resolver at all: it already has a branch, and hand-rolling the present arm inside
+/// it is how five tools came to be window-local.
+fn resolve_optional_pane_ref(args: &Value) -> Result<Option<PaneRef>, String> {
+    match args.get(SelectAsk::PANE_KEY) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => resolve_pane_ref(args).map(Some),
     }
 }
 
@@ -3561,18 +3723,51 @@ fn with_args(params: Value, args: Value) -> Value {
 
 /// The `params` a pane-addressed query or invoke sends, carrying the pane's window when it has one.
 ///
-/// The ONE place a read learns which window to look in, so a tool added later cannot forget it and
-/// quietly become window-local again.
+/// The ONE place a request learns which window to look in, so a tool added later cannot forget it
+/// and quietly become window-local again.
+///
+/// # Every pane-addressed request, not only the reads
+///
+/// Measured against a live daemon at `e7be5eb`: a scene READ of a pane's own external answers
+/// `NoExternalAtPath` without a window and the pane's text with one, and the mux actions divide
+/// into two kinds — `rename_pane` / `swap_pane` / `zoom_pane` resolve REGISTRY-wide and
+/// `select_pane` / `close` / `split` resolve against the SCOPE's window, refusing bare and
+/// succeeding with `window=`. Sending the window on every one of them is therefore correct for both
+/// kinds: the registry-wide actions do not consult it, and the scope-local ones need it. A client
+/// that tried to remember which is which would be keeping a second copy of the daemon's own rule.
 fn pane_params(pane: &PaneRef, path: String) -> Value {
+    windowed_params(path, pane.window.as_deref())
+}
+
+/// [`pane_params`] for a request addressed at a WINDOW rather than at a pane in it.
+fn windowed_params(path: String, window: Option<&str>) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("path".to_owned(), Value::String(path));
-    if let Some(window) = &pane.window {
+    if let Some(window) = window {
         map.insert(
             sprag_rpc::WINDOW_PARAM.to_owned(),
-            Value::String(window.clone()),
+            Value::String(window.to_owned()),
         );
     }
     Value::Object(map)
+}
+
+/// One window's pane listing.
+///
+/// The rows carry no numbers and cannot: a number is `list_panes`'s row index and `list_panes`
+/// answers about the CALLER's window, so numbering another window's panes would hand back numbers
+/// that name different panes. See [`PaneInfo`].
+fn query_window_panes(window: &str) -> Result<Vec<PaneInfo>, String> {
+    let value = host_call(
+        "scene/query",
+        windowed_params(mux_action_path(PANES_SLOT), Some(window)),
+    )?;
+    Ok(value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(parse_pane_info)
+        .collect())
 }
 
 /// Every pane of the caller's SESSION, paired with the window it is in — one query per window.
@@ -3584,15 +3779,8 @@ fn pane_params(pane: &PaneRef, path: String) -> Value {
 fn query_session_panes() -> Result<Vec<(String, PaneInfo)>, String> {
     let mut out = Vec::new();
     for window in query_window_names()? {
-        let value = host_call(
-            "scene/query",
-            json!({ "path": mux_action_path(PANES_SLOT), sprag_rpc::WINDOW_PARAM: window }),
-        )?;
-        let Some(array) = value.as_array() else {
-            continue;
-        };
-        for (index, pane) in array.iter().enumerate() {
-            out.push((window.clone(), parse_pane_info(index, pane)));
+        for pane in query_window_panes(&window)? {
+            out.push((window.clone(), pane));
         }
     }
     Ok(out)
@@ -3624,33 +3812,25 @@ fn pane_by_name_in_session<'a>(
     panes: &'a [(String, PaneInfo)],
     name: &str,
 ) -> Result<(String, &'a PaneInfo), String> {
+    let bearers = |wanted: Option<&str>| -> Vec<NamedPane> {
+        panes
+            .iter()
+            .filter_map(|(window, pane)| {
+                let held = pane.name.as_deref()?;
+                (wanted.is_none_or(|wanted| wanted == held))
+                    .then(|| NamedPane::new(held, window.clone()))
+            })
+            .collect()
+    };
     let mut matching = panes
         .iter()
         .filter(|(_, pane)| pane.name.as_deref() == Some(name))
         .fuse();
-    let first = matching.next().ok_or_else(|| {
-        let known: Vec<String> = panes
-            .iter()
-            .filter_map(|(window, pane)| {
-                pane.name
-                    .as_deref()
-                    .map(|n| format!("{n:?} (window {window})"))
-            })
-            .collect();
-        if known.is_empty() {
-            format!("no pane is called {name:?}; no pane in this SESSION has a name yet.")
-        } else {
-            format!(
-                "no pane is called {name:?}; the session's named panes are {}. Call list_windows.",
-                known.join(", "),
-            )
-        }
-    })?;
+    let first = matching
+        .next()
+        .ok_or_else(|| unknown_pane_name_with(name, &bearers(None), PaneListing::ListWindows))?;
     if matching.next().is_some() {
-        return Err(format!(
-            "more than one pane is called {name:?} in this session, so it does not name one pane. \
-             Rename one (rename_pane) and try again."
-        ));
+        return Err(ambiguous_pane_name(name, &bearers(Some(name))));
     }
     Ok((first.0.clone(), &first.1))
 }
@@ -3661,30 +3841,22 @@ fn pane_by_name_in_session<'a>(
 /// sequence of requests — but the uniqueness check and the write are not one atomic step there, so
 /// this refuses rather than taking the first. Silently resolving an ambiguous name would rebuild
 /// the very failure a name exists to remove: a plausible answer against the wrong pane.
-fn pane_by_name<'a>(panes: &'a [PaneInfo], name: &str) -> Result<&'a PaneInfo, String> {
+fn pane_by_name<'a>(panes: &'a [PaneInfo], name: &str) -> Result<(usize, &'a PaneInfo), String> {
     let mut matching = panes
         .iter()
-        .filter(|p| p.name.as_deref() == Some(name))
+        .enumerate()
+        .filter(|(_, p)| p.name.as_deref() == Some(name))
         .fuse();
-    let first = matching.next().ok_or_else(|| {
-        let known: Vec<&str> = panes.iter().filter_map(|p| p.name.as_deref()).collect();
-        if known.is_empty() {
-            format!("no pane is called {name:?}; no pane in this terminal has a name yet.")
-        } else {
-            format!(
-                "no pane is called {name:?}; the named panes are {}. Call list_panes.",
-                known
-                    .iter()
-                    .map(|n| format!("{n:?}"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            )
-        }
-    })?;
+    // Neither sentence below normally reaches a caller: [`resolve_pane_ref`] treats a miss HERE as
+    // "look in the rest of the session" and the session-wide sentence is what a caller reads. They
+    // are written honestly anyway, because they are what a near-only resolution would say and a
+    // sentence nobody checks is how the false one R311 removed survived.
+    let first = matching
+        .next()
+        .ok_or_else(|| format!("no pane is called {name:?} in this window."))?;
     if matching.next().is_some() {
         return Err(format!(
-            "more than one pane is called {name:?}, so it does not name one pane. Rename one \
-             (rename_pane) and try again."
+            "more than one pane in this window is called {name:?}, so it does not name one pane."
         ));
     }
     Ok(first)
@@ -3694,16 +3866,12 @@ fn pane_by_name<'a>(panes: &'a [PaneInfo], name: &str) -> Result<&'a PaneInfo, S
 fn query_panes() -> Result<Vec<PaneInfo>, String> {
     let value = host_call(
         "scene/query",
-        json!({ "path": mux_action_path(PANES_SLOT) }),
+        windowed_params(mux_action_path(PANES_SLOT), None),
     )?;
     let array = value
         .as_array()
         .ok_or("the host pane list was not an array")?;
-    Ok(array
-        .iter()
-        .enumerate()
-        .map(|(index, pane)| parse_pane_info(index, pane))
-        .collect())
+    Ok(array.iter().map(parse_pane_info).collect())
 }
 
 /// Why the daemon's agent manifests are not the ones the user's `config.toml` declares, as a line to
@@ -3740,13 +3908,15 @@ fn manifest_caveat_line(error: &str) -> String {
     )
 }
 
-/// Parse one panes-slot entry into a [`PaneInfo`], numbered 1-based from its host-order `index`.
+/// Parse one panes-slot entry into a [`PaneInfo`].
 /// Every field is ADDITIVE on the wire (present only when its signal fired), so a missing key maps
 /// to the resting default — split out as a pure function so the parse is testable without a live
 /// host (mirrors [`parse_image_info`]).
-fn parse_pane_info(index: usize, pane: &Value) -> PaneInfo {
+///
+/// It takes no position, and that is the point: see [`PaneInfo`]'s note on why a row carries no
+/// number. The caller that HOLDS a listing forms the numbers with [`numbered`].
+fn parse_pane_info(pane: &Value) -> PaneInfo {
     PaneInfo {
-        number: index + 1,
         id: pane.get("id").and_then(Value::as_u64).unwrap_or(0),
         name: pane.get("name").and_then(Value::as_str).map(str::to_owned),
         title: pane
@@ -4186,7 +4356,14 @@ mod tests {
     #[test]
     fn a_selection_reads_as_a_sentence_about_where_the_user_is_now() {
         assert_eq!(
-            render_selection(SelectHow::Moved, None, None, Some("pane 2 (\"build\")"), 11),
+            render_selection(
+                SelectHow::Moved,
+                None,
+                None,
+                Some("pane 2 (\"build\")"),
+                11,
+                None
+            ),
             "The user is now on pane 2 (\"build\") — the active pane of this session.",
             "a NAME rides in the sentence, because that is the handle the caller can reuse",
         );
@@ -4196,12 +4373,20 @@ mod tests {
                 Some(PaneDir::Left),
                 None,
                 Some("pane 1"),
-                10
+                10,
+                None
             ),
             "Moved the user one pane left: they are now on pane 1.",
         );
         assert_eq!(
-            render_selection(SelectHow::AlreadyActive, None, None, Some("pane 2"), 11),
+            render_selection(
+                SelectHow::AlreadyActive,
+                None,
+                None,
+                Some("pane 2"),
+                11,
+                None
+            ),
             "The user was already on pane 2; nothing moved.",
         );
         let edge = render_selection(
@@ -4210,6 +4395,7 @@ mod tests {
             None,
             Some("pane 1"),
             10,
+            None,
         );
         assert!(
             edge.contains("There is nothing above pane 1")
@@ -4224,6 +4410,7 @@ mod tests {
             None,
             Some("pane 3"),
             12,
+            None,
         );
         assert!(
             floating.contains("on pane 3, which is FLOATING")
@@ -4236,7 +4423,8 @@ mod tests {
         // A pane that exited between the select and the listing that would name it: the move HAPPENED,
         // so the answer says so and hands back the id a caller can still look up — never an error,
         // which would send the caller to move a cursor that has already moved.
-        let vanished = render_selection(SelectHow::Moved, Some(PaneDir::Right), None, None, 42);
+        let vanished =
+            render_selection(SelectHow::Moved, Some(PaneDir::Right), None, None, 42, None);
         assert!(
             vanished.contains("id 42") && vanished.contains("list_panes"),
             "the fallback subject is the id, with the read that resolves it: {vanished}",
@@ -4300,12 +4488,32 @@ mod tests {
 
     /// The handle an answer hands back is one a caller can pass to the next tool — a NUMBER, plus the
     /// NAME when the pane has one, because that is the handle that survives a pane closing.
+    ///
+    /// And for a pane ONE WINDOW OVER it is the id and the window, never a number: a number there
+    /// would be read straight back as `pane: N` and land on a different pane. The two rows below
+    /// carry the SAME `PaneInfo`, so the only thing telling the handles apart is where the pane is.
     #[test]
     fn a_pane_is_named_back_by_the_handles_a_caller_can_use() {
-        let mut pane = parse_pane_info(1, &json!({ "id": 11, "cols": 80, "rows": 24 }));
-        assert_eq!(render_pane_handle(&pane), "pane 2");
-        pane.name = Some("build".to_owned());
-        assert_eq!(render_pane_handle(&pane), "pane 2 (\"build\")");
+        let mut info = parse_pane_info(&json!({ "id": 11, "cols": 80, "rows": 24 }));
+        let near = |info: &PaneInfo| PaneRef {
+            number: Some(2),
+            window: None,
+            info: info.clone(),
+        };
+        let far = |info: &PaneInfo| PaneRef {
+            number: None,
+            window: Some("build".to_owned()),
+            info: info.clone(),
+        };
+        assert_eq!(render_pane_handle(&near(&info)), "pane 2");
+        assert_eq!(render_pane_handle(&far(&info)), "pane id 11 (window build)");
+        info.name = Some("tests".to_owned());
+        assert_eq!(render_pane_handle(&near(&info)), "pane 2 (\"tests\")");
+        assert_eq!(
+            render_pane_handle(&far(&info)),
+            "pane id 11 (window build) (\"tests\")",
+            "a far pane is named by the two handles that reach it, never by a number",
+        );
     }
 
     #[test]
@@ -4522,7 +4730,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            render_processes_answer(&wire, &pool(&[40, 41]), None),
+            render_processes_answer(&wire, &pool(&[40, 41]), &elsewhere("0", &[40, 41]), None),
             "What each pane is running, sampled 7 ms ago:\n\
              \n\
              pane 1 (id 40) on /dev/pts/3, child process 900\n\
@@ -4549,7 +4757,8 @@ mod tests {
             row(41, Some("/dev/pts/4"), Some(901), None),
             row(99, None, Some(902), None),
         ]);
-        let answer = render_processes_answer(&wire, &pool(&[40, 41]), None);
+        let answer =
+            render_processes_answer(&wire, &pool(&[40, 41]), &elsewhere("0", &[40, 41]), None);
 
         assert!(
             answer.contains("pane 1 (id 40) on /dev/pts/3 — no child process\n"),
@@ -4576,18 +4785,77 @@ mod tests {
             row(40, None, Some(900), None),
             row(41, None, Some(901), None),
         ]);
-        let answer = render_processes_answer(&wire, &pool(&[40, 41]), Some(2));
+        let here = pool(&[40, 41]);
+        let answer = render_processes_answer(
+            &wire,
+            &here,
+            &elsewhere("0", &[40, 41]),
+            Some(&near(2, here[1].clone())),
+        );
         assert!(answer.contains("pane 2 (id 41)"), "{answer}");
         assert!(!answer.contains("pane 1 (id 40)"), "{answer}");
+    }
+
+    /// **A LIVE PANE ONE WINDOW OVER IS NOT "GONE", and this is the sentence that said it was.**
+    ///
+    /// The reading is REGISTRY-wide and the numbering is one window's, so before R312 every row
+    /// belonging to another window was rendered *"pane ? (id N, gone since the pane list was
+    /// read)"* — measured against a real two-window daemon, in the same line that went on to report
+    /// that pane's tty and its child's pid. The residual sentence was written for a genuine race
+    /// and had come to fire for the ordinary case.
+    ///
+    /// The fixture is chosen so the three answers actually DISAGREE: `41` is in another window and
+    /// `99` is in none, so a renderer that looked in one listing would call them the same thing.
+    #[test]
+    fn a_row_from_another_window_names_that_window_instead_of_calling_it_gone() {
+        let wire = reading(vec![
+            row(40, None, Some(900), None),
+            row(41, None, Some(901), None),
+            row(99, None, Some(902), None),
+        ]);
+        let answer = render_processes_answer(&wire, &pool(&[40]), &elsewhere("build", &[41]), None);
+        assert!(
+            answer.contains("pane 1 (id 40)"),
+            "your own window still numbers its panes: {answer}",
+        );
+        assert!(
+            answer.contains("pane id 41 (window build)"),
+            "a pane one window over is named by where it IS: {answer}",
+        );
+        assert!(
+            answer.contains("pane ? (id 99, gone since the pane list was read)"),
+            "and the residual sentence is kept for the row that really is gone: {answer}",
+        );
+        assert!(
+            !answer.contains("pane ? (id 41"),
+            "the live pane one window over must not be reported as gone: {answer}",
+        );
     }
 
     /// A pane list of `n` panes whose host ids are deliberately NOT their numbers — the mapping this
     /// surface exists to keep straight, and one an off-by-anything would pass with ids of `1..=n`.
     fn pool(ids: &[u64]) -> Vec<PaneInfo> {
         ids.iter()
-            .enumerate()
-            .map(|(index, id)| parse_pane_info(index, &json!({ "id": id })))
+            .map(|id| parse_pane_info(&json!({ "id": id })))
             .collect()
+    }
+
+    /// Panes of ANOTHER window, paired with its name — the second listing every row-naming answer
+    /// now consults, so a live pane one window over is not reported as gone.
+    fn elsewhere(window: &str, ids: &[u64]) -> Vec<(String, PaneInfo)> {
+        pool(ids)
+            .into_iter()
+            .map(|pane| (window.to_owned(), pane))
+            .collect()
+    }
+
+    /// A resolved pane of the caller's own window, for the renderers that take one.
+    fn near(number: usize, info: PaneInfo) -> PaneRef {
+        PaneRef {
+            number: Some(number),
+            window: None,
+            info,
+        }
     }
 
     fn wire_leaf(pane: u64) -> sprag_terminal::LayoutNodeWire {
@@ -4641,7 +4909,7 @@ mod tests {
         snapshot.zoomed = Some(PaneId(42));
 
         assert_eq!(
-            render_arrangement_answer(&snapshot, &pool(&[40, 41, 42, 43]), Some(41)),
+            render_arrangement_answer(&snapshot, &pool(&[40, 41, 42, 43]), Some(41), None),
             "How YOUR WINDOW's panes are arranged (revision 5):\n\
              \n\
              50% left|right\n\
@@ -4688,7 +4956,7 @@ mod tests {
             ))
         };
         let neighbours = |ratio: f32| {
-            render_arrangement_answer(&arrangement(ratio), &pool(&[40, 41, 42]), None)
+            render_arrangement_answer(&arrangement(ratio), &pool(&[40, 41, 42]), None, None)
                 .lines()
                 .find_map(|line| line.trim().strip_prefix("pane 1: ").map(str::to_owned))
                 .expect("pane 1 has a row in the table")
@@ -4717,7 +4985,7 @@ mod tests {
             wire_leaf(40),
             wire_leaf(41),
         ));
-        let answer = render_arrangement_answer(&snapshot, &pool(&[40]), None);
+        let answer = render_arrangement_answer(&snapshot, &pool(&[40]), None, None);
         assert!(
             answer.contains("pane ? (id 41, gone since the pane list was read)"),
             "the leaf with no number says why it has none: {answer}",
@@ -4733,7 +5001,7 @@ mod tests {
     #[test]
     fn a_single_tiled_pane_gets_no_neighbour_table() {
         let snapshot = wire_snapshot(wire_leaf(40));
-        let answer = render_arrangement_answer(&snapshot, &pool(&[40]), Some(40));
+        let answer = render_arrangement_answer(&snapshot, &pool(&[40]), Some(40), None);
         assert!(
             answer.contains("pane 1 (id 40)  (you are here)"),
             "the sole pane is still drawn and still marked: {answer}",
@@ -4753,15 +5021,15 @@ mod tests {
     #[test]
     fn a_pane_argument_is_a_position_or_a_name_by_its_json_type() {
         assert_eq!(
-            pane_target(&json!({ "pane": 2 })).unwrap(),
+            pane_target_at(&json!({ "pane": 2 }), SelectAsk::PANE_KEY).unwrap(),
             PaneTarget::Number(2),
         );
         assert_eq!(
-            pane_target(&json!({ "pane": "build" })).unwrap(),
+            pane_target_at(&json!({ "pane": "build" }), SelectAsk::PANE_KEY).unwrap(),
             PaneTarget::Name("build".to_owned()),
         );
         assert_eq!(
-            pane_target(&json!({ "pane": "  build  " })).unwrap(),
+            pane_target_at(&json!({ "pane": "  build  " }), SelectAsk::PANE_KEY).unwrap(),
             PaneTarget::Name("build".to_owned()),
             "trimmed, so a name resolves the way the daemon stored it",
         );
@@ -4769,13 +5037,16 @@ mod tests {
         // refuses to store an all-digit name: nothing could then be called \"3\", so this can
         // only ever fail to match, never match the wrong pane.
         assert_eq!(
-            pane_target(&json!({ "pane": "3" })).unwrap(),
+            pane_target_at(&json!({ "pane": "3" }), SelectAsk::PANE_KEY).unwrap(),
             PaneTarget::Name("3".to_owned()),
         );
-        assert!(pane_target(&json!({})).is_err(), "a pane must be named");
-        assert!(pane_target(&json!({ "pane": null })).is_err());
-        assert!(pane_target(&json!({ "pane": 1.5 })).is_err());
-        assert!(pane_target(&json!({ "pane": -1 })).is_err());
+        assert!(
+            pane_target_at(&json!({}), SelectAsk::PANE_KEY).is_err(),
+            "a pane must be named"
+        );
+        assert!(pane_target_at(&json!({ "pane": null }), SelectAsk::PANE_KEY).is_err());
+        assert!(pane_target_at(&json!({ "pane": 1.5 }), SelectAsk::PANE_KEY).is_err());
+        assert!(pane_target_at(&json!({ "pane": -1 }), SelectAsk::PANE_KEY).is_err());
     }
 
     /// A name that answers for two panes resolves to NEITHER.
@@ -4786,8 +5057,7 @@ mod tests {
     /// the first match would rebuild the very failure a name exists to remove.
     #[test]
     fn a_name_two_panes_answer_to_resolves_to_neither() {
-        let pane = |number: usize, id: u64, name: &str| PaneInfo {
-            number,
+        let pane = |id: u64, name: &str| PaneInfo {
             id,
             name: Some(name.to_owned()),
             title: String::new(),
@@ -4805,27 +5075,42 @@ mod tests {
             agent: None,
             opened_by: None,
         };
-        let panes = vec![
-            pane(1, 10, "build"),
-            pane(2, 11, "build"),
-            pane(3, 12, "test"),
+        let panes = vec![pane(10, "build"), pane(11, "build"), pane(12, "test")];
+        assert_eq!(pane_by_name(&panes, "test").unwrap().1.id, 12);
+        assert_eq!(pane_by_name(&panes, "test").unwrap().0, 2, "its position");
+        assert!(
+            pane_by_name(&panes, "build").is_err(),
+            "two bearers is not one pane"
+        );
+
+        // The SESSION-wide resolver is the one a caller actually reaches (a near miss falls
+        // through to it), so the sentence that must name the bearers is that one — and it names
+        // the WINDOWS too, which is the half a caller cannot otherwise reach. The fixture puts the
+        // two bearers in DIFFERENT windows, so a sentence that dropped the window would read as if
+        // one pane were listed twice.
+        let session: Vec<(String, PaneInfo)> = vec![
+            ("0".to_owned(), pane(10, "build")),
+            ("docs".to_owned(), pane(11, "build")),
+            ("0".to_owned(), pane(12, "test")),
         ];
-        assert_eq!(pane_by_name(&panes, "test").unwrap().id, 12);
-        let Err(ambiguous) = pane_by_name(&panes, "build") else {
+        assert_eq!(pane_by_name_in_session(&session, "test").unwrap().0, "0");
+        let Err(ambiguous) = pane_by_name_in_session(&session, "build") else {
             panic!("two bearers is not one pane");
         };
-        assert!(
-            ambiguous.contains("more than one pane is called \"build\""),
-            "and it says so rather than picking: {ambiguous}",
+        assert_eq!(
+            ambiguous,
+            "more than one pane is called \"build\" (\"build\" (window 0), \"build\" (window \
+             docs)), so it does not name one pane. Rename one and try again.",
         );
-        // A name nobody carries lists the ones that exist, so the caller can fix it in one step
-        // instead of calling list_panes to find out it guessed.
-        let Err(missing) = pane_by_name(&panes, "docs") else {
+        // A name nobody carries lists the ones that exist WITH THEIR WINDOWS, so the caller can
+        // fix it in one step instead of calling a listing to find out it guessed.
+        let Err(missing) = pane_by_name_in_session(&session, "docs") else {
             panic!("no pane is called docs");
         };
-        assert!(
-            missing.contains("\"build\"") && missing.contains("\"test\""),
-            "the refusal names the names in use: {missing}",
+        assert_eq!(
+            missing,
+            "no pane is called \"docs\"; the session's named panes are \"build\" (window 0), \
+             \"build\" (window docs), \"test\" (window 0). Call list_windows.",
         );
     }
 
@@ -4873,19 +5158,15 @@ mod tests {
     #[test]
     fn parse_pane_info_reads_mouse_and_focus_from_the_wire_entry() {
         // A tracking pane: the additive `mouse` / `focus_tracking` keys are present.
-        let info = parse_pane_info(
-            1,
-            &json!({
-                "id": 5, "cols": 80, "rows": 24, "command": "htop", "title": null,
-                "mouse": "any", "focus_tracking": true
-            }),
-        );
-        assert_eq!(info.number, 2, "1-based number is index + 1");
+        let info = parse_pane_info(&json!({
+            "id": 5, "cols": 80, "rows": 24, "command": "htop", "title": null,
+            "mouse": "any", "focus_tracking": true
+        }));
         assert_eq!(info.id, 5);
         assert_eq!(info.mouse.as_deref(), Some("any"));
         assert!(info.focus_tracking);
         // A resting pane: neither key present -> the resting defaults (None / false), never a panic.
-        let resting = parse_pane_info(0, &json!({ "id": 1, "command": "bash", "title": null }));
+        let resting = parse_pane_info(&json!({ "id": 1, "command": "bash", "title": null }));
         assert_eq!(resting.mouse, None);
         assert!(!resting.focus_tracking);
     }
@@ -4904,7 +5185,6 @@ mod tests {
     #[test]
     fn a_change_names_its_pane_in_both_vocabularies_or_says_it_is_gone() {
         let live = PaneInfo {
-            number: 3,
             id: 11,
             name: None,
             title: String::new(),
@@ -4922,16 +5202,38 @@ mod tests {
             images: vec![],
             agent: None,
         };
+        // Three rows so the NUMBER and the ID cannot be confused (id 11 is the third pane), a
+        // pane one window over, and a pane in none — the three answers this rendering has to tell
+        // apart, in one fixture where they all disagree.
+        let here = vec![
+            PaneInfo {
+                id: 40,
+                ..live.clone()
+            },
+            PaneInfo {
+                id: 41,
+                ..live.clone()
+            },
+            live.clone(),
+        ];
+        let session = vec![(
+            "build".to_owned(),
+            PaneInfo {
+                id: 7,
+                ..live.clone()
+            },
+        )];
         let events = vec![
             json!({ "type": "pane_job_changed", "pane": 11 }),
+            json!({ "type": "pane_job_changed", "pane": 7 }),
             json!({ "type": "pane_closed", "pane": 4 }),
             json!({ "type": "window_selected", "window": "build" }),
         ];
-
         assert_eq!(
-            render_events(&events, std::slice::from_ref(&live)),
-            "  pane_job_changed: pane 3 (id 11)\n  pane_closed: pane ? (id 4, gone since the pane \
-             list was read)\n  window_selected: window build\n",
+            render_events(&events, &here, &session),
+            "  pane_job_changed: pane 3 (id 11)\n  pane_job_changed: pane id 7 (window build)\n  \
+             pane_closed: pane ? (id 4, gone since the pane list was read)\n  window_selected: \
+             window build\n",
         );
     }
 
@@ -4945,7 +5247,6 @@ mod tests {
     #[test]
     fn the_provenance_line_names_an_opener_this_window_does_not_hold_by_id() {
         let opened = |opener: u64| PaneInfo {
-            number: 2,
             id: 7,
             name: None,
             title: String::new(),
@@ -4965,23 +5266,22 @@ mod tests {
         };
         // The listing this rendering indexes into: pane 1 is host id 3, the opener.
         let listing = [PaneInfo {
-            number: 1,
             id: 3,
             name: None,
             ..opened(0)
         }];
         assert!(
-            pane_summary(&opened(3), &listing, None).contains("      opened by: pane 1\n"),
+            pane_summary(1, &opened(3), &listing, None).contains("      opened by: pane 1\n"),
             "an opener this window holds is named by its NUMBER",
         );
         assert!(
-            pane_summary(&opened(99), &listing, None)
+            pane_summary(1, &opened(99), &listing, None)
                 .contains("      opened by: pane id 99, not in this window\n"),
             "and one it does not hold is named by the id that still addresses it, with the reason \
              it has no number here — never by a number this listing would make up",
         );
         assert!(
-            pane_summary(&opened(3), &listing, Some(3)).contains(
+            pane_summary(1, &opened(3), &listing, Some(3)).contains(
                 "      opened by: you (yours to \
              close)\n"
             ),
@@ -4992,7 +5292,6 @@ mod tests {
     #[test]
     fn pane_summary_surfaces_mouse_and_focus_tracking() {
         let tracking = PaneInfo {
-            number: 2,
             id: 7,
             name: None,
             title: String::new(),
@@ -5010,7 +5309,7 @@ mod tests {
             images: vec![],
             agent: None,
         };
-        let summary = pane_summary(&tracking, &[], None);
+        let summary = pane_summary(1, &tracking, &[], None);
         assert!(
             summary.contains("mouse: tracking clicks + drag + motion"),
             "the mouse-tracking level must surface: {summary}"
@@ -5026,7 +5325,7 @@ mod tests {
             focus_tracking: false,
             ..tracking
         };
-        let resting = pane_summary(&resting, &[], None);
+        let resting = pane_summary(1, &resting, &[], None);
         assert!(
             !resting.contains("mouse:"),
             "no mouse line when off: {resting}"
@@ -5089,7 +5388,6 @@ mod tests {
     #[test]
     fn pane_summary_surfaces_a_sibling_agents_state_and_omits_it_for_a_shell() {
         let shell = PaneInfo {
-            number: 1,
             id: 3,
             name: None,
             title: String::new(),
@@ -5117,7 +5415,7 @@ mod tests {
             }),
             ..shell
         };
-        let summary = pane_summary(&claimed, &[], None);
+        let summary = pane_summary(1, &claimed, &[], None);
         assert!(
             summary.contains("agent: state=blocked name=claude rule=dialog-choice-list seq=4"),
             "the verdict surfaces field for field: {summary}",
@@ -5136,12 +5434,13 @@ mod tests {
             }),
             ..claimed
         };
-        let summary = pane_summary(&reported, &[], None);
+        let summary = pane_summary(1, &reported, &[], None);
         assert!(
             summary.contains("agent: state=working name=claude source=hook:claude seq=5"),
             "an authority is told from an inference: {summary}",
         );
         let quiet = pane_summary(
+            1,
             &PaneInfo {
                 agent: None,
                 ..reported
