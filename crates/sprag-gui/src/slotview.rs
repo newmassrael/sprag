@@ -36,7 +36,8 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    Ended, LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
+    Ended, LayoutSnapshot, LayoutWire, OrderStep, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir,
+    WindowInfo,
 };
 use sprag_vt::{ClipboardTarget, MouseProtocol};
 
@@ -582,11 +583,22 @@ impl SlotView {
     }
 
     /// Switch to the LAST session — the most-recent OTHER session this client visited that is still
-    /// live (tmux `switch-client -l`), a `Ctrl+Shift+L` keyboard affordance. A no-op for the
-    /// in-process host (no visit history).
+    /// live (tmux `switch-client -l`), bound to `prefix L` and `C-S-L`. A no-op for the in-process
+    /// host (no visit history).
     pub(crate) fn switch_to_last_session(&self) {
         self.host.switch_to_last_session();
         self.reseed_pane_focus();
+    }
+
+    /// Step one session along the DAEMON's order (tmux `switch-client -n` / `-p`, bound to
+    /// `prefix )` / `prefix (` and `C-S-PageDown` / `C-S-PageUp`), answering where it landed.
+    ///
+    /// The direction travels and the daemon walks — this client never resolves a neighbour off its
+    /// own `sessions` mirror, which is what the private chord table this replaced did before R314.
+    pub(crate) fn switch_session_toward(&self, step: OrderStep) -> Option<String> {
+        let landed = self.host.switch_session_toward(step);
+        self.reseed_pane_focus();
+        landed
     }
 
     /// Slot `slot`'s cell DATA at `offset_lines` (a `1x1` placeholder for a hole).

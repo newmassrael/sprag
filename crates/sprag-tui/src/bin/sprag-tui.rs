@@ -113,7 +113,7 @@ use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
 use sprag_host::keyhelp::{KeyHelp, Pressed, Scroll};
-use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed};
+use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed, SwitchClientAsk};
 use sprag_host::prompt::{Ask, Line, Subject, Typed};
 use sprag_host::wire::SelectWindowAsk;
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
@@ -460,7 +460,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                         | BoundAction::SelectWindow { .. }
                         | BoundAction::MoveWindow { .. }
                         | BoundAction::KillPane
-                        | BoundAction::KillWindow),
+                        | BoundAction::KillWindow
+                        | BoundAction::SwitchClient { .. }),
                     ) => {
                         match action {
                             BoundAction::NewWindow => {
@@ -481,6 +482,31 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 SelectWindowAsk::Step(step) => {
                                     host.select_window_toward(step);
                                 }
+                            },
+                            // THE SESSION LEVEL (R314), and the first way this front has ever had
+                            // to reach another session — before it, a `sprag-tui` user had to
+                            // detach and run `sprag attach` in a shell. It belongs in THIS group
+                            // because it changes the whole projection: the reconcile below re-reads
+                            // the pane set, the tiling and the focus, which is exactly what a
+                            // client that is now looking at a different session needs.
+                            //
+                            // Nothing here resolves a neighbour. The ring is the daemon's, walked
+                            // from this client's own attachment — the authority split the window
+                            // arm above states, one level up and with a sharper cost, since a
+                            // client's session mirror is refreshed by a poll.
+                            //
+                            // The ASKING arm is unreachable here: `Ask::of` consumes it above.
+                            BoundAction::SwitchClient { ask } => match ask {
+                                SwitchClientAsk::Step(step) => {
+                                    host.switch_session_toward(step);
+                                }
+                                SwitchClientAsk::LastViewed => {
+                                    host.switch_session_last();
+                                }
+                                SwitchClientAsk::Named(session) => {
+                                    host.switch_session_named(&session);
+                                }
+                                SwitchClientAsk::Ask => {}
                             },
                             // NO window named, which is the same rule the kill below breaks
                             // deliberately: the daemon resolves "the one I am on" under its own
@@ -588,7 +614,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
-                    // The five ASKING actions are consumed above, where `Ask::of` turns them into a
+                    // The ASKING actions are consumed above, where `Ask::of` turns them into a
                     // question. This arm is reached only when it answered `None` — a `rename-pane`
                     // pressed with no pane focused, which has no subject and so nothing to ask
                     // about. Doing nothing is the honest outcome: inventing a subject would rename

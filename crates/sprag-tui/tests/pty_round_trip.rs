@@ -3516,6 +3516,83 @@ fn a_root_binding_acts_with_no_prefix_and_the_key_never_reaches_the_pane() {
     );
 }
 
+/// **R314 THROUGH THE SHIPPED TUI, on a real pseudoterminal: a session is reachable from the
+/// keyboard, at the front that had NO way to reach one at all.**
+///
+/// Before this round a `sprag-tui` user had to detach and run `sprag attach` in a shell; the three
+/// session chords lived in `sprag-gui` alone, in a table this vocabulary could not see. So the
+/// claim is not "another key works" — it is that this binary now performs a verb it has never had.
+///
+/// **THE FIXTURE IS BUILT SO THE ANSWERS DISAGREE.** Three sessions and the client starts on the
+/// middle one, so `prefix )` and `prefix (` name DIFFERENT sessions; the daemon's viewer badge is
+/// what is read, not the screen, because that is the fact the switch changes and no amount of
+/// looking at glyphs establishes it. `prefix L` then goes BACK, which discriminates once more: it
+/// must name the session visited before, not simply the neighbour.
+///
+/// REVERT-PROOF: resolve the step in the client (the `session_neighbour` walk R314 deleted) and the
+/// badge assertions still pass — which is why the LAST one exists: after two steps and a `-l` the
+/// client is on the session it visited, and a walk that ignored the visit history lands elsewhere.
+/// Drop the `SwitchClient` arm from this binary's perform and every wait times out.
+#[test]
+fn the_prefix_reaches_another_session_and_then_the_one_before_it() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    for name in ["alpha", "beta"] {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": name } }),
+        )
+        .expect("new_session answers");
+    }
+    let _ = &sock;
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "the client starts on the BOOT session, which is first in the daemon's order",
+    );
+
+    // `prefix )` — one step forward. The daemon walks; this client sent only a direction.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b")");
+    wait_for("the client to step onto alpha", || {
+        settled(attached(&mut conn, "alpha"), &1)
+    });
+    assert_eq!(
+        attached(&mut conn, &session),
+        0,
+        "and it really LEFT: the badge on the session it came from fell",
+    );
+
+    // `prefix )` again — the ring keeps going, from where it now is.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b")");
+    wait_for("the client to step onto beta", || {
+        settled(attached(&mut conn, "beta"), &1)
+    });
+
+    // `prefix (` — one step BACK, which on this fixture is alpha and NOT the boot session. This is
+    // the assertion a direction-blind walk fails.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"(");
+    wait_for("the client to step back onto alpha", || {
+        settled(attached(&mut conn, "alpha"), &1)
+    });
+
+    // `prefix L` — the session VISITED before this one, which is beta. A neighbour walk would
+    // answer the boot session here, so this is what tells the history from the ring.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"L");
+    wait_for("the client to go back to the session it visited", || {
+        settled(attached(&mut conn, "beta"), &1)
+    });
+    assert_eq!(
+        attached(&mut conn, &session),
+        0,
+        "the boot session is still empty — the -l went to the VISIT, not to the neighbour",
+    );
+}
+
 /// **THE GATE for H2 slice 4's repeat: one prefix, two commands — and the window really closes.**
 ///
 /// The third claim is the one that cannot be faked. A client that simply never left the prefix table

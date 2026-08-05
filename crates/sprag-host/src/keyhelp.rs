@@ -460,7 +460,14 @@ mod tests {
         );
     }
 
-    /// A chord shows the user's OWN prefix, not the word `prefix` and not the default key.
+    /// A chord shows the user's OWN prefix, not the word `prefix` and not the default key — and a
+    /// ROOT binding shows no prefix, because a user presses none.
+    ///
+    /// ⚠ The first assertion read *every* chord until R314, which was only an assertion at all
+    /// while the root table shipped EMPTY. It is split now: the prefix rows are exactly the
+    /// defaults minus the two session chords, and those two are named as the reason. Written this
+    /// way it still fails if `chord` stopped consulting the prefix in force, and it no longer fails
+    /// for a root binding being added.
     #[test]
     fn a_rebound_prefix_moves_every_chord() {
         let mut keymap = Keymap::default();
@@ -472,9 +479,16 @@ mod tests {
                 _ => None,
             })
             .collect();
+        let (rooted, prefixed): (Vec<&String>, Vec<&String>) =
+            chords.iter().partition(|chord| !chord.contains(' '));
         assert!(
-            chords.iter().all(|chord| chord.starts_with("C-a ")),
-            "a prefix binding must be shown under the prefix in force: {chords:?}"
+            prefixed.iter().all(|chord| chord.starts_with("C-a ")),
+            "a prefix binding must be shown under the prefix in force: {prefixed:?}"
+        );
+        assert_eq!(
+            rooted,
+            vec!["C-S-PageDown", "C-S-PageUp"],
+            "and the ROOT bindings carry no prefix, because a user presses none",
         );
         assert!(
             chords.contains(&"C-a ?".to_owned()),

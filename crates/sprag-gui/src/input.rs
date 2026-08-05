@@ -9,7 +9,7 @@ use crate::keys::use_client_keys;
 use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
-use sprag_host::keymap::{BoundAction, Routed};
+use sprag_host::keymap::{BoundAction, Routed, SwitchClientAsk};
 use sprag_host::wire::SelectWindowAsk;
 
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
@@ -174,11 +174,13 @@ impl WindowChord {
 /// Recognize a reserved window chord from `key` + `modifiers`, or `None` for a
 /// normal keystroke (which injects). Pure — the chord-decision is separated from
 /// the side-effecting inject path and unit-tested directly. The page chords take
-/// EXACTLY ONE of Ctrl / Shift (Ctrl-only cycles focus, Shift-only scrolls): `Ctrl+Shift+Page`
-/// belongs to the SESSION chord ([`session_chord`], cycle sessions), so excluding the other
-/// modifier here keeps the two disjoint rather than letting `Ctrl+Shift+Page` shadow the session
-/// cycle. `Ctrl+Shift+Enter` is essentially unbound in TUIs (terminals cannot encode it
-/// distinctly), so it steals no app key.
+/// EXACTLY ONE of Ctrl / Shift (Ctrl-only cycles focus, Shift-only scrolls): `Ctrl+Shift+Page` is a
+/// ROOT BINDING of the shared vocabulary since R314 (`switch-client -n`/`-p`), so excluding the
+/// other modifier here keeps the two disjoint. It also no longer has to: the keymap route runs
+/// BEFORE this function, so a bound chord never reaches it — the exclusion is kept because it is
+/// what makes each chord say what it is, and because a user may unbind the session chords and
+/// expect these to stay theirs. `Ctrl+Shift+Enter` is essentially unbound in TUIs (terminals cannot
+/// encode it distinctly), so it steals no app key.
 fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
     let is_page = matches!(key, "PageUp" | "PageDown");
     if modifiers.ctrl && !modifiers.shift && is_page {
@@ -238,50 +240,6 @@ fn palette_chord(key: &str, modifiers: Modifiers) -> bool {
     modifiers.ctrl && modifiers.shift && !modifiers.alt && key.eq_ignore_ascii_case("p")
 }
 
-/// A reserved chord that switches this CLIENT's SESSION, NOT the focused pane's PTY — `Ctrl+Shift+L`
-/// (the tmux `switch-client -l` "last session"), `Ctrl+Shift+PageUp/Down` (cycle to the previous /
-/// next session in the sidebar's list order). `route_key` recognizes one via [`session_chord`] and
-/// dispatches it before the pane injects.
-#[derive(Debug, PartialEq, Eq)]
-enum SessionChord {
-    /// `Ctrl+Shift+L` — switch to the LAST (most-recently-used other) session.
-    Last,
-    /// `Ctrl+Shift+PageDown` — the NEXT session in list order (wrapping).
-    Next,
-    /// `Ctrl+Shift+PageUp` — the PREVIOUS session in list order (wrapping).
-    Previous,
-}
-
-impl SessionChord {
-    /// A stable, allocation-free name for the diagnostic trace ([`crate::diag`]).
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Last => "SwitchLastSession",
-            Self::Next => "SessionNext",
-            Self::Previous => "SessionPrevious",
-        }
-    }
-}
-
-/// Recognize a session chord, or `None`. All are `Ctrl+Shift` (`Alt` excluded so `Ctrl+Alt+Shift+*`
-/// is not stolen), disjoint from the `Ctrl+Shift` clipboard (`C`/`V`) and dock-toggle (`Enter`)
-/// chords and from the Ctrl-only / Shift-only page chords ([`window_chord`]). `Ctrl+Shift+<letter>`
-/// cannot be encoded distinctly to a PTY (like `Ctrl+Shift+Enter`), so `Ctrl+Shift+L` steals no app
-/// key; `Shift` upper-cases the letter, so match case-insensitively. Pure.
-fn session_chord(key: &str, modifiers: Modifiers) -> Option<SessionChord> {
-    if !(modifiers.ctrl && modifiers.shift && !modifiers.alt) {
-        return None;
-    }
-    if key.eq_ignore_ascii_case("l") {
-        return Some(SessionChord::Last);
-    }
-    match key {
-        "PageDown" => Some(SessionChord::Next),
-        "PageUp" => Some(SessionChord::Previous),
-        _ => None,
-    }
-}
-
 /// The session to switch to when cycling from `current` by one step over `names` (the sidebar's
 /// session list, in order), wrapping — `forward` to the NEXT, else the PREVIOUS. `None` when
 /// `current` is not in `names` (nothing to anchor on). A single-session list yields `current` itself,
@@ -293,24 +251,6 @@ pub(crate) fn session_neighbour(names: &[String], current: &str, forward: bool) 
     let len = names.len();
     let step = if forward { 1 } else { len - 1 }; // len - 1 == -1 modulo len
     Some(names[(here + step) % len].clone())
-}
-
-/// Cycle this client to the previous / next session in list order — the `Ctrl+Shift+PageUp/Down`
-/// session chord. Reads the live session list + current session off the mirror and switches by NAME
-/// ([`session_neighbour`]); a no-op when alone (the neighbour resolves to `current`, which
-/// `switch_session` short-circuits).
-fn cycle_session(forward: bool) {
-    let slots = &use_terminal().slots;
-    let names: Vec<String> = slots.sessions().into_iter().map(|info| info.name).collect();
-    if let Some(next) = session_neighbour(&names, &slots.current_session(), forward) {
-        slots.switch_session(&next);
-    }
-}
-
-/// Switch to the LAST session — the `Ctrl+Shift+L` chord (tmux `switch-client -l`). Delegates to the
-/// host client, which keeps this client's MRU visit history; a no-op with no last session.
-fn switch_to_last_session() {
-    use_terminal().slots.switch_to_last_session();
 }
 
 /// A stable, allocation-free name for a bound action in the diagnostic trace ([`crate::diag`]) —
@@ -340,6 +280,7 @@ fn action_label(action: &BoundAction) -> &'static str {
         BoundAction::KillPane => "kill-pane",
         BoundAction::NewWindow => "new-window",
         BoundAction::SelectWindow { .. } => "select-window",
+        BoundAction::SwitchClient { .. } => "switch-client",
         BoundAction::KillWindow => "kill-window",
         BoundAction::RenameWindow => "rename-window",
         // Both move forms label as the VERB: the place says WHERE, and where the window landed is
@@ -457,7 +398,27 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         BoundAction::MoveWindow { place } => {
             use_terminal().slots.move_window(None, &place);
         }
-        // THE FIVE ACTIONS THAT ASK reach this function only through their own question being
+        // THE SESSION LEVEL (R314). The ring is the DAEMON's for the same reason the window ring
+        // above it is, and more sharply: this client's `sessions` mirror is refreshed by a poll, so
+        // a step resolved here could name a row that has moved — which is what the private
+        // `SessionChord` table this replaces actually did, walking `session_neighbour` over the
+        // mirror and then attaching BY NAME.
+        //
+        // The ASKING arm is absent here on the rule stated below: it arrives as an ANSWER.
+        BoundAction::SwitchClient { ask } => {
+            let slots = &use_terminal().slots;
+            match ask {
+                SwitchClientAsk::Step(step) => {
+                    slots.switch_session_toward(step);
+                }
+                SwitchClientAsk::LastViewed => slots.switch_to_last_session(),
+                SwitchClientAsk::Named(session) => {
+                    slots.switch_session(&session);
+                }
+                SwitchClientAsk::Ask => {}
+            }
+        }
+        // THE ACTIONS THAT ASK reach this function only through their own question being
         // ANSWERED, which is why they are not opened here: `route_key` calls `prompt::Ask::of`
         // before it performs anything, and a `confirm-before`'s yes re-enters this function with the
         // verb it guarded. Reached with an ask outstanding only if `Ask::of` answered `None` — a
@@ -581,7 +542,21 @@ pub(crate) fn route_key(
     match use_client_keys().route(prefixed, key, to_input_mods(modifiers)) {
         // The repeat window rides on `Routed::next`, which `ClientKeys::route` already stored — a
         // caller reading `again` here would be a second author of the mode transition.
-        Routed::Act { action, .. } => {
+        Routed::Act { action, again } => {
+            // AN OS AUTO-REPEAT IS NOT A SECOND PRESS unless the binding said so. `-r` is exactly
+            // the statement that holding this key is meaningful (tmux marks its arrows and its
+            // resizes and nothing else), so a binding without it acts once per press — which is
+            // what the GUI's private chord table did for its three session keys before R314 put
+            // them in this vocabulary, and what a ROOT binding needs most: held down, it would walk
+            // the session ring at the keyboard's repeat rate.
+            //
+            // `sprag-tui` cannot make this distinction and does not try: a terminal delivers an
+            // auto-repeat as an ordinary keystroke, so there is nothing to tell apart. tmux on a
+            // terminal is in the same position.
+            if repeat && again.is_none() {
+                crate::diag::chord(action_label(&action), "drop-repeat", active);
+                return false;
+            }
             crate::diag::chord(action_label(&action), "act", active);
             // An action that cannot be carried out without an ANSWER opens a question instead of
             // acting, and WHICH ones those are is `Ask::of`'s decision alone — asked here for every
@@ -632,23 +607,11 @@ pub(crate) fn route_key(
         }
         return true;
     }
-    // Session chords switch this CLIENT's session (not the PTY). Checked BEFORE the window chords so
-    // `Ctrl+Shift+PageUp/Down` reaches session cycling rather than the Ctrl-only tile focus-cycle.
-    // DISCRETE (act once per press): a held chord's OS auto-repeat is dropped, like the focus /
-    // dock-toggle window chords.
-    if let Some(chord) = session_chord(key, modifiers) {
-        if repeat {
-            crate::diag::chord(chord.label(), "drop-repeat", active);
-            return false;
-        }
-        crate::diag::chord(chord.label(), "act", active);
-        match chord {
-            SessionChord::Last => switch_to_last_session(),
-            SessionChord::Next => cycle_session(true),
-            SessionChord::Previous => cycle_session(false),
-        }
-        return true;
-    }
+    // The SESSION chords are gone from here (R314). `Ctrl+Shift+L` / `PageUp` / `PageDown` are ROOT
+    // bindings of the one vocabulary now, so they were already taken by the keymap route above —
+    // where `sprag list-keys` can name them, a config file can unbind them, and `sprag-tui` has
+    // them too. They still reach the session before `window_chord` sees them, because that route
+    // runs first.
     // Reserved window chords act on the layout, not the PTY.
     if let Some(chord) = window_chord(key, modifiers) {
         // Discrete chords (dock-toggle, focus-cycle) act once per press: drop an OS
@@ -1678,7 +1641,7 @@ mod tests {
         // An arrow WITHOUT both modifiers injects (Shift+Arrow selects, Ctrl+Arrow word-moves).
         assert_eq!(window_chord("ArrowUp", ctrl), None);
         assert_eq!(window_chord("ArrowUp", shift), None);
-        // Ctrl+Shift+Page is NOT a window chord — it belongs to the SESSION cycle (`session_chord`);
+        // Ctrl+Shift+Page is NOT a window chord — it is a ROOT BINDING (`switch-client`, R314);
         // the page chords here take EXACTLY ONE of Ctrl / Shift, so neither shadows the other.
         assert_eq!(window_chord("PageUp", ctrl_shift), None);
         assert_eq!(window_chord("PageDown", ctrl_shift), None);
@@ -1711,53 +1674,104 @@ mod tests {
         assert_eq!(jump_target(&positions, 5, max, "Enter"), None);
     }
 
-    /// The session chords are `Ctrl+Shift+{L, PageUp, PageDown}`, DISJOINT from the window page
-    /// chords (Ctrl-only / Shift-only), the clipboard chords (Ctrl+Shift+C/V), and the dock toggle
-    /// (Ctrl+Shift+Enter). `Alt` excludes them; `L` is case-insensitive (Shift upper-cases it).
+    /// The session PAGE chords are BINDINGS now (R314), not a private table — so this drives the
+    /// shared keymap and reads back the ACTION, which is the thing a user can also see in
+    /// `sprag list-keys`.
+    ///
+    /// ⚠ It used to call a `session_chord` function in this file that R314 deleted, and RE-AIMING
+    /// it found a live defect in the replacement: the third chord, `Ctrl+Shift+L`, was bound as
+    /// `C-S-L` and **that binding also took `Ctrl-L`** — the shell's clear-screen — because
+    /// `KeySpec::matches` masks Shift off a character key (R306) and folds an ASCII letter's case
+    /// under `Ctrl`. It is unbound now and `prefix L` carries the verb; the last two assertions
+    /// here are what say so, and they are the reason this test exists in this form.
     #[test]
-    fn session_chord_recognizes_last_and_the_cycle_chords() {
-        let ctrl_shift = Modifiers {
+    fn the_session_chords_are_root_bindings_of_the_shared_vocabulary() {
+        use sprag_host::keymap::{Keymap, PrefixMode, Routed, SwitchClientAsk};
+        use sprag_terminal::OrderStep;
+        let keymap = Keymap::default();
+        let now = std::time::Instant::now();
+        let acted = |key: &str, mods: sprag_input::Modifiers| match keymap.route(
+            PrefixMode::ToPane,
+            now,
+            key,
+            mods,
+        ) {
+            Routed::Act { action, .. } => Some(action),
+            _ => None,
+        };
+        let ctrl_shift = sprag_input::Modifiers {
             ctrl: true,
             shift: true,
-            ..Modifiers::default()
+            ..sprag_input::Modifiers::default()
         };
-        // Last, and the two cycle directions (PageDown = next, PageUp = previous).
-        assert_eq!(session_chord("l", ctrl_shift), Some(SessionChord::Last));
-        assert_eq!(session_chord("L", ctrl_shift), Some(SessionChord::Last));
+        let switching = |ask| Some(BoundAction::SwitchClient { ask });
         assert_eq!(
-            session_chord("PageDown", ctrl_shift),
-            Some(SessionChord::Next)
+            acted("PageDown", ctrl_shift),
+            switching(SwitchClientAsk::Step(OrderStep::Next)),
         );
         assert_eq!(
-            session_chord("PageUp", ctrl_shift),
-            Some(SessionChord::Previous)
+            acted("PageUp", ctrl_shift),
+            switching(SwitchClientAsk::Step(OrderStep::Previous)),
         );
-        // Disjoint from the OTHER Ctrl+Shift chords (clipboard C/V, dock-toggle Enter) and needs both
-        // Ctrl AND Shift; Alt excludes it.
-        assert_eq!(session_chord("c", ctrl_shift), None);
-        assert_eq!(session_chord("Enter", ctrl_shift), None);
-        assert_eq!(
-            session_chord(
-                "l",
-                Modifiers {
-                    ctrl: true,
-                    ..Modifiers::default()
-                }
-            ),
-            None
-        );
-        assert_eq!(
-            session_chord(
-                "l",
-                Modifiers {
-                    ctrl: true,
-                    shift: true,
-                    alt: true,
-                    ..Modifiers::default()
-                }
-            ),
-            None
-        );
+        // Disjoint from the OTHER Ctrl+Shift chords, which this vocabulary must NOT have taken:
+        // clipboard copy/paste and the dock toggle are still the GUI's own and still reach it,
+        // because an unbound key routes `ToPane` and falls through to the chord checks.
+        assert_eq!(acted("c", ctrl_shift), None);
+        assert_eq!(acted("v", ctrl_shift), None);
+        assert_eq!(acted("Enter", ctrl_shift), None);
+        // Both modifiers are required, and Alt excludes it — for a NAMED key `KeySpec::matches`
+        // compares Shift exactly, so this is a property of the binding rather than of a
+        // hand-written predicate.
+        for mods in [
+            sprag_input::Modifiers {
+                ctrl: true,
+                ..sprag_input::Modifiers::default()
+            },
+            sprag_input::Modifiers {
+                shift: true,
+                ..sprag_input::Modifiers::default()
+            },
+            sprag_input::Modifiers {
+                ctrl: true,
+                shift: true,
+                alt: true,
+                ..sprag_input::Modifiers::default()
+            },
+        ] {
+            assert_eq!(
+                acted("PageUp", mods),
+                None,
+                "{mods:?} is not the chord, so the page key stays the GUI's own",
+            );
+        }
+        // ⚠ `Ctrl+Shift+L` IS NOT BOUND, and `Ctrl-L` STILL REACHES THE SHELL. A `C-S-L` binding
+        // takes both, because Shift is masked off a character key and a letter's case is folded
+        // under Ctrl — so the first assertion is the feature that was deliberately dropped and the
+        // second is the clear-screen it would have cost every pane in every client.
+        for mods in [
+            ctrl_shift,
+            sprag_input::Modifiers {
+                ctrl: true,
+                ..sprag_input::Modifiers::default()
+            },
+        ] {
+            for key in ["L", "l"] {
+                assert_eq!(
+                    acted(key, mods),
+                    None,
+                    "{key} under {mods:?} belongs to the program in the pane",
+                );
+            }
+        }
+        // THE CONTROL: the page keys with no modifiers are the pane's too, so the assertions above
+        // are about the chord and not about the key.
+        for key in ["PageUp", "PageDown"] {
+            assert_eq!(
+                acted(key, sprag_input::Modifiers::default()),
+                None,
+                "{key} unmodified belongs to the program in the pane",
+            );
+        }
     }
 
     /// Session cycling is the wrapping LIST neighbour of the current session — `forward` to the next,

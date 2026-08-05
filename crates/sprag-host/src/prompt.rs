@@ -101,9 +101,12 @@ pub enum Ask {
 /// What a line ask will name.
 ///
 /// One variant per LINE-asking verb, rather than a generic "verb with a hole" carrying a command
-/// template. Three of the four are renames and the fourth is not
-/// ([`MoveBefore`](Self::MoveBefore)): what the arms share is that the answer is a NAME the daemon
-/// resolves, not that the act is a rename. tmux's `command-prompt "rename-window '%%'"` substitutes the answer into TEXT and
+/// template. Three of the five are renames and two are not
+/// ([`MoveBefore`](Self::MoveBefore) and [`SwitchTo`](Self::SwitchTo)): what the arms share is that
+/// the answer is a NAME the daemon resolves, not that the act is a rename. The two that are not
+/// renames are the two whose answer is an ADDRESS of something ELSE, and that is exactly the line
+/// this vocabulary lets a binding leave blank — see [`BoundAction::SwitchClient`].
+/// tmux's `command-prompt "rename-window '%%'"` substitutes the answer into TEXT and
 /// re-parses it, which is why it has to quote; here the answer fills a TYPED slot, so an answer
 /// beginning with `-` cannot become a flag. The wrong thing is unrepresentable rather than escaped.
 ///
@@ -128,6 +131,14 @@ pub enum Subject {
     /// [`WindowName`]'s grammar, committed through one function — and splitting it out would give
     /// both frontends a second prompt to route.
     MoveBefore,
+    /// The SESSION this client is to be moved to — `switch-client -t` with the name left off
+    /// (R314).
+    ///
+    /// [`MoveBefore`](Self::MoveBefore)'s sibling one level up: an ADDRESS the user supplies per
+    /// press, not a new name for the subject. It is what this product has instead of tmux's
+    /// `choose-tree` — a name rather than a list, which is why `prefix s` is deliberately left
+    /// unbound (see [`BoundAction::SwitchClient`]).
+    SwitchTo,
 }
 
 impl Subject {
@@ -144,6 +155,7 @@ impl Subject {
             // tmux asks `(move-window)` here too, and then wants an INDEX. The verb is the same
             // and the vocabulary is not, which is the whole of R310 in one line of a prompt.
             Self::MoveBefore => "(move-window --before)",
+            Self::SwitchTo => "(switch-client)",
         }
     }
 
@@ -172,7 +184,10 @@ impl Subject {
             // it. There is no current answer to "which window shall this go in front of" — seeding
             // the neighbour would make the commonest press a no-op the user had to notice and
             // clear.
-            Self::MoveBefore => String::new(),
+            //
+            // The same holds one level up: seeding the session the client is ALREADY on would make
+            // pressing Enter a switch to where it already is.
+            Self::MoveBefore | Self::SwitchTo => String::new(),
         }
     }
 
@@ -201,6 +216,12 @@ impl Subject {
             // catches a malformed answer here and leaves the wire refusal with one cause (no
             // window is called that), exactly as the rename arms do.
             Self::MoveBefore => WindowName::parse(answer)
+                .map(drop)
+                .map_err(|e| e.to_string()),
+            // A SESSION address, so a session's grammar — the same trade the anchor makes, one
+            // level up: the refusal that survives to the wire has one cause (no session is called
+            // that) rather than being a disjunction of every rule.
+            Self::SwitchTo => SessionName::parse(answer)
                 .map(drop)
                 .map_err(|e| e.to_string()),
         }
@@ -256,6 +277,15 @@ impl Subject {
                     }),
                 }
             }
+            // ONE cause, which is what `check` above buys: the grammar is already satisfied, so a
+            // refusal here means the daemon has no session by that name. It reports the name the
+            // daemon LANDED on rather than the one typed — a session may have been renamed while
+            // the user was typing, and echoing the argument would tell them they are somewhere
+            // they are not (R295's rule).
+            Self::SwitchTo => host
+                .switch_session_named(answer)
+                .map(|landed| format!("switched to {landed}"))
+                .ok_or_else(|| format!("no session is called {answer:?}")),
         }
     }
 }
@@ -292,6 +322,12 @@ impl Ask {
             BoundAction::RenameSession => Some(line(Subject::Session)),
             BoundAction::RenamePane => pane.map(|id| line(Subject::Pane(id))),
             BoundAction::MoveWindowBefore => Some(line(Subject::MoveBefore)),
+            // Only the arm with no name in it asks; `switch-client -t work` acts at once, and
+            // `-n`/`-p`/`-l` carry their whole content. `BoundAction::asks` decides that, and this
+            // reads it through the pattern rather than restating the rule.
+            BoundAction::SwitchClient {
+                ask: crate::keymap::SwitchClientAsk::Ask,
+            } => Some(line(Subject::SwitchTo)),
             BoundAction::ConfirmBefore { action } => {
                 let (question, consequence, verb) = confirm_question(action, host, pane);
                 Some(Self::Confirm {

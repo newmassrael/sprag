@@ -4048,14 +4048,28 @@ fn both_key_tables_are_accepted_and_a_third_is_refused() {
     assert!(run.ok, "and so does its long form: {}", run.stderr);
 
     let listed = sprag_env(&socket_path(), &["list-keys"], &env);
-    let root_lines = listed
+    let root_lines: Vec<&str> = listed
         .stdout
         .lines()
         .filter(|line| line.contains("-T root"))
-        .count();
+        .collect();
+    // The two just bound, PLUS the two session chords the root table ships with (R314) — asserted
+    // as the SET rather than as a count, so the claim survives a default being added and still
+    // fails if one spelling produced two lines.
+    let bound_here: Vec<&&str> = root_lines
+        .iter()
+        .filter(|line| line.contains("F5") || line.contains("F6"))
+        .collect();
     assert_eq!(
-        root_lines, 2,
+        bound_here.len(),
+        2,
         "one line each, not one per spelling:\n{}",
+        listed.stdout
+    );
+    assert_eq!(
+        root_lines.len(),
+        4,
+        "and nothing else appeared in root beyond the two shipped chords:\n{}",
         listed.stdout
     );
 
@@ -4222,9 +4236,22 @@ fn one_key_in_two_tables_is_two_bindings() {
             && line.contains("split-window -h")),
         "and the prefix table's % is STILL there:\n{listed}",
     );
+    // Back to what the root table SHIPS with (R314: the two session chords), not to empty — and
+    // asserted as exactly that rather than as an absence, so the unbind is still what is being
+    // measured. `%` is what must be gone; the defaults must not be.
     assert!(
-        !listed.contains("-T root"),
-        "while the root table is empty again:\n{listed}",
+        !listed
+            .lines()
+            .any(|line| line.contains("-T root") && line.contains('%')),
+        "while the root % is gone again:\n{listed}",
+    );
+    assert_eq!(
+        listed
+            .lines()
+            .filter(|line| line.contains("-T root"))
+            .count(),
+        2,
+        "and the two shipped session chords are untouched by any of it:\n{listed}",
     );
 }
 

@@ -414,6 +414,38 @@ impl ActionSubject {
     }
 }
 
+/// WHICH session a [`BoundAction::SwitchClient`] moves this client to.
+///
+/// [`SelectWindowAsk`]'s twin one level up, and the extra arm is where the two differ: a window
+/// ring has no "the one I was on before" to go back to, because a window's identity is only
+/// meaningful inside its session, while a CLIENT visits sessions and the daemon remembers.
+///
+/// The wire counterpart is [`crate::wire::AttachAsk`], and this is deliberately NOT that type:
+/// [`Ask`](Self::Ask) has no wire form at all (a prompt is a client-side act that produces a
+/// [`Named`](Self::Named) later), and `AttachAsk` has a `Scoped` arm no keystroke can mean. Two
+/// grammars because two vocabularies, each complete at its own surface — the shape
+/// [`SelectWindowAsk`] and [`sprag_terminal::WindowPlace`] already take.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SwitchClientAsk {
+    /// `-n` / `-p` — one step along the daemon's session order, wrapping.
+    Step(OrderStep),
+    /// `-l` — the session this client was viewing BEFORE this one (tmux `switch-client -l`).
+    LastViewed,
+    /// `-t <session>` — the session with this NAME, fixed in the config file.
+    ///
+    /// A `String` and not a [`sprag_terminal::SessionName`], on this vocabulary's standing rule
+    /// that a client never owns a name's grammar: the daemon parses it, and a binding that refused
+    /// a name at CONFIG-LOAD time would reject a config for naming a session the user is about to
+    /// create.
+    Named(String),
+    /// `-t` with no name — ASK which session, then go there.
+    ///
+    /// The one thing `select-window` has no counterpart for, and it is honest here for
+    /// [`BoundAction::MoveWindowBefore`]'s reason: the argument is an ADDRESS the user picks per
+    /// press, not the whole content of the act the way a rename's is.
+    Ask,
+}
+
 impl fmt::Display for ActionSubject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.heading())
@@ -670,6 +702,40 @@ pub enum BoundAction {
     /// fingers already carry it, and the alternative was spending one of a shrinking set of free
     /// letters on a guess.
     RenamePane,
+    /// `switch-client -n|-p|-l|-t [<session>]` — point THIS client at another session of the same
+    /// daemon (tmux `prefix (` / `prefix )` / `prefix L`).
+    ///
+    /// # The first arm whose subject is the CLIENT rather than what it is looking at
+    ///
+    /// It is [`DetachClient`](Self::DetachClient)'s twin, which is why they share
+    /// [`ActionSubject::Client`]: one gives the terminal back, the other points it somewhere else,
+    /// and NEITHER changes any session. Filing it under
+    /// [`ActionSubject::Session`] would put it beside
+    /// `rename-session`, which is a verb that edits a session — a different kind of act that only
+    /// shares a noun.
+    ///
+    /// # Why the vocabulary needed it at all
+    ///
+    /// The keys existed and the vocabulary did not have them. `sprag-gui` held a private
+    /// `SessionChord` table with three hard-coded chords, so `sprag list-keys` could not name them
+    /// (R308 derives every row from this enum), a config file could not rebind or unbind them, and
+    /// `sprag-tui` had no way to reach another session AT ALL. The step among them was resolved by
+    /// walking that client's own `sessions` poll mirror and attaching BY NAME — R304's defect
+    /// reached by a different route, one door from the arm R304 fixed.
+    ///
+    /// # What each arm may carry
+    ///
+    /// `-n`/`-p` carry a DIRECTION and no origin, on [`SelectPaneToward`](Self::SelectPaneToward)'s
+    /// rule: a keystroke can only ever mean "from where I am", and the daemon holds where that is.
+    /// `-l` carries nothing, because the answer is the daemon's visit history and a client that
+    /// held its own would be R304 again. `-t <session>` carries a NAME, which is exactly the kind
+    /// of argument a config CAN fix — `bind 1 switch-client -t work` means the same thing every
+    /// press, and it is how the rival's indexed `switch_workspace 1..9` is said here. `-t` with the
+    /// name LEFT OFF asks for one, [`MoveWindowBefore`](Self::MoveWindowBefore)'s rule.
+    SwitchClient {
+        /// Which session to move to.
+        ask: SwitchClientAsk,
+    },
     /// `confirm-before <action>` — ask a yes/no question naming what will be destroyed, and carry
     /// `action` out only if the answer is yes (tmux's `prefix &` guard).
     ///
@@ -764,7 +830,7 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 17] = [
+    pub const VOCABULARY: [&'static str; 18] = [
         "detach-client",
         "send-prefix",
         "list-keys",
@@ -781,6 +847,7 @@ impl BoundAction {
         "rename-window",
         "rename-session",
         "rename-pane",
+        "switch-client -n|-p|-l|-t [<session>]",
         "confirm-before <action>",
     ];
 
@@ -799,6 +866,10 @@ impl BoundAction {
             | Self::RenamePane
             | Self::MoveWindowBefore
             | Self::ConfirmBefore { .. } => true,
+            // The ONE arm whose answer depends on its argument, and that is what `-t` with the
+            // name left off means. It also gives `confirm-before switch-client -t` its refusal for
+            // free, through the no-nested-prompt rule `parse` reads this for.
+            Self::SwitchClient { ask } => matches!(ask, SwitchClientAsk::Ask),
             Self::DetachClient
             | Self::SendPrefix
             | Self::ListKeys
@@ -839,7 +910,10 @@ impl BoundAction {
         match self {
             Self::RenamePane | Self::KillPane => true,
             Self::ConfirmBefore { action } => action.needs_pane(),
-            Self::DetachClient
+            // A client verb, so it acts wherever the focus is — including nowhere. A user whose
+            // pointer is on the session rail must still be able to press `prefix )`.
+            Self::SwitchClient { .. }
+            | Self::DetachClient
             | Self::SendPrefix
             | Self::ListKeys
             | Self::SplitWindow { .. }
@@ -891,6 +965,9 @@ impl BoundAction {
             | Self::KillWindow
             | Self::RenameWindow => ActionSubject::Window,
             Self::RenameSession => ActionSubject::Session,
+            // The CLIENT, with `detach-client` — see the arm's own doc. It changes no session; it
+            // changes which one this client is looking at.
+            Self::SwitchClient { .. } => ActionSubject::Client,
             Self::ConfirmBefore { action } => action.subject(),
         }
     }
@@ -942,7 +1019,8 @@ impl BoundAction {
             | Self::KillWindow
             | Self::RenameWindow
             | Self::RenameSession
-            | Self::RenamePane => vec![self.verb()],
+            | Self::RenamePane
+            | Self::SwitchClient { .. } => vec![self.verb()],
         }
     }
 
@@ -1138,6 +1216,40 @@ impl BoundAction {
                      takes are what a keystroke cannot carry",
                 )),
             },
+            // `select-window`'s shape one LEVEL up, plus the two arms a window ring cannot have:
+            // `-l` (only a client visits things) and a bare `-t` (only an ADDRESS may be left for
+            // the user to supply — `move-window --before`'s rule).
+            "switch-client" => match flags.as_slice() {
+                ["-n"] => Ok(Self::SwitchClient {
+                    ask: SwitchClientAsk::Step(OrderStep::Next),
+                }),
+                ["-p"] => Ok(Self::SwitchClient {
+                    ask: SwitchClientAsk::Step(OrderStep::Previous),
+                }),
+                ["-n", "-p"] | ["-p", "-n"] => {
+                    Err(bad("-n and -p name one direction; give only one"))
+                }
+                ["-l"] => Ok(Self::SwitchClient {
+                    ask: SwitchClientAsk::LastViewed,
+                }),
+                ["-t"] => Ok(Self::SwitchClient {
+                    ask: SwitchClientAsk::Ask,
+                }),
+                ["-t", session] => Ok(Self::SwitchClient {
+                    ask: SwitchClientAsk::Named((*session).to_owned()),
+                }),
+                // Named rather than folded into the catch-all: tmux's `-c` targets ANOTHER client,
+                // which this daemon cannot do — its clients drive their own re-attach — and a user
+                // who typed it is owed that fact rather than a list of the flags that do work.
+                ["-c", ..] => Err(bad(
+                    "sprag has no -c: a client re-attaches itself, so a binding switches the \
+                     client that pressed the key and no other",
+                )),
+                _ => Err(bad(
+                    "a binding steps along the session ring (-n/-p), goes back to the last one \
+                     (-l), names one (-t <session>) or asks for one (-t)",
+                )),
+            },
             // The three lifecycle verbs that take nothing, refused loudly for a flag rather than
             // ignoring it: a user who wrote one meant something by it, and this vocabulary has no
             // reading for it.
@@ -1286,6 +1398,16 @@ impl fmt::Display for BoundAction {
                 SelectWindowAsk::Step(OrderStep::Previous) => f.write_str("select-window -p"),
                 SelectWindowAsk::Named(window) => write!(f, "select-window -t {window}"),
             },
+            // The same four flags a shell takes, so a user reads a row out of `list-keys` and types
+            // it back unchanged. The bare `-t` renders BARE, which is what makes the asking form
+            // round-trip through `parse` rather than becoming a name-less `-t <>`.
+            Self::SwitchClient { ask } => match ask {
+                SwitchClientAsk::Step(OrderStep::Next) => f.write_str("switch-client -n"),
+                SwitchClientAsk::Step(OrderStep::Previous) => f.write_str("switch-client -p"),
+                SwitchClientAsk::LastViewed => f.write_str("switch-client -l"),
+                SwitchClientAsk::Named(session) => write!(f, "switch-client -t {session}"),
+                SwitchClientAsk::Ask => f.write_str("switch-client -t"),
+            },
             // The FLAGS are the CLI verb's own, not a second spelling: a user reads `move-window
             // -p` out of `list-keys` and types it into a shell unchanged. `-n`/`-p` are
             // `select-window`'s two letters for the same two directions, which is the whole reason
@@ -1401,14 +1523,32 @@ impl Default for Keymap {
             repeat: true,
             ..bind(spec, action)
         };
+        // A ROOT binding: no prefix, the key acts wherever it is pressed. See the table's own
+        // comment below for why three of them ship.
+        let rooted = |spec: &str, action| Bind {
+            table: KeyTable::Root,
+            ..bind(spec, action)
+        };
+        let switching = |ask| BoundAction::SwitchClient { ask };
         let toward = |dir| BoundAction::SelectPaneToward { dir };
         let swapping = |dir| BoundAction::SwapPaneToward { dir };
         let sizing = |dir, cells| BoundAction::ResizePaneToward { dir, cells };
         Self {
             prefix: key("C-b"),
             repeat_time: DEFAULT_REPEAT_TIME,
-            // The ROOT table ships empty, which is also tmux's state for keyboard keys: its own
-            // default root table holds mouse bindings only (measured from `list-keys -T root`).
+            // THE ROOT TABLE SHIPS WITH TWO, and until R314 it shipped empty — which is also
+            // tmux's state for keyboard keys (its default root table holds mouse bindings only,
+            // measured from `list-keys -T root`). The change is deliberate and it takes NOTHING
+            // from a user that was theirs: `sprag-gui` already stole exactly these three chords
+            // from the pane, in a private `SessionChord` table that `list-keys` could not name and
+            // a config file could not unbind. Moving them here is what makes them visible and
+            // rebindable, and it gives `sprag-tui` — which had NO way to reach another session —
+            // the same three keys.
+            //
+            // They are root rather than prefix because that is the gesture they already were, and
+            // because the prefix set below carries tmux's own three for the same verb: a tmux
+            // user's fingers find `prefix (` / `prefix )` / `prefix L`, and a herdr or GUI user's
+            // find the chords. One vocabulary, two idioms, no second table.
             //
             // THE SIXTEEN REPEATING BINDINGS are the four arrows, the four shifted ones, and
             // `resize-pane`'s eight — which is every default tmux marks `-r` among the actions
@@ -1526,6 +1666,53 @@ impl Default for Keymap {
                 // build out of a template. Here the anchor is a WINDOW NAME rather than an index,
                 // so the answer fills a typed slot and there is nothing to quote.
                 bind(".", BoundAction::MoveWindowBefore),
+                // THE SESSION LEVEL, on tmux's own three keys (R314). Before this round the whole
+                // vocabulary stopped at the window: a user could rearrange every pane and window
+                // they could see and had no way to say "my OTHER session" at all, unless they were
+                // holding a mouse in `sprag-gui`.
+                //
+                // `(` and `)` are tmux's `switch-client -p` / `-n` verbatim, and `L` is its
+                // `switch-client -l`. NOT repeating, for `prefix n`/`p`'s reason one level up and
+                // more so: a held session key walks a ring whose every step swaps the user's whole
+                // screen, and three unintended repeats land them two workspaces from where they
+                // meant to be.
+                //
+                // tmux's `prefix s` is `choose-tree`, an interactive list, and it is deliberately
+                // LEFT UNBOUND: `switch-client -t` (the asking form) is a NAME PROMPT, so putting
+                // it on those fingers would answer a gesture with a different one. It stays
+                // bindable for anyone who wants it — R305's rule for `kill-window`, applied to a
+                // key whose meaning rather than whose guard is missing.
+                bind("(", switching(SwitchClientAsk::Step(OrderStep::Previous))),
+                bind(")", switching(SwitchClientAsk::Step(OrderStep::Next))),
+                bind("L", switching(SwitchClientAsk::LastViewed)),
+                // TWO of the three chords `sprag-gui` held privately until R314, in the ONE table
+                // now. Same keys, same acts — what changes is that `sprag list-keys` names them,
+                // `prefix ?` paints them, a config file can unbind them, and `sprag-tui` has them.
+                //
+                // THE THIRD, `Ctrl+Shift+L`, IS DELIBERATELY NOT HERE, and the reason is a property
+                // of this vocabulary rather than an oversight. `KeySpec::matches` masks Shift off a
+                // CHARACTER key (R306: a character already carries its shift state, and pretending
+                // otherwise stopped `prefix %` firing in the GUI on a real keyboard) and folds an
+                // ASCII letter's case under `Ctrl` (a terminal sends `Ctrl-L` as the C0 byte
+                // `0x0c`, which cannot say which case was typed). So `C-S-L` is not a key this
+                // vocabulary can tell from `C-l`, and binding it would take the shell's
+                // clear-screen from every pane in every client. THE VERB IS NOT LOST — `prefix L`
+                // above is tmux's own key for it and is exact, and `switch-client -l` binds to
+                // anything a user prefers. The GUI's private chord could tell the two apart because
+                // winit reports the modifier; `sprag-tui` reads a byte that does not, and a
+                // vocabulary both clients share cannot rest on what only one of them can see.
+                //
+                // The two PAGE chords have no such problem: `PageUp`/`PageDown` are NAMED keys, so
+                // Shift is compared EXACTLY, and `C-S-PageUp` stays disjoint from the Ctrl-only and
+                // Shift-only page chords `sprag-gui` keeps for its own scroll and focus-cycle.
+                rooted(
+                    "C-S-PageDown",
+                    switching(SwitchClientAsk::Step(OrderStep::Next)),
+                ),
+                rooted(
+                    "C-S-PageUp",
+                    switching(SwitchClientAsk::Step(OrderStep::Previous)),
+                ),
                 // tmux's own order (`Up Down Left Right`), and its own `-r`: holding the prefix
                 // table open is what makes `prefix Left Left Left` walk three panes instead of one.
                 repeating("ArrowUp", toward(PaneDir::Up)),
@@ -2393,7 +2580,7 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 19;
+    const ARMS: usize = 20;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
@@ -2422,7 +2609,8 @@ mod tests {
             BoundAction::RenameWindow => 15,
             BoundAction::RenameSession => 16,
             BoundAction::RenamePane => 17,
-            BoundAction::ConfirmBefore { .. } => 18,
+            BoundAction::SwitchClient { .. } => 18,
+            BoundAction::ConfirmBefore { .. } => 19,
         }
     }
 
@@ -2459,6 +2647,9 @@ mod tests {
             BoundAction::RenameWindow,
             BoundAction::RenameSession,
             BoundAction::RenamePane,
+            BoundAction::SwitchClient {
+                ask: SwitchClientAsk::Step(OrderStep::Next),
+            },
             BoundAction::ConfirmBefore {
                 action: Box::new(BoundAction::KillWindow),
             },
@@ -2707,12 +2898,16 @@ mod tests {
         );
     }
 
-    /// The defaults ARE tmux's table for the actions sprag's clients have — and the four rows that
-    /// are NOT tmux's are the last four, which is why this asserts the whole list in order.
+    /// The defaults ARE tmux's table for the actions sprag's clients have — and the rows that are
+    /// NOT tmux's are named where they are added, which is why this asserts the whole list in order.
     ///
     /// The REPEAT flag is asserted with each row rather than in a test of its own, because `-r` is
     /// half of what a default binding IS: tmux's four arrows repeat and its other five do not, and
     /// a table that got the keys right and the flags wrong would still be the wrong table.
+    ///
+    /// The three `C-S-` rows are ROOT bindings (R314) and print without a prefix for that reason;
+    /// `the_root_table_holds_exactly_the_session_chords` is what says which TABLE they are in,
+    /// since this projection cannot show it.
     #[test]
     fn the_defaults_are_tmuxs_table() {
         let keymap = Keymap::default();
@@ -2773,6 +2968,13 @@ mod tests {
                 "< move-window -p",
                 "> move-window -n",
                 ". move-window --before",
+                // tmux's three session keys (R314), then the two ROOT chords `sprag-gui` used
+                // to hold privately. The chords print without a prefix because they need none.
+                "( switch-client -p",
+                ") switch-client -n",
+                "L switch-client -l",
+                "C-S-PageDown switch-client -n",
+                "C-S-PageUp switch-client -p",
                 // tmux's four `-r` rows, read from `list-keys -T prefix` on tmux 3.2a. Its own
                 // spelling is `Up`/`Down`/`Left`/`Right`; sprag's key vocabulary is the WIRE's, so
                 // one keystroke has one name across the config, the CLI and both frontends.
@@ -3377,6 +3579,13 @@ mod tests {
     ///
     /// tmux accepts this combination and does nothing with it (measured). Accepting it here would be
     /// a `-r` a user can see in `list-keys` and never observe.
+    ///
+    /// ⚠ The second assertion used to read *"every bind is in the PREFIX table"*, which was only an
+    /// assertion at all while the root table shipped EMPTY — R314 puts three session chords in it,
+    /// and that spelling would have failed for a reason with nothing to do with the claim. Rewritten
+    /// around what it always meant: the refused KEY is not in the table. It discriminates the same
+    /// way (an accepted bind lands `F5` and the count moves) and no longer rests on a fact this
+    /// vocabulary is free to change.
     #[test]
     fn a_root_binding_cannot_repeat() {
         let mut keymap = Keymap::default();
@@ -3385,8 +3594,54 @@ mod tests {
             .expect_err("repeat has no prefix table to hold open");
         assert!(matches!(refused, KeyError::RepeatInRoot(_)));
         assert!(
-            keymap.binds().all(|bind| bind.table() == KeyTable::Prefix),
+            !keymap.binds().any(|bind| bind.key().to_string() == "F5"),
             "and the refused binding did not land",
+        );
+        assert!(
+            keymap.binds().any(|bind| bind.table() == KeyTable::Root),
+            "the CONTROL: the root table is NOT empty, so the assertion above is about F5 rather \
+             than about the table having nothing in it",
+        );
+    }
+
+    /// The ROOT table holds EXACTLY the three session chords, and every other default is behind the
+    /// prefix (R314).
+    ///
+    /// `the_defaults_are_tmuxs_table` prints keys and actions and cannot show a TABLE, so a chord
+    /// that silently moved to the prefix — where `C-S-PageDown` would need `C-b` first and stop
+    /// being the gesture `sprag-gui` users already have — would pass it unchanged. This is what
+    /// says which table.
+    ///
+    /// It asserts the SET both ways round: nothing else leaks into root (where it would steal a key
+    /// from every program running in a pane, with no prefix to opt out of), and none of the three
+    /// leaks out of it.
+    ///
+    /// REVERT-PROOF: spell any of the three with `bind` instead of `rooted` and the first
+    /// assertion drops a row; add a fourth root default and it grows one.
+    #[test]
+    fn the_root_table_holds_exactly_the_session_chords() {
+        let keymap = Keymap::default();
+        let in_table = |table| {
+            keymap
+                .binds()
+                .filter(move |bind| bind.table() == table)
+                .map(|bind| format!("{} {}", bind.key(), bind.action()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            in_table(KeyTable::Root),
+            vec![
+                "C-S-PageDown switch-client -n",
+                "C-S-PageUp switch-client -p",
+            ],
+            "the root table holds the three chords sprag-gui used to hold privately, and nothing \
+             else: a root binding takes its key from every program in every pane",
+        );
+        assert!(
+            in_table(KeyTable::Prefix)
+                .iter()
+                .all(|row| !row.starts_with("C-S-")),
+            "and none of them is ALSO behind the prefix, which would be two keys for one act",
         );
     }
 
