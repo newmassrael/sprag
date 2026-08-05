@@ -52,8 +52,8 @@ use portable_pty::{
 };
 use serde_json::{Value, json};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, PANES_SLOT, RENAME_SESSION_ACTION,
-    SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, WINDOWS_SLOT,
+    FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
+    RENAME_SESSION_ACTION, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, WINDOWS_SLOT,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -86,6 +86,25 @@ const POLL: Duration = Duration::from_millis(20);
 /// The size the client's terminal boots at — deliberately DIFFERENT from the size the daemon gives
 /// its boot pane, so "the pane matched the terminal" cannot be true by accident.
 const BOOT_PTY: (u16, u16) = (80, 24);
+
+/// The rectangle the PANES get out of that terminal — one row less, because the client reserves the
+/// bottom row for its status line (R316, `sprag_tui::Split`).
+///
+/// **A separate constant and not `BOOT_PTY` with a comment**, because the difference is the whole
+/// content of a claim this file makes forty times: the client reports the area it can actually give
+/// the panes, so the arbitrated window is that area and not the terminal. A test that expected the
+/// terminal's own height would be asserting that the status row is drawn OVER a pane's last line.
+const BOOT_PANES: (u16, u16) = panes_of(BOOT_PTY);
+
+/// The rectangle a `sprag-tui` on a `terminal`-sized pseudoterminal gives its PANES — the terminal
+/// less its status row.
+///
+/// ONE derivation, so a test that resizes a client and then asserts what the daemon arbitrated is
+/// stating the client's rule rather than re-deriving it. `sprag_tui::Split::of` is the rule; this is
+/// what it means for a caller that only wants the number.
+const fn panes_of(terminal: (u16, u16)) -> (u16, u16) {
+    (terminal.0, terminal.1 - 1)
+}
 
 /// The size the daemon's boot pane starts at, which no test expects to still hold once a client has
 /// attached to it.
@@ -670,8 +689,7 @@ impl Tui {
         text.trim_end().to_owned()
     }
 
-    /// The column `col` read down every row of the screen — how a divider is asserted, and the
-    /// diagnostic when one is not where it should be.
+    /// The column `col` read down every row of the screen, INCLUDING the client's status row.
     fn column(&self, col: u16) -> String {
         let rows = {
             let emulator = self.screen.lock().expect("the screen mutex");
@@ -680,6 +698,18 @@ impl Tui {
         (0..rows)
             .map(|row| self.cell(col, row).unwrap_or(' '))
             .collect()
+    }
+
+    /// The column `col` read down the rows the PANES occupy — how a divider is asserted, and the
+    /// diagnostic when one is not where it should be.
+    ///
+    /// The last row is excluded because it is the client's own status line (R316), which is outside
+    /// the tiling by construction: a divider that reached it would be the client painting chrome
+    /// over its own sentence. Asserting over the whole screen instead would make every divider test
+    /// fail on a glyph the tiling never claimed — which is exactly what it did before this existed.
+    fn pane_column(&self, col: u16) -> String {
+        let column = self.column(col);
+        column.chars().take(column.chars().count() - 1).collect()
     }
 
     /// Whether the client is still running, for a diagnostic — a client that has EXITED left the
@@ -757,7 +787,7 @@ fn attached_client_with(
     });
     wait_for(
         "the attach to settle the pane at the terminal's size",
-        || settled(pane_size(&mut conn, &session), &Some(BOOT_PTY)),
+        || settled(pane_size(&mut conn, &session), &Some(BOOT_PANES)),
     );
     (daemon, sock, conn, session, tui)
 }
@@ -894,11 +924,11 @@ fn a_window_change_reaches_the_panes_pty() {
     let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
 
     assert_ne!(
-        BOOT_PANE, BOOT_PTY,
+        BOOT_PANE, BOOT_PANES,
         "the pane must start at a size the terminal is not, or nothing below is a measurement",
     );
     wait_for("the attach to size the pane to the terminal", || {
-        settled(pane_size(&mut conn, &session), &Some(BOOT_PTY))
+        settled(pane_size(&mut conn, &session), &Some(BOOT_PANES))
     });
 
     // Something on screen BEFORE the reshape, so the assertion after it is about content and not
@@ -908,8 +938,9 @@ fn a_window_change_reaches_the_panes_pty() {
         painted(&mut tui, "wide")
     });
 
-    let resized = (100, 30);
-    tui.resize(resized.0, resized.1);
+    let terminal = (100, 30);
+    let resized = panes_of(terminal);
+    tui.resize(terminal.0, terminal.1);
     wait_for("the window change to reach the pane", || {
         settled(pane_size(&mut conn, &session), &Some(resized))
     });
@@ -951,15 +982,16 @@ fn a_window_change_reaches_the_panes_pty() {
 fn the_cli_launches_a_client_a_window_change_still_reaches() {
     let (_daemon, _sock, mut conn, session, mut tui) = attached_client_via(Tui::attach_via_cli);
 
-    // `attached_client_via` has already settled the pane at BOOT_PTY, which is claim 1: the CLI
+    // `attached_client_via` has already settled the pane at BOOT_PANES, which is claim 1: the CLI
     // named the session and the socket, or there would be no attached client to have sized.
     assert_ne!(
-        BOOT_PANE, BOOT_PTY,
+        BOOT_PANE, BOOT_PANES,
         "the pane must start at a size the terminal is not, or nothing above is a measurement",
     );
 
-    let resized = (100, 30);
-    tui.resize(resized.0, resized.1);
+    let terminal = (100, 30);
+    let resized = panes_of(terminal);
+    tui.resize(terminal.0, terminal.1);
     wait_for(
         "the window change to reach a client the CLI launched",
         || settled(pane_size(&mut conn, &session), &Some(resized)),
@@ -1531,16 +1563,16 @@ fn a_split_gives_each_child_its_own_half_of_the_terminal() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
 
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for("both panes to reach their own half's size", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
 
     wait_for("a divider to stand between the two panes", || {
-        let column = tui.column(near);
+        let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
         } else {
@@ -1574,11 +1606,11 @@ fn the_other_split_key_divides_rows_instead_of_columns() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"\"");
 
-    let (near, far) = halves(BOOT_PTY.1);
+    let (near, far) = halves(BOOT_PANES.1);
     wait_for("both panes to reach their own half's size", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(BOOT_PTY.0, near), (BOOT_PTY.0, far)],
+            &vec![(BOOT_PANES.0, near), (BOOT_PANES.0, far)],
         )
     });
 
@@ -1611,11 +1643,11 @@ fn keys_follow_the_focus_the_prefix_moves() {
 
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for("the split to settle", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
 
@@ -1681,11 +1713,11 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
     // `-h` puts the panes side by SIDE, so pane 0 is the LEFT one and focus lands on the right.
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for("the split to settle", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
     let ids = pane_ids(&mut conn, &session);
@@ -1711,9 +1743,20 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
         }
     });
 
-    // ...AT THE EDGE: nothing moves, and nothing fails.
+    // ...AT THE EDGE: nothing moves, and nothing fails — and since R316 the client SAYS SO. That
+    // last part is asserted here rather than in a test of its own, because this is the fixture
+    // that reaches the edge: a directional arm whose refusal has no driver is the shape the debt
+    // question keeps finding.
     tui.type_bytes(PREFIX);
     tui.type_bytes(ARROW_LEFT);
+    wait_for("the edge to be reported on the status row", || {
+        settled(
+            tui.row(BOOT_PTY.1 - 1)
+                .contains("select-pane -L: nowhere to go"),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(BOOT_PTY.1 - 1)))
+    });
     // ⚠ THE REPEAT WINDOW AGAIN, and this time it was a BINDING that opened the hole rather than a
     // timing change. The arrow above is `-r`, so for `repeat-time` afterwards the prefix table is
     // still live — and `Keymap::route` lets an UNBOUND key inside that window fall through to the
@@ -1806,11 +1849,11 @@ fn the_shifted_arrows_move_the_pane_and_leave_the_cursor_on_it() {
     // `-h` puts the panes side by SIDE, so pane 0 is the LEFT one and focus lands on the right.
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for("the split to settle", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
     let ids = pane_ids(&mut conn, &session);
@@ -1893,18 +1936,18 @@ fn a_split_made_by_another_client_re_tiles_this_one() {
     )
     .expect("the outside split answers");
 
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for(
         "the client to re-tile around a split it did not make",
         || {
             settled(
                 pane_sizes(&mut conn, &session),
-                &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+                &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
             )
         },
     );
     wait_for("a divider to appear without a key being typed", || {
-        let column = tui.column(near);
+        let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
         } else {
@@ -1936,11 +1979,11 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
     // Split from the terminal, which leaves this client focused on the NEW pane (tmux's rule).
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for("the split to settle", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
     // ...and then for THIS CLIENT to have re-tiled around it. The daemon publishes the new pane
@@ -1950,7 +1993,7 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
     // decoration. The divider is the visible proof, as `a_split_made_by_another_client_re_tiles`
     // uses it.
     wait_for("the client to re-tile around its own split", || {
-        let column = tui.column(near);
+        let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
         } else {
@@ -2099,7 +2142,7 @@ fn a_rename_of_its_session_leaves_the_client_attached_and_painting() {
     });
     assert_eq!(
         pane_size(&mut conn, "prod"),
-        Some(BOOT_PTY),
+        Some(BOOT_PANES),
         "and it is still the session's client, holding the pane at its terminal's size",
     );
 
@@ -2137,7 +2180,7 @@ fn the_prefix_detaches_and_the_session_lives_on() {
     });
     assert_eq!(
         pane_size(&mut conn, &session),
-        Some(BOOT_PTY),
+        Some(BOOT_PANES),
         "the session and its pane outlive the client that was viewing them",
     );
 }
@@ -2364,7 +2407,7 @@ fn a_click_in_the_second_pane_arrives_in_that_panes_own_columns() {
     // decoder read the sequence exactly right. A terminal never sends that, so the test was the
     // thing that was wrong. The button state is tracked even for events that reach no pane, which
     // is also correct: the pointer belongs to the terminal, not to whatever it happens to be over.
-    let (near, _far) = halves(BOOT_PTY.0);
+    let (near, _far) = halves(BOOT_PANES.0);
     tui.type_bytes(format!("\x1b[<0;{};3M", near + 1).as_bytes());
     tui.type_bytes(format!("\x1b[<0;{};3m", near + 1).as_bytes());
 
@@ -2428,11 +2471,11 @@ fn a_divider_drag_moves_the_boundary_and_both_children() {
 
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for("both panes to reach their own half's size", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
 
@@ -2444,17 +2487,17 @@ fn a_divider_drag_moves_the_boundary_and_both_children() {
     tui.type_bytes(format!("\x1b[<0;{};3m", moved + 1).as_bytes());
 
     // Both children, at the sizes the moved boundary implies — asked of the daemon.
-    let (want_near, want_far) = (moved, BOOT_PTY.0 - moved - 1);
+    let (want_near, want_far) = (moved, BOOT_PANES.0 - moved - 1);
     wait_for("the drag to reach both children's PTYs", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(want_near, BOOT_PTY.1), (want_far, BOOT_PTY.1)],
+            &vec![(want_near, BOOT_PANES.1), (want_far, BOOT_PANES.1)],
         )
     });
 
     // ...and the line the user is pointing at is drawn where they dragged it.
     wait_for("the divider to be painted in its new column", || {
-        let column = tui.column(moved);
+        let column = tui.pane_column(moved);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
         } else {
@@ -2782,8 +2825,13 @@ fn window_size_policy_case(policy: &str, want: (u16, u16)) {
         }
     });
     first.resize(FIRST_CLIENT.0, FIRST_CLIENT.1);
+    // What the daemon hears is the TERMINAL less the client's status row, so every expectation
+    // below folds over `panes_of` rather than over the pty sizes.
     wait_for("the first client's area to become the window", || {
-        settled(pane_size(&mut conn, &session), &Some(FIRST_CLIENT))
+        settled(
+            pane_size(&mut conn, &session),
+            &Some(panes_of(FIRST_CLIENT)),
+        )
     });
 
     // The SECOND client, reported last — so `latest` is its area and the other two policies must
@@ -2824,8 +2872,8 @@ fn window_size_smallest_takes_the_narrowest_and_the_shortest() {
     window_size_policy_case(
         "smallest",
         (
-            FIRST_CLIENT.0.min(SECOND_CLIENT.0),
-            FIRST_CLIENT.1.min(SECOND_CLIENT.1),
+            panes_of(FIRST_CLIENT).0.min(panes_of(SECOND_CLIENT).0),
+            panes_of(FIRST_CLIENT).1.min(panes_of(SECOND_CLIENT).1),
         ),
     );
 }
@@ -2835,15 +2883,15 @@ fn window_size_largest_takes_the_widest_and_the_tallest() {
     window_size_policy_case(
         "largest",
         (
-            FIRST_CLIENT.0.max(SECOND_CLIENT.0),
-            FIRST_CLIENT.1.max(SECOND_CLIENT.1),
+            panes_of(FIRST_CLIENT).0.max(panes_of(SECOND_CLIENT).0),
+            panes_of(FIRST_CLIENT).1.max(panes_of(SECOND_CLIENT).1),
         ),
     );
 }
 
 #[test]
 fn window_size_latest_takes_the_client_that_reported_last() {
-    window_size_policy_case("latest", SECOND_CLIENT);
+    window_size_policy_case("latest", panes_of(SECOND_CLIENT));
 }
 
 /// **The announce half of `window-size`**: a client that reported NOTHING still re-tiles when
@@ -2867,8 +2915,11 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
     let mut conn = observe(&sock);
     let session = boot_session(&mut conn);
 
-    let wide = (100u16, 24u16);
-    let narrow = (80u16, 24u16);
+    // The TERMINAL sizes the two clients are given, and what the panes get out of them: the
+    // client keeps its bottom row for the status line, so the arbitrated window is one row shorter
+    // than either terminal.
+    let (wide_pty, narrow_pty) = ((100u16, 24u16), (80u16, 24u16));
+    let (wide, narrow) = (panes_of(wide_pty), panes_of(narrow_pty));
     let mut first = Tui::attach(&sock, &session);
     wait_for("the first client to attach", || {
         match attached(&mut conn, &session) {
@@ -2876,7 +2927,7 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
             _ => Ok(()),
         }
     });
-    first.resize(wide.0, wide.1);
+    first.resize(wide_pty.0, wide_pty.1);
     wait_for("the wide client's area to become the window", || {
         settled(pane_size(&mut conn, &session), &Some(wide))
     });
@@ -2892,7 +2943,7 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
         )
     });
     wait_for("the divider to be drawn at the wide column", || {
-        let column = first.column(wide_near);
+        let column = first.pane_column(wide_near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
         } else {
@@ -2910,7 +2961,7 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
             n => Err(format!("{n} attached")),
         },
     );
-    second.resize(narrow.0, narrow.1);
+    second.resize(narrow_pty.0, narrow_pty.1);
 
     let (narrow_near, narrow_far) = halves(narrow.0);
     assert_ne!(
@@ -2931,13 +2982,13 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
     wait_for(
         "the un-reporting client to redraw its divider at the narrowed column",
         || {
-            let column = first.column(narrow_near);
+            let column = first.pane_column(narrow_near);
             if column.chars().all(|glyph| glyph == '\u{2502}') {
                 Ok(())
             } else {
                 Err(format!(
                     "column {narrow_near} reads {column:?} (wide column {wide_near} reads {:?})",
-                    first.column(wide_near)
+                    first.pane_column(wide_near)
                 ))
             }
         },
@@ -2947,15 +2998,17 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
 // ----- the `window-size manual` gate -----
 
 /// The size an operator PINS below — deliberately not the boot pane's ([`BOOT_PANE`]), not the
-/// attaching client's pseudoterminal ([`BOOT_PTY`]) and not the area it resizes to
+/// attaching client's pseudoterminal ([`BOOT_PANES`]) and not the area it resizes to
 /// ([`MANUAL_CLIENT`]). Every number a daemon could fall back to is a different number, so a pass
 /// cannot be an accident.
 const PINNED: (u16, u16) = (111, 33);
 
-/// What the client in the `manual` gate reports. Chosen SMALLER than [`PINNED`] in both dimensions,
-/// so the pinned window is one the client cannot show whole — the case a policy that quietly took
-/// the client's area would have to produce, and the one a user hits (a big pinned session viewed
-/// from a small terminal).
+/// The TERMINAL the client in the `manual` gate is given. Chosen SMALLER than [`PINNED`] in both
+/// dimensions, so the pinned window is one the client cannot show whole — the case a policy that
+/// quietly took the client's area would have to produce, and the one a user hits (a big pinned
+/// session viewed from a small terminal).
+///
+/// What the daemon RECORDS for it is [`panes_of`] this, not this: the client keeps its bottom row.
 const MANUAL_CLIENT: (u16, u16) = (60, 20);
 
 /// **THE GATE for `window-size manual` + `sprag resize-window`**: a PINNED window does not follow
@@ -3024,7 +3077,8 @@ fn a_pinned_window_does_not_follow_the_client_that_attaches_to_it() {
             &sprag_on(&sock, &config, &["list-clients", "-t", &session]).stdout,
         )
         .into_owned();
-        let want = format!("[{}x{}]", MANUAL_CLIENT.0, MANUAL_CLIENT.1);
+        let reported = panes_of(MANUAL_CLIENT);
+        let want = format!("[{}x{}]", reported.0, reported.1);
         if listing.contains(&want) {
             Ok(())
         } else {
@@ -3106,7 +3160,10 @@ fn un_pinning_hands_the_window_back_to_the_attached_client() {
 
     sprag_on(&sock, &config, &["resize-window", "-t", &session, "-u"]);
     wait_for("the client's own area to become the window again", || {
-        settled(pane_size(&mut conn, &session), &Some(MANUAL_CLIENT))
+        settled(
+            pane_size(&mut conn, &session),
+            &Some(panes_of(MANUAL_CLIENT)),
+        )
     });
 }
 
@@ -3154,7 +3211,9 @@ fn resize_window_fold_case(flag: &str, want: (u16, u16)) {
             &sprag_on(&sock, &config, &["list-clients", "-t", &session]).stdout,
         )
         .into_owned();
-        let ok = [FOLD_FIRST, FOLD_SECOND]
+        // The AREAS the clients reported, which are their terminals less the status row each
+        // keeps — `list-clients` prints what the daemon was told, not what the pty is.
+        let ok = [panes_of(FOLD_FIRST), panes_of(FOLD_SECOND)]
             .iter()
             .all(|(cols, rows)| listing.contains(&format!("[{cols}x{rows}]")));
         if ok {
@@ -3192,24 +3251,15 @@ fn resize_window_fold_case(flag: &str, want: (u16, u16)) {
 
 #[test]
 fn resize_window_takes_the_largest_client_per_dimension() {
-    resize_window_fold_case(
-        "-A",
-        (
-            FOLD_FIRST.0.max(FOLD_SECOND.0),
-            FOLD_FIRST.1.max(FOLD_SECOND.1),
-        ),
-    );
+    // Folded over what the clients REPORT, which is each terminal less its status row.
+    let (first, second) = (panes_of(FOLD_FIRST), panes_of(FOLD_SECOND));
+    resize_window_fold_case("-A", (first.0.max(second.0), first.1.max(second.1)));
 }
 
 #[test]
 fn resize_window_takes_the_smallest_client_per_dimension() {
-    resize_window_fold_case(
-        "-a",
-        (
-            FOLD_FIRST.0.min(FOLD_SECOND.0),
-            FOLD_FIRST.1.min(FOLD_SECOND.1),
-        ),
-    );
+    let (first, second) = (panes_of(FOLD_FIRST), panes_of(FOLD_SECOND));
+    resize_window_fold_case("-a", (first.0.min(second.0), first.1.min(second.1)));
 }
 
 /// **A relative resize moves what the window IS, not what it was pinned to.**
@@ -3231,8 +3281,9 @@ fn a_relative_resize_starts_from_the_window_the_clients_gave_it() {
         0 => Err("nobody".to_owned()),
         _ => Ok(()),
     });
-    let base = (90, 28);
-    client.resize(base.0, base.1);
+    let terminal = (90, 28);
+    let base = panes_of(terminal);
+    client.resize(terminal.0, terminal.1);
     wait_for("the client's area to become the window", || {
         settled(pane_size(&mut conn, &session), &Some(base))
     });
@@ -3363,13 +3414,15 @@ fn one_global_manual_still_gives_each_window_its_own_size() {
             .to_owned();
     assert_ne!(born, "0", "the new window has its own name: {born:?}");
 
-    let client = (60, 20);
+    let terminal = (60, 20);
+    // What the client REPORTS out of that terminal — one row less, kept for its status line.
+    let client = panes_of(terminal);
     let mut tui = Tui::attach(&sock, &session);
     wait_for("the client", || match attached(&mut conn, &session) {
         0 => Err("nobody".to_owned()),
         _ => Ok(()),
     });
-    tui.resize(client.0, client.1);
+    tui.resize(terminal.0, terminal.1);
 
     // The un-pinned window follows the client: `manual` with nothing pinned defers to the default
     // policy, which is the decision this test is really about. Answering `None` instead would leave
@@ -3777,11 +3830,11 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
     tui.type_bytes(&[0x02]); // prefix
     tui.type_bytes(b"%"); // side by side
-    let (left, right) = halves(BOOT_PTY.0);
+    let (left, right) = halves(BOOT_PANES.0);
     wait_for("the split to reach two real PTYs", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(left, BOOT_PTY.1), (right, BOOT_PTY.1)],
+            &vec![(left, BOOT_PANES.1), (right, BOOT_PANES.1)],
         )
     });
     // ASSERTED, not assumed: the split leaves the session on the pane it opened, the RIGHT one — so
@@ -3795,7 +3848,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     wait_for("the boundary to move one cell left", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(left - 1, BOOT_PTY.1), (right + 1, BOOT_PTY.1)],
+            &vec![(left - 1, BOOT_PANES.1), (right + 1, BOOT_PANES.1)],
         )
     });
 
@@ -3806,7 +3859,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     wait_for("two more presses inside the repeat window", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(left - 3, BOOT_PTY.1), (right + 3, BOOT_PTY.1)],
+            &vec![(left - 3, BOOT_PANES.1), (right + 3, BOOT_PANES.1)],
         )
     });
 
@@ -3825,7 +3878,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     wait_for("the boundary to come back one cell", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(left - 2, BOOT_PTY.1), (right + 2, BOOT_PTY.1)],
+            &vec![(left - 2, BOOT_PANES.1), (right + 2, BOOT_PANES.1)],
         )
     });
 
@@ -3836,7 +3889,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     wait_for("the coarse key to move five cells at once", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(left + 3, BOOT_PTY.1), (right - 3, BOOT_PTY.1)],
+            &vec![(left + 3, BOOT_PANES.1), (right - 3, BOOT_PANES.1)],
         )
     });
 
@@ -3859,7 +3912,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     });
     assert_eq!(
         pane_sizes(&mut conn, &session),
-        vec![(left + 3, BOOT_PTY.1), (right - 3, BOOT_PTY.1)],
+        vec![(left + 3, BOOT_PANES.1), (right - 3, BOOT_PANES.1)],
         "an arrow with no prefix is the PANE's, so the arrangement did not move",
     );
 }
@@ -4037,11 +4090,11 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
     );
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
-    let (near, far) = halves(BOOT_PTY.0);
+    let (near, far) = halves(BOOT_PANES.0);
     wait_for("both panes to reach their own half's size", || {
         settled(
             pane_sizes(&mut conn, &session),
-            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
 
@@ -4080,7 +4133,7 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
     });
     assert_eq!(
         pane_sizes(&mut conn, &session),
-        vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         "a press under the table must not claim the divider it cannot be seen to be on",
     );
 
@@ -4094,13 +4147,13 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
         }
     });
     drag(&mut tui);
-    let (want_near, want_far) = (moved, BOOT_PTY.0 - moved - 1);
+    let (want_near, want_far) = (moved, BOOT_PANES.0 - moved - 1);
     wait_for(
         "the same drag to move the boundary with nothing over it",
         || {
             settled(
                 pane_sizes(&mut conn, &session),
-                &vec![(want_near, BOOT_PTY.1), (want_far, BOOT_PTY.1)],
+                &vec![(want_near, BOOT_PANES.1), (want_far, BOOT_PANES.1)],
             )
         },
     );
@@ -4312,4 +4365,326 @@ fn a_session_made_while_the_chooser_is_open_appears_in_it() {
         "and a list that changed under a reader moved nobody",
     );
     assert_eq!(attached(&mut conn, "latecomer"), 0);
+}
+
+// ----- what a key DID, on the row this client speaks in (R316) -----
+
+/// The status row's index on a [`BOOT_PTY`]-sized terminal — the last one, which is what
+/// `sprag_tui::Split` reserves.
+///
+/// Derived rather than typed, so a terminal size change here cannot leave a test asserting about a
+/// pane's last line while calling it the status row.
+const STATUS_ROW: u16 = BOOT_PTY.1 - 1;
+
+/// **THE GATE for R316: a key bound to a session that does not exist SAYS SO.**
+///
+/// The defect this round opened on was MEASURED on this exact fixture before a line was written: a
+/// live `sprag-tui`, a binding of `switch-client -t ghost`, and a screen that came back
+/// **byte-for-byte identical** to the one an UNBOUND key left. A user could not tell a typo in
+/// their config from a broken build, and no surface in the product could tell them.
+///
+/// Three claims, and the middle one is what makes the first discriminating:
+///
+/// * **The refusal is painted, and it names the session that is not there.** `no session called
+///   "ghost"` — the noun read off [`BoundAction::names`] rather than off the action's grouping,
+///   which is `client` and would have made this line say `no client called "ghost"`.
+/// * **The CONTROL says nothing.** An unbound key in the same table, pressed on the same client,
+///   leaves the status row reading where the client is. Without this, a row that had simply
+///   painted the refusal at boot would pass.
+/// * **Nothing moved.** The client is still attached to the session it started on, so the sentence
+///   is about a refusal rather than about a switch that happened to be reported.
+///
+/// It presses the CONTROL FIRST, which is R303's rule applied to a surface rather than to a lock:
+/// the reading that must be able to fail is taken before the one that must succeed, so a row that
+/// was already showing the sentence cannot be mistaken for one that just started to.
+#[test]
+fn a_key_bound_to_a_session_that_does_not_exist_says_so() {
+    let config = ConfigHome::new("[[bind]]\nkey = \"g\"\naction = \"switch-client -t ghost\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    let where_it_is = format!("[{session}]");
+    wait_for("the status row to say where the client is", || {
+        settled(tui.row(STATUS_ROW).contains(&where_it_is), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    // THE CONTROL, pressed first: `q` is bound to nothing, so the row must go on saying where the
+    // client is. A row that reported every keystroke would fail here.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"q");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        tui.row(STATUS_ROW).contains(&where_it_is),
+        "an UNBOUND key says nothing, so the row still reads where the client is: {:?}",
+        tui.row(STATUS_ROW),
+    );
+
+    // ...and the bound one names what is not there.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"g");
+    wait_for("the refusal to be painted on the status row", || {
+        settled(
+            tui.row(STATUS_ROW).contains("no session called \"ghost\""),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "the refused switch left the client exactly where it was",
+    );
+    // The name never reached the shell — `cat` echoes what it is given, so a keystroke that leaked
+    // past the keymap would be visible in the pane's own text.
+    let text = pane_text_of(&mut conn, &session, 0);
+    assert!(
+        !text.contains("ghost"),
+        "the bound key is the CLIENT's and must not also reach the child: {text:?}",
+    );
+}
+
+/// **The message EXPIRES on its own deadline**, rather than at the next keystroke — the one timer
+/// in this client's event loop.
+///
+/// The claim needs a client that is doing NOTHING afterwards, because that is the state a
+/// message-clearing that rode on the next event would survive: press the key, touch nothing, and
+/// watch the row come back. `display-time` is set to a value long enough to be observed and short
+/// enough not to slow the suite, from the user's own config — which is also the only thing that
+/// drives the option end to end.
+#[test]
+fn the_message_goes_away_on_its_own_and_the_row_comes_back() {
+    let config = ConfigHome::new(
+        "[options]\ndisplay-time = 400\n\n[[bind]]\nkey = \"g\"\naction = \"switch-client -t ghost\"\n",
+    );
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    let _ = &mut conn;
+
+    let where_it_is = format!("[{session}]");
+    wait_for("the status row to say where the client is", || {
+        settled(tui.row(STATUS_ROW).contains(&where_it_is), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"g");
+    wait_for("the refusal to be painted", || {
+        settled(
+            tui.row(STATUS_ROW).contains("no session called \"ghost\""),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    // NOTHING IS TYPED from here on. A client that cleared the row on its next event would hold the
+    // sentence forever in this state, which is the whole point of waiting rather than pressing.
+    wait_for(
+        "the row to come back with no keystroke to prompt it",
+        || {
+            settled(tui.row(STATUS_ROW).contains(&where_it_is), &true)
+                .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        },
+    );
+}
+
+/// **The status row names the session AND its windows, and follows both.**
+///
+/// The half of R316 that is not a refusal: a terminal client had no chrome at all, so *which
+/// session am I on* and *which of its windows* were questions this front could not answer — the
+/// GUI's session rail and tab strip have always answered them. The row is DERIVED from the daemon
+/// on every paint, so this drives it by changing the daemon's answer rather than by pressing the
+/// key that draws it.
+///
+/// Two moves, each of which a hand-maintained row would get wrong in a different way: a window is
+/// CREATED (the list grows and the marker moves), and the session is RENAMED from another
+/// connection (the name follows, which a client remembering its own would not).
+#[test]
+fn the_status_row_follows_the_session_and_its_windows() {
+    let (_daemon, _sock, mut conn, session, tui) = attached_client();
+
+    wait_for(
+        "the row to name the boot session and its one window",
+        || settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*")),
+    );
+
+    // A SECOND window, made from a separate connection — so what moves the row is the daemon's
+    // answer and not this client's own keystroke.
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_WINDOW_ACTION), "args": { "session": session } }),
+    )
+    .expect("new_window answers");
+    wait_for("the row to grow a window and move the marker", || {
+        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0 1:1*"))
+    });
+
+    // ...and the NAME follows a rename this client did not make. A row holding the name it attached
+    // with would still read the old one — R303's impostor, one surface up.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(RENAME_SESSION_ACTION),
+            "args": { "session": session, "name": "renamed" },
+        }),
+    )
+    .expect("rename_session answers");
+    wait_for("the row to follow the rename", || {
+        settled(tui.row(STATUS_ROW), &"[renamed] 0:0 1:1*".to_owned())
+    });
+}
+
+/// **The status row is the client's OWN, and the panes do not reach it.**
+///
+/// The geometry claim R316 makes forty times over in this file's other expectations, asserted once
+/// directly: the daemon's window is the terminal LESS the status row, so a pane's last line lands
+/// on the row above it and the row below carries the client's own text. A client that painted its
+/// row over a pane would pass every size assertion here and lose the pane's bottom line.
+#[test]
+fn the_panes_stop_one_row_above_what_the_client_says() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(BOOT_PANES),
+        "the daemon's window is what the client REPORTED, which is the terminal less its row",
+    );
+    assert_eq!(
+        BOOT_PANES.1 + 1,
+        BOOT_PTY.1,
+        "...and that is exactly one row, or the assertion below is about the wrong line",
+    );
+
+    // Fill the pane past its own last line, so the row under it is one the child WOULD have written
+    // to if it had been given the whole terminal.
+    for line in 0..BOOT_PTY.1 {
+        tui.type_bytes(format!("line{line}\r").as_bytes());
+    }
+    wait_for("the child's output to reach the pane's last line", || {
+        settled(tui.row(BOOT_PANES.1 - 1).trim_end().is_empty(), &false)
+            .map_err(|got| format!("{got}: rows {:?}", tui.rows()))
+    });
+
+    let status = tui.row(STATUS_ROW);
+    assert!(
+        status.starts_with(&format!("[{session}]")),
+        "the last row is the CLIENT's, not the pane's overflow: {status:?} (screen {:?})",
+        tui.rows(),
+    );
+}
+
+/// **A key naming a WINDOW that is not there says so too** — the same defect one level down, and
+/// the arm the round's own audit found driven by nothing.
+///
+/// `select_window` answered `()` until R316, so a client could not tell a name the daemon refused
+/// from one it selected. The daemon has always refused an unknown name; what was missing was the
+/// fact crossing back. This drives the whole chain — config, keymap, wire client, report, row — on
+/// a name nothing carries, and the CONTROL is the same key bound to a window that does exist.
+#[test]
+fn a_key_bound_to_a_window_that_does_not_exist_says_so() {
+    let config = ConfigHome::new(
+        "[[bind]]\nkey = \"w\"\naction = \"select-window -t nowindow\"\n\n\
+         [[bind]]\nkey = \"e\"\naction = \"select-window -t 0\"\n",
+    );
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to name the boot window", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    // THE CONTROL FIRST: the window that EXISTS is selected and says nothing, so a row that
+    // reported every keystroke fails here rather than passing the case below.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"e");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        tui.row(STATUS_ROW),
+        where_it_is,
+        "selecting the window this client is already on says nothing",
+    );
+
+    // ...and the name nothing carries is NAMED.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"w");
+    wait_for("the refusal to name the window that is not there", || {
+        settled(
+            tui.row(STATUS_ROW)
+                .contains("no window called \"nowindow\""),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    let text = pane_text_of(&mut conn, &session, 0);
+    assert!(
+        !text.contains("nowindow"),
+        "the bound key is the CLIENT's and must not also reach the child: {text:?}",
+    );
+}
+
+/// **`display-time 0` puts the silence back, which is what its own doc says it is for.**
+///
+/// The one value that undoes this round's whole surface, reachable only by asking for it — and the
+/// arm nothing drove until the audit asked. It is the option's DECISION (see
+/// `sprag_host::options::DISPLAY_TIME`), so a build that quietly floored it at some minimum would
+/// be honouring a config nobody wrote.
+///
+/// The CONTROL is the same key on the same client with the default in force, one test above: there
+/// the row carries the sentence, here it never does.
+#[test]
+fn display_time_zero_reports_nothing_at_all() {
+    let config = ConfigHome::new(
+        "[options]\ndisplay-time = 0\n\n[[bind]]\nkey = \"g\"\naction = \"switch-client -t ghost\"\n",
+    );
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"g");
+    // Sampled over a window far longer than the default `display-time`, so a message that appeared
+    // for even one frame would be caught — the assertion is an ABSENCE and needs a duration behind
+    // it rather than one look.
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline {
+        assert_eq!(
+            tui.row(STATUS_ROW),
+            where_it_is,
+            "`display-time 0` is a message that has already expired, so the row never changes",
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // ...and the KEY still ran: the option silences the report, not the verb. Nothing moved because
+    // no session is called `ghost`, which is what makes this the same fixture as the test above.
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "the client is still on the session it started from",
+    );
 }
