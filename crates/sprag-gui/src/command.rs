@@ -75,7 +75,7 @@
 //! is the arm's job and not a gate at the top.
 
 use sprag_host::ProjectAction;
-use sprag_host::keymap::BoundAction;
+use sprag_host::keymap::{BoundAction, SwitchClientAsk};
 use sprag_host::wire::SelectWindowAsk;
 use sprag_terminal::{OrderStep, WindowPlace};
 
@@ -135,7 +135,8 @@ pub(crate) enum Command {
     NewSession,
     /// Switch this client to the named session.
     SwitchSession(String),
-    /// Switch back to the most recently used other session (`Ctrl+Shift+L`).
+    /// Switch back to the most recently used other session (tmux `switch-client -l`; the hint
+    /// column derives the chord from the user's own table, so it is never spelled here).
     LastSession,
     /// Kill the named window of the current session (tmux `kill-window`). DESTRUCTIVE — see
     /// [`Command::confirmation`].
@@ -246,7 +247,6 @@ impl Command {
             Self::Copy => Some("Ctrl+Shift+C".to_owned()),
             Self::Paste => Some("Ctrl+Shift+V".to_owned()),
             Self::ToggleFloat => Some("Ctrl+Shift+Enter".to_owned()),
-            Self::LastSession => Some("Ctrl+Shift+L".to_owned()),
             Self::Declared(action) => Some(action.command_line()),
             Self::SelectAll
             // NO KEYMAP COUNTERPART, and for these that is a fact about the commands rather than a
@@ -257,7 +257,6 @@ impl Command {
             | Self::BreakOut
             | Self::JoinInto(_)
             | Self::NewSession
-            | Self::SwitchSession(_)
             // A kill deliberately advertises no chord even where one exists: this column is where
             // the eye looks for a shortcut, and what a destructive row WOULD say belongs on the
             // confirmation prompt instead — the only place a consequence can be read in time to
@@ -267,7 +266,9 @@ impl Command {
             | Self::KillWindow(_)
             | Self::KillSession(_) => None,
             // Answered above, off the live keymap — never from here.
-            Self::ShowKeys
+            Self::LastSession
+            | Self::SwitchSession(_)
+            | Self::ShowKeys
             | Self::ZoomPane
             | Self::NewWindow
             | Self::SelectWindow(_)
@@ -300,6 +301,17 @@ impl Command {
             Self::MoveWindow(place) => Some(BoundAction::MoveWindow {
                 place: place.clone(),
             }),
+            // THE SESSION ROWS, paired since R314 — before it they were unpaired because there was
+            // no session verb in the vocabulary to pair them WITH, and the hint column fell through
+            // to a literal `Ctrl+Shift+L` that R314 unbound. A row advertising a key that does
+            // nothing is the exact defect R308 built this pairing to remove, and it came back the
+            // moment a chord moved. Paired, the column derives from the user's own table and cannot.
+            Self::LastSession => Some(BoundAction::SwitchClient {
+                ask: SwitchClientAsk::LastViewed,
+            }),
+            Self::SwitchSession(name) => Some(BoundAction::SwitchClient {
+                ask: SwitchClientAsk::Named(name.clone()),
+            }),
             Self::Find
             | Self::Copy
             | Self::Paste
@@ -310,8 +322,6 @@ impl Command {
             | Self::NewPane
             | Self::KillPane
             | Self::NewSession
-            | Self::SwitchSession(_)
-            | Self::LastSession
             | Self::KillWindow(_)
             | Self::KillSession(_)
             | Self::Declared(_) => None,
@@ -2427,6 +2437,83 @@ mod tests {
             !without.contains(&Command::KillPane),
             "but a kill with nothing to kill is not a row: {without:?}"
         );
+    }
+
+    /// **THE HINT COLUMN NEVER ADVERTISES A KEY THAT DOES NOTHING.**
+    ///
+    /// Every hint is either DERIVED from the live keymap (a `bound()` row) or one of this client's
+    /// OWN reserved chords — and this walks the whole catalog asserting exactly that split, in both
+    /// directions: a derived hint must be a chord the keymap really holds, and a LITERAL must be a
+    /// chord one of this client's own recognisers really acts on.
+    ///
+    /// ⚠ **IT IS HERE BECAUSE R314 SHIPPED THE DEFECT AND NOTHING CAUGHT IT.** `Switch to the last
+    /// session` carried the literal `Ctrl+Shift+L`, which was correct until that round unbound the
+    /// chord (`KeySpec::matches` cannot tell `C-S-L` from `C-l`, so binding it would have taken the
+    /// shell's clear-screen) — and the whole suite stayed green while the palette told users to
+    /// press a key that does nothing. R308 built the derivation to remove exactly this class and
+    /// the class came back through the remaining literals, because a literal is checked by nobody.
+    ///
+    /// REVERT-PROOF: put any literal back on a row that `bound()` names and the first branch fails
+    /// (it is no longer a literal); write a literal for a chord no recogniser has — `Ctrl+Shift+L`
+    /// again — and the second fails.
+    #[test]
+    fn no_palette_hint_advertises_a_chord_that_does_nothing() {
+        let owner = pinion_core::reactive::Owner::new();
+        owner.run(no_palette_hint_body);
+    }
+
+    /// The body of the check above, run inside a reactive [`Owner`] because
+    /// `use_client_keys` needs one — the keymap is a client-scoped resource, not a global.
+    fn no_palette_hint_body() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+        let keys = crate::keys::use_client_keys();
+        // A hint spelling (`Ctrl+Shift+F`) back into the pieces a router takes.
+        let split = |hint: &str| -> Option<(String, pinion_core::Modifiers)> {
+            let mut mods = pinion_core::Modifiers::default();
+            let mut key = None;
+            for part in hint.split('+') {
+                match part {
+                    "Ctrl" => mods.ctrl = true,
+                    "Shift" => mods.shift = true,
+                    "Alt" => mods.alt = true,
+                    other => key = Some(other.to_owned()),
+                }
+            }
+            Some((key?, mods))
+        };
+        let mut derived = 0;
+        let mut literal = 0;
+        for command in catalog(Some(0), &slots).commands {
+            let Some(hint) = command.hint() else { continue };
+            if let Some(action) = command.bound() {
+                assert_eq!(
+                    keys.chord_of(&action).as_deref(),
+                    Some(hint.as_str()),
+                    "{command:?} is bound, so its hint must BE the keymap's chord",
+                );
+                derived += 1;
+                continue;
+            }
+            // A project row's hint is a command line, not a chord — it carries no `+` and is not
+            // this claim's subject.
+            let Some((key, mods)) = split(&hint) else {
+                continue;
+            };
+            if !hint.contains('+') {
+                continue;
+            }
+            let acted = crate::input::client_chord_acts(&key, mods);
+            assert!(
+                acted,
+                "{command:?} advertises the literal {hint:?}, which NO recogniser in this client                  acts on — a hint for a chord the user does not have is worse than no hint",
+            );
+            literal += 1;
+        }
+        // THE CONTROLS. Both kinds must actually occur, or the loop above asserted nothing: a
+        // catalog with no bound rows passes the first branch vacuously, and one with no literals
+        // passes the second the same way.
+        assert!(derived > 0, "some row derives its hint from the keymap");
+        assert!(literal > 0, "and some row carries one of this client's own");
     }
 
     #[test]

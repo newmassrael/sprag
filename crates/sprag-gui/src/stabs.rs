@@ -47,7 +47,7 @@
 //! routing SSOT. The "+" footer is a separate focusable `button` Tab stop.
 //! [`route_key`](crate::input::route_key) dispatches here — before its pane focus gate — for a tag
 //! [`is_sidebar_focus`] recognises; the a11y tree is [`session_sidebar_access_nodes`]. (Pre-R179 the
-//! rail was mouse-first — its keyboard analog was the `sprag` CLI + the `Ctrl+Shift` session chords.)
+//! rail was mouse-first — its keyboard analog is the `switch-client` bindings, R314.)
 
 use pinion_a11y::{AccessNode, AriaRole};
 use pinion_core::external::IntrospectValue;

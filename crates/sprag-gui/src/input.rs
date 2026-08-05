@@ -171,6 +171,30 @@ impl WindowChord {
     }
 }
 
+/// Whether THIS CLIENT acts on `key` + `modifiers` as one of its own reserved chords — the ones no
+/// keymap holds because they are GUI capabilities (find, clipboard, the dock toggle) rather than mux
+/// verbs.
+///
+/// The ONE place that answers it, so the palette's hint column can be checked against the same
+/// predicate `route_key` uses instead of against a list somebody maintains. It exists because R314
+/// shipped a hint for a chord whose recogniser had just been deleted, and nothing in the tree could
+/// tell: a literal in a hint column is a claim about this file, and until now it was made nowhere.
+///
+/// It deliberately does NOT consult the keymap. A chord the KEYMAP holds is derived by the palette
+/// through `Command::bound`, and folding the two together here would let a row satisfy the check by
+/// the wrong route.
+///
+/// `#[cfg(test)]`, and that is honest rather than a shortcut: `route_key` cannot call it, because it
+/// needs to know WHICH recogniser matched in order to act. What this adds is the OR of the three,
+/// which only a checker wants — so it derives from the production functions rather than restating
+/// them, and there is no fourth spelling for a new chord to be missing from.
+#[cfg(test)]
+pub(crate) fn client_chord_acts(key: &str, modifiers: Modifiers) -> bool {
+    find_chord(key, modifiers)
+        || clipboard_chord(key, modifiers).is_some()
+        || window_chord(key, modifiers).is_some()
+}
+
 /// Recognize a reserved window chord from `key` + `modifiers`, or `None` for a
 /// normal keystroke (which injects). Pure — the chord-decision is separated from
 /// the side-effecting inject path and unit-tested directly. The page chords take
@@ -607,11 +631,13 @@ pub(crate) fn route_key(
         }
         return true;
     }
-    // The SESSION chords are gone from here (R314). `Ctrl+Shift+L` / `PageUp` / `PageDown` are ROOT
+    // The SESSION chords are gone from here (R314). `Ctrl+Shift+PageUp` / `PageDown` are ROOT
     // bindings of the one vocabulary now, so they were already taken by the keymap route above —
     // where `sprag list-keys` can name them, a config file can unbind them, and `sprag-tui` has
     // them too. They still reach the session before `window_chord` sees them, because that route
-    // runs first.
+    // runs first. `Ctrl+Shift+L` is NOT among them and its verb lives on `prefix L`: this
+    // vocabulary cannot tell `C-S-L` from `C-l`, so binding it would take the shell's
+    // clear-screen from every pane (see `BoundAction::SwitchClient`'s default table).
     // Reserved window chords act on the layout, not the PTY.
     if let Some(chord) = window_chord(key, modifiers) {
         // Discrete chords (dock-toggle, focus-cycle) act once per press: drop an OS

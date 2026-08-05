@@ -3581,7 +3581,7 @@ mod tests {
     /// a `-r` a user can see in `list-keys` and never observe.
     ///
     /// ⚠ The second assertion used to read *"every bind is in the PREFIX table"*, which was only an
-    /// assertion at all while the root table shipped EMPTY — R314 puts three session chords in it,
+    /// assertion at all while the root table shipped EMPTY — R314 puts two session chords in it,
     /// and that spelling would have failed for a reason with nothing to do with the claim. Rewritten
     /// around what it always meant: the refused KEY is not in the table. It discriminates the same
     /// way (an accepted bind lands `F5` and the count moves) and no longer rests on a fact this
@@ -3604,7 +3604,7 @@ mod tests {
         );
     }
 
-    /// The ROOT table holds EXACTLY the three session chords, and every other default is behind the
+    /// The ROOT table holds EXACTLY the two session chords, and every other default is behind the
     /// prefix (R314).
     ///
     /// `the_defaults_are_tmuxs_table` prints keys and actions and cannot show a TABLE, so a chord
