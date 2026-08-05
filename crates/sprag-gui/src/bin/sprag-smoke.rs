@@ -115,6 +115,10 @@ fn main() -> ExitCode {
             // extra one behind it — exactly the arrangement a reorder needs, so this check reads
             // that inheritance rather than building its own.
             check_the_order_keys_move_a_window_on_the_daemon(&mut smoke, &mut report);
+            // Straight after the order keys, and for their reason: the DEFAULT prefix is in force.
+            // It creates a second SESSION and leaves it standing, and leaves this client back on
+            // the session it started from — so a later check reads the same windows it would have.
+            check_the_session_keys_move_this_client(&mut smoke, &mut report);
             // Straight after the window keys, and for the same reason: it drives the DEFAULT
             // prefix. It RENAMES the current window and leaves it renamed, which every later check
             // survives because they read the window they are on rather than a fixed name — an
@@ -2558,6 +2562,106 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
     );
 }
 
+/// **`prefix )` / `prefix (` / `prefix L` move this CLIENT to another SESSION, through the shipped
+/// GUI binary (R314).**
+///
+/// The GUI half of what `sprag-tui`'s pty test drives. It matters most here for a reason no other
+/// key check has: **the three session chords used to be this binary's PRIVATE table** — hard-coded
+/// `Ctrl+Shift+{L,PageUp,PageDown}` that `sprag list-keys` could not name and a config could not
+/// unbind — and R314 deleted them in favour of these bindings. So this check is what says the
+/// capability survived the move, in the client that had it.
+///
+/// Judged against the DAEMON's per-session VIEWER BADGE, not against pixels: "this client is now
+/// attached to that session" is a fact only the daemon holds, and the badge is where it publishes
+/// it. Reading the strip instead would test this client's paint and not the switch.
+///
+/// **What it leaves, stated**: the client back on the session it started from. The last press is
+/// `prefix L`, which returns it, and every later check reads the session it is on rather than a
+/// fixed name.
+fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Report) {
+    let Some(home) = smoke.attached_session() else {
+        report.check("the window names its session for the session keys", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the session keys", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the session keys", false);
+        return;
+    }
+    // A SECOND session, or the ring wraps onto the one we are on and every assertion below passes
+    // without discriminating — the vacuous-fixture shape this project has now caught six times.
+    let made = daemon.call(
+        "scene/invoke",
+        json!({ "path": "/sprag_mux/external/new_session", "args": { "name": "smoke-elsewhere" } }),
+    );
+    report.check(
+        &format!("a second session exists for the ring to reach ({made:?})"),
+        made.is_ok(),
+    );
+    let listed = sessions_of(&mut daemon);
+    report.check(
+        &format!("the daemon lists more than one session ({listed:?})"),
+        listed.len() > 1,
+    );
+    if listed.len() < 2 {
+        return;
+    }
+    report.check(
+        &format!("this client is counted on the session it is on ({home})"),
+        attached_to(&mut daemon, &home) > 0,
+    );
+
+    // `prefix )` — one step along the ring. `)` is a SHIFTED character, R306's class: winit reports
+    // it with the shift flag where a pty reports it without one, so this press is also the standing
+    // check that the masking fix still holds one verb further on.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, ")", false).is_ok();
+    report.check("the GUI accepts `prefix )`", pressed);
+    let moved = smoke.wait_for(|s| {
+        let _ = s;
+        let now = attached_to(&mut daemon, &home);
+        (now == 0).then_some(now)
+    });
+    report.check(
+        &format!("`prefix )` moved this client OFF the session it was on ({moved:?})"),
+        moved.is_ok(),
+    );
+    if moved.is_err() {
+        return;
+    }
+    // ...and onto one the daemon can name. Read as a SET rather than as a name: which session the
+    // ring lands on is the daemon's business, and pinning it here would make this check fail for a
+    // reordering that is none of its concern.
+    let landed = smoke.wait_for(|s| {
+        let _ = s;
+        let where_now: Vec<String> = sessions_of(&mut daemon)
+            .into_iter()
+            .filter(|name| attached_to(&mut daemon, name) > 0)
+            .collect();
+        (where_now.len() == 1 && where_now[0] != home).then_some(where_now)
+    });
+    report.check(
+        &format!("...and onto a DIFFERENT one, which the daemon counts ({landed:?})"),
+        landed.is_ok(),
+    );
+
+    // `prefix L` — back to the session VISITED before this one. A key that merely stepped again
+    // would satisfy nothing here on a two-session ring, so the assertion is the NAME: `home`.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "L", false).is_ok();
+    report.check("the GUI accepts `prefix L`", pressed);
+    let back = smoke.wait_for(|s| {
+        let _ = s;
+        let now = attached_to(&mut daemon, &home);
+        (now > 0).then_some(now)
+    });
+    report.check(
+        &format!("`prefix L` brought this client back to {home} ({back:?})"),
+        back.is_ok(),
+    );
+}
+
 /// **`prefix >` and `prefix <` move a WINDOW's place, through the shipped GUI binary.**
 ///
 /// The GUI half of what `sprag-tui`'s pty test drives, and it exists for the reason the check above
@@ -3141,6 +3245,39 @@ fn windows_of(daemon: &mut HostConn, session: &str) -> Vec<(String, bool)> {
             ))
         })
         .collect()
+}
+
+/// Every session the DAEMON lists, in its own order — the same rows `sprag ls` and the GUI's
+/// session rail paint, since all three come off one builder.
+fn sessions_of(daemon: &mut HostConn) -> Vec<String> {
+    daemon
+        .call(
+            "scene/query",
+            json!({ "path": "/sprag_mux/external/sessions" }),
+        )
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| Some(s["name"].as_str()?.to_owned()))
+        .collect()
+}
+
+/// How many clients the daemon counts as VIEWING `session` — the fact a `switch-client` moves, and
+/// the only one that says where a client actually is. A screen cannot establish it.
+fn attached_to(daemon: &mut HostConn, session: &str) -> u64 {
+    daemon
+        .call(
+            "scene/query",
+            json!({ "path": "/sprag_mux/external/sessions" }),
+        )
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .find(|s| s["name"].as_str() == Some(session))
+        .and_then(|s| s["attached"].as_u64())
+        .unwrap_or(0)
 }
 
 /// The session's arbitrated window, straight off the daemon — the derived answer every client is
