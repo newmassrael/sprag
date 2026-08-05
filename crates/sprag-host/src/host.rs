@@ -51,9 +51,9 @@ use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, CommandBuilder, DividerStep, Ended, HistoryLimitSource, LayoutSnapshot,
-    LayoutWire, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth,
-    PaneStep, PlaceHow, Projection, Rect, SessionInfo, SessionRegistry, Snapshot, SnapshotError,
-    SplitDir, SplitSide, WindowInfo, WindowPlace, WindowStep, Workspace, ZoomOutcome, tile,
+    LayoutWire, OrderStep, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle,
+    PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionInfo, SessionRegistry, Snapshot,
+    SnapshotError, SplitDir, SplitSide, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile,
     with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
@@ -677,7 +677,7 @@ pub trait HostClient {
     ///
     /// [`None`] when the host could not be asked. It cannot mean "nowhere to go": a session always
     /// holds a window, so the walk always lands.
-    fn select_window_toward(&self, step: WindowStep) -> Option<String>;
+    fn select_window_toward(&self, step: OrderStep) -> Option<String>;
 
     /// Move a window's PLACE in the scoped session's order — tmux `move-window`. Answers the window
     /// that was placed and WHAT happened, or [`None`] if the host could not be asked or refused.
@@ -2477,7 +2477,7 @@ impl HostClient for Host {
 
     /// The walk, straight on the registry this arm owns — the same ring the wire arm asks the daemon
     /// to walk, resolved here because this host IS the daemon for its one in-process client.
-    fn select_window_toward(&self, step: WindowStep) -> Option<String> {
+    fn select_window_toward(&self, step: OrderStep) -> Option<String> {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
         registry.select_window_relative(&session, step).ok()

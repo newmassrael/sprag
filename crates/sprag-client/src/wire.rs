@@ -111,8 +111,8 @@ use sprag_rpc::{
     ROWS_PARAM, new_gui_client_id,
 };
 use sprag_terminal::{
-    Ended, LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, PlaceHow, SessionInfo, SplitDir,
-    WindowInfo, WindowPlace, WindowStep, ZoomOutcome,
+    Ended, LayoutSnapshot, LayoutWire, OrderStep, PaneDir, PaneExit, PaneId, PlaceHow, SessionInfo,
+    SplitDir, WindowInfo, WindowPlace, ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
@@ -2309,7 +2309,7 @@ impl HostClient for WireHost {
     ///
     /// The view is refreshed exactly as a named select refreshes it: the current window changed, so
     /// every mirror this client projects from is about a different window now.
-    fn select_window_toward(&self, step: WindowStep) -> Option<String> {
+    fn select_window_toward(&self, step: OrderStep) -> Option<String> {
         let params = invoke(
             &mux_action_path(SELECT_WINDOW_ACTION),
             SelectWindowAsk::Step(step).to_args(),

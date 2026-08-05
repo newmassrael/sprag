@@ -273,7 +273,7 @@ impl SlotView {
     /// Walk the window RING one step, wrapping (tmux `next-window` / `previous-window`) — the
     /// `prefix n` / `prefix p` keys. The step is resolved by the daemon; this reseeds the focus for
     /// the same reason a tab click does, because the window it projects has changed.
-    pub(crate) fn select_window_toward(&self, step: sprag_terminal::WindowStep) -> Option<String> {
+    pub(crate) fn select_window_toward(&self, step: sprag_terminal::OrderStep) -> Option<String> {
         let landed = self.host.select_window_toward(step);
         self.reseed_pane_focus();
         landed
@@ -1195,7 +1195,7 @@ mod tests {
             Vec::new()
         }
         fn select_window(&self, _name: &str) {}
-        fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
+        fn select_window_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {
             None
         }
         /// Inert, like the walk above it: this fixture drives what is PAINTED, not the order.

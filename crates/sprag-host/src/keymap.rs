@@ -71,7 +71,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use sprag_input::Modifiers;
-use sprag_terminal::{PaneDir, SplitDir, WindowPlace, WindowStep};
+use sprag_terminal::{OrderStep, PaneDir, SplitDir, WindowPlace};
 
 use crate::wire::SelectWindowAsk;
 
@@ -1182,10 +1182,10 @@ impl BoundAction {
             // <window>` is TWO words that mean one thing.
             "select-window" => match flags.as_slice() {
                 ["-n"] => Ok(Self::SelectWindow {
-                    ask: SelectWindowAsk::Step(WindowStep::Next),
+                    ask: SelectWindowAsk::Step(OrderStep::Next),
                 }),
                 ["-p"] => Ok(Self::SelectWindow {
-                    ask: SelectWindowAsk::Step(WindowStep::Previous),
+                    ask: SelectWindowAsk::Step(OrderStep::Previous),
                 }),
                 ["-n", "-p"] | ["-p", "-n"] => {
                     Err(bad("-n and -p name one direction; give only one"))
@@ -1210,10 +1210,10 @@ impl BoundAction {
                     place: WindowPlace::Last,
                 }),
                 ["-n"] => Ok(Self::MoveWindow {
-                    place: WindowPlace::Step(WindowStep::Next),
+                    place: WindowPlace::Step(OrderStep::Next),
                 }),
                 ["-p"] => Ok(Self::MoveWindow {
-                    place: WindowPlace::Step(WindowStep::Previous),
+                    place: WindowPlace::Step(OrderStep::Previous),
                 }),
                 ["--before"] => Ok(Self::MoveWindowBefore),
                 ["--before", window] => Ok(Self::MoveWindow {
@@ -1282,19 +1282,19 @@ impl fmt::Display for BoundAction {
             // could type back.
             Self::ConfirmBefore { action } => write!(f, "confirm-before {action}"),
             Self::SelectWindow { ask } => match ask {
-                SelectWindowAsk::Step(WindowStep::Next) => f.write_str("select-window -n"),
-                SelectWindowAsk::Step(WindowStep::Previous) => f.write_str("select-window -p"),
+                SelectWindowAsk::Step(OrderStep::Next) => f.write_str("select-window -n"),
+                SelectWindowAsk::Step(OrderStep::Previous) => f.write_str("select-window -p"),
                 SelectWindowAsk::Named(window) => write!(f, "select-window -t {window}"),
             },
             // The FLAGS are the CLI verb's own, not a second spelling: a user reads `move-window
             // -p` out of `list-keys` and types it into a shell unchanged. `-n`/`-p` are
             // `select-window`'s two letters for the same two directions, which is the whole reason
-            // the place reuses `WindowStep` rather than inventing a pair.
+            // the place reuses `OrderStep` rather than inventing a pair.
             Self::MoveWindow { place } => match place {
                 WindowPlace::First => f.write_str("move-window --first"),
                 WindowPlace::Last => f.write_str("move-window --last"),
-                WindowPlace::Step(WindowStep::Next) => f.write_str("move-window -n"),
-                WindowPlace::Step(WindowStep::Previous) => f.write_str("move-window -p"),
+                WindowPlace::Step(OrderStep::Next) => f.write_str("move-window -n"),
+                WindowPlace::Step(OrderStep::Previous) => f.write_str("move-window -p"),
                 WindowPlace::Before(window) => write!(f, "move-window --before {window}"),
                 WindowPlace::After(window) => write!(f, "move-window --after {window}"),
             },
@@ -1487,13 +1487,13 @@ impl Default for Keymap {
                 bind(
                     "n",
                     BoundAction::SelectWindow {
-                        ask: SelectWindowAsk::Step(WindowStep::Next),
+                        ask: SelectWindowAsk::Step(OrderStep::Next),
                     },
                 ),
                 bind(
                     "p",
                     BoundAction::SelectWindow {
-                        ask: SelectWindowAsk::Step(WindowStep::Previous),
+                        ask: SelectWindowAsk::Step(OrderStep::Previous),
                     },
                 ),
                 // THE WINDOW ORDER, on the three keys the two parity targets between them settle
@@ -1512,13 +1512,13 @@ impl Default for Keymap {
                 bind(
                     "<",
                     BoundAction::MoveWindow {
-                        place: WindowPlace::Step(WindowStep::Previous),
+                        place: WindowPlace::Step(OrderStep::Previous),
                     },
                 ),
                 bind(
                     ">",
                     BoundAction::MoveWindow {
-                        place: WindowPlace::Step(WindowStep::Next),
+                        place: WindowPlace::Step(OrderStep::Next),
                     },
                 ),
                 // `.` IS tmux's own default for this verb — `command-prompt "move-window -t '%%'"`
@@ -2154,13 +2154,13 @@ mod tests {
             (
                 "select-window -n",
                 BoundAction::SelectWindow {
-                    ask: SelectWindowAsk::Step(WindowStep::Next),
+                    ask: SelectWindowAsk::Step(OrderStep::Next),
                 },
             ),
             (
                 "select-window -p",
                 BoundAction::SelectWindow {
-                    ask: SelectWindowAsk::Step(WindowStep::Previous),
+                    ask: SelectWindowAsk::Step(OrderStep::Previous),
                 },
             ),
             (
@@ -2449,10 +2449,10 @@ mod tests {
             BoundAction::KillPane,
             BoundAction::NewWindow,
             BoundAction::SelectWindow {
-                ask: SelectWindowAsk::Step(WindowStep::Next),
+                ask: SelectWindowAsk::Step(OrderStep::Next),
             },
             BoundAction::MoveWindow {
-                place: WindowPlace::Step(WindowStep::Previous),
+                place: WindowPlace::Step(OrderStep::Previous),
             },
             BoundAction::MoveWindowBefore,
             BoundAction::KillWindow,

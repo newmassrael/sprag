@@ -960,7 +960,7 @@ mod tests {
             Vec::new()
         }
         fn select_window(&self, _name: &str) {}
-        fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
+        fn select_window_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {
             None
         }
         /// Inert, like the walk above it: this fixture drives what is PAINTED, not the order.

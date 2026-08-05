@@ -202,7 +202,7 @@ use sprag_rpc::{
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
 use sprag_terminal::{
-    Ended, LayoutSnapshot, PaneDir, PaneId, PlaceHow, WindowPlace, WindowStep, arrangement,
+    Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow, WindowPlace, arrangement,
 };
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -4306,8 +4306,8 @@ fn select_window(args: Vec<String>) -> io::Result<()> {
     // RING is walked by the daemon: a CLI that read the window list and named the next one would be
     // a second answer to this question, computed from a list that can be a request old.
     let ask = match word.as_str() {
-        "-n" => SelectWindowAsk::Step(WindowStep::Next),
-        "-p" => SelectWindowAsk::Step(WindowStep::Previous),
+        "-n" => SelectWindowAsk::Step(OrderStep::Next),
+        "-p" => SelectWindowAsk::Step(OrderStep::Previous),
         window => SelectWindowAsk::Named(window.to_owned()),
     };
     let mut conn = connect(None)?;
@@ -4365,8 +4365,8 @@ fn move_window(args: Vec<String>) -> io::Result<()> {
         let named = match arg.as_str() {
             "--first" => Some(WindowPlace::First),
             "--last" => Some(WindowPlace::Last),
-            "-n" => Some(WindowPlace::Step(WindowStep::Next)),
-            "-p" => Some(WindowPlace::Step(WindowStep::Previous)),
+            "-n" => Some(WindowPlace::Step(OrderStep::Next)),
+            "-p" => Some(WindowPlace::Step(OrderStep::Previous)),
             "--before" => Some(anchored(WindowPlace::Before, &mut rest)?),
             "--after" => Some(anchored(WindowPlace::After, &mut rest)?),
             other if other.starts_with('-') => {

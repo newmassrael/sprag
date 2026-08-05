@@ -92,19 +92,20 @@ pub struct SessionId(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct WindowId(pub u64);
 
-/// One step along a session's window RING — tmux `next-window` / `previous-window`, and
-/// `select-window -n` / `-p`.
+/// One step FORWARD or BACK along an order — tmux's `-n` / `-p` on every verb that takes them.
+///
+/// It names a direction and NOTHING ELSE, which is why it is not `WindowStep` (its name until R314)
+/// and not `RingStep`. Three orders in this product are walked with these two words and they do not
+/// agree about their ends: a session's window ring WRAPS (`select-window -n`), a window's PLACE in
+/// that same order STOPS (`move-window -n`, [`WindowPlace::Step`]), and the daemon's session ring
+/// wraps again (`switch-client -n`, R314). **Whether there is an end is the caller's question**; a
+/// name that answered it here would be wrong at two of the three sites.
 ///
 /// A direction rather than a target, and a SEPARATE vocabulary from [`PaneDir`] rather than a reuse
 /// of it, because the two walks are different kinds of question: a pane walk is spatial (four ways,
-/// an edge at each end), a window WALK is ordinal (two ways, no ends). Spelling them with one type
-/// would let a caller ask for the window "to the left", which the registry would then have to
-/// refuse at runtime for a mistake the types can prevent.
-///
-/// "No ends" is a property of the WALK and not of the collection: the same two words spell a MOVE
-/// along the same order ([`WindowPlace::Step`]), and that one stops at the first and last window
-/// because the arrangement has them. The direction is shared; the wrap is a policy each verb states
-/// at its own site.
+/// an edge at each end), an ordinal walk is two ways along a list. Spelling them with one type would
+/// let a caller ask for the window "to the left", which the registry would then have to refuse at
+/// runtime for a mistake the types can prevent.
 ///
 /// # The serde derive is a CLIENT's own storage, not the wire
 ///
@@ -116,19 +117,21 @@ pub struct WindowId(pub u64);
 /// [`from_wire`](Self::from_wire) exists to keep single.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum WindowStep {
-    /// The window AFTER the current one, wrapping past the last onto the first.
+pub enum OrderStep {
+    /// The one AFTER the current member of the order.
     Next,
-    /// The window BEFORE it, wrapping past the first onto the last.
+    /// The one BEFORE it.
     Previous,
 }
 
-impl WindowStep {
+impl OrderStep {
     /// Every step, for a caller that must be exhaustive over the vocabulary (a flag table, a test).
     pub const ALL: [Self; 2] = [Self::Next, Self::Previous];
 
-    /// How far this moves along the ring — the ONE place the direction becomes arithmetic, so the
-    /// two arms cannot come to disagree about which way is forward.
+    /// How far this moves along the order — the ONE place the direction becomes arithmetic, so the
+    /// two arms cannot come to disagree about which way is forward. What happens at the ends is the
+    /// caller's: every walk in this tree applies the offset and then either wraps (`rem_euclid`) or
+    /// clamps, and that choice is stated where the walk is.
     #[must_use]
     pub const fn offset(self) -> isize {
         match self {
@@ -164,8 +167,9 @@ impl WindowStep {
 ///
 /// # A ring to WALK, a sequence to ARRANGE
 ///
-/// [`WindowStep`]'s docs call this collection an ORDINAL RING with no ends, and that is true of a
-/// WALK: attention comes back round, so `select-window -n` past the last window lands on the first.
+/// [`OrderStep`] names a direction and leaves the ends to its caller, and this is one of the two
+/// sites where that matters. A collection is a RING with no ends to a WALK: attention comes back
+/// round, so `select-window -n` past the last window lands on the first.
 /// It is false of the ARRANGEMENT. The list is drawn as a strip with a first tab and a last tab
 /// (`sprag-gui`'s window strip) and published as an ARRAY whose order is the fact — so the order has
 /// ends, and a move STOPS at them where a walk wraps. One collection, two questions, and each states
@@ -185,7 +189,7 @@ impl WindowStep {
 /// NO name: without them a caller wanting the front would have to READ the window list first, which
 /// is the round trip `select_pane {dir, from}` removed for panes.
 ///
-/// The serde derive is [`WindowStep`]'s — a client's own storage for a bound action, never the
+/// The serde derive is [`OrderStep`]'s — a client's own storage for a bound action, never the
 /// wire. The wire grammar is `sprag_host::wire::MoveWindowAsk`, which spells a place as top-level
 /// request KEYS (`place` / `before` / `after`) rather than as this enum's tagging, and is the only
 /// form a daemon parses.
@@ -199,10 +203,10 @@ pub enum WindowPlace {
     /// ONE place along the order, NOT wrapping: a window already at the end it is asked to move
     /// toward is [`PlaceHow::AlreadyThere`].
     ///
-    /// Spelled with [`WindowStep`] rather than a second pair of direction words, because it IS the
+    /// Spelled with [`OrderStep`] rather than a second pair of direction words, because it IS the
     /// same direction — the one `select-window -n` walks. What differs between the two verbs is the
     /// WRAP, which is a policy, and each states its own.
-    Step(WindowStep),
+    Step(OrderStep),
     /// Immediately BEFORE the named window — the drop-target reading of a drag.
     Before(String),
     /// Immediately AFTER the named window.
@@ -252,7 +256,7 @@ pub enum PlaceHow {
 impl PlaceHow {
     /// Every outcome, for a caller that must be exhaustive over the vocabulary.
     ///
-    /// ⚠ **An array literal no compiler checks** — the residual [`WindowStep::ALL`] and
+    /// ⚠ **An array literal no compiler checks** — the residual [`OrderStep::ALL`] and
     /// [`PaneDir::ALL`] already carry, stated here rather than hidden: a fifth variant left out of
     /// it would fail to PARSE silently while [`wire_str`](Self::wire_str) still compiled. Rust has
     /// no stable way to derive it, and the honest form is to say so at the array.
@@ -1230,7 +1234,7 @@ impl Ended {
     /// `null`, and the honest reading of that is "it was killed and this daemon cannot say how
     /// far" — never [`Ended::Pane`], which would report a surviving window that may already be
     /// gone. That is why the handshake refuses the skew rather than leaving it to each reader.
-    /// **There is no `ALL` array here, deliberately.** `PaneDir::ALL`, `WindowStep::ALL` and
+    /// **There is no `ALL` array here, deliberately.** `PaneDir::ALL`, `OrderStep::ALL` and
     /// `ActionSubject::ALL` are each an array literal no compiler checks — a hazard this project has
     /// now written into its debt register three times, where a variant left out is a word that
     /// silently fails to parse. This walks [`escalation`](Self::escalation) instead, which is an
@@ -1721,7 +1725,7 @@ impl Session {
     /// window, so there is always somewhere to land. With ONE window it lands on itself and answers
     /// its name — the honest "you are where you were", which a caller can compare against what it
     /// had. No error case, so unlike [`select_window`](Self::select_window) it cannot refuse.
-    pub fn select_window_relative(&mut self, step: WindowStep) -> &str {
+    pub fn select_window_relative(&mut self, step: OrderStep) -> &str {
         // A session ALWAYS holds at least one window — `kill_window` on the last one ends the
         // SESSION instead (`WindowKillOutcome::Session`), which is why the wrap below is total and
         // why the index that follows it cannot be out of range.
@@ -1792,8 +1796,8 @@ impl Session {
             // Saturating and clamping are the ENDS, not defensive padding: a window already at the
             // front asked to move further front computes its own index back, which the comparison
             // below reads as `AlreadyThere`. That is why this verb needs no wrap arm.
-            WindowPlace::Step(WindowStep::Previous) => from.saturating_sub(1),
-            WindowPlace::Step(WindowStep::Next) => (from + 1).min(len - 1),
+            WindowPlace::Step(OrderStep::Previous) => from.saturating_sub(1),
+            WindowPlace::Step(OrderStep::Next) => (from + 1).min(len - 1),
             WindowPlace::Before(_) => without(anchor.expect("Before carries an anchor")),
             WindowPlace::After(_) => without(anchor.expect("After carries an anchor")) + 1,
         };
@@ -2944,7 +2948,7 @@ impl SessionRegistry {
     pub fn select_window_relative(
         &mut self,
         session: &str,
-        step: WindowStep,
+        step: OrderStep,
     ) -> Result<String, SessionError> {
         Ok(self
             .session_named_mut(session)?
@@ -3940,7 +3944,7 @@ mod tests {
     /// first).
     ///
     /// REVERT-PROOF: drop the `rem_euclid` for a saturating step and the two wrap rows fail; swap
-    /// `WindowStep::offset`'s signs and every row lands one window the wrong way.
+    /// `OrderStep::offset`'s signs and every row lands one window the wrong way.
     #[test]
     fn the_window_walk_wraps_in_both_directions_and_answers_where_it_landed() {
         let mut reg = SessionRegistry::new((80, 24));
@@ -3957,19 +3961,19 @@ mod tests {
             reg.select_window_relative(&session, step)
                 .expect("the session resolves")
         };
-        assert_eq!(step(&mut reg, WindowStep::Next), "a");
-        assert_eq!(step(&mut reg, WindowStep::Next), "b");
+        assert_eq!(step(&mut reg, OrderStep::Next), "a");
+        assert_eq!(step(&mut reg, OrderStep::Next), "b");
         assert_eq!(
-            step(&mut reg, WindowStep::Next),
+            step(&mut reg, OrderStep::Next),
             "0",
             "the last wraps onto the first, which is what makes it a ring",
         );
         assert_eq!(
-            step(&mut reg, WindowStep::Previous),
+            step(&mut reg, OrderStep::Previous),
             "b",
             "and the first wraps onto the last, going the other way",
         );
-        assert_eq!(step(&mut reg, WindowStep::Previous), "a");
+        assert_eq!(step(&mut reg, OrderStep::Previous), "a");
 
         // The walk really MOVED the session's current window, not just answered a name — read back
         // through the listing every client projects from.
@@ -3996,7 +4000,7 @@ mod tests {
     fn the_window_walk_is_total_for_a_session_with_one_window() {
         let mut reg = SessionRegistry::new((80, 24));
         let session = reg.default_session().name().to_owned();
-        for step in WindowStep::ALL {
+        for step in OrderStep::ALL {
             assert_eq!(
                 reg.select_window_relative(&session, step)
                     .expect("the session resolves"),
@@ -4005,7 +4009,7 @@ mod tests {
             );
         }
         assert!(
-            reg.select_window_relative("nosuch", WindowStep::Next)
+            reg.select_window_relative("nosuch", OrderStep::Next)
                 .is_err(),
             "the ONLY way this refuses is a session that does not exist",
         );
@@ -4015,14 +4019,14 @@ mod tests {
     /// cannot drift between the action, the CLI flags and the keybinding.
     #[test]
     fn a_window_step_round_trips_through_its_wire_word() {
-        for step in WindowStep::ALL {
-            assert_eq!(WindowStep::from_wire(step.wire_str()), Some(step));
+        for step in OrderStep::ALL {
+            assert_eq!(OrderStep::from_wire(step.wire_str()), Some(step));
         }
-        assert_eq!(WindowStep::from_wire("sideways"), None);
+        assert_eq!(OrderStep::from_wire("sideways"), None);
         // The words themselves, pinned: they cross the wire, so renaming one is a protocol change
         // rather than a refactor.
-        assert_eq!(WindowStep::Next.wire_str(), "next");
-        assert_eq!(WindowStep::Previous.wire_str(), "previous");
+        assert_eq!(OrderStep::Next.wire_str(), "next");
+        assert_eq!(OrderStep::Previous.wire_str(), "previous");
     }
 
     /// Build a session holding windows `0 a b c` with the session sitting on `0`, and answer
@@ -4063,11 +4067,8 @@ mod tests {
         let cases: [(WindowPlace, [&str; 4]); 6] = [
             (WindowPlace::First, ["b", "0", "a", "c"]),
             (WindowPlace::Last, ["0", "a", "c", "b"]),
-            (
-                WindowPlace::Step(WindowStep::Previous),
-                ["0", "b", "a", "c"],
-            ),
-            (WindowPlace::Step(WindowStep::Next), ["0", "a", "c", "b"]),
+            (WindowPlace::Step(OrderStep::Previous), ["0", "b", "a", "c"]),
+            (WindowPlace::Step(OrderStep::Next), ["0", "a", "c", "b"]),
             // Anchored BACKWARD (the anchor sits before the moved window) and FORWARD (after it):
             // the two directions exercise the two halves of the frame correction.
             (WindowPlace::Before("0".to_owned()), ["b", "0", "a", "c"]),
@@ -4097,7 +4098,7 @@ mod tests {
         for (place, want) in [
             (WindowPlace::First, PlaceHow::AlreadyThere),
             (
-                WindowPlace::Step(WindowStep::Previous),
+                WindowPlace::Step(OrderStep::Previous),
                 PlaceHow::AlreadyThere,
             ),
             (WindowPlace::Before("a".to_owned()), PlaceHow::AlreadyThere),
@@ -4116,7 +4117,7 @@ mod tests {
             );
         }
         // The same ends from the other side, so a clamp that stuck the wrong way is caught.
-        for place in [WindowPlace::Last, WindowPlace::Step(WindowStep::Next)] {
+        for place in [WindowPlace::Last, WindowPlace::Step(OrderStep::Next)] {
             assert_eq!(
                 reg.move_window(&session, "c", &place),
                 Ok(PlaceHow::AlreadyThere),
@@ -4131,8 +4132,8 @@ mod tests {
         for place in [
             WindowPlace::First,
             WindowPlace::Last,
-            WindowPlace::Step(WindowStep::Next),
-            WindowPlace::Step(WindowStep::Previous),
+            WindowPlace::Step(OrderStep::Next),
+            WindowPlace::Step(OrderStep::Previous),
         ] {
             assert_eq!(
                 lone.move_window(&only, "0", &place),
@@ -4213,7 +4214,7 @@ mod tests {
     fn a_move_changes_the_order_the_ring_walks() {
         let (mut reg, session) = four_windows();
         assert_eq!(
-            reg.select_window_relative(&session, WindowStep::Next),
+            reg.select_window_relative(&session, OrderStep::Next),
             Ok("a".to_owned()),
         );
         reg.select_window(&session, "0").expect("back to the top");
@@ -4221,7 +4222,7 @@ mod tests {
             .expect("c moves in behind 0");
         assert_eq!(order(&reg, &session), ["0", "c", "a", "b"]);
         assert_eq!(
-            reg.select_window_relative(&session, WindowStep::Next),
+            reg.select_window_relative(&session, OrderStep::Next),
             Ok("c".to_owned()),
             "the ring walks the order the move left behind",
         );
@@ -4254,7 +4255,7 @@ mod tests {
         assert_eq!(WindowPlace::After("a".to_owned()).anchor(), Some("a"));
         assert_eq!(WindowPlace::First.anchor(), None);
         assert_eq!(WindowPlace::Last.anchor(), None);
-        for step in WindowStep::ALL {
+        for step in OrderStep::ALL {
             assert_eq!(WindowPlace::Step(step).anchor(), None);
         }
     }

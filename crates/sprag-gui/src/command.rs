@@ -77,7 +77,7 @@
 use sprag_host::ProjectAction;
 use sprag_host::keymap::BoundAction;
 use sprag_host::wire::SelectWindowAsk;
-use sprag_terminal::{WindowPlace, WindowStep};
+use sprag_terminal::{OrderStep, WindowPlace};
 
 use crate::slotview::SlotView;
 
@@ -192,10 +192,10 @@ impl Command {
             Self::MoveWindow(place) => match place {
                 WindowPlace::First => "Move window to the front".to_owned(),
                 WindowPlace::Last => "Move window to the end".to_owned(),
-                WindowPlace::Step(WindowStep::Previous) => {
+                WindowPlace::Step(OrderStep::Previous) => {
                     "Move window one place earlier".to_owned()
                 }
-                WindowPlace::Step(WindowStep::Next) => "Move window one place later".to_owned(),
+                WindowPlace::Step(OrderStep::Next) => "Move window one place later".to_owned(),
                 WindowPlace::Before(name) => format!("Move window before {name}"),
                 WindowPlace::After(name) => format!("Move window after {name}"),
             },
@@ -768,8 +768,8 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         // steps. A row per window per direction is what the anchored forms would cost, and
         // `prefix .` already asks for an anchor by name — so the palette carries the half that has
         // no argument and the prompt carries the half that does.
-        Command::MoveWindow(WindowPlace::Step(WindowStep::Previous)),
-        Command::MoveWindow(WindowPlace::Step(WindowStep::Next)),
+        Command::MoveWindow(WindowPlace::Step(OrderStep::Previous)),
+        Command::MoveWindow(WindowPlace::Step(OrderStep::Next)),
         Command::MoveWindow(WindowPlace::First),
         Command::MoveWindow(WindowPlace::Last),
     ]);
@@ -1063,9 +1063,9 @@ mod tests {
             "the row names a window and so does the binding it is paired with",
         );
         assert_eq!(
-            Command::MoveWindow(WindowPlace::Step(WindowStep::Next)).bound(),
+            Command::MoveWindow(WindowPlace::Step(OrderStep::Next)).bound(),
             Some(sprag_host::keymap::BoundAction::MoveWindow {
-                place: WindowPlace::Step(WindowStep::Next),
+                place: WindowPlace::Step(OrderStep::Next),
             }),
             "neither the row nor the binding names a window, so the two really are the same act",
         );
@@ -1171,7 +1171,7 @@ mod tests {
             Some((named, sprag_terminal::PlaceHow::Moved))
         }
         /// Inert: this catalogue fixture drives which ROWS exist, not the window ring.
-        fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
+        fn select_window_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {
             None
         }
         fn new_window(&self) -> String {
@@ -1800,8 +1800,8 @@ mod tests {
         for place in [
             WindowPlace::First,
             WindowPlace::Last,
-            WindowPlace::Step(WindowStep::Next),
-            WindowPlace::Step(WindowStep::Previous),
+            WindowPlace::Step(OrderStep::Next),
+            WindowPlace::Step(OrderStep::Previous),
         ] {
             Command::MoveWindow(place).run(Some(0), &slots);
         }
@@ -1810,8 +1810,8 @@ mod tests {
             vec![
                 WindowPlace::First,
                 WindowPlace::Last,
-                WindowPlace::Step(WindowStep::Next),
-                WindowPlace::Step(WindowStep::Previous),
+                WindowPlace::Step(OrderStep::Next),
+                WindowPlace::Step(OrderStep::Previous),
             ],
             "each row sent the place it names, and none of them named a window",
         );

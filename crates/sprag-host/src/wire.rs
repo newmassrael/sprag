@@ -14,7 +14,7 @@
 
 use pinion_core::external::{SchemaArg, SchemaField};
 use serde_json::{Map, Value};
-use sprag_terminal::{PaneDir, PaneId, PlaceHow, WindowPlace, WindowStep};
+use sprag_terminal::{OrderStep, PaneDir, PaneId, PlaceHow, WindowPlace};
 
 use crate::{INPUT_TAG, MUX_TAG};
 
@@ -1104,7 +1104,7 @@ pub const SELECT_WINDOW_ACTION: &str = "select_window";
 /// A pane walk is SPATIAL — four ways, and an edge at each end that the answer has to name. A
 /// window list is an ORDINAL RING TO WALK: two ways, no ends, and the step always lands — where
 /// [`MOVE_WINDOW_ACTION`] treats the same order as a SEQUENCE with a front and a back. That is why
-/// [`WindowStep`] is its own vocabulary rather than a reuse of [`PaneDir`], and why this ask has no
+/// [`OrderStep`] is its own vocabulary rather than a reuse of [`PaneDir`], and why this ask has no
 /// origin key: a step is always measured from the window the session is CURRENTLY on, because that
 /// is the only thing "next" can mean for a ring the session itself walks.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1113,7 +1113,7 @@ pub enum SelectWindowAsk {
     Named(String),
     /// `{relative}` — one step along the ring from the current window, WRAPPING. Total: a session
     /// always has a window, so this always lands somewhere and answers its name.
-    Step(WindowStep),
+    Step(OrderStep),
 }
 
 impl SelectWindowAsk {
@@ -1166,7 +1166,7 @@ impl SelectWindowAsk {
         };
         let step = match field(Self::RELATIVE_KEY) {
             None => None,
-            Some(value) => Some(WindowStep::from_wire(value.as_str()?)?),
+            Some(value) => Some(OrderStep::from_wire(value.as_str()?)?),
         };
         match (named, step) {
             (Some(window), None) => Some(Self::Named(window)),
@@ -1227,7 +1227,7 @@ pub const MOVE_WINDOW_ACTION: &str = "move_window";
 /// may be called that, since [`sprag_terminal::WindowName`] admits it. Separate keys make the
 /// ambiguity unrepresentable rather than resolved by precedence.
 ///
-/// The two step words are [`WindowStep`]'s own, not a second pair: it is the same direction the
+/// The two step words are [`OrderStep`]'s own, not a second pair: it is the same direction the
 /// ring walks, and only the WRAP differs between the verbs.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MoveWindowAsk {
@@ -1296,7 +1296,7 @@ impl MoveWindowAsk {
             Some(value) => Some(match value.as_str()? {
                 Self::FIRST_WORD => WindowPlace::First,
                 Self::LAST_WORD => WindowPlace::Last,
-                other => WindowPlace::Step(WindowStep::from_wire(other)?),
+                other => WindowPlace::Step(OrderStep::from_wire(other)?),
             }),
         };
         let anchored = |key: &'static str, wrap: fn(String) -> WindowPlace| match field(key) {
@@ -3110,8 +3110,8 @@ mod tests {
             BUMP,
         );
         for (step, rendered) in [
-            (WindowStep::Next, r#"{"relative":"next"}"#),
-            (WindowStep::Previous, r#"{"relative":"previous"}"#),
+            (OrderStep::Next, r#"{"relative":"next"}"#),
+            (OrderStep::Previous, r#"{"relative":"previous"}"#),
         ] {
             assert_eq!(
                 serde_json::to_string(&SelectWindowAsk::Step(step).to_args())
@@ -3130,9 +3130,9 @@ mod tests {
         for (place, rendered) in [
             (WindowPlace::First, r#"{"place":"first"}"#),
             (WindowPlace::Last, r#"{"place":"last"}"#),
-            (WindowPlace::Step(WindowStep::Next), r#"{"place":"next"}"#),
+            (WindowPlace::Step(OrderStep::Next), r#"{"place":"next"}"#),
             (
-                WindowPlace::Step(WindowStep::Previous),
+                WindowPlace::Step(OrderStep::Previous),
                 r#"{"place":"previous"}"#,
             ),
             (

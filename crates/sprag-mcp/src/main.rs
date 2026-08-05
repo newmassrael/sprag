@@ -127,7 +127,7 @@ use sprag_rpc::{
     CallError, HostConn, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PATTERN_PARAM,
 };
-use sprag_terminal::{Ended, LayoutSnapshot, PaneDir, PaneId, WindowInfo, WindowStep, arrangement};
+use sprag_terminal::{Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, WindowInfo, arrangement};
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
 /// descendants) — [`sprag_host`]'s socket policy path key.
@@ -968,7 +968,7 @@ fn tools_list() -> Value {
                         },
                         "relative": {
                             "type": "string",
-                            "enum": WindowStep::ALL.map(WindowStep::wire_str),
+                            "enum": OrderStep::ALL.map(OrderStep::wire_str),
                             "description": "One step along the window ring instead of naming one. \
                                 The ring wraps, so a step always lands somewhere."
                         }
@@ -1498,11 +1498,11 @@ fn tool_select_window(args: &Value) -> Result<String, String> {
             SelectWindowAsk::Named(resolve_window(args, SelectWindowAsk::WINDOW_KEY)?.name)
         }
         (None | Some(Value::Null), Some(Value::String(word))) => {
-            SelectWindowAsk::Step(WindowStep::from_wire(word).ok_or_else(|| {
+            SelectWindowAsk::Step(OrderStep::from_wire(word).ok_or_else(|| {
                 format!(
                     "'{}' must be one of {}, not {word:?}",
                     SelectWindowAsk::RELATIVE_KEY,
-                    WindowStep::ALL.map(WindowStep::wire_str).join(", "),
+                    OrderStep::ALL.map(OrderStep::wire_str).join(", "),
                 )
             })?)
         }
@@ -1518,7 +1518,7 @@ fn tool_select_window(args: &Value) -> Result<String, String> {
                 "select_window needs '{}' (a window's NAME, from list_windows) or '{}' ({})",
                 SelectWindowAsk::WINDOW_KEY,
                 SelectWindowAsk::RELATIVE_KEY,
-                WindowStep::ALL.map(WindowStep::wire_str).join(" / "),
+                OrderStep::ALL.map(OrderStep::wire_str).join(" / "),
             ));
         }
     };
