@@ -49,6 +49,7 @@
 
 pub mod agent;
 pub mod attach;
+pub mod chooser;
 pub mod config;
 pub mod durability;
 pub mod events;

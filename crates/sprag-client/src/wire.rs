@@ -87,6 +87,7 @@ use pinion_core::{GridBuffer, QuitSink};
 use serde_json::{Value, json};
 use sprag_grid::ProjectionToken;
 use sprag_host::ClientSize;
+use sprag_host::chooser::Target;
 use sprag_host::wire::ActivityWire;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, AttachAsk, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION,
@@ -98,7 +99,7 @@ use sprag_host::wire::{
     ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE,
     SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
     SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
+    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for,
     project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
@@ -730,6 +731,13 @@ enum Attaching<'a> {
     /// have moved — R304's defect, reached by a different route. See
     /// [`sprag_host::wire::AttachAsk::Step`].
     Step(OrderStep),
+    /// The row a CHOOSER picked, as a path of IDENTITIES — R315.
+    ///
+    /// The strongest form of the argument the two arms above make. There the client cannot name its
+    /// target; here it CAN — the row it painted has a label on it — and must not, because the label
+    /// was true when the list was drawn and a person has been reading it since. See
+    /// [`AttachAsk::Goto`].
+    Goto(Target),
     /// The session this client was viewing BEFORE this one, resolved by the daemon (tmux
     /// `switch-client -l`). The client cannot name it, and R304 measured what happens when it
     /// tries — see [`AttachAsk::LastViewed`].
@@ -783,6 +791,15 @@ fn attach_and_follow(conn: &mut HostConn, to: Attaching<'_>) -> Landed {
         // asking for "the next one" must not have to say where it currently is, and saying so
         // would be a name where the daemon already holds an identity.
         Attaching::Step(step) => send_attach(conn, AttachAsk::Step(step)),
+        // The same, with a target the client DOES hold and deliberately does not send by name.
+        Attaching::Goto(target) => send_attach(
+            conn,
+            AttachAsk::Goto {
+                session: target.session(),
+                window: target.window(),
+                pane: target.pane(),
+            },
+        ),
         // The scope IS the target here: the daemon reads `{"attached": true}` as this client's own
         // attachment and re-attaches it to itself, which is a no-op that answers the one thing the
         // caller needs — what that session is called now.
@@ -1817,7 +1834,14 @@ impl WireHost {
                     // step arm belongs here rather than beside `Named` for the reason it exists —
                     // it never held a name, and inventing one off the mirror is the second answer
                     // the daemon's walk was built to prevent.
-                    Attaching::LastViewed { .. } | Attaching::Step(_) | Attaching::Attached => {
+                    // The goto arm joins them: its refusal is the daemon saying the picked row is
+                    // GONE, which is the one answer this whole design exists to be able to give.
+                    // Falling back to a name here would be inventing the very address the pick
+                    // refused to be.
+                    Attaching::LastViewed { .. }
+                    | Attaching::Step(_)
+                    | Attaching::Goto(_)
+                    | Attaching::Attached => {
                         return Ok(None);
                     }
                 },
@@ -2753,6 +2777,31 @@ impl HostClient for WireHost {
             return Some(here);
         }
         self.switch_to(Attaching::Named(name))
+    }
+
+    /// The registry-wide tree, read fresh from the daemon rather than off this client's mirror.
+    ///
+    /// A FRESH READ and not a poll, deliberately: nothing else in this client needs the other
+    /// sessions' windows, so mirroring them would make every poll wake pay for a fact one keystroke
+    /// a day asks for. See [`sprag_host::wire::TREE_SLOT`].
+    fn tree(&self) -> Vec<sprag_terminal::TreeSession> {
+        self.request(
+            "scene/query",
+            json!({ "path": mux_action_path(TREE_SLOT) }),
+            "tree",
+        )
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+    }
+
+    /// Go where a chooser's row points, by IDENTITY.
+    ///
+    /// It takes the SWITCH path even when the pick names the session this client is already on,
+    /// where [`switch_session_named`](HostClient::switch_session_named) short-circuits — because a
+    /// pick can also name a window or a pane of that session, which is a real act with nothing to
+    /// short-circuit. The daemon's own `Unchanged` outcome makes the attach half free.
+    fn goto(&self, target: Target) -> Option<String> {
+        self.switch_to(Attaching::Goto(target))
     }
 
     /// Create a fresh session on the host (born with a shell at the boot size — it reflows to this

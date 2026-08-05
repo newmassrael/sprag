@@ -57,6 +57,7 @@ use sprag_terminal::{PaneId, PaneName, SessionName, WindowName};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::HostClient;
+use crate::chooser::Pick;
 use crate::keymap::BoundAction;
 
 /// What a client is asking, and what it will do with the answer.
@@ -74,6 +75,16 @@ pub enum Ask {
         /// with a `#W` format; here it is READ at the moment the key is pressed, which is why
         /// sprag needs no format language to put the right name in front of the user.
         seed: String,
+    },
+    /// A LIST: the answer is a row a person PICKED, not a name they typed (R315).
+    ///
+    /// The third kind of question, and the one this vocabulary was missing: `rename-window` needs a
+    /// string, `kill-window` needs a yes, and `choose-tree` needs *that one, there*. It is a
+    /// separate arm rather than a [`Line`](Self::Line) whose subject happens to offer completions,
+    /// because what comes back is not text at all — see [`Pick::commit`].
+    Choose {
+        /// The open chooser: every row, the query narrowing them, and the picked one.
+        pick: Box<Pick>,
     },
     /// A YES/NO: the answer decides whether a destructive verb runs at all.
     Confirm {
@@ -328,6 +339,16 @@ impl Ask {
             BoundAction::SwitchClient {
                 ask: crate::keymap::SwitchClientAsk::Ask,
             } => Some(line(Subject::SwitchTo)),
+            // The tree is read HERE, at the moment the key is pressed, exactly as a seed is and for
+            // the same reason: what the user reads is what was true when they asked. A chooser with
+            // nothing in it asks NOTHING rather than opening an empty box — `RenamePane`'s rule
+            // ("an action needing a subject when there is none asks nothing and does nothing"),
+            // reached by a different route.
+            BoundAction::ChooseTree => {
+                Pick::new(&host.tree(), &host.current_session()).map(|pick| Self::Choose {
+                    pick: Box::new(pick),
+                })
+            }
             BoundAction::ConfirmBefore { action } => {
                 let (question, consequence, verb) = confirm_question(action, host, pane);
                 Some(Self::Confirm {
@@ -454,7 +475,13 @@ pub enum Typed {
 ///
 /// [`cursor`](Self::cursor) is where a client paints the caret, in the one unit that is not a
 /// guess about somebody else's screen.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// Serde-derived for [`Subject`]'s reason: `sprag-gui` holds an open question in a reactive cell,
+/// whose value type carries pinion's serialization bound. **It is not a wire type and must not
+/// become one** — [`cursor`](Self::cursor) is a byte offset this type's own methods keep on a
+/// grapheme boundary, and a value decoded from somewhere else could arrive with one that is not.
+/// Every value that round-trips through that cell was built by these methods in this process.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Line {
     /// What has been typed.
     text: String,

@@ -736,6 +736,30 @@ pub enum BoundAction {
         /// Which session to move to.
         ask: SwitchClientAsk,
     },
+    /// `choose-tree` — show every session, window and pane, and go to the one picked (tmux
+    /// `prefix s`, which is `choose-tree -Zs`).
+    ///
+    /// # The gesture [`SwitchClient`](Self::SwitchClient)'s asking arm is not
+    ///
+    /// `switch-client -t` with the name left off asks a person to TYPE a session name. That is the
+    /// right question for somebody who knows the name and no question at all for somebody who does
+    /// not — and *"which sessions are there?"* had no answer inside sprag at all: a user had to
+    /// leave the terminal and run `sprag ls` in a shell, which is R308's finding one noun over. So
+    /// this arm ships and `prefix s` becomes reachable, where R314 had to leave it unbound because
+    /// answering a chooser's key with a name prompt would answer a different gesture.
+    ///
+    /// # It takes no scoping flag
+    ///
+    /// tmux has `-s` (sessions) and `-w` (windows) and binds them to two keys. Here the tree is one
+    /// list and the QUERY is the scope — typing narrows it to whatever a person is looking for,
+    /// which covers both flags and the pane level tmux's own flags do not reach. `prefix w` is
+    /// therefore left FREE rather than bound to a second spelling of this.
+    ///
+    /// # What a pick carries
+    ///
+    /// An IDENTITY, resolved by the daemon — never the name on the row and never its position. See
+    /// [`crate::chooser`], whose whole design is that sentence.
+    ChooseTree,
     /// `confirm-before <action>` — ask a yes/no question naming what will be destroyed, and carry
     /// `action` out only if the answer is yes (tmux's `prefix &` guard).
     ///
@@ -830,7 +854,7 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 18] = [
+    pub const VOCABULARY: [&'static str; 19] = [
         "detach-client",
         "send-prefix",
         "list-keys",
@@ -848,6 +872,7 @@ impl BoundAction {
         "rename-session",
         "rename-pane",
         "switch-client -n|-p|-l|-t [<session>]",
+        "choose-tree",
         "confirm-before <action>",
     ];
 
@@ -865,6 +890,10 @@ impl BoundAction {
             | Self::RenameSession
             | Self::RenamePane
             | Self::MoveWindowBefore
+            // A LIST is a question: the key puts rows on the screen and waits. Being here is also
+            // what refuses `confirm-before choose-tree` — a yes/no in front of a chooser is a
+            // prompt inside a prompt, which this vocabulary has no surface for.
+            | Self::ChooseTree
             | Self::ConfirmBefore { .. } => true,
             // The ONE arm whose answer depends on its argument, and that is what `-t` with the
             // name left off means. It also gives `confirm-before switch-client -t` its refusal for
@@ -913,6 +942,7 @@ impl BoundAction {
             // A client verb, so it acts wherever the focus is — including nowhere. A user whose
             // pointer is on the session rail must still be able to press `prefix )`.
             Self::SwitchClient { .. }
+            | Self::ChooseTree
             | Self::DetachClient
             | Self::SendPrefix
             | Self::ListKeys
@@ -967,7 +997,13 @@ impl BoundAction {
             Self::RenameSession => ActionSubject::Session,
             // The CLIENT, with `detach-client` — see the arm's own doc. It changes no session; it
             // changes which one this client is looking at.
-            Self::SwitchClient { .. } => ActionSubject::Client,
+            //
+            // `choose-tree` joins them, and the grouping is a decision rather than a default: a
+            // pick can select a WINDOW and a PANE, so it reaches two other subjects. What it is
+            // FOR is moving this client, and its rows are every session — filing it under Window
+            // would put the key that shows a person the whole daemon in a group about tab
+            // management.
+            Self::SwitchClient { .. } | Self::ChooseTree => ActionSubject::Client,
             Self::ConfirmBefore { action } => action.subject(),
         }
     }
@@ -1020,7 +1056,8 @@ impl BoundAction {
             | Self::RenameWindow
             | Self::RenameSession
             | Self::RenamePane
-            | Self::SwitchClient { .. } => vec![self.verb()],
+            | Self::SwitchClient { .. }
+            | Self::ChooseTree => vec![self.verb()],
         }
     }
 
@@ -1062,18 +1099,22 @@ impl BoundAction {
         }
         let flags: Vec<&str> = words.collect();
         match verb {
-            // The three argument-less client-local verbs, sharing one arm because they share one
+            // The four argument-less client-local verbs, sharing one arm because they share one
             // grammar. `list-keys` takes none deliberately where the CLI verb of that name now
             // takes `-N`: a binding opens the view, and which view is a thing the surface decides,
-            // not a thing a config file has an opinion about.
-            "detach-client" | "send-prefix" | "list-keys" => {
+            // not a thing a config file has an opinion about. `choose-tree` takes none for a
+            // sharper version of the same reason — tmux's `-s` / `-w` scope its list and here the
+            // QUERY does, so a flag would fix in a config file the one thing a person types per
+            // press.
+            "detach-client" | "send-prefix" | "list-keys" | "choose-tree" => {
                 if !flags.is_empty() {
                     return Err(bad("takes no arguments"));
                 }
                 Ok(match verb {
                     "detach-client" => Self::DetachClient,
                     "send-prefix" => Self::SendPrefix,
-                    _ => Self::ListKeys,
+                    "list-keys" => Self::ListKeys,
+                    _ => Self::ChooseTree,
                 })
             }
             "split-window" => {
@@ -1424,6 +1465,7 @@ impl fmt::Display for BoundAction {
             // `move-window --before ` with a trailing space: `list-keys` output is pasted back
             // into `bind-key`, and a trailing space would parse as the same thing only by luck.
             Self::MoveWindowBefore => f.write_str("move-window --before"),
+            Self::ChooseTree => f.write_str("choose-tree"),
         }
     }
 }
@@ -1677,14 +1719,21 @@ impl Default for Keymap {
                 // screen, and three unintended repeats land them two workspaces from where they
                 // meant to be.
                 //
-                // tmux's `prefix s` is `choose-tree`, an interactive list, and it is deliberately
-                // LEFT UNBOUND: `switch-client -t` (the asking form) is a NAME PROMPT, so putting
-                // it on those fingers would answer a gesture with a different one. It stays
-                // bindable for anyone who wants it — R305's rule for `kill-window`, applied to a
-                // key whose meaning rather than whose guard is missing.
                 bind("(", switching(SwitchClientAsk::Step(OrderStep::Previous))),
                 bind(")", switching(SwitchClientAsk::Step(OrderStep::Next))),
                 bind("L", switching(SwitchClientAsk::LastViewed)),
+                // `prefix s` — tmux's own `choose-tree -Zs`, and R314 left this key FREE rather
+                // than spending it on `switch-client -t`: that arm is a NAME PROMPT, and answering
+                // a chooser's key with a prompt would answer a different gesture. The chooser
+                // exists now, so the key means what a tmux user's fingers already think it means.
+                //
+                // NOT repeating, for the session steps' reason above and more so: this one opens a
+                // list, and a held key would reopen it under itself.
+                //
+                // `prefix w` (tmux's `choose-tree -Zw`) stays FREE deliberately — see
+                // [`BoundAction::ChooseTree`] for why one list needs no scoping flag and therefore
+                // no second key.
+                bind("s", BoundAction::ChooseTree),
                 // TWO of the three chords `sprag-gui` held privately until R314, in the ONE table
                 // now. Same keys, same acts — what changes is that `sprag list-keys` names them,
                 // `prefix ?` paints them, a config file can unbind them, and `sprag-tui` has them.
@@ -2580,12 +2629,12 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 20;
+    const ARMS: usize = 21;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
     ///
-    /// A twentieth variant stops this compiling, and adding its line here makes
+    /// A twenty-second variant stops this compiling, and adding its line here makes
     /// [`one_of_every_action`] fail until an instance of it is written down. That is the pair the
     /// vocabulary, the subject and the reach tests all rest on: three properties that must hold for
     /// EVERY action, checked against a census the compiler forces to stay complete.
@@ -2610,13 +2659,14 @@ mod tests {
             BoundAction::RenameSession => 16,
             BoundAction::RenamePane => 17,
             BoundAction::SwitchClient { .. } => 18,
-            BoundAction::ConfirmBefore { .. } => 19,
+            BoundAction::ChooseTree => 19,
+            BoundAction::ConfirmBefore { .. } => 20,
         }
     }
 
     /// One value of every arm — the census the whole-vocabulary tests walk.
     ///
-    /// Panics if it is not complete, so a caller never silently tests eighteen of nineteen arms.
+    /// Panics if it is not complete, so a caller never silently tests twenty of twenty-one arms.
     fn one_of_every_action() -> Vec<BoundAction> {
         let every = vec![
             BoundAction::DetachClient,
@@ -2650,6 +2700,7 @@ mod tests {
             BoundAction::SwitchClient {
                 ask: SwitchClientAsk::Step(OrderStep::Next),
             },
+            BoundAction::ChooseTree,
             BoundAction::ConfirmBefore {
                 action: Box::new(BoundAction::KillWindow),
             },
@@ -2973,6 +3024,9 @@ mod tests {
                 "( switch-client -p",
                 ") switch-client -n",
                 "L switch-client -l",
+                // tmux's own `prefix s` — `choose-tree`, the key R314 could not take because the
+                // gesture behind it did not exist yet (R315).
+                "s choose-tree",
                 "C-S-PageDown switch-client -n",
                 "C-S-PageUp switch-client -p",
                 // tmux's four `-r` rows, read from `list-keys -T prefix` on tmux 3.2a. Its own
