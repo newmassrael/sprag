@@ -7,16 +7,16 @@
 //! sprag ssh [user@]host [-p PORT] [-L FWD]... [--tmux[=NAME]] [-- cmd...]  create a session running
 //!                          ssh to a remote host (a first-classed remote workspace); -L forwards a
 //!                          local->remote port; --tmux attaches-or-creates a remote tmux session
-//! sprag find NEEDLE [-t SESSION] [--pane N] [--regex]  print each matching line as
+//! sprag find NEEDLE [-t SESSION] [--pane PANE] [--regex]  print each matching line as
 //!                          PANE:LINE: text. Literal + ASCII case-insensitive by default;
 //!                          --regex reads NEEDLE as a case-SENSITIVE regular expression (use
 //!                          (?i) to fold); --pane narrows the sweep to one pane
-//! sprag wait-for-output --pane N NEEDLE [-t SESSION] [--regex]  BLOCK until that pane's retained
+//! sprag wait-for-output --pane PANE NEEDLE [-t SESSION] [--regex]  BLOCK until that pane's retained
 //!                          output matches, then print the matching lines like `find`. The same two
 //!                          search languages, in the other tense: `find` asks "does it say this
 //!                          now", this asks "tell me when it does". No timeout — wrap it in
 //!                          `timeout` if you want one
-//! sprag run [NAME] [-t SESSION] [--pane N]  list the commands the pane's project declares
+//! sprag run [NAME] [-t SESSION] [--pane PANE]  list the commands the pane's project declares
 //!                          (its `.sprag.toml`), or, given NAME, TYPE that command at the pane's
 //!                          prompt without running it — the Enter is the user's
 //! sprag attach NAME [--no-wait | --tui | --remote HOST]  attach a client to a session (tmux
@@ -30,7 +30,7 @@
 //!                              the saved workspace, start fresh)
 //!
 //! sprag select-pane -t SESSION <PANE | -L|-R|-U|-D [--from PANE]>
-//!                                         make a pane ACTIVE — by id, or by walking the
+//!                                         make a pane ACTIVE — by PANE, or by walking the
 //!                                         arrangement left/right/up/down from the pane the
 //!                                         session is on, or from the pane --from names (tmux
 //!                                         select-pane). Session state: every
@@ -76,7 +76,7 @@
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
 //! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
 //! sprag agent [-t SESSION] [PANE]                 what the AI agent in each pane is doing
-//! sprag report-agent STATE [--pane N] [--source S]  say what the agent in a pane is DOING
+//! sprag report-agent STATE [--pane PANE] [--source S]  say what the agent in a pane is DOING
 //!                          [--name AGENT] [--seq N]  (the pane defaults to $SPRAG_PANE)
 //! sprag release-agent [-t SESSION] [--pane PANE]      hand the pane back to screen inference
 //! sprag install-hooks [AGENT…] [--yes] [--dry-run]  wire an agent's OWN config to report-agent,
@@ -115,6 +115,27 @@
 //! never has to spell it. That is the rule [`find`] and [`run_project`] already followed; the pane
 //! verbs join them rather than inventing a third convention. Both kinds pass the same out-of-band
 //! `session` param the GUI sends, so there is one scoping vocabulary, not a CLI-only one.
+//!
+//! ## A PANE argument is an ADDRESS
+//!
+//! Every `PANE` above is a pane's id or its NAME, told apart by
+//! [`PaneAddress`] — the same rule the agent surface uses,
+//! and the reason [`PaneName`](sprag_terminal::PaneName) refuses an all-digit name. Either
+//! spelling reaches any WINDOW of the scoped session, and neither crosses a session.
+//!
+//! **Both halves of that were false before R312.** No verb accepted a name at all, and the six
+//! spellings of that refusal (`pane id "x" must be a number` / `"x" is not a pane id` / `"x" is
+//! neither a direction flag nor a pane id` / `"x" is neither a flag nor a pane id` / `"x" is
+//! neither -t nor a pane id` / `--pane "x" is not a pane id (a number)`) are what a rule with no
+//! home looks like. Worse, the verbs disagreed about whether a pane EXISTED: `zoom-pane`,
+//! `rename-pane` and `swap-pane` reached a pane one window over — they are registry-wide mux
+//! actions — while `capture-pane`, `agent` and `select-pane` refused the same pane at the same
+//! instant, because they pre-flighted against the scoped session's CURRENT WINDOW.
+//!
+//! There is one resolver now ([`resolve_pane`]), it answers a [`PaneSite`] that carries the window
+//! it found, and a `PaneSite` has no other constructor — so a verb cannot address a pane it has
+//! not looked up. `every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over` derives its
+//! list from the usage text above and fails for a verb that stops.
 //!
 //! ## The pane verbs and the pane they mean
 //!

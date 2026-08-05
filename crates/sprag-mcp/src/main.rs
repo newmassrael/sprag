@@ -798,7 +798,10 @@ fn tools_list() -> Value {
                     on, and what a pane command with no target acts on. Use it to put a human \
                     on the pane you want them to look at, after opening or preparing it. \
                     `list_panes` marks the active pane. This MOVES a person's cursor: prefer \
-                    it when you have something for them to see, not as a side effect. \
+                    it when you have something for them to see, not as a side effect. A pane in \
+                    ANOTHER window is the exception and the answer says so: it becomes THAT \
+                    window's active pane and the person does not move, because nothing here \
+                    changes which window somebody is looking at. \
                     Give EITHER `pane` (that pane) OR `dir` (one step that way through the \
                     arrangement, like a tmux `select-pane -L`) — never both. By default `dir` \
                     steps FROM WHERE THE USER IS NOW; add `from` (a pane number or name) or \
