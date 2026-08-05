@@ -3277,3 +3277,100 @@ fn every_window_tool_is_safe_to_point_at_a_persons_window() {
         );
     }
 }
+
+/// **THE PANES OF A WINDOW AN AGENT OPENED ARE ITS OWN — and until R313's own audit they were
+/// nobody's, so the agent was told they belonged to a PERSON.**
+///
+/// Measured through the shipped server: an agent opened a window, and `rename_pane`, `close_pane`
+/// and `resize_pane` on the birth pane inside it all answered *"was opened by a PERSON, not by
+/// you"* — false, since the agent's own request had just created it — while `close_window`
+/// destroyed that same pane without a murmur. The daemon passed `None` for the birth pane's opener
+/// on a comment reasoning from `new_session`, and that premise moved in the round that let a
+/// caller which is not a person make a window.
+///
+/// The CONTROL is in the same test: a pane of a PERSON's window is still refused, so this is not
+/// "the gate stopped working".
+#[test]
+fn the_panes_of_a_window_an_agent_opened_are_the_agents_too() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool("open_window", json!({ "name": "agentwork" }));
+    let far = mux_query_panes_in(&sock, "agentwork")
+        .first()
+        .copied()
+        .expect("the window's birth pane");
+    // Named out of band so the test can address it, since a window's birth pane is deliberately
+    // unnamed (the request's `name` is the WINDOW's).
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "inmine" }),
+    );
+
+    let renamed = server.call_tool("rename_pane", json!({ "pane": "inmine", "name": "built" }));
+    assert!(
+        renamed.contains("is now called \"built\""),
+        "the pane of the agent's OWN window is the agent's to name: {renamed}",
+    );
+    // THE CONTROL — a pane of the PERSON's window is still refused, so the gate still gates.
+    let theirs = server.call_tool_error("rename_pane", json!({ "pane": 1, "name": "nope" }));
+    assert!(
+        theirs.contains("was opened by a person, not by you"),
+        "and a person's pane is still theirs: {theirs}",
+    );
+
+    let closed = server.call_tool("close_pane", json!({ "pane": "built" }));
+    assert!(
+        closed.contains("which you had opened"),
+        "and it is the agent's to close: {closed}",
+    );
+}
+
+/// `open_window` starts its shell WHERE THE AGENT SAYS — `open_pane`'s `cwd`, which this tool did
+/// not take at all until R313's audit noticed the asymmetry was an artifact rather than a decision.
+#[test]
+fn a_window_an_agent_opens_starts_where_it_asks() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    // A directory that is NOT the server's own, or the assertion could not tell "honoured the
+    // argument" from "inherited the default".
+    let elsewhere = std::env::temp_dir();
+    assert_ne!(
+        std::env::current_dir().expect("a cwd"),
+        elsewhere,
+        "the fixture's directory must differ from the default or nothing below discriminates",
+    );
+    server.call_tool(
+        "open_window",
+        json!({ "name": "elsewhere", "cwd": elsewhere.to_str().expect("a utf-8 temp dir") }),
+    );
+    let far = mux_query_panes_in(&sock, "elsewhere")
+        .first()
+        .copied()
+        .expect("the window's birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "there" }),
+    );
+
+    server.call_tool("write_pane", json!({ "pane": "there", "text": "pwd" }));
+    let mut screen = String::new();
+    for _ in 0..200 {
+        screen = server.call_tool("read_pane", json!({ "pane": "there" }));
+        if screen.contains(elsewhere.to_str().expect("a utf-8 temp dir")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        screen.contains(elsewhere.to_str().expect("a utf-8 temp dir")),
+        "the shell started where the agent asked: {screen:?}",
+    );
+    // A directory that is not one is refused BEFORE anything is created, naming the path.
+    let refused = server.call_tool_error("open_window", json!({ "cwd": "/no/such/place/at/all" }));
+    assert!(
+        refused.contains("/no/such/place/at/all") && refused.contains("is not a directory"),
+        "and a bad path is a sentence naming it: {refused}",
+    );
+}

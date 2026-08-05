@@ -1115,10 +1115,23 @@ impl WorkspaceExternal {
                 .expect("the scoped session resolves; new_window just created that window");
             (created, pool)
         };
-        // Both `None` for `new_session`'s stated reasons one level down: a WINDOW's birth pane is
-        // nobody's work pane, and this request's `name` is the WINDOW's, so a pane name here would
-        // be one fact under two spellings.
-        if let Err(error) = self.spawn_parsed(&pool, spec, None, None) {
+        // THE BIRTH PANE INHERITS THE WINDOW'S OPENER, and that sentence used to read "both `None`
+        // for `new_session`'s stated reasons: a WINDOW's birth pane is nobody's work pane".
+        //
+        // ⚠ That premise MOVED in the round that stated it. It was written when only a person could
+        // make a window; R313 let a caller that is not a person make one, and measured what the old
+        // rule then said: an agent that opened a window of its own was told **"this pane was opened
+        // by a PERSON, not by you"** about the pane its own request had just created — by
+        // `rename_pane`, `close_pane` and `resize_pane` alike, while `close_window` destroyed that
+        // same pane without a murmur. A surface refusing with a sentence that is false about its
+        // subject is the exact shape R311 exists to have removed.
+        //
+        // Whoever asked for the window asked for its first pane. `new_session` keeps `None` because
+        // its own reason still holds: a session is not creatable by anything but a person.
+        //
+        // The NAME stays `None`: this request's `name` is the WINDOW's, so a pane name here would be
+        // one fact under two spellings, which is the ambiguity a pane name exists to remove.
+        if let Err(error) = self.spawn_parsed(&pool, spec, born.opened_by, None) {
             tracing::warn!(
                 target: "sprag_host",
                 ?error,
@@ -3067,29 +3080,53 @@ mod tests {
         );
     }
 
-    /// The birth spec is ONE spec, so `cwd` reaches every birth — and an OPENER reaches only the
-    /// two PANE births, even when a caller sends one.
+    /// The birth spec is ONE spec, so `cwd` reaches every birth — and a window's birth pane
+    /// INHERITS the window's opener, where a window nobody claims births a pane nobody claims.
     ///
-    /// Both halves are behaviour, not documentation. `parse_spawn` is shared by four actions, so
-    /// adding `cwd` to it handed the argument to `new_session` and `new_window` as well; an
-    /// argument a caller can send and no test exercises is the shape this round's own skew run
-    /// caught being silently dropped elsewhere. And the opener's ABSENCE here is a decision — a
-    /// session's or window's birth pane is nobody's work pane — which was a comment until this
-    /// test, so a later reader could not tell it from an oversight.
+    /// # ⚠ This test PINNED THE OPPOSITE, deliberately, and R313 re-decided it
+    ///
+    /// It used to assert *"a window's birth pane is claimed by nobody, however the request was
+    /// spelled"*, with a comment saying an `opened_by` on this action was **sent and IGNORED** —
+    /// and that was right at the time, because only a person could make a window and a window's
+    /// birth pane really was nobody's work pane.
+    ///
+    /// R313 let a caller that is NOT a person make a window, and measured what the old rule then
+    /// said: an agent that opened a window of its own was told *"this pane was opened by a PERSON,
+    /// not by you"* about the pane its own request had just created — by `rename_pane`,
+    /// `close_pane` and `resize_pane` alike, while `close_window` destroyed that same pane without
+    /// a murmur. Whoever asked for the window asked for its first pane.
+    ///
+    /// `new_session` keeps the old rule and its own reason still holds: a session is not creatable
+    /// by anything but a person.
     #[test]
-    fn a_window_is_born_in_the_directory_it_was_given_and_claimed_by_nobody() {
+    fn a_window_is_born_where_it_was_told_and_claimed_by_whoever_asked() {
         let reg = registry();
         let (mut ext, _revision) = control(&reg);
         let dir = std::env::temp_dir();
         ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
             .expect("a pane that could be named as an opener");
+
+        // THE CONTROL FIRST: a window nobody claims births a pane nobody claims, which is every
+        // window a person makes and the half that must NOT have changed.
+        ext.invoke(
+            NEW_WINDOW_ACTION,
+            IntrospectValue::Json(json!({ "cmd": ["cat"] })),
+        )
+        .expect("a window is born");
+        assert_eq!(
+            lock(&pool(&reg))
+                .panes()
+                .last()
+                .and_then(sprag_terminal::Pane::opened_by),
+            None,
+            "a window nobody asked for births a pane nobody claims",
+        );
+
         ext.invoke(
             NEW_WINDOW_ACTION,
             IntrospectValue::Json(json!({
                 "cmd": ["cat"],
                 "cwd": dir.to_str().unwrap(),
-                // Sent and IGNORED: this action takes no opener, and the assertion below is what
-                // says so out loud rather than leaving it to a reader of the parse site.
                 "opened_by": 0,
             })),
         )
@@ -3101,8 +3138,10 @@ mod tests {
             .map(|pane| (pane.opened_by(), pane.pty().cwd()))
             .expect("the new window's birth pane");
         assert_eq!(
-            born.0, None,
-            "a window's birth pane is claimed by nobody, however the request was spelled",
+            born.0,
+            Some(sprag_terminal::PaneId(0)),
+            "the pane of a window an agent asked for is the agent's too, or the surface refuses \
+             it with a sentence that is false about who made it",
         );
         assert_eq!(
             born.1.as_deref().and_then(|p| p.canonicalize().ok()),

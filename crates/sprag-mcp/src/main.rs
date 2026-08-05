@@ -939,6 +939,12 @@ fn tools_list() -> Value {
                             "description": "What to call the window — how a person will see it in \
                                 the window list, and how you address it afterwards. Omit for the \
                                 lowest free number, but a name says whose work it is."
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Which directory the window's shell starts in — an \
+                                absolute path. Defaults to wherever the daemon starts a shell. \
+                                `open_pane` takes the same argument and means the same thing."
                         }
                     },
                     "additionalProperties": false
@@ -1361,6 +1367,34 @@ fn require_own_window(window: &WindowRef, verb: &str, consequence: &str) -> Resu
     }
 }
 
+/// Where a newly-opened pane or window should start, resolved and CHECKED here so the caller gets a
+/// sentence naming the path it asked for.
+///
+/// The action checks it too — it must, since this is not its only client — but from there the
+/// refusal is a bare `Rejected` that cannot say which of its causes it was.
+///
+/// ONE function for both openers. `open_window` did not take a `cwd` at all until R313's audit,
+/// which was an artifact of it being written after `open_pane` rather than a decision; copying the
+/// parse would have made two answers to "is that a directory?" free to drift.
+fn opt_cwd(args: &Value) -> Result<Option<PathBuf>, String> {
+    let cwd = match args.get("cwd") {
+        Some(Value::String(dir)) => Some(PathBuf::from(dir)),
+        Some(other) => return Err(format!("'cwd' must be a string path, not {other}")),
+        // This server is started by the agent's own client, so its working directory is the
+        // agent's — derived rather than asked for, which is one fewer thing to get wrong.
+        None => std::env::current_dir().ok(),
+    };
+    if let Some(dir) = &cwd
+        && !dir.is_dir()
+    {
+        return Err(format!(
+            "{} is not a directory this terminal can open a pane in",
+            dir.display()
+        ));
+    }
+    Ok(cwd)
+}
+
 /// `open_window` — a whole screenful of the agent's own, born DETACHED.
 ///
 /// # Why detached, and why that is the round's decision rather than a flag
@@ -1393,6 +1427,18 @@ fn tool_open_window(args: &Value) -> Result<String, String> {
     );
     if let Some(name) = &name {
         action_args["name"] = json!(name);
+    }
+    // `cwd` is `open_pane`'s argument, verbatim and through the SAME parser — its absence here was
+    // an artifact of this tool being written after that one, not a decision: an agent that opens a
+    // window to build in has exactly as much reason to say WHERE as one that opens a pane.
+    if let Some(dir) = opt_cwd(args)? {
+        let Some(dir) = dir.to_str() else {
+            return Err(format!(
+                "{} is not valid UTF-8, so it cannot be sent to the terminal",
+                dir.display()
+            ));
+        };
+        action_args["cwd"] = json!(dir);
     }
     let created = host_call_kinded(
         "scene/invoke",
@@ -2517,24 +2563,7 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
          to). A pane opened with nobody answerable for it could never be closed by this tool, so \
          it is refused rather than left behind. The user can open one with `sprag split-window`.",
     )?;
-    // The directory is resolved and CHECKED here, so the caller gets a sentence naming the path it
-    // asked for. The action checks it too — it must, since this is not its only client — but from
-    // there the refusal is a bare `Rejected` that cannot say which of its causes it was.
-    let cwd = match args.get("cwd") {
-        Some(Value::String(dir)) => Some(PathBuf::from(dir)),
-        Some(other) => return Err(format!("'cwd' must be a string path, not {other}")),
-        // This server is started by the agent's own client, so its working directory is the
-        // agent's — derived rather than asked for, which is one fewer thing to get wrong.
-        None => std::env::current_dir().ok(),
-    };
-    if let Some(dir) = &cwd
-        && !dir.is_dir()
-    {
-        return Err(format!(
-            "{} is not a directory this terminal can open a pane in",
-            dir.display()
-        ));
-    }
+    let cwd = opt_cwd(args)?;
     // The name is passed THROUGH rather than validated here: the daemon owns the rules, and a
     // second copy of them in this crate would be a second answer that can drift. What this does own
     // is the sentence — the daemon's refusal is a bare `Rejected` that cannot say which rule it was.
@@ -3245,13 +3274,29 @@ fn tool_resize_pane(args: &Value) -> Result<String, String> {
         dir,
         cells,
     };
-    let answer = host_call(
+    // Through `host_call_kinded`, because this action REFUSES and the daemon can only say
+    // `Rejected` (upstream PINION-PR82). ⚠ Until R313's audit that refusal reached the agent as
+    // `host rpc error: InvokeRejected` — a Rust variant name, which is debt item 9's class, and it
+    // was unreachable before only because the authorship gate refused first: the moment an agent
+    // owned a pane in a window nobody is watching, the leak was the answer it got.
+    let answer = host_call_kinded(
         "scene/invoke",
         with_args(
             pane_params(&pane, mux_action_path(RESIZE_PANE_ACTION)),
             ask.to_args(),
         ),
-    )?;
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "{subject} could not be resized: it is floating, or it has no boundary {}, or \
+                 nothing is WATCHING its window — a cell has no length until a client reports an \
+                 area, so a window nobody has looked at yet cannot have its dividers moved.",
+                dir.wire_str(),
+            ),
+        )
+    })?;
     let how = ResizeHow::from_wire(answer[OUTCOME_KEY].as_str().unwrap_or_default())
         .unwrap_or(ResizeHow::Resized);
     let moved = u16::try_from(answer["cells"].as_u64().unwrap_or_default()).unwrap_or(u16::MAX);
