@@ -55,8 +55,14 @@ use crate::terminal::use_terminal;
 pub(crate) const PROMPT_FIELD_TAG: &str = "sprag_prompt_field";
 /// The panel's tag: the box an accessible dialog resolves its bounds from.
 const PROMPT_PANEL_TAG: &str = "sprag_prompt_panel";
-/// The backdrop's tag. A click beside the panel dismisses — for a prompt that changes a name, light
-/// dismiss can only ever cancel, which is the safe direction [`crate::confirm`] states too.
+/// The backdrop's tag — the topmost hit target everywhere except over the panel.
+///
+/// ⚠ **CORRECTED R308.** This said *"a click beside the panel dismisses"*, and it does not: pinion's
+/// `scrim_backdrop` swallows a background click and light dismiss happens only where a binding
+/// attaches an `External` to this tag, which nothing here does. So a click outside the panel does
+/// NOTHING and the prompt is cancelled with `Escape`. The swallow is still the safe direction the
+/// old sentence wanted — the keystroke cannot reach a pane behind the scrim — but the sentence
+/// described a gesture the user does not have.
 const PROMPT_SCRIM_TAG: &str = "sprag_prompt#scrim";
 /// The modal's introspection tag, answering `open`, so "is this client asking for a name?" is a
 /// question with an address rather than something a test has to infer from pixels.

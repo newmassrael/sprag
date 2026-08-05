@@ -3571,3 +3571,104 @@ fn a_pane_printing_underneath_does_not_wipe_the_key_table() {
          {rows:?}",
     );
 }
+
+/// **A POINTER DOES NOT REACH WHAT THE KEY TABLE IS COVERING** — and the same drag moves the
+/// boundary the moment the table is closed.
+///
+/// Found by the debt audit rather than by writing the feature: `sprag-tui`'s mouse arm had no idea
+/// an overlay existed, so while a full-screen table was up a press on the cell where a divider
+/// happens to be started a DRAG and resized the arrangement — a change with no gesture the user
+/// could see and nothing on screen to explain it. The keystroke path was closed and this was not,
+/// which is the shape R306 met one round earlier when a PASTE reached the shell behind its prompt.
+///
+/// **The control is the whole test.** The first half asserts nothing moved, which any broken drag
+/// would also satisfy — a wrong column, a child that never asked for tracking, an escape sequence
+/// this client cannot decode. The second half sends the SAME BYTES with the table closed and
+/// requires the boundary to move, so the first half is a statement about the overlay rather than
+/// about the drag.
+///
+/// The prompt is deliberately NOT covered by this rule and that asymmetry is the rule itself: it
+/// borrows one row, so everything a pointer can reach is visible and is what the user meant.
+#[test]
+fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
+    let (_daemon, _sock, mut conn, session, mut tui) =
+        attached_client_with(Tui::attach, &MOUSE_CHILD);
+    wait_for(
+        "the child's tracking to reach the client's terminal",
+        || {
+            settled(
+                tui.local_modes().mouse_protocol,
+                &MouseProtocol::ButtonEvent,
+            )
+        },
+    );
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    let (near, far) = halves(BOOT_PTY.0);
+    wait_for("both panes to reach their own half's size", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        )
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"?");
+    wait_for("the key table to cover the arrangement", || {
+        if tui.rows().iter().any(|row| row.contains("zoom-pane")) {
+            Ok(())
+        } else {
+            Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+        }
+    });
+
+    // The exact gesture `a_divider_drag_moves_the_boundary_and_both_children` uses, on the exact
+    // column that test drags, while the table is up.
+    let moved = near - 10;
+    let drag = |tui: &mut Tui| {
+        tui.type_bytes(format!("\x1b[<0;{};3M", near + 1).as_bytes());
+        tui.type_bytes(format!("\x1b[<32;{};3M", moved + 1).as_bytes());
+        tui.type_bytes(format!("\x1b[<0;{};3m", moved + 1).as_bytes());
+    };
+    drag(&mut tui);
+    // Something the CLIENT will answer, sent after the drag, so this waits on a real event rather
+    // than on a duration: the table scrolls on a key it does own, which cannot happen before the
+    // three reports above have been read off the same stream.
+    tui.type_bytes(b"\x1b[6~");
+    tui.type_bytes(b"\x1b[6~");
+    tui.type_bytes(b"\x1b[6~");
+    let vocabulary = sprag_host::keyhelp::KeyHelp::VOCABULARY_HEADING;
+    wait_for("the client to have consumed everything sent since", || {
+        if tui.rows().iter().any(|row| row.contains(vocabulary)) {
+            Ok(())
+        } else {
+            Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+        }
+    });
+    assert_eq!(
+        pane_sizes(&mut conn, &session),
+        vec![(near, BOOT_PTY.1), (far, BOOT_PTY.1)],
+        "a press under the table must not claim the divider it cannot be seen to be on",
+    );
+
+    // THE CONTROL: close it, send the same bytes, and the boundary moves.
+    tui.type_bytes(b"q");
+    wait_for("the panes to come back", || {
+        if tui.rows().iter().any(|row| row.contains("zoom-pane")) {
+            Err(format!("the table is still up: {:?}", tui.rows()))
+        } else {
+            Ok(())
+        }
+    });
+    drag(&mut tui);
+    let (want_near, want_far) = (moved, BOOT_PTY.0 - moved - 1);
+    wait_for(
+        "the same drag to move the boundary with nothing over it",
+        || {
+            settled(
+                pane_sizes(&mut conn, &session),
+                &vec![(want_near, BOOT_PTY.1), (want_far, BOOT_PTY.1)],
+            )
+        },
+    );
+}

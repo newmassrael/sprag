@@ -632,7 +632,21 @@ fn run() -> Result<(), Box<dyn Error>> {
             // A press ALSO moves the keyboard there, so the two never drift apart — a client that
             // clicked into one pane while typing into another would hold two answers to "where am
             // I", which is the split-authority shape the layouter already had to settle once.
-            Some(InputEvent::Mouse(event)) => {
+            //
+            // ⚠ EXCEPT WHERE THE USER CANNOT SEE WHAT THEY WOULD BE CLICKING. That rule is what
+            // decides the two overlays differently, and it is the rule rather than a compromise:
+            //
+            // * The KEY TABLE covers the whole screen, so every cell under the pointer belongs to
+            //   something invisible. A press on a cell that happens to be a divider would start a
+            //   DRAG and resize the arrangement while the user is reading a table — a change with
+            //   no gesture behind it and nothing on screen to explain it. Swallowed entirely.
+            // * The PROMPT borrows ONE row, so everything the pointer can reach except that row is
+            //   visible and is exactly what the user means by clicking it. Passed through, which is
+            //   also what leaving R306's surface alone means.
+            //
+            // Found by the debt audit, not by a test: the arm below had no idea an overlay existed,
+            // and the round that added a full-screen one is the round that had to notice.
+            Some(InputEvent::Mouse(event)) if !matches!(overlay, Overlay::Showing(_)) => {
                 for edge in pointer.edges(&event) {
                     // A divider DRAG outranks everything below, and it is claimed on the PRESS
                     // rather than recognised on each move: once a drag is under way the pointer

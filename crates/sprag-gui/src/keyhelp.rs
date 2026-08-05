@@ -46,8 +46,14 @@ use sprag_host::keyhelp::{KeyHelp, Pressed, Row, Scroll};
 /// The panel's tag: the box an accessible dialog resolves its bounds from, and the modal's single
 /// focus-trap member — there is nothing inside to Tab to, so the panel itself is the stop.
 pub(crate) const KEYHELP_PANEL_TAG: &str = "sprag_keyhelp_panel";
-/// The backdrop's tag. A click beside the panel closes: for a view that changes nothing, light
-/// dismiss is the only thing it could mean.
+/// The backdrop's tag — the topmost hit target everywhere except over the panel, so a click beside
+/// the panel is SWALLOWED and reaches nothing behind it.
+///
+/// It does not dismiss, and that is pinion's contract rather than a choice made here: `scrim_backdrop`
+/// says light dismiss happens only where a binding attaches an `External` to this tag, and neither
+/// this surface nor [`crate::prompt`] does. Written down because the first version of this comment
+/// claimed the opposite, having been copied from the prompt's — whose own comment is wrong in the
+/// same way and is corrected in place. *A mechanism claim in a durable comment is a claim.*
 const KEYHELP_SCRIM_TAG: &str = "sprag_keyhelp#scrim";
 /// The modal's introspection tag, answering `open` — so "is this client showing its keys?" has an
 /// address a test can read rather than a shape it has to infer from pixels.
