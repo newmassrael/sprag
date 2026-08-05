@@ -11317,6 +11317,74 @@
         "herdr GOT NEITHER HALF: their tab.move / workspace.move are API + MOUSE DRAG only (herdr tab has list/create/get/focus/rename/close and no move; KeysConfig has no move binding, both read at 9a4ce5e1), their Workspace::move_tab answers a bool collapsing out-of-range and no-op, and the handler then reports SUCCESS with no event for all three."
       ]
     },
+    "R311": {
+      "decision_summary": "A READ REACHES AS FAR AS A WRITE. Measured first: sprag's WRITE verbs cross a window and its READS did not - rename_pane and swap_pane resolve a pane registry-wide, where a read is addressed at a SCENE path and the scene holds only the scoped session's CURRENT window. So an agent could RENAME and SWAP a pane it could not READ, and read_pane by name one window over answered 'no pane is called buildout; no pane in this terminal has a name yet' with both halves false. The cause is one sentence - the writes are mux actions and the reads are scene paths - and the seam already existed: Scope has always carried a window NAME and that window's POOL, so only the ASK was missing. A request can name a window now, and every subject wait_for_change tells an agent about has a tool that reads it.",
+      "changes_bullets": [
+        "ScopeAsk gained WINDOW_PARAM - ORTHOGONAL to its three arms rather than a fourth, so it composes with Default, Named and Attached alike; parsed by ScopeAsk::window so the whole scope grammar keeps one home, null refused, absent means the session's CURRENT window.",
+        "Scope::narrowed is the one place the ask becomes a window, reading the name and the pool off the SAME Window as of_session always has; two refusals with their own sentences, because a window NUMBER is the likeliest mistake and is not the same error as an unknown name.",
+        "A pane NAME now resolves across the SESSION on the agent surface, which is what PaneName promised all along; a pane NUMBER stays window-local because list_panes is what defines it and widening it would silently change every existing pane: 2.",
+        "PaneRef carries the pane's window, and pane_params is the ONE place a read learns which window to look in - so a tool added later cannot forget it and quietly become window-local again.",
+        "list_windows lists the session's windows in R310's order, marking CURRENT and YOU ARE HERE separately because they are different facts, with each window's pane names so the handle an agent takes away is never a position.",
+        "list_sessions gives the third subject a reader; a READ only, because these tools act on the agent's own session and a pane name's registry-wide uniqueness is not a licence to cross a boundary the user drew.",
+        "THE COMPLETENESS RATCHET walks EventKind::ALL, takes each subject_key, and asserts the roster declares a DISTINCT tool that reads that subject - so a kind added later naming a new subject fails until its reader exists.",
+        "The refusal for an unknown name lists the session's named panes WITH their windows, where it used to say \"no pane in this terminal has a name yet\" about a terminal that had one.",
+        "list_panes and pane_layout name the WINDOW instead of calling it the terminal, and point at list_windows.",
+        "R310's own wait_for_change sentence said \"the order list_panes's windows are listed in\"; list_panes lists no windows. Corrected to list_windows."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2102 tests (R310 left 2098), clippy 0 with no suppression, fmt, doc gate 0/16, pixel smoke 183/0 on a rebuilt release set - re-run because a protocol bump is exactly what a smoke must be re-measured against.",
+        "FOUR revert-proofs, each shown to DISCRIMINATE with a control green after it: dropping the window read from Scope::resolve, resolving the window against the CURRENT one, stopping the NAME looking past the caller's window, and dropping the window from the read's params.",
+        "The whole claim driven live through the SHIPPED sprag-mcp over its own stdio against a real daemon: write across a window, read it back, find it - with the agent's OWN pane as the control that does NOT hold what was written.",
+        "A standing integration test pins the same thing with THREE controls: the own pane, a NUMBER still refused window-locally, and the whole refusal sentence for an absent name.",
+        "WIRE_PROTOCOL 10 to 11, the FIFTH bump from an added ARGUMENT, MEASURED with a discriminating control AFTER A FIRST PROBE THAT HAD NONE: the first fixture was built with the NEW client, which the old daemon refuses by number, so it had one window and \"narrowed == not narrowed\" was trivially true. Rebuilt with the OLD client, the old daemon answers [0] to both the narrowed and unnarrowed query - the argument accepted, DROPPED, and answered about the CURRENT window - where the new daemon answers [1] and [0].",
+        "The measurement before a line was written, against a real isolated daemon with two windows: the roster had 21 tools and readers for PANE only; read_pane by name one window over said \"no pane is called buildout; no pane in this terminal has a name yet\", both halves false; and rename-pane and swap-pane on the SAME pane both succeeded."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "THE CLI IS NOT FIXED. sprag capture-pane -t 0 1 on a pane one window over still answers \"no pane 1 in 0 (panes: [0])\", and capture-pane does not take a NAME at all (\"pane id must be a number\"). The daemon seam is there and the CLI is one flag from it; the agent surface was taken first because that is where the false sentence was.",
+        "NO WINDOW OR SESSION WRITE FOR AN AGENT (select_window, new-window, kill-session). This round's claim is about READING what an agent is TOLD; a write is R294's authorship question at a scope its per-pane gate does not cover. Honest trade, stated first: herdr's whole 76-method API IS their agent surface, so their agent reaches every one of these by construction - they are AHEAD and this round does not close it.",
+        "NO CROSS-SESSION PANE READ. The window scope rides inside a session scope.",
+        "query_session_panes costs one query per window. Fine for the handful of windows a session holds and the path only runs when a NAME missed in the caller's own window; worth revisiting if a session-wide pane slot ever exists for another reason.",
+        "sprag-mcp sends NO session scope at all, so it acts on the daemon's DEFAULT session rather than the one the agent's pane is in. Pre-existing, not this round's, and correct for the ordinary case - but it is a positional assumption of the same family as the pane number and nothing checks it.",
+        "The MCP surface still has no window or session verb in the WRITE direction and no pane_layout for another window; list_windows reports pane names and counts, not arrangements."
+      ],
+      "publishable_decision_summary": "A READ REACHES AS FAR AS A WRITE. Measured first: sprag's WRITE verbs cross a window and its READS did not - rename_pane and swap_pane resolve a pane registry-wide, where a read is addressed at a SCENE path and the scene holds only the scoped session's CURRENT window. So an agent could RENAME and SWAP a pane it could not READ, and read_pane by name one window over answered 'no pane is called buildout; no pane in this terminal has a name yet' with both halves false. The cause is one sentence - the writes are mux actions and the reads are scene paths - and the seam already existed: Scope has always carried a window NAME and that window's POOL, so only the ASK was missing. A request can name a window now, and every subject wait_for_change tells an agent about has a tool that reads it.",
+      "publishable_changes_bullets": [
+        "ScopeAsk gained WINDOW_PARAM - ORTHOGONAL to its three arms rather than a fourth, so it composes with Default, Named and Attached alike; parsed by ScopeAsk::window so the whole scope grammar keeps one home, null refused, absent means the session's CURRENT window.",
+        "Scope::narrowed is the one place the ask becomes a window, reading the name and the pool off the SAME Window as of_session always has; two refusals with their own sentences, because a window NUMBER is the likeliest mistake and is not the same error as an unknown name.",
+        "A pane NAME now resolves across the SESSION on the agent surface, which is what PaneName promised all along; a pane NUMBER stays window-local because list_panes is what defines it and widening it would silently change every existing pane: 2.",
+        "PaneRef carries the pane's window, and pane_params is the ONE place a read learns which window to look in - so a tool added later cannot forget it and quietly become window-local again.",
+        "list_windows lists the session's windows in R310's order, marking CURRENT and YOU ARE HERE separately because they are different facts, with each window's pane names so the handle an agent takes away is never a position.",
+        "list_sessions gives the third subject a reader; a READ only, because these tools act on the agent's own session and a pane name's registry-wide uniqueness is not a licence to cross a boundary the user drew.",
+        "THE COMPLETENESS RATCHET walks EventKind::ALL, takes each subject_key, and asserts the roster declares a DISTINCT tool that reads that subject - so a kind added later naming a new subject fails until its reader exists.",
+        "The refusal for an unknown name lists the session's named panes WITH their windows, where it used to say \"no pane in this terminal has a name yet\" about a terminal that had one.",
+        "list_panes and pane_layout name the WINDOW instead of calling it the terminal, and point at list_windows.",
+        "R310's own wait_for_change sentence said \"the order list_panes's windows are listed in\"; list_panes lists no windows. Corrected to list_windows."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2102 tests (R310 left 2098), clippy 0 with no suppression, fmt, doc gate 0/16, pixel smoke 183/0 on a rebuilt release set - re-run because a protocol bump is exactly what a smoke must be re-measured against.",
+        "FOUR revert-proofs, each shown to DISCRIMINATE with a control green after it: dropping the window read from Scope::resolve, resolving the window against the CURRENT one, stopping the NAME looking past the caller's window, and dropping the window from the read's params.",
+        "The whole claim driven live through the SHIPPED sprag-mcp over its own stdio against a real daemon: write across a window, read it back, find it - with the agent's OWN pane as the control that does NOT hold what was written.",
+        "A standing integration test pins the same thing with THREE controls: the own pane, a NUMBER still refused window-locally, and the whole refusal sentence for an absent name.",
+        "WIRE_PROTOCOL 10 to 11, the FIFTH bump from an added ARGUMENT, MEASURED with a discriminating control AFTER A FIRST PROBE THAT HAD NONE: the first fixture was built with the NEW client, which the old daemon refuses by number, so it had one window and \"narrowed == not narrowed\" was trivially true. Rebuilt with the OLD client, the old daemon answers [0] to both the narrowed and unnarrowed query - the argument accepted, DROPPED, and answered about the CURRENT window - where the new daemon answers [1] and [0].",
+        "The measurement before a line was written, against a real isolated daemon with two windows: the roster had 21 tools and readers for PANE only; read_pane by name one window over said \"no pane is called buildout; no pane in this terminal has a name yet\", both halves false; and rename-pane and swap-pane on the SAME pane both succeeded."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "THE CLI IS NOT FIXED. sprag capture-pane -t 0 1 on a pane one window over still answers \"no pane 1 in 0 (panes: [0])\", and capture-pane does not take a NAME at all (\"pane id must be a number\"). The daemon seam is there and the CLI is one flag from it; the agent surface was taken first because that is where the false sentence was.",
+        "NO WINDOW OR SESSION WRITE FOR AN AGENT (select_window, new-window, kill-session). This round's claim is about READING what an agent is TOLD; a write is R294's authorship question at a scope its per-pane gate does not cover. Honest trade, stated first: herdr's whole 76-method API IS their agent surface, so their agent reaches every one of these by construction - they are AHEAD and this round does not close it.",
+        "NO CROSS-SESSION PANE READ. The window scope rides inside a session scope.",
+        "query_session_panes costs one query per window. Fine for the handful of windows a session holds and the path only runs when a NAME missed in the caller's own window; worth revisiting if a session-wide pane slot ever exists for another reason.",
+        "sprag-mcp sends NO session scope at all, so it acts on the daemon's DEFAULT session rather than the one the agent's pane is in. Pre-existing, not this round's, and correct for the ordinary case - but it is a positional assumption of the same family as the pane number and nothing checks it.",
+        "The MCP surface still has no window or session verb in the WRITE direction and no pane_layout for another window; list_windows reports pane names and counts, not arrangements."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
