@@ -114,9 +114,9 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
     LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire,
-    RENAME_PANE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION, SINCE_PARAM,
-    SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk, SwapHow, TEXT_ACTION,
-    find_slot_for, pane_processes_at, regex_slot_for,
+    RENAME_PANE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
+    SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk,
+    SwapHow, TEXT_ACTION, WINDOWS_SLOT, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -259,6 +259,11 @@ fn handle_initialize(message: &Value) -> Value {
             means the second pane in that list. A number is POSITIONAL — closing an earlier pane \
             shifts every number after it — so for any pane you will come back to, use its NAME \
             instead: every `pane` argument here takes a name as well as a number. \
+            `list_panes` answers about YOUR WINDOW only. A sprag session holds several, and \
+            `list_windows` is what tells you so — the other windows, their panes, and the names \
+            those panes carry. A pane NAME reaches ANY window of the session; a number reaches \
+            only yours. `list_sessions` answers what else this daemon holds, which is what the \
+            session changes you can wait for are about. \
             READ a pane: `read_pane` (its screen and scrollback), `read_last_command` (just \
             the last command and its result), `read_pane_links` and `read_pane_images` (what \
             it shows that is not text), `find_in_pane` and `regex_in_pane` (search it). \
@@ -314,7 +319,8 @@ fn tools_list() -> Value {
         "tools": [
             {
                 "name": "list_panes",
-                "description": "List the sibling terminal panes in this sprag window, \
+                "description": "List the sibling terminal panes in YOUR window of this sprag \
+                    session — NOT every pane the session has; call list_windows for the others. \
                     with their 1-based number, any NAME they have been given (pass a name as \
                     `pane` in place of the number — it does not shift when a pane closes, and a \
                     number does), host id, size, running command, live \
@@ -325,6 +331,32 @@ fn tools_list() -> Value {
                     FOCUS (DECSET 1004 — focus in/out), which the pane's on-screen text \
                     does not show and tmux does not expose. Call this first to learn which \
                     number is which pane.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            },
+            {
+                "name": "list_windows",
+                "description": "List the WINDOWS of this sprag session — the containers the panes \
+                    live in (tmux calls them windows; other terminals call them tabs) — in the \
+                    order the user arranged them, marking which one is CURRENT and which one YOU \
+                    are in, with each window's panes and the NAMES any of them carry. \
+                    `list_panes` answers about ONE window (yours); this is what tells you there \
+                    are others at all. Call it when `wait_for_change` reports a \
+                    `window_created` / `window_closed` / `window_selected` / `window_renamed` / \
+                    `windows_reordered`, and when a pane you are looking for is not among your \
+                    siblings: a pane NAME reaches ANY window of this session, so once you know a \
+                    name from here you can read_pane, find_in_pane or write_pane it directly. A \
+                    pane NUMBER cannot — a number means the Nth pane of YOUR window and nothing \
+                    else.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            },
+            {
+                "name": "list_sessions",
+                "description": "List this daemon's SESSIONS — the outermost container, one per \
+                    workspace a person is keeping — with each one's window and pane counts and \
+                    which is the default. Call it when `wait_for_change` reports a \
+                    `session_created` / `session_closed` / `session_renamed`, which are changes \
+                    you are told about and could otherwise read nothing about. These tools act on \
+                    YOUR session only: this answers what else exists, not a way to reach into it.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
             {
@@ -567,10 +599,10 @@ fn tools_list() -> Value {
                     `window_renamed`, `session_created`, `session_closed`, `session_renamed` (the \
                     session ITSELF was renamed: the `session` key is the name it had — the one you \
                     were holding — and `name` is what it answers to now), `layout_updated`, \
-                    `windows_reordered` (a window changed PLACE in the session's order — the order \
-                    `list_panes`'s windows are listed in, and the one the window keys walk; it \
+                    `windows_reordered` (a window changed PLACE in the session's order — the \
+                    order `list_windows` lists them in, and the one the window keys walk; it \
                     names no window because a swap of two has two equally true readings, so \
-                    re-read the window list) — each \
+                    re-read `list_windows`) — each \
                     naming its SUBJECT, not its new value, except the three that MOVE AN ADDRESS: a \
                     rename and a pane's move also carry the one fact no later read could recover. \
                     Follow up with agent_state, pane_processes or list_panes to read the subject a \
@@ -882,6 +914,8 @@ fn handle_tools_call(message: &Value) -> Value {
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
         "list_panes" => tool_list_panes(),
+        "list_windows" => tool_list_windows(),
+        "list_sessions" => tool_list_sessions(),
         "pane_layout" => tool_pane_layout(),
         "pane_processes" => tool_pane_processes(&args),
         "read_pane" => tool_read_pane(&args),
@@ -1042,6 +1076,112 @@ fn parse_image_info(entry: &Value) -> Option<ImageInfo> {
 
 fn tool_list_panes() -> Result<String, String> {
     Ok(render_pane_list(&query_panes()?, own_pane()))
+}
+
+/// `list_windows` — the session's windows in the order the user arranged them, each with its panes.
+///
+/// **The reader R311 owed.** `wait_for_change` has always reported four window kinds (five since
+/// R310's `windows_reordered`) and nothing on this surface could read a window, so an agent was
+/// told about a subject it had no way to look at. It is also what makes a pane NAME usable across
+/// windows: the resolver reaches any window of the session, and this is where an agent LEARNS the
+/// names to reach for.
+fn tool_list_windows() -> Result<String, String> {
+    let names = query_window_names()?;
+    if names.is_empty() {
+        return Err("the host answered no windows for this session".to_owned());
+    }
+    let current = current_window_name();
+    let mine = own_pane();
+    let panes = query_session_panes()?;
+    let mut out = format!("{} window(s) in this sprag session:\n", names.len());
+    for name in &names {
+        let here: Vec<&PaneInfo> = panes
+            .iter()
+            .filter(|(window, _)| window == name)
+            .map(|(_, pane)| pane)
+            .collect();
+        // YOURS is marked separately from CURRENT: they are different facts and an agent that
+        // conflated them would think it was looking at what the user is looking at.
+        let yours = mine.is_some_and(|id| here.iter().any(|pane| pane.id == id));
+        let marks = [
+            (current.as_deref() == Some(name.as_str())).then_some("current"),
+            yours.then_some("you are here"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        out.push_str(&format!("  window {name}"));
+        if !marks.is_empty() {
+            out.push_str(&format!(" ({})", marks.join(", ")));
+        }
+        out.push_str(&format!(": {} pane(s)", here.len()));
+        let named: Vec<String> = here
+            .iter()
+            .filter_map(|pane| pane.name.as_deref().map(|n| format!("{n:?}")))
+            .collect();
+        if !named.is_empty() {
+            out.push_str(&format!(", named {}", named.join(", ")));
+        }
+        out.push('\n');
+    }
+    out.push_str(
+        "A pane NAME reaches any window of this session — pass one as `pane` to read_pane, \
+         find_in_pane, write_pane or send_keys. A pane NUMBER means the Nth pane of YOUR window \
+         (list_panes) and reaches no further.\n",
+    );
+    Ok(out)
+}
+
+/// The name of the window this session is currently showing, or `None` if the host did not say.
+fn current_window_name() -> Option<String> {
+    let value = host_call(
+        "scene/query",
+        json!({ "path": mux_action_path(WINDOWS_SLOT) }),
+    )
+    .ok()?;
+    value.as_array()?.iter().find_map(|window| {
+        window
+            .get("current")?
+            .as_bool()?
+            .then(|| window.get("name")?.as_str().map(str::to_owned))?
+    })
+}
+
+/// `list_sessions` — the daemon's sessions, so the three session events have a reader.
+///
+/// A READ and nothing else: these tools act on the agent's own session, and this answers what else
+/// exists rather than offering a way in. That boundary is the user's, and a pane name's
+/// registry-wide uniqueness is not a licence to cross it.
+fn tool_list_sessions() -> Result<String, String> {
+    let value = host_call(
+        "scene/query",
+        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
+    )?;
+    let array = value
+        .as_array()
+        .ok_or("the host session list was not an array")?;
+    if array.is_empty() {
+        return Err("the host answered no sessions".to_owned());
+    }
+    let mut out = format!("{} session(s) on this sprag daemon:\n", array.len());
+    for session in array {
+        let name = session.get("name").and_then(Value::as_str).unwrap_or("?");
+        let windows = session.get("windows").and_then(Value::as_u64).unwrap_or(0);
+        let panes = session.get("panes").and_then(Value::as_u64).unwrap_or(0);
+        let default = session
+            .get("default")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        out.push_str(&format!(
+            "  session {name:?}: {windows} window(s), {panes} pane(s)"
+        ));
+        if default {
+            out.push_str(" (default)");
+        }
+        out.push('\n');
+    }
+    out.push_str("These tools act on YOUR session; this is what else the daemon holds.\n");
+    Ok(out)
 }
 
 /// The whole numbered listing, as `list_panes` answers it.
@@ -1490,10 +1630,10 @@ fn own_pane() -> Option<u64> {
 }
 
 fn tool_read_pane(args: &Value) -> Result<String, String> {
-    let id = resolve_pane_id(args)?;
+    let pane = resolve_pane_ref(args)?;
     let value = host_call(
         "scene/query",
-        json!({ "path": pane_input_path(id, FULL_TEXT_SLOT) }),
+        pane_params(&pane, pane_input_path(pane.id, FULL_TEXT_SLOT)),
     )?;
     let text = value
         .as_str()
@@ -1509,10 +1649,10 @@ fn tool_read_pane(args: &Value) -> Result<String, String> {
 /// and its exit status — rendered as a readable block. A `null` slot means the pane's shell
 /// has no OSC 133 integration; the agent is told to fall back to `read_pane`.
 fn tool_read_last_command(args: &Value) -> Result<String, String> {
-    let id = resolve_pane_id(args)?;
+    let pane = resolve_pane_ref(args)?;
     let value = host_call(
         "scene/query",
-        json!({ "path": pane_input_path(id, LAST_COMMAND_SLOT) }),
+        pane_params(&pane, pane_input_path(pane.id, LAST_COMMAND_SLOT)),
     )?;
     if value.is_null() {
         return Ok(
@@ -1538,10 +1678,10 @@ fn tool_read_last_command(args: &Value) -> Result<String, String> {
 /// reads a link's destination as data. tmux's `capture-pane` cannot: it flattens OSC 8 to plain
 /// text, dropping the URI entirely.
 fn tool_read_pane_links(args: &Value) -> Result<String, String> {
-    let id = resolve_pane_id(args)?;
+    let pane = resolve_pane_ref(args)?;
     let value = host_call(
         "scene/query",
-        json!({ "path": pane_input_path(id, LINKS_SLOT) }),
+        pane_params(&pane, pane_input_path(pane.id, LINKS_SLOT)),
     )?;
     let runs = value
         .as_array()
@@ -1594,13 +1734,13 @@ fn tool_read_pane_images(args: &Value) -> Result<String, String> {
 /// cannot disagree. A capped answer says so in the rendered text, since an agent that believed a
 /// truncated list was complete would conclude something false about the pane.
 fn tool_find_in_pane(args: &Value) -> Result<String, String> {
-    let id = resolve_pane_id(args)?;
+    let pane = resolve_pane_ref(args)?;
     let needle = args
         .get("needle")
         .and_then(Value::as_str)
         .filter(|needle| !needle.is_empty())
         .ok_or("find_in_pane needs a non-empty `needle`")?;
-    search_pane(id, &find_slot_for(needle), needle)
+    search_pane(&pane, &find_slot_for(needle), needle)
 }
 
 /// `regex_in_pane` — the same search read as a REGULAR EXPRESSION.
@@ -1610,13 +1750,13 @@ fn tool_find_in_pane(args: &Value) -> Result<String, String> {
 /// an agent means is expressed by WHICH TOOL it calls, not by an argument that could be defaulted,
 /// forgotten, or carried over from a previous call.
 fn tool_regex_in_pane(args: &Value) -> Result<String, String> {
-    let id = resolve_pane_id(args)?;
+    let pane = resolve_pane_ref(args)?;
     let pattern = args
         .get("pattern")
         .and_then(Value::as_str)
         .filter(|pattern| !pattern.is_empty())
         .ok_or("regex_in_pane needs a non-empty `pattern`")?;
-    search_pane(id, &regex_slot_for(pattern), pattern)
+    search_pane(&pane, &regex_slot_for(pattern), pattern)
 }
 
 /// Query pane `id` at `slot` and render the matching lines as `LINE: text`.
@@ -1624,8 +1764,11 @@ fn tool_regex_in_pane(args: &Value) -> Result<String, String> {
 /// The ONE renderer both search tools use, so a literal hit and a regex hit read identically to an
 /// agent — only the language of `wanted` (echoed in the no-match message) differs. Neither tool
 /// implements a search: both read a host query, so they agree with the CLI and the GUI highlight.
-fn search_pane(id: u64, slot: &str, wanted: &str) -> Result<String, String> {
-    let value = host_call("scene/query", json!({ "path": pane_input_path(id, slot) }))?;
+fn search_pane(pane: &PaneRef, slot: &str, wanted: &str) -> Result<String, String> {
+    let value = host_call(
+        "scene/query",
+        pane_params(pane, pane_input_path(pane.id, slot)),
+    )?;
     let found: PaneFind =
         serde_json::from_value(value).map_err(|error| format!("malformed find answer: {error}"))?;
     // A refused pattern is an ERROR, not an empty result: "your pattern is wrong" and "nothing
@@ -1634,7 +1777,15 @@ fn search_pane(id: u64, slot: &str, wanted: &str) -> Result<String, String> {
         return Err(format!("invalid pattern {wanted:?}: {error}"));
     }
     if found.lines.is_empty() {
-        return Ok(format!("no matches for {wanted:?} in pane {id}"));
+        return Ok(match &pane.window {
+            // The WINDOW is named only when the pane is not the caller's own: an agent that
+            // searched a sibling window and found nothing is owed which screen was searched.
+            Some(window) => format!(
+                "no matches for {wanted:?} in pane {} (window {window})",
+                pane.id
+            ),
+            None => format!("no matches for {wanted:?} in pane {}", pane.id),
+        });
     }
     let mut out = String::new();
     for line in &found.lines {
@@ -1792,25 +1943,33 @@ fn tool_wait_for_output(args: &Value) -> Result<String, String> {
 }
 
 fn tool_write_pane(args: &Value) -> Result<String, String> {
-    let (number, id) = resolve_pane(args)?;
+    let pane = resolve_pane_ref(args)?;
+    let id = pane.id;
     let text = args
         .get("text")
         .and_then(Value::as_str)
         .ok_or("missing required string argument 'text'")?;
     host_call(
         "scene/invoke",
-        json!({ "path": pane_input_path(id, TEXT_ACTION), "args": { "text": text } }),
+        with_args(
+            pane_params(&pane, pane_input_path(id, TEXT_ACTION)),
+            json!({ "text": text }),
+        ),
     )?;
     let enter = args.get("enter").and_then(Value::as_bool).unwrap_or(true);
     if enter {
         host_call(
             "scene/invoke",
-            json!({ "path": pane_input_path(id, KEY_ACTION), "args": { "key": "Enter" } }),
+            with_args(
+                pane_params(&pane, pane_input_path(id, KEY_ACTION)),
+                json!({ "key": "Enter" }),
+            ),
         )?;
     }
     Ok(format!(
-        "Wrote {} byte(s) to pane {number}{}.",
+        "Wrote {} byte(s) to {}{}.",
         text.len(),
+        pane.subject(),
         if enter { " and pressed Enter" } else { "" }
     ))
 }
@@ -2798,7 +2957,8 @@ fn render_selection(
 }
 
 fn tool_send_keys(args: &Value) -> Result<String, String> {
-    let (number, id) = resolve_pane(args)?;
+    let pane = resolve_pane_ref(args)?;
+    let id = pane.id;
     let keys: Vec<String> = match args.get("keys") {
         Some(Value::Array(items)) => items
             .iter()
@@ -2814,13 +2974,13 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
     for key in &keys {
         host_call(
             "scene/invoke",
-            json!({
-                "path": pane_input_path(id, KEY_ACTION),
-                "args": { "key": key, "ctrl": ctrl, "alt": alt, "shift": shift, "super": sup }
-            }),
+            with_args(
+                pane_params(&pane, pane_input_path(id, KEY_ACTION)),
+                json!({ "key": key, "ctrl": ctrl, "alt": alt, "shift": shift, "super": sup }),
+            ),
         )?;
     }
-    Ok(format!("Sent {} key(s) to pane {number}.", keys.len()))
+    Ok(format!("Sent {} key(s) to {}.", keys.len(), pane.subject()))
 }
 
 /// `agent_state`: what the agent in each pane is doing, or in one named pane (H3 slice 5).
@@ -3300,6 +3460,186 @@ fn resolve_pane_id(args: &Value) -> Result<u64, String> {
     resolve_pane(args).map(|(_, id)| id)
 }
 
+/// A pane this surface has resolved, and WHICH WINDOW it lives in.
+///
+/// The window is [`None`] for a pane of the caller's own window, which is every pane a NUMBER can
+/// name and most panes a name does. It is `Some` only for a pane a NAME reached one window over —
+/// and it is what every read below must carry, because a read is addressed through the SCENE and
+/// the scene holds one window ([`sprag_rpc::WINDOW_PARAM`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PaneRef {
+    /// The pane's host id — what the wire takes.
+    id: u64,
+    /// Its 1-based number in `list_panes`, or [`None`] for a pane in ANOTHER window.
+    ///
+    /// `None` rather than the position within that other window, deliberately: a number on this
+    /// surface means "the Nth pane of YOUR window", and handing back a number that means something
+    /// else is the positional confusion the whole name grammar exists to remove.
+    number: Option<usize>,
+    /// The window it lives in, or [`None`] for the caller's own.
+    window: Option<String>,
+}
+
+impl PaneRef {
+    /// How an ANSWER names this pane — its number when the caller could have used one, else its
+    /// id and the window it is in, which is the only honest handle for a pane one window over.
+    fn subject(&self) -> String {
+        match (&self.number, &self.window) {
+            (Some(number), _) => format!("pane {number}"),
+            (None, Some(window)) => format!("pane id {} (window {window})", self.id),
+            (None, None) => format!("pane id {}", self.id),
+        }
+    }
+}
+
+/// Resolve a tool's `pane` argument to a pane and the window it is in.
+///
+/// # A NUMBER is window-local and a NAME is not, and that asymmetry is the CONTRACT
+///
+/// A number is defined by `list_panes` — "the Nth pane of this window" — so widening it across the
+/// session would silently change what every existing `pane: 2` means, which is the positional
+/// hazard this whole surface exists to keep an agent away from.
+///
+/// A NAME was always promised wider: [`sprag_terminal::PaneName`] is unique REGISTRY-wide and
+/// exists precisely so an agent holds a handle that does not move. Until R311 it was resolved only
+/// against the caller's own window, so `read_pane {pane: "buildout"}` one window over answered
+/// *"no pane is called \"buildout\"; no pane in this terminal has a name yet"* — **both halves
+/// false**, measured against a real daemon. Meanwhile `rename_pane` and `swap_pane` crossed a
+/// window freely, because a write is a mux action and a read is a scene path.
+fn resolve_pane_ref(args: &Value) -> Result<PaneRef, String> {
+    let target = pane_target(args)?;
+    let here = query_panes()?;
+    match resolve_in(&here, &target) {
+        Ok(pane) => Ok(PaneRef {
+            id: pane.id,
+            number: Some(pane.number),
+            window: None,
+        }),
+        // Only a NAME looks further: a number that missed named no pane of the window it is defined
+        // against, and looking elsewhere would answer about a pane the caller did not ask for.
+        Err(near) => match &target {
+            PaneTarget::Number(_) => Err(near),
+            PaneTarget::Name(name) => match query_session_panes()? {
+                elsewhere if elsewhere.is_empty() => Err(near),
+                elsewhere => {
+                    let (window, pane) = pane_by_name_in_session(&elsewhere, name)?;
+                    Ok(PaneRef {
+                        id: pane.id,
+                        number: None,
+                        window: Some(window),
+                    })
+                }
+            },
+        },
+    }
+}
+
+/// A pane-addressed `params` object with an invoke's `args` filled in — [`pane_params`] for the
+/// write paths, so a window narrowing rides on those too rather than only on the reads.
+fn with_args(params: Value, args: Value) -> Value {
+    let mut params = params;
+    if let Value::Object(map) = &mut params {
+        map.insert("args".to_owned(), args);
+    }
+    params
+}
+
+/// The `params` a pane-addressed query or invoke sends, carrying the pane's window when it has one.
+///
+/// The ONE place a read learns which window to look in, so a tool added later cannot forget it and
+/// quietly become window-local again.
+fn pane_params(pane: &PaneRef, path: String) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("path".to_owned(), Value::String(path));
+    if let Some(window) = &pane.window {
+        map.insert(
+            sprag_rpc::WINDOW_PARAM.to_owned(),
+            Value::String(window.clone()),
+        );
+    }
+    Value::Object(map)
+}
+
+/// Every pane of the caller's SESSION, paired with the window it is in — one query per window.
+///
+/// Read window by window rather than from one session-wide slot because the daemon has no such
+/// slot and should not grow one for this: the `panes` slot is a WINDOW's pane list by construction
+/// (it is what a display client projects), and R311 gave a request the ability to name which
+/// window rather than inventing a second listing that could disagree with the first.
+fn query_session_panes() -> Result<Vec<(String, PaneInfo)>, String> {
+    let mut out = Vec::new();
+    for window in query_window_names()? {
+        let value = host_call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT), sprag_rpc::WINDOW_PARAM: window }),
+        )?;
+        let Some(array) = value.as_array() else {
+            continue;
+        };
+        for (index, pane) in array.iter().enumerate() {
+            out.push((window.clone(), parse_pane_info(index, pane)));
+        }
+    }
+    Ok(out)
+}
+
+/// The names of the caller's session's windows, in the order the session arranges them (R310).
+fn query_window_names() -> Result<Vec<String>, String> {
+    let value = host_call(
+        "scene/query",
+        json!({ "path": mux_action_path(WINDOWS_SLOT) }),
+    )?;
+    Ok(value
+        .as_array()
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|window| Some(window.get("name")?.as_str()?.to_owned()))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Find the pane called `name` anywhere in the SESSION, refusing to guess between two bearers.
+///
+/// [`pane_by_name`]'s rule one scope wider, and the refusal is what R311 came to fix: it names the
+/// session's named panes and the windows they are in, where the old sentence said *"no pane in this
+/// terminal has a name yet"* about a terminal that had one.
+fn pane_by_name_in_session<'a>(
+    panes: &'a [(String, PaneInfo)],
+    name: &str,
+) -> Result<(String, &'a PaneInfo), String> {
+    let mut matching = panes
+        .iter()
+        .filter(|(_, pane)| pane.name.as_deref() == Some(name))
+        .fuse();
+    let first = matching.next().ok_or_else(|| {
+        let known: Vec<String> = panes
+            .iter()
+            .filter_map(|(window, pane)| {
+                pane.name
+                    .as_deref()
+                    .map(|n| format!("{n:?} (window {window})"))
+            })
+            .collect();
+        if known.is_empty() {
+            format!("no pane is called {name:?}; no pane in this SESSION has a name yet.")
+        } else {
+            format!(
+                "no pane is called {name:?}; the session's named panes are {}. Call list_windows.",
+                known.join(", "),
+            )
+        }
+    })?;
+    if matching.next().is_some() {
+        return Err(format!(
+            "more than one pane is called {name:?} in this session, so it does not name one pane. \
+             Rename one (rename_pane) and try again."
+        ));
+    }
+    Ok((first.0.clone(), &first.1))
+}
+
 /// Find the pane called `name` in `panes`, refusing to guess when more than one answers to it.
 ///
 /// The daemon holds names unique across itself, so a second bearer cannot arise from a correct
@@ -3574,6 +3914,82 @@ fn last_n_lines(text: &str, n: usize) -> String {
 mod tests {
     use super::*;
 
+    /// **THE COMPLETENESS RATCHET: every subject an agent is TOLD about, it can READ.**
+    ///
+    /// `wait_for_change` reports a change by naming its SUBJECT and nothing else — that is the
+    /// event vocabulary's stated contract (*"an event names WHAT TO RE-READ; it does not carry the
+    /// new value"*). A subject with no reader on this surface turns that contract into a dead end:
+    /// the agent is told a window was renamed, or a session created, and has nowhere to go.
+    ///
+    /// **It was a dead end for two of the three subject kinds until R311**, measured against a real
+    /// daemon: the roster had readers for PANE only, so an agent told `session_renamed work → prod`
+    /// could read nothing about either name.
+    ///
+    /// Walked from `EventKind::ALL` rather than listed, so a kind added later that names a NEW
+    /// subject fails here until its reader exists. That is the whole point — this is a ratchet, not
+    /// a snapshot, and neither parity target has anything of the shape.
+    #[test]
+    fn every_subject_an_event_names_has_a_tool_that_reads_it() {
+        let tools = tools_list();
+        let names: Vec<&str> = tools["tools"]
+            .as_array()
+            .expect("a tool array")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+
+        // The reader declared for each subject key — the ONE place the pairing is stated, and the
+        // match is exhaustive over the keys `EventKind::subject_key` can answer, so a fourth
+        // subject added to the event vocabulary fails to COMPILE here rather than slipping through.
+        let reader_for = |key: &str| -> &'static str {
+            match key {
+                k if k == sprag_host::events::Subject::PANE_KEY => "list_panes",
+                k if k == sprag_host::events::Subject::WINDOW_KEY => "list_windows",
+                k if k == sprag_host::events::Subject::SESSION_KEY => "list_sessions",
+                other => panic!(
+                    "the event vocabulary names a subject {other:?} that no tool on this surface \
+                     reads — an agent told about it has nowhere to go. Add the reader, then name \
+                     it here."
+                ),
+            }
+        };
+
+        let mut checked = 0;
+        for kind in sprag_host::events::EventKind::ALL {
+            let Some(key) = kind.subject_key() else {
+                continue;
+            };
+            let reader = reader_for(key);
+            assert!(
+                names.contains(&reader),
+                "`{}` names a {key} and this surface has no `{reader}` to read one",
+                kind.wire_str(),
+            );
+            checked += 1;
+        }
+        // The COUNT, so a vocabulary that lost every subject-carrying kind could not pass this
+        // vacuously — the shape R275 cost a round.
+        assert!(
+            checked >= 10,
+            "only {checked} kinds carried a subject; this test asserted almost nothing",
+        );
+
+        // And the readers really are DISTINCT tools: three subjects answered by one tool would
+        // satisfy every assertion above while leaving two of them unreadable.
+        let readers = [
+            sprag_host::events::Subject::PANE_KEY,
+            sprag_host::events::Subject::WINDOW_KEY,
+            sprag_host::events::Subject::SESSION_KEY,
+        ]
+        .map(reader_for);
+        let unique: std::collections::HashSet<&str> = readers.into_iter().collect();
+        assert_eq!(
+            unique.len(),
+            3,
+            "one tool cannot be three readers: {readers:?}"
+        );
+    }
+
     #[test]
     fn the_wait_tool_names_every_change_the_daemon_can_report() {
         // ⚠ TWO REGISTER ITEMS, CLOSED BY ONE ASSERTION — and the first was live when this was
@@ -3629,6 +4045,8 @@ mod tests {
             names,
             [
                 "list_panes",
+                "list_windows",
+                "list_sessions",
                 "pane_layout",
                 "pane_processes",
                 "read_pane",

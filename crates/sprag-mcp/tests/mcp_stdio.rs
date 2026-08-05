@@ -65,7 +65,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
-use sprag_host::wire::{SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION, ZOOM_PANE_ACTION};
+use sprag_host::wire::{
+    NEW_WINDOW_ACTION, RENAME_PANE_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION, SPAWN_ACTION,
+    SPLIT_ACTION, ZOOM_PANE_ACTION,
+};
 use sprag_rpc::HostConn;
 
 /// How long any single condition may take before this file calls it a failure.
@@ -188,6 +191,24 @@ fn spawn_daemon_with(
 ///
 /// Over the mux spawn action rather than through the `sprag` CLI: that binary belongs to a third
 /// package, and the point here is a second pane, not a second way of asking for one.
+/// The pane ids the daemon's UNSCOPED `panes` slot lists — the current window's, in its order.
+fn mux_query_panes(sock: &Path) -> Vec<u64> {
+    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(sprag_host::wire::PANES_SLOT) }),
+    )
+    .expect("the pane list")
+    .as_array()
+    .map(|panes| {
+        panes
+            .iter()
+            .filter_map(|pane| pane.get("id")?.as_u64())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 fn add_pane(sock: &Path, program: &[&str]) -> u64 {
     let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
@@ -2067,6 +2088,96 @@ fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
     assert!(
         last.contains("1 pane(s) in this sprag terminal:"),
         "and only the person's pane is left: {last}",
+    );
+}
+
+/// **A pane NAME reaches ANOTHER WINDOW of the session, and a NUMBER still does not** — R311's
+/// whole claim, end to end through the shipped server against a real daemon.
+///
+/// Measured at `dac6ef7` before a line was written: `read_pane {pane: "buildout"}` from a sibling
+/// window answered *"no pane is called \"buildout\"; no pane in this terminal has a name yet"* —
+/// BOTH halves false — while `rename_pane` and `swap_pane` crossed a window freely, because a write
+/// is a mux action and a read was a scene path into a scene that holds one window.
+///
+/// The CONTROLS are what make it mean something, and there are three: the agent's own pane does
+/// NOT hold what was written across the window (so the write really crossed), a NUMBER that would
+/// name the far pane is still refused window-locally (so the contract a number carries is intact),
+/// and the refusal for an absent name now lists the session's named panes WITH their windows.
+#[test]
+fn a_pane_name_reaches_another_window_and_a_number_does_not() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    // A second WINDOW holding one pane, named — then back to the boot window, which is where the
+    // agent runs. `new_window` selects what it creates, so the select back is what makes the far
+    // window far.
+    mux_invoke(&sock, NEW_WINDOW_ACTION, json!({}));
+    // The new window's birth pane, read off the daemon's own list for that window rather than
+    // guessed: `new_window` selected it, so the unscoped `panes` slot is already its list.
+    let far = mux_query_panes(&sock)
+        .first()
+        .copied()
+        .expect("the new window's birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "buildout" }),
+    );
+    mux_invoke(&sock, SELECT_WINDOW_ACTION, json!({ "window": "0" }));
+
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    // 1. The agent's own window is ONE pane, and the listing says so about the WINDOW.
+    let here = server.call_tool("list_panes", json!({}));
+    assert!(
+        here.contains("1 pane(s)") && !here.contains("buildout"),
+        "the agent's own window does not hold the far pane: {here}",
+    );
+
+    // 2. `list_windows` is what tells it the other window exists, and hands it the NAME.
+    let windows = server.call_tool("list_windows", json!({}));
+    assert!(
+        windows.contains("2 window(s)")
+            && windows.contains("you are here")
+            && windows.contains("\"buildout\""),
+        "list_windows names the other window and the pane in it: {windows}",
+    );
+
+    // 3. The NAME reaches it — write, then read it back.
+    let wrote = server.call_tool(
+        "write_pane",
+        json!({ "pane": "buildout", "text": "printf R311-CROSSED" }),
+    );
+    assert!(
+        wrote.contains("(window") && !wrote.contains("pane 1"),
+        "the answer names the pane the only honest way for one a number cannot reach: {wrote}",
+    );
+    let read = server.wait_for_tool("read_pane", json!({ "pane": "buildout" }), "R311-CROSSED");
+    assert!(
+        read.contains("R311-CROSSED"),
+        "read across the window: {read}"
+    );
+
+    // CONTROL A — the agent's OWN pane does not hold it, so the write really crossed.
+    let mine = server.call_tool("read_pane", json!({ "pane": 1 }));
+    assert!(
+        !mine.contains("R311-CROSSED"),
+        "the write went to the far window, not to the agent's own pane: {mine}",
+    );
+
+    // CONTROL B — a NUMBER is still window-local. `pane: 2` names nothing here even though the
+    // session holds a second pane, which is the contract `list_panes` defines and R311 keeps.
+    let refused = server.call_tool_error("read_pane", json!({ "pane": 2 }));
+    assert!(
+        refused.contains("no pane 2") && refused.contains("Call list_panes."),
+        "a number reaches only the agent's own window: {refused}",
+    );
+
+    // CONTROL C — an absent NAME is refused with the session's named panes AND their windows,
+    // where the old sentence claimed no pane in the terminal had a name at all.
+    let unknown = server.call_tool_error("read_pane", json!({ "pane": "nope" }));
+    assert_eq!(
+        unknown,
+        "Error: no pane is called \"nope\"; the session's named panes are \"buildout\" \
+         (window 1). Call list_windows.",
     );
 }
 
