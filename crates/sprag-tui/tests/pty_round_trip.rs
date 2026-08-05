@@ -4243,3 +4243,73 @@ fn a_cancelled_chooser_moves_nobody_and_hands_the_keyboard_back() {
     );
     assert_eq!(attached(&mut conn, "elsewhere"), 0);
 }
+
+/// **AN OPEN CHOOSER IS LIVE: a session another client makes while a person is reading the list
+/// appears in it, and the cursor does not move.**
+///
+/// ⚠ **THIS TEST EXISTS BECAUSE THE DEBT SWEEP FOUND `Pick::refresh` HAD ONE CALLER.** It was the
+/// GUI's per-frame reconcile, so THIS front's list was a photograph — and `Pick`'s own module doc
+/// said *"refreshed from the daemon, so the list is LIVE while a person reads it"*, which was false
+/// for half the product. A durable doc claim with no driver on one of its two subjects.
+///
+/// THE FIXTURE MAKES THE TWO READINGS DISAGREE: the new session is made by a SEPARATE connection
+/// while the overlay is up, so a chooser that had photographed its rows cannot show it however long
+/// the test waits.
+///
+/// The second assertion is the other half and is what makes the refresh safe rather than merely
+/// live: the cursor is an IDENTITY, so a list growing under it leaves it where the person left it.
+///
+/// REVERT-PROOF: drop the `Pick::refresh` call from the wake path and the first wait times out with
+/// the old rows still painted.
+#[test]
+fn a_session_made_while_the_chooser_is_open_appears_in_it() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &sock;
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"s");
+    wait_for("the chooser to open", || shows(&mut tui, "(choose-tree)"));
+    wait_for("...listing the session this client is on", || {
+        shows(&mut tui, &session)
+    });
+    assert!(
+        !tui.rows().iter().any(|row| row.contains("latecomer")),
+        "the session under test does not exist yet: {:?}",
+        tui.rows(),
+    );
+
+    // ANOTHER connection makes a session while the list is on the screen. This is the whole claim:
+    // nothing this client did put it there.
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "latecomer" } }),
+    )
+    .expect("new_session answers");
+
+    wait_for("the new session to appear in the open list", || {
+        shows(&mut tui, "latecomer")
+    });
+    // ...AND THE CURSOR DID NOT MOVE. It opened on this client's own session, and a list that grew
+    // under it must leave it there — which is what an identity cursor buys and a row number does
+    // not. Read by CANCELLING and checking nobody moved: a cursor that had drifted onto the new row
+    // would still be harmless here, so the sharper assertion is the one the unit test makes; what
+    // this adds is that the refresh did not disturb the live surface.
+    tui.type_bytes(b"\x03");
+    tui.type_bytes(b"after");
+    wait_for("the keyboard to come back to the pane", || {
+        let held = pane_text_of(&mut conn, &session, 0);
+        if held.contains("after") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {held:?}"))
+        }
+    });
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "and a list that changed under a reader moved nobody",
+    );
+    assert_eq!(attached(&mut conn, "latecomer"), 0);
+}

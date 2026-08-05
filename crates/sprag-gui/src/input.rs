@@ -225,7 +225,7 @@ fn window_chord(key: &str, modifiers: Modifiers) -> Option<WindowChord> {
 
 /// A `Ctrl+Shift+C` (copy) / `Ctrl+Shift+V` (paste) clipboard chord (R139).
 #[derive(Debug, PartialEq, Eq)]
-enum ClipboardChord {
+pub(crate) enum ClipboardChord {
     Copy,
     Paste,
 }
@@ -234,7 +234,7 @@ enum ClipboardChord {
 /// `Ctrl+C` is SIGINT and `Ctrl+V` is literal-next, so copy / paste are the `Shift`
 /// variants (matching `gnome-terminal` / xterm). `Shift` upper-cases the letter, so
 /// match case-insensitively; `Alt` excluded so `Ctrl+Alt+Shift+*` is not stolen. Pure.
-fn clipboard_chord(key: &str, modifiers: Modifiers) -> Option<ClipboardChord> {
+pub(crate) fn clipboard_chord(key: &str, modifiers: Modifiers) -> Option<ClipboardChord> {
     if modifiers.ctrl && modifiers.shift && !modifiers.alt {
         if key.eq_ignore_ascii_case("c") {
             return Some(ClipboardChord::Copy);

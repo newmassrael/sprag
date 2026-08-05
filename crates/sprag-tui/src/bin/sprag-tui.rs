@@ -831,6 +831,19 @@ fn run() -> Result<(), Box<dyn Error>> {
         // `swap` rather than `load` + `store`: a change landing DURING the paint must leave the
         // flag set, so the next iteration repaints instead of showing a frame one behind.
         if repaint.swap(false, Ordering::AcqRel) {
+            // ⚠ AN OPEN CHOOSER IS RE-READ ON THE SAME WAKE, and it was NOT until the debt sweep
+            // asked. `Pick::refresh` had exactly one caller — the GUI's per-frame reconcile — so
+            // this front's list was a PHOTOGRAPH while the other's was live, and `Pick`'s own doc
+            // ("refreshed from the daemon so the list is LIVE while a person reads it") was false
+            // for half the product. The wake that tells this client a session appeared is the same
+            // wake that must put it in the list somebody is reading.
+            //
+            // The cursor is `Pick::refresh`'s to move and it moves only when its OWN row goes —
+            // which is the whole reason the cursor is an identity, and why re-reading under an open
+            // list is safe rather than disruptive.
+            if let Overlay::Asking(Asking::Choose { pick, .. }) = &mut overlay {
+                pick.refresh(&host.tree(), &host.current_session());
+            }
             // Reconciled, not merely repainted: the host's notification covers the ARRANGEMENT as
             // well as the cells, so a split made from another client — or a pane whose shell just
             // exited and was closed — changes which rectangles exist. Painting the old tiling would
@@ -1445,40 +1458,6 @@ impl Asking {
         }
     }
 
-    /// The sentence to paint: the question, and the refusal if one is standing.
-    fn question(&self) -> String {
-        match self {
-            Self::Line {
-                subject, refusal, ..
-            } => match refusal {
-                // Two spaces, so the refusal reads as a second clause rather than as part of the
-                // name being typed — the row has no colour of its own to separate them with.
-                Some(why) => format!("{}  {why}", subject.question()),
-                None => subject.question().to_owned(),
-            },
-            Self::Confirm { question, .. } => question.clone(),
-            // The chooser paints its own surface (`chooser_changes`), so this is never asked of it
-            // — see `asking_changes`, which is the one place that decides.
-            Self::Choose { .. } => String::new(),
-        }
-    }
-
-    /// The text being edited (empty for a yes/no, which has none).
-    fn answer(&self) -> &str {
-        match self {
-            Self::Line { line, .. } => line.text(),
-            Self::Confirm { .. } | Self::Choose { .. } => "",
-        }
-    }
-
-    /// Where the caret goes, or [`None`] for a question with nothing to type into.
-    fn caret(&self) -> Option<usize> {
-        match self {
-            Self::Line { line, .. } => Some(line.cursor()),
-            Self::Confirm { .. } | Self::Choose { .. } => None,
-        }
-    }
-
     /// Feed one keystroke to the open prompt.
     ///
     /// The two arms answer different questions and so read keys differently, and neither gesture is
@@ -1582,12 +1561,29 @@ fn paint_prompt(
 fn asking_changes(screen_area: Rect, asking: &Asking) -> Vec<termwiz::surface::Change> {
     match asking {
         Asking::Choose { pick, refusal } => chooser_changes(screen_area, pick, refusal.as_deref()),
-        Asking::Line { .. } | Asking::Confirm { .. } => prompt_changes(
+        // The three ROW pieces are read straight off the arm that has them, and that is the audit
+        // correcting a shape it had just introduced: these were three `Asking` methods, each with a
+        // `Choose` arm returning an empty string or a `None` that nothing could ever ask for. A
+        // total function whose totality is a FICTION is the thing this project spells "make the
+        // wrong thing unrepresentable" — the arms are gone, and so is the only caller that needed
+        // them to be total.
+        Asking::Line {
+            subject,
+            line,
+            refusal,
+        } => prompt_changes(
             screen_area,
-            &asking.question(),
-            asking.answer(),
-            asking.caret(),
+            &match refusal {
+                // Two spaces, so the refusal reads as a second clause rather than as part of the
+                // name being typed — the row has no colour of its own to separate them with.
+                Some(why) => format!("{}  {why}", subject.question()),
+                None => subject.question().to_owned(),
+            },
+            line.text(),
+            Some(line.cursor()),
         ),
+        // A yes/no has nothing to type into, so no text and no caret.
+        Asking::Confirm { question, .. } => prompt_changes(screen_area, question, "", None),
     }
 }
 

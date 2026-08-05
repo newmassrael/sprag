@@ -169,9 +169,31 @@ pub(crate) fn handle_key(key: &str, modifiers: Modifiers) -> bool {
         // would otherwise fall through to a pane behind the scrim, so it is swallowed.
         return true;
     };
-    let typed = current
-        .pick
-        .typed(key, crate::input::to_input_mods(modifiers));
+    // ⚠ THE PASTE CHORD, handled HERE because this gate runs BEFORE `route_key`'s clipboard arm —
+    // so without it `Ctrl+Shift+V` reached `Line::typed`, matched no chord and was swallowed, and
+    // this client's chooser was the only one of the two that could not be pasted into. Found by the
+    // debt sweep: `sprag-tui` gets it from the terminal's own paste EVENT, which this client has no
+    // counterpart for, and the asymmetry is invisible from either side alone.
+    //
+    // The pane's own paste is NOT reachable from here and must not be: the panes are behind a
+    // scrim, and `route_key`'s arm would send the text to a shell the user cannot see.
+    //
+    // It asks `clipboard_chord` rather than re-spelling `ctrl && shift && !alt && "v"`, and that is
+    // the audit correcting ITSELF: the first version of this block hand-wrote the rule, which is a
+    // SECOND copy of the very thing it was added to reach — the shape this sweep is looking for.
+    let typed = if matches!(
+        crate::input::clipboard_chord(key, modifiers),
+        Some(crate::input::ClipboardChord::Paste)
+    ) {
+        match crate::selection::clipboard().paste_from(pinion_core::ClipboardSelection::Clipboard) {
+            Some(text) => current.pick.pasted(&text),
+            None => Typed::Ignored,
+        }
+    } else {
+        current
+            .pick
+            .typed(key, crate::input::to_input_mods(modifiers))
+    };
     match typed {
         Typed::Ignored => {}
         Typed::Edited => {
