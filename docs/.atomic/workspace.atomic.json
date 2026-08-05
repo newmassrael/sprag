@@ -11237,6 +11237,86 @@
         "herdr got the cascade first and it is stated first; sprag goes past them on the derived event (their pane close removes a tab and emits no tab.closed), on the answer, and on a guard that is not conditional on a worktree group."
       ]
     },
+    "R310": {
+      "decision_summary": "A WINDOW HAS A PLACE, AND A PLACE IS A THING YOU CAN SAY. Measured first: a session's window order was WALKED by prefix n/p, PAINTED by sprag-gui's tab strip and published as the windows slot's ARRAY - and changeable by nothing in the product, promised by nothing, and observable by nothing (SessionShape::diff matched windows by identity with a find, so a reorder produced zero events). The same collection is a RING to walk and a SEQUENCE to arrange: the walk wraps because attention comes back round, the move stops because the strip has a first tab and a last. move_window is the daemon's first ordering op, its anchor is a NAME and never an index, and PlaceHow answers four words where the rival answers a bool.",
+      "changes_bullets": [
+        "WindowPlace (first/last/one-step/before/after) and PlaceHow (moved/already_there/alone/itself) join sprag-terminal beside WindowStep; Session::move_window computes one destination index in the frame with the moved window REMOVED, so \"already there\" falls out of a single comparison and the source-before-insert correction is written once.",
+        "An anchor is a NAME resolved under the registry lock, never an insertion INDEX a client computed from a list it read earlier - PaneName's argument one level up.",
+        "The current window follows its own window across a move BY IDENTITY (WindowId), because an index is where a window is and where it is, is exactly what this verb changes.",
+        "Event::WindowsReordered is DERIVED in SessionShape::diff from the COMMON-ID SUBSEQUENCES of the two shapes - the first comparison in that function that reads a sequence where every other reads a set, so a reorder produced zero events before this round.",
+        "It names no window on purpose and the claim is PROVED: `move A after B` and `move B before A` leave identical state, so no derivation from state can attribute the move, and a subject is what a filter matches on.",
+        "move_window {window?, place|before|after} answering {window, how}; the CURRENT window is resolved at the daemon under the lock that moves it, and an absent window or anchor is REFUSED rather than answered as an outcome.",
+        "sprag move-window [W] --first|--last|-n|-p|--before W|--after W, with one sentence per outcome and a daemon-too-old-for-the-verb told apart from a refusal.",
+        "prefix < / prefix > step the current window along; prefix . is tmux's OWN default for this verb and ASKS for an anchor by name, where tmux's prompt wants an index and a command template.",
+        "Subject::MoveBefore is the fourth line-ask and the first that is not a rename: its answer is an ADDRESS of a different window, its seed is EMPTY, and its commit reports the daemon's outcome word.",
+        "Both frontends carry the arms out; the GUI palette gains the four anchorless placings, PAIRED with the binding so the hint column shows the user's own chord.",
+        "The snapshot's doc called the window order \"creation order\", which this round made false; the arranged order is now pinned across a restart."
+      ],
+      "verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2098 tests (R309 left 2083), clippy 0 with no suppression, fmt, doc gate 0/16.",
+        "Headless pixel smoke 183/0 on a rebuilt release set (R309 left 175/0): eight checks new, driving prefix > and prefix < through the SHIPPED GUI binary and reading both the daemon's window list and the strip's PAINTED tab order.",
+        "A live sprag-tui on a real pty drives prefix > , prefix < and prefix . through the shipped binary, judged at the daemon, including a cancelled prompt that moves nothing.",
+        "TEN revert-proofs, each shown to DISCRIMINATE with a control green after it: the frame correction, the current-window follow, the funnel's sequence check, the funnel's common-subset restriction, the daemon-side current-window resolution, the answer's outcome word, asks() for the prompt arm, the prompt's subject, the palette's place routing, and the restored order.",
+        "ONE of those ten was VACUOUS and was RE-AIMED: asks() is not what opens the prompt (Ask::of matches the action directly), so the missing assertion was BUILT - confirm-before move-window --before is refused where the anchored form is guardable.",
+        "WIRE_PROTOCOL STAYS 10, MEASURED both directions rather than reasoned: a new client's move-window against a parent-commit daemon gets the version-skew sentence (with an existing verb as the control that the connection is fine), and an old client against a new daemon reads the reordered list, walks the new order, and reads a journal holding windows_reordered with exit 0.",
+        "The wire ANSWER bytes are pinned over a real socket, and the request grammar's six spellings plus the answer are in the shape pin.",
+        "The measurement before a line was written, against a real isolated daemon: no swap-window / move-window / renumber anywhere in the tree, WindowInfo is {name,current} with no place, and SessionShape::diff matched windows by identity with a find."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "NO MCP TOOL, re-derived rather than inherited (item 14's note that this argument inverted once): the MCP surface has no window verbs AT ALL, so the first to add is the read/select, not the reorder - and a reorder rearranges what a HUMAN looks at at a scope no authorship gate covers. Honest trade: herdr's whole API is its agent surface, so their agent reaches tab.move by construction.",
+        "NO swap-window: for a LIST the general primitive is a move, and an exchange of two non-adjacent windows is a different result not expressible as one. tmux has both; herdr has only a move.",
+        "NO cross-session window move (tmux move-window -s a:1 -t b:) - a decision about ADDRESSING, not about ordering.",
+        "NO GUI tab DRAG, which is herdr's ONLY gesture for this. The strip that draws the order is one check away from it; the keyboard and the CLI are what had no answer at all.",
+        "PlaceHow::ALL is a FIFTH array literal no compiler checks (PaneDir::ALL, WindowStep::ALL, ActionSubject::ALL, Ended's inline one). Stated at the array rather than hidden; Rust has no stable way to derive it without a new dependency, and the class fix is its own round.",
+        "sprag move-window requires -t SESSION, joining select-window and the other window verbs - the registered mandatory -t gap gains a fifth member.",
+        "The one-step keys do NOT repeat (no tmux -r), on the window keys' own argument: a held > walks a window past every other one and stops nowhere a user aimed at.",
+        "The GUI's palette offers only the four ANCHORLESS placings; the anchored forms would be one row per window per direction, and prefix . already asks for an anchor by name.",
+        "herdr GOT NEITHER HALF: their tab.move / workspace.move are API + MOUSE DRAG only (herdr tab has list/create/get/focus/rename/close and no move; KeysConfig has no move binding, both read at 9a4ce5e1), their Workspace::move_tab answers a bool collapsing out-of-range and no-op, and the handler then reports SUCCESS with no event for all three."
+      ],
+      "publishable_decision_summary": "A WINDOW HAS A PLACE, AND A PLACE IS A THING YOU CAN SAY. Measured first: a session's window order was WALKED by prefix n/p, PAINTED by sprag-gui's tab strip and published as the windows slot's ARRAY - and changeable by nothing in the product, promised by nothing, and observable by nothing (SessionShape::diff matched windows by identity with a find, so a reorder produced zero events). The same collection is a RING to walk and a SEQUENCE to arrange: the walk wraps because attention comes back round, the move stops because the strip has a first tab and a last. move_window is the daemon's first ordering op, its anchor is a NAME and never an index, and PlaceHow answers four words where the rival answers a bool.",
+      "publishable_changes_bullets": [
+        "WindowPlace (first/last/one-step/before/after) and PlaceHow (moved/already_there/alone/itself) join sprag-terminal beside WindowStep; Session::move_window computes one destination index in the frame with the moved window REMOVED, so \"already there\" falls out of a single comparison and the source-before-insert correction is written once.",
+        "An anchor is a NAME resolved under the registry lock, never an insertion INDEX a client computed from a list it read earlier - PaneName's argument one level up.",
+        "The current window follows its own window across a move BY IDENTITY (WindowId), because an index is where a window is and where it is, is exactly what this verb changes.",
+        "Event::WindowsReordered is DERIVED in SessionShape::diff from the COMMON-ID SUBSEQUENCES of the two shapes - the first comparison in that function that reads a sequence where every other reads a set, so a reorder produced zero events before this round.",
+        "It names no window on purpose and the claim is PROVED: `move A after B` and `move B before A` leave identical state, so no derivation from state can attribute the move, and a subject is what a filter matches on.",
+        "move_window {window?, place|before|after} answering {window, how}; the CURRENT window is resolved at the daemon under the lock that moves it, and an absent window or anchor is REFUSED rather than answered as an outcome.",
+        "sprag move-window [W] --first|--last|-n|-p|--before W|--after W, with one sentence per outcome and a daemon-too-old-for-the-verb told apart from a refusal.",
+        "prefix < / prefix > step the current window along; prefix . is tmux's OWN default for this verb and ASKS for an anchor by name, where tmux's prompt wants an index and a command template.",
+        "Subject::MoveBefore is the fourth line-ask and the first that is not a rename: its answer is an ADDRESS of a different window, its seed is EMPTY, and its commit reports the daemon's outcome word.",
+        "Both frontends carry the arms out; the GUI palette gains the four anchorless placings, PAIRED with the binding so the hint column shows the user's own chord.",
+        "The snapshot's doc called the window order \"creation order\", which this round made false; the arranged order is now pinned across a restart."
+      ],
+      "publishable_verification_bullets": [
+        "Suite EXIT 0 / 46 targets / 2098 tests (R309 left 2083), clippy 0 with no suppression, fmt, doc gate 0/16.",
+        "Headless pixel smoke 183/0 on a rebuilt release set (R309 left 175/0): eight checks new, driving prefix > and prefix < through the SHIPPED GUI binary and reading both the daemon's window list and the strip's PAINTED tab order.",
+        "A live sprag-tui on a real pty drives prefix > , prefix < and prefix . through the shipped binary, judged at the daemon, including a cancelled prompt that moves nothing.",
+        "TEN revert-proofs, each shown to DISCRIMINATE with a control green after it: the frame correction, the current-window follow, the funnel's sequence check, the funnel's common-subset restriction, the daemon-side current-window resolution, the answer's outcome word, asks() for the prompt arm, the prompt's subject, the palette's place routing, and the restored order.",
+        "ONE of those ten was VACUOUS and was RE-AIMED: asks() is not what opens the prompt (Ask::of matches the action directly), so the missing assertion was BUILT - confirm-before move-window --before is refused where the anchored form is guardable.",
+        "WIRE_PROTOCOL STAYS 10, MEASURED both directions rather than reasoned: a new client's move-window against a parent-commit daemon gets the version-skew sentence (with an existing verb as the control that the connection is fine), and an old client against a new daemon reads the reordered list, walks the new order, and reads a journal holding windows_reordered with exit 0.",
+        "The wire ANSWER bytes are pinned over a real socket, and the request grammar's six spellings plus the answer are in the shape pin.",
+        "The measurement before a line was written, against a real isolated daemon: no swap-window / move-window / renumber anywhere in the tree, WindowInfo is {name,current} with no place, and SessionShape::diff matched windows by identity with a find."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "NO MCP TOOL, re-derived rather than inherited (item 14's note that this argument inverted once): the MCP surface has no window verbs AT ALL, so the first to add is the read/select, not the reorder - and a reorder rearranges what a HUMAN looks at at a scope no authorship gate covers. Honest trade: herdr's whole API is its agent surface, so their agent reaches tab.move by construction.",
+        "NO swap-window: for a LIST the general primitive is a move, and an exchange of two non-adjacent windows is a different result not expressible as one. tmux has both; herdr has only a move.",
+        "NO cross-session window move (tmux move-window -s a:1 -t b:) - a decision about ADDRESSING, not about ordering.",
+        "NO GUI tab DRAG, which is herdr's ONLY gesture for this. The strip that draws the order is one check away from it; the keyboard and the CLI are what had no answer at all.",
+        "PlaceHow::ALL is a FIFTH array literal no compiler checks (PaneDir::ALL, WindowStep::ALL, ActionSubject::ALL, Ended's inline one). Stated at the array rather than hidden; Rust has no stable way to derive it without a new dependency, and the class fix is its own round.",
+        "sprag move-window requires -t SESSION, joining select-window and the other window verbs - the registered mandatory -t gap gains a fifth member.",
+        "The one-step keys do NOT repeat (no tmux -r), on the window keys' own argument: a held > walks a window past every other one and stops nowhere a user aimed at.",
+        "The GUI's palette offers only the four ANCHORLESS placings; the anchored forms would be one row per window per direction, and prefix . already asks for an anchor by name.",
+        "herdr GOT NEITHER HALF: their tab.move / workspace.move are API + MOUSE DRAG only (herdr tab has list/create/get/focus/rename/close and no move; KeysConfig has no move binding, both read at 9a4ce5e1), their Workspace::move_tab answers a bool collapsing out-of-range and no-op, and the handler then reports SUCCESS with no event for all three."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
