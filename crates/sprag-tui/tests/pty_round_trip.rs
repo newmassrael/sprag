@@ -3430,3 +3430,144 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
         "an arrow with no prefix is the PANE's, so the arrangement did not move",
     );
 }
+
+/// **THE GATE for R308: the key table a user opens is the table the user HAS.**
+///
+/// Every unit test of the view hands it a `Keymap` and asks what rows come out, which says nothing
+/// about whether the shipped binary ever opens one — the seam where a whole surface can be absent
+/// while the suite stays green, and the seam [`a_prefix_declared_in_the_users_config_reaches_the_
+/// client`] exists for one round earlier. So this runs the real client, on a real pseudoterminal,
+/// against a real `config.toml`.
+///
+/// **The prefix is rebound, and that is the discriminator.** The rows must read `C-a z`, not
+/// `C-b z`: a view built from `Keymap::default()` — the easiest wrong implementation, and the one a
+/// unit test seeded with defaults could never catch — would paint the second. It is the same claim
+/// the palette's hint column makes on the other frontend, made here through a shipped binary.
+///
+/// Three more, each of which has failed some multiplexer before:
+///
+/// * **The panes come back.** A view that painted over the arrangement and did not repaint on close
+///   would leave a screen of stale rows, which is what an overlay costs if the close path forgets.
+/// * **Nothing typed at it reaches the shell.** R306 found exactly that leak on the prompt beside
+///   this one — a pasted name running in the user's shell — so the surface added a round later is
+///   asked the same question. `whoami` is chosen because `cat` would echo it and the assertion after
+///   the close would read `livewhoamiX`.
+/// * **It scrolls.** The table is longer than 24 rows by construction (a unit test asserts that),
+///   so a view that could not scroll would be one that hides half of itself.
+#[test]
+fn the_key_table_shows_the_users_own_table_and_gives_the_panes_back() {
+    let config = ConfigHome::new("[options]\nprefix = \"C-a\"\n");
+    let (_daemon, _sock, _conn, _session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    // Typed first, so everything after it is proven to act on a client that was WORKING.
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    tui.type_bytes(&[0x01]); // C-a, the prefix this user declared
+    tui.type_bytes(b"?");
+    wait_for("the key table to open on the user's own prefix", || {
+        let rows = tui.rows();
+        let shows = |want: &str| rows.iter().any(|row| row.contains(want));
+        if shows("keys") && shows("C-a z") && shows("zoom-pane") {
+            Ok(())
+        } else {
+            Err(format!("{rows:?} (client: {})", tui.liveness()))
+        }
+    });
+    assert!(
+        !tui.rows().iter().any(|row| row.contains("C-b z")),
+        "the view must show the prefix in force, not the default one: {:?}",
+        tui.rows(),
+    );
+
+    // IT SCROLLS. The vocabulary section is past the bottom of a 24-row terminal, so reaching it is
+    // a statement that the page key moved the view rather than that the rows happened to fit.
+    let vocabulary = sprag_host::keyhelp::KeyHelp::VOCABULARY_HEADING;
+    assert!(
+        !tui.rows().iter().any(|row| row.contains(vocabulary)),
+        "the last section must be off screen before the scroll, or paging proves nothing: {:?}",
+        tui.rows(),
+    );
+    tui.type_bytes(b"\x1b[6~"); // PageDown
+    tui.type_bytes(b"\x1b[6~");
+    tui.type_bytes(b"\x1b[6~");
+    wait_for("the page key to reach the end of the table", || {
+        if tui.rows().iter().any(|row| row.contains(vocabulary)) {
+            Ok(())
+        } else {
+            Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+        }
+    });
+
+    // NOT ONE CHARACTER REACHES THE SHELL while the table is up.
+    tui.type_bytes(b"whoami");
+
+    tui.type_bytes(b"q");
+    // The panes come back, and the row underneath is the one the client left there.
+    wait_for("the panes to come back", || painted(&mut tui, "live"));
+
+    // The pane is still the keyboard's, and it never saw the six characters above: `cat` echoes
+    // what reaches it, so a leak would read `livewhoamiX` here.
+    tui.type_bytes(b"X");
+    wait_for("the pane to have the keyboard again", || {
+        painted(&mut tui, "liveX")
+    });
+}
+
+/// **A REPAINT DOES NOT WIPE THE KEY TABLE** — R306's failure, on the surface added after it.
+///
+/// A resize or a host wake drew the frame straight over the prompt while that client went on eating
+/// every keystroke, and the fix was to draw the overlay from `paint` itself. This is the same claim
+/// one surface over, and it is a test OF ITS OWN because of what it took to make it discriminate.
+///
+/// **A resize does not drive it and neither does a wake with a quiet pane.** R306 recorded why and
+/// the first version of this test measured it again: a terminal keeps glyphs nobody writes over, so
+/// an overlay survives a repaint that draws nothing where it is. What is needed is a pane that
+/// PRINTS — output landing in the cells the table is drawn over — so the rows can only still be
+/// there if the paint path put them back. Hence a boot program that ticks on its own, which is also
+/// why this cannot share the `cat` the leak test needs.
+///
+/// REVERT-PROOF: drop the `Overlay::Showing` arm from `paint` and this fails; the version of this
+/// assertion that used a resize passed with that arm gone, which is what a vacuous test looks like.
+#[test]
+fn a_pane_printing_underneath_does_not_wipe_the_key_table() {
+    let (_daemon, _sock, _conn, _session, mut tui) = attached_client_with(
+        Tui::attach,
+        &["sh", "-c", "while :; do printf 'tick\\n'; sleep 0.1; done"],
+    );
+    wait_for("the pane to be printing", || {
+        if tui.rows().iter().any(|row| row.contains("tick")) {
+            Ok(())
+        } else {
+            Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+        }
+    });
+
+    tui.type_bytes(&[0x02]); // prefix
+    tui.type_bytes(b"?");
+    wait_for("the key table to open", || {
+        if tui.rows().iter().any(|row| row.contains("zoom-pane")) {
+            Ok(())
+        } else {
+            Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+        }
+    });
+
+    // A dozen ticks land under the table, each one a repaint of the cells it occupies.
+    std::thread::sleep(Duration::from_millis(1_200));
+    let rows = tui.rows();
+    assert!(
+        rows.iter().any(|row| row.contains("zoom-pane")),
+        "the table must survive the repaints its own pane caused: {rows:?}",
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("tick")),
+        "and it must still be OPAQUE — a pane showing through is the same defect half-fixed: \
+         {rows:?}",
+    );
+}
