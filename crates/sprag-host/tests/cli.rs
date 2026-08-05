@@ -5369,3 +5369,93 @@ fn the_cli_says_what_each_pane_is_running() {
         missing.stderr,
     );
 }
+
+/// `list-keys -N` is the same table in the form a PERSON reads — and the paste-back form is
+/// untouched, which is the contract this flag exists to protect.
+///
+/// Both halves matter and only together. tmux's own `-N` is a second view of one table, and the
+/// reason sprag copies that rather than changing the default output is that every line of the
+/// default after the first is a `bind-key` command a user can paste back; a script filtering on that
+/// prefix must not have the ground moved under it by a round about readability. So this asserts what
+/// the notes form ADDS and, in the same run, that the old form still says exactly what it said.
+///
+/// The third assertion is the one that could not exist before R308: the view names the actions NO
+/// key reaches. `%` is unbound here, and `split-window` still reaches the vocabulary because the
+/// file binds `|` to it — so the mark is about the VERB, and the row for `zoom-pane` is the one that
+/// moves when its only key goes away.
+#[test]
+fn list_keys_notes_form_reads_as_a_table_and_leaves_the_paste_back_form_alone() {
+    let config = ConfigHome::new(
+        "[options]\nprefix = \"C-a\"\n\n\
+         [[bind]]\nkey = \"|\"\naction = \"split-window -h\"\n\n\
+         [[unbind]]\nkey = \"%\"\n\n\
+         [[unbind]]\nkey = \"z\"\n",
+    );
+    let absent = socket_path();
+    let env = [("XDG_CONFIG_HOME", config.as_str())];
+    let notes = sprag_env(&absent, &["list-keys", "-N"], &env);
+    assert!(
+        notes.ok,
+        "no daemon is not an error here either: {}",
+        notes.stderr
+    );
+    let text = notes.stdout;
+
+    // THE CHORD IN FORCE, so a reader with a rebound prefix is not sent to look it up elsewhere.
+    assert!(
+        text.contains("C-a |"),
+        "the notes form shows the chord a user presses: {text}",
+    );
+    assert!(
+        !text.contains("C-b "),
+        "and never the default prefix this file moved: {text}",
+    );
+    // GROUPED, by what each verb acts on.
+    for heading in ["client", "pane", "window", "session"] {
+        assert!(
+            text.lines().any(|line| line == heading),
+            "the {heading} group has a heading of its own: {text}",
+        );
+    }
+    // AND WHAT IS NOT BOUND, which is the question the paste-back form cannot answer at all.
+    assert!(
+        text.contains(&format!(
+            "zoom-pane [-Z|-u]  ({})",
+            sprag_host::keyhelp::KeyHelp::UNBOUND
+        )),
+        "the verb whose only key the file removed is marked: {text}",
+    );
+    assert!(
+        !text
+            .lines()
+            .any(|line| line.trim_start().starts_with("split-window")
+                && line.contains(sprag_host::keyhelp::KeyHelp::UNBOUND)),
+        "and a verb the file gave a NEW key to is not: {text}",
+    );
+
+    // THE CONTRACT: the default form is byte-for-byte what it was, flag or no flag.
+    let plain = sprag_env(&absent, &["list-keys"], &env);
+    assert!(plain.ok, "{}", plain.stderr);
+    assert!(
+        plain
+            .stdout
+            .lines()
+            .skip(1)
+            .all(|line| line.starts_with("bind-key")),
+        "every line after the prefix is still a command a user can paste back: {}",
+        plain.stdout,
+    );
+    assert_ne!(
+        plain.stdout, text,
+        "the two forms are different views, or one of them is pointless",
+    );
+
+    // A FLAG THIS VERB DOES NOT HAVE is refused by name rather than ignored.
+    let bad = sprag_env(&absent, &["list-keys", "-Q"], &env);
+    assert!(!bad.ok, "an unknown flag is refused: {}", bad.stdout);
+    assert!(
+        bad.stderr.contains("-Q") && bad.stderr.contains("[-N]"),
+        "and the refusal names both what was given and what is taken: {}",
+        bad.stderr,
+    );
+}
