@@ -218,6 +218,23 @@ pub const GUI_FONT: &str = "gui-font";
 /// reboot, silently.
 pub const HISTORY_LIMIT: &str = "history-limit";
 
+/// How long a client shows what a key just DID, in milliseconds — tmux's `display-time`.
+///
+/// A CLIENT-side option like [`PREFIX`] and [`REPEAT_TIME`], and the reason is theirs sharpened: a
+/// message is a sentence one PERSON reads, and two people attached to one session read at different
+/// speeds. Nothing crosses the wire.
+///
+/// Zero is a DECISION and not an absence, the fourth setting to draw [`HISTORY_LIMIT`]'s
+/// distinction: `display-time 0` is a message that has already expired, so a client reports
+/// nothing. That is a legitimate thing to want from a user who has memorised their own bindings,
+/// and it is the one value that puts back the silence this option's consumer exists to remove —
+/// which is why it is reachable only by asking for it. tmux accepts `0` and refuses a negative
+/// value, which is `Number { min: 0 }` exactly.
+///
+/// The default is [`report::DEFAULT_DISPLAY_TIME`](crate::report::DEFAULT_DISPLAY_TIME) rather than
+/// a number spelled twice; `the_display_time_default_is_the_reports_own` holds the two together.
+pub const DISPLAY_TIME: &str = "display-time";
+
 /// How long a repeating binding holds the prefix table open, in milliseconds — tmux's
 /// `repeat-time`.
 ///
@@ -315,6 +332,17 @@ pub const OPTIONS: &[OptionSpec] = &[
         name: DETACH_ON_DESTROY,
         kind: OptionKind::Choice(DETACH_ON_DESTROY_VALUES),
         default: "on",
+    },
+    OptionSpec {
+        name: DISPLAY_TIME,
+        // Floors at 0, where zero MEANS "report nothing" rather than "unset" — see the name's own
+        // doc for why that is a decision a user has to ask for.
+        kind: OptionKind::Number { min: 0 },
+        // tmux's own default, read from `tmux 3.2a`'s `show-options -g display-time` on this
+        // machine rather than recalled. Spelled here AND as `report::DEFAULT_DISPLAY_TIME`;
+        // `the_display_time_default_is_the_reports_own` holds the two together, the treatment
+        // `repeat-time` gets against the keymap.
+        default: "750",
     },
     OptionSpec {
         name: GUI_FONT,

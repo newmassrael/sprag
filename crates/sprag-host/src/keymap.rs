@@ -1008,6 +1008,64 @@ impl BoundAction {
         }
     }
 
+    /// The thing this binding NAMES, if it names one — what KIND of thing, and WHICH.
+    ///
+    /// **Not [`subject`](Self::subject), and the difference is the whole reason this exists.** That
+    /// one answers what a verb ACTS ON, which is the axis `list-keys` groups by; `switch-client` is
+    /// filed under the CLIENT there, because what it changes is which session this client is
+    /// looking at. The name it carries is a SESSION's. A refusal built off the grouping told a user
+    /// *"no client called \"ghost\""* — caught by
+    /// `a_switch_to_a_session_that_does_not_exist_names_it` before it reached a screen, which is
+    /// why the two questions have two methods instead of one being read for both.
+    ///
+    /// Exhaustive rather than a wildcard, for [`subject`](Self::subject)'s reason and with a
+    /// sharper failure mode: an arm added later that carries a name and defaults to [`None`] is a
+    /// verb whose refusal cannot say what it looked for, and nothing else in the tree would notice.
+    ///
+    /// [`ConfirmBefore`](Self::ConfirmBefore) answers what it GUARDS, exactly as
+    /// [`subject`](Self::subject) does: the name a user is being asked about is the guarded verb's.
+    #[must_use]
+    pub fn names(&self) -> Option<(ActionSubject, &str)> {
+        match self {
+            Self::SwitchClient {
+                ask: SwitchClientAsk::Named(session),
+            } => Some((ActionSubject::Session, session)),
+            Self::SelectWindow {
+                ask: SelectWindowAsk::Named(window),
+            } => Some((ActionSubject::Window, window)),
+            // The two ANCHORED places name a window; `--first` / `--last` / a step name none, and
+            // the collapse is `WindowPlace::anchor`'s so this cannot handle one arm and forget the
+            // other.
+            Self::MoveWindow { place } => {
+                place.anchor().map(|window| (ActionSubject::Window, window))
+            }
+            Self::ConfirmBefore { action } => action.names(),
+            // Everything else takes no name at all: a keystroke acts where the user is
+            // ([`NewWindow`](Self::NewWindow)'s rule), a direction is not a name, and the verbs
+            // that need one ASK for it rather than carrying it — a `rename-window` binding that
+            // fixed a name would rename every window to the same string.
+            Self::DetachClient
+            | Self::SendPrefix
+            | Self::ListKeys
+            | Self::SplitWindow { .. }
+            | Self::SelectNextPane
+            | Self::SelectPaneToward { .. }
+            | Self::SwapPaneToward { .. }
+            | Self::ResizePaneToward { .. }
+            | Self::ZoomPane { .. }
+            | Self::KillPane
+            | Self::NewWindow
+            | Self::SelectWindow { .. }
+            | Self::MoveWindowBefore
+            | Self::KillWindow
+            | Self::RenameWindow
+            | Self::RenameSession
+            | Self::RenamePane
+            | Self::SwitchClient { .. }
+            | Self::ChooseTree => None,
+        }
+    }
+
     /// The first word of the canonical spelling — `split-window` for every form of the split.
     ///
     /// DERIVED from [`Display`](fmt::Display) rather than matched a second time, which is the whole

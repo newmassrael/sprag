@@ -67,6 +67,7 @@ pub mod pane_address;
 pub mod plugins;
 pub mod project;
 pub mod prompt;
+pub mod report;
 pub mod rpc;
 pub mod runs;
 pub mod scope;
@@ -74,6 +75,7 @@ pub mod scope;
 // docs and resolves THEIR intra-doc links in this scope, which manufactures phantom errors.
 pub mod shellword;
 pub mod ssh;
+pub mod status;
 pub mod sweep;
 // Dropped-file delivery (paste a local path / `scp` it to a remote workspace first). Private: the
 // policy is reached ONLY through the `drop_file` action + `HostClient::drop_file`, so there is one
