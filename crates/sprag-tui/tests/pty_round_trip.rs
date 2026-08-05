@@ -1714,6 +1714,16 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
     // ...AT THE EDGE: nothing moves, and nothing fails.
     tui.type_bytes(PREFIX);
     tui.type_bytes(ARROW_LEFT);
+    // ⚠ THE REPEAT WINDOW AGAIN, and this time it was a BINDING that opened the hole rather than a
+    // timing change. The arrow above is `-r`, so for `repeat-time` afterwards the prefix table is
+    // still live — and `Keymap::route` lets an UNBOUND key inside that window fall through to the
+    // pane, which is why `"stayed"` used to arrive whole. R315 bound `prefix s` to `choose-tree`,
+    // so its first character stopped falling through and the rest went into a chooser's query.
+    //
+    // The product is right and this check inherited a window it never declared — R308's registered
+    // hazard, bitten by a round three later. Waiting past it is the recorded fix, and it is done
+    // through the helper that ENFORCES the wait rather than by a bare sleep here.
+    typing_follows(&mut tui, &mut conn, &session, left);
     tui.type_bytes(b"stayed");
     wait_for("what was typed at the edge to reach pane 0 as well", || {
         let held = pane_text(&mut conn, &session);
@@ -4094,4 +4104,142 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
             )
         },
     );
+}
+
+/// **R315 THROUGH THE SHIPPED `sprag-tui`, on a real pseudoterminal: `prefix s` puts every session,
+/// window and pane on the screen, and the row a person picks is where they end up.**
+///
+/// The gesture this front has never had. `switch-client -t` (R314) asks a user to TYPE a name, which
+/// is no help to the user who cannot name their other session — and `sprag ls` in a shell was the
+/// only answer sprag had to *"what is there?"*, which is R308's finding one noun over.
+///
+/// **THE FIXTURE IS BUILT SO THE READINGS DISAGREE.** Three sessions, and the one picked is neither
+/// the one the client is on nor the neighbour a `switch-client -n` would step to — so a chooser that
+/// ignored the cursor and a chooser that stepped a ring both fail here. The DAEMON's viewer badge is
+/// what is read, not the screen: that is the fact a switch changes, and no amount of looking at
+/// glyphs establishes it.
+///
+/// The pane's own text is the second record: `cat` echoes what it is given, so a character that
+/// reached the shell instead of the chooser would be visible there.
+///
+/// REVERT-PROOF: drop the `ChooseTree` arm from `Ask::of` and the first wait times out with the
+/// panes still painted; commit the row's LABEL instead of its target and the last assertion still
+/// passes — which is why the sibling wire test, not this one, is what pins the identity.
+#[test]
+fn the_prefix_opens_a_chooser_and_the_row_that_is_picked_is_where_the_client_lands() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    for name in ["alpha", "beta"] {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": name } }),
+        )
+        .expect("new_session answers");
+    }
+    let _ = &sock;
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    let shell_before = pane_text_of(&mut conn, &session, 0);
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "the client starts on the session it booted into",
+    );
+
+    // `prefix s` — tmux's own key for this.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"s");
+    wait_for("the chooser to open", || shows(&mut tui, "(choose-tree)"));
+    // ...and it lists what is THERE, which is the whole difference from a name prompt.
+    for name in [&session, "alpha", "beta"] {
+        wait_for(&format!("the chooser to list {name}"), || {
+            shows(&mut tui, name)
+        });
+    }
+    wait_for(
+        "the chooser to say how big a session is, so two rows can be told apart",
+        || shows(&mut tui, "1 window, 1 pane"),
+    );
+
+    // TYPE TO NARROW, then pick. `beta` is the LAST session in the daemon's order and the client is
+    // on the FIRST, so this is neither where it is nor one step along it.
+    tui.type_bytes(b"beta");
+    tui.type_bytes(b"\r");
+    wait_for("the picked row to move this client", || {
+        settled(attached(&mut conn, "beta"), &1)
+    });
+    assert_eq!(
+        attached(&mut conn, &session),
+        0,
+        "...and off the one it was on: a switch LEAVES as well as arrives",
+    );
+    assert_eq!(
+        attached(&mut conn, "alpha"),
+        0,
+        "and it did not land on the neighbour a session STEP would have taken",
+    );
+
+    // NOT the shell. Every character of the query was the client's.
+    assert_eq!(
+        pane_text_of(&mut conn, &session, 0),
+        shell_before,
+        "the query was typed AT THE CLIENT: not one character reached the pane",
+    );
+
+    // ...and the chooser is GONE from the screen, so the client is projecting its new session
+    // rather than still holding a list over it. What happens to the keyboard afterwards is the
+    // CANCEL test's claim, and it is driven there on a `cat` pane that can be read back — this
+    // session's pane runs the machine's `$SHELL`, whose echo is not a fixture.
+    wait_for("the chooser to leave the screen", || {
+        if tui.rows().iter().any(|row| row.contains("(choose-tree)")) {
+            Err(format!("{:?}", tui.rows()))
+        } else {
+            Ok(())
+        }
+    });
+}
+
+/// **A chooser that is CANCELLED changes nothing, and gives the keyboard straight back.**
+///
+/// The half the happy path cannot claim: a surface that owns every key has to be leavable, and a
+/// person who opens a list to look at it must not be moved by having done so. Escape is the gesture;
+/// what it must NOT do is what is asserted.
+///
+/// REVERT-PROOF: make `Typed::Cancel` commit instead and the badge assertion fails; make it leave
+/// the overlay up and the typed marker never reaches the pane.
+#[test]
+fn a_cancelled_chooser_moves_nobody_and_hands_the_keyboard_back() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "elsewhere" } }),
+    )
+    .expect("new_session answers");
+    let _ = &sock;
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"s");
+    wait_for("the chooser to open", || shows(&mut tui, "(choose-tree)"));
+    // Move the cursor OFF the row the client is on, so a cancel that committed would be observable.
+    tui.type_bytes(&[0x1b, b'[', b'B']); // ArrowDown
+    tui.type_bytes(&[0x1b, b'[', b'B']);
+    tui.type_bytes(&[0x1b, b'[', b'B']);
+    tui.type_bytes(b"\x03"); // C-c, which cancels without depending on an escape timeout
+
+    tui.type_bytes(b"cancelled");
+    wait_for("the keyboard to be the pane's again", || {
+        let held = pane_text_of(&mut conn, &session, 0);
+        if held.contains("cancelled") {
+            Ok(())
+        } else {
+            Err(format!("pane 0 holds {held:?}"))
+        }
+    });
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "and the client never moved: a list a person looked at and closed is not a gesture",
+    );
+    assert_eq!(attached(&mut conn, "elsewhere"), 0);
 }

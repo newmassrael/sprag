@@ -4182,3 +4182,511 @@ fn the_hello_reply_carries_the_daemons_protocol() {
     conn.handshake("cli-protocol-test")
         .expect("and the handshake over the same method agrees");
 }
+
+/// **R315 over the REAL socket: a CHOOSER'S PICK is an identity, and it lands on the row the person
+/// read even after that row has been renamed and a stranger has taken its name.**
+///
+/// The round's central claim, driven end to end, and **the fixture is R304's own — built so a NAME
+/// and an IDENTITY land on DIFFERENT LIVE SESSIONS**: the picked session is renamed (so the label
+/// the chooser painted resolves to nothing) and a new session takes the freed name (so it resolves
+/// to a stranger). Both are live. A chooser that committed the label lands on `work`; one that
+/// commits the identity lands on `renamed`.
+///
+/// It is not R304's claim, though: there the daemon holds the past and the client cannot name it,
+/// and here the CLIENT holds the past — it has the label on the screen — and must not send it. That
+/// is why the identity had to reach the wire at all.
+///
+/// The list is READ FROM THE TREE SLOT rather than assumed, so the ids under test are the ones a
+/// real chooser would have painted from.
+///
+/// REVERT-PROOF: commit the label instead (send `{"session": <name>}` as a scope and a plain
+/// attach) and the first assertion lands on the impostor with both readings still "succeeding".
+#[test]
+fn a_pick_lands_on_the_session_it_named_after_a_stranger_takes_its_name() {
+    let (_host, sock) = spawn_host();
+    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    let new_session = |conn: &mut HostConn, name: &str| {
+        conn.call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": name } }),
+        )
+        .expect("new_session answers");
+    };
+    new_session(&mut admin, "work");
+
+    // WHAT A CHOOSER WOULD HAVE PAINTED. Read off the slot, so the id below is the one a person's
+    // screen was built from rather than a number this test invented.
+    let picked = tree_of(&mut admin);
+    let work = picked
+        .iter()
+        .find(|session| session["name"] == json!("work"))
+        .expect("the tree lists the session that was just made");
+    let work_id = work["id"]
+        .as_u64()
+        .expect("a tree row carries its identity");
+
+    let mut viewer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
+        .expect("client/hello is accepted");
+    viewer
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("it starts on the boot session");
+
+    // ...AND THEN THE WORLD MOVES UNDER THE OPEN LIST, which is what a chooser is for and what
+    // makes its pick a fact about the past.
+    admin
+        .call(
+            "scene/invoke",
+            json!({
+                "session": "work",
+                "path": mux_action_path(RENAME_SESSION_ACTION),
+                "args": { "name": "renamed" },
+            }),
+        )
+        .expect("rename_session answers");
+    new_session(&mut admin, "work");
+    assert!(
+        session_names(&mut admin).contains(&"work".to_owned()),
+        "the impostor is LIVE — a pick that carried the label would resolve straight onto it",
+    );
+
+    let goto = |conn: &mut HostConn, ask: sprag_host::wire::AttachAsk| -> Result<Value, _> {
+        let mut params = serde_json::Map::new();
+        ask.write_into(&mut params);
+        conn.call(CLIENT_ATTACH_METHOD, Value::Object(params))
+    };
+    assert_eq!(
+        goto(
+            &mut viewer,
+            sprag_host::wire::AttachAsk::Goto {
+                session: sprag_terminal::SessionId(work_id),
+                window: None,
+                pane: None,
+            },
+        )
+        .expect("a well-formed pick is accepted"),
+        json!("renamed"),
+        "the row that was PICKED, under the name it has now — never the stranger wearing its old \
+         one",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "renamed"),
+        1,
+        "and it really went: the daemon counts it on that session's badge",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "work"),
+        0,
+        "...and not on the impostor's",
+    );
+
+    // A PICK THAT IS GONE IS REFUSED, which is the answer a label could never give — a label that
+    // something else has taken RESOLVES. The id is one no session carries.
+    let missing = goto(
+        &mut viewer,
+        sprag_host::wire::AttachAsk::Goto {
+            session: sprag_terminal::SessionId(9999),
+            window: None,
+            pane: None,
+        },
+    )
+    .expect_err("a pick naming nothing is refused");
+    assert!(
+        missing.to_string().contains("is gone"),
+        "the refusal says the row went, rather than falling back to somewhere: {missing}",
+    );
+    assert_eq!(
+        attached_of(&mut admin, "renamed"),
+        1,
+        "...and the refused pick left the client exactly where it was",
+    );
+}
+
+/// **A pick naming a WINDOW takes the client there AND selects it — and a path with a dead level is
+/// refused WHOLE, leaving the client where it was.**
+///
+/// The half a session-only chooser cannot have, and the reason the wire carries a path rather than
+/// a leaf: attaching and selecting are two acts, and a person who picked a window row asked for
+/// both. The refusal is what says they get both or neither.
+///
+/// THE FIXTURE MAKES THE TWO OUTCOMES DISAGREE: the window picked is NOT the session's current one,
+/// so "went to the session" and "went to the window" are different observations, and the second is
+/// what is read.
+///
+/// REVERT-PROOF: perform the window selection before checking it exists (drop `resolve_goto`'s
+/// window arm) and the dead-window assertion below finds the client attached to `work` instead of
+/// still on the boot session.
+#[test]
+fn a_pick_naming_a_window_selects_it_and_a_dead_one_refuses_the_whole_path() {
+    let (_host, sock) = spawn_host();
+    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    admin
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+    // Two more windows, so the one picked is neither the first nor the current.
+    for name in ["build", "logs"] {
+        admin
+            .call(
+                "scene/invoke",
+                json!({
+                    "session": "work",
+                    "path": mux_action_path(NEW_WINDOW_ACTION),
+                    "args": { "name": name },
+                }),
+            )
+            .expect("new_window answers");
+    }
+    let boot = session_names(&mut admin)
+        .into_iter()
+        .next()
+        .expect("a boot session");
+
+    let tree = tree_of(&mut admin);
+    let work = tree
+        .iter()
+        .find(|session| session["name"] == json!("work"))
+        .expect("the tree lists work");
+    let work_id = work["id"].as_u64().expect("an identity");
+    let windows = work["windows"].as_array().expect("a session's windows");
+    assert_eq!(windows.len(), 3, "three windows, so a pick can be specific");
+    let build = &windows[1];
+    assert_eq!(build["name"], json!("build"));
+    assert_eq!(
+        build["current"],
+        json!(false),
+        "and it is NOT the current one, so selecting it is observable",
+    );
+    let build_id = build["id"].as_u64().expect("a window carries its identity");
+
+    let mut viewer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
+        .expect("client/hello is accepted");
+    viewer
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("it starts on the boot session");
+
+    let goto = |conn: &mut HostConn, session: u64, window: Option<u64>| -> Result<Value, _> {
+        let mut params = serde_json::Map::new();
+        sprag_host::wire::AttachAsk::Goto {
+            session: sprag_terminal::SessionId(session),
+            window: window.map(sprag_terminal::WindowId),
+            pane: None,
+        }
+        .write_into(&mut params);
+        conn.call(CLIENT_ATTACH_METHOD, Value::Object(params))
+    };
+
+    // A DEAD WINDOW FIRST, so a handler that attached before checking fails here rather than
+    // passing the happy path below.
+    let missing = goto(&mut viewer, work_id, Some(9999))
+        .expect_err("a path naming a window that is not there is refused");
+    assert!(missing.to_string().contains("is gone"), "{missing}");
+    assert_eq!(
+        attached_of(&mut admin, "work"),
+        0,
+        "and the refused path did NOT attach the client on its way to failing",
+    );
+    assert_eq!(
+        attached_of(&mut admin, &boot),
+        1,
+        "...it is still exactly where it was",
+    );
+
+    // ...and the live one takes it there and selects the window.
+    assert_eq!(
+        goto(&mut viewer, work_id, Some(build_id)).expect("a live path is accepted"),
+        json!("work"),
+    );
+    assert_eq!(attached_of(&mut admin, "work"), 1);
+    assert_eq!(
+        windows_in(&mut admin, "work"),
+        vec![
+            ("0".to_owned(), false),
+            ("build".to_owned(), true),
+            ("logs".to_owned(), false),
+        ],
+        "the picked window is the session's current one now — which is what a WINDOW row means",
+    );
+}
+
+/// The registry-wide TREE as the daemon publishes it — every level, with its identity, in ONE read.
+fn tree_of(conn: &mut HostConn) -> Vec<Value> {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(sprag_host::wire::TREE_SLOT) }),
+    )
+    .expect("the tree slot answers")
+    .as_array()
+    .expect("the tree is a list")
+    .clone()
+}
+
+/// **The tree carries an identity at every level, and a RENAME does not move any of them** — which
+/// is the property the whole pick rests on and the one a name cannot have.
+///
+/// REVERT-PROOF: mint a fresh id on rename (or key the tree by name) and the second half fails with
+/// two different numbers for one session.
+#[test]
+fn the_tree_publishes_an_identity_at_every_level_and_a_rename_does_not_move_it() {
+    let (_host, sock) = spawn_host_running(&["cat"]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    let boot = session_names(&mut conn)
+        .into_iter()
+        .next()
+        .expect("a boot session");
+
+    let before = tree_of(&mut conn);
+    assert_eq!(before.len(), 1, "one session: {before:?}");
+    let session = &before[0];
+    let session_id = session["id"]
+        .as_u64()
+        .expect("a session carries an identity");
+    let window = &session["windows"].as_array().expect("windows")[0];
+    let window_id = window["id"].as_u64().expect("a window carries an identity");
+    let pane = &window["panes"].as_array().expect("panes")[0];
+    assert_eq!(
+        pane["command"],
+        json!("cat"),
+        "a pane row says what it is running, which is what names an UNNAMED pane",
+    );
+    assert_eq!(pane["active"], json!(true));
+    assert!(
+        pane["id"].is_u64(),
+        "and the pane's own id, which has been on the wire all along",
+    );
+
+    // THE RENAME — the act that moves a NAME and must not move an identity.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": &boot,
+            "path": mux_action_path(RENAME_SESSION_ACTION),
+            "args": { "name": "renamed" },
+        }),
+    )
+    .expect("rename_session answers");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "renamed",
+            "path": mux_action_path(RENAME_WINDOW_ACTION),
+            "args": { "name": "build" },
+        }),
+    )
+    .expect("rename_window answers");
+
+    let after = tree_of(&mut conn);
+    let session = &after[0];
+    assert_eq!(
+        session["name"],
+        json!("renamed"),
+        "the LABEL moved, which is what makes this a discriminating fixture",
+    );
+    assert_eq!(
+        session["id"].as_u64(),
+        Some(session_id),
+        "...and the IDENTITY did not",
+    );
+    let window = &session["windows"].as_array().expect("windows")[0];
+    assert_eq!(window["name"], json!("build"));
+    assert_eq!(window["id"].as_u64(), Some(window_id), "one level down too");
+}
+
+/// **The tree and the `panes` slot agree about which pane is HERE** — two surfaces, one fact.
+///
+/// ⚠ **THIS ASSERTION EXISTS BECAUSE THE FIRST VERSION OF THE TREE FAILED IT, on a live daemon.**
+/// `SessionRegistry::tree` read `Window::active_pane()` raw, and a window whose layout has never
+/// been reconciled answers `None` — which is every freshly booted session. So the tree said no pane
+/// was active while `mux.panes` reported the same pane as active in the same instant. Nothing in
+/// the type system connects the two; this does.
+///
+/// It also drives the case the bug lived in — a session NOBODY has selected a pane in — and then a
+/// second one where a select HAS happened, so the agreement is checked in both states rather than
+/// in the one that happens to be easy.
+///
+/// REVERT-PROOF: drop the reconcile from the tree's third phase and the FIRST comparison fails with
+/// `None` against `Some(0)`.
+#[test]
+fn the_tree_and_the_pane_list_name_the_same_active_pane() {
+    let (_host, sock) = spawn_host_running(&["cat"]);
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    let boot = session_names(&mut conn)
+        .into_iter()
+        .next()
+        .expect("a boot session");
+    conn.scope_to(boot.clone());
+
+    /// The pane the `panes` slot marks — the daemon's older answer to "here".
+    fn active_in_panes(conn: &mut HostConn) -> Option<u64> {
+        conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(sprag_host::wire::PANES_SLOT) }),
+        )
+        .expect("the panes slot answers")
+        .as_array()
+        .expect("a list")
+        .iter()
+        .find(|row| row["active"] == json!(true))
+        .map(|row| row["id"].as_u64().expect("a pane carries its id"))
+    }
+    let active_in_tree = |conn: &mut HostConn| -> Option<u64> {
+        tree_of(conn)[0]["windows"].as_array().expect("windows")[0]["panes"]
+            .as_array()
+            .expect("panes")
+            .iter()
+            .find(|pane| pane["active"] == json!(true))
+            .map(|pane| pane["id"].as_u64().expect("a pane carries its id"))
+    };
+
+    // NOBODY HAS SELECTED ANYTHING — the state the defect lived in.
+    //
+    // ⚠ **THE TREE IS READ FIRST, AND THE ORDER IS THE TEST.** Reading the pane list first passed
+    // with the fix REVERTED, because that slot's own read reconciles the window on its way past —
+    // so the tree behind it saw a state somebody else had already repaired. The control caught it;
+    // the assertion had been vacuous. Whichever surface is asked first must be the one under test.
+    let in_tree = active_in_tree(&mut conn);
+    let listed = active_in_panes(&mut conn);
+    assert!(
+        listed.is_some(),
+        "the pane list marks the boot pane active, which is what makes this a discriminator",
+    );
+    assert_eq!(
+        in_tree, listed,
+        "and the tree said the same thing about the same pane, asked FIRST",
+    );
+
+    // ...and again after a SELECT has moved it, so the agreement is not an accident of the boot
+    // state. The second pane is the one the split leaves the session on.
+    let born = spawn_in(&mut conn, &boot);
+    assert!(born > 0, "a second pane");
+    let listed = active_in_panes(&mut conn);
+    assert_eq!(
+        active_in_tree(&mut conn),
+        listed,
+        "after a select, still one answer",
+    );
+    assert_ne!(
+        listed, None,
+        "...and it is a real pane, so the comparison above is not two Nones",
+    );
+}
+
+/// **A pick naming a PANE puts the person on that pane, and a pane that has gone refuses the whole
+/// path** — the deepest level, and the one the two tests above leave undriven.
+///
+/// ⚠ **THIS EXISTS BECAUSE THE AUDIT FOUND THE BRANCH DRIVEN BY NOTHING.** `resolve_goto` checks
+/// the pane against its window's live POOL — a second lock acquisition, after the registry has
+/// named the window — and the session and window arms cannot reach it: a path with a dead SESSION
+/// or a dead WINDOW is refused before the pool is ever opened. So the one level whose check lives
+/// in a different lock had no test at all.
+///
+/// THE FIXTURE MAKES THE READINGS DISAGREE: the pane picked is NOT the window's active one, so
+/// "went to the window" and "went to the pane" are different observations and the second is what is
+/// read.
+///
+/// REVERT-PROOF: drop the pool membership check from `resolve_goto` and the dead-pane assertion
+/// finds the client attached to `work` with the window selected — a half-landing, which is the
+/// state the whole-path rule exists to make unrepresentable.
+#[test]
+fn a_pick_naming_a_pane_selects_it_and_a_dead_one_refuses_the_whole_path() {
+    let (_host, sock) = spawn_host();
+    let mut admin = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    admin
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+        )
+        .expect("new_session answers");
+    admin.scope_to("work".to_owned());
+    // A SECOND pane, so the pick can name one that is not the one the window is already on.
+    let born = spawn_in(&mut admin, "work");
+    assert!(born > 0, "a second pane exists to pick");
+    let boot = session_names(&mut admin)
+        .into_iter()
+        .find(|name| name != "work")
+        .expect("the boot session");
+
+    let tree = tree_of(&mut admin);
+    let work = tree
+        .iter()
+        .find(|session| session["name"] == json!("work"))
+        .expect("the tree lists work");
+    let work_id = work["id"].as_u64().expect("an identity");
+    let window = &work["windows"].as_array().expect("windows")[0];
+    let window_id = window["id"].as_u64().expect("an identity");
+    let panes = window["panes"].as_array().expect("panes");
+    assert_eq!(panes.len(), 2, "two panes: {panes:?}");
+    // The one that is NOT active, so selecting it is observable.
+    let wanted = panes
+        .iter()
+        .find(|pane| pane["active"] != json!(true))
+        .expect("a pane the window is not on");
+    let pane_id = wanted["id"].as_u64().expect("a pane carries its id");
+
+    let mut viewer =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the display client connects");
+    viewer
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "display" }))
+        .expect("client/hello is accepted");
+    viewer
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("it starts on the boot session");
+
+    let goto = |conn: &mut HostConn, pane: u64| -> Result<Value, _> {
+        let mut params = serde_json::Map::new();
+        sprag_host::wire::AttachAsk::Goto {
+            session: sprag_terminal::SessionId(work_id),
+            window: Some(sprag_terminal::WindowId(window_id)),
+            pane: Some(sprag_terminal::PaneId(pane)),
+        }
+        .write_into(&mut params);
+        conn.call(CLIENT_ATTACH_METHOD, Value::Object(params))
+    };
+
+    // A DEAD PANE FIRST, so a handler that acted before checking the deepest level fails here.
+    let missing =
+        goto(&mut viewer, 9999).expect_err("a path naming a pane that is gone is refused");
+    assert!(missing.to_string().contains("is gone"), "{missing}");
+    assert_eq!(
+        attached_of(&mut admin, "work"),
+        0,
+        "and the refused path did NOT attach the client on its way to failing",
+    );
+    assert_eq!(attached_of(&mut admin, &boot), 1, "...it never moved");
+
+    // ...and the live one takes it there and makes that pane active.
+    assert_eq!(
+        goto(&mut viewer, pane_id).expect("a live path is accepted"),
+        json!("work"),
+    );
+    assert_eq!(attached_of(&mut admin, "work"), 1);
+    let after = tree_of(&mut admin);
+    let active = after
+        .iter()
+        .find(|session| session["name"] == json!("work"))
+        .expect("work")["windows"]
+        .as_array()
+        .expect("windows")[0]["panes"]
+        .as_array()
+        .expect("panes")
+        .iter()
+        .find(|pane| pane["active"] == json!(true))
+        .and_then(|pane| pane["id"].as_u64());
+    assert_eq!(
+        active,
+        Some(pane_id),
+        "the picked PANE is the one the window is on now — which is what a pane row means",
+    );
+}
