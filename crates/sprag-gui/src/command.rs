@@ -91,6 +91,13 @@ use crate::slotview::SlotView;
 /// serialization bound — the same reason the context menu's own action enum derives them.)
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Command {
+    /// Show what the keys do — this client's key table (`prefix ?`, tmux `list-keys`).
+    ///
+    /// The palette's own answer to the question the palette exists for: a user who came here to
+    /// find a command by name is the user who does not know the chord for it, and this row is where
+    /// they learn that the chords have a list. Found by auditing R308 rather than while writing it —
+    /// a round about discoverability that left its own surface undiscoverable.
+    ShowKeys,
     /// Open the find bar on the target pane (`Ctrl+Shift+F`).
     Find,
     /// Copy the active selection to the clipboard (`Ctrl+Shift+C`).
@@ -152,6 +159,7 @@ impl Command {
     /// user recognizes.
     pub(crate) fn title(&self) -> String {
         match self {
+            Self::ShowKeys => "Show what the keys do".to_owned(),
             Self::Find => "Find in scrollback".to_owned(),
             Self::Copy => "Copy selection".to_owned(),
             Self::Paste => "Paste into pane".to_owned(),
@@ -237,7 +245,7 @@ impl Command {
             | Self::KillWindow(_)
             | Self::KillSession(_) => None,
             // Answered above, off the live keymap — never from here.
-            Self::ZoomPane | Self::NewWindow | Self::SelectWindow(_) => None,
+            Self::ShowKeys | Self::ZoomPane | Self::NewWindow | Self::SelectWindow(_) => None,
         }
     }
 
@@ -254,6 +262,7 @@ impl Command {
     /// window and a keystroke can only ever mean the current one.
     pub(crate) fn bound(&self) -> Option<BoundAction> {
         match self {
+            Self::ShowKeys => Some(BoundAction::ListKeys),
             Self::ZoomPane => Some(BoundAction::ZoomPane { on: None }),
             Self::NewWindow => Some(BoundAction::NewWindow),
             Self::SelectWindow(name) => Some(BoundAction::SelectWindow {
@@ -307,6 +316,9 @@ impl Command {
         slots: &SlotView,
     ) -> Option<Confirmation> {
         match self {
+            // Showing a table asks nothing and changes nothing — the one row here that cannot be
+            // regretted, which is stated rather than defaulted because this match has no `_` arm.
+            Self::ShowKeys => None,
             // Named by what it RUNS, not by an index: "pane 2" is a display slot the user never
             // chose and cannot see, whereas the program in it is what they are looking at. Falls
             // back to the bare question when the label is empty (a pane whose command is unknown),
@@ -388,7 +400,8 @@ impl Command {
             Self::KillPane => target.is_some_and(|pane| slots.is_pane_occupied(pane)),
             Self::KillWindow(name) => slots.windows().iter().any(|window| &window.name == name),
             Self::KillSession(name) => slots.sessions().iter().any(|session| &session.name == name),
-            Self::Find
+            Self::ShowKeys
+            | Self::Find
             | Self::Copy
             | Self::Paste
             | Self::SelectAll
@@ -438,9 +451,12 @@ impl Command {
             | Self::Declared(_)
             // A kill of THE pane needs the pane, unlike the two name-addressed kills below it.
             | Self::KillPane => true,
+            // A table about the CLIENT's keyboard needs no pane at all: it is the one row here that
+            // is not about the arrangement, which is also why it is offered on an empty window.
+            Self::ShowKeys
             // Creating a pane needs no pane: it goes into the CURRENT WINDOW, which exists whether
             // or not anything in it holds focus — the same reason `NewWindow` beside it needs none.
-            Self::NewPane
+            | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
             | Self::NewSession
@@ -484,6 +500,10 @@ impl Command {
     /// — the arms were.
     pub(crate) fn run(&self, target: Option<usize>, slots: &SlotView) {
         match self {
+            // Through the SAME path `prefix ?` takes, so a row and a chord cannot come to show
+            // different tables — the discipline `crate::confirm`'s guarded arm already follows for
+            // a bound action, applied from the palette end.
+            Self::ShowKeys => crate::keyhelp::show(crate::keys::use_client_keys().help()),
             Self::Find => {
                 if let Some(pane) = target {
                     crate::find::open(pane);
@@ -685,6 +705,7 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         Command::Copy,
         Command::Paste,
         Command::SelectAll,
+        Command::ShowKeys,
         Command::ToggleFloat,
         Command::ZoomPane,
         Command::BreakOut,
@@ -901,6 +922,44 @@ mod tests {
                 Command::ZoomPane.hint(),
                 None,
                 "a row whose verb nothing reaches must advertise nothing",
+            );
+            drop(config);
+        });
+    }
+
+    /// The palette offers the KEY TABLE, and teaches the chord that opens it without the palette.
+    ///
+    /// Found by auditing R308 and not while writing it: a round whose whole subject is *"what can I
+    /// press?"* shipped the answer behind a key, and left this client's own by-name discovery
+    /// surface with no row for it. The user who opens a palette is exactly the user who does not
+    /// know the chord.
+    ///
+    /// It is offered with NO PANE, which is the second half: a table about this client's keyboard is
+    /// not about the arrangement, so an empty window must still be able to ask for it.
+    #[test]
+    fn the_palette_offers_the_key_table_and_teaches_the_chord_for_it() {
+        let owner = pinion_core::reactive::Owner::new();
+        owner.run(|| {
+            let (config, _keys) = crate::keys::test_support::Config::seeded("");
+            let (slots, _log) = slots_with_project(None);
+            let built = catalog(None, &slots);
+            assert!(
+                built.commands.contains(&Command::ShowKeys),
+                "the key table is offered with no pane captured: {:?}",
+                built
+                    .commands
+                    .iter()
+                    .map(Command::title)
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                Command::ShowKeys.hint().as_deref(),
+                Some("C-b ?"),
+                "and the row teaches the chord that opens it without the palette",
+            );
+            assert!(
+                Command::ShowKeys.confirmation(None, &slots).is_none(),
+                "showing a table asks nothing",
             );
             drop(config);
         });
