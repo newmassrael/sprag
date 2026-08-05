@@ -359,11 +359,22 @@ fn a_mux_close_shrinks_the_set_and_advances_the_wire_notification() {
 
     // Close the 2nd pane: the served set shrinks AND the revision advances.
     let before_close = read_revision(&mut conn);
-    conn.call(
-        "scene/invoke",
-        json!({ "path": mux_action_path(CLOSE_ACTION), "args": { "id": victim } }),
-    )
-    .expect("close the 2nd pane over the wire");
+    let closed = conn
+        .call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(CLOSE_ACTION), "args": { "id": victim } }),
+        )
+        .expect("close the 2nd pane over the wire");
+    // THE ANSWER, over a real socket (R309). The CLI test pins the SENTENCE a person reads and the
+    // registry tests pin the cascade; this is the only place the BYTES a client parses are checked
+    // end to end. This pane has a sibling, so the honest word is the cheapest one — which also
+    // makes it the control for the escalations: a `close` that always claimed the window would pass
+    // every cascade test and fail here.
+    assert_eq!(
+        closed["ended"].as_str(),
+        Some("pane"),
+        "the close says how far it reached, and it reached exactly the pane: {closed}",
+    );
     assert_eq!(pane_count(&mut conn), 1, "the mux close shrank the set");
     assert!(
         !pane_ids(&mut conn).contains(&victim),

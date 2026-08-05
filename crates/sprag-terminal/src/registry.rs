@@ -1260,10 +1260,18 @@ impl SessionInfo {
     /// resting anchor. A session lists iff it holds a pane OR a client is attached to it:
     ///
     /// * `panes > 0` — a working session, always shown.
-    /// * `attached > 0` — an EMPTY session a client is currently viewing (all its panes closed
-    ///   while it stays attached). Shown so a client can see where it is; tmux cannot represent
-    ///   this state at all (an empty session does not exist there), so honestly listing it is a
-    ///   sprag-superior refinement, not a divergence.
+    /// * `attached > 0` — an EMPTY session a client is currently viewing. Shown so a client can see
+    ///   where it is; tmux cannot represent this state at all (an empty session does not exist
+    ///   there), so honestly listing it is a sprag-superior refinement, not a divergence.
+    ///
+    ///   ⚠ **THE ROUTE THIS ARM NAMED IS GONE, and the arm is not.** It used to read *"all its panes
+    ///   closed while it stays attached"* — which R309 removed: closing a window's last pane ends
+    ///   the window, whose session's last window ends the SESSION, and
+    ///   `handle_session_kill` releases that session's viewers. What still reaches
+    ///   `panes == 0, attached > 0` is the LAST session's kill, which drains its panes and keeps the
+    ///   empty shell so `default_session` stays total — briefly on a daemon that is exiting, and
+    ///   indefinitely on an in-process host, which has no reaper to exit. The conclusion holds; the
+    ///   mechanism sentence did not, and an inherited mechanism claim is a claim.
     ///
     /// The daemon keeps an empty resting anchor for `default_session` totality + reattach
     /// durability (unlike tmux, whose server exits when its last session dies); that anchor holds
