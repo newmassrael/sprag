@@ -121,6 +121,10 @@ fn main() -> ExitCode {
             // reads the panes it finds rather than a fixed count or a fixed width, which is the
             // same inheritance the rename check above states.
             check_the_resize_key_moves_a_boundary_on_the_daemon(&mut smoke, &mut report);
+            // Straight after them, and for their reason: it drives the DEFAULT prefix. This one
+            // leaves NOTHING behind — it opens a read-only panel and closes it — so unlike the two
+            // above it hands the next check the arrangement it was given.
+            check_the_key_table_opens_and_shows_the_table_in_force(&mut smoke, &mut report);
             // HERE for the same reason as the keymap gate above: it needs exactly ONE pane, so the
             // pane the daemon reports and the grid this window paints are unambiguously the same
             // one. It attaches a second CLIENT and takes it away again, leaving the pane set as it
@@ -2699,6 +2703,129 @@ fn tiled_leaves(daemon: &mut HostConn, session: &str) -> Vec<u64> {
         .iter()
         .filter_map(|node| node["leaf"].as_u64())
         .collect()
+}
+
+/// **`prefix ?` opens this client's key table, and what it shows is the table in force.**
+///
+/// The GUI half of R308, driven through the shipped binary. The rows and their order are the shared
+/// module's and are unit-tested there; what only this can say is that `sprag-gui` opens the panel at
+/// all, that the panel holds the keyboard, and that a key gets it back — three things that live in
+/// this binary's own modal code and in nothing a unit test of `sprag-host` touches. It is the same
+/// argument R305 made when it added a smoke check for the window keys rather than inferring the GUI
+/// from `sprag-tui`'s pty test.
+///
+/// The rows are read off the PAINTED TREE and not off the panel's accessible value, though the panel
+/// publishes one: the claim under test is that a shipped binary put these words on a screen, and the
+/// painted strings are the only thing that says so. An accessible value could be right about a panel
+/// that laid out nothing.
+fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session for the key table", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the key table", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the key table", false);
+        return;
+    }
+    // PAST THE REPEAT WINDOW FIRST, and this is not padding. The check before this one drives
+    // `resize-pane`, which is `-r`: while its window is open the prefix table is still armed, so
+    // `C-b` means `send-prefix` (the self-send) rather than arming anything, and the `?` after it
+    // would go to the pane. The first run of this check passed and the second timed out on exactly
+    // that — a REAL defect in the check, not a flake, and the same hazard `sprag-tui`'s own resize
+    // test states one crate over. It is item 15's "a check leaves a state for whatever follows it",
+    // on a resource nothing had noticed a check could leave behind.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "?", false).is_ok();
+    report.check("the GUI accepts `prefix ?`", pressed);
+    let opened = smoke.wait_for_tag("sprag_keyhelp_panel");
+    report.check(
+        &format!("`prefix ?` opened the key table ({opened:?})"),
+        opened.is_ok(),
+    );
+    if opened.is_err() {
+        return;
+    }
+
+    // WHAT IT SAYS, read off the strings the panel actually PAINTED. Not off its accessible value
+    // and not off the keymap this process could build for itself: the claim is that a shipped binary
+    // put these words on a screen, and only the painted tree can say that.
+    let text = opened
+        .as_ref()
+        .ok()
+        .and_then(|tags| tags.get("sprag_keyhelp_panel"))
+        .map(|painted| painted.text.join("\u{1f}"))
+        .unwrap_or_default();
+    report.check(
+        &format!("the panel painted its rows ({} strings)", text.len()),
+        !text.is_empty(),
+    );
+    // A CHORD and its ACTION, spelled as this user presses it. `C-b z` and not `prefix z`: a view
+    // that printed the word would be one a reader has to look the prefix up for, which is the
+    // failure R235 met and `sprag list-keys` has avoided since.
+    report.check(
+        "...and it names a chord the way a user presses it",
+        text.contains("C-b z"),
+    );
+    report.check(
+        "...beside the action that chord runs",
+        text.contains("zoom-pane"),
+    );
+    // IT SCROLLS, and the thing past the fold is THE SECOND QUESTION — what else could be bound —
+    // which is the half the rival's own help cannot answer at all, because its vocabulary is a
+    // struct nobody enumerates. Asserted absent first: a panel that showed everything at once would
+    // make the paging below prove nothing.
+    let form = "split-window -h|-v";
+    report.check(
+        "the last section starts off screen, so paging is a real gesture",
+        !text.contains(form),
+    );
+    for _ in 0..4 {
+        let _ = smoke.press(0, "PageDown", false);
+    }
+    let paged = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        let painted = tags.get("sprag_keyhelp_panel")?.text.join("\u{1f}");
+        painted.contains(form).then_some(())
+    });
+    report.check(
+        &format!("...and paging reaches the forms a binding can name ({paged:?})"),
+        paged.is_ok(),
+    );
+
+    // THE KEYBOARD IS THE PANEL'S while it is up: `prefix %` would split the window on any other
+    // frame, and here it must do nothing at all.
+    //
+    // ⚠ WHAT THIS ONE DISCRIMINATES, stated because the revert-proof measured it: deleting the
+    // `keyhelp::is_open()` gate from `route_key` leaves THIS assertion passing, because the modal's
+    // focus trap holds the focus on the panel and `route_key` drops a keystroke whose focus is not a
+    // pane. Two mechanisms keep the key away and this reads their conjunction. The gate itself is
+    // pinned by the paging above and the close below, both of which the same edit fails.
+    // Judged on the DAEMON's pane list, never on this client's paint: a client that split and
+    // painted nothing would satisfy a check made on its own tree.
+    let panes_before = daemon_panes(&mut daemon, &session);
+    let _ = smoke.press(0, "b", true);
+    let _ = smoke.press(0, "%", false);
+    let panes_after = daemon_panes(&mut daemon, &session);
+    report.check(
+        &format!("no key reaches the panes behind it ({panes_before:?} -> {panes_after:?})"),
+        panes_before == panes_after,
+    );
+
+    // AND A KEY GIVES THEM BACK.
+    let closed = smoke.press(0, "Escape", false).is_ok();
+    report.check("the GUI accepts the `Escape` that closes it", closed);
+    let gone = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_keyhelp_panel")).then_some(())
+    });
+    report.check(
+        &format!("...and the panel is gone, so the panes have the keyboard ({gone:?})"),
+        gone.is_ok(),
+    );
 }
 
 /// **`prefix ,` opens this client's name prompt, and what is typed into it renames the window ON
