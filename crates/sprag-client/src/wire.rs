@@ -90,7 +90,7 @@ use sprag_host::ClientSize;
 use sprag_host::wire::ActivityWire;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
-    CLOSE_ACTION, DROP_FILE_ACTION, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
+    CLOSE_ACTION, DROP_FILE_ACTION, ENDED_KEY, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
@@ -111,8 +111,8 @@ use sprag_rpc::{
     ROWS_PARAM, new_gui_client_id,
 };
 use sprag_terminal::{
-    LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir, WindowInfo,
-    WindowStep, ZoomOutcome,
+    Ended, LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir,
+    WindowInfo, WindowStep, ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
@@ -2501,16 +2501,35 @@ impl HostClient for WireHost {
         Some(outcome)
     }
 
-    /// Close pane `id` over the wire. The daemon answers `Rejected` for an absent pane, which
-    /// arrives here as the absent request result — so "no such pane" and "the socket failed" are
-    /// both `false`, which is the same conflation every other write on this client accepts.
-    fn kill_pane(&self, id: PaneId) -> bool {
+    /// Close pane `id` over the wire, answering how far the kill CASCADED. The daemon answers
+    /// `Rejected` for an absent pane, which arrives here as the absent request result — so "no such
+    /// pane" and "the socket failed" are both [`None`], which is the same conflation every other
+    /// write on this client accepts.
+    ///
+    /// The word is the DAEMON's ([`ENDED_KEY`]), never re-derived here from a mirror: whether a
+    /// window survived its last pane is a fact only the process that performed the kill holds, and
+    /// a client that counted its own tiles would answer from a snapshot taken before the kill.
+    ///
+    /// An answer with no such key can only come from a daemon older than the cascade, which
+    /// [`client/hello`](sprag_rpc::CLIENT_HELLO_METHOD) refuses by number — so it is reported as a
+    /// kill this client cannot describe rather than guessed at as [`Ended::Pane`], the guess that
+    /// would tell a user their session survived when it did not.
+    fn kill_pane(&self, id: PaneId) -> Option<Ended> {
         let params = invoke(&mux_action_path(CLOSE_ACTION), json!({ "id": id.0 }));
-        let killed = self.request("scene/invoke", params, "kill_pane").is_some();
-        if killed {
-            self.refresh_view();
+        let answer = self.request("scene/invoke", params, "kill_pane")?;
+        self.refresh_view();
+        let ended = answer
+            .get(ENDED_KEY)
+            .and_then(Value::as_str)
+            .and_then(Ended::from_wire);
+        if ended.is_none() {
+            tracing::debug!(
+                target: "sprag_gui::wire",
+                pane = id.0,
+                "the daemon killed a pane without saying what it ended",
+            );
         }
-        killed
+        ended
     }
 
     /// Break the pane `id` out into a new window (tmux `break-pane`) over the wire, returning the

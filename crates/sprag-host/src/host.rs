@@ -50,10 +50,10 @@ use pinion_core::GridBuffer;
 use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    ActivityReading, CommandBuilder, DividerStep, HistoryLimitSource, LayoutSnapshot, LayoutWire,
-    Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep,
-    Projection, Rect, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide,
-    WindowInfo, WindowStep, Workspace, ZoomOutcome, tile, with_ratio,
+    ActivityReading, CommandBuilder, DividerStep, Ended, HistoryLimitSource, LayoutSnapshot,
+    LayoutWire, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth,
+    PaneStep, Projection, Rect, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir,
+    SplitSide, WindowInfo, WindowStep, Workspace, ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -804,8 +804,9 @@ pub trait HostClient {
         None
     }
 
-    /// Close pane `id` — kill its child and drop it from the window (tmux `kill-pane`), returning
-    /// whether a pane was actually removed (`false` for an absent id).
+    /// Close pane `id` — kill its child and drop it from the window (tmux `kill-pane`), answering
+    /// HOW FAR the kill cascaded, or [`None`] if nothing was killed (an absent id, a refusal, a
+    /// failed request).
     ///
     /// DESTRUCTIVE and unconditional: it ends a running program and takes that pane's scrollback
     /// with it. Asking first is a CLIENT's job — this is the performer, exactly as
@@ -817,13 +818,22 @@ pub trait HostClient {
     /// [`is_eof`](sprag_terminal::PanePty::is_eof) only to decide whether ANY pane is still live —
     /// so an exited pane stays in the pool showing its last screen, and this is what removes it.
     ///
-    /// The window emptied by the last pane is not closed either: the arrangement reconciles to an
-    /// empty tree and the window remains, exactly as a window whose panes all ran `exit` does.
+    /// **The window emptied by the last pane IS closed** (R309), which is what
+    /// [`Ended`] exists to report: the window, then its session, then the
+    /// server. Until R309 it was not, and the sentence here said so — arguing that an emptied
+    /// window is *"exactly as a window whose panes all ran `exit`"*. It is not: those panes are
+    /// still there showing their exit statuses, which is why nothing reaps them, whereas an
+    /// emptied window tiles nothing and both frontends draw it as a void.
     ///
-    /// Defaulted to `false`, like [`new_pane`](Self::new_pane).
-    fn kill_pane(&self, id: PaneId) -> bool {
+    /// [`Ended`] rather than a bool, for the reason
+    /// [`zoom_pane`](Self::zoom_pane) takes a [`ZoomOutcome`]: the answer is total over four
+    /// distinct cases and a caller handed one flag would have to guess which it had — and here the
+    /// cases differ by whether the caller's own session still exists.
+    ///
+    /// Defaulted to `None`, like [`new_pane`](Self::new_pane).
+    fn kill_pane(&self, id: PaneId) -> Option<Ended> {
         let _ = id;
-        false
+        None
     }
 
     /// Break the pane `id` out of its window into a NEW window of the scoped session (tmux
@@ -2623,12 +2633,19 @@ impl HostClient for Host {
         lock(&self.registry).zoom_pane(session, target, on)
     }
 
-    /// Remove the pane, bound so the pool guard drops FIRST and the reaped `Pane`'s blocking `Drop`
-    /// (kill / wait / join the reader) runs outside the lock — the discipline the `close` wire
-    /// action keeps for the same reason.
-    fn kill_pane(&self, id: PaneId) -> bool {
-        let removed = lock(&self.workspace()).close(id);
-        removed.is_some()
+    /// Remove the pane, bound so the outcome's reaped owners' blocking `Drop` (kill / wait / join
+    /// the reader) runs outside the registry lock — the discipline the `close` wire action keeps
+    /// for the same reason.
+    ///
+    /// The CASCADE is the registry's, so this arm and the wire's cannot disagree about whether a
+    /// window survived: both call
+    /// [`close_pane`](sprag_terminal::SessionRegistry::close_pane). What this arm does NOT do is
+    /// end the process — an in-process host has no daemon to exit, so `Ended::Server` is a word it
+    /// reports and does not act on, exactly as its `kill_session` arm already behaves.
+    fn kill_pane(&self, id: PaneId) -> Option<Ended> {
+        let scope = self.scope();
+        let outcome = lock(&self.registry).close_pane(scope.session(), scope.window(), id);
+        outcome.ok().map(|outcome| outcome.ended())
     }
 
     /// Break the pane `id` out into a new window of the default session (tmux `break-pane`). The
@@ -3032,11 +3049,19 @@ mod tests {
     }
 
     /// The client-protocol pane pair: `new_pane` grows the CURRENT window's set with a shell, and
-    /// `kill_pane` removes exactly the pane named — answering `false` for one that is not there.
+    /// `kill_pane` removes exactly the pane named — answering `None` for one that is not there, and
+    /// saying how far the kill CASCADED for one that is.
+    ///
+    /// **The last assertion is the one that changed at R309, and it changed from the opposite
+    /// claim.** It used to read *"leaving an empty window rather than refusing"* — this test PINNED
+    /// the window surviving its own last pane. It does not survive it now: this host holds one
+    /// session of one window, so closing that pane walks the whole chain in one call and the answer
+    /// says so.
     ///
     /// REVERT-PROOF: have `new_pane` return `None` without spawning and the set never grows; have
     /// `kill_pane` ignore its answer and the absent-id assertion fails, which is the difference
-    /// between "I closed it" and "there was nothing to close".
+    /// between "I closed it" and "there was nothing to close"; drop the escalation from
+    /// `SessionRegistry::close_pane` and the last pane answers `Ended::Pane`.
     #[test]
     fn the_client_protocol_creates_and_closes_panes_in_the_current_window() {
         let host = Host::new((40, 6));
@@ -3050,16 +3075,26 @@ mod tests {
             "both join the current window's pane set, in birth order"
         );
 
-        assert!(host.kill_pane(first), "the named pane is removed");
+        assert_eq!(
+            host.kill_pane(first),
+            Some(Ended::Pane),
+            "the named pane is removed, and it took nothing else with it"
+        );
         assert_eq!(host.pane_ids(), vec![second], "and only that one");
-        assert!(
-            !host.kill_pane(first),
+        assert_eq!(
+            host.kill_pane(first),
+            None,
             "closing it again reports that there was nothing to close"
         );
-        assert!(host.kill_pane(second), "the window's LAST pane closes too");
+        assert_eq!(
+            host.kill_pane(second),
+            Some(Ended::Server),
+            "the window's LAST pane takes the window, its session, and — this host holding only \
+             that one — the server: one call, the whole chain, said in one word"
+        );
         assert!(
             host.pane_ids().is_empty(),
-            "leaving an empty window rather than refusing"
+            "and nothing is left tiled behind it"
         );
     }
 
