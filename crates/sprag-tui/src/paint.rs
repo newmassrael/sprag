@@ -45,6 +45,7 @@ use sprag_grid::ProjectionToken;
 use sprag_host::PaneAgent;
 use sprag_host::chooser::Pick;
 use sprag_host::keyhelp::{KeyHelp, Row, Scroll};
+use sprag_host::status::Status;
 use sprag_terminal::PaneId;
 use sprag_terminal::tiling::{Divider, Rect};
 use termwiz::cell::{Blink, CellAttributes, Intensity, Underline, unicode_column_width};
@@ -406,6 +407,97 @@ pub fn chooser_changes(area: Rect, pick: &Pick, refusal: Option<&str>) -> Vec<Ch
     // watching is the SELECTED ROW, and two markers on one screen is one too many. Hidden, as the
     // help view and the yes/no prompt both are.
     changes.push(Change::CursorVisibility(CursorVisibility::Hidden));
+    changes
+}
+
+/// The terminal split into the rectangle the PANES fill and the row this client SPEAKS in.
+///
+/// One type rather than two rectangles passed side by side, because the two are derived from one
+/// number and a caller holding them separately could report a size to the daemon that includes a
+/// row no pane will ever be given — which is the whole class of bug a status line introduces. See
+/// [`Split::of`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Split {
+    /// What every pane's rectangle is carved out of. This is what the client REPORTS to the daemon,
+    /// so the arbitrated window is the space the panes actually have.
+    pub panes: Rect,
+    /// The bottom row: where this client says where it is and what a key just did. Empty on a
+    /// terminal with no room for one — see [`Split::of`].
+    pub status: Rect,
+}
+
+impl Split {
+    /// Cut a `cols` x `rows` terminal into the two.
+    ///
+    /// **The status row is given up when there is no room**, and "no room" is one row: a terminal
+    /// one row tall would otherwise leave the panes nothing at all, which trades a client that
+    /// cannot show a message for a client that cannot show a SESSION. The status rectangle is empty
+    /// then, and every painter here already returns nothing for an empty area — so the degradation
+    /// costs no branch at any call site.
+    #[must_use]
+    pub const fn of(cols: u16, rows: u16) -> Self {
+        if rows <= 1 {
+            return Self {
+                panes: Rect::screen(cols, rows),
+                status: Rect::new(0, 0, 0, 0),
+            };
+        }
+        Self {
+            panes: Rect::screen(cols, rows - 1),
+            status: Rect::new(0, rows - 1, cols, 1),
+        }
+    }
+
+    /// The whole terminal this was cut from — what a client can DRAW on, as opposed to what it
+    /// gives the panes.
+    ///
+    /// Kept as a method rather than as a third field so the two cannot disagree, and it earns its
+    /// place: a live test caught a surface sized to [`panes`](Self::panes) instead, which CLAMPS
+    /// the status row's absolute cursor move, so the row painted one line high and the terminal's
+    /// real bottom row was never written at all.
+    #[must_use]
+    pub const fn terminal(&self) -> Rect {
+        Rect::screen(self.panes.cols, self.panes.rows + self.status.rows)
+    }
+}
+
+/// The status row: where this client is, or what a key just did.
+///
+/// **A message REPLACES the line rather than sharing it**, which is tmux's own behaviour and is
+/// the honest reading of a single row: half a location beside half a refusal is two truncated
+/// facts. The location comes back when the message expires, and nothing has to remember it —
+/// [`Status`] is derived from the host on every paint.
+#[must_use]
+pub fn status_changes(area: Rect, status: &Status, message: Option<&str>) -> Vec<Change> {
+    if area.is_empty() {
+        return Vec::new();
+    }
+    let mut attrs = CellAttributes::default();
+    // Reverse video, like the chooser's header and the key table's — the one decoration available
+    // in every terminal this client can be attached from, and what makes the row read as CHROME
+    // rather than as a pane's last line of output.
+    attrs.set_reverse(true);
+    let mut changes = vec![
+        Change::AllAttributes(attrs),
+        Change::CursorPosition {
+            x: Position::Absolute(usize::from(area.col)),
+            y: Position::Absolute(usize::from(area.row)),
+        },
+    ];
+    // **THE LAST CELL OF THE BOTTOM ROW IS NEVER WRITTEN**, and that is not a cosmetic margin: a
+    // character placed in the bottom-right corner leaves the terminal with a pending wrap, and the
+    // next thing written SCROLLS the screen — taking the top pane row with it and moving this row
+    // out from under the client that just drew it. A live test caught exactly that (the whole
+    // screen blank with one status line stranded a row too high, after a pane produced enough
+    // output to force repeated repaints), which is why the bound is here rather than in a comment.
+    //
+    // Nothing else paints that cell — the status row is outside the tiling by construction
+    // ([`Split`]) — so what it holds is whatever the last `Clear` left, which is a blank.
+    push_clipped(
+        &mut changes,
+        message.unwrap_or(&status.line()),
+        usize::from(area.cols.saturating_sub(1)),
+    );
     changes
 }
 
@@ -1868,5 +1960,149 @@ mod tests {
             "the pane's own cells keep it"
         );
         assert!(!cells[0][2].attrs().reverse(), "the divider does not");
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use sprag_terminal::WindowInfo;
+    use termwiz::surface::Surface;
+
+    fn status(session: &str, windows: &[(&str, bool)]) -> Status {
+        Status {
+            session: session.to_owned(),
+            windows: windows
+                .iter()
+                .map(|(name, current)| WindowInfo {
+                    name: (*name).to_owned(),
+                    current: *current,
+                    opened_by: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// What the surface actually holds after `changes` are applied to an `cols` x `rows` screen.
+    fn painted(cols: usize, rows: usize, changes: Vec<Change>) -> Vec<String> {
+        let mut surface = Surface::new(cols, rows);
+        surface.add_changes(changes);
+        surface
+            .screen_cells()
+            .iter()
+            .map(|row| row.iter().map(|cell| cell.str().to_owned()).collect())
+            .collect()
+    }
+
+    /// The cut: the panes get every row but the last, and the last is where the client speaks.
+    #[test]
+    fn the_screen_is_cut_into_panes_and_one_row_to_speak_in() {
+        let split = Split::of(80, 24);
+        assert_eq!(split.panes, Rect::screen(80, 23));
+        assert_eq!(split.status, Rect::new(0, 23, 80, 1));
+        assert_eq!(
+            split.terminal(),
+            Rect::screen(80, 24),
+            "the two halves add back up to what the client can draw on",
+        );
+    }
+
+    /// A terminal with no room for both gives the row up rather than the panes.
+    ///
+    /// REVERT-PROOF: take the guard out and `rows - 1` underflows to 65535 on a one-row terminal —
+    /// or, with a saturating subtraction instead, leaves the panes a rectangle of no rows at all.
+    #[test]
+    fn a_terminal_too_small_for_a_status_row_keeps_its_panes() {
+        let one = Split::of(80, 1);
+        assert_eq!(one.panes, Rect::screen(80, 1), "the pane keeps the row");
+        assert!(
+            one.status.is_empty(),
+            "and there is no row left to speak in"
+        );
+        assert!(
+            status_changes(one.status, &status("0", &[("0", true)]), None).is_empty(),
+            "an empty status rectangle paints nothing, so no call site needs a branch",
+        );
+    }
+
+    /// The steady state: where the client is, in the shape a tmux user already reads.
+    #[test]
+    fn the_row_says_where_the_client_is() {
+        let split = Split::of(20, 3);
+        let rows = painted(
+            20,
+            3,
+            status_changes(
+                split.status,
+                &status("work", &[("0", true), ("logs", false)]),
+                None,
+            ),
+        );
+        assert_eq!(rows[2].trim_end(), "[work] 0:0* 1:logs");
+        assert_eq!(
+            rows[0].trim_end(),
+            "",
+            "and it touches no row a pane was given",
+        );
+    }
+
+    /// A message REPLACES the line, which is tmux's own behaviour: half a location beside half a
+    /// refusal is two truncated facts on one row.
+    #[test]
+    fn a_message_takes_the_row_over() {
+        let split = Split::of(30, 3);
+        let rows = painted(
+            30,
+            3,
+            status_changes(
+                split.status,
+                &status("work", &[("0", true)]),
+                Some("no session called \"ghost\""),
+            ),
+        );
+        assert_eq!(rows[2].trim_end(), "no session called \"ghost\"");
+        assert!(
+            !rows[2].contains("[work]"),
+            "the location is not squeezed in beside it: {:?}",
+            rows[2],
+        );
+    }
+
+    /// **The bottom-RIGHT cell is never written**, because a character there leaves the terminal
+    /// with a pending wrap and the next write scrolls the screen out from under this row.
+    ///
+    /// REVERT-PROOF: drop the `saturating_sub(1)` and the last cell fills, which is what a live
+    /// client did before this bound existed — the whole screen scrolled away and left one status
+    /// line stranded a row too high.
+    #[test]
+    fn the_last_cell_of_the_bottom_row_is_left_alone() {
+        let split = Split::of(8, 2);
+        let rows = painted(
+            8,
+            2,
+            status_changes(split.status, &status("0", &[]), Some("0123456789")),
+        );
+        assert_eq!(
+            rows[1], "0123456 ",
+            "seven cells of the message and the corner left blank",
+        );
+    }
+
+    /// The row is CHROME, not a pane's last line — reverse video, the one decoration available in
+    /// every terminal this client can be attached from.
+    #[test]
+    fn the_row_reads_as_chrome() {
+        let split = Split::of(12, 2);
+        let mut surface = Surface::new(12, 2);
+        surface.add_changes(status_changes(split.status, &status("0", &[]), None));
+        let cells = surface.screen_cells();
+        assert!(
+            cells[1][0].attrs().reverse(),
+            "the status row is drawn in reverse video",
+        );
+        assert!(
+            !cells[0][0].attrs().reverse(),
+            "...and the pane rows above it are not",
+        );
     }
 }

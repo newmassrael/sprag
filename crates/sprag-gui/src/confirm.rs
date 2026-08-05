@@ -289,7 +289,12 @@ fn accept(slots: &SlotView) -> Option<Command> {
         // is no catalog command to report: the caller's report is about the catalog.
         Guarded::Bound(spelling) => {
             match (BoundAction::parse(&spelling), armed.target) {
-                (Ok(action), Some(active)) => crate::input::perform(action, active),
+                // The answer to a guarded question is shown exactly as an unguarded key's is: the
+                // user said yes to something, and if it then found nothing to act on they are owed
+                // the same sentence.
+                (Ok(action), Some(active)) => {
+                    crate::message::show(&crate::input::perform(action, active));
+                }
                 // The spelling round-trip is `BoundAction`'s own contract (see [`Guarded::Bound`]),
                 // so this is a broken invariant rather than a user mistake — reported, and nothing
                 // destructive happens.

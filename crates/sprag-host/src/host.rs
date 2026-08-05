@@ -532,11 +532,19 @@ pub trait HostClient {
     /// Move the session's active pane to its NEIGHBOUR in `dir` — tmux `select-pane -L/-R/-U/-D`,
     /// and the wire's `{dir}` form of [`crate::wire::SELECT_PANE_ACTION`].
     ///
-    /// Answers the pane the window is on AFTER the call, which a caller adopts whether or not it
-    /// moved; [`None`] is a refusal (no such window, or a window holding no panes). **Reaching the
-    /// edge is not a refusal**: it answers the unmoved active pane, because a key bound to
-    /// `select-pane -L` pressed at the left edge is a well-formed request whose honest answer is
-    /// "nothing that way".
+    /// Answers whether the focus MOVED — the same shape [`swap_toward`](Self::swap_toward) and
+    /// [`resize_toward`](Self::resize_toward) already have, so the three directional questions are
+    /// one question asked three times.
+    ///
+    /// **It answered the landed `PaneId` until R316, and no caller ever read it** — both frontends
+    /// re-derive the focus through their own reconcile, which is the authority split stated below.
+    /// What they could not get was the EDGE: `select-pane -L` at the left edge answered
+    /// `Some(the pane you were already on)`, indistinguishable from a move, so a key pressed against
+    /// a wall was silent. This method's own doc named that gap — *"the day one wants \"you are at
+    /// the edge\", this signature is where the fact stops"* — and the fact does not stop here now.
+    ///
+    /// Reaching the edge is still not a REFUSAL: `select-pane -L` at the left edge is a well-formed
+    /// request whose honest answer is "nothing that way", which is what `false` says.
     ///
     /// # The one write on this trait that names no pane, and why
     ///
@@ -566,10 +574,11 @@ pub trait HostClient {
     /// from its ring. A floating pane is in no arrangement, so that call answers unmoved and the
     /// ring stays where it was.
     ///
-    /// Defaulted to [`None`], like [`new_pane`](Self::new_pane) — the wire client overrides it.
-    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
+    /// Defaulted to `false`, like [`swap_toward`](Self::swap_toward) — the wire client overrides it.
+    #[must_use = "`false` is the EDGE, which no repaint can show because nothing moved"]
+    fn select_toward(&self, dir: PaneDir) -> bool {
         let _ = dir;
-        None
+        false
     }
 
     /// Trade the session's active pane with its NEIGHBOUR in `dir` — tmux `swap-pane`, and the
@@ -657,9 +666,18 @@ pub trait HostClient {
     /// dedicated window/mux client trait is tracked, not done — so this increment stays focused.
     fn windows(&self) -> Vec<WindowInfo>;
 
-    /// Make the window named `name` the scoped session's current window (tmux `select-window`).
-    /// Every attached client's next read then projects that window. A no-op for an unknown name.
-    fn select_window(&self, name: &str);
+    /// Make the window named `name` the scoped session's current window (tmux `select-window`), and
+    /// answer the name the daemon RECORDED. Every attached client's next read then projects that
+    /// window. [`None`] when no window carries that name, or the host could not be asked.
+    ///
+    /// **It answered `()` until R316, which made a key bound to `select-window -t <a name that is
+    /// not there>` a silent no-op with nothing for a client to report.** The daemon has always
+    /// refused an unknown name; what was missing was the fact crossing back. The name comes back
+    /// rather than being echoed for [`switch_session_named`](Self::switch_session_named)'s reason —
+    /// the daemon's recorded spelling, never the caller's argument.
+    #[must_use = "a select that did not land is the only way a client learns the name is not there, \
+                  and a client that drops it is the silent key R316 removed"]
+    fn select_window(&self, name: &str) -> Option<String>;
 
     /// Walk the scoped session's windows one step, WRAPPING, and answer the window it landed on —
     /// tmux `next-window` / `previous-window` (`select-window -n` / `-p`).
@@ -677,6 +695,8 @@ pub trait HostClient {
     ///
     /// [`None`] when the host could not be asked. It cannot mean "nowhere to go": a session always
     /// holds a window, so the walk always lands.
+    #[must_use = "the window a walk landed on is what a client paints; dropping it is the silent \
+                  key R316 removed"]
     fn select_window_toward(&self, step: OrderStep) -> Option<String>;
 
     /// Move a window's PLACE in the scoped session's order — tmux `move-window`. Answers the window
@@ -690,6 +710,8 @@ pub trait HostClient {
     /// The ANSWER is a [`PlaceHow`] and not a `bool`, because three of its four words mean the order
     /// did not move and each has a different remedy — the discrimination R301 gave the swap, and the
     /// one the rival's `move_tab` collapses into `false`.
+    #[must_use = "three of `PlaceHow`'s four words mean the order did NOT move, and a client that \
+                  drops them tells the user nothing about a key that did nothing"]
     fn move_window(&self, window: Option<&str>, place: &WindowPlace) -> Option<(String, PlaceHow)>;
 
     /// Create a window in the scoped session, born with a shell, and select it (tmux
@@ -1046,6 +1068,8 @@ pub trait HostClient {
     /// the name the daemon LANDED on, which is the only way the caller learns where it went.
     ///
     /// A one-session ring answers that same session: the ring wrapped, and that is not a failure.
+    #[must_use = "where this client landed is the only evidence the step worked; dropping it is \
+                  the silent key R316 removed"]
     fn switch_session_toward(&self, step: OrderStep) -> Option<String>;
 
     /// Move this client back to the session it was viewing BEFORE this one and answer where it
@@ -1055,6 +1079,7 @@ pub trait HostClient {
     /// The history is the DAEMON's and is keyed by session IDENTITY, which is why a client cannot
     /// answer this itself: a remembered NAME resolves to nothing after a rename and to A STRANGER
     /// once a new session takes the freed one. See [`crate::wire::AttachAsk::LastViewed`].
+    #[must_use = "`None` here means there was nowhere to go back to, which no repaint can say"]
     fn switch_session_last(&self) -> Option<String>;
 
     /// Attach this client to the session named `name` and answer the name the daemon RECORDED —
@@ -1065,6 +1090,8 @@ pub trait HostClient {
     /// user who typed a name is owed either the session they asked for or the sentence saying no
     /// session is called that. The name comes back rather than being echoed for R295's rule — the
     /// daemon's recorded spelling, never the caller's argument.
+    #[must_use = "`None` here means no session carries that name — the measured defect R316 was \
+                  opened by, where a mistyped binding was indistinguishable from a broken build"]
     fn switch_session_named(&self, name: &str) -> Option<String>;
 
     /// The whole registry as a NAVIGABLE TREE — what a chooser draws its rows from (R315).
@@ -1129,13 +1156,6 @@ pub trait HostClient {
     /// The in-process arm renders one default session it can never lose out of band (it has no daemon
     /// and no second client), so the default is a NO-OP; only the wire client overrides it.
     fn reconcile_lost_session(&self) {}
-
-    /// Switch this client to the LAST session — the most-recently-used OTHER session it visited that
-    /// is still live (tmux `switch-client -l`), a keyboard `Ctrl+Shift+L` affordance. A no-op with no
-    /// such session (never switched, or the prior sessions are gone). The in-process arm renders only
-    /// the default session and has no visit history, so the default is a NO-OP; only the wire client
-    /// (which keeps the MRU stack) overrides it.
-    fn switch_to_last_session(&self) {}
 
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
@@ -2660,13 +2680,13 @@ impl HostClient for Host {
 
     /// Straight to the resolve-and-select the wire action calls, so the in-process arm and a wire
     /// client walk ONE arrangement with one lock — not two implementations that agree today.
-    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
+    fn select_toward(&self, dir: PaneDir) -> bool {
         select_pane(
             &self.registry,
             &self.scope(),
             SelectAsk::Toward { dir, from: None },
         )
-        .map(|selection| selection.pane)
+        .is_some_and(|selection| selection.how.changed())
     }
 
     /// ...and the same for the SWAP, through the same one function the wire action calls.
@@ -2706,12 +2726,18 @@ impl HostClient for Host {
         lock(&self.registry).default_session().window_infos()
     }
 
-    /// Select a window of the default session; an unknown name is a no-op (logged by the registry
-    /// through the `Result` this arm discards — the in-process caller has no wire to refuse on).
-    fn select_window(&self, name: &str) {
+    /// Select a window of the default session, answering the name that was selected.
+    ///
+    /// The registry's own `Result` IS the answer now — it used to be discarded here, which is what
+    /// left an unknown name looking like a success to every caller. The name comes back from the
+    /// argument only after the registry has accepted it, so a [`Some`] means the select happened.
+    fn select_window(&self, name: &str) -> Option<String> {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
-        let _ = registry.select_window(&session, name);
+        registry
+            .select_window(&session, name)
+            .ok()
+            .map(|()| name.to_owned())
     }
 
     /// The walk, straight on the registry this arm owns — the same ring the wire arm asks the daemon

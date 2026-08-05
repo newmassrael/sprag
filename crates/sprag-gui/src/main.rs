@@ -252,6 +252,7 @@ mod hyperlink;
 mod input;
 mod keyhelp;
 mod keys;
+mod message;
 mod palette;
 mod prompt;
 mod reflow;

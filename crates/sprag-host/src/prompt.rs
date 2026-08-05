@@ -828,8 +828,14 @@ mod tests {
         let host = crate::Host::new((40, 6));
         let alone = host.new_pane().expect("a shell is born");
         host.new_window();
-        // `new_window` selects the window it made, so come back to the one holding the pane.
-        host.select_window("0");
+        // `new_window` selects the window it made, so come back to the one holding the pane. The
+        // landing is asserted rather than dropped: a fixture that silently failed to come back
+        // would be asserting the escalation of a DIFFERENT window.
+        assert_eq!(
+            host.select_window("0"),
+            Some("0".to_owned()),
+            "the fixture comes back to the window holding the pane",
+        );
         let said = consequence(&host, alone).expect("the escalation is said");
         assert!(
             said.contains("last pane"),

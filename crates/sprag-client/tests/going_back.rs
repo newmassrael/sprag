@@ -6,7 +6,7 @@
 //! `WireHost` kept its own visit history as a `Vec<String>` of session NAMES, maintained by
 //! nothing. Driven through this same harness: a client booted on session `1`, switched to `beta`,
 //! and then — out of band — `1` was renamed to `renamed` and a NEW session took the freed name.
-//! `switch_to_last_session()` (tmux `switch-client -l`) attached it to `1`: **the impostor**, a
+//! `switch_session_last()` (tmux `switch-client -l`) attached it to `1`: **the impostor**, a
 //! session it had never seen, over the connection it also sends keystrokes down. The daemon
 //! confirmed it, reporting `1 … attached:1` while `renamed` had no viewer.
 //!
@@ -187,7 +187,7 @@ fn attached(conn: &mut HostConn, session: &str) -> Option<u64> {
 /// impostor that took the name that session wore.
 ///
 /// REVERT-PROOF: make the daemon's history hold names instead of ids — or simply have
-/// `switch_to_last_session` re-attach by the name the client last saw — and the two assertions after
+/// `switch_session_last` re-attach by the name the client last saw — and the two assertions after
 /// the ask both fail, naming `work` where the client's own visit is `renamed`.
 #[test]
 fn a_client_goes_back_to_the_session_it_visited_across_a_rename() {
@@ -216,7 +216,7 @@ fn a_client_goes_back_to_the_session_it_visited_across_a_rename() {
     );
 
     // tmux `switch-client -l`.
-    client.switch_to_last_session();
+    let _ = client.switch_session_last();
 
     assert_eq!(
         client.current_session(),
@@ -235,7 +235,7 @@ fn a_client_goes_back_to_the_session_it_visited_across_a_rename() {
     );
 
     // Going back is itself a visit, so the gesture toggles — tmux's own `switch-client -l`.
-    client.switch_to_last_session();
+    let _ = client.switch_session_last();
     assert_eq!(client.current_session(), "beta");
 }
 
@@ -245,7 +245,7 @@ fn a_client_goes_back_to_the_session_it_visited_across_a_rename() {
 /// again.
 ///
 /// **The last assertion is here because a revert-proof said it had to be.** Dropping
-/// `switch_to_last_session`'s `fall_back_to` on the `Ok(None)` arm left this test GREEN with only
+/// `switch_session_last`'s `fall_back_to` on the `Ok(None)` arm left this test GREEN with only
 /// the "an ordinary switch still completes" check, because a switch does its own attach and starts
 /// its own poll — so it repairs the very thing it was supposed to detect. What a stopped poll
 /// really costs is the client's mirrors going deaf, so that is what is asserted: a pane opened out
@@ -265,7 +265,7 @@ fn a_client_with_nowhere_to_go_back_to_stays_put_and_still_works() {
         "the CONTROL: this client's mirror follows its session before the no-op",
     );
 
-    client.switch_to_last_session();
+    let _ = client.switch_session_last();
     assert_eq!(
         client.current_session(),
         home,

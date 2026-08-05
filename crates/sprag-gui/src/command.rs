@@ -649,19 +649,28 @@ impl Command {
                 // Creates AND selects (the host action does both), like the strip's "+".
                 slots.new_window();
             }
-            Self::SelectWindow(name) => slots.select_window(name),
-            // The outcome word is dropped for the same reason `input::perform`'s arm drops it: this
-            // client repaints its strip off the daemon's announcement, so a move that changed
-            // nothing repaints nothing and there is no sentence to lose.
+            // A palette row is CHOSEN from a list of this client's own windows, so a name that is
+            // not there cannot be picked — which is why the landing is dropped here where the key
+            // path reports it. Same for the move below: the rows a person picked from are the
+            // order they are about to change.
+            Self::SelectWindow(name) => {
+                let _ = slots.select_window(name);
+            }
             Self::MoveWindow(place) => {
-                slots.move_window(None, place);
+                let _ = slots.move_window(None, place);
             }
             Self::NewSession => {
                 // Creates AND switches, like the rail's "+".
                 let _ = slots.new_session();
             }
             Self::SwitchSession(name) => slots.switch_session(name),
-            Self::LastSession => slots.switch_to_last_session(),
+            // The landing is dropped HERE and not in the key path beside it: a palette row is
+            // chosen from a list of sessions this client is already showing, so "there was nowhere
+            // to go" is a state the user just looked at. The keyboard's arm has no such list in
+            // front of it, which is why that one reports.
+            Self::LastSession => {
+                let _ = slots.switch_session_last();
+            }
             // Addressed by NAME, so what is killed is what the prompt named — never a row index
             // re-resolved against a list that moved in the meantime. Killing the last window ends
             // the session and killing the attached session detaches this client; both are stated on
@@ -1201,8 +1210,12 @@ mod tests {
         fn windows(&self) -> Vec<WindowInfo> {
             self.windows.clone()
         }
-        fn select_window(&self, name: &str) {
+        fn select_window(&self, name: &str) -> Option<String> {
             self.log.borrow_mut().selected_windows.push(name.to_owned());
+            self.windows
+                .iter()
+                .find(|window| window.name == name)
+                .map(|window| window.name.clone())
         }
         /// Records the place and answers `Moved` for the CURRENT window, so a row's assertion is
         /// about which place it sent rather than about this fixture's arithmetic.
@@ -1299,11 +1312,12 @@ mod tests {
                 .push(step.wire_str().to_owned());
             None
         }
+        /// Counted on its OWN row and NOT pushed onto `switched_sessions`: this fixture's two
+        /// counters answer two questions — WHICH sessions were named, and how many times the
+        /// last-viewed verb ran — and folding the second into the first would make the row that
+        /// names no session look like one that does.
         fn switch_session_last(&self) -> Option<String> {
-            self.log
-                .borrow_mut()
-                .switched_sessions
-                .push("last".to_owned());
+            self.log.borrow_mut().last_session += 1;
             None
         }
         fn switch_session_named(&self, name: &str) -> Option<String> {
@@ -1320,9 +1334,7 @@ mod tests {
         fn kill_session(&self, name: &str) {
             self.log.borrow_mut().killed_sessions.push(name.to_owned());
         }
-        fn switch_to_last_session(&self) {
-            self.log.borrow_mut().last_session += 1;
-        }
+
         fn project(&self, _id: PaneId) -> Option<Result<sprag_host::Project, String>> {
             self.project.clone()
         }

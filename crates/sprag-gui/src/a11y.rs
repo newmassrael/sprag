@@ -100,6 +100,11 @@ fn modal_access_nodes(focused: Option<&str>) -> Vec<AccessNode> {
         focused,
         (crate::WINDOW_W, crate::WINDOW_H),
     ));
+    // The MESSAGE STRIP is here with the modals and is not one: it takes no focus and traps
+    // nothing, so it carries no `focused` argument. It belongs in this list because it is the other
+    // thing this client puts over its panes, and a live region a screen reader never reaches is a
+    // sentence only sighted users get.
+    nodes.extend(crate::message::message_access_nodes());
     nodes
 }
 

@@ -184,6 +184,20 @@ impl ClientKeys {
         KeyHelp::of(self.file.borrow().keymap())
     }
 
+    /// The OPTIONS table in force — what a client-side setting (`display-time`) is read from.
+    ///
+    /// **The fourth place the file's answer is used, and so the fourth re-reader** — see
+    /// [`reread`](Self::reread), whose rule this follows for a reason of its own: a user who raises
+    /// `display-time` because a message went by too fast is a user who wants the NEXT message to
+    /// last longer, and a table read once at boot would make them restart the client to get it.
+    ///
+    /// Handed back OWNED for [`prefix`](Self::prefix)'s reason: the caller reads a number out of it
+    /// after the borrow would have ended.
+    pub(crate) fn options(&self) -> sprag_host::Options {
+        self.reread();
+        self.file.borrow().options().clone()
+    }
+
     /// Why the user's config could not be used, if it could not — already worded to name the file, and
     /// re-read so the answer describes the file as it is NOW.
     ///

@@ -116,13 +116,15 @@ use sprag_host::chooser::Pick;
 use sprag_host::keyhelp::{KeyHelp, Pressed, Scroll};
 use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed, SwitchClientAsk};
 use sprag_host::prompt::{Ask, Line, Subject, Typed};
+use sprag_host::report::{Message, Report, display_time, now};
+use sprag_host::status::Status;
 use sprag_host::wire::SelectWindowAsk;
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
-use sprag_terminal::{PaneId, SplitId};
+use sprag_terminal::{PaneId, PlaceHow, SplitId};
 use sprag_tui::{
-    Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, agent_window_title,
+    Divider, MouseEdges, PaintCache, PanePaint, Rect, Split, Tiling, WireKey, agent_window_title,
     chooser_changes, cursor_changes, divider_changes, help_changes, help_viewport, prompt_changes,
-    tile, title_change, wire_key, with_ratio,
+    status_changes, tile, title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -170,12 +172,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         .open("/dev/tty")?;
     let mut terminal = SystemTerminal::new_with(local_capabilities()?, &tty, &tty)?;
     let mut mouse = MouseMirror::new(tty);
-    // The rectangle every pane's is carved out of. Mutable because a window change replaces it, and
-    // kept as ONE value rather than a pair so that every reader of "how big is the screen" — the
-    // layouter, the surface, the pane resizes — is reading the same fact.
-    let mut screen_area = {
+    // The terminal, cut into the rectangle every pane's is carved out of and the row this client
+    // speaks in. Mutable because a window change replaces it, and kept as ONE value rather than a
+    // pair so that every reader of "how big is the screen" — the layouter, the surface, the pane
+    // resizes, the size REPORTED to the daemon — is reading the same fact. That last one is why the
+    // cut is a type: reporting the whole terminal while tiling one row less would arbitrate a
+    // window a row taller than any pane can ever be given.
+    let mut split = {
         let (cols, rows) = screen_size(&mut terminal)?;
-        Rect::screen(cols, rows)
+        Split::of(cols, rows)
     };
 
     // The two edges the client is woken by, each a flag plus a wake of the one blocking poll.
@@ -187,8 +192,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let host = WireHost::spawn_or_attach(
         // No argv: the host's own `$SHELL`, the same default `sprag attach` gives the GUI.
         None,
-        screen_area.cols,
-        screen_area.rows,
+        split.panes.cols,
+        split.panes.rows,
         1,
         Arc::new({
             let (repaint, waker) = (Arc::clone(&repaint), waker.clone());
@@ -213,7 +218,15 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut screen = BufferedTerminal::new(terminal)?;
     // `BufferedTerminal::new` sizes its surface from the terminal's raw answer, so the fallback
     // has to be applied here too or a terminal that reports nothing paints into a 0x0 surface.
-    screen.resize(usize::from(screen_area.cols), usize::from(screen_area.rows));
+    //
+    // **THE WHOLE TERMINAL, not the pane rectangle**, and a live test caught the difference: a
+    // surface one row short CLAMPS the status row's absolute cursor move, so the row painted a line
+    // above where it belongs and the terminal's real bottom row was never written. The surface is
+    // what this client can draw ON; `split.panes` is what it gives the panes.
+    screen.resize(
+        usize::from(split.terminal().cols),
+        usize::from(split.terminal().rows),
+    );
 
     // Which pane the user is typing into. `None` until the arrangement is read, which is the
     // honest starting value: the client cannot name a pane before it has been told of one.
@@ -231,8 +244,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     // over ssh show panes shaped like the window they are being shown in.
     // BEFORE the first reconcile: the arbitration cannot include a client that has not spoken, so
     // reporting after it would tile the first frame over a window this terminal was not counted in.
-    report_size(&host, screen_area);
-    let mut tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+    report_size(&host, split.panes);
+    let mut tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
     mouse.follow(&host, &tiling);
     // The pointer's state, kept across events because the wire wants EDGES and this terminal
     // reports a state (see [`MouseEdges`]).
@@ -253,13 +266,17 @@ fn run() -> Result<(), Box<dyn Error>> {
         &mut screen,
         &host,
         &tiling,
-        screen_area,
+        split.panes,
         Frame {
             focus,
             clear: Clear::Yes,
             // Nothing is over the panes at boot, and the state that would say so is
             // declared below — where it belongs, one line before the loop that owns it.
             overlay: &Overlay::None,
+            status: split.status,
+            // Nothing has been pressed yet, so the row says where this client is — which is the
+            // first thing a person attaching over ssh wants to know anyway.
+            message: None,
         },
         &mut held,
     )?;
@@ -270,10 +287,31 @@ fn run() -> Result<(), Box<dyn Error>> {
     // What this client has put over the panes — see [`Overlay`]. `None` is the steady state, and
     // while it is anything else every keystroke belongs to that surface rather than to the pane.
     let mut overlay = Overlay::None;
+    // WHAT THE LAST KEY DID, while it is still worth reading — see [`sprag_host::report::Message`].
+    // `None` is the steady state, and the status row then says where this client is instead.
+    let mut message: Option<Message> = None;
     loop {
-        // `None` blocks until the terminal has something OR the waker fires — the select this
-        // client's whole idle cost rests on.
-        match screen.terminal().poll_input(None)? {
+        // The poll blocks until the terminal has something OR the waker fires — the select this
+        // client's whole idle cost rests on. It blocks FOREVER unless a message is up, in which
+        // case it blocks only until that message expires: the row has to clear on its own deadline
+        // rather than at the next keystroke, and a timeout that exists only while a sentence is on
+        // screen leaves the idle cost exactly where it was. This is the one timer in this loop and
+        // it is bounded by `display-time`.
+        let waiting = message
+            .as_ref()
+            .map(|said| said.until().saturating_sub(now()));
+        match screen.terminal().poll_input(waiting)? {
+            // The message's own deadline came and went with nothing else happening: take the row
+            // back. `poll_input` answers `None` on a timeout, which is the same answer it gives for
+            // a spurious wake — so the state is re-derived rather than assumed, and a `None` with
+            // no message up costs one comparison.
+            None if message
+                .as_ref()
+                .is_some_and(|said| said.showing(now()).is_none()) =>
+            {
+                message = None;
+                paint_status(&mut screen, &host, split.status, None)?;
+            }
             // The table is re-read HERE, and only here, because this is the one moment its answer
             // is used: a repaint cannot change what a key means. Routed in a `let` before the match
             // so the borrow the re-read takes ends before an arm reads the prefix back out.
@@ -292,7 +330,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     Overlay::Asking(mut open) => match open.answered(&host, &event) {
                         // Still asking: only the row changed, so only the row is painted.
                         Answered::Asking => {
-                            paint_prompt(&mut screen, screen_area, &open)?;
+                            paint_prompt(&mut screen, split.panes, &open)?;
                             overlay = Overlay::Asking(open);
                             continue;
                         }
@@ -303,11 +341,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &mut screen,
                                 &host,
                                 &tiling,
-                                screen_area,
+                                split.panes,
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
                                     overlay: &overlay,
+                                    status: split.status,
+                                    message: showing(&message),
                                 },
                                 &mut held,
                             )?;
@@ -320,11 +360,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &mut screen,
                                 &host,
                                 &tiling,
-                                screen_area,
+                                split.panes,
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
                                     overlay: &overlay,
+                                    status: split.status,
+                                    message: showing(&message),
                                 },
                                 &mut held,
                             )?;
@@ -335,19 +377,21 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // is `KeyHelp::pressed`'s, shared with the other frontend; what this arm decides
                     // is only what to repaint, which is the surface's half of that split.
                     Overlay::Showing(mut open) => {
-                        if open.pressed(&event, help_viewport(screen_area)) == Shown::Open {
-                            paint_help(&mut screen, screen_area, &open)?;
+                        if open.pressed(&event, help_viewport(split.panes)) == Shown::Open {
+                            paint_help(&mut screen, split.panes, &open)?;
                             overlay = Overlay::Showing(open);
                         } else {
                             paint(
                                 &mut screen,
                                 &host,
                                 &tiling,
-                                screen_area,
+                                split.panes,
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
                                     overlay: &overlay,
+                                    status: split.status,
+                                    message: showing(&message),
                                 },
                                 &mut held,
                             )?;
@@ -364,11 +408,16 @@ fn run() -> Result<(), Box<dyn Error>> {
                     && let Some(ask) = Ask::of(action, &host, focus)
                 {
                     let open = Asking::open(ask);
-                    paint_prompt(&mut screen, screen_area, &open)?;
+                    paint_prompt(&mut screen, split.panes, &open)?;
                     overlay = Overlay::Asking(open);
                     continue;
                 }
-                match command {
+                // EVERY ARM ANSWERS. The match is an expression whose value is what this
+                // keystroke DID, so an action that changed nothing cannot leave without saying so —
+                // the defect R316 measured (a key bound to a session that does not exist left a
+                // live client's screen byte-for-byte unchanged) is unrepresentable here, because
+                // there is no arm that can simply return.
+                let report: Report = match command {
                     Command::Act(BoundAction::DetachClient) => break,
                     // THE VIEW IS BUILT FROM THE TABLE IN FORCE, at the instant it opens: the same
                     // `refreshed` re-read the keystroke above went through, so a user who edits
@@ -377,20 +426,29 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // screen would scroll under the reader.
                     Command::Act(BoundAction::ListKeys) => {
                         let open = Showing::open(refreshed(&mut keymap));
-                        paint_help(&mut screen, screen_area, &open)?;
+                        paint_help(&mut screen, split.panes, &open)?;
                         overlay = Overlay::Showing(open);
                         continue;
                     }
-                    Command::Swallow => {}
+                    // The prefix itself, an unbound key, a key the wire cannot spell: each is a
+                    // keystroke that was never a command, so there is no outcome to report. Not
+                    // silence by omission — the arm SAYS so, which is the whole difference.
+                    Command::Swallow => Report::on_screen(),
+                    // A key that reached the pane is answered by the pane: whatever the program
+                    // inside it does about the keystroke is what appears, and a client sentence
+                    // over the top would be this client talking about somebody else's program.
                     Command::ToPane(key) => {
                         let mut scratch = [0u8; 4];
                         send_key(&host, focus, key.name(&mut scratch), key.mods());
+                        Report::on_screen()
                     }
                     // The PREFIX, not the key that was pressed: a user who binds `send-prefix` to some
                     // other key means that key to send the prefix, not to send itself.
                     Command::Act(BoundAction::SendPrefix) => {
                         let prefix = keymap.keymap().prefix();
                         send_key(&host, focus, prefix.name(), prefix.mods());
+                        // The pane answers, exactly as it does for `ToPane` above.
+                        Report::on_screen()
                     }
                     // A split and a focus move both change what is on screen without the host
                     // necessarily waking this loop, so each repaints on the spot rather than waiting
@@ -402,20 +460,26 @@ fn run() -> Result<(), Box<dyn Error>> {
                             // session already is — locally, with no publish to race the next one.
                             set_focus(&host, &mut focus, Some(pane));
                         }
-                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        // A pane either appeared or it did not, and either way the screen below
+                        // says which — this arm's own repaint is the answer.
+                        let report = Report::on_screen();
+                        tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::No,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
+                        report
                     }
                     // A zoom changes what this client DRAWS without changing the pane set, so it
                     // needs the same on-the-spot reconcile a split does: the projection the next
@@ -428,20 +492,27 @@ fn run() -> Result<(), Box<dyn Error>> {
                         if let Some(pane) = focus {
                             host.zoom_pane(pane, on);
                         }
-                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        // A zoom is a change to what is DRAWN, so the drawing is the report. The
+                        // one case with nothing to show — a zoom on a window holding one pane —
+                        // is a request that was already true, not a refusal.
+                        let report = Report::on_screen();
+                        tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::No,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
+                        report
                     }
                     // THE WINDOW LEVEL, reached from a key (R305), and the pane KILL that can
                     // reach it (R309). All four arms share one shape and one repaint, because all
@@ -464,9 +535,16 @@ fn run() -> Result<(), Box<dyn Error>> {
                         | BoundAction::KillWindow
                         | BoundAction::SwitchClient { .. }),
                     ) => {
-                        match action {
+                        // The GROUP'S OWN REPORT, computed before the repaint below rather than
+                        // after it, because two of these six can move this client somewhere that
+                        // does not exist — and the repaint would then be painting a screen that
+                        // never changed while the sentence explaining why sat unbuilt.
+                        let report = match &action {
                             BoundAction::NewWindow => {
-                                host.new_window();
+                                // A window is born and selected, so the whole screen below is the
+                                // answer — and the status row now names it.
+                                let _ = host.new_window();
+                                Report::on_screen()
                             }
                             // The pane the user is ON, which is the only one a keystroke can mean —
                             // the zoom arm's rule. How far the kill cascaded is the daemon's answer
@@ -475,13 +553,25 @@ fn run() -> Result<(), Box<dyn Error>> {
                             // learn that its window is gone.
                             BoundAction::KillPane => {
                                 if let Some(pane) = focus {
-                                    host.kill_pane(pane);
+                                    let _ = host.kill_pane(pane);
                                 }
+                                Report::on_screen()
                             }
                             BoundAction::SelectWindow { ask } => match ask {
-                                SelectWindowAsk::Named(window) => host.select_window(&window),
+                                // THE NAME IS THE HALF THAT CAN BE WRONG. A window called what the
+                                // config says may simply not be there, and until R316 the daemon's
+                                // refusal stopped at a `()` return.
+                                SelectWindowAsk::Named(window) => {
+                                    match host.select_window(window) {
+                                        Some(_) => Report::on_screen(),
+                                        None => Report::no_such(&action),
+                                    }
+                                }
+                                // The step cannot miss: a session always holds a window, so the
+                                // walk always lands. `None` is a host that could not be asked.
                                 SelectWindowAsk::Step(step) => {
-                                    host.select_window_toward(step);
+                                    let _ = host.select_window_toward(*step);
+                                    Report::on_screen()
                                 }
                             },
                             // THE SESSION LEVEL (R314), and the first way this front has ever had
@@ -498,25 +588,52 @@ fn run() -> Result<(), Box<dyn Error>> {
                             //
                             // The ASKING arm is unreachable here: `Ask::of` consumes it above.
                             BoundAction::SwitchClient { ask } => match ask {
+                                // A step that landed is shown by the status row naming the session
+                                // it landed on; `None` is a ring this client could not be walked
+                                // along at all, which nothing else says.
                                 SwitchClientAsk::Step(step) => {
-                                    host.switch_session_toward(step);
+                                    match host.switch_session_toward(*step) {
+                                        Some(_) => Report::on_screen(),
+                                        None => Report::nowhere(&action),
+                                    }
                                 }
-                                SwitchClientAsk::LastViewed => {
-                                    host.switch_session_last();
-                                }
+                                // `None` here is the degraded half R304 measured: this client has
+                                // viewed nothing else that is still alive, so "take me back" has
+                                // nowhere to take anybody.
+                                SwitchClientAsk::LastViewed => match host.switch_session_last() {
+                                    Some(_) => Report::on_screen(),
+                                    None => Report::nowhere(&action),
+                                },
+                                // **THE MEASURED DEFECT.** `switch-client -t <a name nothing
+                                // carries>` was a silent no-op in both frontends: a live client's
+                                // screen came back byte-for-byte identical to an UNBOUND key's.
                                 SwitchClientAsk::Named(session) => {
-                                    host.switch_session_named(&session);
+                                    match host.switch_session_named(session) {
+                                        Some(_) => Report::on_screen(),
+                                        None => Report::no_such(&action),
+                                    }
                                 }
-                                SwitchClientAsk::Ask => {}
+                                // Unreachable: `Ask::of` consumes the asking form above and opens a
+                                // chooser with it. Kept as an arm because the vocabulary has one.
+                                SwitchClientAsk::Ask => Report::on_screen(),
                             },
                             // NO window named, which is the same rule the kill below breaks
                             // deliberately: the daemon resolves "the one I am on" under its own
-                            // lock, where this client's mirror can be a revision behind. The
-                            // outcome word is not read here — this front paints no window strip,
-                            // so a reorder changes nothing it draws, and the `reconcile` below is
-                            // what keeps that honest if it ever does.
+                            // lock, where this client's mirror can be a revision behind.
+                            //
+                            // **The outcome word IS read now, and this front is the reason the
+                            // note beside it changed.** It used to say the move "changes nothing
+                            // this front draws" because `sprag-tui` painted no window strip — and
+                            // this round gave it one, so a reorder moves the status row. What no
+                            // repaint can show is a move that did NOT happen: three of
+                            // `PlaceHow`'s four words leave the order untouched, and the two that
+                            // are a user's mistake — already at that end, or anchored to the
+                            // window itself — are exactly the ones a person needs told.
                             BoundAction::MoveWindow { place } => {
-                                host.move_window(None, &place);
+                                match host.move_window(None, place) {
+                                    Some((_, PlaceHow::Moved)) => Report::on_screen(),
+                                    Some((_, _)) | None => Report::nowhere(&action),
+                                }
                             }
                             // The CURRENT window, which is the only one a keystroke can mean. Its
                             // name comes off the client's own window mirror, where `current` is the
@@ -525,23 +642,27 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 if let Some(window) = current_window_name(&host) {
                                     host.kill_window(&window);
                                 }
+                                Report::on_screen()
                             }
-                            _ => unreachable!("the match above admits only the five arms here"),
-                        }
-                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                            _ => unreachable!("the match above admits only the six arms here"),
+                        };
+                        tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::Yes,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
+                        report
                     }
                     // A DIRECTIONAL move is the daemon's to resolve, so this arm publishes nothing
                     // and adopts nothing: it asks, and then re-reads through the same [`reconcile`]
@@ -551,42 +672,63 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // did not move. `SelectNextPane` below cannot share this shape: its target is
                     // this client's own paint order, so the client is the one that knows it.
                     Command::Act(BoundAction::SelectPaneToward { dir }) => {
-                        host.select_toward(dir);
-                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        // The daemon's answer is the report: `None` is the EDGE, which no repaint
+                        // can show because nothing moved. This is the fact
+                        // `HostClient::select_toward`'s own doc said stopped at its signature —
+                        // *"the day one wants \"you are at the edge\", this signature is where the
+                        // fact stops"* — and it stops here instead now.
+                        let report = if host.select_toward(dir) {
+                            Report::on_screen()
+                        } else {
+                            Report::nowhere(&BoundAction::SelectPaneToward { dir })
+                        };
+                        tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::No,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
+                        report
                     }
                     // The SWAP's twin of the arm above, and identical for the same reason: the
                     // daemon resolves the direction and this re-reads. What it does NOT need is a
                     // focus move — the active pane is a PANE, so a user typing into it goes on
                     // typing into it in its new cell, and the reconcile below just re-tiles.
                     Command::Act(BoundAction::SwapPaneToward { dir }) => {
-                        host.swap_toward(dir);
-                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        // The select's rule one verb over: `false` is the edge, and a swap that
+                        // moved nothing looks exactly like a key that is not bound.
+                        let report = if host.swap_toward(dir) {
+                            Report::on_screen()
+                        } else {
+                            Report::nowhere(&BoundAction::SwapPaneToward { dir })
+                        };
+                        tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::No,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
+                        report
                     }
                     // THE BOUNDARY (R307), and the same shape a third time. The reconcile is what
                     // makes it visible: a resize changes no pane's identity and no window's pane
@@ -599,21 +741,31 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // pointer drag in `sprag-gui`, and a terminal client had no pointer to drag
                     // with — so a TUI user's arrangement was whatever the even splits gave them.
                     Command::Act(BoundAction::ResizePaneToward { dir, cells }) => {
-                        host.resize_toward(dir, cells);
-                        tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                        // The same rule a third time. `false` here is a boundary that had nowhere
+                        // to go — the window's own edge, or a lone pane with no boundary at all —
+                        // and it is the arm a user is likeliest to hold down without noticing.
+                        let report = if host.resize_toward(dir, cells) {
+                            Report::on_screen()
+                        } else {
+                            Report::nowhere(&BoundAction::ResizePaneToward { dir, cells })
+                        };
+                        tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::No,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
+                        report
                     }
                     // The ASKING actions are consumed above, where `Ask::of` turns them into a
                     // question. This arm is reached only when it answered `None` — a `rename-pane`
@@ -629,7 +781,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         // same shape one level up: a question with nothing to ask about.
                         | BoundAction::ChooseTree
                         | BoundAction::ConfirmBefore { .. },
-                    ) => {}
+                    ) => Report::on_screen(),
                     Command::Act(BoundAction::SelectNextPane) => {
                         let next = focus.and_then(|pane| tiling.next_after(pane));
                         select_pane(&host, &mut focus, next.or_else(|| tiling.first_pane()));
@@ -639,15 +791,31 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::No,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
+                        // The ring is this client's own paint order, so a window holding one pane
+                        // cycles onto itself — which is not a refusal, it is the answer.
+                        Report::on_screen()
                     }
+                };
+                // WHAT THE KEY DID, put where a person can read it. A report with nothing to say
+                // leaves the message that is already up alone rather than clearing it: a user who
+                // pressed a key that spoke and then typed into a pane is still owed the sentence
+                // for its remaining lifetime, and the deadline is what takes it away.
+                if let Some(said) = Message::of(&report, now(), display_time(keymap.options())) {
+                    message = Some(said);
+                    // The row is repainted HERE and not by the arm above, because the arm painted
+                    // before this message existed. One row, diffed by the surface, so a keystroke
+                    // that says nothing costs nothing.
+                    paint_status(&mut screen, &host, split.status, showing(&message))?;
                 }
             }
             // A bracketed paste arrives as ONE event rather than a key per character, and this arm
@@ -683,7 +851,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         }
                         Asking::Confirm { .. } => {}
                     }
-                    paint_prompt(&mut screen, screen_area, open)?;
+                    paint_prompt(&mut screen, split.panes, open)?;
                 }
                 // The key table has nowhere to put text either. Swallowed rather than forwarded,
                 // which is what the keystroke path does with everything it does not understand —
@@ -737,7 +905,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 if let Some(ratio) = divider.ratio_at(edge.col, edge.row) {
                                     tiling = drag_divider(
                                         &host,
-                                        screen_area,
+                                        split.panes,
                                         &mut focus,
                                         &mut seen_active,
                                         id,
@@ -750,11 +918,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         &mut screen,
                                         &host,
                                         &tiling,
-                                        screen_area,
+                                        split.panes,
                                         Frame {
                                             focus,
                                             clear: Clear::Yes,
                                             overlay: &overlay,
+                                            status: split.status,
+                                            message: showing(&message),
                                         },
                                         &mut held,
                                     )?;
@@ -777,11 +947,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut screen,
                             &host,
                             &tiling,
-                            screen_area,
+                            split.panes,
                             Frame {
                                 focus,
                                 clear: Clear::No,
                                 overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message),
                             },
                             &mut held,
                         )?;
@@ -801,23 +973,25 @@ fn run() -> Result<(), Box<dyn Error>> {
                 // `BufferedTerminal::check_for_resize`: both take the terminal's raw answer, so a
                 // terminal that reports 0 would undo the boot fallback and leave a 0x0 surface.
                 let (cols, rows) = screen_size(screen.terminal())?;
-                screen_area = Rect::screen(cols, rows);
+                split = Split::of(cols, rows);
                 screen.resize(usize::from(cols), usize::from(rows));
                 // The window is arbitrated over what the clients report, so this terminal's new
                 // area has to reach the daemon BEFORE the tiling that depends on it — under the
                 // default `latest` policy this report IS the new window.
-                report_size(&host, screen_area);
-                tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+                report_size(&host, split.panes);
+                tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                 mouse.follow(&host, &tiling);
                 paint(
                     &mut screen,
                     &host,
                     &tiling,
-                    screen_area,
+                    split.panes,
                     Frame {
                         focus,
                         clear: Clear::Yes,
                         overlay: &overlay,
+                        status: split.status,
+                        message: showing(&message),
                     },
                     &mut held,
                 )?;
@@ -848,7 +1022,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // well as the cells, so a split made from another client — or a pane whose shell just
             // exited and was closed — changes which rectangles exist. Painting the old tiling would
             // put the new pane nowhere and leave the closed one's cells on screen.
-            tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
+            tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
             // A child that just enabled tracking woke this client the same way its output would,
             // so the mirror is re-read here and not on a timer.
             mouse.follow(&host, &tiling);
@@ -856,11 +1030,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                 &mut screen,
                 &host,
                 &tiling,
-                screen_area,
+                split.panes,
                 Frame {
                     focus,
                     clear: Clear::No,
                     overlay: &overlay,
+                    status: split.status,
+                    message: showing(&message),
                 },
                 &mut held,
             )?;
@@ -937,6 +1113,8 @@ fn paint(
         focus,
         clear,
         overlay,
+        status,
+        message,
     } = frame;
     // The outer terminal's title, refreshed HERE because this is the one function that writes the
     // terminal at all — so every path that repaints also re-titles, and no future caller can add a
@@ -949,6 +1127,11 @@ fn paint(
         // screen rather than being blanked, because a user whose shell just exited is owed the
         // output it exited with. Flushed all the same, so a title the retitle above queued is not
         // held back by a frame there is nothing to draw for; with no cell changes it paints nothing.
+        //
+        // THE STATUS ROW IS STILL DRAWN, before the return: a client whose last pane just closed is
+        // still attached to a session and can still be pressed at, so the one surface able to say
+        // so must not be the thing that disappears with the panes.
+        screen.add_changes(status_changes(status, &Status::of(host), message));
         screen.flush()?;
         return Ok(());
     }
@@ -988,6 +1171,17 @@ fn paint(
         };
         screen.add_changes(divider_changes(&Divider { area, ..*divider }));
     }
+    // THE STATUS ROW, after the panes and BEFORE the cursor. It is outside the tiling's rectangle
+    // by construction ([`Split`]), so nothing above can have painted over it — and it is drawn HERE
+    // rather than at the call sites for the same reason the prompt below is: this is the one
+    // function that writes the terminal, so no future repaint can be added that forgets the row.
+    // `Status` is DERIVED from the host on every frame, so there is no cached location to go stale.
+    //
+    // **Before the cursor, and that ordering is load-bearing**: this row is the last thing painted
+    // in the terminal's own bottom-left corner, so drawing it after the cursor would leave the
+    // terminal's one cursor sitting on the status line instead of in the pane the user is typing
+    // into. The overlays below can follow the cursor because each of them HIDES it.
+    screen.add_changes(status_changes(status, &Status::of(host), message));
     screen.add_changes(cursor);
     // THE PROMPT LAST, and inside this function rather than at the call sites, for the reason the
     // retitle above is here: this is the one place that writes the terminal, so every path that
@@ -1246,6 +1440,36 @@ fn window_area(host: &WireHost, screen: Rect) -> Rect {
 /// Called at boot and on every window change, which are exactly the moments the answer can move.
 /// The daemon ignores a repeat of the same numbers, so a resize that ends where it started costs
 /// one call and wakes nobody.
+/// The status row's content for THIS instant: the message while one is live, and nothing once its
+/// deadline has passed.
+///
+/// One reader, called at every paint, so a row cannot show a sentence past its lifetime because one
+/// call site forgot to check the clock. The clock is read HERE rather than passed in for the reason
+/// [`Frame::message`] states: the loop and the paint must agree, and they agree by there being one
+/// function.
+fn showing(message: &Option<Message>) -> Option<&str> {
+    message.as_ref().and_then(|said| said.showing(now()))
+}
+
+/// Repaint the status row ALONE and flush it.
+///
+/// The row-only fast path, exactly as [`paint_prompt`] is for the question: a keystroke that
+/// produced a sentence has already repainted whatever else it changed, and re-tiling the panes to
+/// put one line on the screen would cost a frame for a row the surface diffs to a few cells.
+///
+/// [`Status`] is read from the host here rather than passed in, so this and [`paint`] cannot come to
+/// disagree about where the client is.
+fn paint_status(
+    screen: &mut BufferedTerminal<SystemTerminal>,
+    host: &WireHost,
+    area: Rect,
+    message: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    screen.add_changes(status_changes(area, &Status::of(host), message));
+    screen.flush()?;
+    Ok(())
+}
+
 fn report_size(host: &WireHost, screen: Rect) {
     host.report_client_size(screen.cols, screen.rows);
 }
@@ -1617,6 +1841,16 @@ struct Frame<'a> {
     clear: Clear,
     /// What is over the panes, drawn last so no repaint can lose it.
     overlay: &'a Overlay,
+    /// The bottom row this client speaks in — [`Split::status`]. Empty on a terminal with no room
+    /// for one, which every painter here already treats as "draw nothing".
+    status: Rect,
+    /// What that row says INSTEAD of where the client is, while a message is live.
+    ///
+    /// Carried on the frame rather than read inside [`paint`] for the reason the whole record
+    /// exists: the message has a DEADLINE, so a paint that read it would be reading a different
+    /// clock than the loop that set it — and the row would clear one frame late, on a client that
+    /// only repaints when something else happens.
+    message: Option<&'a str>,
 }
 
 /// What the loop should do with a key.

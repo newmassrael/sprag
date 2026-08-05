@@ -2263,8 +2263,8 @@ impl HostClient for WireHost {
     /// than left for a reader to wonder about: the trait answers where to put the focus ring, and
     /// nothing that draws one has anything to SAY about why it did not move. The day a client wants
     /// "you are at the edge", this signature is where the fact stops.
-    fn select_toward(&self, dir: PaneDir) -> Option<PaneId> {
-        let answer = self.request(
+    fn select_toward(&self, dir: PaneDir) -> bool {
+        let Some(answer) = self.request(
             "scene/invoke",
             invoke(
                 &mux_action_path(SELECT_PANE_ACTION),
@@ -2275,8 +2275,13 @@ impl HostClient for WireHost {
                 SelectAsk::Toward { dir, from: None }.to_args(),
             ),
             "select_toward",
-        )?;
-        answer["pane"].as_u64().map(PaneId)
+        ) else {
+            return false;
+        };
+        // `changed` and not the pane id: the daemon answers the pane the window is on either way,
+        // so the id says nothing about whether the key did anything. This key is the one the swap
+        // and the resize beside it already read this way.
+        answer["changed"].as_bool().unwrap_or(false)
     }
 
     /// Send the DIRECTION and let the daemon trade the two leaves — the same action
@@ -2384,17 +2389,27 @@ impl HostClient for WireHost {
         lock_windows(&self.windows).clone()
     }
 
-    fn select_window(&self, name: &str) {
+    /// The NAMED select, and it adopts the daemon's answer exactly as the step below does.
+    ///
+    /// **The daemon has always answered the window it landed on** — the handler's own comment says
+    /// giving the named arm the step's answer "is what keeps one shape for one verb" — and this
+    /// client discarded it until R316, which is what made `select-window -t <a name that is not
+    /// there>` indistinguishable from a success at every surface above. Nothing on the wire
+    /// changed; what changed is that the fact is now carried.
+    ///
+    /// ⚠ **The load-bearing half is the `?`, not the `as_str`**, and that was MEASURED rather than
+    /// assumed: a revert-proof that replaced the answer with the caller's own argument left the
+    /// live test GREEN, because an unknown name is REFUSED at the daemon and the refusal
+    /// short-circuits here. Reading the answer is kept for the shape the step arm has — one verb,
+    /// one reply — and for the day the daemon's recorded spelling stops being the argument.
+    fn select_window(&self, name: &str) -> Option<String> {
         let params = invoke(
             &mux_action_path(SELECT_WINDOW_ACTION),
             SelectWindowAsk::Named(name.to_owned()).to_args(),
         );
-        if self
-            .request("scene/invoke", params, "select_window")
-            .is_some()
-        {
-            self.refresh_view();
-        }
+        let landed = self.request("scene/invoke", params, "select_window")?;
+        self.refresh_view();
+        landed.as_str().map(str::to_owned)
     }
 
     /// The RING walk, asked of the daemon and adopted from its answer — never resolved against this
@@ -2919,24 +2934,6 @@ impl HostClient for WireHost {
                 &me,
             ));
         }
-    }
-
-    /// Switch to the LAST session — the session this client was viewing before this one, if it is
-    /// still there (tmux `switch-client -l`). A no-op when there is none (a fresh client that never
-    /// switched, or everything else it visited is gone) — matching tmux, which also no-ops.
-    ///
-    /// The pick is the DAEMON's, resolved by session identity, and this client keeps no history of
-    /// its own. It used to: a `Vec<String>` of names maintained by nothing, which R304 measured
-    /// walking straight into a stranger's session — the visited session had been renamed and a new
-    /// one had taken its name, so "take me back where I was" attached this client to a session it
-    /// had never seen, on the connection it types down.
-    ///
-    /// The poll thread is stopped FIRST, as for any switch, so nothing refreshes a mirror out from
-    /// under the swap; the cost of that is that a gesture with nowhere to go pays a re-attach to
-    /// where it already was, which is the same recovery a failed switch takes
-    /// (this client's one switch sequence).
-    fn switch_to_last_session(&self) {
-        self.switch_session_last();
     }
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {

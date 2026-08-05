@@ -286,6 +286,24 @@ fn with_chooser(scene: Scene, theme: &Theme) -> Scene {
     Scene::Container(root)
 }
 
+/// Overlay the MESSAGE STRIP on `scene` when this client has something to say (a no-op otherwise).
+///
+/// **LAST of all, above every modal**, and that is the one place in this order settled by what the
+/// thing is rather than by how destructive it is: a message is the answer to a key the user just
+/// pressed, and a key pressed while a modal is up is answered over that modal. It is also the only
+/// one of these that is NOT exclusive — the panes and any panel go on taking input while it shows,
+/// which is why it declares no scrim and no hit target.
+fn with_message(scene: Scene, theme: &Theme) -> Scene {
+    let Some(strip) = crate::message::view_message(theme, (WINDOW_W, WINDOW_H)) else {
+        return scene;
+    };
+    let Scene::Container(mut root) = scene else {
+        return scene;
+    };
+    root.children.push(strip);
+    Scene::Container(root)
+}
+
 fn with_confirm(scene: Scene, theme: &Theme) -> Scene {
     let Some(panel) = crate::confirm::view_confirm(theme, (WINDOW_W, WINDOW_H)) else {
         return scene;
@@ -342,24 +360,27 @@ pub(crate) fn view_for_window(window_id: &str, state: ViewState, _frame: &Frame)
         // The name prompt goes between the key table and the confirmation, which is the order of
         // how much each one is a point of no return: a key table changes nothing, a palette can be
         // dismissed, a name can be typed and re-typed, and a destructive yes cannot be taken back.
-        _ => with_confirm(
-            with_prompt(
-                with_chooser(
-                    with_keyhelp(
-                        with_palette(
-                            crate::ctxmenu::overlay(
-                                with_find_bar(view_main(&tv, &theme), state.find, &theme),
-                                state.menu,
+        _ => with_message(
+            with_confirm(
+                with_prompt(
+                    with_chooser(
+                        with_keyhelp(
+                            with_palette(
+                                crate::ctxmenu::overlay(
+                                    with_find_bar(view_main(&tv, &theme), state.find, &theme),
+                                    state.menu,
+                                    &theme,
+                                ),
+                                state.palette,
                                 &theme,
                             ),
-                            state.palette,
                             &theme,
                         ),
                         &theme,
                     ),
+                    state.prompt,
                     &theme,
                 ),
-                state.prompt,
                 &theme,
             ),
             &theme,

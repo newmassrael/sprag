@@ -1,0 +1,197 @@
+//! WHAT THE LAST KEY DID, as a strip this client puts over the bottom of its window (R316).
+//!
+//! The windowed half of [`sprag_host::report`]. The sentence, the deadline and the decision about
+//! which outcomes are worth saying out loud are all in that shared module, so this front and
+//! `sprag-tui` cannot come to disagree about what a key did. **Nothing in this file knows what a
+//! session is**, which is the same claim [`crate::chooser`] opens with and for the same reason.
+//!
+//! # Why a strip and not the terminal front's status ROW
+//!
+//! `sprag-tui` reserves its bottom row permanently, because a terminal client has no chrome at all
+//! and *where am I* had nowhere else to go. This window already answers that: the session rail and
+//! the window tab strip name the session and its windows, and they are painted from the same two
+//! facts [`sprag_host::status::Status`] reads. What is missing here is only the NEGATIVE half — the
+//! key that did nothing — so only that half is built.
+//!
+//! It is an OVERLAY rather than a layout child, and that is not a style preference: a strip that
+//! joined the column would resize the pane grid every time a message appeared and again when it
+//! expired, so the daemon would re-arbitrate the window twice per refused keystroke. The panes must
+//! not move because a client said something.
+//!
+//! # The expiry needs a WAKE, and this is where the one timer lives
+//!
+//! A pinion window repaints on damage, so a message whose deadline passes with nothing else
+//! happening would sit on the screen until the next event. One detached thread per shown message
+//! sleeps to the deadline and asks for a repaint. It is bounded by construction — a thread lives at
+//! most `display-time`, and only a keystroke that SAID something starts one — and it is the same
+//! `RepaintSink` seam the PTY producer already wakes this client through.
+
+use pinion_a11y::{AccessNode, AccessValue, AriaRole};
+use pinion_core::Scene;
+use pinion_core::reactive::{Owner, Signal};
+use pinion_core::scene::{ContainerNode, Rect, TextNode};
+use pinion_core::style::{
+    AlignItems, BoxStyle, FlexDirection, JustifyContent, LayoutStyle, Size, SizeValue, TextStyle,
+};
+use pinion_core::theme::{ColorRole, Theme};
+use sprag_host::report::{Message, Report, display_time, now};
+
+/// The strip's tag — where a test reads the sentence this client is showing, rather than inferring
+/// it from pixels.
+pub(crate) const MESSAGE_STRIP_TAG: &str = "sprag_message_strip";
+
+/// `Owner::cache` key for the live message.
+const MESSAGE_KEY: &str = "sprag_gui.message";
+
+/// The strip's height in pixels — one line of [`FONT_PX`] with room to breathe.
+const STRIP_H: u32 = 28;
+/// The sentence's size.
+const FONT_PX: u32 = 14;
+/// How far the strip sits from the window's edges.
+const MARGIN: u32 = 8;
+
+/// The message being shown, or `None` when the client has nothing to say.
+fn use_message() -> Signal<Option<Message>> {
+    Owner::current()
+        .expect("use_message() requires an active Owner scope")
+        .cache(MESSAGE_KEY, || Signal::new(None))
+        .as_ref()
+        .clone()
+}
+
+/// Show what a key just did, if it had anything to say.
+///
+/// A [`Report`] with nothing to say leaves whatever is up ALONE rather than clearing it: a user who
+/// pressed a key that spoke and then typed into a pane is still owed the sentence for its remaining
+/// lifetime, and the deadline is what takes it away.
+pub(crate) fn show(report: &Report) {
+    let Some(said) = Message::of(
+        report,
+        now(),
+        display_time(&crate::keys::use_client_keys().options()),
+    ) else {
+        return;
+    };
+    let until = said.until();
+    use_message().set(Some(said));
+    wake_at(until);
+}
+
+/// The sentence to paint right now, or `None` once the deadline has passed.
+///
+/// The clock is read HERE rather than by a timer that clears the signal, so a client that never
+/// repaints again shows a stale line to nobody — [`Message::showing`]'s own rule.
+#[must_use]
+pub(crate) fn showing() -> Option<String> {
+    use_message().get()?.showing(now()).map(str::to_owned)
+}
+
+/// Ask for a repaint once `until` has passed, so the strip clears on its own deadline.
+///
+/// A detached thread and not a runtime timer, because pinion has no scheduler seam and this client
+/// already wakes the same way from the PTY producer's reader thread. Bounded: one thread per
+/// keystroke that SAID something, each living at most `display-time`.
+fn wake_at(until: sprag_host::report::Moment) {
+    let sink = pinion_core::use_repaint_sink();
+    std::thread::spawn(move || {
+        std::thread::sleep(until.saturating_sub(now()));
+        sink.request_repaint();
+    });
+}
+
+/// The strip's paint: the sentence, pinned to the bottom of the window — or nothing at all when the
+/// client has nothing to say.
+///
+/// The whole overlay is a full-window container with no fill and `JustifyContent::End`, so it
+/// covers the window without painting over it and puts its one child at the bottom. It declares no
+/// hit target: a message is read, not clicked, and a strip that swallowed a click would take a
+/// pane's last row away from the pointer for three quarters of a second.
+#[must_use]
+pub(crate) fn view_message(theme: &Theme, window: (u32, u32)) -> Option<Scene> {
+    let line = showing()?;
+    let strip = Scene::Container(
+        ContainerNode::new(vec![Scene::Text(TextNode::styled(
+            line,
+            Rect::default(),
+            TextStyle::new()
+                .with_size_px(FONT_PX)
+                .with_fg(theme.resolve(ColorRole::OnSurface)),
+        ))])
+        .with_tag(MESSAGE_STRIP_TAG)
+        .with_style(
+            // The ERROR container role, because everything this strip can say is a thing that did
+            // not happen — see [`sprag_host::report`], where a landing is deliberately silent.
+            BoxStyle::filled(theme.resolve(ColorRole::SurfaceContainerHigh)).with_corner_radius(6),
+        )
+        .with_layout(
+            LayoutStyle::new()
+                .flex(FlexDirection::Row)
+                .with_padding(Rect::new(MARGIN, MARGIN, MARGIN, MARGIN))
+                .with_size(Size::auto().with_height(SizeValue::Px(STRIP_H))),
+        ),
+    );
+    Some(Scene::Container(
+        ContainerNode::new(vec![strip]).with_layout(
+            LayoutStyle::new()
+                .flex(FlexDirection::Column)
+                .with_align_items(AlignItems::Center)
+                .with_justify(JustifyContent::End)
+                .with_padding(Rect::new(MARGIN, MARGIN, MARGIN, MARGIN))
+                .with_size(Size::px(window.0, window.1)),
+        ),
+    ))
+}
+
+/// The strip as a screen reader reads it — a live region, so a sentence that appears while the
+/// user's focus is in a pane is ANNOUNCED rather than only drawn.
+///
+/// `Status` and not `Alert`: what this says is the outcome of a key the user just pressed, which is
+/// polite by definition — an assertive role would interrupt a screen reader mid-word to say that a
+/// pane did not move.
+#[must_use]
+pub(crate) fn message_access_nodes() -> Vec<AccessNode> {
+    showing().map_or_else(Vec::new, |line| {
+        vec![
+            AccessNode::new(MESSAGE_STRIP_TAG, AriaRole::Status)
+                .with_name("what the last key did")
+                .with_value(AccessValue::Text(line)),
+        ]
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sprag_host::keymap::{BoundAction, SwitchClientAsk};
+
+    /// A report with nothing to say leaves the client silent, so the strip is absent rather than
+    /// empty — the state a blank bar would be indistinguishable from.
+    #[test]
+    fn what_is_on_screen_raises_no_strip() {
+        let owner = Owner::new();
+        owner.run(|| {
+            show(&Report::on_screen());
+            assert_eq!(showing(), None);
+            assert!(view_message(&Theme::default(), (960, 600)).is_none());
+            assert!(message_access_nodes().is_empty());
+        });
+    }
+
+    /// The measured defect's sentence reaches this front's surface, in the SAME words the terminal
+    /// front paints — both read [`Report::says`], and neither writes one.
+    #[test]
+    fn a_refusal_is_shown_and_announced() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let action = BoundAction::SwitchClient {
+                ask: SwitchClientAsk::Named("ghost".into()),
+            };
+            show(&Report::no_such(&action));
+            assert_eq!(showing().as_deref(), Some("no session called \"ghost\""));
+            assert!(view_message(&Theme::default(), (960, 600)).is_some());
+            let nodes = message_access_nodes();
+            assert_eq!(nodes.len(), 1, "one live region, not one per frame");
+            assert_eq!(nodes[0].role, AriaRole::Status);
+        });
+    }
+}

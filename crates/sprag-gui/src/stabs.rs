@@ -973,7 +973,9 @@ mod tests {
         fn windows(&self) -> Vec<WindowInfo> {
             Vec::new()
         }
-        fn select_window(&self, _name: &str) {}
+        fn select_window(&self, _name: &str) -> Option<String> {
+            None
+        }
         fn select_window_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {
             None
         }

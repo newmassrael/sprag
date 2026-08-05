@@ -185,32 +185,34 @@ impl SlotView {
     /// the same wire action, resolved against the arrangement rather than against this client's
     /// tiles (see [`HostClient::select_toward`]).
     ///
-    /// The answer is dropped for [`Self::select_pane`]'s reason and one more: which pane the session
-    /// is on is exactly what [`crate::active_pane`] already follows, so adopting it here would be a
-    /// second path to a fact this client has one path to.
-    pub(crate) fn select_toward(&self, dir: PaneDir) {
-        let _ = self.host.select_toward(dir);
+    /// Answers whether the focus MOVED. WHICH pane it moved to is still not adopted here — that is
+    /// exactly what [`crate::active_pane`] already follows, and a second path to it would be a
+    /// second answer — but whether it moved at all is a fact no repaint carries, because a select
+    /// at the arrangement's edge changes nothing on the screen.
+    pub(crate) fn select_toward(&self, dir: PaneDir) -> bool {
+        self.host.select_toward(dir)
     }
 
     /// Ask the daemon to TRADE the active pane with its neighbour one step in `dir` — the swap's
     /// directional arm, resolved against the same arrangement (see [`HostClient::swap_toward`]).
     ///
-    /// The answer is dropped for [`Self::select_toward`]'s reason: the daemon announces an
-    /// arrangement that moved, and the layout mirror this client projects from is what re-reads it.
-    /// Adopting the answer here would be a second path to a fact this client has one path to.
-    pub(crate) fn swap_toward(&self, dir: PaneDir) {
-        let _ = self.host.swap_toward(dir);
+    /// Answers whether the arrangement MOVED, for [`Self::select_toward`]'s reason: the daemon
+    /// announces an arrangement that changed and the layout mirror re-reads it, so the new
+    /// arrangement is not adopted here — but a swap at the edge produces no announcement to read,
+    /// which is the half a caller cannot get any other way.
+    pub(crate) fn swap_toward(&self, dir: PaneDir) -> bool {
+        self.host.swap_toward(dir)
     }
 
     /// Ask the daemon to MOVE THE BOUNDARY beside the active pane `cells` cells in `dir` — see
     /// [`HostClient::resize_toward`].
     ///
-    /// The answer is dropped for [`Self::select_toward`]'s reason, and the DISTANCE is sent rather
-    /// than resolved here for a reason of this verb's own: a cell becomes a share against the
-    /// arbitrated window, which is derived from every attached client's report and not from this
-    /// one's surface.
-    pub(crate) fn resize_toward(&self, dir: PaneDir, cells: u16) {
-        let _ = self.host.resize_toward(dir, cells);
+    /// Answers whether the boundary MOVED, for [`Self::select_toward`]'s reason. The DISTANCE is
+    /// sent rather than resolved here for a reason of this verb's own: a cell becomes a share
+    /// against the arbitrated window, which is derived from every attached client's report and not
+    /// from this one's surface.
+    pub(crate) fn resize_toward(&self, dir: PaneDir, cells: u16) -> bool {
+        self.host.resize_toward(dir, cells)
     }
 
     /// The display slot holding `pane` — the inverse of [`Self::id`], for PROJECTING
@@ -265,10 +267,13 @@ impl SlotView {
         self.host.windows()
     }
 
-    /// Make the window named `name` current (tmux `select-window`) — a tab click.
-    pub(crate) fn select_window(&self, name: &str) {
-        self.host.select_window(name);
+    /// Make the window named `name` current (tmux `select-window`) — a tab click, and the key
+    /// bound to `select-window -t <name>`. Answers the window it landed on, [`None`] when no window
+    /// carries that name.
+    pub(crate) fn select_window(&self, name: &str) -> Option<String> {
+        let landed = self.host.select_window(name);
         self.reseed_pane_focus();
+        landed
     }
 
     /// Walk the window RING one step, wrapping (tmux `next-window` / `previous-window`) — the
@@ -583,11 +588,17 @@ impl SlotView {
     }
 
     /// Switch to the LAST session — the most-recent OTHER session this client visited that is still
-    /// live (tmux `switch-client -l`), bound to `prefix L` and `C-S-L`. A no-op for the in-process
-    /// host (no visit history).
-    pub(crate) fn switch_to_last_session(&self) {
-        self.host.switch_to_last_session();
+    /// live (tmux `switch-client -l`), bound to `prefix L`. Answers where it landed, or [`None`]
+    /// when there was nowhere to go back to. A no-op for the in-process host (no visit history).
+    ///
+    /// **It called a second method until R316** — `switch_to_last_session`, a `()`-answering
+    /// wrapper on this one, so the GUI dropped the landing where `sprag-tui` read it. Two methods
+    /// for one action is the shape the debt question sweeps for, and the wrapper is DELETED rather
+    /// than given an answer: one act, one method, at both frontends.
+    pub(crate) fn switch_session_last(&self) -> Option<String> {
+        let landed = self.host.switch_session_last();
         self.reseed_pane_focus();
+        landed
     }
 
     /// Switch to the session NAMED, answering the name the daemon recorded — `switch-client -t
@@ -1218,7 +1229,9 @@ mod tests {
         fn windows(&self) -> Vec<WindowInfo> {
             Vec::new()
         }
-        fn select_window(&self, _name: &str) {}
+        fn select_window(&self, _name: &str) -> Option<String> {
+            None
+        }
         fn select_window_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {
             None
         }

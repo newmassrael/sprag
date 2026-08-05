@@ -10,7 +10,9 @@ use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
 use sprag_host::keymap::{BoundAction, Routed, SwitchClientAsk};
+use sprag_host::report::Report;
 use sprag_host::wire::SelectWindowAsk;
+use sprag_terminal::PlaceHow;
 
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
 /// per-pane key site [`pane_cache_key`] so the index suffix cannot drift.
@@ -333,9 +335,18 @@ fn action_label(action: &BoundAction) -> &'static str {
 /// Nothing here repaints: a split's new pane and a focus move both reach the paint through the
 /// channels that already carry them (the host announces the pane set, and a focus request re-derives
 /// the ring), which is why the palette's `New pane` needs no repaint either.
-pub(crate) fn perform(action: BoundAction, active: usize) {
-    match action {
-        BoundAction::DetachClient => pinion_core::use_quit_sink().request_quit(),
+/// **Every arm ANSWERS** (R316). The match is an expression whose value is what this keystroke did,
+/// so an action that changed nothing cannot leave without saying so — the defect R316 measured (a
+/// key bound to a session that does not exist left a live client byte-for-byte unchanged) is
+/// unrepresentable here, because there is no arm that can simply return.
+#[must_use = "the caller shows it — see `crate::message`"]
+pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
+    match &action {
+        BoundAction::DetachClient => {
+            pinion_core::use_quit_sink().request_quit();
+            // The window is closing; there is nobody left to read a sentence.
+            Report::on_screen()
+        }
         BoundAction::SendPrefix => {
             let prefix = use_client_keys().prefix();
             // Whether the PTY could be given it is discarded on purpose. Elsewhere a `false` from
@@ -346,41 +357,78 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
             let _ = use_terminal()
                 .slots
                 .send_key(active, prefix.name(), prefix.mods());
+            // The pane answers: whatever the program inside it does about the prefix is what
+            // appears, and a client sentence over the top would be this client talking about
+            // somebody else's program.
+            Report::on_screen()
         }
         // THE ONLY ACTION THAT SHOWS THIS CLIENT ITSELF, and so the only one whose whole effect is
         // a surface of its own: it reaches no daemon and moves nothing. The table is read from the
         // live client keys, so a user who has just edited their config is shown what they wrote.
-        BoundAction::ListKeys => crate::keyhelp::show(use_client_keys().help()),
+        BoundAction::ListKeys => {
+            crate::keyhelp::show(use_client_keys().help());
+            Report::on_screen()
+        }
         // Reached only when `Ask::of` answered `None` — a daemon with an empty tree, which is a
         // question with nothing to ask about. The chooser's real path is the `Ask::Choose` arm in
         // `route_key`, exactly as the rename verbs' is.
-        BoundAction::ChooseTree => {}
+        BoundAction::ChooseTree => Report::on_screen(),
         BoundAction::SplitWindow { dir, before } => {
-            use_terminal().slots.split(active, dir, before);
+            use_terminal().slots.split(active, *dir, *before);
+            Report::on_screen()
         }
-        BoundAction::SelectNextPane => cycle_focus(active, true),
+        BoundAction::SelectNextPane => {
+            cycle_focus(active, true);
+            // The ring is this client's own paint order, so a window holding one pane cycles onto
+            // itself — which is not a refusal, it is the answer.
+            Report::on_screen()
+        }
         // Unlike the cycle above, this one does NOT move the ring: it asks the daemon to move the
         // session's active pane, and `crate::active_pane`'s reconcile follows that onto a focus
         // request on the next pass. One path to "which pane the session is on" rather than two,
         // which is the same discipline the zoom below leans on.
-        BoundAction::SelectPaneToward { dir } => use_terminal().slots.select_toward(dir),
+        // `false` is the EDGE, which no repaint can show because nothing moved — the fact
+        // `HostClient::select_toward`'s own doc said stopped at its signature until R316.
+        BoundAction::SelectPaneToward { dir } => {
+            if use_terminal().slots.select_toward(*dir) {
+                Report::on_screen()
+            } else {
+                Report::nowhere(&action)
+            }
+        }
         // The same shape one verb over, and for the same reason: the daemon resolves the direction
         // and announces the arrangement it produced, which is the channel the dock topology is
         // already projected from. Nothing here repaints.
-        BoundAction::SwapPaneToward { dir } => use_terminal().slots.swap_toward(dir),
+        // The select's rule one verb over: a swap that moved nothing looks exactly like a key that
+        // is not bound.
+        BoundAction::SwapPaneToward { dir } => {
+            if use_terminal().slots.swap_toward(*dir) {
+                Report::on_screen()
+            } else {
+                Report::nowhere(&action)
+            }
+        }
         // The same shape again, and the reason the DISTANCE travels rather than being applied here:
         // a cell becomes a share against the split's region under the ARBITRATED window, which is
         // derived from every attached client's report and not from this one's surface. A client
         // converting it would move the boundary a different distance than the user asked for
         // whenever another client is larger.
+        // The same rule a third time, and this is the arm a user is likeliest to hold down without
+        // noticing: a boundary at the window's own edge, or a lone pane with no boundary at all.
         BoundAction::ResizePaneToward { dir, cells } => {
-            use_terminal().slots.resize_toward(dir, cells);
+            if use_terminal().slots.resize_toward(*dir, *cells) {
+                Report::on_screen()
+            } else {
+                Report::nowhere(&action)
+            }
         }
         // The wire client re-reads the arrangement when the zoom moved anything, and the layout
         // mirror is what the dock topology is projected from — so this repaints through the channel
         // that already carries an arrangement change, exactly as the split above does.
         BoundAction::ZoomPane { on } => {
-            use_terminal().slots.zoom_pane(active, on);
+            use_terminal().slots.zoom_pane(active, *on);
+            // A zoom is a change to what is DRAWN, so the drawing is the report.
+            Report::on_screen()
         }
         // The CASCADE is the daemon's (R309): closing the window's last pane ends the window, and
         // this client learns that the way it learns every set change — the host announces and the
@@ -389,6 +437,7 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         // word.
         BoundAction::KillPane => {
             use_terminal().slots.close_pane(active);
+            Report::on_screen()
         }
         // THE WINDOW LEVEL (R305). Nothing here repaints, for this function's standing reason: a
         // window change reaches the paint through the channels that already carry it — the host
@@ -396,15 +445,24 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         // above relies on.
         BoundAction::NewWindow => {
             use_terminal().slots.new_window();
+            // A window is born and selected, so the tab strip below is the answer.
+            Report::on_screen()
         }
         // The walk is the DAEMON's, exactly as the directional pane move above is: this asks, and
         // the answer arrives as the arrangement the host publishes.
         BoundAction::SelectWindow { ask } => {
             let slots = &use_terminal().slots;
             match ask {
-                SelectWindowAsk::Named(window) => slots.select_window(&window),
+                // THE NAME IS THE HALF THAT CAN BE WRONG. A window called what the config says may
+                // simply not be there, and until R316 the daemon's refusal stopped at a `()`.
+                SelectWindowAsk::Named(window) => match slots.select_window(window) {
+                    Some(_) => Report::on_screen(),
+                    None => Report::no_such(&action),
+                },
+                // The step cannot miss: a session always holds a window, so the walk always lands.
                 SelectWindowAsk::Step(step) => {
-                    slots.select_window_toward(step);
+                    let _ = slots.select_window_toward(*step);
+                    Report::on_screen()
                 }
             }
         }
@@ -415,18 +473,22 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
             if let Some(window) = slots.windows().into_iter().find(|w| w.current) {
                 slots.kill_window(&window.name);
             }
+            Report::on_screen()
         }
         // NO window named, unlike the kill above it: the daemon resolves "the one I am on" under
         // the lock that performs the move. The kill reads the mirror because a kill's QUESTION
         // already named a window to the user and the act must match what they agreed to; nothing
         // was agreed to here.
         //
-        // The outcome word is discarded here and NOT in the prompt arm beside it: this client
-        // repaints its window strip off the daemon's own announcement, so a move that changed
-        // nothing repaints nothing — where a user who answered a question is owed a sentence.
-        BoundAction::MoveWindow { place } => {
-            use_terminal().slots.move_window(None, &place);
-        }
+        // **The outcome word IS read now** (R316), and the note it replaces had the argument
+        // exactly backwards: *"a move that changed nothing repaints nothing"* is the REASON to
+        // report it, not the reason to drop it. Three of `PlaceHow`'s four words leave the order
+        // untouched, and the two that are a user's mistake — already at that end, or anchored to
+        // the window itself — are the ones a person needs told.
+        BoundAction::MoveWindow { place } => match use_terminal().slots.move_window(None, place) {
+            Some((_, PlaceHow::Moved)) => Report::on_screen(),
+            Some((_, _)) | None => Report::nowhere(&action),
+        },
         // THE SESSION LEVEL (R314). The ring is the DAEMON's for the same reason the window ring
         // above it is, and more sharply: this client's `sessions` mirror is refreshed by a poll, so
         // a step resolved here could name a row that has moved — which is what the private
@@ -437,19 +499,27 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         BoundAction::SwitchClient { ask } => {
             let slots = &use_terminal().slots;
             match ask {
-                SwitchClientAsk::Step(step) => {
-                    slots.switch_session_toward(step);
-                }
-                SwitchClientAsk::LastViewed => slots.switch_to_last_session(),
-                // The ANSWERING form, which is what `sprag-tui` calls for this same arm. Both
-                // discard the landing (a keystroke has nowhere to paint a refusal), but calling two
-                // different methods for one action is how two frontends come to disagree — and the
-                // non-answering one cannot tell a bad name from a good one even if a caller wanted
-                // to know.
-                SwitchClientAsk::Named(session) => {
-                    slots.switch_session_named(&session);
-                }
-                SwitchClientAsk::Ask => {}
+                // A step that landed is shown by the session tabs naming where it landed; `None`
+                // is a ring this client could not be walked along at all.
+                SwitchClientAsk::Step(step) => match slots.switch_session_toward(*step) {
+                    Some(_) => Report::on_screen(),
+                    None => Report::nowhere(&action),
+                },
+                // `None` here is the degraded half R304 measured: this client has viewed nothing
+                // else that is still alive, so "take me back" has nowhere to take anybody.
+                SwitchClientAsk::LastViewed => match slots.switch_session_last() {
+                    Some(_) => Report::on_screen(),
+                    None => Report::nowhere(&action),
+                },
+                // **THE MEASURED DEFECT**, and the comment this replaces is the register's own
+                // *"a keystroke has nowhere to paint a refusal"* — which was true, and is what
+                // R316 built the surface for.
+                SwitchClientAsk::Named(session) => match slots.switch_session_named(session) {
+                    Some(_) => Report::on_screen(),
+                    None => Report::no_such(&action),
+                },
+                // Unreachable: `Ask::of` consumes the asking form and opens a chooser with it.
+                SwitchClientAsk::Ask => Report::on_screen(),
             }
         }
         // THE ACTIONS THAT ASK reach this function only through their own question being
@@ -461,7 +531,7 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         | BoundAction::RenameSession
         | BoundAction::RenamePane
         | BoundAction::MoveWindowBefore
-        | BoundAction::ConfirmBefore { .. } => {}
+        | BoundAction::ConfirmBefore { .. } => Report::on_screen(),
     }
 }
 
@@ -621,7 +691,10 @@ pub(crate) fn route_key(
                     };
                     crate::confirm::arm_bound(action, active, &ask);
                 }
-                None => perform(action, active),
+                // NOTHING TO ASK, so the verb runs — and what it did is SHOWN. This is the one
+                // place a bare binding's outcome reaches a surface, which is why `perform` is
+                // `#[must_use]`: a future arm that dropped it would be the silent key again.
+                None => crate::message::show(&perform(action, active)),
             }
             return true;
         }
