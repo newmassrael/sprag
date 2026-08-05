@@ -72,24 +72,44 @@ use crate::workspace::{HistoryLimitSource, Pane, PaneEnvSource, Workspace};
 /// now called `prod`* rather than reporting a death and a birth a client acts on by tearing down
 /// everything it held.
 ///
-/// # It is a WITHIN-RUN identity and does not cross the wire
+/// # It is a WITHIN-RUN identity, and it crosses the wire for ONE question
 ///
 /// Minted from one registry-wide counter, never reused while the daemon lives, and NOT restored
 /// from the durability snapshot — a rebooted daemon mints fresh ones, because the only holder an
-/// id could have had is a client that did not survive the reboot either. Nothing serialises it.
-/// The trade, stated rather than hidden: a client cannot hold an identity that outlives a rename;
-/// it holds a name and is TOLD the moment that name moves.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+/// id could have had is a client that did not survive the reboot either.
+///
+/// **⚠ R315 RE-DECIDED THE SECOND HALF OF THIS PARAGRAPH.** It read *"Nothing serialises it… a
+/// client cannot hold an identity that outlives a rename; it holds a name and is TOLD the moment
+/// that name moves"* — true while the id had exactly one consumer (the derivation), and a
+/// CHOOSER is the second. A chooser paints a list and then waits for a person to read it, so what
+/// it commits is a fact about the PAST; R304 already recorded that *a fact about the present can
+/// be kept true by a hook where the change is published, and a fact about the past cannot*. A
+/// picked NAME lands on whatever holds it now (R304 measured the impostor), and a picked POSITION
+/// lands on whatever sits there now (R295's rule one level down). So the id goes on the wire, and
+/// the bound it is published under is stated here rather than left to a reader:
+///
+/// * It is valid **for the lifetime of one daemon** and no client may persist one. A daemon that
+///   does not know an id REFUSES it with a sentence and resolves it to nothing — the arm this
+///   type's own liveness makes possible, where a stale NAME cannot be refused because it resolves.
+/// * The address of a session is still its **NAME** at every surface a person types at (`-t`,
+///   tmux's grammar, this registry's own lookups). The id addresses nothing a human writes.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct SessionId(pub u64);
 
 /// A window's IDENTITY — [`SessionId`]'s twin one level down, for the same derivation and on the
-/// same terms: unique registry-wide, minted from the one counter, never on the wire.
+/// same terms: unique registry-wide, minted from the one counter, and published under exactly the
+/// bound stated there (R315's chooser is the one reader; a daemon that does not know one refuses
+/// it).
 ///
 /// Registry-wide rather than per-session even though every comparison of one happens inside a
 /// single session today, because the day a window can MOVE between sessions is the day a
 /// per-session id starts colliding — and that failure would show up as a wrong EVENT, which is the
 /// class this whole type exists to remove.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct WindowId(pub u64);
 
 /// One step FORWARD or BACK along an order — tmux's `-n` / `-p` on every verb that takes them.
@@ -1505,6 +1525,108 @@ impl SessionInfo {
     }
 }
 
+/// A chooser's path, RESOLVED against the registry — what [`SessionRegistry::locate`] answers.
+///
+/// A record rather than the nested tuple it was, on [`crate::PaneMoveError`]'s own argument and
+/// this module's: at a call site a `(String, Option<(String, Arc<Mutex<Workspace>>)>)` says nothing
+/// about which half is which, and these are not interchangeable — one is a session's name and the
+/// other is a window's, and swapping them still compiles.
+pub struct Located {
+    /// The picked session's name NOW, whatever it was called when the row was painted.
+    pub session: String,
+    /// The picked window, for a path that named one.
+    pub window: Option<LocatedWindow>,
+}
+
+/// The window half of a [`Located`] — its name now, and the pool a caller checks the pane against.
+pub struct LocatedWindow {
+    /// The window's name NOW.
+    pub name: String,
+    /// Its pane pool, to be locked on its OWN after the registry lock is released.
+    pub pool: Arc<Mutex<Workspace>>,
+}
+
+/// One session in the registry-wide NAVIGABLE TREE — everything a chooser draws a row from, with
+/// the IDENTITY it commits by (R315).
+///
+/// # Why this is not [`SessionInfo`] with a field added
+///
+/// [`SessionInfo`] answers *what sessions exist*, and every reader of it — `sprag ls`, the GUI's
+/// session rail, `switch-client`'s ring walk — wants that and nothing more. This answers *where
+/// can I go*, which is a different question with a different subject: it descends, and it carries
+/// the ids. Folding the two would make every poll of the session list pay for every window's pane
+/// pool.
+///
+/// # ONE READ, ONE SNAPSHOT
+///
+/// The whole tree is built in one call ([`SessionRegistry::tree`]) rather than by asking per
+/// session, because a chooser assembled from N reads is the torn read this project has removed
+/// twice already (R282's activity split, R285's zoom projection): the levels would disagree, and
+/// the disagreement would be a row pointing at a window that the row above says is not there.
+///
+/// The rival rebuilds its navigator's rows from live application state on every render AND again
+/// when the selection is accepted (`navigator_rows_from`, herdr `9a4ce5e1`) — which is coherent
+/// for one process under one lock and is not available across a display-client seam.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TreeSession {
+    /// What a pick COMMITS by — see [`SessionId`] for the bound this is published under.
+    pub id: SessionId,
+    /// What a row is LABELLED with. A name is an address a person types; the id is not.
+    pub name: String,
+    /// Whether this is the registry default (where an unscoped request lands) — the same fact
+    /// [`SessionInfo::default`] carries and drawn the same way.
+    pub default: bool,
+    /// How many clients are viewing it. Filled HOST-side (the registry has no idea who is
+    /// watching), exactly as [`SessionInfo::attached`] is, and by the same builder — so a chooser
+    /// row and a `sprag ls` row cannot disagree about it.
+    ///
+    /// **The rival cannot have this column**: herdr is one process with no display-client seam, so
+    /// there is never anybody else viewing a workspace.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attached: usize,
+    /// Its windows, in the session's own order — the order `windows` publishes and `move-window`
+    /// sets.
+    pub windows: Vec<TreeWindow>,
+}
+
+/// One window of a [`TreeSession`].
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TreeWindow {
+    /// What a pick commits by — see [`WindowId`].
+    pub id: WindowId,
+    /// The window's display name (a tab label).
+    pub name: String,
+    /// Whether it is its session's current window.
+    pub current: bool,
+    /// Its panes, in pool order.
+    pub panes: Vec<TreePane>,
+}
+
+/// One pane of a [`TreeWindow`] — the leaf a chooser can send a person to.
+#[derive(Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TreePane {
+    /// What a pick commits by. A [`PaneId`] has been on the wire all along, which is exactly why
+    /// the two levels above it needed the same treatment before a chooser could exist.
+    pub id: PaneId,
+    /// The name a person gave it, or [`None`] — never the command label standing in for one, on
+    /// [`crate::PaneName`]'s rule that a label is not a name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// What it was launched with — the only thing a chooser can say about an UNNAMED pane, and the
+    /// same fact `sprag_host`'s guarded kill names its subject with.
+    pub command: String,
+    /// Whether it is its window's active pane.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub active: bool,
+}
+
+/// `skip_serializing_if` predicate for [`TreePane::active`] — the same "omit the default" rule
+/// [`is_zero`] states for the counts, spelled for a `bool`.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
 /// `skip_serializing_if` predicate for [`SessionInfo::attached`] / [`SessionInfo::panes`] — a
 /// `usize` has no `is_empty`, so the "omit the default" rule the other enrichment fields get from
 /// `Option`/`Vec` is spelled out here, keeping a paneless / unattached session byte-identical to
@@ -2640,6 +2762,149 @@ impl SessionRegistry {
             info.panes = Self::window_pane_count(pools);
         }
         infos
+    }
+
+    /// The whole registry as a NAVIGABLE TREE, with every level's identity — what a chooser draws
+    /// (R315).
+    ///
+    /// TWO-PHASE for [`session_infos_live`](Self::session_infos_live)'s reason, verbatim: the
+    /// structure (and every window's pool handle) under the registry lock, then each pool locked on
+    /// its OWN. Never nested — the module's registry-then-workspace discipline.
+    ///
+    /// # What one caller means by ONE snapshot, and what it does not
+    ///
+    /// Every session's structure is read under a single acquisition of the registry lock, so the
+    /// sessions, their windows, the window ORDER and which window is current are mutually
+    /// consistent. The pane pools are then read one at a time, so a pane that exits between two
+    /// pools is absent from the second and present in the first — the same bound
+    /// [`session_infos_live`](Self::session_infos_live) has always had for its counts, and it is
+    /// harmless HERE for the reason the whole design rests on: a row is TEXT, and what a pick
+    /// commits is an id the daemon resolves again at the moment of use. A row for a pane that has
+    /// gone is refused with a sentence; it cannot select something else.
+    ///
+    /// [`TreeSession::attached`] is left ZERO — the registry cannot know who is watching. The host
+    /// fills it, exactly as it does for [`SessionInfo::attached`].
+    #[must_use]
+    pub fn tree(registry: &Arc<Mutex<Self>>) -> Vec<TreeSession> {
+        // Phase 1 — registry lock ONLY: the structure of every level, each carrying the handles
+        // phase 2 needs. Built as ONE nested value rather than as parallel Vecs zipped by position
+        // afterwards: `session_infos_live`'s pairing claim ("entry `i` of both Vecs names the same
+        // session") is a comment nothing checks, and a tree has two levels of it to get wrong.
+        let mut sessions: Vec<(TreeSession, Vec<Arc<Mutex<Workspace>>>)> = {
+            let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
+            let default = reg.default_session().name().to_owned();
+            reg.sessions
+                .iter()
+                .map(|session| {
+                    let current = session.current_window().id();
+                    let mut windows = Vec::with_capacity(session.windows().len());
+                    let mut pools = Vec::with_capacity(session.windows().len());
+                    for window in session.windows() {
+                        windows.push(TreeWindow {
+                            id: window.id(),
+                            name: window.name().to_owned(),
+                            current: window.id() == current,
+                            panes: Vec::new(),
+                        });
+                        pools.push(Arc::clone(window.workspace()));
+                    }
+                    (
+                        TreeSession {
+                            id: session.id(),
+                            name: session.name().to_owned(),
+                            default: session.name() == default,
+                            attached: 0,
+                            windows,
+                        },
+                        pools,
+                    )
+                })
+                .collect()
+        };
+
+        // Phase 2 (each pool under its OWN lock, never nested with the registry): the panes.
+        for (session, pools) in &mut sessions {
+            for (window, pool) in session.windows.iter_mut().zip(pools) {
+                let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
+                window.panes = pool
+                    .panes()
+                    .iter()
+                    .map(|pane| TreePane {
+                        id: pane.id(),
+                        name: pane.name().map(|name| name.as_str().to_owned()),
+                        command: pane.command_label().to_owned(),
+                        active: false,
+                    })
+                    .collect();
+            }
+        }
+
+        // Phase 3 — the registry AGAIN, for the one fact that needs both halves: which pane each
+        // window is ON.
+        //
+        // ⚠ IT RECONCILES FIRST, and reading `active_pane()` raw in phase 1 is what this replaces.
+        // A window whose layout has never been reconciled answers `None` — which is EVERY freshly
+        // booted session — so the tree said "no pane is here" about a pane the `panes` slot was
+        // simultaneously reporting as active. Two answers to one question, in the daemon, measured
+        // against a live one rather than reasoned about. `sprag_host::host::active_pane` has always
+        // reconciled for the neighbouring reason its own comment gives (a pane that has just exited
+        // must not be marked active in a list that no longer holds it), and this is now that same
+        // sequence per window: pool ids taken above, registry taken here, never nested.
+        {
+            let mut reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
+            for (session, _) in &mut sessions {
+                let name = session.name.clone();
+                for window in &mut session.windows {
+                    let ids: Vec<PaneId> = window.panes.iter().map(|pane| pane.id).collect();
+                    let Some(held) = reg.window_mut(&name, &window.name) else {
+                        continue;
+                    };
+                    held.reconcile_layout(&ids);
+                    let active = held.active_pane();
+                    for pane in &mut window.panes {
+                        pane.active = Some(pane.id) == active;
+                    }
+                }
+            }
+        }
+        sessions.into_iter().map(|(session, _)| session).collect()
+    }
+
+    /// Resolve a chooser's PICK — a path of identities — to the names the landing needs, WITHOUT
+    /// moving anything (R315).
+    ///
+    /// **Every level is checked before any of them is carried out**, which is the whole reason this
+    /// is a separate call: a path naming a window that has gone must be refused WHOLE, never
+    /// half-performed. That is [`crate::PlaceHow`]'s neighbour rule one level up and
+    /// `sprag_host::wire::AttachAsk`'s own stated one — *an attach whose target cannot be read must
+    /// not fall back to one*, because the fallback is the session the client is already on.
+    ///
+    /// Answers a [`Located`] — the names the caller needs to act through the name-addressed verbs,
+    /// plus the pool it still has to ask about the pane. [`None`] means some level of the path no
+    /// longer resolves, which is the answer a stale NAME could never give: a name that has been
+    /// taken by something else resolves, and lands the user on a stranger.
+    ///
+    /// The POOL comes back rather than the pane list, because the PANE is checked under that pool's
+    /// own lock and this runs beneath the registry's — the module's registry-then-workspace,
+    /// never-nested discipline. So a goto is checked in two acquisitions and performed in a third,
+    /// and nothing moves until all of it has resolved.
+    #[must_use]
+    pub fn locate(&self, session: SessionId, window: Option<WindowId>) -> Option<Located> {
+        let session = self.sessions.iter().find(|held| held.id() == session)?;
+        let window = match window {
+            None => None,
+            Some(wanted) => {
+                let window = session.windows().iter().find(|held| held.id() == wanted)?;
+                Some(LocatedWindow {
+                    name: window.name().to_owned(),
+                    pool: Arc::clone(window.workspace()),
+                })
+            }
+        };
+        Some(Located {
+            session: session.name().to_owned(),
+            window,
+        })
     }
 
     /// Every session's windows' pane pools, in registry order — the handles a caller needs to read

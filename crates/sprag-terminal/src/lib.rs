@@ -52,9 +52,10 @@ pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,
 };
 pub use registry::{
-    Ended, KillOutcome, OrderStep, PaneKillOutcome, PaneMoveError, PlaceHow, Session, SessionError,
-    SessionId, SessionInfo, SessionRegistry, Window, WindowBirth, WindowId, WindowInfo,
-    WindowKillOutcome, WindowPlace, ZoomOutcome,
+    Ended, KillOutcome, Located, LocatedWindow, OrderStep, PaneKillOutcome, PaneMoveError,
+    PlaceHow, Session, SessionError, SessionId, SessionInfo, SessionRegistry, TreePane,
+    TreeSession, TreeWindow, Window, WindowBirth, WindowId, WindowInfo, WindowKillOutcome,
+    WindowPlace, ZoomOutcome,
 };
 pub use remote::SshRemote;
 pub use sampled::{Reading, Sampled};
