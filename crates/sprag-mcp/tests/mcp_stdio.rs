@@ -66,8 +66,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
-    NEW_WINDOW_ACTION, RENAME_PANE_ACTION, SELECT_WINDOW_ACTION, SET_FLOATING_ACTION, SPAWN_ACTION,
-    SPLIT_ACTION, SelectAsk, ZOOM_PANE_ACTION,
+    KILL_WINDOW_ACTION, NEW_WINDOW_ACTION, RENAME_PANE_ACTION, SELECT_WINDOW_ACTION,
+    SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION, SelectAsk, ZOOM_PANE_ACTION,
 };
 use sprag_rpc::HostConn;
 
@@ -192,6 +192,47 @@ fn spawn_daemon_with(
 /// Over the mux spawn action rather than through the `sprag` CLI: that binary belongs to a third
 /// package, and the point here is a second pane, not a second way of asking for one.
 /// The pane ids the daemon's UNSCOPED `panes` slot lists — the current window's, in its order.
+/// The panes of ONE named window, whichever window the session is currently on — R311's
+/// `WINDOW_PARAM`, used here to reach into a window an agent opened DETACHED (so it is by
+/// construction not the current one).
+fn mux_query_panes_in(sock: &Path, window: &str) -> Vec<u64> {
+    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    conn.call(
+        "scene/query",
+        json!({
+            "path": mux_action_path(sprag_host::wire::PANES_SLOT),
+            sprag_rpc::WINDOW_PARAM: window,
+        }),
+    )
+    .expect("the pane list")
+    .as_array()
+    .map(|panes| {
+        panes
+            .iter()
+            .filter_map(|pane| pane.get("id")?.as_u64())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The name of the window the session is CURRENTLY on — the one fact `open_window` must not move
+/// and `select_window` must.
+fn mux_current_window(sock: &Path) -> String {
+    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(sprag_host::wire::WINDOWS_SLOT) }),
+    )
+    .expect("the window list")
+    .as_array()
+    .into_iter()
+    .flatten()
+    .find(|window| window["current"].as_bool().unwrap_or(false))
+    .and_then(|window| window["name"].as_str())
+    .expect("a session always has a current window")
+    .to_owned()
+}
+
 fn mux_query_panes(sock: &Path) -> Vec<u64> {
     let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
     conn.call(
@@ -2989,5 +3030,164 @@ fn a_running_pane_in_another_window_is_not_reported_as_gone() {
     assert!(
         running.contains("pane 1 (id 0)"),
         "your own window still numbers its panes: {running}",
+    );
+}
+
+/// **The round's claim end to end: an agent makes itself a place to work, works in it, and THEN
+/// shows the person — three acts, and only the third takes their screen.**
+///
+/// The middle assertion is the whole of it. `open_window` must leave the session exactly where it
+/// was: the daemon's `new_window` SELECTS by default (measured at `37d3971`, `current` went
+/// `0` → `agentwork`), so a tool that merely wrapped it would take a person's screen every time an
+/// agent decided to do some work. The fixture starts on a window that is not the one being created,
+/// so "did not move" and "moved" are different strings.
+#[test]
+fn an_agent_opens_a_window_of_its_own_works_in_it_and_then_shows_the_person() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let booted = mux_current_window(&sock);
+
+    let opened = server.call_tool("open_window", json!({ "name": "agentwork" }));
+    assert!(
+        opened.contains("Opened window agentwork")
+            && opened.contains("The user did NOT move and cannot see it yet")
+            && opened.contains("It is yours to close_window and rename_window."),
+        "the answer says what happened, what did NOT, and what the window is now for: {opened}",
+    );
+    assert_eq!(
+        mux_current_window(&sock),
+        booted,
+        "⚠ THE POINT: a window an agent opens does not move the person",
+    );
+    // And it really was created — otherwise "did not move" would pass on a tool that did nothing.
+    let listed = server.call_tool("list_windows", json!({}));
+    assert!(
+        listed.contains("window agentwork") && listed.contains("(current, you are here)"),
+        "the window exists and the agent is still in its own: {listed}",
+    );
+
+    // It WORKS in there, across the window, by the name it gave the pane (R311/R312).
+    let far = mux_query_panes_in(&sock, "agentwork")
+        .first()
+        .copied()
+        .expect("the new window's birth pane");
+    mux_invoke(
+        &sock,
+        RENAME_PANE_ACTION,
+        json!({ "pane": far, "name": "build" }),
+    );
+    server.call_tool(
+        "write_pane",
+        json!({ "pane": "build", "text": "echo R313-DONE" }),
+    );
+    let mut screen = String::new();
+    for _ in 0..200 {
+        screen = server.call_tool("read_pane", json!({ "pane": "build" }));
+        if screen.contains("R313-DONE") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        screen.contains("R313-DONE"),
+        "the agent drove a pane of its OWN window from its own: {screen:?}",
+    );
+
+    // THEN it shows the person, and that is the act that moves them.
+    let shown = server.call_tool("select_window", json!({ "window": "agentwork" }));
+    assert!(
+        shown.contains("The user is now looking at window agentwork")
+            && shown.contains("this is their whole screen, not a pane of it"),
+        "the answer says what it took: {shown}",
+    );
+    assert_eq!(
+        mux_current_window(&sock),
+        "agentwork",
+        "and the session really moved — which is what makes the earlier assertion mean something",
+    );
+}
+
+/// A window a PERSON made is refused by both destructive window verbs, and a window the agent made
+/// is accepted by both — R294's authorship gate one level up.
+///
+/// Both halves in one test with the SAME two verbs, because the assertion that matters is the
+/// DIFFERENCE: a gate that refused everything would pass a refusal-only test.
+#[test]
+fn an_agent_closes_and_renames_only_the_windows_it_opened() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let theirs = mux_current_window(&sock);
+    server.call_tool("open_window", json!({ "name": "mine" }));
+
+    for verb in ["close_window", "rename_window"] {
+        let refused = server.call_tool_error(
+            verb,
+            json!({ "window": theirs.clone(), "name": "whatever" }),
+        );
+        assert!(
+            refused.contains(&format!(
+                "window {theirs} was opened by a person, not by you"
+            )) && refused.contains("Only a window you opened yourself with open_window is yours."),
+            "{verb} refuses a person's window and says why: {refused}",
+        );
+    }
+    // The window is still there — a refusal that had already acted would be worse than none.
+    assert!(
+        server
+            .call_tool("list_windows", json!({}))
+            .contains(&format!("window {theirs}")),
+        "the refused window is untouched",
+    );
+
+    let renamed = server.call_tool("rename_window", json!({ "window": "mine", "name": "ours" }));
+    assert!(
+        renamed.contains("Window mine is now called \"ours\"")
+            && renamed.contains("That is its ADDRESS too"),
+        "its own window renames, and the answer says the name is the handle: {renamed}",
+    );
+    let closed = server.call_tool("close_window", json!({ "window": "ours" }));
+    assert!(
+        closed.contains("Closed window ours, which you had opened, and every pane in it"),
+        "and closes: {closed}",
+    );
+    let left = server.call_tool("list_windows", json!({}));
+    assert!(
+        !left.contains("window ours") && left.contains(&format!("window {theirs}")),
+        "the agent's window went and the person's stayed: {left}",
+    );
+}
+
+/// **An agent tidying up its own workbench cannot end a person's SESSION.**
+///
+/// R309 made a kill cascade: a session's last window ends the session, and the last session ends
+/// the daemon. So `close_window` refuses when the window is the session's only one — even though
+/// the agent opened it, and even though every other rule says it may.
+///
+/// ⚠ **The state has to be BUILT, and the first version of this measurement could not fail**: it
+/// asked the agent to close its own window while the person's window was still there, which is
+/// simply a legal close. The person's window is killed out of band here so the agent's really is
+/// the last one.
+#[test]
+fn an_agent_cannot_close_the_last_window_of_a_session() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let theirs = mux_current_window(&sock);
+    server.call_tool("open_window", json!({ "name": "solo" }));
+    // Out of band, as a person would. The agent's own pane goes with it, which is why this state is
+    // unusual — and exactly why the guard must still hold when it arises.
+    mux_invoke(&sock, KILL_WINDOW_ACTION, json!({ "window": theirs }));
+
+    let refused = server.call_tool_error("close_window", json!({ "window": "solo" }));
+    assert!(
+        refused.contains("window solo is this session's only window")
+            && refused.contains("would end the SESSION")
+            && refused.contains("close_window will not do that"),
+        "it refuses, and the sentence says what it was protecting: {refused}",
+    );
+    assert!(
+        server
+            .call_tool("list_windows", json!({}))
+            .contains("window solo"),
+        "and the window is still there — a refusal that had already acted is worse than none",
     );
 }

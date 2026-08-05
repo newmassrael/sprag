@@ -116,17 +116,18 @@ use sprag_host::pane_address::{
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
-    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire,
-    RENAME_PANE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
-    SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SwapAsk,
-    SwapHow, TEXT_ACTION, WINDOWS_SLOT, find_slot_for, pane_processes_at, regex_slot_for,
+    KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, NEW_WINDOW_ACTION, OUTCOME_KEY,
+    PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION,
+    ResizeAsk, ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM,
+    SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow,
+    TEXT_ACTION, WINDOWS_SLOT, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, HostConn, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PATTERN_PARAM,
 };
-use sprag_terminal::{Ended, LayoutSnapshot, PaneDir, PaneId, arrangement};
+use sprag_terminal::{Ended, LayoutSnapshot, PaneDir, PaneId, WindowInfo, WindowStep, arrangement};
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
 /// descendants) — [`sprag_host`]'s socket policy path key.
@@ -295,6 +296,12 @@ fn handle_initialize(message: &Value) -> Value {
             are theirs). \
             `select_pane` moves where the USER is typing, so use it only when you have \
             something for them to look at. \
+            For work that needs MORE ROOM than a pane beside somebody, `open_window` gives you a \
+            whole screenful of your own — created WITHOUT moving the user, who cannot see it until \
+            you call `select_window`. That split is deliberate: making a place and showing it are \
+            two acts, and only the second takes a person's screen. `rename_window` and \
+            `close_window` finish the job, and both act ONLY on a window you opened — a person's \
+            window is refused, and so is closing the session's last one. \
             If a tool reports it is not inside a sprag terminal, these tools do not apply to \
             this session."
     })
@@ -912,6 +919,96 @@ fn tools_list() -> Value {
                     "required": ["pane", "dir"],
                     "additionalProperties": false
                 }
+            },
+            {
+                "name": "open_window",
+                "description": "Open a NEW WINDOW of this session to do your own work in, WITHOUT \
+                    moving the user. `open_pane` gives you a pane beside somebody — this gives you \
+                    a whole screenful nobody is looking at, which is what to use when your work \
+                    would crowd a person's window or when you want several panes of your own. It \
+                    is created DETACHED: the user stays exactly where they are and does not see \
+                    it. When you have something for them, call `select_window` — showing it is a \
+                    separate act on purpose. Name it, and address its panes by THEIR names \
+                    afterwards; a window you opened is yours to `close_window` and \
+                    `rename_window`, and a person's window is refused.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "What to call the window — how a person will see it in \
+                                the window list, and how you address it afterwards. Omit for the \
+                                lowest free number, but a name says whose work it is."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "select_window",
+                "description": "Move the USER to another window of this session — the window-level \
+                    twin of `select_pane`, and the only verb here that changes which screenful a \
+                    person is looking at. Use it when you have something for them to SEE (a build \
+                    you finished in a window you opened, a pane that needs their answer), never as \
+                    a side effect: it takes their whole screen, and every attached client follows. \
+                    Give `window` (that window, by name — `list_windows` names them) or `relative` \
+                    (one step along the ring, which wraps). It answers where they landed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "window": {
+                            "type": "string",
+                            "description": "The window's NAME, from list_windows."
+                        },
+                        "relative": {
+                            "type": "string",
+                            "enum": WindowStep::ALL.map(WindowStep::wire_str),
+                            "description": "One step along the window ring instead of naming one. \
+                                The ring wraps, so a step always lands somewhere."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "close_window",
+                "description": "Close a window YOU opened, and every pane in it. Refused for a \
+                    window a person made — that is their workspace — and refused when it is the \
+                    session's LAST window, because closing that would end the person's whole \
+                    session and a tidy-up must not do that. Use it when the work you opened a \
+                    window for is done.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "window": {
+                            "type": "string",
+                            "description": "The window's NAME, from list_windows."
+                        }
+                    },
+                    "required": ["window"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "rename_window",
+                "description": "Change the name of a window YOU opened. Refused for a person's \
+                    window: a window's name is what THEY read in the window list. The name is also \
+                    the address, so what you rename it to is what you must call it afterwards.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "window": {
+                            "type": "string",
+                            "description": "The window's CURRENT name, from list_windows."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "What to call it instead."
+                        }
+                    },
+                    "required": ["window", "name"],
+                    "additionalProperties": false
+                }
             }
         ]
     })
@@ -931,6 +1028,10 @@ fn handle_tools_call(message: &Value) -> Value {
     let outcome = match name {
         "list_panes" => tool_list_panes(),
         "list_windows" => tool_list_windows(),
+        "open_window" => tool_open_window(&args),
+        "select_window" => tool_select_window(&args),
+        "close_window" => tool_close_window(&args),
+        "rename_window" => tool_rename_window(&args),
         "list_sessions" => tool_list_sessions(),
         "pane_layout" => tool_pane_layout(&args),
         "pane_processes" => tool_pane_processes(&args),
@@ -1173,6 +1274,287 @@ fn current_window_name() -> Option<String> {
             .as_bool()?
             .then(|| window.get("name")?.as_str().map(str::to_owned))?
     })
+}
+
+/// A window this surface has resolved: its name, whether the session is ON it, and WHO ASKED for
+/// it — read in the ONE query that resolved it, for [`PaneRef`]'s reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowRef {
+    name: String,
+    current: bool,
+    opened_by: Option<u64>,
+    /// How many windows the session held at that same instant — what tells a close whether it
+    /// would end the SESSION, from the same reading rather than a second one.
+    siblings: usize,
+}
+
+/// Resolve a tool's `window` argument against one reading of the session's window list.
+///
+/// A window is addressed by NAME and only by name: a window has no number on this surface and its
+/// id never leaves the daemon, so there is one spelling and nothing to tell apart. That is why
+/// there is no `WindowAddress` beside [`PaneAddress`](sprag_host::pane_address::PaneAddress) —
+/// the grammar that type exists for is the two-spellings problem, and a window does not have it.
+fn resolve_window(args: &Value, key: &str) -> Result<WindowRef, String> {
+    let wanted = match args.get(key) {
+        Some(Value::String(name)) => name.trim().to_owned(),
+        Some(Value::Null) | None => {
+            return Err(format!(
+                "missing required argument '{key}': a window's NAME (call list_windows)"
+            ));
+        }
+        Some(other) => return Err(format!("'{key}' must be a window's name, not {other}")),
+    };
+    let windows = query_windows()?;
+    let siblings = windows.len();
+    windows
+        .into_iter()
+        .find(|window| window.name == wanted)
+        .map(|window| WindowRef {
+            name: window.name,
+            current: window.current,
+            opened_by: window.opened_by.map(|pane| pane.0),
+            siblings,
+        })
+        .ok_or_else(|| {
+            format!(
+                "no window is called {wanted:?} in this session. Call list_windows to see the {} \
+                 there {}.",
+                siblings,
+                if siblings == 1 { "is" } else { "are" },
+            )
+        })
+}
+
+/// Refuse a window this agent did not open — [`require_own_pane`]'s rule one level up, and the
+/// reason [`sprag_terminal::Window::opened_by`] exists.
+fn require_own_window(window: &WindowRef, verb: &str, consequence: &str) -> Result<(), String> {
+    match window.opened_by {
+        Some(opener) if Some(opener) == own_pane() => Ok(()),
+        Some(opener) => Err(format!(
+            "window {} was opened by {}, not by you, so {verb} will not touch it. {consequence}",
+            window.name,
+            opener_subject(opener),
+        )),
+        None => Err(format!(
+            "window {} was opened by a person, not by you, so {verb} will not touch it. \
+             {consequence} Only a window you opened yourself with open_window is yours.",
+            window.name,
+        )),
+    }
+}
+
+/// `open_window` — a whole screenful of the agent's own, born DETACHED.
+///
+/// # Why detached, and why that is the round's decision rather than a flag
+///
+/// Because CREATING a place and SHOWING it are two acts and only the second is about the person.
+/// The daemon's `new_window` always selected — measured at `37d3971`, `current` went `0` →
+/// `agentwork` — so a tool that merely wrapped it would take the user's screen every single time an
+/// agent decided to do some work. That is precisely the intrusion R294 gated the pane verbs
+/// against, arriving one level up and with no gate at all. `select_window` is how an agent asks for
+/// the screen, and asking is the point.
+fn tool_open_window(args: &Value) -> Result<String, String> {
+    let opener = own_pane().ok_or(
+        "open_window needs to know which pane you are running in, and this server is not inside \
+         one (no SPRAG_PANE published beside the socket it is talking to). Without it the daemon \
+         cannot record the window as yours, and close_window would then refuse it.",
+    )?;
+    let name = match args.get("name") {
+        Some(Value::String(name)) => Some(name.clone()),
+        Some(Value::Null) | None => None,
+        Some(other) => return Err(format!("'name' must be a string, not {other}")),
+    };
+    let mut action_args = json!({
+        sprag_host::wire::DETACHED_KEY: true,
+        sprag_host::wire::WINDOW_OPENED_BY_KEY: opener,
+    });
+    if let Some(name) = &name {
+        action_args["name"] = json!(name);
+    }
+    let created = host_call_kinded(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_WINDOW_ACTION), "args": action_args }),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &match &name {
+                Some(name) => format!(
+                    "could not open a window called {name:?}: the name may already be taken by \
+                     another window of this session, or be blank or malformed. Call list_windows \
+                     to see which names are in use."
+                ),
+                None => "could not open a window".to_owned(),
+            },
+        )
+    })?;
+    let created = created
+        .as_str()
+        .ok_or("the host did not answer with the new window's name")?;
+    // WHETHER THE PROVENANCE LANDED, read back off the window rather than assumed from the request
+    // — `tool_open_pane`'s rule, for its reason: a daemon at the same wire protocol that predates
+    // the key accepts the argument and records nothing, so promising the close would be a promise
+    // this surface could not keep.
+    let ours = query_windows()
+        .ok()
+        .and_then(|windows| {
+            windows
+                .into_iter()
+                .find(|window| window.name == created)
+                .map(|window| window.opened_by == Some(PaneId(opener)))
+        })
+        .unwrap_or(false);
+    let mine = if ours {
+        "It is yours to close_window and rename_window."
+    } else {
+        "WARNING: this terminal did not record it as opened by you, so close_window will refuse \
+         it — the daemon predates the window provenance."
+    };
+    Ok(format!(
+        "Opened window {created}, with a shell in it. The user did NOT move and cannot see it \
+         yet — call select_window {{\"window\": {created:?}}} when you have something for them to \
+         look at. {mine}\n\n{}",
+        relisted_windows()
+    ))
+}
+
+/// `select_window` — move the USER to another window. Ungated, like `select_pane`.
+fn tool_select_window(args: &Value) -> Result<String, String> {
+    let named = args.get(SelectWindowAsk::WINDOW_KEY);
+    let stepped = args.get(SelectWindowAsk::RELATIVE_KEY);
+    let ask = match (named, stepped) {
+        (Some(Value::String(_)), None | Some(Value::Null)) => {
+            // Resolved BEFORE the request so an unknown name is a sentence naming what exists,
+            // where the daemon can only answer a payload-less `Rejected` (upstream PINION-PR82).
+            SelectWindowAsk::Named(resolve_window(args, SelectWindowAsk::WINDOW_KEY)?.name)
+        }
+        (None | Some(Value::Null), Some(Value::String(word))) => {
+            SelectWindowAsk::Step(WindowStep::from_wire(word).ok_or_else(|| {
+                format!(
+                    "'{}' must be one of {}, not {word:?}",
+                    SelectWindowAsk::RELATIVE_KEY,
+                    WindowStep::ALL.map(WindowStep::wire_str).join(", "),
+                )
+            })?)
+        }
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "'{}' and '{}' name the target two different ways; give one.",
+                SelectWindowAsk::WINDOW_KEY,
+                SelectWindowAsk::RELATIVE_KEY,
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "select_window needs '{}' (a window's NAME, from list_windows) or '{}' ({})",
+                SelectWindowAsk::WINDOW_KEY,
+                SelectWindowAsk::RELATIVE_KEY,
+                WindowStep::ALL.map(WindowStep::wire_str).join(" / "),
+            ));
+        }
+    };
+    let landed = host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(SELECT_WINDOW_ACTION), "args": ask.to_args() }),
+    )?;
+    let landed = landed
+        .as_str()
+        .ok_or("the host did not answer with the window it landed on")?;
+    Ok(format!(
+        "The user is now looking at window {landed}. Every attached client followed — this is \
+         their whole screen, not a pane of it. Call list_panes to see what is in front of them \
+         now; the numbers are that window's.",
+    ))
+}
+
+/// `close_window` — end a window the agent opened, refusing a person's and refusing the last one.
+fn tool_close_window(args: &Value) -> Result<String, String> {
+    let window = resolve_window(args, SelectWindowAsk::WINDOW_KEY)?;
+    require_own_window(
+        &window,
+        "close_window",
+        "It may hold work nobody else can get back.",
+    )?;
+    // THE SESSION GUARD. R309 made a kill cascade: a session's last window ends the SESSION and the
+    // last session ends the daemon. An agent tidying up its own workbench must not be able to end a
+    // person's workspace, so the ordinary case is refused here — and the answer below reports the
+    // daemon's own `Ended` word regardless, so the RACED case (a person closing the other window in
+    // between) is told rather than hidden.
+    if window.siblings <= 1 {
+        return Err(format!(
+            "window {} is this session's only window, so closing it would end the SESSION and \
+             every pane in it. close_window will not do that. Leave it, or ask the person.",
+            window.name,
+        ));
+    }
+    let answer = host_call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(KILL_WINDOW_ACTION),
+            "args": { SelectWindowAsk::WINDOW_KEY: window.name },
+        }),
+    )?;
+    let beyond = Ended::from_wire(answer[ENDED_KEY].as_str().unwrap_or_default())
+        .and_then(|ended| ended.beyond(Ended::Window))
+        .map(|clause| {
+            format!(
+                " ⚠ It was the session's last window after all — somebody closed the other one \
+                 between the check and the kill — so {clause}."
+            )
+        });
+    Ok(format!(
+        "Closed window {}, which you had opened, and every pane in it.{}\n\n{}",
+        window.name,
+        beyond.unwrap_or_default(),
+        relisted_windows()
+    ))
+}
+
+/// `rename_window` — rename a window the agent opened, refusing a person's.
+fn tool_rename_window(args: &Value) -> Result<String, String> {
+    let window = resolve_window(args, SelectWindowAsk::WINDOW_KEY)?;
+    let new = match args.get("name") {
+        Some(Value::String(name)) => name.clone(),
+        Some(other) => return Err(format!("'name' must be a string, not {other}")),
+        None => return Err("rename_window needs a 'name' to call the window".to_owned()),
+    };
+    require_own_window(
+        &window,
+        "rename_window",
+        "Its name is what a person reads in the window list.",
+    )?;
+    host_call_kinded(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(RENAME_WINDOW_ACTION),
+            "args": { SelectWindowAsk::WINDOW_KEY: window.name, "name": new },
+        }),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "could not rename window {} to {new:?}: the name may already be taken by another \
+                 window of this session, or be blank or malformed. Call list_windows to see which \
+                 names are in use.",
+                window.name,
+            ),
+        )
+    })?;
+    Ok(format!(
+        "Window {} is now called {new:?}. That is its ADDRESS too — pass the new name to \
+         select_window, close_window and pane_layout from here on.\n\n{}",
+        window.name,
+        relisted_windows()
+    ))
+}
+
+/// The window listing, re-read after a verb that changed the set — [`relisted`]'s rule one level
+/// up, and NOT `?`: the change already happened, and an error here is a broken connection rather
+/// than a failed verb.
+fn relisted_windows() -> String {
+    tool_list_windows()
+        .unwrap_or_else(|why| format!("(could not re-list the windows: {why} — call list_windows)"))
 }
 
 /// `list_sessions` — the daemon's sessions, so the three session events have a reader.
@@ -3789,21 +4171,27 @@ fn query_session_panes() -> Result<Vec<(String, PaneInfo)>, String> {
     Ok(out)
 }
 
-/// The names of the caller's session's windows, in the order the session arranges them (R310).
-fn query_window_names() -> Result<Vec<String>, String> {
+/// The caller's session's windows, in the order the session arranges them (R310) — each one's
+/// name, whether the session is ON it, and WHO ASKED for it.
+///
+/// Through the SSOT type, never by reading the keys by hand: a second reader of the served shape is
+/// a second thing that can come to disagree with the daemon about what a field means, which is the
+/// rule `PaneProcessesWire` and `LayoutSnapshot` already follow here.
+fn query_windows() -> Result<Vec<WindowInfo>, String> {
     let value = host_call(
         "scene/query",
         json!({ "path": mux_action_path(WINDOWS_SLOT) }),
     )?;
-    Ok(value
-        .as_array()
-        .map(|array| {
-            array
-                .iter()
-                .filter_map(|window| Some(window.get("name")?.as_str()?.to_owned()))
-                .collect()
-        })
-        .unwrap_or_default())
+    serde_json::from_value(value)
+        .map_err(|error| format!("the host's window list did not parse: {error}"))
+}
+
+/// Just the NAMES, for the readers that only walk them.
+fn query_window_names() -> Result<Vec<String>, String> {
+    Ok(query_windows()?
+        .into_iter()
+        .map(|window| window.name)
+        .collect())
 }
 
 /// Find the pane called `name` anywhere in the SESSION, refusing to guess between two bearers.
@@ -4254,7 +4642,11 @@ mod tests {
                 "rename_pane",
                 "select_pane",
                 "swap_pane",
-                "resize_pane"
+                "resize_pane",
+                "open_window",
+                "select_window",
+                "close_window",
+                "rename_window"
             ]
         );
         for tool in tools["tools"].as_array().unwrap() {
@@ -4282,6 +4674,16 @@ mod tests {
         assert_eq!(required("regex_in_pane"), json!(["pane", "pattern"]));
         // agent_explain requires the pane it is explaining...
         assert_eq!(required("agent_explain"), json!(["pane"]));
+        // A WINDOW is addressed by NAME and only by name — there is no number and no id on this
+        // surface, so `window` is the whole grammar. `open_window` requires NOTHING: a window with
+        // no name gets the lowest free number, exactly as `new-window` does for a person.
+        assert_eq!(required("close_window"), json!(["window"]));
+        assert_eq!(required("rename_window"), json!(["window", "name"]));
+        assert_eq!(
+            required("open_window"),
+            json!(null),
+            "a window an agent opens may be unnamed, like a person's",
+        );
         // close_pane requires the pane to close; open_pane requires NOTHING, because the one thing
         // it must know — which pane is asking — is this server's own identity and never an argument
         // a caller could get wrong.
