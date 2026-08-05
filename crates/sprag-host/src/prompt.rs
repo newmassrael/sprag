@@ -100,8 +100,10 @@ pub enum Ask {
 
 /// What a line ask will name.
 ///
-/// One variant per rename verb, rather than a generic "verb with a hole" carrying a command
-/// template. tmux's `command-prompt "rename-window '%%'"` substitutes the answer into TEXT and
+/// One variant per LINE-asking verb, rather than a generic "verb with a hole" carrying a command
+/// template. Three of the four are renames and the fourth is not
+/// ([`MoveBefore`](Self::MoveBefore)): what the arms share is that the answer is a NAME the daemon
+/// resolves, not that the act is a rename. tmux's `command-prompt "rename-window '%%'"` substitutes the answer into TEXT and
 /// re-parses it, which is why it has to quote; here the answer fills a TYPED slot, so an answer
 /// beginning with `-` cannot become a flag. The wrong thing is unrepresentable rather than escaped.
 ///
@@ -118,6 +120,14 @@ pub enum Subject {
     /// One pane, BY ID. The only subject that carries a target, and the only one that has an
     /// identity to carry: a [`PaneId`] is registry-unique and does not move.
     Pane(PaneId),
+    /// The window the CURRENT window is to be moved in front of — tmux `prefix .` (R310).
+    ///
+    /// The one arm whose answer is not the new name of the thing being asked about: it is an
+    /// ANCHOR, an address of a DIFFERENT window, and the act is a move. It shares this type
+    /// because everything the surface needs is the same — a line of text, checked against
+    /// [`WindowName`]'s grammar, committed through one function — and splitting it out would give
+    /// both frontends a second prompt to route.
+    MoveBefore,
 }
 
 impl Subject {
@@ -131,6 +141,9 @@ impl Subject {
             Self::Window => "(rename-window)",
             Self::Session => "(rename-session)",
             Self::Pane(_) => "(rename-pane)",
+            // tmux asks `(move-window)` here too, and then wants an INDEX. The verb is the same
+            // and the vocabulary is not, which is the whole of R310 in one line of a prompt.
+            Self::MoveBefore => "(move-window --before)",
         }
     }
 
@@ -154,6 +167,12 @@ impl Subject {
                 .pane_name(id)
                 .map(|name| name.as_str().to_owned())
                 .unwrap_or_default(),
+            // EMPTY, and that is the honest seed rather than a missing feature. Every other arm
+            // seeds with the subject's CURRENT name, because the common edit is to fix a typo in
+            // it. There is no current answer to "which window shall this go in front of" — seeding
+            // the neighbour would make the commonest press a no-op the user had to notice and
+            // clear.
+            Self::MoveBefore => String::new(),
         }
     }
 
@@ -178,6 +197,12 @@ impl Subject {
                 .map(drop)
                 .map_err(|e| e.to_string()),
             Self::Pane(_) => PaneName::parse(answer).map(drop).map_err(|e| e.to_string()),
+            // The ANCHOR is a window name, so it is checked against a window's grammar — which
+            // catches a malformed answer here and leaves the wire refusal with one cause (no
+            // window is called that), exactly as the rename arms do.
+            Self::MoveBefore => WindowName::parse(answer)
+                .map(drop)
+                .map_err(|e| e.to_string()),
         }
     }
 
@@ -209,6 +234,28 @@ impl Subject {
                     id.0
                 )
             }),
+            // The one arm that reports something other than a name: the daemon's own
+            // [`PlaceHow`](sprag_terminal::PlaceHow) word, because three of its four outcomes leave
+            // the order untouched and a user who pressed a key and saw nothing move is owed the
+            // reason. `Itself` is reachable from here — a user can name the window they are on.
+            Self::MoveBefore => {
+                let place = sprag_terminal::WindowPlace::Before(answer.to_owned());
+                match host.move_window(None, &place) {
+                    None => Err(format!("no window is called {answer:?}")),
+                    Some((window, how)) => Ok(match how {
+                        sprag_terminal::PlaceHow::Moved => format!("moved {window}"),
+                        sprag_terminal::PlaceHow::AlreadyThere => {
+                            format!("{window} is already there")
+                        }
+                        sprag_terminal::PlaceHow::Alone => {
+                            format!("{window} is this session's only window")
+                        }
+                        sprag_terminal::PlaceHow::Itself => {
+                            format!("{window} cannot be anchored to itself")
+                        }
+                    }),
+                }
+            }
         }
     }
 }
@@ -244,6 +291,7 @@ impl Ask {
             BoundAction::RenameWindow => Some(line(Subject::Window)),
             BoundAction::RenameSession => Some(line(Subject::Session)),
             BoundAction::RenamePane => pane.map(|id| line(Subject::Pane(id))),
+            BoundAction::MoveWindowBefore => Some(line(Subject::MoveBefore)),
             BoundAction::ConfirmBefore { action } => {
                 let (question, consequence, verb) = confirm_question(action, host, pane);
                 Some(Self::Confirm {

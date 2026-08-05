@@ -77,6 +77,7 @@
 use sprag_host::ProjectAction;
 use sprag_host::keymap::BoundAction;
 use sprag_host::wire::SelectWindowAsk;
+use sprag_terminal::{WindowPlace, WindowStep};
 
 use crate::slotview::SlotView;
 
@@ -123,6 +124,13 @@ pub(crate) enum Command {
     NewWindow,
     /// Select the named window of the current session.
     SelectWindow(String),
+    /// Move the CURRENT window to a place in the session's order (tmux `move-window`).
+    ///
+    /// The one window row that names no window, and that is the verb rather than an omission: a
+    /// move acts on the window you are looking at, and the PLACE is what varies. Only the four
+    /// placings that need no anchor are offered — the anchored forms would be one row per window
+    /// per direction, and `prefix .` already asks for an anchor by name.
+    MoveWindow(WindowPlace),
     /// Create a session and switch this client to it.
     NewSession,
     /// Switch this client to the named session.
@@ -178,6 +186,19 @@ impl Command {
             Self::NewPane => "Split into a new pane".to_owned(),
             Self::NewWindow => "New window".to_owned(),
             Self::SelectWindow(name) => format!("Go to window {name}"),
+            // The verb LEADS for the kills' reason: a query of "move" collects the whole set. The
+            // words say what a user sees happen to the strip, not what the grammar calls it —
+            // `-p` is "earlier", not "previous", once it is a place rather than a step.
+            Self::MoveWindow(place) => match place {
+                WindowPlace::First => "Move window to the front".to_owned(),
+                WindowPlace::Last => "Move window to the end".to_owned(),
+                WindowPlace::Step(WindowStep::Previous) => {
+                    "Move window one place earlier".to_owned()
+                }
+                WindowPlace::Step(WindowStep::Next) => "Move window one place later".to_owned(),
+                WindowPlace::Before(name) => format!("Move window before {name}"),
+                WindowPlace::After(name) => format!("Move window after {name}"),
+            },
             Self::NewSession => "New session".to_owned(),
             Self::SwitchSession(name) => format!("Switch to session {name}"),
             Self::LastSession => "Switch to the last session".to_owned(),
@@ -246,7 +267,11 @@ impl Command {
             | Self::KillWindow(_)
             | Self::KillSession(_) => None,
             // Answered above, off the live keymap — never from here.
-            Self::ShowKeys | Self::ZoomPane | Self::NewWindow | Self::SelectWindow(_) => None,
+            Self::ShowKeys
+            | Self::ZoomPane
+            | Self::NewWindow
+            | Self::SelectWindow(_)
+            | Self::MoveWindow(_) => None,
         }
     }
 
@@ -268,6 +293,12 @@ impl Command {
             Self::NewWindow => Some(BoundAction::NewWindow),
             Self::SelectWindow(name) => Some(BoundAction::SelectWindow {
                 ask: SelectWindowAsk::Named(name.clone()),
+            }),
+            // PAIRED, unlike `Kill window <name>` beside it: this row names no window either, so
+            // the two really do the same thing and a user pressing `prefix <` gets exactly what
+            // this row does. The join is what puts the chord in the hint column.
+            Self::MoveWindow(place) => Some(BoundAction::MoveWindow {
+                place: place.clone(),
             }),
             Self::Find
             | Self::Copy
@@ -378,6 +409,7 @@ impl Command {
             | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
+            | Self::MoveWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
             | Self::LastSession
@@ -419,6 +451,7 @@ impl Command {
             | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
+            | Self::MoveWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
             | Self::LastSession
@@ -466,6 +499,7 @@ impl Command {
             | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
+            | Self::MoveWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
             | Self::LastSession
@@ -569,6 +603,12 @@ impl Command {
                 slots.new_window();
             }
             Self::SelectWindow(name) => slots.select_window(name),
+            // The outcome word is dropped for the same reason `input::perform`'s arm drops it: this
+            // client repaints its strip off the daemon's announcement, so a move that changed
+            // nothing repaints nothing and there is no sentence to lose.
+            Self::MoveWindow(place) => {
+                slots.move_window(None, place);
+            }
             Self::NewSession => {
                 // Creates AND switches, like the rail's "+".
                 let _ = slots.new_session();
@@ -724,6 +764,14 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         // the ones that leave it.
         Command::NewPane,
         Command::NewWindow,
+        // The four ANCHORLESS placings, in the order a strip reads: the two ends, then the two
+        // steps. A row per window per direction is what the anchored forms would cost, and
+        // `prefix .` already asks for an anchor by name — so the palette carries the half that has
+        // no argument and the prompt carries the half that does.
+        Command::MoveWindow(WindowPlace::Step(WindowStep::Previous)),
+        Command::MoveWindow(WindowPlace::Step(WindowStep::Next)),
+        Command::MoveWindow(WindowPlace::First),
+        Command::MoveWindow(WindowPlace::Last),
     ]);
     // A pane command with no pane to act on is not offered at all: a row that is guaranteed to do
     // nothing is worse than a shorter list, because the user cannot tell the two apart. (A project
@@ -1015,6 +1063,13 @@ mod tests {
             "the row names a window and so does the binding it is paired with",
         );
         assert_eq!(
+            Command::MoveWindow(WindowPlace::Step(WindowStep::Next)).bound(),
+            Some(sprag_host::keymap::BoundAction::MoveWindow {
+                place: WindowPlace::Step(WindowStep::Next),
+            }),
+            "neither the row nor the binding names a window, so the two really are the same act",
+        );
+        assert_eq!(
             Command::KillWindow("logs".to_owned()).bound(),
             None,
             "a row that names a window is not the keystroke that can only mean the current one",
@@ -1061,6 +1116,9 @@ mod tests {
         /// renders only the default session), so a recording fake is the ONLY way to observe that this
         /// arm addresses the right one at all.
         killed_sessions: Vec<String>,
+        /// The PLACES a move asked for, in order — recorded because the outcome of a move is
+        /// invisible to this fixture's window list, so the only observable is what was SENT.
+        moved: Vec<sprag_terminal::WindowPlace>,
         /// Every name a rename was ASKED for, exactly as it was sent — so a test can tell a client
         /// that forwards what the user typed from one that trimmed it on the way (R306: the grammar
         /// is the daemon's, and a client that pre-trimmed would be a second opinion about it).
@@ -1095,6 +1153,22 @@ mod tests {
         }
         fn select_window(&self, name: &str) {
             self.log.borrow_mut().selected_windows.push(name.to_owned());
+        }
+        /// Records the place and answers `Moved` for the CURRENT window, so a row's assertion is
+        /// about which place it sent rather than about this fixture's arithmetic.
+        fn move_window(
+            &self,
+            window: Option<&str>,
+            place: &sprag_terminal::WindowPlace,
+        ) -> Option<(String, sprag_terminal::PlaceHow)> {
+            self.log.borrow_mut().moved.push(place.clone());
+            let named = window.map(str::to_owned).or_else(|| {
+                self.windows
+                    .iter()
+                    .find(|window| window.current)
+                    .map(|window| window.name.clone())
+            })?;
+            Some((named, sprag_terminal::PlaceHow::Moved))
         }
         /// Inert: this catalogue fixture drives which ROWS exist, not the window ring.
         fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
@@ -1688,6 +1762,55 @@ mod tests {
         assert!(
             without.contains(&Command::NewSession),
             "the session commands need no pane and stay"
+        );
+    }
+
+    /// The four ANCHORLESS placings are offered, they are TITLED in the words a user sees the strip
+    /// move in, and running one reaches the daemon seam with the place the row named.
+    ///
+    /// The last claim is the one that matters and the one a title assertion cannot make: a catalog
+    /// where every move row sent `First` would read correctly and do the wrong thing three times
+    /// out of four.
+    ///
+    /// REVERT-PROOF: send a fixed place from `Command::run`'s arm and the recorded list collapses;
+    /// drop a row from `catalog` and the first assertion fails naming it.
+    #[test]
+    fn the_move_rows_send_the_place_they_name() {
+        let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0"], "0");
+        let offered: Vec<String> = catalog(Some(0), &slots)
+            .commands
+            .into_iter()
+            .filter(|command| matches!(command, Command::MoveWindow(_)))
+            .map(|command| command.title())
+            .collect();
+        assert_eq!(
+            offered,
+            vec![
+                "Move window one place earlier",
+                "Move window one place later",
+                "Move window to the front",
+                "Move window to the end",
+            ],
+            "the four placings that need no anchor, in the order a strip reads",
+        );
+
+        for place in [
+            WindowPlace::First,
+            WindowPlace::Last,
+            WindowPlace::Step(WindowStep::Next),
+            WindowPlace::Step(WindowStep::Previous),
+        ] {
+            Command::MoveWindow(place).run(Some(0), &slots);
+        }
+        assert_eq!(
+            log.borrow().moved,
+            vec![
+                WindowPlace::First,
+                WindowPlace::Last,
+                WindowPlace::Step(WindowStep::Next),
+                WindowPlace::Step(WindowStep::Previous),
+            ],
+            "each row sent the place it names, and none of them named a window",
         );
     }
 

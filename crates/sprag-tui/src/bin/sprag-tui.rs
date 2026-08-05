@@ -458,6 +458,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     Command::Act(
                         action @ (BoundAction::NewWindow
                         | BoundAction::SelectWindow { .. }
+                        | BoundAction::MoveWindow { .. }
                         | BoundAction::KillPane
                         | BoundAction::KillWindow),
                     ) => {
@@ -481,6 +482,15 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     host.select_window_toward(step);
                                 }
                             },
+                            // NO window named, which is the same rule the kill below breaks
+                            // deliberately: the daemon resolves "the one I am on" under its own
+                            // lock, where this client's mirror can be a revision behind. The
+                            // outcome word is not read here — this front paints no window strip,
+                            // so a reorder changes nothing it draws, and the `reconcile` below is
+                            // what keeps that honest if it ever does.
+                            BoundAction::MoveWindow { place } => {
+                                host.move_window(None, &place);
+                            }
                             // The CURRENT window, which is the only one a keystroke can mean. Its
                             // name comes off the client's own window mirror, where `current` is the
                             // fact the daemon publishes for exactly this.
@@ -489,7 +499,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     host.kill_window(&window);
                                 }
                             }
-                            _ => unreachable!("the match above admits only the four arms here"),
+                            _ => unreachable!("the match above admits only the five arms here"),
                         }
                         tiling = reconcile(&host, screen_area, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
@@ -578,7 +588,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &mut held,
                         )?;
                     }
-                    // The four ASKING actions are consumed above, where `Ask::of` turns them into a
+                    // The five ASKING actions are consumed above, where `Ask::of` turns them into a
                     // question. This arm is reached only when it answered `None` — a `rename-pane`
                     // pressed with no pane focused, which has no subject and so nothing to ask
                     // about. Doing nothing is the honest outcome: inventing a subject would rename
@@ -587,6 +597,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         BoundAction::RenameWindow
                         | BoundAction::RenameSession
                         | BoundAction::RenamePane
+                        | BoundAction::MoveWindowBefore
                         | BoundAction::ConfirmBefore { .. },
                     ) => {}
                     Command::Act(BoundAction::SelectNextPane) => {

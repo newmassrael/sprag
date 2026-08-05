@@ -71,7 +71,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use sprag_input::Modifiers;
-use sprag_terminal::{PaneDir, SplitDir, WindowStep};
+use sprag_terminal::{PaneDir, SplitDir, WindowPlace, WindowStep};
 
 use crate::wire::SelectWindowAsk;
 
@@ -590,6 +590,36 @@ pub enum BoundAction {
         /// Which window — a step along the ring, or one by name.
         ask: SelectWindowAsk,
     },
+    /// `move-window --first|--last|-n|-p|--before <w>|--after <w>` — move THIS session's current
+    /// window to a place in the session's order (tmux `move-window`; the near-universal user
+    /// bindings `prefix <` / `prefix >` ship as the two step forms).
+    ///
+    /// [`SelectWindow`](Self::SelectWindow)'s companion, and the pair is where this project draws
+    /// the distinction its own docs left implicit: the select WALKS a ring and wraps, this
+    /// ARRANGES a sequence and stops at the ends.
+    ///
+    /// It names no window, on [`NewWindow`](Self::NewWindow)'s rule: a keystroke acts where the
+    /// user is. The PLACE, unlike a name to rename to, is exactly the kind of argument a config
+    /// CAN fix — `bind < move-window -p` means the same thing every time it is pressed — which is
+    /// why this arm carries one where [`RenameWindow`](Self::RenameWindow) carries a decision to
+    /// ask.
+    MoveWindow {
+        /// Where the current window goes.
+        place: WindowPlace,
+    },
+    /// `move-window --before` with NO anchor — ask which window to move the current one in front
+    /// of, then do it (tmux's own `prefix .`, which is `command-prompt "move-window -t '%%'"`).
+    ///
+    /// **A missing argument is what makes this ask**, which is the one place this vocabulary lets a
+    /// verb have both forms: `move-window --before logs` fixes the anchor in the config and
+    /// `move-window --before` asks for it. That is honest here and would not be for a rename,
+    /// because an anchor is an ADDRESS the user picks per press while a rename's argument is the
+    /// whole content of the act.
+    ///
+    /// BEFORE and not AFTER, because that is the drop-target reading a person already has from
+    /// dragging a tab: the window you name is the one it lands in front of. The tail of the order
+    /// is reached by `--last`, which needs no name at all.
+    MoveWindowBefore,
     /// `kill-window` — end this session's CURRENT window and everything running in it; the
     /// session's LAST window ends the SESSION (tmux `prefix &`).
     ///
@@ -734,7 +764,7 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 16] = [
+    pub const VOCABULARY: [&'static str; 17] = [
         "detach-client",
         "send-prefix",
         "list-keys",
@@ -746,6 +776,7 @@ impl BoundAction {
         "kill-pane",
         "new-window",
         "select-window -n|-p|-t <window>",
+        "move-window --first|--last|-n|-p|--before [<window>]|--after <window>",
         "kill-window",
         "rename-window",
         "rename-session",
@@ -766,6 +797,7 @@ impl BoundAction {
             Self::RenameWindow
             | Self::RenameSession
             | Self::RenamePane
+            | Self::MoveWindowBefore
             | Self::ConfirmBefore { .. } => true,
             Self::DetachClient
             | Self::SendPrefix
@@ -778,6 +810,7 @@ impl BoundAction {
             | Self::ZoomPane { .. }
             | Self::NewWindow
             | Self::SelectWindow { .. }
+            | Self::MoveWindow { .. }
             | Self::KillPane
             | Self::KillWindow => false,
         }
@@ -817,6 +850,8 @@ impl BoundAction {
             | Self::ZoomPane { .. }
             | Self::NewWindow
             | Self::SelectWindow { .. }
+            | Self::MoveWindow { .. }
+            | Self::MoveWindowBefore
             | Self::KillWindow
             | Self::RenameWindow
             | Self::RenameSession => false,
@@ -849,9 +884,12 @@ impl BoundAction {
             | Self::ZoomPane { .. }
             | Self::KillPane
             | Self::RenamePane => ActionSubject::Pane,
-            Self::NewWindow | Self::SelectWindow { .. } | Self::KillWindow | Self::RenameWindow => {
-                ActionSubject::Window
-            }
+            Self::NewWindow
+            | Self::SelectWindow { .. }
+            | Self::MoveWindow { .. }
+            | Self::MoveWindowBefore
+            | Self::KillWindow
+            | Self::RenameWindow => ActionSubject::Window,
             Self::RenameSession => ActionSubject::Session,
             Self::ConfirmBefore { action } => action.subject(),
         }
@@ -898,6 +936,8 @@ impl BoundAction {
             | Self::ZoomPane { .. }
             | Self::NewWindow
             | Self::SelectWindow { .. }
+            | Self::MoveWindow { .. }
+            | Self::MoveWindowBefore
             | Self::KillPane
             | Self::KillWindow
             | Self::RenameWindow
@@ -1157,6 +1197,40 @@ impl BoundAction {
                     "a binding steps along the window ring (-n/-p) or names one window (-t                      <window>)",
                 )),
             },
+            // `select-window`'s shape one verb over, and the ONE arm in this vocabulary where a
+            // MISSING argument is a different action rather than an error: `--before <window>`
+            // fixes the anchor in the config, `--before` on its own asks for it per press. That is
+            // only honest because an anchor is an address the user picks each time — a rename's
+            // argument is the whole content of the act, which is why that verb has no fixed form.
+            "move-window" => match flags.as_slice() {
+                ["--first"] => Ok(Self::MoveWindow {
+                    place: WindowPlace::First,
+                }),
+                ["--last"] => Ok(Self::MoveWindow {
+                    place: WindowPlace::Last,
+                }),
+                ["-n"] => Ok(Self::MoveWindow {
+                    place: WindowPlace::Step(WindowStep::Next),
+                }),
+                ["-p"] => Ok(Self::MoveWindow {
+                    place: WindowPlace::Step(WindowStep::Previous),
+                }),
+                ["--before"] => Ok(Self::MoveWindowBefore),
+                ["--before", window] => Ok(Self::MoveWindow {
+                    place: WindowPlace::Before((*window).to_owned()),
+                }),
+                ["--after", window] => Ok(Self::MoveWindow {
+                    place: WindowPlace::After((*window).to_owned()),
+                }),
+                ["--after"] => Err(bad(
+                    "move-window --after needs a window to anchor to; --before on its own is the \
+                     form that ASKS, and --last reaches the end with no name at all",
+                )),
+                _ => Err(bad(
+                    "a binding moves a window to --first, --last, one place along (-n/-p), or \
+                     beside a named one (--before <window> / --after <window>); --before alone asks",
+                )),
+            },
             _ => Err(KeyError::UnknownAction(verb.to_owned())),
         }
     }
@@ -1212,6 +1286,22 @@ impl fmt::Display for BoundAction {
                 SelectWindowAsk::Step(WindowStep::Previous) => f.write_str("select-window -p"),
                 SelectWindowAsk::Named(window) => write!(f, "select-window -t {window}"),
             },
+            // The FLAGS are the CLI verb's own, not a second spelling: a user reads `move-window
+            // -p` out of `list-keys` and types it into a shell unchanged. `-n`/`-p` are
+            // `select-window`'s two letters for the same two directions, which is the whole reason
+            // the place reuses `WindowStep` rather than inventing a pair.
+            Self::MoveWindow { place } => match place {
+                WindowPlace::First => f.write_str("move-window --first"),
+                WindowPlace::Last => f.write_str("move-window --last"),
+                WindowPlace::Step(WindowStep::Next) => f.write_str("move-window -n"),
+                WindowPlace::Step(WindowStep::Previous) => f.write_str("move-window -p"),
+                WindowPlace::Before(window) => write!(f, "move-window --before {window}"),
+                WindowPlace::After(window) => write!(f, "move-window --after {window}"),
+            },
+            // The ANCHORLESS form, which is what makes it ask. It must not print as
+            // `move-window --before ` with a trailing space: `list-keys` output is pasted back
+            // into `bind-key`, and a trailing space would parse as the same thing only by luck.
+            Self::MoveWindowBefore => f.write_str("move-window --before"),
         }
     }
 }
@@ -1406,6 +1496,36 @@ impl Default for Keymap {
                         ask: SelectWindowAsk::Step(WindowStep::Previous),
                     },
                 ),
+                // THE WINDOW ORDER, on the three keys the two parity targets between them settle
+                // (R310). Before this round the order was WALKED by the two keys above, PAINTED by
+                // the GUI's window strip, and changeable by nothing anywhere in the product.
+                //
+                // `<` and `>` are not tmux DEFAULTS — tmux ships `swap-window` unbound — but they
+                // are the binding a tmux user writes for it, and the glyphs say which way along a
+                // strip drawn left to right. They are taken rather than invented for the same
+                // reason `P` was: where a convention exists, inheriting it beats a third spelling.
+                //
+                // NOT repeating, and for the WINDOW keys' reason above rather than the arrows':
+                // a held `>` walks a window past every other one and stops nowhere a user aimed
+                // at. The move has ENDS, but they are the ends of a list the user cannot see the
+                // whole of while the key is held.
+                bind(
+                    "<",
+                    BoundAction::MoveWindow {
+                        place: WindowPlace::Step(WindowStep::Previous),
+                    },
+                ),
+                bind(
+                    ">",
+                    BoundAction::MoveWindow {
+                        place: WindowPlace::Step(WindowStep::Next),
+                    },
+                ),
+                // `.` IS tmux's own default for this verb — `command-prompt "move-window -t '%%'"`
+                // — and it is the only tmux default in this table that asks a question tmux has to
+                // build out of a template. Here the anchor is a WINDOW NAME rather than an index,
+                // so the answer fills a typed slot and there is nothing to quote.
+                bind(".", BoundAction::MoveWindowBefore),
                 // tmux's own order (`Up Down Left Right`), and its own `-r`: holding the prefix
                 // table open is what makes `prefix Left Left Left` walk three panes instead of one.
                 repeating("ArrowUp", toward(PaneDir::Up)),
@@ -2101,9 +2221,13 @@ mod tests {
                 "{action:?} must be refused with the reason",
             );
         }
-        // A guard on a verb that asks would put a question on top of a question.
+        // A guard on a verb that asks would put a question on top of a question. The MOVE prompt
+        // is here because it is the only asking verb whose asking is decided by an ABSENT argument
+        // — `move-window --before logs` is guardable and `move-window --before` is not — so it is
+        // the one arm where `asks` can be got wrong without any other test noticing.
         for action in [
             "confirm-before rename-window",
+            "confirm-before move-window --before",
             "confirm-before confirm-before kill-window",
         ] {
             assert!(
@@ -2269,12 +2393,12 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 17;
+    const ARMS: usize = 19;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
     ///
-    /// A seventeenth variant stops this compiling, and adding its line here makes
+    /// A twentieth variant stops this compiling, and adding its line here makes
     /// [`one_of_every_action`] fail until an instance of it is written down. That is the pair the
     /// vocabulary, the subject and the reach tests all rest on: three properties that must hold for
     /// EVERY action, checked against a census the compiler forces to stay complete.
@@ -2292,17 +2416,19 @@ mod tests {
             BoundAction::KillPane => 9,
             BoundAction::NewWindow => 10,
             BoundAction::SelectWindow { .. } => 11,
-            BoundAction::KillWindow => 12,
-            BoundAction::RenameWindow => 13,
-            BoundAction::RenameSession => 14,
-            BoundAction::RenamePane => 15,
-            BoundAction::ConfirmBefore { .. } => 16,
+            BoundAction::MoveWindow { .. } => 12,
+            BoundAction::MoveWindowBefore => 13,
+            BoundAction::KillWindow => 14,
+            BoundAction::RenameWindow => 15,
+            BoundAction::RenameSession => 16,
+            BoundAction::RenamePane => 17,
+            BoundAction::ConfirmBefore { .. } => 18,
         }
     }
 
     /// One value of every arm — the census the whole-vocabulary tests walk.
     ///
-    /// Panics if it is not complete, so a caller never silently tests sixteen of seventeen arms.
+    /// Panics if it is not complete, so a caller never silently tests eighteen of nineteen arms.
     fn one_of_every_action() -> Vec<BoundAction> {
         let every = vec![
             BoundAction::DetachClient,
@@ -2325,6 +2451,10 @@ mod tests {
             BoundAction::SelectWindow {
                 ask: SelectWindowAsk::Step(WindowStep::Next),
             },
+            BoundAction::MoveWindow {
+                place: WindowPlace::Step(WindowStep::Previous),
+            },
+            BoundAction::MoveWindowBefore,
             BoundAction::KillWindow,
             BoundAction::RenameWindow,
             BoundAction::RenameSession,
@@ -2561,6 +2691,14 @@ mod tests {
         // It does NOT ask, so `confirm-before` may guard it — the property `asks` decides once for
         // every arm, checked here because a new arm is exactly when it can be got wrong.
         assert!(!parsed("resize-pane -L 5").asks());
+        // ...and the ANCHORED move is guardable where the anchorless one above is not, which is the
+        // control that the refusal is about the ASK and not about the verb.
+        assert!(!parsed("move-window --before logs").asks());
+        assert!(parsed("move-window --before").asks());
+        assert!(
+            BoundAction::parse("confirm-before move-window --before logs").is_ok(),
+            "a move with its anchor fixed asks nothing, so a guard may wrap it",
+        );
         assert_eq!(
             BoundAction::parse("confirm-before resize-pane -L 5").expect("guardable"),
             BoundAction::ConfirmBefore {
@@ -2632,6 +2770,9 @@ mod tests {
                 "P rename-pane",
                 "n select-window -n",
                 "p select-window -p",
+                "< move-window -p",
+                "> move-window -n",
+                ". move-window --before",
                 // tmux's four `-r` rows, read from `list-keys -T prefix` on tmux 3.2a. Its own
                 // spelling is `Up`/`Down`/`Left`/`Right`; sprag's key vocabulary is the WIRE's, so
                 // one keystroke has one name across the config, the CLI and both frontends.

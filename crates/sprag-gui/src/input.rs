@@ -342,6 +342,9 @@ fn action_label(action: &BoundAction) -> &'static str {
         BoundAction::SelectWindow { .. } => "select-window",
         BoundAction::KillWindow => "kill-window",
         BoundAction::RenameWindow => "rename-window",
+        // Both move forms label as the VERB: the place says WHERE, and where the window landed is
+        // in the next frame's window strip — the split's rule, one level up.
+        BoundAction::MoveWindow { .. } | BoundAction::MoveWindowBefore => "move-window",
         BoundAction::RenameSession => "rename-session",
         BoundAction::RenamePane => "rename-pane",
         // The GUARD's own name, not the verb it guards: what this diag line records is that a key
@@ -443,7 +446,18 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
                 slots.kill_window(&window.name);
             }
         }
-        // THE FOUR ACTIONS THAT ASK reach this function only through their own question being
+        // NO window named, unlike the kill above it: the daemon resolves "the one I am on" under
+        // the lock that performs the move. The kill reads the mirror because a kill's QUESTION
+        // already named a window to the user and the act must match what they agreed to; nothing
+        // was agreed to here.
+        //
+        // The outcome word is discarded here and NOT in the prompt arm beside it: this client
+        // repaints its window strip off the daemon's own announcement, so a move that changed
+        // nothing repaints nothing — where a user who answered a question is owed a sentence.
+        BoundAction::MoveWindow { place } => {
+            use_terminal().slots.move_window(None, &place);
+        }
+        // THE FIVE ACTIONS THAT ASK reach this function only through their own question being
         // ANSWERED, which is why they are not opened here: `route_key` calls `prompt::Ask::of`
         // before it performs anything, and a `confirm-before`'s yes re-enters this function with the
         // verb it guarded. Reached with an ask outstanding only if `Ask::of` answered `None` — a
@@ -451,6 +465,7 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
         BoundAction::RenameWindow
         | BoundAction::RenameSession
         | BoundAction::RenamePane
+        | BoundAction::MoveWindowBefore
         | BoundAction::ConfirmBefore { .. } => {}
     }
 }
