@@ -111,6 +111,10 @@ fn main() -> ExitCode {
             // After the keymap gate, which leaves the shipped table in force — this check drives
             // the DEFAULT prefix, so it must not run while a user config has moved it.
             check_the_window_keys_reach_the_daemon(&mut smoke, &mut report);
+            // Straight after the window keys, which leave the session on its FIRST window with an
+            // extra one behind it — exactly the arrangement a reorder needs, so this check reads
+            // that inheritance rather than building its own.
+            check_the_order_keys_move_a_window_on_the_daemon(&mut smoke, &mut report);
             // Straight after the window keys, and for the same reason: it drives the DEFAULT
             // prefix. It RENAMES the current window and leaves it renamed, which every later check
             // survives because they read the window they are on rather than a fixed name — an
@@ -2551,6 +2555,94 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
     report.check(
         &format!("`prefix n` wrapped onto the session's first window ({walked:?})"),
         walked.is_ok(),
+    );
+}
+
+/// **`prefix >` and `prefix <` move a WINDOW's place, through the shipped GUI binary.**
+///
+/// The GUI half of what `sprag-tui`'s pty test drives, and it exists for the reason the check above
+/// states: the keymap arm is shared, the `perform` that runs it is each frontend's own code. This
+/// client is also the one that DRAWS the order — the window strip — so it is the client where a
+/// wrong answer would be visible to a user, and the only one where "the order moved" is a claim
+/// about something on screen.
+///
+/// Judged against the DAEMON's window list rather than against painted pixels, deliberately: the
+/// strip is a projection of that list and asserting on it would test this client's paint twice
+/// while testing the verb not at all.
+///
+/// **What it leaves, stated**: the window order as it found it. Both presses are made and the
+/// second undoes the first, so a later check inherits the arrangement the window-key check left.
+fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session for the order keys", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the order keys", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the order keys", false);
+        return;
+    }
+    let before = windows_of(&mut daemon, &session);
+    // TWO windows at least, or a move has nowhere to go and every assertion below is vacuous —
+    // which is the shape this project has caught five times, so it is checked rather than assumed.
+    report.check(
+        &format!("the session has more than one window to reorder ({before:?})"),
+        before.len() > 1,
+    );
+    if before.len() < 2 {
+        return;
+    }
+    let names = |list: &[(String, bool)]| -> Vec<String> {
+        list.iter().map(|(name, _)| name.clone()).collect()
+    };
+    let on = |list: &[(String, bool)]| -> Option<String> {
+        list.iter()
+            .find(|(_, current)| *current)
+            .map(|(name, _)| name.clone())
+    };
+    let was = names(&before);
+    let sitting = on(&before);
+
+    // `prefix >` — one place toward the back. `>` is a SHIFTED character, which is the class R306
+    // measured `prefix %` failing on in this client on a real keyboard: winit reports it with the
+    // shift flag where a pty reports it without one. So this press is also the standing check that
+    // the fix held.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, ">", false).is_ok();
+    report.check("the GUI accepts `prefix >`", pressed);
+    let moved = smoke.wait_for(|s| {
+        let _ = s;
+        let now = windows_of(&mut daemon, &session);
+        (names(&now) != was).then_some(now)
+    });
+    report.check(
+        &format!("`prefix >` moved a window on the daemon ({moved:?})"),
+        moved.is_ok(),
+    );
+    let Ok(moved) = moved else { return };
+    report.check(
+        "...and moved the WINDOW, not the user: the session sits where it did",
+        on(&moved) == sitting,
+    );
+    report.check(
+        "...and moved it rather than adding or dropping one",
+        moved.len() == before.len(),
+    );
+
+    // `prefix <` — the other way, which must put the order back. A key that did the same thing as
+    // its twin would pass every assertion above and fail this one.
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "<", false).is_ok();
+    report.check("the GUI accepts `prefix <`", pressed);
+    let back = smoke.wait_for(|s| {
+        let _ = s;
+        let now = windows_of(&mut daemon, &session);
+        (names(&now) == was).then_some(now)
+    });
+    report.check(
+        &format!("`prefix <` put the order back ({back:?})"),
+        back.is_ok(),
     );
 }
 

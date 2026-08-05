@@ -365,6 +365,18 @@ fn pane_text_of(conn: &mut HostConn, session: &str, pane: u64) -> String {
 /// sibling test one screen down had already recorded the mechanism ("the client learns of the select
 /// on its next wake") and solved it with one character typed until it lands.
 fn typing_follows(tui: &mut Tui, conn: &mut HostConn, session: &str, pane: u64) {
+    // WAIT PAST THE REPEAT WINDOW FIRST, and this is the one place it is enforced rather than
+    // remembered. R308 registered the hazard and left it to each caller: after an `-r` binding the
+    // prefix table stays armed for `repeat-time`, so a character typed inside it is read as a
+    // PREFIX key and never reaches the pane. The probe below is `.`, and R310 bound `prefix .` to
+    // `move-window --before` — which opens a PROMPT that then eats every following character, so
+    // the two arrow tests hung for the full deadline rather than failing on one lost keystroke.
+    //
+    // Sleeping is honest here where it usually is not: the thing being waited for is a TIMER in
+    // another process, and no observable this side moves when it expires. It is the keymap's own
+    // constant plus a margin, not a guessed number — and it is paid once per call, in a helper that
+    // already polls for 45 seconds when something is wrong.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
     let before = pane_text_of(conn, session, pane).matches('.').count();
     wait_for(
         &format!("this client's typing to follow the session onto pane {pane}"),
@@ -995,6 +1007,137 @@ fn windows_of(conn: &mut HostConn, session: &str) -> Vec<(String, bool)> {
         ))
     })
     .collect()
+}
+
+/// **The window ORDER, reached from a KEY** — a real `sprag-tui` on a real PTY presses `prefix >`,
+/// `prefix <` and `prefix .`, and the DAEMON's own window list is what is asserted.
+///
+/// Measured at `1ba0164` before a line was written: the order was WALKED by `prefix n`/`p`, PAINTED
+/// by the GUI's window strip, and changeable by nothing in the product — no key, no CLI verb, no
+/// wire action. The rival's only gesture for it is a MOUSE DRAG in its tab bar
+/// (`MouseAction::MoveTab`; herdr `9a4ce5e1` has no CLI `tab move` and no `KeysConfig` binding), so
+/// this test is the half neither product had.
+///
+/// ⚠ **The session is walked BACK onto window "0" before anything is moved, and that is
+/// load-bearing rather than tidy.** `prefix c` selects what it creates, so after two of them the
+/// scope is a window whose pane is a SHELL — and `pane_text_of(.., 0)` reads the SCOPED window, so
+/// the `cat` pane is `"<unreadable>"` from there. The first version of this test compared two
+/// unreadable strings and called it "not one character reached the pane": a VACUOUS assertion, of
+/// exactly the class this project has now caught five times, and the harness is what found it.
+#[test]
+fn the_order_keys_move_a_window_and_the_prompt_key_anchors_it() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &sock;
+
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    // Three windows, so a step has somewhere to go and an anchor has something to name.
+    for _ in 0..2 {
+        tui.type_bytes(PREFIX);
+        tui.type_bytes(b"c");
+    }
+    wait_for("three windows to exist", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![
+                ("0".to_owned(), false),
+                ("1".to_owned(), false),
+                ("2".to_owned(), true),
+            ],
+        )
+    });
+    // Back onto "0" — the `cat` window, whose pane is the only one that can be read unambiguously.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"n");
+    wait_for("the session to be back on the cat window", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![
+                ("0".to_owned(), true),
+                ("1".to_owned(), false),
+                ("2".to_owned(), false),
+            ],
+        )
+    });
+
+    // 1. `prefix >` — one place toward the back. The window the session is ON moves, and the
+    // session STAYS ON IT, which is the property a client that recomputed an index would break.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b">");
+    wait_for("the key to move the current window one place later", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![
+                ("1".to_owned(), false),
+                ("0".to_owned(), true),
+                ("2".to_owned(), false),
+            ],
+        )
+    });
+
+    // 2. `prefix <` — the other way, and it really is the other way rather than the same key twice.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"<");
+    wait_for("the key to move it back one place earlier", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![
+                ("0".to_owned(), true),
+                ("1".to_owned(), false),
+                ("2".to_owned(), false),
+            ],
+        )
+    });
+
+    // 3. `prefix .` — tmux's own default for `move-window`, which there prompts for an INDEX and
+    // here asks for a WINDOW NAME. Typed one keystroke at a time and committed with Enter, exactly
+    // as the rename prompt beside it is, because it is the same surface.
+    //
+    // The seed is EMPTY here where a rename's is the current name, so what lands is `2` and not
+    // `02`: a prompt that seeded with the subject would name a window that does not exist.
+    let shell_before = pane_text_of(&mut conn, &session, 0);
+    assert!(
+        shell_before.contains("before"),
+        "the fixture pane really is readable, or the assertion below says nothing: {shell_before:?}",
+    );
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b".");
+    tui.type_bytes(b"2\r");
+    wait_for(
+        "the anchored move to reach the daemon's window list",
+        || {
+            settled(
+                windows_of(&mut conn, &session),
+                &vec![
+                    ("1".to_owned(), false),
+                    ("0".to_owned(), true),
+                    ("2".to_owned(), false),
+                ],
+            )
+        },
+    );
+    assert_eq!(
+        pane_text_of(&mut conn, &session, 0),
+        shell_before,
+        "the anchor was typed AT THE CLIENT: not one character of it reached the pane",
+    );
+
+    // ...and CANCELLING gives the keyboard back with the order untouched. `C-c` rather than
+    // `Escape`, for the reason the rename prompt's own cancel states.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b".");
+    tui.type_bytes(b"1");
+    tui.type_bytes(b"\x03");
+    typing_follows(&mut tui, &mut conn, &session, 0);
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![
+            ("1".to_owned(), false),
+            ("0".to_owned(), true),
+            ("2".to_owned(), false),
+        ],
+        "a cancelled prompt moves nothing, and the keyboard is the pane's again",
+    );
 }
 
 /// **The window level, reached from a KEY** — a real `sprag-tui` on a real PTY presses `prefix c`
