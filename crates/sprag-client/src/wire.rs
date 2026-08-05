@@ -92,13 +92,13 @@ use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
     CLOSE_ACTION, DROP_FILE_ACTION, ENDED_KEY, FOCUS_ACTION, FULL_TEXT_SLOT, GLOBAL_COMMANDS_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOUSE_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    RESIZE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOW_SIZE_SLOT, WINDOWS_SLOT,
-    ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    MOUSE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
+    RENAME_WINDOW_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION,
+    SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOW_SIZE_SLOT,
+    WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
     session_activity_at,
 };
 use sprag_host::{
@@ -111,8 +111,8 @@ use sprag_rpc::{
     ROWS_PARAM, new_gui_client_id,
 };
 use sprag_terminal::{
-    Ended, LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, SessionInfo, SplitDir,
-    WindowInfo, WindowStep, ZoomOutcome,
+    Ended, LayoutSnapshot, LayoutWire, PaneDir, PaneExit, PaneId, PlaceHow, SessionInfo, SplitDir,
+    WindowInfo, WindowPlace, WindowStep, ZoomOutcome,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol};
 
@@ -2317,6 +2317,27 @@ impl HostClient for WireHost {
         let landed = self.request("scene/invoke", params, "select_window_toward")?;
         self.refresh_view();
         landed.as_str().map(str::to_owned)
+    }
+
+    /// The move, sent with the client's own `window` argument or NONE at all — a client never
+    /// resolves "the current window" itself, for [`HostClient::move_window`]'s stated reason.
+    ///
+    /// The view is refreshed on every outcome, not only on [`PlaceHow::Moved`]: the strip this
+    /// client paints reads the window order, and a client deciding for itself when that order is
+    /// worth re-reading is a second answer to a question the daemon already answered.
+    ///
+    /// An answer this build cannot READ (a daemon too old to serve the verb refuses it before this
+    /// point; one that answered a word this build's [`PlaceHow`] lacks) is [`None`] — never a
+    /// guessed `Moved`, which would tell a user their window went somewhere it did not.
+    fn move_window(&self, window: Option<&str>, place: &WindowPlace) -> Option<(String, PlaceHow)> {
+        let ask = MoveWindowAsk {
+            window: window.map(str::to_owned),
+            place: place.clone(),
+        };
+        let params = invoke(&mux_action_path(MOVE_WINDOW_ACTION), ask.to_args());
+        let answer = self.request("scene/invoke", params, "move_window")?;
+        self.refresh_view();
+        MoveWindowAsk::read_answer(&answer)
     }
 
     fn new_window(&self) -> String {

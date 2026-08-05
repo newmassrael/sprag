@@ -279,6 +279,23 @@ impl SlotView {
         landed
     }
 
+    /// Move a window's PLACE in the session's order (tmux `move-window`), answering the window
+    /// that was placed and WHAT happened.
+    ///
+    /// A reseed for [`select_window_toward`](Self::select_window_toward)'s reason, even though a
+    /// reorder moves no pane: the daemon may resolve `None` to a window this client's mirror does
+    /// not think is current, and one authority for "where the session is" is the whole discipline
+    /// these window verbs keep. It costs a mirror read on a gesture a user makes by hand.
+    pub(crate) fn move_window(
+        &self,
+        window: Option<&str>,
+        place: &sprag_terminal::WindowPlace,
+    ) -> Option<(String, sprag_terminal::PlaceHow)> {
+        let moved = self.host.move_window(window, place);
+        self.reseed_pane_focus();
+        moved
+    }
+
     /// Create + select a window, born with a shell (tmux `new-window`), returning its name — the
     /// "+" tab.
     pub(crate) fn new_window(&self) -> String {
@@ -1179,6 +1196,14 @@ mod tests {
         }
         fn select_window(&self, _name: &str) {}
         fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
+            None
+        }
+        /// Inert, like the walk above it: this fixture drives what is PAINTED, not the order.
+        fn move_window(
+            &self,
+            _window: Option<&str>,
+            _place: &sprag_terminal::WindowPlace,
+        ) -> Option<(String, sprag_terminal::PlaceHow)> {
             None
         }
         fn new_window(&self) -> String {

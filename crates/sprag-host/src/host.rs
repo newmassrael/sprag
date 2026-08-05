@@ -52,8 +52,9 @@ use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, CommandBuilder, DividerStep, Ended, HistoryLimitSource, LayoutSnapshot,
     LayoutWire, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle, PaneRebirth,
-    PaneStep, Projection, Rect, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir,
-    SplitSide, WindowInfo, WindowStep, Workspace, ZoomOutcome, tile, with_ratio,
+    PaneStep, PlaceHow, Projection, Rect, SessionInfo, SessionRegistry, Snapshot, SnapshotError,
+    SplitDir, SplitSide, WindowInfo, WindowPlace, WindowStep, Workspace, ZoomOutcome, tile,
+    with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -677,6 +678,19 @@ pub trait HostClient {
     /// [`None`] when the host could not be asked. It cannot mean "nowhere to go": a session always
     /// holds a window, so the walk always lands.
     fn select_window_toward(&self, step: WindowStep) -> Option<String>;
+
+    /// Move a window's PLACE in the scoped session's order — tmux `move-window`. Answers the window
+    /// that was placed and WHAT happened, or [`None`] if the host could not be asked or refused.
+    ///
+    /// `window` [`None`] means the session's CURRENT window, which is what a keypress means. It is
+    /// resolved by the DAEMON and not here, for [`select_window_toward`](Self::select_window_toward)'s
+    /// reason: a client reading its own `windows` mirror for "the current one" would be naming a
+    /// window off a list that can be a revision behind the session it is naming.
+    ///
+    /// The ANSWER is a [`PlaceHow`] and not a `bool`, because three of its four words mean the order
+    /// did not move and each has a different remedy — the discrimination R301 gave the swap, and the
+    /// one the rival's `move_tab` collapses into `false`.
+    fn move_window(&self, window: Option<&str>, place: &WindowPlace) -> Option<(String, PlaceHow)>;
 
     /// Create a window in the scoped session, born with a shell, and select it (tmux
     /// `new-window`), returning its name.
@@ -2467,6 +2481,24 @@ impl HostClient for Host {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
         registry.select_window_relative(&session, step).ok()
+    }
+
+    /// The move, straight on the registry this arm owns — and the CURRENT window resolved here for
+    /// the same reason the wire arm resolves it at the daemon: it is a fact about the scope, read
+    /// under the one lock that also performs the move, so nothing can slip between the two.
+    fn move_window(&self, window: Option<&str>, place: &WindowPlace) -> Option<(String, PlaceHow)> {
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        let window = match window {
+            Some(window) => window.to_owned(),
+            None => registry
+                .session(&session)?
+                .current_window()
+                .name()
+                .to_owned(),
+        };
+        let how = registry.move_window(&session, &window, place).ok()?;
+        Some((window, how))
     }
 
     /// Create + select a window in the default session, birthing a shell into it — the in-process

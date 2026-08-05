@@ -14,7 +14,7 @@
 
 use pinion_core::external::{SchemaArg, SchemaField};
 use serde_json::{Map, Value};
-use sprag_terminal::{PaneDir, PaneId, WindowStep};
+use sprag_terminal::{PaneDir, PaneId, PlaceHow, WindowPlace, WindowStep};
 
 use crate::{INPUT_TAG, MUX_TAG};
 
@@ -1111,6 +1111,177 @@ impl SelectWindowAsk {
 /// The mux control external invoke action that makes a pane ACTIVE in the scoped session's current
 /// window (`{pane?}` XOR `{dir?}`) — tmux `select-pane`. Answers `{pane, changed}`.
 ///
+/// The mux control external invoke action that moves a window's PLACE in the scoped session's
+/// order — tmux `move-window`. Answers `{window, how}`.
+///
+/// [`SELECT_WINDOW_ACTION`]'s companion, and the two together are why this project draws the
+/// distinction its own docs used to leave implicit: **the same collection is a RING to walk and a
+/// SEQUENCE to arrange.** The select wraps because attention comes back round; this one stops at
+/// the ends, because the order the `windows` slot publishes as an ARRAY — and the strip
+/// `sprag-gui` paints from it — has a front and a back.
+///
+/// The order was, until this verb, **walkable, paintable and unchangeable**: no CLI verb, no key, no
+/// wire action anywhere in this tree could move a window past another one.
+///
+/// # The grammar
+///
+/// [`MoveWindowAsk`] — `{window?}` plus exactly one of `place` / `before` / `after`. `window`
+/// ABSENT means the session's CURRENT window, which is what a keypress means and the default
+/// [`SELECT_PANE_ACTION`]'s origin takes for its own reason.
+///
+/// An anchor is a NAME, never an index. The rival's `tab.move` takes `insert_index`
+/// (`src/app/api/tabs.rs:179` at herdr `9a4ce5e1`), a position the CLIENT computes from a list it
+/// read earlier — [`sprag_terminal::PaneName`]'s whole argument one level up, since a position
+/// silently comes to mean a different slot and the caller cannot tell. A name is resolved under the
+/// registry lock at the instant the move happens.
+///
+/// # The answer: `{window, how}`
+///
+/// `window` is the window AS RESOLVED, so a caller that omitted it learns which one moved. `how` is
+/// [`sprag_terminal::PlaceHow`]'s four words, because "nothing happened" has four causes with four
+/// remedies — already in that place, the session holds one window, the anchor was the window
+/// itself, or it moved. The rival answers `bool` for the first three at once and then reports
+/// SUCCESS with no event (`Workspace::move_tab`, herdr `src/workspace.rs:619`).
+///
+/// A window that does not exist, or an anchor that does not, is REFUSED rather than answered —
+/// R301's rule, kept here so a client cannot read "succeeded" about something absent.
+pub const MOVE_WINDOW_ACTION: &str = "move_window";
+
+/// The REQUEST grammar of [`MOVE_WINDOW_ACTION`] — [`SelectWindowAsk`]'s companion, and a type for
+/// the same reason: the keys are spelled ONCE for the daemon, the CLI verb and the keybinding, and
+/// the XOR lives in the type so no code in this tree can build "before AND last".
+///
+/// # Why three keys and not one
+///
+/// `place` carries the four placings that need no name (`"first"` / `"last"` / `"next"` /
+/// `"previous"`); `before` and `after` each carry a window name. One key holding either a word or a
+/// name would make `{"place": "first"}` ambiguous the day a window is CALLED `first` — and a window
+/// may be called that, since [`sprag_terminal::WindowName`] admits it. Separate keys make the
+/// ambiguity unrepresentable rather than resolved by precedence.
+///
+/// The two step words are [`WindowStep`]'s own, not a second pair: it is the same direction the
+/// ring walks, and only the WRAP differs between the verbs.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MoveWindowAsk {
+    /// The window being placed. [`None`] ⇒ the scoped session's CURRENT window.
+    pub window: Option<String>,
+    /// Where it goes.
+    pub place: WindowPlace,
+}
+
+impl MoveWindowAsk {
+    /// The request key naming the window being placed.
+    pub const WINDOW_KEY: &'static str = "window";
+    /// The request key carrying a placing that needs no anchor.
+    pub const PLACE_KEY: &'static str = "place";
+    /// The request key naming the anchor a window goes BEFORE.
+    pub const BEFORE_KEY: &'static str = "before";
+    /// The request key naming the anchor a window goes AFTER.
+    pub const AFTER_KEY: &'static str = "after";
+    /// [`WindowPlace::First`]'s word under [`PLACE_KEY`](Self::PLACE_KEY).
+    pub const FIRST_WORD: &'static str = "first";
+    /// [`WindowPlace::Last`]'s word under [`PLACE_KEY`](Self::PLACE_KEY).
+    pub const LAST_WORD: &'static str = "last";
+
+    /// The `args` object a client sends for this ask.
+    ///
+    /// An absent window emits no key at all rather than a null — [`SelectAsk::to_args`]'s rule, so a
+    /// reader of a trace tells "move the current one" from "move that one" by eye.
+    #[must_use]
+    pub fn to_args(&self) -> Value {
+        let mut map = Map::new();
+        if let Some(window) = &self.window {
+            map.insert(Self::WINDOW_KEY.to_owned(), Value::from(window.clone()));
+        }
+        let (key, value) = match &self.place {
+            WindowPlace::First => (Self::PLACE_KEY, Self::FIRST_WORD.to_owned()),
+            WindowPlace::Last => (Self::PLACE_KEY, Self::LAST_WORD.to_owned()),
+            WindowPlace::Step(step) => (Self::PLACE_KEY, step.wire_str().to_owned()),
+            WindowPlace::Before(anchor) => (Self::BEFORE_KEY, anchor.clone()),
+            WindowPlace::After(anchor) => (Self::AFTER_KEY, anchor.clone()),
+        };
+        map.insert(key.to_owned(), Value::from(value));
+        Value::Object(map)
+    }
+
+    /// The ask an `args` value names, or [`None`] for anything this grammar does not admit — a key
+    /// of the wrong type, a `place` word this build does not know, no placing at all, or more than
+    /// one.
+    ///
+    /// One [`None`] for every refusal, [`SelectWindowAsk::parse`]'s stated rule: the action answers
+    /// one error for all of them and each SURFACE knows what it sent.
+    #[must_use]
+    pub fn parse(args: &Value) -> Option<Self> {
+        let map = match args {
+            Value::Object(map) => Some(map),
+            Value::Null => None,
+            _ => return None,
+        };
+        // An explicit `null` reads as absent — the sibling grammar's rule, so a caller filling in a
+        // whole argument struct asks what one omitting the halves asks.
+        let field = |key: &str| {
+            map.and_then(|map| map.get(key))
+                .filter(|value| !value.is_null())
+        };
+        let word = match field(Self::PLACE_KEY) {
+            None => None,
+            Some(value) => Some(match value.as_str()? {
+                Self::FIRST_WORD => WindowPlace::First,
+                Self::LAST_WORD => WindowPlace::Last,
+                other => WindowPlace::Step(WindowStep::from_wire(other)?),
+            }),
+        };
+        let anchored = |key: &'static str, wrap: fn(String) -> WindowPlace| match field(key) {
+            None => Ok(None),
+            Some(value) => value
+                .as_str()
+                .map(|name| Some(wrap(name.to_owned())))
+                .ok_or(()),
+        };
+        let before = anchored(Self::BEFORE_KEY, WindowPlace::Before).ok()?;
+        let after = anchored(Self::AFTER_KEY, WindowPlace::After).ok()?;
+        let mut named = [word, before, after].into_iter().flatten();
+        let place = named.next()?;
+        if named.next().is_some() {
+            return None;
+        }
+        let window = match field(Self::WINDOW_KEY) {
+            None => None,
+            Some(value) => Some(value.as_str()?.to_owned()),
+        };
+        Some(Self { window, place })
+    }
+
+    /// The answer key naming the window that was placed.
+    pub const ANSWER_WINDOW_KEY: &'static str = "window";
+    /// The answer key carrying [`PlaceHow`]'s word.
+    pub const ANSWER_HOW_KEY: &'static str = "how";
+
+    /// The answer a daemon sends: `{window, how}`.
+    ///
+    /// Built here rather than at the action, so the daemon writing it and every client reading it
+    /// agree by construction — the rule [`SwapAsk`] states for its own answer.
+    #[must_use]
+    pub fn answer(window: &str, how: PlaceHow) -> Value {
+        let mut map = Map::new();
+        map.insert(
+            Self::ANSWER_WINDOW_KEY.to_owned(),
+            Value::from(window.to_owned()),
+        );
+        map.insert(Self::ANSWER_HOW_KEY.to_owned(), Value::from(how.wire_str()));
+        Value::Object(map)
+    }
+
+    /// Read that answer back, or [`None`] if it is not one — a daemon too old to know this verb,
+    /// or a word this build's [`PlaceHow`] does not have.
+    #[must_use]
+    pub fn read_answer(value: &Value) -> Option<(String, PlaceHow)> {
+        let window = value.get(Self::ANSWER_WINDOW_KEY)?.as_str()?.to_owned();
+        let how = PlaceHow::from_wire(value.get(Self::ANSWER_HOW_KEY)?.as_str()?)?;
+        Some((window, how))
+    }
+}
+
 /// The pane half of [`SELECT_WINDOW_ACTION`], and session state for the same reason: which pane a
 /// user is ON outlives any one client, so every attached client follows it and a reattaching one
 /// inherits it. Before this the daemon had no such concept and each display client kept its own
@@ -2822,6 +2993,62 @@ mod tests {
                 BUMP,
             );
         }
+
+        // The MOVE's grammar (R310), beside the select's for its reason — the two are companions
+        // over one order, and a key that drifted between them would be invisible from either type
+        // alone. EVERY arm, plus the window field present and absent, because a place is what this
+        // verb is FOR: a spelling that moved would send a well-formed request meaning something
+        // else, which is the failure the anchored arms have and the bare ones do not.
+        for (place, rendered) in [
+            (WindowPlace::First, r#"{"place":"first"}"#),
+            (WindowPlace::Last, r#"{"place":"last"}"#),
+            (WindowPlace::Step(WindowStep::Next), r#"{"place":"next"}"#),
+            (
+                WindowPlace::Step(WindowStep::Previous),
+                r#"{"place":"previous"}"#,
+            ),
+            (
+                WindowPlace::Before("logs".to_owned()),
+                r#"{"before":"logs"}"#,
+            ),
+            (WindowPlace::After("logs".to_owned()), r#"{"after":"logs"}"#),
+        ] {
+            assert_eq!(
+                serde_json::to_string(
+                    &MoveWindowAsk {
+                        window: None,
+                        place,
+                    }
+                    .to_args()
+                )
+                .expect("an ask renders"),
+                rendered,
+                "{}",
+                BUMP,
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(
+                &MoveWindowAsk {
+                    window: Some("logs".to_owned()),
+                    place: WindowPlace::First,
+                }
+                .to_args()
+            )
+            .expect("an ask renders"),
+            r#"{"window":"logs","place":"first"}"#,
+            "{}",
+            BUMP,
+        );
+        // ...and its ANSWER, which a client parses key by key but through ONE function, so a moved
+        // key moves under every caller at once.
+        assert_eq!(
+            serde_json::to_string(&MoveWindowAsk::answer("logs", PlaceHow::AlreadyThere))
+                .expect("an answer renders"),
+            r#"{"window":"logs","how":"already_there"}"#,
+            "{}",
+            BUMP,
+        );
 
         // The swap's grammar, all four spellings: an origin present and absent on each arm, because
         // the origin is a FIELD of both here rather than a variant of its own.

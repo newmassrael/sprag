@@ -963,6 +963,14 @@ mod tests {
         fn select_window_toward(&self, _step: sprag_terminal::WindowStep) -> Option<String> {
             None
         }
+        /// Inert, like the walk above it: this fixture drives what is PAINTED, not the order.
+        fn move_window(
+            &self,
+            _window: Option<&str>,
+            _place: &sprag_terminal::WindowPlace,
+        ) -> Option<(String, sprag_terminal::PlaceHow)> {
+            None
+        }
         fn new_window(&self) -> String {
             String::new()
         }

@@ -20,10 +20,10 @@ use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
     FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
-    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
-    SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, project_slot_for,
+    MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
+    RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -1878,6 +1878,136 @@ fn the_window_ring_is_walked_by_the_daemon_over_the_real_socket() {
     assert_eq!(
         windows_in(&mut conn, "0").into_iter().find(|w| w.1),
         Some(("1".to_owned(), true)),
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// `move_window`'s ANSWER BYTES over a real socket — the shape a client parses, which the CLI's
+/// sentence test and the registry's order tests both leave unchecked (R309's finding on `close`,
+/// applied on the round that could have repeated it).
+///
+/// The CONTROL is built into the fixture: the FIRST assertion moves a window that is not the
+/// scope's current one and reads `{window: "2", how: "moved"}`, so a daemon that always answered
+/// about the current window, or always answered `moved`, fails here while passing every test that
+/// only reads the order back.
+#[test]
+fn the_move_answers_which_window_and_how_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    for _ in 0..2 {
+        conn.call(
+            "scene/invoke",
+            json!({ "session": "0", "path": mux_action_path(NEW_WINDOW_ACTION), "args": {} }),
+        )
+        .expect("new_window answers");
+    }
+    // "0", "1", "2" — and `new_window` selected the last, so "2" IS current. Put the scope back on
+    // "0", which is what makes the omitted-window arm below discriminate.
+    select_window(&mut conn, "0", "0");
+
+    let mv = |conn: &mut HostConn, args: Value| -> Value {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": "0",
+                "path": mux_action_path(MOVE_WINDOW_ACTION),
+                "args": args,
+            }),
+        )
+        .expect("move_window answers")
+    };
+
+    assert_eq!(
+        mv(&mut conn, json!({ "window": "2", "place": "first" })),
+        json!({ "window": "2", "how": "moved" }),
+        "a NAMED move answers the window it was given and the outcome word",
+    );
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![
+            ("2".to_owned(), false),
+            ("0".to_owned(), true),
+            ("1".to_owned(), false),
+        ],
+    );
+    assert_eq!(
+        mv(&mut conn, json!({ "place": "last" })),
+        json!({ "window": "0", "how": "moved" }),
+        "an OMITTED window resolves to the scope's current one and is NAMED BACK",
+    );
+    assert_eq!(
+        mv(&mut conn, json!({ "place": "last" })),
+        json!({ "window": "0", "how": "already_there" }),
+        "and the same request again says which nothing happened",
+    );
+    assert_eq!(
+        mv(&mut conn, json!({ "before": "0" })),
+        json!({ "window": "0", "how": "itself" }),
+    );
+    assert_eq!(
+        mv(&mut conn, json!({ "after": "2" })),
+        json!({ "window": "0", "how": "moved" }),
+        "the anchored arm crosses the wire under its own key",
+    );
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![
+            ("2".to_owned(), false),
+            ("0".to_owned(), true),
+            ("1".to_owned(), false),
+        ],
+    );
+
+    // Every reading this grammar does not admit is refused, with the two well-formed arms above as
+    // the control that the refusals are about the SHAPE and not about the verb.
+    for bad in [
+        json!({ "place": "first", "before": "1" }),
+        json!({}),
+        json!({ "place": "sideways" }),
+        json!({ "place": 1 }),
+        json!({ "before": 1 }),
+    ] {
+        assert!(
+            conn.call(
+                "scene/invoke",
+                json!({
+                    "session": "0",
+                    "path": mux_action_path(MOVE_WINDOW_ACTION),
+                    "args": bad,
+                }),
+            )
+            .is_err(),
+            "{bad} names no place this grammar admits, so it must be refused",
+        );
+    }
+    // A window and an anchor that do NOT exist are refused too — not answered with an outcome.
+    for bad in [
+        json!({ "window": "nosuch", "place": "first" }),
+        json!({ "before": "nosuch" }),
+    ] {
+        assert!(
+            conn.call(
+                "scene/invoke",
+                json!({
+                    "session": "0",
+                    "path": mux_action_path(MOVE_WINDOW_ACTION),
+                    "args": bad,
+                }),
+            )
+            .is_err(),
+            "{bad} names a window that does not exist",
+        );
+    }
+    assert_eq!(
+        windows_in(&mut conn, "0"),
+        vec![
+            ("2".to_owned(), false),
+            ("0".to_owned(), true),
+            ("1".to_owned(), false),
+        ],
+        "and not one refusal moved anything",
     );
 
     let _ = std::fs::remove_file(&sock);

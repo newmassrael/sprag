@@ -78,11 +78,11 @@ use crate::window::{SizeRequest, WindowSize};
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
     DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, NEIGHBORS_FIELD,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD,
-    PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
-    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION,
-    RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
+    MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
+    PANES_SLOT, PROJECT_FIELD, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
     SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk, WINDOW_SIZE_SLOT,
     WINDOWS_SLOT, ZOOM_PANE_ACTION,
@@ -1158,6 +1158,53 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::String(landed)))
     }
 
+    /// `move_window {window?, place|before|after}` action: move a window's PLACE in THIS request's
+    /// session's order — tmux `move-window`. See [`crate::wire::MOVE_WINDOW_ACTION`].
+    ///
+    /// Answers `{window, how}` — which window moved (a caller may have omitted it) and WHAT
+    /// happened, in [`sprag_terminal::PlaceHow`]'s four words. The daemon states the reason because
+    /// three of the four leave the order untouched and a caller re-reading `windows` cannot tell
+    /// them apart: "already there", "this session holds one window" and "the anchor was the window
+    /// itself" have three different remedies and one appearance.
+    fn move_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let value = match args {
+            IntrospectValue::Json(value) => value,
+            IntrospectValue::Null => &Value::Null,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let ask = MoveWindowAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
+        let session = self.scope.session();
+        // Resolved HERE and not in the registry, because "the current window" is a fact about the
+        // scope and the registry's verb takes a name — the same split `rename_window` keeps. The
+        // resolved name is also what the answer carries, so a caller that omitted it learns which
+        // window it moved without a second read at a second instant.
+        let (window, how) = {
+            let mut registry = lock(&self.registry);
+            let window = match &ask.window {
+                Some(window) => window.clone(),
+                None => registry
+                    .session(session)
+                    .ok_or(InvokeError::Rejected)?
+                    .current_window()
+                    .name()
+                    .to_owned(),
+            };
+            let how = registry
+                .move_window(session, &window, &ask.place)
+                .map_err(|error| {
+                    tracing::debug!(target: "sprag_host", %error, "refused to move a window");
+                    InvokeError::Rejected
+                })?;
+            (window, how)
+        };
+        // Announced whatever the outcome: an announcement is a WAKE, and the change funnel behind
+        // it derives nothing from a move that moved nothing (`Event::WindowsReordered` is a
+        // sequence comparison, so an unchanged order produces an empty batch). Gating the wake on
+        // `how.changed()` here would be a second place deciding what counts as a change.
+        self.announce();
+        Ok(IntrospectValue::Json(MoveWindowAsk::answer(&window, how)))
+    }
+
     /// `select_pane {pane?} | {dir?, from?}` action: make a pane active in THIS request's session's
     /// current window — tmux `select-pane`. See [`crate::wire::SELECT_PANE_ACTION`].
     ///
@@ -1691,6 +1738,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(KILL_SESSION_ACTION, "action"),
                     SchemaField::new(NEW_WINDOW_ACTION, "action"),
                     SchemaField::new(SELECT_WINDOW_ACTION, "action"),
+                    SchemaField::new(MOVE_WINDOW_ACTION, "action"),
                     SchemaField::new(SELECT_PANE_ACTION, "action"),
                     SchemaField::new(RENAME_WINDOW_ACTION, "action"),
                     SchemaField::new(RENAME_SESSION_ACTION, "action"),
@@ -2214,6 +2262,7 @@ impl WorkspaceExternal {
             KILL_SESSION_ACTION => self.kill_session(&args),
             NEW_WINDOW_ACTION => self.new_window(&args),
             SELECT_WINDOW_ACTION => self.select_window(&args),
+            MOVE_WINDOW_ACTION => self.move_window(&args),
             SELECT_PANE_ACTION => self.select_pane(&args),
             RENAME_WINDOW_ACTION => self.rename_window(&args),
             RENAME_SESSION_ACTION => self.rename_session(&args),
