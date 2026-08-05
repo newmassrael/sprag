@@ -127,6 +127,10 @@ fn main() -> ExitCode {
             // the session it started from, with the DEFAULT prefix in force. It makes a session of
             // its own to pick, leaves it standing, and puts this client back where it found it.
             check_the_chooser_opens_and_a_picked_row_moves_this_client(&mut smoke, &mut report);
+            // Straight after the chooser, which leaves this client back where it started with the
+            // DEFAULT prefix in force. It writes a config of its own and puts the shipped table
+            // back before it returns, exactly as the keymap gate above does.
+            check_a_key_that_finds_nothing_says_so_on_the_screen(&mut smoke, &mut report);
             check_the_rename_key_asks_and_the_answer_reaches_the_daemon(&mut smoke, &mut report);
             // Straight after the renames, and for their reason: the DEFAULT prefix is in force. It
             // splits a pane and leaves BOTH standing with an uneven share — every later check
@@ -2348,8 +2352,13 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     // rewritten, because a policy is read when a window is re-derived and nothing re-derives on a
     // file write — a check that only edited the file would pass against a daemon that never read it.
     let _ = smoke.write_user_config("[options]\nwindow-size = \"largest\"\n");
-    let larger = (120, 40);
-    if let Err(error) = terminal.resize(larger.0, larger.1, (0, 0)) {
+    let larger_pty = (120u16, 40u16);
+    // What the terminal client REPORTS out of that pty: one row less, kept for its status line
+    // (R316, `sprag_tui::Split`). The window is arbitrated over what clients report, never over
+    // what their terminals are — so a check that expected the pty's own height would be asserting
+    // that `sprag-tui` paints its status row over a pane's last line.
+    let larger = (larger_pty.0, larger_pty.1 - 1);
+    if let Err(error) = terminal.resize(larger_pty.0, larger_pty.1, (0, 0)) {
         eprintln!("      could not resize the terminal client: {error}");
     }
     report.check(
@@ -2789,6 +2798,141 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
 
     // BACK, so what follows inherits the session this check was handed. `prefix L` is the verb for
     // exactly this and is already proved by the check above it.
+    let _ = smoke.press(0, "b", true);
+    let _ = smoke.press(0, "L", false);
+    let back = smoke.wait_for(|s| {
+        let _ = s;
+        (attached_to(&mut daemon, &home) > 0).then_some(())
+    });
+    report.check(
+        &format!("...and this check leaves the client where it found it ({back:?})"),
+        back.is_ok(),
+    );
+}
+
+/// **A key that finds nothing SAYS SO, through the shipped GUI binary** (R316).
+///
+/// The GUI half of what `sprag-tui`'s pty test drives, and the pair is the whole point: the
+/// sentence is decided once in `sprag_host::report`, and the SURFACE that shows it is each
+/// frontend's own — a reserved status row there, an overlay strip here. A shared decision proves
+/// nothing about a strip this binary draws.
+///
+/// **THE FIXTURE MAKES THE TWO READINGS DISAGREE.** One key is bound to a session that exists and
+/// one to a session that does not, in the same config, and both are pressed: the first must leave
+/// the client silent (and MOVED), the second must paint the sentence. A strip that appeared on
+/// every keystroke, and one that never appeared, each fail on one of the two.
+///
+/// The strip's TAG is read out of the painted tree rather than out of this process's own state,
+/// which is what makes it a claim about pixels; and the DAEMON's viewer badge is what says the good
+/// key worked, never the paint.
+///
+/// **What it leaves, stated**: the shipped keymap back in force, and this client on the session it
+/// started from.
+fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, report: &mut Report) {
+    let Some(home) = smoke.attached_session() else {
+        report.check("the window names its session for the report", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the report", false);
+        return;
+    };
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to press a reporting key", false);
+        return;
+    }
+    // A session the GOOD key can reach, made here so this check discriminates on its own.
+    let made = daemon.call(
+        "scene/invoke",
+        json!({ "path": "/sprag_mux/external/new_session", "args": { "name": "smoke-report" } }),
+    );
+    report.check(
+        &format!("a session exists for the good key to reach ({made:?})"),
+        made.is_ok(),
+    );
+    // TWO bindings in one file, so the pair is pressed against one table.
+    let wrote = smoke.write_user_config(
+        "[[bind]]\nkey = \"y\"\naction = \"switch-client -t smoke-report\"\n\n\
+         [[bind]]\nkey = \"g\"\naction = \"switch-client -t no-such-session\"\n",
+    );
+    report.check(
+        &format!("the two bindings are written ({wrote:?})"),
+        wrote.is_ok(),
+    );
+
+    // PAST THE REPEAT WINDOW FIRST — R308's hazard, which R315 was bitten by: inside an open window
+    // the prefix table is still live, so the first character of this chord would self-send.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+
+    // THE GOOD KEY, pressed first so the silence below is measured on a client that was WORKING.
+    let good = smoke.press(0, "b", true).is_ok() && smoke.press(0, "y", false).is_ok();
+    report.check("the GUI accepts the good binding", good);
+    let moved = smoke.wait_for(|s| {
+        let _ = s;
+        (attached_to(&mut daemon, "smoke-report") > 0).then_some(())
+    });
+    report.check(
+        &format!("a key naming a session that EXISTS moves this client ({moved:?})"),
+        moved.is_ok(),
+    );
+    let quiet = smoke
+        .tags()
+        .map(|tags| !tags.contains_key("sprag_message_strip"))
+        .unwrap_or(false);
+    report.check(
+        "...and says nothing, because the session tabs already show where it went",
+        quiet,
+    );
+
+    // THE BAD KEY. The strip must appear, and it must NAME the session that is not there.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let bad = smoke.press(0, "b", true).is_ok() && smoke.press(0, "g", false).is_ok();
+    report.check("the GUI accepts the bad binding", bad);
+    let shown = smoke.wait_for_tag("sprag_message_strip");
+    report.check(
+        &format!("a key naming a session that does NOT exist raises the strip ({shown:?})"),
+        shown.is_ok(),
+    );
+    let said = shown
+        .as_ref()
+        .ok()
+        .and_then(|tags| tags.get("sprag_message_strip"))
+        .map(|painted| painted.text.join("\u{1f}"))
+        .unwrap_or_default();
+    report.check(
+        &format!("...and the strip NAMES what is not there ({said:?})"),
+        said.contains("no session called") && said.contains("no-such-session"),
+    );
+    report.check(
+        "...and it says SESSION, not the action's grouping subject",
+        !said.contains("no client called"),
+    );
+    report.check(
+        &format!("...and the refused switch moved nobody ({said:?})"),
+        attached_to(&mut daemon, "smoke-report") > 0,
+    );
+
+    // IT GOES AWAY ON ITS OWN. A pinion window repaints on damage, so the strip's expiry rides on a
+    // wake this client schedules for itself — the one timer it has. Nothing is pressed from here,
+    // which is the state a clearing that rode on the next event would survive forever.
+    let cleared = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!(
+            "...and the strip clears on its own deadline, with no key to prompt it ({cleared:?})"
+        ),
+        cleared.is_ok(),
+    );
+
+    // WHAT IT LEAVES: the shipped table back, and this client where it started.
+    let restored = smoke.write_user_config("");
+    report.check(
+        &format!("the shipped keymap is put back ({restored:?})"),
+        restored.is_ok(),
+    );
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
     let _ = smoke.press(0, "b", true);
     let _ = smoke.press(0, "L", false);
     let back = smoke.wait_for(|s| {
