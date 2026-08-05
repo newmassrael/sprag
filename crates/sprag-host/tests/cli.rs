@@ -326,6 +326,101 @@ fn the_cli_manages_windows_over_the_socket() {
     );
 }
 
+/// `move-window` reorders a session's windows over the socket, and its FOUR SENTENCES are pinned —
+/// including the three that mean nothing moved, which is the discrimination the rival's `bool`
+/// cannot make (`Workspace::move_tab`, herdr `9a4ce5e1` `src/workspace.rs:619`, whose handler then
+/// reports success and emits no event for all three).
+///
+/// The listing is read back after every move rather than trusting the sentence: the printed word is
+/// the DAEMON's own outcome, but "the order really changed" is a different claim from "the daemon
+/// said moved", and only the second is a claim about the CLI.
+///
+/// REVERT-PROOF: drop the `if anchor > from` frame correction in `Session::move_window` and the
+/// `--after` row lands one window early; make the CLI print `moved` for every outcome and the three
+/// no-op rows fail.
+#[test]
+fn the_cli_moves_a_window_and_says_which_nothing_happened() {
+    let (_host, sock) = spawn_host();
+    let order = |sock: &std::path::Path| {
+        sprag(sock, &["windows", "-t", "0"])
+            .stdout
+            .lines()
+            .map(|line| line.replace(" (current)", ""))
+            .collect::<Vec<_>>()
+    };
+    for name in ["a", "b", "c"] {
+        assert!(sprag(&sock, &["new-window", "-t", "0", name]).ok);
+    }
+    assert!(sprag(&sock, &["select-window", "-t", "0", "0"]).ok);
+    assert_eq!(order(&sock), ["0", "a", "b", "c"], "the order as created");
+
+    // NAMED, to the front.
+    let run = sprag(&sock, &["move-window", "-t", "0", "c", "--first"]);
+    assert!(run.ok, "move-window succeeded: {}", run.stderr);
+    assert_eq!(run.stdout.trim(), "moved c");
+    assert_eq!(order(&sock), ["c", "0", "a", "b"]);
+
+    // ANCHORED, forward — the direction that exercises the frame correction.
+    let run = sprag(&sock, &["move-window", "-t", "0", "c", "--after", "a"]);
+    assert_eq!(run.stdout.trim(), "moved c");
+    assert_eq!(order(&sock), ["0", "a", "c", "b"]);
+
+    // UNNAMED: the window the session is ON, resolved by the daemon and NAMED BACK — a caller that
+    // omitted it learns which one it meant, which is the half a bare "ok" could not carry.
+    let run = sprag(&sock, &["move-window", "-t", "0", "--last"]);
+    assert_eq!(run.stdout.trim(), "moved 0");
+    assert_eq!(order(&sock), ["a", "c", "b", "0"]);
+
+    // THE THREE THAT MOVED NOTHING, each with its own sentence.
+    let run = sprag(&sock, &["move-window", "-t", "0", "--last"]);
+    assert!(
+        run.ok,
+        "a no-op is a SUCCESS, not a failure: {}",
+        run.stderr
+    );
+    assert_eq!(run.stdout.trim(), "0 is already there");
+    let run = sprag(&sock, &["move-window", "-t", "0", "a", "--before", "a"]);
+    assert_eq!(run.stdout.trim(), "a cannot be anchored to itself");
+    assert_eq!(order(&sock), ["a", "c", "b", "0"], "and nothing moved");
+    // `Alone` needs a session holding ONE window, which the boot session no longer does.
+    assert!(sprag(&sock, &["new", "solo"]).ok);
+    let run = sprag(&sock, &["move-window", "-t", "solo", "-p"]);
+    assert_eq!(run.stdout.trim(), "0 is this session's only window");
+
+    // A REFUSAL names the ANCHOR, not the window that was to move — the two are different mistakes
+    // and only one of them is in the user's hand.
+    let run = sprag(&sock, &["move-window", "-t", "0", "a", "--after", "nosuch"]);
+    assert!(!run.ok, "an absent anchor fails");
+    assert!(
+        run.stderr
+            .contains("no window named \"nosuch\" to anchor to"),
+        "the refusal names the anchor: {}",
+        run.stderr,
+    );
+
+    // The ARGUMENT errors, which never reach the wire.
+    let run = sprag(&sock, &["move-window", "-t", "0", "a"]);
+    assert!(!run.ok, "a move with no place fails");
+    assert!(
+        run.stderr.contains("move-window needs a place"),
+        "and says what is missing: {}",
+        run.stderr,
+    );
+    let run = sprag(&sock, &["move-window", "-t", "0", "--first", "--last"]);
+    assert!(
+        run.stderr.contains("exactly one place"),
+        "two places is one mistake with one sentence: {}",
+        run.stderr,
+    );
+    let run = sprag(&sock, &["move-window", "-t", "0", "--before"]);
+    assert!(
+        run.stderr
+            .contains("needs the name of a window to anchor to"),
+        "an anchorless --before is an error at the CLI, where it ASKS at a keybinding: {}",
+        run.stderr,
+    );
+}
+
 /// `--version` answers off a socket with NO daemon behind it — R281.
 ///
 /// The point is what it does NOT do. Every other command connects first, so a version that needed

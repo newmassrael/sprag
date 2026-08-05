@@ -45,6 +45,8 @@
 //! sprag windows -t SESSION                list a session's windows (name, and which is current)
 //! sprag new-window -t SESSION [name]      create + select a window, born with a shell; print its name
 //! sprag select-window -t SESSION <NAME|-n|-p>  make NAME current, or step along the window ring
+//! sprag move-window -t SESSION [NAME] <--first|--last|-n|-p|--before W|--after W>
+//!                                          move a window's PLACE in the session's order
 //! sprag rename-window -t SESSION [win] NEW rename a window (default: the current one) to NEW
 //! sprag rename-session [-t SESSION] NEW   rename a session. A session NAME is the address every
 //!                                         -t takes, so the daemon carries the session's parked
@@ -158,21 +160,24 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, ENDED_KEY, FULL_TEXT_SLOT,
     JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOVE_PANE_ACTION, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM,
-    PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
-    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
-    ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
-    SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    WINDOWS_SLOT, ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at,
-    project_slot_for, regex_slot_for, session_activity_at,
+    MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION,
+    PATTERN_PARAM, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
+    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    events_slot_since, find_slot_for, pane_processes_at, project_slot_for, regex_slot_for,
+    session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, HOST_SOCKET, HostConn, HostEndpoint,
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
-use sprag_terminal::{Ended, LayoutSnapshot, PaneDir, PaneId, WindowStep, arrangement};
+use sprag_terminal::{
+    Ended, LayoutSnapshot, PaneDir, PaneId, PlaceHow, WindowPlace, WindowStep, arrangement,
+};
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
@@ -201,6 +206,7 @@ fn run() -> io::Result<()> {
         Some("windows") => windows(args.collect()),
         Some("new-window") => new_window(args.collect()),
         Some("select-window") => select_window(args.collect()),
+        Some("move-window") => move_window(args.collect()),
         Some("select-pane") => select_pane(args.collect()),
         Some("rename-window") => rename_window(args.collect()),
         Some("rename-session") => rename_session(args.collect()),
@@ -825,6 +831,8 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20             | kill-session NAME | kill-server [--purge]>\n\
          \x20      sprag <windows | new-window [name] | select-window <NAME|-n|-p>\n\
          \x20             | rename-window [window] NAME | kill-window [window]\n\
+         \x20             | move-window [window]\n\
+         \x20                 <--first | --last | -n | -p | --before W | --after W>\n\
          \x20             | resize-window [window]\n\
          \x20                 <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>\n\
          \x20             | break-pane PANE [name] | join-pane PANE WINDOW\n\
@@ -3954,6 +3962,127 @@ fn select_window(args: Vec<String>) -> io::Result<()> {
     // answering the argument on the other arm would be the mistake R295 fixed for `rename-pane` and
     // R302 met again for `rename-session`.
     println!("selected {}", landed.as_str().unwrap_or(&word));
+    Ok(())
+}
+
+/// `move-window [WINDOW] <--first | --last | -n | -p | --before W | --after W> -t SESSION`: move a
+/// window's PLACE in its session's order — tmux `move-window`.
+///
+/// WINDOW is optional and defaults to the session's CURRENT window, which is the one a person at a
+/// keyboard means. It is resolved by the DAEMON, never here: a CLI reading the window list to find
+/// "the current one" would name it off a list that can be a request old.
+///
+/// # Why the anchor flags take a NAME and there is no `-t INDEX`
+///
+/// tmux's `move-window -t 5` names a slot by number, which works there because a tmux window HAS a
+/// number. A sprag window has a NAME and that name is its address, so a number here would be a
+/// second address for the same thing — and a positional one, which is exactly what
+/// [`RENAME_PANE_ACTION`] exists to keep an agent from holding. `-n` / `-p` are the SAME two letters
+/// `select-window` uses for the same two directions; only the WRAP differs, and this verb does not.
+///
+/// The four outcomes get four sentences, from the daemon's own
+/// [`PlaceHow`] word — because "nothing happened" has three causes here
+/// and a caller re-reading `sprag windows` cannot tell them apart.
+fn move_window(args: Vec<String>) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let (session, rest) = target_and_rest(args, "move-window")?;
+    let mut window: Option<String> = None;
+    let mut place: Option<WindowPlace> = None;
+    let mut rest = rest.into_iter();
+    while let Some(arg) = rest.next() {
+        // An anchored flag needs its window; the four bare ones do not. Read in one loop so a
+        // second placing is caught wherever it appears rather than only after a positional.
+        let anchored = |wrap: fn(String) -> WindowPlace,
+                        rest: &mut std::vec::IntoIter<String>|
+         -> io::Result<WindowPlace> {
+            rest.next().map(wrap).ok_or_else(|| {
+                bad(format!(
+                    "move-window: {arg} needs the name of a window to anchor to"
+                ))
+            })
+        };
+        let named = match arg.as_str() {
+            "--first" => Some(WindowPlace::First),
+            "--last" => Some(WindowPlace::Last),
+            "-n" => Some(WindowPlace::Step(WindowStep::Next)),
+            "-p" => Some(WindowPlace::Step(WindowStep::Previous)),
+            "--before" => Some(anchored(WindowPlace::Before, &mut rest)?),
+            "--after" => Some(anchored(WindowPlace::After, &mut rest)?),
+            other if other.starts_with('-') => {
+                return Err(bad(format!("move-window: unknown flag {other:?}")));
+            }
+            other => {
+                if window.replace(other.to_owned()).is_some() {
+                    return Err(bad(format!("move-window: unexpected argument {other:?}")));
+                }
+                None
+            }
+        };
+        if let Some(named) = named
+            && place.replace(named).is_some()
+        {
+            return Err(bad(
+                "move-window takes exactly one place: --first, --last, -n, -p, --before W or \
+                 --after W"
+                    .to_owned(),
+            ));
+        }
+    }
+    let place = place.ok_or_else(|| {
+        bad(
+            "move-window needs a place: --first, --last, -n, -p, --before WINDOW or --after WINDOW"
+                .to_owned(),
+        )
+    })?;
+    let ask = MoveWindowAsk {
+        window: window.clone(),
+        place: place.clone(),
+    };
+    let mut conn = connect(None)?;
+    require_session(&mut conn, &session)?;
+    let answer = match conn.try_call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(MOVE_WINDOW_ACTION),
+            "args": ask.to_args(),
+        }),
+    ) {
+        Ok(answer) => answer,
+        // Told APART from a refusal, which is R307's finding on the verb it added: an ADDED ACTION
+        // passes `client/hello`, so a daemon that predates this verb refuses it — and reporting
+        // that as "no such window" sends the user hunting for a typo in a name that is fine.
+        Err(CallError::Fault(fault)) => {
+            return Err(unknown_action("move-window", &fault).unwrap_or_else(|| {
+                let subject = match (&window, place.anchor()) {
+                    (_, Some(anchor)) => format!("no window named {anchor:?} to anchor to"),
+                    (Some(window), None) => format!("no window named {window:?}"),
+                    (None, None) => "the session could not be read".to_owned(),
+                };
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("move-window refused: {subject} in session {session:?}"),
+                )
+            }));
+        }
+        Err(other) => return Err(other.into()),
+    };
+    let Some((moved, how)) = MoveWindowAsk::read_answer(&answer) else {
+        return Err(io::Error::other(
+            "move-window: this daemon answered something this build cannot read",
+        ));
+    };
+    // One sentence per outcome, and the three that did NOT move say which nothing it was. The
+    // window is the DAEMON's resolved name, so a caller that omitted it learns which one it meant.
+    println!(
+        "{}",
+        match how {
+            PlaceHow::Moved => format!("moved {moved}"),
+            PlaceHow::AlreadyThere => format!("{moved} is already there"),
+            PlaceHow::Alone => format!("{moved} is this session's only window"),
+            PlaceHow::Itself => format!("{moved} cannot be anchored to itself"),
+        }
+    );
     Ok(())
 }
 
