@@ -697,7 +697,33 @@ pub const SPLIT_ACTION: &str = "split";
 /// `id` ABSENT means the current window's ACTIVE pane, the default [`SPLIT_ACTION`] takes and for
 /// the same reason. The window then hands the active pane on to the closed one's neighbour, so a
 /// caller can close repeatedly without naming anything and walk the window down.
+///
+/// # What it ENDS, and what it answers
+///
+/// Answers `{ended}` — one of [`Ended`](sprag_terminal::Ended)'s four words, and the reason this
+/// action is not a fire-and-forget `null` any more. A mux is nested, so closing a pane can take
+/// three other things with it: a window's LAST pane ends the WINDOW, a session's last window ends
+/// the SESSION, and the last session ends the SERVER. Until R309 the daemon did none of that — it
+/// removed the pane and left a window tiling nothing, which `sprag layout` reported as
+/// `no panes tiled` and both frontends drew as a void — while the GUI's own palette was already
+/// telling users *"It is this window's last pane and this session's last window."*
+///
+/// The cascade lives in [`SessionRegistry::close_pane`](sprag_terminal::SessionRegistry::close_pane)
+/// and delegates upward to `kill_window`, so `kill-pane`, [`KILL_WINDOW_ACTION`] and
+/// [`KILL_SESSION_ACTION`] are three entrances to ONE chain and answer with one vocabulary.
+///
+/// **`"server"` races its own delivery**, and that is a property of the answer rather than a
+/// defect: the caller is being told the daemon is ending, so the reply may be severed by the exit.
+/// A severed connection therefore reads as success — the `server_gone` arm every kill verb in
+/// `sprag` already had.
 pub const CLOSE_ACTION: &str = "close";
+/// The key carrying [`Ended`](sprag_terminal::Ended)'s word in the answer of [`CLOSE_ACTION`],
+/// [`KILL_WINDOW_ACTION`] and [`KILL_SESSION_ACTION`].
+///
+/// Spelled once, here, because three handlers write it and four readers (the CLI, the wire client,
+/// the MCP tool and the wire's own shape pin) parse it — the shape R300 found had grown a FIFTH
+/// hand-built copy of a request's keys in the crate both frontends share.
+pub const ENDED_KEY: &str = "ended";
 /// The mux control external invoke action that resizes a pane's PTY + emulator (`{id?, cols, rows,
 /// cell_width?, cell_height?}`). `id` absent ⇒ the current window's ACTIVE pane.
 pub const RESIZE_ACTION: &str = "resize";

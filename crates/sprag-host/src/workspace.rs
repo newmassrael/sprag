@@ -62,8 +62,8 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_terminal::{
-    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneId, SessionInfo,
-    SessionRegistry, SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
+    CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneId, PaneKillOutcome,
+    SessionInfo, SessionRegistry, SplitDir, SplitSide, SshRemote, WindowKillOutcome, Workspace,
 };
 
 use crate::attach::ClientSize;
@@ -507,22 +507,43 @@ impl WorkspaceExternal {
         ))
     }
 
-    /// `close` action: reap the pane with `id`. The removed `Pane` is bound
-    /// here so the workspace guard drops first and the pane's blocking
-    /// `Drop` (kill/wait/join) runs *outside* the lock.
+    /// `close` action: reap the pane with `id` — tmux `kill-pane`. See
+    /// [`crate::wire::CLOSE_ACTION`] for the answer's grammar and the cascade.
+    ///
+    /// The outcome is bound off the registry lock so the reaped owners' blocking `Drop`
+    /// (kill/wait/join) runs *outside* it, and the escalations route through the SAME
+    /// [`handle_session_kill`](Self::handle_session_kill) a `kill_window` and a `kill_session` use,
+    /// so a session ended from the pane end releases its viewers exactly as one ended by name does.
     fn close(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let id = self.pane_target(as_object(args)?, "id")?;
-        let removed = lock(self.workspace()).close(id);
-        if removed.is_some() {
-            // The set shrank: wake parked waiters so a mirror drops the pane's
-            // tile promptly. `removed` (the reaped `Pane`) is still bound, so its
-            // blocking `Drop` (kill/wait/join) runs after this returns, outside the
-            // lock — the bump only signals the already-completed removal.
-            self.announce();
-            Ok(IntrospectValue::Null)
-        } else {
-            Err(InvokeError::Rejected) // no such pane
+        // The window is the SCOPE's, unchanged: `close` has always acted within the scoped
+        // session's current window (its pool was the only thing it could reach), and widening the
+        // target to any window holding the id is a separate decision about addressing.
+        let outcome =
+            lock(&self.registry).close_pane(self.scope.session(), self.scope.window(), id);
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                tracing::debug!(target: "sprag_host", %error, "refused to close a pane");
+                return Err(InvokeError::Rejected);
+            }
+        };
+        let ended = outcome.ended();
+        match outcome {
+            // The set shrank: wake parked waiters so a mirror drops the pane's tile promptly. The
+            // reaped `Pane` is still bound, so its blocking `Drop` runs after this returns, outside
+            // the lock — the bump only signals the already-completed removal.
+            PaneKillOutcome::Pane(_reaped) => self.announce(),
+            // The window went with it. A removed window is a set change like any other; a session
+            // ended from below is the same escalation `kill_window` reports, handled in one place.
+            PaneKillOutcome::Window(WindowKillOutcome::Removed(_panes)) => self.announce(),
+            PaneKillOutcome::Window(WindowKillOutcome::Session(kill)) => {
+                self.handle_session_kill(kill);
+            }
         }
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ crate::wire::ENDED_KEY: ended.as_wire() }),
+        ))
     }
 
     /// `rename_pane {pane, name?}` action: name a pane, or take its name away — see
@@ -982,14 +1003,20 @@ impl WorkspaceExternal {
         // panes ride in `outcome` and their blocking `Drop` (kill / wait / join the reader) runs
         // OFF the lock — the `close` action's discipline.
         let outcome = lock(&self.registry).kill_session(name);
-        match outcome {
-            Ok(outcome) => self.handle_session_kill(outcome),
+        let ended = match outcome {
+            Ok(outcome) => {
+                let ended = outcome.ended();
+                self.handle_session_kill(outcome);
+                ended
+            }
             Err(error) => {
                 tracing::debug!(target: "sprag_host", %error, "refused to kill a session");
                 return Err(InvokeError::Rejected);
             }
-        }
-        Ok(IntrospectValue::Json(Value::Null))
+        };
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ crate::wire::ENDED_KEY: ended.as_wire() }),
+        ))
     }
 
     /// React to a [`KillOutcome`] that has already been bound OFF the registry lock (so its
@@ -1272,19 +1299,25 @@ impl WorkspaceExternal {
         let window = self.window_target(map)?.to_owned();
         // Bind off-lock so the reaped panes' blocking Drop runs outside the registry lock.
         let outcome = lock(&self.registry).kill_window(self.scope.session(), &window);
-        match outcome {
-            Ok(WindowKillOutcome::Removed(_panes)) => {
-                // A non-last window: its drained panes drop here, off-lock; wake clients watching
-                // the windows list.
-                self.announce();
-            }
-            Ok(WindowKillOutcome::Session(kill)) => self.handle_session_kill(kill),
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
             Err(error) => {
                 tracing::debug!(target: "sprag_host", %error, "refused to kill a window");
                 return Err(InvokeError::Rejected);
             }
+        };
+        let ended = outcome.ended();
+        match outcome {
+            WindowKillOutcome::Removed(_panes) => {
+                // A non-last window: its drained panes drop here, off-lock; wake clients watching
+                // the windows list.
+                self.announce();
+            }
+            WindowKillOutcome::Session(kill) => self.handle_session_kill(kill),
         }
-        Ok(IntrospectValue::Json(Value::Null))
+        Ok(IntrospectValue::Json(
+            serde_json::json!({ crate::wire::ENDED_KEY: ended.as_wire() }),
+        ))
     }
 
     /// `resize_window {window?, cols?, rows?, adjust_cols?, adjust_rows?, from?}` action: PIN the
@@ -3425,6 +3458,15 @@ mod tests {
         assert_eq!(lock(&pool(&reg)).list()[0].command_label, "cat");
     }
 
+    /// The answer a kill gives now that all three of them say how far the CASCADE reached — the
+    /// expected value spelled once for the six sites that assert it, so a change to the key or the
+    /// vocabulary lands in one place rather than in six literals.
+    fn ended(word: sprag_terminal::Ended) -> Result<IntrospectValue, InvokeError> {
+        Ok(IntrospectValue::Json(
+            json!({ crate::wire::ENDED_KEY: word.as_wire() }),
+        ))
+    }
+
     #[test]
     fn close_existing_then_missing() {
         let reg = registry();
@@ -3432,7 +3474,9 @@ mod tests {
         ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
         assert_eq!(
             ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0}))),
-            Ok(IntrospectValue::Null)
+            ended(sprag_terminal::Ended::Server),
+            "this fixture holds ONE session of ONE window, so its only pane takes all three with \
+             it — the answer says so instead of the `null` it said before R309",
         );
         assert_eq!(
             ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0}))),
@@ -4988,7 +5032,7 @@ mod tests {
                 KILL_SESSION_ACTION,
                 IntrospectValue::Json(json!({"name": "work"})),
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            ended(sprag_terminal::Ended::Session),
         );
         assert!(lock(&reg).session("work").is_none(), "the session is gone");
         assert_eq!(lock(&reg).sessions().len(), 1, "only the default remains");
@@ -5064,7 +5108,7 @@ mod tests {
                 KILL_SESSION_ACTION,
                 IntrospectValue::Json(json!({"name": "work"})),
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            ended(sprag_terminal::Ended::Session),
         );
 
         assert_eq!(
@@ -5125,7 +5169,7 @@ mod tests {
                 KILL_SESSION_ACTION,
                 IntrospectValue::Json(json!({"name": "0"})),
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            ended(sprag_terminal::Ended::Server),
         );
         assert_eq!(
             fired.load(Ordering::SeqCst),
@@ -5146,7 +5190,7 @@ mod tests {
                 KILL_SESSION_ACTION,
                 IntrospectValue::Json(json!({"name": "0"})),
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            ended(sprag_terminal::Ended::Server),
             "a last-session kill with no reaper is a no-op exit, not an error",
         );
     }
@@ -5377,7 +5421,7 @@ mod tests {
                 KILL_WINDOW_ACTION,
                 IntrospectValue::Json(json!({"window": "logs"}))
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            ended(sprag_terminal::Ended::Window),
         );
         assert!(rev.current() > before, "a window kill wakes waiters");
         assert_eq!(
@@ -5408,7 +5452,7 @@ mod tests {
                 KILL_WINDOW_ACTION,
                 IntrospectValue::Json(json!({"window": "0"}))
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            ended(sprag_terminal::Ended::Session),
         );
         assert!(
             lock(&reg).session("work").is_none(),
@@ -5447,7 +5491,7 @@ mod tests {
                 KILL_WINDOW_ACTION,
                 IntrospectValue::Json(json!({"window": "0"}))
             ),
-            Ok(IntrospectValue::Json(Value::Null)),
+            ended(sprag_terminal::Ended::Server),
         );
         assert_eq!(
             fired.load(Ordering::SeqCst),

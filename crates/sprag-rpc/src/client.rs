@@ -399,7 +399,20 @@ impl AttachAsk {
 ///   The grammar itself the client can check on its own — it calls the same `WindowName` the
 ///   daemon does (named rather than linked: this crate does not depend on `sprag-terminal`) — but
 ///   what a daemon RECORDED is only ever the daemon's to say.
-pub const WIRE_PROTOCOL: u32 = 9;
+/// * **10** — a kill CASCADES and says how far it reached (R309). `close` (tmux `kill-pane`) now
+///   ends the WINDOW its last pane emptied, which ends the SESSION and then the SERVER, and all
+///   three kill actions answer `{ended}` where they answered `null`. The SECOND bump caused by
+///   changed BEHAVIOUR rather than by an argument, and its two directions fail differently:
+///   a NEW client against an OLD daemon asks a `kill-pane` that leaves an empty window behind, then
+///   reads no `ended` key — and the honest reading of an absent key here is *"this daemon cannot
+///   say"*, never "only the pane went", because the difference between those two is whether the
+///   user's session still exists. A new client that assumed the cheapest answer would tell somebody
+///   their window survived a kill that emptied it.
+///   The OLD-client-against-NEW-daemon direction is the one a bump cannot fix by an absent key,
+///   which is why it needs the number: an old client's `kill-pane` now DESTROYS a window (and
+///   possibly the session) where the build it was compiled against destroyed one pane. Nothing in
+///   the old answer could carry that, because the old answer was `null` for every case.
+pub const WIRE_PROTOCOL: u32 = 10;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
