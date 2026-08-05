@@ -282,9 +282,21 @@ fn confirm_question(
         // before answering, and the one tmux's `confirm-before -p "kill-pane #P? (y/n)"` cannot
         // state because its prompt is a fixed string in a config file.
         BoundAction::KillPane => (
+            // It names the PROGRAM, not the id — the same sentence `sprag-gui`'s catalog has always
+            // shown for the same act, word for word. Two surfaces asking one question two ways is
+            // the exact thing this module exists to prevent (*"what must not differ is here: which
+            // actions ask, WHAT THEY ASK"*), and the divergence was mine: the first version of this
+            // arm asked `Kill pane 3?`, which tells a user a number they would have to go and look
+            // up, where `Kill pane running 'vim'?` tells them what they are about to lose.
+            //
+            // The id is the FALLBACK rather than the answer, because a pane always has one and a
+            // label can be empty; `Kill this pane?` is what is left when there is neither.
             pane.map_or_else(
                 || "Kill this pane?".to_owned(),
-                |id| format!("Kill pane {}?", id.0),
+                |id| match host.pane_command_label(id) {
+                    label if label.is_empty() => format!("Kill pane {}?", id.0),
+                    label => format!("Kill pane running '{label}'?"),
+                },
             ),
             // `pane_ids` is the panes this client can RENDER — its own contract allows briefly
             // omitting one it cannot draw yet, so this can over-state the escalation and never
@@ -630,6 +642,17 @@ mod tests {
             None,
             "a pane with a sibling takes nothing else down with it",
         );
+        // ...AND THE QUESTION NAMES THE PROGRAM, which is the same sentence `sprag-gui`'s catalog
+        // shows for this act. Two surfaces asking one question two ways is what this module exists
+        // to prevent, and it is checked here rather than assumed: the id is a number a user would
+        // have to go and look up.
+        let question = match Ask::of(&guarded, &host, Some(first)) {
+            Some(Ask::Confirm { question, .. }) => question,
+            other => panic!("a guarded kill asks a yes/no: {other:?}"),
+        };
+        let label = host.pane_command_label(first);
+        assert!(!label.is_empty(), "the fixture has a label to name");
+        assert_eq!(question, format!("Kill pane running '{label}'?"));
 
         // ONE PANE, TWO WINDOWS: the window goes and the session does not.
         let host = crate::Host::new((40, 6));

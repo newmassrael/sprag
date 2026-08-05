@@ -1037,11 +1037,22 @@ impl Ended {
     /// `null`, and the honest reading of that is "it was killed and this daemon cannot say how
     /// far" — never [`Ended::Pane`], which would report a surviving window that may already be
     /// gone. That is why the handshake refuses the skew rather than leaving it to each reader.
+    /// **There is no `ALL` array here, deliberately.** `PaneDir::ALL`, `WindowStep::ALL` and
+    /// `ActionSubject::ALL` are each an array literal no compiler checks — a hazard this project has
+    /// now written into its debt register three times, where a variant left out is a word that
+    /// silently fails to parse. This walks [`escalation`](Self::escalation) instead, which is an
+    /// exhaustive `match`: the chain IS the set, so a fifth level cannot be added without the
+    /// compiler asking, and there is no second list for a test to have to keep.
     #[must_use]
     pub fn from_wire(word: &str) -> Option<Self> {
-        [Self::Pane, Self::Window, Self::Session, Self::Server]
-            .into_iter()
-            .find(|ended| ended.as_wire() == word)
+        let mut level = Some(Self::Pane);
+        while let Some(ended) = level {
+            if ended.as_wire() == word {
+                return Some(ended);
+            }
+            level = ended.escalation();
+        }
+        None
     }
 
     /// The link this one escalates INTO, or [`None`] at the top of the chain.
@@ -4771,9 +4782,16 @@ mod tests {
     /// kill that ended it.
     #[test]
     fn every_ended_word_round_trips_and_an_unknown_one_is_refused() {
-        for word in [Ended::Pane, Ended::Window, Ended::Session, Ended::Server] {
+        // Walks the CHAIN rather than a list of its own, for `from_wire`'s reason: a second literal
+        // set here would be the very thing that lets a fifth level be missed by both.
+        let mut level = Some(Ended::Pane);
+        let mut seen = 0;
+        while let Some(word) = level {
             assert_eq!(Ended::from_wire(word.as_wire()), Some(word));
+            seen += 1;
+            level = word.escalation();
         }
+        assert_eq!(seen, 4, "and the chain is the four levels a mux has");
         assert_eq!(Ended::from_wire("everything"), None);
         assert_eq!(Ended::from_wire(""), None);
     }
