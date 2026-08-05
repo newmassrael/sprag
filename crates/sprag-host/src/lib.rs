@@ -57,6 +57,7 @@ pub mod history;
 pub mod hooks;
 pub mod host;
 pub mod job;
+pub mod keyhelp;
 pub mod keymap;
 pub mod notify;
 pub mod options;

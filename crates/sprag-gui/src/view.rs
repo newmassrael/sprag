@@ -253,6 +253,24 @@ fn with_prompt(
 /// so nothing may be clicked or typed while it is up, and least of all the palette row that armed it.
 /// (The palette closes before arming, so the two are never up together; the layering is the guarantee
 /// rather than the mechanism.)
+/// Overlay the KEY TABLE on `scene` when it is up (a no-op otherwise), pushed after the palette and
+/// before the two questions.
+///
+/// Above the palette because it is a modal like the palette and the last one raised wins; BELOW the
+/// prompt and the confirmation because those ask something and this only tells. The three are never
+/// up together — the view swallows every key, so nothing behind it can arm a question — so the
+/// order is a guarantee rather than a mechanism, exactly as it is for the pair below.
+fn with_keyhelp(scene: Scene, theme: &Theme) -> Scene {
+    let Some(panel) = crate::keyhelp::view_keyhelp(theme, (WINDOW_W, WINDOW_H)) else {
+        return scene;
+    };
+    let Scene::Container(mut root) = scene else {
+        return scene;
+    };
+    root.children.push(panel);
+    Scene::Container(root)
+}
+
 fn with_confirm(scene: Scene, theme: &Theme) -> Scene {
     let Some(panel) = crate::confirm::view_confirm(theme, (WINDOW_W, WINDOW_H)) else {
         return scene;
@@ -306,18 +324,21 @@ pub(crate) fn view_for_window(window_id: &str, state: ViewState, _frame: &Frame)
         // (R140) when it is open (a no-op when closed) — LAST so the popup paints over.
         // The find bar rides ABOVE the tiling and BELOW the context menu: a menu opened over the
         // bar must still paint on top, and the menu's own dismiss barrier must not sit over it.
-        // The name prompt goes between the palette and the confirmation, which is the order of
-        // how much each one is a point of no return: a palette can be dismissed, a name can be
-        // typed and re-typed, and a destructive yes cannot be taken back.
+        // The name prompt goes between the key table and the confirmation, which is the order of
+        // how much each one is a point of no return: a key table changes nothing, a palette can be
+        // dismissed, a name can be typed and re-typed, and a destructive yes cannot be taken back.
         _ => with_confirm(
             with_prompt(
-                with_palette(
-                    crate::ctxmenu::overlay(
-                        with_find_bar(view_main(&tv, &theme), state.find, &theme),
-                        state.menu,
+                with_keyhelp(
+                    with_palette(
+                        crate::ctxmenu::overlay(
+                            with_find_bar(view_main(&tv, &theme), state.find, &theme),
+                            state.menu,
+                            &theme,
+                        ),
+                        state.palette,
                         &theme,
                     ),
-                    state.palette,
                     &theme,
                 ),
                 state.prompt,

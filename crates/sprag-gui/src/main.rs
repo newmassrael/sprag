@@ -249,6 +249,7 @@ mod find;
 mod focus_report;
 mod hyperlink;
 mod input;
+mod keyhelp;
 mod keys;
 mod palette;
 mod prompt;
@@ -481,6 +482,7 @@ impl WidgetCore for TerminalViewer {
         // the query text, and an unpainted External costs nothing.
         externals.extend(palette::create_palette_externals());
         externals.extend(prompt::create_prompt_externals());
+        externals.extend(keyhelp::create_keyhelp_externals());
         // ...and the destructive-command PROMPT the palette (and the window strip) arms instead of
         // acting: its captured sentence, its two answers, and its own modal `open` query. Registered
         // on the same terms, and readable over RPC while nothing is armed so "is this client asking

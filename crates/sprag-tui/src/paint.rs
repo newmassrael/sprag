@@ -43,6 +43,7 @@ use pinion_core::{
 };
 use sprag_grid::ProjectionToken;
 use sprag_host::PaneAgent;
+use sprag_host::keyhelp::{KeyHelp, Row, Scroll};
 use sprag_terminal::PaneId;
 use sprag_terminal::tiling::{Divider, Rect};
 use termwiz::cell::{Blink, CellAttributes, Intensity, Underline, unicode_column_width};
@@ -233,27 +234,10 @@ pub fn prompt_changes(
             y: Position::Absolute(usize::from(row)),
         },
     ];
-    let line = format!("{question} {answer}");
-    // Truncated by COLUMNS, not characters: a name in CJK fills two cells per glyph, and a client
-    // that counted characters would run its own prompt off the end of the row for exactly the
-    // users whose names need this editor. The tail is dropped rather than the head — the question
-    // says which verb is being answered, which is the half a user cannot reconstruct.
-    let mut painted = String::new();
-    let mut columns = 0;
-    for cluster in line.graphemes(true) {
-        let cluster_width = unicode_column_width(cluster, None);
-        if columns + cluster_width > width {
-            break;
-        }
-        painted.push_str(cluster);
-        columns += cluster_width;
-    }
-    changes.push(Change::Text(painted));
-    // The rest of the row is the prompt's too: blanking it is what makes the overlay opaque, so a
-    // pane's output cannot appear to be part of the question.
-    if columns < width {
-        changes.push(Change::Text(" ".repeat(width - columns)));
-    }
+    // Truncated by COLUMNS, not characters, and blank-filled to the end of the row — both by
+    // [`push_clipped`], which the help view shares. The tail is dropped rather than the head: the
+    // question says which verb is being answered, which is the half a user cannot reconstruct.
+    push_clipped(&mut changes, &format!("{question} {answer}"), width);
     if let Some(caret) = caret {
         let before = unicode_column_width(question, None)
             + 1
@@ -273,6 +257,145 @@ pub fn prompt_changes(
         changes.push(Change::CursorVisibility(CursorVisibility::Hidden));
     }
     changes
+}
+
+/// The HELP view: what the keys do, painted over the whole of `area`.
+///
+/// # Why it covers the screen where the prompt covers one row
+///
+/// [`prompt_changes`] borrows the bottom line because a question is asked WHILE the user is looking
+/// at their panes — the answer is about the thing underneath. This is the opposite: a reader here
+/// has stopped working to find out what a key does, the table is thirty-odd rows in a terminal that
+/// may hold twenty-four, and a view that left the panes visible would be competing with its own
+/// content for the eye. It is still an OVERLAY and not a resize, for `prompt_changes`' reason
+/// exactly: this client's area is arbitrated across every attached client, so taking rows would
+/// reflow somebody else's panes because this user pressed `?`.
+///
+/// The first row is the header and the rest is the viewport, so `area.rows - 1` rows of the view
+/// are shown. `scroll` is clamped by [`Scroll::offset`] against that number rather than trusted,
+/// which is what makes a terminal RESIZE while the view is open safe: the offset that fitted the
+/// old height cannot strand the new one past the end.
+///
+/// [`Scroll::offset`]: sprag_host::keyhelp::Scroll::offset
+#[must_use]
+pub fn help_changes(area: Rect, help: &KeyHelp, scroll: Scroll) -> Vec<Change> {
+    if area.is_empty() {
+        return Vec::new();
+    }
+    let width = usize::from(area.cols);
+    let viewport = help_viewport(area);
+    let offset = scroll.offset(help.len(), viewport);
+    let mut changes = Vec::new();
+    // REVERSE VIDEO on the header alone, which is `prompt_changes`' rule and the same argument: the
+    // header is the client speaking, and the rows below it are content a user reads at length.
+    let mut header_attrs = CellAttributes::default();
+    header_attrs.set_reverse(true);
+    // What the header says is the two things a reader needs and cannot guess: how to leave, and
+    // whether there is more. The scroll marks are ASCII rather than arrows — this row is painted
+    // into whatever terminal the user attached with, and a header is the wrong place to discover
+    // that a font has no glyph.
+    let mut header = "keys — q or Esc to close".to_owned();
+    if scroll.more_above(help.len(), viewport) || scroll.more_below(help.len(), viewport) {
+        header.push_str(", PgUp/PgDn to scroll");
+    }
+    if scroll.more_below(help.len(), viewport) {
+        header.push_str(" (more below)");
+    } else if scroll.more_above(help.len(), viewport) {
+        header.push_str(" (end)");
+    }
+    changes.push(Change::AllAttributes(header_attrs));
+    changes.push(Change::CursorPosition {
+        x: Position::Absolute(usize::from(area.col)),
+        y: Position::Absolute(usize::from(area.row)),
+    });
+    push_clipped(&mut changes, &header, width);
+    let body_attrs = CellAttributes::default();
+    for line in 0..viewport {
+        changes.push(Change::AllAttributes(body_attrs.clone()));
+        changes.push(Change::CursorPosition {
+            x: Position::Absolute(usize::from(area.col)),
+            y: Position::Absolute(usize::from(area.row) + line + 1),
+        });
+        // A row past the end of the view is painted as BLANKS rather than skipped: the panes are
+        // still underneath, and a short table that left them showing would read as a broken frame.
+        let text = help
+            .rows()
+            .nth(offset + line)
+            .map_or_else(String::new, |row| help_row_text(row, help.chord_width()));
+        push_clipped(&mut changes, &text, width);
+    }
+    // Nothing here is being typed into, so the caret would only mark a place the user cannot edit —
+    // the same decision the yes/no prompt makes.
+    changes.push(Change::CursorVisibility(CursorVisibility::Hidden));
+    changes
+}
+
+/// How many rows of the help view fit on `area` — the screen less its header row.
+///
+/// One function so the painter and whatever handles the keys cannot disagree about the size of a
+/// page. It is the painter's own arithmetic, named and exported rather than repeated in the client,
+/// because a page-down that moved by a different number than the screen shows is a reader losing
+/// lines between two pages — the failure [`Scroll::page`]'s one-row overlap exists to prevent.
+///
+/// [`Scroll::page`]: sprag_host::keyhelp::Scroll::page
+#[must_use]
+pub fn help_viewport(area: Rect) -> usize {
+    usize::from(area.rows).saturating_sub(1)
+}
+
+/// One [`Row`] as this surface lays it out — the chord column, then what it does.
+///
+/// The TEXT of every row is the shared module's ([`Row`]'s own `Display`); what this adds is the
+/// COLUMN, which is a layout decision and so belongs to the surface. A heading is not indented and
+/// a binding is, so the groups read as groups without a box being drawn round them.
+fn help_row_text(row: &Row, chord_width: usize) -> String {
+    match row {
+        Row::Heading(text) => text.clone(),
+        Row::Blank => String::new(),
+        Row::Bind {
+            chord,
+            action,
+            repeat,
+        } => {
+            // Padded in CHARACTERS, and the pad is computed rather than given to `{:width$}`,
+            // because a chord may hold a multi-byte key a user bound and the formatter counts
+            // bytes. `sprag list-keys` measures its own column the same way and for the same reason.
+            let pad = " ".repeat(chord_width.saturating_sub(chord.chars().count()));
+            // The MARK is the shared module's two characters ([`KeyHelp::REPEAT`]); the column that
+            // keeps the actions lined up whether or not a row has one is this surface's.
+            let mark = if *repeat { KeyHelp::REPEAT } else { "  " };
+            format!("  {chord}{pad}  {mark} {action}")
+        }
+        Row::Vocabulary { form, bound } => {
+            if *bound {
+                format!("  {form}")
+            } else {
+                format!("  {form}  ({})", KeyHelp::UNBOUND)
+            }
+        }
+    }
+}
+
+/// Write `text` at the cursor, cut to `width` COLUMNS and blank-filled to it.
+///
+/// Columns rather than characters for [`prompt_changes`]' reason — a name in CJK fills two cells per
+/// glyph — and the fill is what makes an overlay opaque: without it a pane's output shows through
+/// the short rows of the thing drawn over it.
+fn push_clipped(changes: &mut Vec<Change>, text: &str, width: usize) {
+    let mut painted = String::new();
+    let mut columns = 0;
+    for cluster in text.graphemes(true) {
+        let cluster_width = unicode_column_width(cluster, None);
+        if columns + cluster_width > width {
+            break;
+        }
+        painted.push_str(cluster);
+        columns += cluster_width;
+    }
+    changes.push(Change::Text(painted));
+    if columns < width {
+        changes.push(Change::Text(" ".repeat(width - columns)));
+    }
 }
 
 /// The glyphs of one divider — the line of cells between two panes.

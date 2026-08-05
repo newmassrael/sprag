@@ -45,6 +45,7 @@ use std::time::Instant;
 
 use pinion_core::reactive::Owner;
 use sprag_host::config::ClientConfig;
+use sprag_host::keyhelp::KeyHelp;
 use sprag_host::keymap::{KeySpec, PrefixMode, Routed};
 
 /// `Owner::cache` key for this client's keymap holder.
@@ -151,6 +152,23 @@ impl ClientKeys {
         self.file.borrow().keymap().prefix().clone()
     }
 
+    /// The table as a view a client can PAINT — what `list-keys` shows on the screen (R308).
+    ///
+    /// **The third place the file's answer is used, and so the third re-reader** — see
+    /// [`reread`](Self::reread), whose rule this follows rather than extends. It matters here for
+    /// the palette's own recorded reason, one surface over: a user whose config was broken can fix
+    /// the file and press `?`, and a view built from the last routed table would show them what
+    /// they have just stopped having. Nothing else in the client re-reads on their behalf, because
+    /// no keystroke reaches a pane while a modal holds the keyboard.
+    ///
+    /// Built under the borrow and handed back OWNED, for [`prefix`](Self::prefix)'s reason: the
+    /// caller stores it in a `Signal` for as long as the panel is up, which is far longer than a
+    /// borrow of the one thing that can be re-read.
+    pub(crate) fn help(&self) -> KeyHelp {
+        self.reread();
+        KeyHelp::of(self.file.borrow().keymap())
+    }
+
     /// Why the user's config could not be used, if it could not — already worded to name the file, and
     /// re-read so the answer describes the file as it is NOW.
     ///
@@ -202,5 +220,46 @@ pub(crate) mod test_support {
                 file: RefCell::new(file),
                 mode: Cell::new(PrefixMode::default()),
             })
+    }
+
+    /// A throwaway `config.toml` plus the seeded keymap that reads it.
+    ///
+    /// Here rather than in one module's test block because two now need it — the routing tests and
+    /// the palette's hint column — and a second copy of a fixture that writes a file and seeds a
+    /// cache slot is a second thing that can drift about what "a known keymap" means.
+    pub(crate) struct Config(std::path::PathBuf);
+
+    impl Config {
+        /// Write `text` as this client's config and seed the keymap from it.
+        pub(crate) fn seeded(text: &str) -> (Self, Rc<ClientKeys>) {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static NEXT: AtomicU32 = AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "sprag-gui-keys-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            std::fs::create_dir_all(&dir).expect("temp config dir");
+            let config = Self(dir);
+            config.write(text);
+            let keys = seed_keys(&config.path());
+            (config, keys)
+        }
+
+        /// Where the file is.
+        pub(crate) fn path(&self) -> std::path::PathBuf {
+            self.0.join("config.toml")
+        }
+
+        /// Rewrite the file — what `sprag bind-key` does, and what an editor does.
+        pub(crate) fn write(&self, text: &str) {
+            std::fs::write(self.path(), text).expect("write config");
+        }
+    }
+
+    impl Drop for Config {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }

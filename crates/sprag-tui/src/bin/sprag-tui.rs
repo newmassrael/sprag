@@ -112,6 +112,7 @@ use std::time::Instant;
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
+use sprag_host::keyhelp::{KeyHelp, Pressed, Scroll};
 use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed};
 use sprag_host::prompt::{Ask, Line, Subject, Typed};
 use sprag_host::wire::SelectWindowAsk;
@@ -119,7 +120,8 @@ use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, SplitId};
 use sprag_tui::{
     Divider, MouseEdges, PaintCache, PanePaint, Rect, Tiling, WireKey, agent_window_title,
-    cursor_changes, divider_changes, prompt_changes, tile, title_change, wire_key, with_ratio,
+    cursor_changes, divider_changes, help_changes, help_viewport, prompt_changes, tile,
+    title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -254,9 +256,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         Frame {
             focus,
             clear: Clear::Yes,
-            // Nothing is being asked at boot, and the state that would say so is
+            // Nothing is over the panes at boot, and the state that would say so is
             // declared below — where it belongs, one line before the loop that owns it.
-            asking: None,
+            overlay: &Overlay::None,
         },
         &mut held,
     )?;
@@ -264,9 +266,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Where the next key goes. Starts at the pane: the prefix is a departure from the steady
     // state, not the other way round.
     let mut keys = PrefixMode::ToPane;
-    // The question this client is asking, if any — see [`Asking`]. `None` is the steady state, and
-    // while it is `Some` every keystroke belongs to the prompt.
-    let mut asking: Option<Asking> = None;
+    // What this client has put over the panes — see [`Overlay`]. `None` is the steady state, and
+    // while it is anything else every keystroke belongs to that surface rather than to the pane.
+    let mut overlay = Overlay::None;
     loop {
         // `None` blocks until the terminal has something OR the waker fires — the select this
         // client's whole idle cost rests on.
@@ -275,22 +277,27 @@ fn run() -> Result<(), Box<dyn Error>> {
             // is used: a repaint cannot change what a key means. Routed in a `let` before the match
             // so the borrow the re-read takes ends before an arm reads the prefix back out.
             Some(InputEvent::Key(event)) => {
-                // THE PROMPT OWNS THE KEYBOARD while it is up, and this is checked before the key
-                // is looked at rather than after: a user answering a question is not addressing the
-                // keymap, the prefix or the pane, and an unhandled key is swallowed rather than
-                // leaked to a shell behind a question the user has not answered yet. `sprag-gui`
-                // states the same rule at the top of its own routing for its destructive prompt.
-                let command = if let Some(open) = &mut asking {
-                    match open.answered(&host, &event) {
+                // AN OVERLAY OWNS THE KEYBOARD while it is up, and this is checked before the key
+                // is looked at rather than after: a user answering a question — or reading the key
+                // table — is not addressing the keymap, the prefix or the pane, and an unhandled
+                // key is swallowed rather than leaked to a shell behind a surface the user has not
+                // finished with. `sprag-gui` states the same rule at the top of its own routing.
+                //
+                // TAKEN rather than borrowed, and put back only if it is still up: that is what
+                // lets an arm close the overlay while it is still holding the value, and it says in
+                // the types that closing is the default — a path that forgets to restore it gives
+                // the panes back rather than stranding the keyboard.
+                let command = match std::mem::replace(&mut overlay, Overlay::None) {
+                    Overlay::Asking(mut open) => match open.answered(&host, &event) {
                         // Still asking: only the row changed, so only the row is painted.
                         Answered::Asking => {
-                            paint_prompt(&mut screen, screen_area, open)?;
+                            paint_prompt(&mut screen, screen_area, &open)?;
+                            overlay = Overlay::Asking(open);
                             continue;
                         }
                         // Closed with nothing to do — repaint the FRAME, which is what puts the
                         // panes back under the row the overlay borrowed.
                         Answered::Closed => {
-                            asking = None;
                             paint(
                                 &mut screen,
                                 &host,
@@ -299,7 +306,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
-                                    asking: asking.as_ref(),
+                                    overlay: &overlay,
                                 },
                                 &mut held,
                             )?;
@@ -308,7 +315,6 @@ fn run() -> Result<(), Box<dyn Error>> {
                         // Answered yes: the row is given back first, then the guarded action runs
                         // through the very same arms a bare binding reaches.
                         Answered::Perform(action) => {
-                            asking = None;
                             paint(
                                 &mut screen,
                                 &host,
@@ -317,15 +323,37 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
-                                    asking: asking.as_ref(),
+                                    overlay: &overlay,
                                 },
                                 &mut held,
                             )?;
                             Command::Act(action)
                         }
+                    },
+                    // The help view answers every key itself — scroll, or leave. What each key MEANS
+                    // is `KeyHelp::pressed`'s, shared with the other frontend; what this arm decides
+                    // is only what to repaint, which is the surface's half of that split.
+                    Overlay::Showing(mut open) => {
+                        if open.pressed(&event, help_viewport(screen_area)) == Shown::Open {
+                            paint_help(&mut screen, screen_area, &open)?;
+                            overlay = Overlay::Showing(open);
+                        } else {
+                            paint(
+                                &mut screen,
+                                &host,
+                                &tiling,
+                                screen_area,
+                                Frame {
+                                    focus,
+                                    clear: Clear::Yes,
+                                    overlay: &overlay,
+                                },
+                                &mut held,
+                            )?;
+                        }
+                        continue;
                     }
-                } else {
-                    command(&mut keys, refreshed(&mut keymap), &event)
+                    Overlay::None => command(&mut keys, refreshed(&mut keymap), &event),
                 };
                 // An action that cannot be carried out without an ANSWER opens the prompt instead
                 // of acting. Asked here for EVERY action rather than per arm, so the decision is
@@ -334,12 +362,24 @@ fn run() -> Result<(), Box<dyn Error>> {
                 if let Command::Act(action) = &command
                     && let Some(ask) = Ask::of(action, &host, focus)
                 {
-                    let open = asking.insert(Asking::open(ask));
-                    paint_prompt(&mut screen, screen_area, open)?;
+                    let open = Asking::open(ask);
+                    paint_prompt(&mut screen, screen_area, &open)?;
+                    overlay = Overlay::Asking(open);
                     continue;
                 }
                 match command {
                     Command::Act(BoundAction::DetachClient) => break,
+                    // THE VIEW IS BUILT FROM THE TABLE IN FORCE, at the instant it opens: the same
+                    // `refreshed` re-read the keystroke above went through, so a user who edits
+                    // their config and presses `?` is shown what they just wrote. It is then a
+                    // photograph — see `KeyHelp` — because a table that changed while it was on
+                    // screen would scroll under the reader.
+                    Command::Act(BoundAction::ListKeys) => {
+                        let open = Showing::open(refreshed(&mut keymap));
+                        paint_help(&mut screen, screen_area, &open)?;
+                        overlay = Overlay::Showing(open);
+                        continue;
+                    }
                     Command::Swallow => {}
                     Command::ToPane(key) => {
                         let mut scratch = [0u8; 4];
@@ -371,7 +411,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::No,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -397,7 +437,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::No,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -447,7 +487,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::Yes,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -471,7 +511,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::No,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -492,7 +532,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::No,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -519,7 +559,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::No,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -548,7 +588,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::No,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -567,21 +607,25 @@ fn run() -> Result<(), Box<dyn Error>> {
             // A PASTE, and the prompt gets first refusal on it for the same reason it gets first
             // refusal on a keystroke: a name pasted into an open question must not land in the
             // shell behind it. Found by the debt audit — the key path was closed and this was not.
-            Some(InputEvent::Paste(text)) => match &mut asking {
-                Some(Asking::Line { line, refusal, .. }) => {
-                    if line.pasted(&text) == Typed::Edited {
+            Some(InputEvent::Paste(text)) => match &mut overlay {
+                Overlay::Asking(open) => {
+                    // A yes/no has nowhere to put text, so only the line takes it — and the row is
+                    // redrawn either way, which costs one idempotent repaint and means this arm has
+                    // no second opinion about which questions are on screen.
+                    if let Asking::Line { line, refusal, .. } = open
+                        && line.pasted(&text) == Typed::Edited
+                    {
                         *refusal = None;
                     }
-                    paint_prompt(
-                        &mut screen,
-                        screen_area,
-                        asking.as_ref().expect("just matched"),
-                    )?;
+                    paint_prompt(&mut screen, screen_area, open)?;
                 }
-                // A yes/no has nowhere to put text. Swallowed rather than forwarded, which is what
-                // the keystroke path does with everything it does not understand.
-                Some(Asking::Confirm { .. }) => {}
-                None => paste(&host, focus, &text),
+                // The key table has nowhere to put text either. Swallowed rather than forwarded,
+                // which is what the keystroke path does with everything it does not understand —
+                // and the point of the whole arm: a paste must not reach the shell behind a surface
+                // the user is still using. R306 found exactly that leak on the prompt one round ago,
+                // and an overlay added without this arm would have re-opened it.
+                Overlay::Showing(_) => {}
+                Overlay::None => paste(&host, focus, &text),
             },
             // The pointer is addressed by WHERE IT IS, not by what has the keyboard: a report
             // belongs to the pane under it, which is the only reading a program can make sense of.
@@ -625,7 +669,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         Frame {
                                             focus,
                                             clear: Clear::Yes,
-                                            asking: asking.as_ref(),
+                                            overlay: &overlay,
                                         },
                                         &mut held,
                                     )?;
@@ -652,7 +696,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Frame {
                                 focus,
                                 clear: Clear::No,
-                                asking: asking.as_ref(),
+                                overlay: &overlay,
                             },
                             &mut held,
                         )?;
@@ -688,7 +732,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     Frame {
                         focus,
                         clear: Clear::Yes,
-                        asking: asking.as_ref(),
+                        overlay: &overlay,
                     },
                     &mut held,
                 )?;
@@ -718,7 +762,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 Frame {
                     focus,
                     clear: Clear::No,
-                    asking: asking.as_ref(),
+                    overlay: &overlay,
                 },
                 &mut held,
             )?;
@@ -794,7 +838,7 @@ fn paint(
     let Frame {
         focus,
         clear,
-        asking,
+        overlay,
     } = frame;
     // The outer terminal's title, refreshed HERE because this is the one function that writes the
     // terminal at all — so every path that repaints also re-titles, and no future caller can add a
@@ -852,13 +896,19 @@ fn paint(
     // repaints also re-draws the question, and no future caller can add a repaint that drops it.
     // Found by the audit rather than by a test — a resize or a host wake while the prompt was up
     // wiped the row off the screen while this client went on eating every keystroke.
-    if let Some(asking) = asking {
-        screen.add_changes(prompt_changes(
-            screen_area,
-            &asking.question(),
-            asking.answer(),
-            asking.caret(),
-        ));
+    match overlay {
+        Overlay::None => {}
+        Overlay::Asking(asking) => {
+            screen.add_changes(prompt_changes(
+                screen_area,
+                &asking.question(),
+                asking.answer(),
+                asking.caret(),
+            ));
+        }
+        Overlay::Showing(showing) => {
+            screen.add_changes(help_changes(screen_area, showing.help(), showing.scroll()));
+        }
     }
     screen.flush()?;
     Ok(())
@@ -1152,6 +1202,88 @@ fn refreshed(keymap: &mut sprag_host::config::ClientConfig) -> &Keymap {
     keymap.keymap()
 }
 
+/// What this client has put over the panes, and therefore what owns the keyboard.
+///
+/// ONE value rather than an `Option` per surface, and that is a correctness decision rather than a
+/// tidiness one: two `Option`s make "a question and the key table are both up" representable, and
+/// the client would then be painting one surface while routing keys to the other. There is nothing
+/// to keep in step here because there is only one thing.
+///
+/// It also gives every repaint one field to carry ([`Frame::overlay`]) instead of one per surface,
+/// so the next overlay this client grows is an arm and not another thirteen call sites.
+enum Overlay {
+    /// Nothing: keys route through the keymap to the pane, which is the steady state.
+    None,
+    /// A question is up. Every key belongs to it — see [`Asking`].
+    Asking(Asking),
+    /// The key table is up. Every key belongs to it — see [`Showing`].
+    Showing(Showing),
+}
+
+/// The help view this client is showing, and where the reader has scrolled to.
+///
+/// The SURFACE half of [`sprag_host::keyhelp`], exactly as [`Asking`] is the surface half of
+/// [`sprag_host::prompt`]: the shared module decides which rows, in what order, with what text, and
+/// what each key MEANS; this holds the photograph and the position, and knows how many rows fit.
+struct Showing {
+    /// The table as it was when `?` was pressed.
+    help: KeyHelp,
+    /// Where the reader is in it.
+    scroll: Scroll,
+}
+
+impl Showing {
+    /// Open the view on `keymap`.
+    fn open(keymap: &Keymap) -> Self {
+        Self {
+            help: KeyHelp::of(keymap),
+            scroll: Scroll::default(),
+        }
+    }
+
+    /// The table being shown.
+    fn help(&self) -> &KeyHelp {
+        &self.help
+    }
+
+    /// Where the reader is.
+    fn scroll(&self) -> Scroll {
+        self.scroll
+    }
+
+    /// Feed one keystroke to the open view.
+    ///
+    /// `viewport` is how many rows of the table are on screen, which the caller knows and this does
+    /// not: the same value the painter uses, so a page here and a page there are the same distance.
+    fn pressed(&mut self, event: &KeyEvent, viewport: usize) -> Shown {
+        let Some(key) = wire_key(event) else {
+            // A key the wire cannot spell is still this view's — swallowed, not passed on, which is
+            // the rule the prompt states one surface over.
+            return Shown::Open;
+        };
+        let mut scratch = [0u8; 4];
+        match self
+            .help
+            .pressed(self.scroll, key.name(&mut scratch), key.mods(), viewport)
+        {
+            Pressed::Open(scroll) => {
+                self.scroll = scroll;
+                Shown::Open
+            }
+            Pressed::Closed => Shown::Closed,
+        }
+    }
+}
+
+/// Whether the help view survived a keystroke.
+#[derive(PartialEq, Eq, Debug)]
+enum Shown {
+    /// Still up.
+    Open,
+    /// The reader left; give the panes back.
+    Closed,
+}
+
 /// The question this client is asking, and everything it needs to finish asking it.
 ///
 /// The SURFACE half of [`sprag_host::prompt`]: the shared module decides which actions ask, what
@@ -1322,6 +1454,22 @@ fn paint_prompt(
     Ok(())
 }
 
+/// Paint the help view over the screen, and nothing else.
+///
+/// [`paint_prompt`]'s peer and used for the same reason: while a reader is scrolling, every
+/// keystroke changes only what this draws, and putting the whole arrangement through the diff cache
+/// for a page-down would be paying for panes nobody can see. Every other path goes through
+/// [`paint`], which draws this last so a repaint cannot lose it.
+fn paint_help(
+    screen: &mut BufferedTerminal<SystemTerminal>,
+    screen_area: Rect,
+    showing: &Showing,
+) -> Result<(), Box<dyn Error>> {
+    screen.add_changes(help_changes(screen_area, showing.help(), showing.scroll()));
+    screen.flush()?;
+    Ok(())
+}
+
 /// What one frame shows beyond the panes themselves — the three facts that are about THIS paint
 /// rather than about the arrangement.
 ///
@@ -1334,8 +1482,8 @@ struct Frame<'a> {
     focus: Option<PaneId>,
     /// Whether the screen is cleared first — see [`Clear`].
     clear: Clear,
-    /// The question this client is asking, drawn last so no repaint can lose it.
-    asking: Option<&'a Asking>,
+    /// What is over the panes, drawn last so no repaint can lose it.
+    overlay: &'a Overlay,
 }
 
 /// What the loop should do with a key.

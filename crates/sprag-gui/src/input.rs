@@ -324,6 +324,7 @@ fn action_label(action: &BoundAction) -> &'static str {
     match action {
         BoundAction::DetachClient => "detach-client",
         BoundAction::SendPrefix => "send-prefix",
+        BoundAction::ListKeys => "list-keys",
         BoundAction::SplitWindow { .. } => "split-window",
         // Both `select-pane` forms label as the VERB: the flags say which pane, and the pane the
         // action landed on is in the next frame's layout — the same reason the split's flags are
@@ -376,6 +377,10 @@ pub(crate) fn perform(action: BoundAction, active: usize) {
                 .slots
                 .send_key(active, prefix.name(), prefix.mods());
         }
+        // THE ONLY ACTION THAT SHOWS THIS CLIENT ITSELF, and so the only one whose whole effect is
+        // a surface of its own: it reaches no daemon and moves nothing. The table is read from the
+        // live client keys, so a user who has just edited their config is shown what they wrote.
+        BoundAction::ListKeys => crate::keyhelp::show(use_client_keys().help()),
         BoundAction::SplitWindow { dir, before } => {
             use_terminal().slots.split(active, dir, before);
         }
@@ -487,6 +492,13 @@ pub(crate) fn route_key(
     // two are never up together, so the order is a guarantee rather than a mechanism.
     if crate::prompt::is_open() {
         return crate::prompt::handle_key(scene, key, modifiers);
+    }
+    // THE KEY TABLE, on the same terms as the two above and for the same reason: while this client
+    // is showing what its keys do, no key may reach a pane behind the scrim. It is BELOW both
+    // questions because neither can be armed while it is up — it swallows every key — so the order
+    // is a guarantee rather than a mechanism, exactly as it is for the pair above.
+    if crate::keyhelp::is_open() {
+        return crate::keyhelp::handle_key(key, modifiers, (crate::WINDOW_W, crate::WINDOW_H));
     }
     let Some(tag) = focused else {
         return false;
@@ -797,40 +809,10 @@ mod tests {
     /// Its own directory per test, so `$XDG_CONFIG_HOME` is never touched: the environment is
     /// process-global and this crate's tests run in parallel, so pointing it anywhere would have
     /// siblings reading whatever the last writer left.
-    struct Config(std::path::PathBuf);
-
-    impl Config {
-        /// Write `text` as a fresh config and answer the holder reading it.
-        fn seeded(text: &str) -> (Self, std::rc::Rc<crate::keys::ClientKeys>) {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static NEXT: AtomicU32 = AtomicU32::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "sprag-gui-keys-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed),
-            ));
-            std::fs::create_dir_all(&dir).expect("temp config dir");
-            let config = Self(dir);
-            config.write(text);
-            let keys = crate::keys::test_support::seed_keys(&config.path());
-            (config, keys)
-        }
-
-        fn path(&self) -> std::path::PathBuf {
-            self.0.join("config.toml")
-        }
-
-        /// Rewrite the file — what `sprag bind-key` does, and what an editor does.
-        fn write(&self, text: &str) {
-            std::fs::write(self.path(), text).expect("write config");
-        }
-    }
-
-    impl Drop for Config {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    /// Moved to [`crate::keys::test_support`] when the palette's hint column became a second
+    /// consumer (R308) — one fixture, so two suites cannot come to different ideas of what "a known
+    /// keymap" is.
+    use crate::keys::test_support::Config;
 
     /// A quit sink that counts, seeded into pinion's provider slot so `detach-client` is observable.
     #[derive(Debug)]

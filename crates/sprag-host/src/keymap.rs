@@ -371,6 +371,64 @@ impl fmt::Display for KeySpec {
     }
 }
 
+/// What a [`BoundAction`] acts on — the four subjects this vocabulary has.
+///
+/// A grouping axis, and it is an enum rather than a string because it is READ: the help view orders
+/// its sections by it, so "which group is this in" has to be a decision with a fixed set of answers
+/// and a fixed order rather than a label each caller invents.
+///
+/// The order is the declaration order, and it is the reading order of the view: the CLIENT's own
+/// actions first, because `list-keys` and `detach-client` are what a user who is lost needs and the
+/// top of a list is where they will look; then outward through the containment the product itself
+/// uses, pane inside window inside session.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum ActionSubject {
+    /// This client and its keyboard — detach, send the prefix, show the keys.
+    Client,
+    /// One pane: splitting, focusing, swapping, sizing, zooming, naming.
+    Pane,
+    /// One window: creating, walking to, killing, naming.
+    Window,
+    /// The session itself.
+    Session,
+}
+
+impl ActionSubject {
+    /// Every subject, in the reading order the view uses.
+    ///
+    /// An array literal for [`PaneDir::ALL`]'s reason and with [`PaneDir::ALL`]'s residual: Rust has
+    /// no stable way to derive it, so a fifth subject left out of this would compile and simply
+    /// never render a section. The test that walks every [`BoundAction`] and asserts its subject is
+    /// in here is what catches that.
+    pub const ALL: [Self; 4] = [Self::Client, Self::Pane, Self::Window, Self::Session];
+
+    /// What the view calls this group.
+    #[must_use]
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Pane => "pane",
+            Self::Window => "window",
+            Self::Session => "session",
+        }
+    }
+}
+
+impl fmt::Display for ActionSubject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.heading())
+    }
+}
+
+/// The first word of an action's spelling, for a caller holding the whole line.
+///
+/// One definition so [`BoundAction::verb`] and the vocabulary's own entries are cut the same way —
+/// `"resize-pane -L|-R|-U|-D [N]"` and `"resize-pane -L 5"` have to yield the same word or the view
+/// that joins them would report a bound verb as unbound.
+pub(crate) fn verb_of(spelling: &str) -> &str {
+    spelling.split_whitespace().next().unwrap_or("")
+}
+
 /// What a bound key does.
 ///
 /// Every variant is an action a CLIENT can carry out on its own focus. Nothing here needs the
@@ -390,6 +448,20 @@ pub enum BoundAction {
     /// The prefix, not the key that was pressed: a user who rebinds this to `a` means `prefix a` to
     /// send `C-b`, not to send `a`.
     SendPrefix,
+    /// `list-keys` — show what the keys do, on the screen the user is already looking at (tmux's
+    /// `prefix ?`).
+    ///
+    /// The vocabulary's own reflection, and the only action here whose subject is this list. It is
+    /// client-local like [`DetachClient`](Self::DetachClient) and for the same reason a keybinding
+    /// is: the table being shown is the CLIENT's, read from its config, so the answer needs no
+    /// daemon and cannot be wrong about a session it is not attached to.
+    ///
+    /// **Why an action rather than a chord each frontend picks.** The key that opens the help is
+    /// the one binding a user is likeliest to need before they know how to change it — so it has to
+    /// appear in the list it opens, and a chord held privately by a frontend could not. Putting it
+    /// in the vocabulary also makes it rebindable and unbindable by the same file as everything
+    /// else, which is what `list-keys` claims to be printing.
+    ListKeys,
     /// `split-window -h|-v [-b]` — divide the focused pane and put a new shell in the half it opens.
     SplitWindow {
         /// tmux's `-h` lays the panes side by SIDE, which is [`SplitDir::Horizontal`]. The flag
@@ -644,9 +716,10 @@ impl BoundAction {
     /// different questions — this one names the FORMS, including the flag grammar a parser
     /// expresses as control flow — and
     /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 14] = [
+    pub const VOCABULARY: [&'static str; 15] = [
         "detach-client",
         "send-prefix",
+        "list-keys",
         "split-window -h|-v [-b]",
         "select-pane -L|-R|-U|-D|-t :.+",
         "swap-pane -L|-R|-U|-D",
@@ -677,6 +750,7 @@ impl BoundAction {
             | Self::ConfirmBefore { .. } => true,
             Self::DetachClient
             | Self::SendPrefix
+            | Self::ListKeys
             | Self::SplitWindow { .. }
             | Self::SelectNextPane
             | Self::SelectPaneToward { .. }
@@ -686,6 +760,87 @@ impl BoundAction {
             | Self::NewWindow
             | Self::SelectWindow { .. }
             | Self::KillWindow => false,
+        }
+    }
+
+    /// What this action ACTS ON — the axis a reader groups a keymap by.
+    ///
+    /// Exhaustive on purpose, for [`asks`](Self::asks)' reason one property over: a wildcard would
+    /// make some group the silent default for every verb added later, and a verb filed under the
+    /// wrong subject is a verb a user does not find in the list that exists to show it to them.
+    /// The compiler asks instead.
+    ///
+    /// [`ConfirmBefore`](Self::ConfirmBefore) takes the subject of what it GUARDS: `confirm-before
+    /// kill-window` is a window verb that asks first, and filing it under the guard would put the
+    /// only bound kill in the client's group, away from every other window key.
+    #[must_use]
+    pub fn subject(&self) -> ActionSubject {
+        match self {
+            Self::DetachClient | Self::SendPrefix | Self::ListKeys => ActionSubject::Client,
+            // tmux's NAME says window and the subject is the pane: it divides the focused pane and
+            // puts a shell in the half it opens, leaving the window's own identity untouched. The
+            // spelling is inherited (see [`SplitWindow`](Self::SplitWindow)); the grouping follows
+            // what the verb does.
+            Self::SplitWindow { .. }
+            | Self::SelectNextPane
+            | Self::SelectPaneToward { .. }
+            | Self::SwapPaneToward { .. }
+            | Self::ResizePaneToward { .. }
+            | Self::ZoomPane { .. }
+            | Self::RenamePane => ActionSubject::Pane,
+            Self::NewWindow | Self::SelectWindow { .. } | Self::KillWindow | Self::RenameWindow => {
+                ActionSubject::Window
+            }
+            Self::RenameSession => ActionSubject::Session,
+            Self::ConfirmBefore { action } => action.subject(),
+        }
+    }
+
+    /// The first word of the canonical spelling — `split-window` for every form of the split.
+    ///
+    /// DERIVED from [`Display`](fmt::Display) rather than matched a second time, which is the whole
+    /// point: a second list of first words is the drift [`VOCABULARY`](Self::VOCABULARY)'s own doc
+    /// records (`bind-key`'s copy of the vocabulary was stale for eight rounds). One impl decides
+    /// how an action spells itself, and everything that needs part of that spelling cuts it up.
+    #[must_use]
+    pub fn verb(&self) -> String {
+        verb_of(&self.to_string()).to_owned()
+    }
+
+    /// Every verb this binding puts WITHIN REACH — its own, and a wrapper's argument too.
+    ///
+    /// [`verb`](Self::verb) answers what an action is called; this answers what pressing the key
+    /// gets you, and the two differ for exactly one arm today. `prefix &` is
+    /// `confirm-before kill-window`, so a view that counted only the outer verb would tell a user
+    /// that `kill-window` is bound to nothing while the key that kills their window sits three
+    /// lines above — which is what the test for it measured before this existed.
+    ///
+    /// Exhaustive rather than a wildcard for [`subject`](Self::subject)'s reason: the failure mode
+    /// of forgetting a WRAPPER here is silent and is a lie about the table, so a second wrapper
+    /// added later must be made to say what it reaches rather than defaulting to nothing.
+    #[must_use]
+    pub fn reaches(&self) -> Vec<String> {
+        match self {
+            Self::ConfirmBefore { action } => {
+                let mut verbs = vec![self.verb()];
+                verbs.extend(action.reaches());
+                verbs
+            }
+            Self::DetachClient
+            | Self::SendPrefix
+            | Self::ListKeys
+            | Self::SplitWindow { .. }
+            | Self::SelectNextPane
+            | Self::SelectPaneToward { .. }
+            | Self::SwapPaneToward { .. }
+            | Self::ResizePaneToward { .. }
+            | Self::ZoomPane { .. }
+            | Self::NewWindow
+            | Self::SelectWindow { .. }
+            | Self::KillWindow
+            | Self::RenameWindow
+            | Self::RenameSession
+            | Self::RenamePane => vec![self.verb()],
         }
     }
 
@@ -727,14 +882,18 @@ impl BoundAction {
         }
         let flags: Vec<&str> = words.collect();
         match verb {
-            "detach-client" | "send-prefix" => {
+            // The three argument-less client-local verbs, sharing one arm because they share one
+            // grammar. `list-keys` takes none deliberately where the CLI verb of that name now
+            // takes `-N`: a binding opens the view, and which view is a thing the surface decides,
+            // not a thing a config file has an opinion about.
+            "detach-client" | "send-prefix" | "list-keys" => {
                 if !flags.is_empty() {
                     return Err(bad("takes no arguments"));
                 }
-                Ok(if verb == "detach-client" {
-                    Self::DetachClient
-                } else {
-                    Self::SendPrefix
+                Ok(match verb {
+                    "detach-client" => Self::DetachClient,
+                    "send-prefix" => Self::SendPrefix,
+                    _ => Self::ListKeys,
                 })
             }
             "split-window" => {
@@ -946,6 +1105,7 @@ impl fmt::Display for BoundAction {
         match self {
             Self::DetachClient => f.write_str("detach-client"),
             Self::SendPrefix => f.write_str("send-prefix"),
+            Self::ListKeys => f.write_str("list-keys"),
             Self::SplitWindow { dir, before } => {
                 f.write_str(match dir {
                     SplitDir::Horizontal => "split-window -h",
@@ -1117,6 +1277,11 @@ impl Default for Keymap {
                     },
                 ),
                 bind("d", BoundAction::DetachClient),
+                // tmux's own key for this, and the one binding whose absence hid every other one:
+                // until R308 a user's only way to learn what these keys do was to leave the
+                // terminal and run `sprag list-keys` in a shell. `?` is tmux's `list-keys -N` and
+                // is free in every table here.
+                bind("?", BoundAction::ListKeys),
                 bind("o", BoundAction::SelectNextPane),
                 // tmux's `prefix z`, and herdr's `prefix+z` — the one key every multiplexer user
                 // already has in their fingers. The TOGGLE form, so the same key both fills the
@@ -1365,6 +1530,37 @@ impl Keymap {
     /// Every binding, in the order a user would read them, across both tables.
     pub fn binds(&self) -> impl Iterator<Item = &Bind> {
         self.binds.iter()
+    }
+
+    /// What a user PRESSES to reach `bind` — `C-b z` for a prefix binding, `F1` for a root one.
+    ///
+    /// The literal chord, with this keymap's own prefix spelled out, rather than the word `prefix`:
+    /// a reader with a rebound prefix must see their own key, and a view that said `prefix z` would
+    /// be asking them to look the prefix up somewhere else. That is the failure `sprag list-keys`
+    /// already avoids by printing the prefix on its first line — R235's `send-prefix` stranded on an
+    /// abandoned key was invisible until the two were read together.
+    ///
+    /// Here rather than at a surface because every surface that shows a chord must show the same
+    /// one: the help view, the CLI's notes form and the GUI palette's hint column all call this.
+    #[must_use]
+    pub fn chord(&self, bind: &Bind) -> String {
+        match bind.table() {
+            KeyTable::Prefix => format!("{} {}", self.prefix, bind.key()),
+            KeyTable::Root => bind.key().to_string(),
+        }
+    }
+
+    /// The chord that reaches `action`, or [`None`] when no key does.
+    ///
+    /// The FIRST such binding in reading order when several reach it, which is what a hint column
+    /// wants: one chord to teach, chosen the same way every time rather than by whichever the
+    /// caller's own iteration happened to reach.
+    #[must_use]
+    pub fn chord_of(&self, action: &BoundAction) -> Option<String> {
+        self.binds
+            .iter()
+            .find(|bind| &bind.action == action)
+            .map(|bind| self.chord(bind))
     }
 
     /// Route one keystroke, given the mode the PREVIOUS one left behind.
@@ -1992,6 +2188,156 @@ mod tests {
     ///
     /// REVERT-PROOF: drop any entry from the const and the second loop fails on that variant; add
     /// one for a verb nothing implements and the first loop fails on it.
+    /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
+    /// a variant added without touching this fails to compile there.
+    const ARMS: usize = 16;
+
+    /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
+    /// below is a check rather than a list somebody maintains.
+    ///
+    /// A sixteenth variant stops this compiling, and adding its line here makes
+    /// [`one_of_every_action`] fail until an instance of it is written down. That is the pair the
+    /// vocabulary, the subject and the reach tests all rest on: three properties that must hold for
+    /// EVERY action, checked against a census the compiler forces to stay complete.
+    fn arm_of(action: &BoundAction) -> usize {
+        match action {
+            BoundAction::DetachClient => 0,
+            BoundAction::SendPrefix => 1,
+            BoundAction::ListKeys => 2,
+            BoundAction::SplitWindow { .. } => 3,
+            BoundAction::SelectNextPane => 4,
+            BoundAction::SelectPaneToward { .. } => 5,
+            BoundAction::SwapPaneToward { .. } => 6,
+            BoundAction::ResizePaneToward { .. } => 7,
+            BoundAction::ZoomPane { .. } => 8,
+            BoundAction::NewWindow => 9,
+            BoundAction::SelectWindow { .. } => 10,
+            BoundAction::KillWindow => 11,
+            BoundAction::RenameWindow => 12,
+            BoundAction::RenameSession => 13,
+            BoundAction::RenamePane => 14,
+            BoundAction::ConfirmBefore { .. } => 15,
+        }
+    }
+
+    /// One value of every arm — the census the whole-vocabulary tests walk.
+    ///
+    /// Panics if it is not complete, so a caller never silently tests fourteen of fifteen arms.
+    fn one_of_every_action() -> Vec<BoundAction> {
+        let every = vec![
+            BoundAction::DetachClient,
+            BoundAction::SendPrefix,
+            BoundAction::ListKeys,
+            BoundAction::SplitWindow {
+                dir: SplitDir::Horizontal,
+                before: false,
+            },
+            BoundAction::SelectNextPane,
+            BoundAction::SelectPaneToward { dir: PaneDir::Left },
+            BoundAction::SwapPaneToward { dir: PaneDir::Up },
+            BoundAction::ResizePaneToward {
+                dir: PaneDir::Right,
+                cells: 5,
+            },
+            BoundAction::ZoomPane { on: None },
+            BoundAction::NewWindow,
+            BoundAction::SelectWindow {
+                ask: SelectWindowAsk::Step(WindowStep::Next),
+            },
+            BoundAction::KillWindow,
+            BoundAction::RenameWindow,
+            BoundAction::RenameSession,
+            BoundAction::RenamePane,
+            BoundAction::ConfirmBefore {
+                action: Box::new(BoundAction::KillWindow),
+            },
+        ];
+        let mut seen: Vec<usize> = every.iter().map(arm_of).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen,
+            (0..ARMS).collect::<Vec<_>>(),
+            "the census is not one of every arm",
+        );
+        every
+    }
+
+    /// Every action has a subject, and it is one of the four the view renders.
+    ///
+    /// The array `ActionSubject::ALL` is a literal no compiler checks — the same residual
+    /// `PaneDir::ALL` carries — so this is what would catch a fifth subject added to the enum and
+    /// left out of it: a group that exists and renders nowhere.
+    #[test]
+    fn every_action_has_a_subject_the_view_renders() {
+        for action in one_of_every_action() {
+            let subject = action.subject();
+            assert!(
+                ActionSubject::ALL.contains(&subject),
+                "{action} is filed under {subject}, which the view has no section for",
+            );
+        }
+    }
+
+    /// Every action reaches at least its own verb, and every verb it reaches is in the vocabulary.
+    ///
+    /// The second half is the one that matters: a wrapper reporting a verb nobody is told about
+    /// would put a row in the view that `bind-key` refuses.
+    #[test]
+    fn every_verb_an_action_reaches_is_one_the_vocabulary_names() {
+        for action in one_of_every_action() {
+            let reached = action.reaches();
+            assert!(
+                reached.contains(&action.verb()),
+                "{action} does not reach its own verb",
+            );
+            for verb in reached {
+                assert!(
+                    BoundAction::VOCABULARY
+                        .iter()
+                        .any(|form| verb_of(form) == verb),
+                    "{action} reaches {verb:?}, which the vocabulary does not name",
+                );
+            }
+        }
+    }
+
+    /// The guard reaches two verbs where every other action reaches one.
+    #[test]
+    fn a_guard_reaches_what_it_guards() {
+        let guarded = BoundAction::ConfirmBefore {
+            action: Box::new(BoundAction::KillWindow),
+        };
+        assert_eq!(
+            guarded.reaches(),
+            vec!["confirm-before".to_owned(), "kill-window".to_owned()]
+        );
+        assert_eq!(guarded.subject(), BoundAction::KillWindow.subject());
+    }
+
+    /// A hint column asks for the chord in force and gets the first one, or nothing.
+    #[test]
+    fn a_chord_can_be_looked_up_by_the_action_it_runs() {
+        let mut keymap = Keymap::default();
+        assert_eq!(
+            keymap.chord_of(&BoundAction::ZoomPane { on: None }),
+            Some("C-b z".to_owned())
+        );
+        assert_eq!(
+            keymap.chord_of(&BoundAction::ZoomPane { on: Some(true) }),
+            None,
+            "the toggle is bound and the explicit form is not; they must not be confused",
+        );
+        keymap.set_prefix("C-a").expect("C-a is a key");
+        assert_eq!(
+            keymap.chord_of(&BoundAction::ZoomPane { on: None }),
+            Some("C-a z".to_owned()),
+            "a hint must teach the chord this user actually has",
+        );
+        keymap.unbind(KeyTable::Prefix, "z").expect("z is bound");
+        assert_eq!(keymap.chord_of(&BoundAction::ZoomPane { on: None }), None);
+    }
+
     #[test]
     fn the_vocabulary_lists_every_verb_a_binding_takes() {
         for form in BoundAction::VOCABULARY {
@@ -2004,23 +2350,7 @@ mod tests {
                 "{verb:?} is listed but is not a verb the parser has",
             );
         }
-        let every = [
-            BoundAction::DetachClient,
-            BoundAction::SendPrefix,
-            BoundAction::SplitWindow {
-                dir: SplitDir::Horizontal,
-                before: false,
-            },
-            BoundAction::SelectNextPane,
-            BoundAction::SelectPaneToward { dir: PaneDir::Left },
-            BoundAction::ZoomPane { on: None },
-            BoundAction::NewWindow,
-            BoundAction::SelectWindow {
-                ask: SelectWindowAsk::Step(WindowStep::Next),
-            },
-            BoundAction::KillWindow,
-        ];
-        for action in every {
+        for action in one_of_every_action() {
             let printed = action.to_string();
             let verb = printed.split_whitespace().next().expect("an action prints");
             assert!(
@@ -2186,6 +2516,7 @@ mod tests {
                 "\" split-window -v",
                 "% split-window -h",
                 "d detach-client",
+                "? list-keys",
                 "o select-pane -t :.+",
                 // tmux's KEY, spelled with sprag's own verb: tmux says `resize-pane -Z` and sprag's
                 // shell says `zoom-pane`, and this table is parsed from the string the shell takes.

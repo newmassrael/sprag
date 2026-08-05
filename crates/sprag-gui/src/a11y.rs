@@ -92,6 +92,10 @@ fn modal_access_nodes(focused: Option<&str>) -> Vec<AccessNode> {
     let mut nodes = crate::confirm::confirm_access_nodes(focused);
     nodes.extend(crate::palette::palette_access_nodes(focused));
     nodes.extend(crate::prompt::prompt_access_nodes(focused));
+    nodes.extend(crate::keyhelp::keyhelp_access_nodes(
+        focused,
+        (crate::WINDOW_W, crate::WINDOW_H),
+    ));
     nodes
 }
 
