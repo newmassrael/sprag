@@ -11603,6 +11603,64 @@
         "OPEN: the asking arm ships bindable and UNBOUND; item 30's client id-keying question and `sprag list-clients` publishing where a client was last are untouched."
       ]
     },
+    "R315": {
+      "decision_summary": "R315 — you can go to what you cannot name. sprag had no chooser: switch-client -t asks a user to TYPE a session name, which is no gesture at all for the user who cannot name it, and what is there had no answer inside sprag (a user left the terminal for sprag ls). Measured first by running the product: 41 bindings and none shows a list, prefix s free, and the sessions/windows slots carry NO identity while windows and panes are scoped to one session — so a chooser built today could only commit a NAME or a POSITION, which is R304's measured impostor and R295's positional pane one door over. The thesis is that a pick is an IDENTITY at every level and the daemon resolves it, applied to the wire (AttachAsk::Goto, a path checked whole), to the data (mux.tree), and to the client's own CURSOR, which is a Target rather than a usize — so a session closing above it cannot move it onto another. herdr is AHEAD on the axis and the entry says so first: their Navigator is a filterable three-level tree bound by default on prefix+g, and sprag had nothing; where sprag goes past them is that two of their three NavigatorTarget levels are POSITIONAL and their selected is a usize into rows rebuilt every render.",
+      "changes_bullets": [
+        "mux.tree: the whole registry as a navigable tree, every level carrying its identity, built two-phase and filtered by the same is_listable predicate the session listing applies",
+        "AttachAsk::Goto: a pick is a path of identities checked WHOLE under the registry lock before anything moves, so a path with a dead level refuses the attach as well",
+        "sprag_host::chooser: rows, a Line-backed query that keeps a match with its ancestors and descendants, and a cursor that is a Target rather than a row number",
+        "BoundAction::ChooseTree on tmux's prefix s, ARMS 20 to 21, VOCABULARY 18 to 19; the key R314 could not take because the gesture did not exist",
+        "Ask::Choose, painted as a full-screen overlay by sprag-tui and as a fourth modal by sprag-gui, with a palette row paired so its hint derives from the live keymap",
+        "WIRE_PROTOCOL 13 to 14; SessionId/WindowId now serialise, a re-decision recorded on the type with the bound it is published under"
+      ],
+      "verification_bullets": [
+        "suite exit 0, 46 targets, 2148 passed (baseline 2130 at 843a8cd)",
+        "clippy 0 with no suppression; doc gate 0/16; pixel smoke 202/0, run twice on the final tree (191/0 baseline; eleven new checks drive prefix s through the shipped GUI binary)",
+        "skew measured BOTH ways with a control isolating one fact: a protocol-13 daemon SILENTLY DROPS the pick and answers the session the client was already on, while last:true on that same connection answers null (it never moved); the new daemon answers beta and last:true then answers 0",
+        "the impostor fixture over the real socket: the picked session is renamed and a new session takes its name, and the pick lands on the renamed one with the stranger's badge at zero",
+        "three revert-proofs, each with a control that came back RED: a position cursor lands on another session's pane; dropping the pane check half-lands a dead path; removing the reconcile makes the tree disagree with the panes slot",
+        "two live sprag-tui tests on real pseudoterminals: prefix s opens the list, a narrowed row moves the client, and a cancelled chooser moves nobody"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The landing is still read by nobody: HostClient::goto answers the session it landed on and no surface paints it, which is item 40's registered head and needs a status line rather than an assertion",
+        "A key bound to switch-client -t <a name that does not exist> is still a silent no-op in both frontends; the chooser gives a place to paint a refusal only for a PICK",
+        "No expand/collapse and no state filter, where the rival has both; the query is the collapse, and that is a stated cut rather than an omission",
+        "No agent verdict column: it is a SAMPLED fact and joining it to a structural slot is what R282 split apart",
+        "The tree is a fresh read per keypress and per frame while the chooser is open; nothing bounds a very large registry"
+      ],
+      "publishable_decision_summary": "R315 — you can go to what you cannot name. sprag had no chooser: switch-client -t asks a user to TYPE a session name, which is no gesture at all for the user who cannot name it, and what is there had no answer inside sprag (a user left the terminal for sprag ls). Measured first by running the product: 41 bindings and none shows a list, prefix s free, and the sessions/windows slots carry NO identity while windows and panes are scoped to one session — so a chooser built today could only commit a NAME or a POSITION, which is R304's measured impostor and R295's positional pane one door over. The thesis is that a pick is an IDENTITY at every level and the daemon resolves it, applied to the wire (AttachAsk::Goto, a path checked whole), to the data (mux.tree), and to the client's own CURSOR, which is a Target rather than a usize — so a session closing above it cannot move it onto another. herdr is AHEAD on the axis and the entry says so first: their Navigator is a filterable three-level tree bound by default on prefix+g, and sprag had nothing; where sprag goes past them is that two of their three NavigatorTarget levels are POSITIONAL and their selected is a usize into rows rebuilt every render.",
+      "publishable_changes_bullets": [
+        "mux.tree: the whole registry as a navigable tree, every level carrying its identity, built two-phase and filtered by the same is_listable predicate the session listing applies",
+        "AttachAsk::Goto: a pick is a path of identities checked WHOLE under the registry lock before anything moves, so a path with a dead level refuses the attach as well",
+        "sprag_host::chooser: rows, a Line-backed query that keeps a match with its ancestors and descendants, and a cursor that is a Target rather than a row number",
+        "BoundAction::ChooseTree on tmux's prefix s, ARMS 20 to 21, VOCABULARY 18 to 19; the key R314 could not take because the gesture did not exist",
+        "Ask::Choose, painted as a full-screen overlay by sprag-tui and as a fourth modal by sprag-gui, with a palette row paired so its hint derives from the live keymap",
+        "WIRE_PROTOCOL 13 to 14; SessionId/WindowId now serialise, a re-decision recorded on the type with the bound it is published under"
+      ],
+      "publishable_verification_bullets": [
+        "suite exit 0, 46 targets, 2148 passed (baseline 2130 at 843a8cd)",
+        "clippy 0 with no suppression; doc gate 0/16; pixel smoke 202/0, run twice on the final tree (191/0 baseline; eleven new checks drive prefix s through the shipped GUI binary)",
+        "skew measured BOTH ways with a control isolating one fact: a protocol-13 daemon SILENTLY DROPS the pick and answers the session the client was already on, while last:true on that same connection answers null (it never moved); the new daemon answers beta and last:true then answers 0",
+        "the impostor fixture over the real socket: the picked session is renamed and a new session takes its name, and the pick lands on the renamed one with the stranger's badge at zero",
+        "three revert-proofs, each with a control that came back RED: a position cursor lands on another session's pane; dropping the pane check half-lands a dead path; removing the reconcile makes the tree disagree with the panes slot",
+        "two live sprag-tui tests on real pseudoterminals: prefix s opens the list, a narrowed row moves the client, and a cancelled chooser moves nobody"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The landing is still read by nobody: HostClient::goto answers the session it landed on and no surface paints it, which is item 40's registered head and needs a status line rather than an assertion",
+        "A key bound to switch-client -t <a name that does not exist> is still a silent no-op in both frontends; the chooser gives a place to paint a refusal only for a PICK",
+        "No expand/collapse and no state filter, where the rival has both; the query is the collapse, and that is a stated cut rather than an omission",
+        "No agent verdict column: it is a SAMPLED fact and joining it to a structural slot is what R282 split apart",
+        "The tree is a fresh read per keypress and per frame while the chooser is open; nothing bounds a very large registry"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
