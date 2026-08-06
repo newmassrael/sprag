@@ -5428,3 +5428,76 @@ fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
         settled(tui.row(STATUS_ROW), &where_it_is)
     });
 }
+
+/// **`monitor-notification off` puts the silence back, and the BELL is a separate switch.**
+///
+/// Two options rather than one, because the two sources have nothing in common but the word
+/// "attention": a build tool that raises a notification per file and a shell that rings on tab
+/// completion are different nuisances, and one switch over both would make either cost the user the
+/// other. This drives that claim rather than asserting it: the notification is silenced and the bell
+/// still speaks, on ONE daemon reading ONE config file.
+///
+/// **The CONTROL is the bell**, and it is what makes the first half able to fail: a build where
+/// nothing was routed at all — the state this round found — would pass "the notification is silent"
+/// and fail here.
+#[test]
+fn each_attention_source_has_its_own_switch() {
+    let config = ConfigHome::new("[options]\nmonitor-notification = \"off\"\n");
+    // The child raises a NOTIFICATION for a line starting `n`, and a BELL for anything else.
+    let (_daemon, sock) = spawn_daemon_with_config(
+        &[
+            "sh",
+            "-c",
+            "stty -echo; while IFS= read -r line; do case \"$line\" in n*) \
+             printf '\\033]9;%s\\007' \"$line\";; *) printf '\\007';; esac; done; cat",
+        ],
+        Some(config.as_str()),
+    );
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+    let mut tui = Tui::attach(&sock, &session);
+    wait_for("the client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+
+    // THE SILENCED HALF. The daemon must still LATCH it — the switch is about delivery, not about
+    // capture, and a build that stopped capturing would break the pane list's own dot.
+    tui.type_bytes(b"notification while switched off\r");
+    wait_for("the DAEMON to latch it even though nobody is told", || {
+        let panes = conn
+            .call(
+                "scene/query",
+                json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("panes answers");
+        let note = panes
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|row| row["notification"]["body"].clone())
+            .unwrap_or(Value::Null);
+        settled(note.as_str().is_some(), &true)
+            .map_err(|got| format!("{got}: the pane row's notification is {note}"))
+    });
+
+    // THE CONTROL, on the same daemon and the same config: the BELL is a different switch and is
+    // still on, so it reaches the row. Waiting for it is also what gives the silence above time to
+    // have failed — a message in flight would land before this one does.
+    tui.type_bytes(b"ring\r");
+    wait_for("the bell to reach the row", || {
+        settled(tui.row(STATUS_ROW).contains("pane 0: bell"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    let row = tui.row(STATUS_ROW);
+    assert!(
+        !row.contains("notification while switched off"),
+        "the silenced source must not have painted: {row:?}",
+    );
+}
