@@ -486,10 +486,17 @@ pub const CLIENT_SIZE_METHOD: &str = "client/size";
 ///
 /// ## When a client asks
 ///
-/// On the wake it already has. The daemon bumps the change channel of every session it delivered
-/// into, so the target's parked `scene/waitFor` returns and its reconcile — which re-reads
-/// everything else the daemon owns — reads this too. No new poll, no new thread, and a client that is
-/// not looking at anything is not woken.
+/// On the wake it already has: a client's reconcile re-reads everything else the daemon owns, and
+/// this rides that pass. No new poll and no new thread.
+///
+/// The daemon also bumps the change channel of every session it delivered into. **What that bump
+/// contributes is NOT established** — a revert-proof deleting it left a settled cross-session
+/// fixture green, and the target's `scene/revision` does not visibly move for a delivery either
+/// way. It is kept because it is the only wake this code owns, and this comment says what was
+/// measured rather than asserting the mechanism (see the R317 gate
+/// `a_named_client_is_reached_from_a_request_scoped_to_another_session`). What IS measured: the
+/// message arrives promptly, and an unrelated session's mutation does not wake a client, so the
+/// per-session contract holds.
 pub const CLIENT_MESSAGES_METHOD: &str = "client/messages";
 
 /// The [`CLIENT_MESSAGES_METHOD`] reply key carrying the collected message, or `null` when the

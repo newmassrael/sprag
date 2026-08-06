@@ -499,6 +499,9 @@ impl AttachmentRegistry {
     /// be threaded through the wire to say so. A client that dies between the queueing and the
     /// collection loses the message with its mailbox, which is the honest bound
     /// [`Delivery`] documents rather than papers over.
+    #[must_use = "collecting a message REMOVES it from the daemon — an answer that is dropped is a \
+                  person's message destroyed with no error anywhere, which is exactly the defect \
+                  R316's `Report` exists to remove"]
     pub fn collect(&mut self, conn: ConnId) -> Option<Announcement> {
         let client = self.conn_client.get(&conn)?;
         self.client_mail.remove(client)

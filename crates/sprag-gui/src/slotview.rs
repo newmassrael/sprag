@@ -773,6 +773,7 @@ impl SlotView {
     /// Not keyed by a slot, and that is the fact it carries: a message is addressed to the CLIENT,
     /// not to a pane or a window or even a session, so it survives a session switch and belongs to
     /// whoever is at this keyboard rather than to what they happen to be looking at.
+    #[must_use = "TAKING a message removes it — an answer dropped here is a sentence nobody sees"]
     pub(crate) fn take_message(&self) -> Option<sprag_host::report::Announcement> {
         self.host.take_message()
     }

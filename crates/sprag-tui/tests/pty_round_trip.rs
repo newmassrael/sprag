@@ -5200,4 +5200,77 @@ fn a_message_with_an_escape_in_it_is_refused_by_name() {
     let (ok, out, err) = run("wiped: nothing");
     assert!(ok, "the control must be accepted: {err}");
     assert!(out.starts_with("shown to gui-"), "{out:?}");
+
+    // THE OTHER THREE RULES, each pinned by the WHOLE SENTENCE an operator reads. They had no
+    // driver until the debt sweep asked: a refusal a user meets is a sentence this project pins,
+    // and a grammar checked only by a unit test is a grammar the CLI could stop applying.
+    let (ok, _, err) = run("   ");
+    assert!(!ok, "a blank message is refused");
+    assert!(
+        err.contains("a message cannot be blank"),
+        "and says so in the rule's own words: {err:?}",
+    );
+    let too_long = "x".repeat(sprag_host::report::MessageText::MAX_BYTES + 1);
+    let (ok, _, err) = run(&too_long);
+    assert!(!ok, "a message longer than a row is refused");
+    assert!(
+        err.contains("at most 200 bytes") && err.contains("201"),
+        "and names the bound AND the length offered: {err:?}",
+    );
+}
+
+/// **The refusals a user meets when they get the VERB wrong** — a severity that is not one, and no
+/// message at all — plus the form a person actually types: `display-message` with **no `-t`**.
+///
+/// Every other gate here passes `-t`, so the DEFAULT scope — the session the connection resolves to
+/// — was reached by nothing. That is the shape the sweep hunts: a branch reachable only from a state
+/// no test builds, and in this case it is the state a user is in.
+#[test]
+fn the_verb_refuses_a_bad_severity_and_works_with_no_target_at_all() {
+    let (_daemon, sock, mut conn, session, tui) = attached_client();
+    let _ = &mut conn;
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    let run = |args: &[&str]| -> (bool, String, String) {
+        let out = Command::new(sprag_cli_bin())
+            .args(args)
+            .env("SPRAG_HOST_RPC_SOCK", &sock)
+            .output()
+            .expect("run the sprag CLI");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (ok, _, err) = run(&["display-message", "-s", "shout", "hello"]);
+    assert!(!ok, "a severity this build does not know is refused");
+    assert!(
+        err.contains("shout") && err.contains("note|warn|alert"),
+        "and names what was offered AND what exists: {err:?}",
+    );
+    let (ok, _, err) = run(&["display-message"]);
+    assert!(!ok, "the verb needs something to show");
+    assert!(
+        err.contains("needs a message to show"),
+        "and says what is missing: {err:?}",
+    );
+
+    // ...and with NO `-t`, which is what a person at a shell types. The scope resolves to this
+    // daemon's default session, which is the one this client is attached to, so the sentence lands.
+    let (ok, out, err) = run(&["display-message", "the default scope works"]);
+    assert!(ok, "display-message with no target is a normal call: {err}");
+    assert!(out.starts_with("shown to gui-"), "{out:?}");
+    wait_for("the message sent with no -t to be painted", || {
+        settled(
+            tui.row(STATUS_ROW).contains("the default scope works"),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
 }

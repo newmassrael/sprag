@@ -670,9 +670,11 @@ fn lock_message(message: &Mutex<Option<Announcement>>) -> MutexGuard<'_, Option<
 /// runs on its own connection, parked host-side while the scene is quiet — so this is a fifth read
 /// on a path that is already paid for, and it happens exactly when the daemon says something moved.
 ///
-/// The daemon BUMPS the change channel of every session it delivered into, so the wake that carries
-/// a message is the message's own. There is no timer here and none is wanted: a client watching a
-/// quiet session is not woken, and a message to it wakes it.
+/// There is no timer here and none is wanted: a client watching a quiet session is not woken, and a
+/// message to it arrives on the next wake it gets — measured at roughly 150 ms end to end. **Which
+/// wake that is has NOT been attributed**: the daemon bumps the delivered-into session's channel,
+/// and deleting that bump leaves a settled cross-session fixture green. Recorded here rather than
+/// claimed, because a mechanism sentence in a durable comment is a claim like any other.
 fn query_message(conn: &mut HostConn) -> io::Result<Option<Announcement>> {
     let answer = conn
         .call(CLIENT_MESSAGES_METHOD, json!({}))
@@ -3243,6 +3245,9 @@ impl HostClient for WireHost {
     ///
     /// Served from the mirror the poll thread fills, so a surface asks for it on the reconcile it
     /// already does and never touches the wire from the paint path.
+    // No `#[must_use]` here and none is missing: the TRAIT declares it, and an impl inherits it —
+    // the compiler rejects the attribute in this position, which is the check that the rule lives
+    // in one place.
     fn take_message(&self) -> Option<Announcement> {
         lock_message(&self.message).take()
     }
@@ -4822,6 +4827,50 @@ mod tests {
         let (server, _) = listener.accept().expect("accept the client");
         drop(server);
         (conn, listener, SockGuard(path))
+    }
+
+    /// **The client's own mirror ranks two undelivered messages**, and this drives `store_message`
+    /// rather than the `Announcement::over` it calls.
+    ///
+    /// The daemon's slot resolves two messages before either is collected, so this composition only
+    /// runs when TWO wakes land between two of the surface's takes — a state no live fixture builds
+    /// reliably. A unit test on `over` is not a test that `store_message` calls it (the rule this
+    /// project keeps re-learning), so the caller is driven here directly.
+    #[test]
+    fn the_mirror_keeps_the_alert_when_a_note_lands_behind_it() {
+        let say = |text: &str, severity: sprag_host::report::Severity| Announcement {
+            text: sprag_host::report::MessageText::parse(text).expect("a plain sentence"),
+            severity,
+        };
+        let mirror: MessageMirror = Arc::new(Mutex::new(None));
+
+        store_message(
+            &mirror,
+            say("your turn", sprag_host::report::Severity::Alert),
+        );
+        store_message(&mirror, say("a note", sprag_host::report::Severity::Note));
+        assert_eq!(
+            lock_message(&mirror)
+                .as_ref()
+                .map(|held| held.text.as_str().to_owned()),
+            Some("your turn".to_owned()),
+            "a note landing behind an alert must not displace it in the mirror either",
+        );
+
+        // ...and the other way round, which is what stops this passing for a mirror that simply
+        // ignored every message after the first.
+        let mirror: MessageMirror = Arc::new(Mutex::new(None));
+        store_message(&mirror, say("a note", sprag_host::report::Severity::Note));
+        store_message(
+            &mirror,
+            say("your turn", sprag_host::report::Severity::Alert),
+        );
+        assert_eq!(
+            lock_message(&mirror)
+                .as_ref()
+                .map(|held| held.text.as_str().to_owned()),
+            Some("your turn".to_owned()),
+        );
     }
 
     /// The tmux convention, deterministically: when the poll thread's parked `scene/waitFor`

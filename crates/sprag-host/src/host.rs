@@ -1223,6 +1223,8 @@ pub trait HostClient {
     /// Defaulted to `None` so an in-process host — a GUI hosting its own panes, a unit test — needs
     /// no implementation: nothing attaches to those over a wire, so there is no client to address
     /// and no daemon to route from.
+    #[must_use = "TAKING a message empties the client's own side of the hand-off — dropping the \
+                  answer loses a person's message silently, and `Option` will not say so"]
     fn take_message(&self) -> Option<crate::report::Announcement> {
         None
     }
