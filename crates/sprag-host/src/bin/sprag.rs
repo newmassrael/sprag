@@ -183,6 +183,7 @@ use sprag_host::pane_address::{
     NamedPane, PaneAddress, PaneListing, ambiguous_pane_name, unknown_pane_name_with,
 };
 use sprag_host::shellword::shell_quote;
+use sprag_host::vocabulary::{self, Verb};
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
     ENDED_KEY, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
@@ -219,67 +220,104 @@ fn main() {
 
 fn run() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("ls") => ls(),
-        Some("list-clients") => list_clients(args.collect()),
-        Some("new") => new(args.next()),
-        Some("ssh") => ssh(args.collect()),
-        Some("find") => find(args.collect()),
-        Some("wait-for-output") => wait_for_output(args.collect()),
-        Some("run") => run_project(args.collect()),
-        Some("attach") => attach(args.collect()),
-        Some("kill-session") => kill_session(args.next()),
-        Some("kill-server") => kill_server(args.collect()),
-        Some("windows") => windows(args.collect()),
-        Some("new-window") => new_window(args.collect()),
-        Some("select-window") => select_window(args.collect()),
-        Some("move-window") => move_window(args.collect()),
-        Some("select-pane") => select_pane(args.collect()),
-        Some("rename-window") => rename_window(args.collect()),
-        Some("rename-session") => rename_session(args.collect()),
-        Some("kill-window") => kill_window(args.collect()),
-        Some("resize-window") => resize_window(args.collect()),
-        Some("break-pane") => break_pane(args.collect()),
-        Some("join-pane") => join_pane(args.collect()),
-        Some("move-pane") => move_pane(args.collect()),
-        Some("swap-pane") => swap_pane(args.collect()),
-        Some("zoom-pane") => zoom_pane(args.collect()),
-        Some("rename-pane") => rename_pane(args.collect()),
-        Some("panes") => panes(args.collect()),
-        Some("layout") => layout(args.collect()),
-        Some("processes") => processes(args.collect()),
-        Some("agent") => agent(args.collect()),
-        Some("display-message") => display_message(args.collect()),
-        Some("report-agent") => report_agent(args.collect()),
-        Some("release-agent") => release_agent(args.collect()),
-        Some("install-hooks") => install_hooks(args.collect()),
-        Some("uninstall-hooks") => uninstall_hooks(args.collect()),
-        Some("list-hooks") => list_hooks(args.collect()),
-        Some("hook") => hook(args.collect()),
-        Some("events") => events(args.collect()),
-        Some("split-window") => split_window(args.collect()),
-        Some("kill-pane") => kill_pane(args.collect()),
-        Some("resize-pane") => resize_pane(args.collect()),
-        Some("send-keys") => send_keys(args.collect()),
-        Some("capture-pane") => capture_pane(args.collect()),
-        Some("list-keys") => list_keys(args.collect()),
-        Some("bind-key") => bind_key(args.collect()),
-        Some("unbind-key") => unbind_key(args.collect()),
-        Some("show-options") => show_options(args.collect()),
-        Some("set-option") => set_option(args.collect()),
-        Some("-V" | "--version" | "version") => {
+    let Some(word) = args.next() else {
+        print_usage();
+        return Ok(());
+    };
+    // ONE place a word becomes a verb, shared with the keyboard and with the help this prints —
+    // see [`sprag_host::vocabulary`]. A word that names nothing is the only unknown left: a verb
+    // this vocabulary HAS and no shell dispatches is answered by `dispatch` in its own words,
+    // because a user who typed `sprag switch-client` asked for something that exists.
+    let Some(verb) = Verb::parse(&word) else {
+        eprintln!("sprag: unknown command {word:?}");
+        print_usage();
+        std::process::exit(2);
+    };
+    dispatch(verb, args)
+}
+
+/// Carry out one verb of the vocabulary.
+///
+/// **EXHAUSTIVE over [`Verb`], and that is the whole mechanism this round added**: a verb added to
+/// the table without an implementation here does not compile, and a verb implemented here without a
+/// table entry cannot be reached — so the dispatch, the help
+/// ([`vocabulary::usage`]) and the keyboard's list of forms are three
+/// projections of one array instead of three lists that drift. Two of them had: `run` and `hook`
+/// were dispatched and named in no usage text at all.
+fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()> {
+    match verb {
+        Verb::Ls => ls(),
+        Verb::ListClients => list_clients(args.collect()),
+        Verb::New => new(args.next()),
+        Verb::Ssh => ssh(args.collect()),
+        Verb::Find => find(args.collect()),
+        Verb::WaitForOutput => wait_for_output(args.collect()),
+        Verb::Run => run_project(args.collect()),
+        Verb::Attach => attach(args.collect()),
+        Verb::KillSession => kill_session(args.next()),
+        Verb::KillServer => kill_server(args.collect()),
+        Verb::Windows => windows(args.collect()),
+        Verb::NewWindow => new_window(args.collect()),
+        Verb::SelectWindow => select_window(args.collect()),
+        Verb::MoveWindow => move_window(args.collect()),
+        Verb::SelectPane => select_pane(args.collect()),
+        Verb::RenameWindow => rename_window(args.collect()),
+        Verb::RenameSession => rename_session(args.collect()),
+        Verb::KillWindow => kill_window(args.collect()),
+        Verb::ResizeWindow => resize_window(args.collect()),
+        Verb::BreakPane => break_pane(args.collect()),
+        Verb::JoinPane => join_pane(args.collect()),
+        Verb::MovePane => move_pane(args.collect()),
+        Verb::SwapPane => swap_pane(args.collect()),
+        Verb::ZoomPane => zoom_pane(args.collect()),
+        Verb::RenamePane => rename_pane(args.collect()),
+        Verb::Panes => panes(args.collect()),
+        Verb::Layout => layout(args.collect()),
+        Verb::Processes => processes(args.collect()),
+        Verb::Agent => agent(args.collect()),
+        Verb::DisplayMessage => display_message(args.collect()),
+        Verb::ReportAgent => report_agent(args.collect()),
+        Verb::ReleaseAgent => release_agent(args.collect()),
+        Verb::InstallHooks => install_hooks(args.collect()),
+        Verb::UninstallHooks => uninstall_hooks(args.collect()),
+        Verb::ListHooks => list_hooks(args.collect()),
+        Verb::Hook => hook(args.collect()),
+        Verb::Events => events(args.collect()),
+        Verb::SplitWindow => split_window(args.collect()),
+        Verb::KillPane => kill_pane(args.collect()),
+        Verb::ResizePane => resize_pane(args.collect()),
+        Verb::SendKeys => send_keys(args.collect()),
+        Verb::CapturePane => capture_pane(args.collect()),
+        Verb::ListKeys => list_keys(args.collect()),
+        Verb::BindKey => bind_key(args.collect()),
+        Verb::UnbindKey => unbind_key(args.collect()),
+        Verb::ShowOptions => show_options(args.collect()),
+        Verb::SetOption => set_option(args.collect()),
+        Verb::Version => {
             print_version();
             Ok(())
         }
-        Some("-h" | "--help" | "help") | None => {
+        Verb::Help => {
             print_usage();
             Ok(())
         }
-        Some(other) => {
-            eprintln!("sprag: unknown command {other:?}");
-            print_usage();
-            std::process::exit(2);
-        }
+        // THE FIVE VERBS A SHELL CANNOT SAY, each acting on the client that pressed the key. They
+        // are refused BY NAME with the line that would bind them, where until R323 they came back
+        // `unknown command "switch-client"` — a sentence about a verb this product has had since
+        // R314. An argument error, so it exits 1 like every other one; the unknown-word path above
+        // keeps its 2.
+        Verb::DetachClient
+        | Verb::SendPrefix
+        | Verb::SwitchClient
+        | Verb::ChooseTree
+        | Verb::ConfirmBefore => Err(bad_input(
+            &verb
+                .only_a_keystroke()
+                // Unreachable: these five ARE the verbs with no shell form, which is the question
+                // that method answers. A fallback rather than an `expect` because this renders an
+                // error message, and a panic inside one is a worse outcome than a plainer sentence.
+                .unwrap_or_else(|| format!("{:?} is not a command", verb.name())),
+        )),
     }
 }
 
@@ -517,7 +555,7 @@ fn bind_key(args: Vec<String>) -> io::Result<()> {
         // fail because a second list is not checked against anything.
         return Err(bad_input(&format!(
             "bind-key: {key:?} needs an action (there are: {})",
-            BoundAction::VOCABULARY.join(", ")
+            BoundAction::vocabulary().join(", ")
         )));
     }
     // Parsed HERE, so a typo in an argument is reported as one. Rendering it through
@@ -838,52 +876,13 @@ fn bad_input(message: &str) -> io::Error {
 
 /// What `sprag` with no verb (or an unknown one) prints — the whole verb set in one place.
 ///
-/// A `const` rather than a literal inside the `eprintln!` so a test can read it. It is a SECOND
-/// list of what this binary does, and a second list is exactly what nothing checks: `sprag
-/// bind-key` held one that was stale for eight rounds because no test could see it.
-const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n\
-         \x20             | attach NAME [--no-wait | --tui | --remote HOST]\n\
-         \x20             | ssh [user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]\n\
-         \x20             | find NEEDLE [-t SESSION] [--pane PANE] [--regex]\n\
-         \x20             | wait-for-output --pane PANE NEEDLE [-t SESSION] [--regex]\n\
-         \x20             | rename-session [-t SESSION] NEW\n\
-         \x20             | kill-session NAME | kill-server [--purge]>\n\
-         \x20      sprag <windows | new-window [-d] [name] | select-window <NAME|-n|-p>\n\
-         \x20             | rename-window [window] NAME | kill-window [window]\n\
-         \x20             | move-window [window]\n\
-         \x20                 <--first | --last | -n | -p | --before W | --after W>\n\
-         \x20             | resize-window [window]\n\
-         \x20                 <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u>\n\
-         \x20             | break-pane PANE [name] | join-pane PANE WINDOW\n\
-         \x20             | move-pane PANE -h|-v [-b] TARGET> -t SESSION\n\
-         \x20      sprag <panes | layout | processes [PANE]\n\
-         \x20             | select-pane <PANE | -L|-R|-U|-D [--from PANE]>\n\
-         \x20             | swap-pane [PANE] <WITH | -L|-R|-U|-D>\n\
-         \x20             | split-window [-h|-v [-b] [PANE]] [-- command…]\n\
-         \x20             | kill-pane [PANE]\n\
-         \x20             | resize-pane [PANE] <-x COLS -y ROWS | -L|-R|-U|-D [N]>\n\
-         \x20             | zoom-pane [PANE] [-u]\n\
-         \x20             | rename-pane PANE <NAME | --clear>\n\
-         \x20             | send-keys PANE [-l] KEY… | capture-pane PANE [-p]\n\
-         \x20             | agent [PANE]> [-t SESSION]\n\
-         \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane PANE]\n\
-         \x20             [--source S] [--name AGENT] [--seq N]\n\
-         \x20      sprag release-agent [-t SESSION] [--pane PANE]\n\
-         \x20      sprag display-message [-t SESSION] [-c CLIENT] [-s note|warn|alert]\n\
-         \x20             MESSAGE\n\
-         \x20      sprag <install-hooks | uninstall-hooks> [AGENT…] [--yes] [--dry-run]\n\
-         \x20      sprag list-hooks\n\
-         \x20      sprag events [-t SESSION] [--since N] [-f [--pane PANE] [--kind KIND]…]\n\
-         \x20      sprag <list-keys [-N] | bind-key [-nr] [-T prefix|root] KEY ACTION…\n\
-         \x20             | unbind-key [-n] [-T prefix|root] KEY>\n\
-         \x20      sprag <show-options [-v] [NAME] | set-option [-u] NAME [VALUE]> [-g]\n\
-         \x20      sprag <--version | --help>\n\
-         \x20\n\
-         \x20PANE is a pane's id (see `sprag panes`) or its NAME (`sprag rename-pane`).\n\
-         \x20Either spelling reaches any WINDOW of the session, and neither crosses a session.";
-
+/// **BUILT from the vocabulary since R323**, where it used to be a `const` beside this function
+/// whose own doc said *"a second list is exactly what nothing checks"*. It was right: measured by
+/// running the shipped binary, `run` and `hook` were dispatched and named in it nowhere. Both
+/// halves now come off [`sprag_host::vocabulary::usage`], which iterates the same array
+/// [`dispatch`] is exhaustive over.
 fn print_usage() {
-    eprintln!("{USAGE}");
+    eprintln!("{}", vocabulary::usage());
 }
 
 /// `--version`: the build, on STDOUT, contacting no daemon.
@@ -6148,13 +6147,16 @@ mod tests {
     /// The usage text names every flag `select-pane` PARSES — held against the flag constants
     /// themselves, so the two spellings cannot drift.
     ///
-    /// A usage block is a second list of what a binary does, and until this round nothing in the
-    /// suite read it. That is the shape `sprag bind-key` shipped for eight rounds: a list that is
-    /// wrong costs nothing to write and nothing fails. This asserts the one line this round
-    /// changed and leaves the hook for the rest.
+    /// A usage block is a second list of what a binary does, and until R312 nothing in the suite
+    /// read it. **It stopped being a second list at R323**: the text comes off
+    /// [`sprag_host::vocabulary::usage`] now, so *which verbs appear* is no longer a claim anyone
+    /// can get wrong. What a verb's own FORM spells still is — an entry saying `-L|-R` while its
+    /// parser takes four directions is exactly as wrong as the old const was — and that is what
+    /// this still checks, one entry at a time.
     #[test]
     fn the_usage_text_names_the_flags_select_pane_parses() {
-        let line = USAGE
+        let usage = sprag_host::vocabulary::usage();
+        let line = usage
             .lines()
             .find(|line| line.contains("select-pane"))
             .expect("the usage names select-pane");
@@ -6179,20 +6181,20 @@ mod tests {
             "the usage line must offer every direction the verb parses: {line}",
         );
 
-        // The SWAP's line, by the same derivation — and one thing more: it must no longer sit in
-        // the block that ends `-t SESSION`, because the verb stopped requiring one. A usage that
-        // says a flag is mandatory when it is not sends a reader to type something they need not.
-        let (window_block, pane_block) = USAGE
-            .split_once("sprag <panes")
-            .expect("the usage opens the pane block with `sprag <panes`");
-        assert!(
-            !window_block.contains("swap-pane"),
-            "swap-pane must not be in the block that requires -t: {window_block}",
-        );
-        let swap = pane_block
+        // The SWAP's line, by the same derivation — and one thing more: `-t` must be spelled
+        // OPTIONAL on it, because the verb stopped requiring one at R311. A usage that says a flag
+        // is mandatory when it is not sends a reader to type something they need not. It used to
+        // be checked by which BLOCK the verb sat in (the packed text shared one `-t SESSION` tail
+        // across a run of verbs); a line per verb states it per verb, which is what a reader gets
+        // to rely on.
+        let swap = usage
             .lines()
-            .find(|line| line.contains("swap-pane"))
-            .expect("the usage names swap-pane among the pane verbs");
+            .find(|line| line.trim_start().starts_with("swap-pane "))
+            .expect("the usage names swap-pane");
+        assert!(
+            swap.contains("[-t SESSION]"),
+            "swap-pane takes an OPTIONAL session, and its own line is where that is said: {swap}",
+        );
         let mut swap_named: Vec<&str> = swap
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
             .filter_map(sprag_host::keymap::direction_of)

@@ -79,6 +79,10 @@ pub mod shellword;
 pub mod ssh;
 pub mod status;
 pub mod sweep;
+// Every verb the product has, named ONCE — the table the CLI dispatches through, the help is built
+// from, and the keyboard's own list of forms is derived from. Written because those three were three
+// hand-written lists with nothing holding any two together (R323).
+pub mod vocabulary;
 // Dropped-file delivery (paste a local path / `scp` it to a remote workspace first). Private: the
 // policy is reached ONLY through the `drop_file` action + `HostClient::drop_file`, so there is one
 // way in and no second policy site. A plain comment, not a doc comment: an outer doc here would be
