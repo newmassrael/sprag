@@ -640,6 +640,7 @@ pub trait HostClient {
     /// with every divider the client minted now named, so the caller adopts it directly
     /// rather than re-reading — and a refused write answers with the arrangement actually in
     /// force, so a client always learns the truth it must project.
+    #[must_use = "the CANONICAL arrangement, including a write the daemon REFUSED because the layout moved"]
     fn set_layout(&self, tree: LayoutWire, expected: u64) -> LayoutSnapshot;
 
     /// Take pane `id` out of the tiling (`floating == true`) or put it back, returning the
@@ -655,6 +656,7 @@ pub trait HostClient {
     /// REFUSED if it would leave the window tiling nothing (a terminal window always shows a
     /// terminal). The answer then carries the arrangement still in force, so a client that
     /// asked anyway learns the truth rather than being trusted to have checked first.
+    #[must_use = "the resulting arrangement, which the caller adopts rather than re-reads"]
     fn set_floating(&self, id: PaneId, floating: bool) -> LayoutSnapshot;
 
     /// The scoped session's windows, in order — each window's name and whether it is CURRENT
@@ -739,6 +741,7 @@ pub trait HostClient {
     /// ([`WindowName`](sprag_terminal::WindowName)), so a caller that echoed its own argument would
     /// paint a name the window does not have. [`None`] has one cause once a caller has checked the
     /// grammar with that same type: the name is already another window's.
+    #[must_use = "a rename the daemon REFUSED — the name is taken, or unusable — is a fact no repaint carries"]
     fn rename_window(&self, name: &str) -> Option<String>;
 
     /// Rename the session this connection is scoped to, answering the name the daemon RECORDED — or
@@ -749,6 +752,7 @@ pub trait HostClient {
     /// session the user is looking at even if somebody renamed it a moment ago. The daemon carries
     /// the session's change channel and every attachment across with the name (R302), which is why
     /// a client can ask for this without knowing who else is watching.
+    #[must_use = "a rename the daemon REFUSED is a fact no repaint carries"]
     fn rename_session(&self, name: &str) -> Option<String>;
 
     /// Give the pane with `id` the name `name`, answering the name the daemon RECORDED — or
@@ -757,6 +761,7 @@ pub trait HostClient {
     /// The one rename that carries a TARGET, because a [`PaneId`] is an identity: registry-unique,
     /// stable, and not the thing being changed. A pane NAME is an address (R295), which is what
     /// makes this worth a gesture rather than a decoration.
+    #[must_use = "a rename the daemon REFUSED is a fact no repaint carries"]
     fn rename_pane(&self, id: PaneId, name: &str) -> Option<String>;
 
     /// Create a pane in the scoped session's CURRENT window, born with a shell (tmux
@@ -774,6 +779,7 @@ pub trait HostClient {
     ///
     /// Defaulted to `None` — a display client that never creates panes (and the test doubles) need
     /// not implement it; the in-process [`Host`] and the wire client override it.
+    #[must_use = "[`None`] is a pane that was NOT born, which an arrangement re-read cannot distinguish from one that was"]
     fn new_pane(&self) -> Option<PaneId> {
         None
     }
@@ -808,6 +814,7 @@ pub trait HostClient {
     /// instead would be the same lie as accepting `-h` and ignoring it.
     ///
     /// Defaulted to `None`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    #[must_use = "[`None`] is a split that did not happen, and the arrangement looks the same either way"]
     fn split(&self, target: PaneId, dir: SplitDir, before: bool) -> Option<PaneId> {
         let (_, _, _) = (target, dir, before);
         None
@@ -837,6 +844,7 @@ pub trait HostClient {
     /// quiet no-ops, which is the rule the whole placement family shares.
     ///
     /// Defaulted to `None`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    #[must_use = "[`None`] is a zoom that was refused (no such pane, or it is floating)"]
     fn zoom_pane(&self, target: PaneId, on: Option<bool>) -> Option<ZoomOutcome> {
         let (_, _) = (target, on);
         None
@@ -869,6 +877,7 @@ pub trait HostClient {
     /// cases differ by whether the caller's own session still exists.
     ///
     /// Defaulted to `None`, like [`new_pane`](Self::new_pane).
+    #[must_use = "the [`Ended`] word says HOW FAR the cascade went, which nothing else states"]
     fn kill_pane(&self, id: PaneId) -> Option<Ended> {
         let _ = id;
         None
@@ -881,6 +890,7 @@ pub trait HostClient {
     ///
     /// Defaulted to `None` — a display client that never breaks panes (and the test doubles) need
     /// not implement it; the in-process [`Host`] and the wire client override it.
+    #[must_use = "[`None`] is a refusal — the pane is its window's only one"]
     fn break_pane(&self, id: PaneId, name: Option<&str>) -> Option<String> {
         let _ = (id, name);
         None
@@ -981,6 +991,7 @@ pub trait HostClient {
     /// returning whether the source window was CLOSED (a join that emptied it) — or `None` if the
     /// move was refused (`id` already lives in `dst`, no window holds `id`, or `dst` names no
     /// window). Defaulted to `None`, like [`break_pane`](Self::break_pane).
+    #[must_use = "[`None`] is a refusal and `Some(false)` is a move that changed nothing"]
     fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
         let _ = (id, dst);
         None
@@ -999,6 +1010,7 @@ pub trait HostClient {
     ///
     /// Defaulted to `None`, like [`break_pane`](Self::break_pane) — a client that cannot spawn
     /// processes (and the test doubles) need not implement it.
+    #[must_use = "the answer is the delivery's own error text, which nobody else holds"]
     fn drop_file(&self, id: PaneId, path: &str) -> Option<String> {
         let _ = (id, path);
         None
@@ -1136,6 +1148,7 @@ pub trait HostClient {
 
     /// Create a fresh session on the host (born with a shell, tmux `new-session`) and switch this
     /// client to it, returning its name. The "+" of a session sidebar.
+    #[must_use = "the NAME the daemon minted, which the caller cannot guess"]
     fn new_session(&self) -> String;
 
     /// Kill the session named `name` (tmux `kill-session -t`) — a session sidebar row's close

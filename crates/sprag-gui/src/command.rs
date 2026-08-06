@@ -299,6 +299,14 @@ impl Command {
     /// rather than lossy, because the three arms that call this are exactly the three the pairing
     /// covers, and a fourth added later without one would be caught by its own missing sentence.
     fn reported(&self, say: fn(&BoundAction) -> Report) -> Report {
+        // THE RATCHET, and it is an assertion rather than a test because a test would have to DRIVE
+        // every row — which drags this client's whole reactive surface (the find bar, the
+        // clipboard, the chooser) into a claim about wording. This fires in every debug build and
+        // every test run, from whichever row reached it, with no list to keep in step.
+        debug_assert!(
+            self.bound().is_some(),
+            "{self:?} answers a sentence but has no `bound()` pairing to take the words from — a              row and the key that reaches it would word one outcome differently",
+        );
         self.bound().as_ref().map_or_else(Report::on_screen, say)
     }
 
@@ -1272,21 +1280,40 @@ mod tests {
                 .find(|window| window.name == name)
                 .map(|window| window.name.clone())
         }
-        /// Records the place and answers `Moved` for the CURRENT window, so a row's assertion is
-        /// about which place it sent rather than about this fixture's arithmetic.
+        /// Records the place and answers `Moved` for the CURRENT window — EXCEPT when the current
+        /// window is already at the end the step names, which answers `AlreadyThere`.
+        ///
+        /// The exception is the whole arithmetic this fixture does, and it is here because R316
+        /// needs the two readings to DISAGREE: a stub answering `Moved` unconditionally cannot tell
+        /// a row that reports a refusal from one that reports nothing, so every assertion about the
+        /// palette's sentence would have passed vacuously.
         fn move_window(
             &self,
             window: Option<&str>,
             place: &sprag_terminal::WindowPlace,
         ) -> Option<(String, sprag_terminal::PlaceHow)> {
             self.log.borrow_mut().moved.push(place.clone());
+            let at = self.windows.iter().position(|window| window.current);
             let named = window.map(str::to_owned).or_else(|| {
-                self.windows
-                    .iter()
-                    .find(|window| window.current)
+                at.and_then(|at| self.windows.get(at))
                     .map(|window| window.name.clone())
             })?;
-            Some((named, sprag_terminal::PlaceHow::Moved))
+            let stuck = matches!(
+                (place, at),
+                (
+                    sprag_terminal::WindowPlace::Step(sprag_terminal::OrderStep::Previous)
+                        | sprag_terminal::WindowPlace::First,
+                    Some(0)
+                )
+            );
+            Some((
+                named,
+                if stuck {
+                    sprag_terminal::PlaceHow::AlreadyThere
+                } else {
+                    sprag_terminal::PlaceHow::Moved
+                },
+            ))
         }
         /// Inert: this catalogue fixture drives which ROWS exist, not the window ring.
         fn select_window_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {
@@ -2658,6 +2685,37 @@ mod tests {
         // passes the second the same way.
         assert!(derived > 0, "some row derives its hint from the keymap");
         assert!(literal > 0, "and some row carries one of this client's own");
+    }
+
+    /// **A row that can SPEAK has a binding to speak through** (R316).
+    ///
+    /// The enforcement is `Command::reported`'s own `debug_assert!`, which fires from whichever row
+    /// reaches it in every debug build and every test run — a ratchet with no list to keep in step,
+    /// and the reason this is not a loop over the catalog: driving every row would drag this
+    /// client's whole reactive surface (the find bar, the clipboard, the chooser) into a claim
+    /// about wording.
+    ///
+    /// What this adds is the DRIVER: the three arms that call `reported` are exercised in their
+    /// SPEAKING state, so the assertion above is reached rather than merely written.
+    #[test]
+    fn every_row_that_can_speak_has_a_binding_to_speak_through() {
+        let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
+        // Each in the state where it SPEAKS — a window that is not there, a move with nowhere to
+        // go, a client that has visited nothing still alive.
+        let spoken = [
+            Command::SelectWindow("gone".to_owned()).run(Some(0), &slots),
+            Command::MoveWindow(sprag_terminal::WindowPlace::Step(
+                sprag_terminal::OrderStep::Previous,
+            ))
+            .run(Some(0), &slots),
+            Command::LastSession.run(None, &slots),
+        ];
+        for (i, report) in spoken.iter().enumerate() {
+            assert!(
+                report.says().is_some(),
+                "row {i} must reach `reported` in this fixture, or the assertion inside it is                  written and never run",
+            );
+        }
     }
 
     #[test]

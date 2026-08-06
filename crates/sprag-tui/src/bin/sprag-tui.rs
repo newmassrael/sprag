@@ -489,13 +489,20 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // partitions the screen exactly as an arrangement does, so every cell still has
                     // an author.
                     Command::Act(BoundAction::ZoomPane { on }) => {
-                        if let Some(pane) = focus {
-                            host.zoom_pane(pane, on);
-                        }
-                        // A zoom is a change to what is DRAWN, so the drawing is the report. The
-                        // one case with nothing to show — a zoom on a window holding one pane —
-                        // is a request that was already true, not a refusal.
-                        let report = Report::on_screen();
+                        // A zoom is a change to what is DRAWN, so the drawing is the report — for
+                        // the three outcomes that HAVE a drawing. [`None`] is the fourth: the
+                        // daemon REFUSED, because the pane is floating and a floating pane is in no
+                        // arrangement to fill a window with. That case draws nothing at all, which
+                        // is the shape this round exists to remove — and the answer was dropped
+                        // here until the `#[must_use]` sweep asked what read it.
+                        //
+                        // `changed: false` is NOT a refusal: it is a zoom re-asserting the state
+                        // already in force, which is a well-formed request whose drawing is
+                        // already on the screen.
+                        let report = match focus.map(|pane| host.zoom_pane(pane, on)) {
+                            Some(None) => Report::nowhere(&BoundAction::ZoomPane { on }),
+                            Some(Some(_)) | None => Report::on_screen(),
+                        };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);
                         paint(
@@ -1321,7 +1328,12 @@ fn drag_divider(
 ) -> Tiling {
     let snapshot = host.layout();
     if let Some(tree) = with_ratio(&snapshot.tree, id, ratio) {
-        host.set_layout(tree, snapshot.revision);
+        // The canonical arrangement is DROPPED and the reconcile below re-reads it, which is the
+        // one place in this file that is right to drop an answer: a refused write (the layout moved
+        // under the drag) answers with the arrangement actually in force, and this function's whole
+        // job is to project whatever that is. Adopting it here would be a second path to the fact
+        // the next line already fetches.
+        let _ = host.set_layout(tree, snapshot.revision);
     }
     reconcile(host, area, focus, seen_active)
 }

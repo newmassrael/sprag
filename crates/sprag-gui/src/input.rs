@@ -425,11 +425,14 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
         // The wire client re-reads the arrangement when the zoom moved anything, and the layout
         // mirror is what the dock topology is projected from — so this repaints through the channel
         // that already carries an arrangement change, exactly as the split above does.
-        BoundAction::ZoomPane { on } => {
-            use_terminal().slots.zoom_pane(active, *on);
-            // A zoom is a change to what is DRAWN, so the drawing is the report.
-            Report::on_screen()
-        }
+        // A zoom is a change to what is DRAWN, so the drawing is the report — for the outcomes that
+        // HAVE a drawing. [`None`] is the daemon REFUSING, because the pane is floating and a
+        // floating pane is in no arrangement to fill a window with; that case draws nothing at all.
+        // The terminal front states the same rule beside its own arm.
+        BoundAction::ZoomPane { on } => match use_terminal().slots.zoom_pane(active, *on) {
+            Some(_) => Report::on_screen(),
+            None => Report::nowhere(&action),
+        },
         // The CASCADE is the daemon's (R309): closing the window's last pane ends the window, and
         // this client learns that the way it learns every set change — the host announces and the
         // mirror is re-read. So there is nothing to repaint here and nothing to decide: the answer
