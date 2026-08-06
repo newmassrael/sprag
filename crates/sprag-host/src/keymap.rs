@@ -92,8 +92,27 @@ pub const DEFAULT_REPEAT_TIME: Duration = Duration::from_millis(500);
 pub enum KeyError {
     /// The spec named no key at all, or named one nothing in sprag's vocabulary can produce.
     UnknownKey(String),
-    /// The action's verb is not one any client has.
+    /// The action's verb is not one sprag has AT ALL — a typo, or another multiplexer's word.
     UnknownAction(String),
+    /// The verb is one sprag HAS and a keystroke cannot mean, with the rule it falls under.
+    ///
+    /// **The variant R323 split out of [`UnknownAction`](Self::UnknownAction)**, and the split is
+    /// the whole point: measured against the shipped binary, 33 of the 47 verbs the CLI dispatched
+    /// were refused by `bind-key` with the sentence a TYPO gets, so a person who had just run
+    /// `sprag capture-pane` was told it is not an action. It exists, and what a user needs to know
+    /// is which rule stops a key meaning it — see [`NotAKeystroke`](crate::vocabulary::NotAKeystroke).
+    NotAKeystroke {
+        /// The verb, quoted back.
+        verb: String,
+        /// Which of the vocabulary's five rules it falls under.
+        why: crate::vocabulary::NotAKeystroke,
+    },
+    /// The verb is one a keystroke COULD mean and sprag builds no binding for yet.
+    ///
+    /// The honest third answer, and it is deliberately not [`NotAKeystroke`](Self::NotAKeystroke):
+    /// telling a user their key cannot mean `join-pane` would be a refusal that is not true. The
+    /// set is [`Keystroke::NotBuilt`](crate::vocabulary::Keystroke::NotBuilt) and is countable.
+    NoBindingYet(String),
     /// The verb is known, but these flags are not usable in a binding.
     BadFlags {
         /// The action as the user wrote it, so the report can quote it back.
@@ -120,7 +139,19 @@ impl fmt::Display for KeyError {
             Self::UnknownAction(verb) => write!(
                 f,
                 "{verb:?} is not an action (there are: {})",
-                BoundAction::VOCABULARY.join(", ")
+                crate::vocabulary::bindable_forms().join(", ")
+            ),
+            // The verb's own name first, then the RULE — because the rule is what tells a user
+            // whether to look for another verb or to stop looking.
+            Self::NotAKeystroke { verb, why } => write!(
+                f,
+                "{verb:?} is a command, not a binding: {} (run it with `sprag {verb}`)",
+                why.why(),
+            ),
+            Self::NoBindingYet(verb) => write!(
+                f,
+                "{verb:?} is a verb a keystroke could mean and sprag does not bind it yet \
+                 (run it with `sprag {verb}`)",
             ),
             Self::BadFlags { action, why } => write!(f, "{action:?}: {why}"),
             Self::BoundAndUnbound(key) => {
@@ -679,6 +710,50 @@ pub enum BoundAction {
     ///
     /// It names no window, on [`NewWindow`](Self::NewWindow)'s rule.
     RenameWindow,
+    /// `break-pane` — take the focused pane out of its window and into a new one of its own (tmux
+    /// `prefix !`).
+    ///
+    /// **The first of the three verbs R323 brought over from the CLI**, and the one that needed
+    /// nothing built for it: [`HostClient::break_pane`](crate::host::HostClient::break_pane) has
+    /// existed since the GUI's palette got the gesture, and the keyboard could not say the word.
+    /// R322 measured `sprag bind-key F9 break-pane` answering *"break-pane" is not an action* —
+    /// about a verb the same binary dispatches.
+    ///
+    /// It names no pane and no name: the pane is the focused one on
+    /// [`NewWindow`](Self::NewWindow)'s rule, and the CLI verb's optional NAME is the argument a
+    /// binding must not fix ([`RenameWindow`](Self::RenameWindow)'s rule) — so the window is born
+    /// with the daemon's own name, exactly as `prefix c` births one.
+    BreakPane,
+    /// `kill-session` — end the session this client is looking at, and everything in it (no tmux
+    /// default; tmux users bind it, and herdr ships `close_workspace` on `prefix+shift+x`).
+    ///
+    /// # Why a keystroke can mean this where the CLI verb needs a NAME
+    ///
+    /// `sprag kill-session NAME` must be told which one, because a daemon has no current session.
+    /// A client has: the one it is attached to. That asymmetry is this vocabulary's whole rule
+    /// stated from the other side — a keystroke acts where the user is — and it is why the verb is
+    /// bindable with no argument at all.
+    ///
+    /// **BINDABLE AND UNBOUND BY DEFAULT**, on [`KillWindow`](Self::KillWindow)'s reasoning one
+    /// level up: tmux has no default key for it, and the blast radius here is the largest in the
+    /// vocabulary. `confirm-before kill-session` is the spelling a user who wants it should write,
+    /// and [`prompt::Ask::of`](crate::prompt::Ask::of) derives the question from the live session
+    /// so it names what is actually about to go.
+    KillSession,
+    /// `new` — create a session and point this client at it.
+    ///
+    /// # It is TWO acts and that is a decision, not an oversight
+    ///
+    /// `sprag new` creates a session and prints its name; a person at a keyboard who creates a
+    /// session and stays where they were has pressed a key that appears to do nothing — R316's
+    /// measured defect, in the one place a new arm could reproduce it. So the client follows the
+    /// session it just made, which is what `new-window` already does one level down (the daemon
+    /// selects the window it births) and what every tabbed thing a person uses does.
+    ///
+    /// It carries no name, on [`NewWindow`](Self::NewWindow)'s rule: the CLI verb's optional name
+    /// is a string a binding would fix forever, and the daemon generates one exactly as it does
+    /// for `sprag new` with no argument.
+    NewSession,
     /// `rename-session` — ask for this session's new name, then rename it (tmux `prefix $`).
     ///
     /// [`RenameWindow`](Self::RenameWindow)'s twin one level up, and the one that moves an ADDRESS:
@@ -848,31 +923,17 @@ impl BoundAction {
     /// `zoom-pane`: a verb that exists and is absent from the list nobody reads twice is a verb
     /// nobody finds.
     ///
-    /// Kept beside [`parse`](Self::parse) rather than derived from it because the two answer
-    /// different questions — this one names the FORMS, including the flag grammar a parser
-    /// expresses as control flow — and
-    /// [`the_vocabulary_lists_every_verb_a_binding_takes`](self) holds them together.
-    pub const VOCABULARY: [&'static str; 19] = [
-        "detach-client",
-        "send-prefix",
-        "list-keys",
-        "split-window -h|-v [-b]",
-        "select-pane -L|-R|-U|-D|-t :.+",
-        "swap-pane -L|-R|-U|-D",
-        "resize-pane -L|-R|-U|-D [N]",
-        "zoom-pane [-Z|-u]",
-        "kill-pane",
-        "new-window",
-        "select-window -n|-p|-t <window>",
-        "move-window --first|--last|-n|-p|--before [<window>]|--after <window>",
-        "kill-window",
-        "rename-window",
-        "rename-session",
-        "rename-pane",
-        "switch-client -n|-p|-l|-t [<session>]",
-        "choose-tree",
-        "confirm-before <action>",
-    ];
+    /// **DERIVED SINCE R323** from [`crate::vocabulary`], which holds every verb the product has
+    /// and what a keystroke can mean by each. This was a 19-entry array beside the parser, joined
+    /// to the CLI's 47 verbs by nothing at all — so a verb that existed and was not bindable, and a
+    /// verb that was bindable and unlisted, were both invisible. A verb becomes listed here the
+    /// moment its entry says [`Keystroke::Means`](crate::vocabulary::Keystroke::Means), and
+    /// [`the_bindable_forms_are_the_ones_the_parser_takes`](self) holds the forms against the
+    /// parser that has to accept them.
+    #[must_use]
+    pub fn vocabulary() -> Vec<&'static str> {
+        crate::vocabulary::bindable_forms()
+    }
 
     /// Whether carrying this out puts a QUESTION on the user's screen first.
     ///
@@ -910,6 +971,9 @@ impl BoundAction {
             | Self::SelectWindow { .. }
             | Self::MoveWindow { .. }
             | Self::KillPane
+            | Self::BreakPane
+            | Self::KillSession
+            | Self::NewSession
             | Self::KillWindow => false,
         }
     }
@@ -955,6 +1019,12 @@ impl BoundAction {
             | Self::MoveWindow { .. }
             | Self::MoveWindowBefore
             | Self::KillWindow
+            // The BREAK sends no pane id for `split-window`'s reason: the daemon breaks the
+            // session's own active pane, so a client mirror one revision behind cannot name the
+            // wrong one. The two session verbs need no pane at all.
+            | Self::BreakPane
+            | Self::KillSession
+            | Self::NewSession
             | Self::RenameWindow
             | Self::RenameSession => false,
         }
@@ -991,8 +1061,12 @@ impl BoundAction {
             | Self::MoveWindow { .. }
             | Self::MoveWindowBefore
             | Self::KillWindow
+            // A WINDOW verb though its object is a pane, and the vocabulary's own table says so
+            // (`vocabulary::Group::Window`): what the act PRODUCES is a window, which is the group
+            // a user looks in for it — `split-window`'s grouping decision, read the other way.
+            | Self::BreakPane
             | Self::RenameWindow => ActionSubject::Window,
-            Self::RenameSession => ActionSubject::Session,
+            Self::RenameSession | Self::KillSession | Self::NewSession => ActionSubject::Session,
             // The CLIENT, with `detach-client` — see the arm's own doc. It changes no session; it
             // changes which one this client is looking at.
             //
@@ -1056,6 +1130,9 @@ impl BoundAction {
             | Self::SelectWindow { .. }
             | Self::MoveWindowBefore
             | Self::KillWindow
+            | Self::BreakPane
+            | Self::KillSession
+            | Self::NewSession
             | Self::RenameWindow
             | Self::RenameSession
             | Self::RenamePane
@@ -1067,7 +1144,7 @@ impl BoundAction {
     /// The first word of the canonical spelling — `split-window` for every form of the split.
     ///
     /// DERIVED from [`Display`](fmt::Display) rather than matched a second time, which is the whole
-    /// point: a second list of first words is the drift [`VOCABULARY`](Self::VOCABULARY)'s own doc
+    /// point: a second list of first words is the drift [`vocabulary`](Self::vocabulary)'s own doc
     /// records (`bind-key`'s copy of the vocabulary was stale for eight rounds). One impl decides
     /// how an action spells itself, and everything that needs part of that spelling cuts it up.
     #[must_use]
@@ -1109,6 +1186,9 @@ impl BoundAction {
             | Self::MoveWindowBefore
             | Self::KillPane
             | Self::KillWindow
+            | Self::BreakPane
+            | Self::KillSession
+            | Self::NewSession
             | Self::RenameWindow
             | Self::RenameSession
             | Self::RenamePane
@@ -1347,10 +1427,16 @@ impl BoundAction {
                      (-l), names one (-t <session>) or asks for one (-t)",
                 )),
             },
-            // The three lifecycle verbs that take nothing, refused loudly for a flag rather than
+            // The SIX lifecycle verbs that take nothing, refused loudly for a flag rather than
             // ignoring it: a user who wrote one meant something by it, and this vocabulary has no
             // reading for it.
-            "new-window" | "kill-window" | "kill-pane" => {
+            //
+            // R323 brought the last three over from the CLI, and each of them takes an argument
+            // there that a client already knows: `break-pane` needs a PANE (the focused one),
+            // `kill-session` needs a NAME (the one this client is attached to), and `new` takes an
+            // optional one the daemon generates. That is the vocabulary's own rule — a keystroke
+            // acts where the user is — reading as a REASON TO BIND rather than a reason to refuse.
+            "new-window" | "kill-window" | "kill-pane" | "break-pane" | "kill-session" | "new" => {
                 if !flags.is_empty() {
                     return Err(bad(
                         "takes no arguments (a binding acts on the session, window and pane the \
@@ -1360,6 +1446,9 @@ impl BoundAction {
                 Ok(match verb {
                     "new-window" => Self::NewWindow,
                     "kill-window" => Self::KillWindow,
+                    "break-pane" => Self::BreakPane,
+                    "kill-session" => Self::KillSession,
+                    "new" => Self::NewSession,
                     _ => Self::KillPane,
                 })
             }
@@ -1440,7 +1529,28 @@ impl BoundAction {
                      beside a named one (--before <window> / --after <window>); --before alone asks",
                 )),
             },
-            _ => Err(KeyError::UnknownAction(verb.to_owned())),
+            // **THE VOCABULARY ANSWERS, NOT THIS MATCH** (R323). Everything that reaches here is a
+            // word no arm above builds an action from, and until this round every one of them got
+            // `UnknownAction` — the sentence a TYPO gets, handed to 33 verbs the same binary
+            // dispatches. What the table says about the word is what the user is told.
+            _ => Err(
+                match crate::vocabulary::Verb::parse(verb).map(crate::vocabulary::Verb::keystroke) {
+                    Some(crate::vocabulary::Keystroke::Cannot(why)) => KeyError::NotAKeystroke {
+                        verb: verb.to_owned(),
+                        why,
+                    },
+                    Some(crate::vocabulary::Keystroke::NotBuilt) => {
+                        KeyError::NoBindingYet(verb.to_owned())
+                    }
+                    // A verb the TABLE says a keystroke can mean and this parser has no arm for is a
+                    // table entry ahead of its parser. Unreachable while
+                    // `the_bindable_forms_are_the_ones_the_parser_takes` passes — and it falls to the
+                    // typo sentence rather than panicking, because this renders an error message.
+                    Some(crate::vocabulary::Keystroke::Means(_)) | None => {
+                        KeyError::UnknownAction(verb.to_owned())
+                    }
+                },
+            ),
         }
     }
 }
@@ -1483,6 +1593,11 @@ impl fmt::Display for BoundAction {
             Self::KillPane => f.write_str("kill-pane"),
             Self::NewWindow => f.write_str("new-window"),
             Self::KillWindow => f.write_str("kill-window"),
+            Self::BreakPane => f.write_str("break-pane"),
+            Self::KillSession => f.write_str("kill-session"),
+            // `new`, which is the CLI's spelling — NOT tmux's `new-session`. A row read out of
+            // `list-keys` is typed back into a shell, and this shell's verb is `sprag new`.
+            Self::NewSession => f.write_str("new"),
             Self::RenameWindow => f.write_str("rename-window"),
             Self::RenameSession => f.write_str("rename-session"),
             Self::RenamePane => f.write_str("rename-pane"),
@@ -1714,6 +1829,11 @@ impl Default for Keymap {
                 // is herdr's (`prefix+shift+p`), taken because tmux has no pane-rename verb at all
                 // and inheriting the other parity target's key beats inventing a third — see
                 // [`BoundAction::RenamePane`].
+                // `!` — tmux's own key for `break-pane`, and the verb R322 measured the keyboard
+                // refusing while the CLI dispatched it. UNGUARDED, unlike the two kills: nothing
+                // is destroyed, and a pane broken out is put back with `join-pane` — which is the
+                // one of the pair a keystroke cannot say yet.
+                bind("!", BoundAction::BreakPane),
                 bind(",", BoundAction::RenameWindow),
                 bind("$", BoundAction::RenameSession),
                 bind("P", BoundAction::RenamePane),
@@ -2675,7 +2795,7 @@ mod tests {
 
     /// **The vocabulary a user is shown is the vocabulary the parser has.**
     ///
-    /// Two surfaces print [`BoundAction::VOCABULARY`] and neither re-spells it — the CLI's own copy
+    /// Two surfaces print [`BoundAction::vocabulary`] and neither re-spells it — the CLI's own copy
     /// was stale for eight rounds before it became one const, and a second list is checked by
     /// nothing. This is what checks the one that is left, in both directions: every listed form
     /// names a verb `parse` accepts, and every action `parse` can PRODUCE prints back under a
@@ -2685,7 +2805,7 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 21;
+    const ARMS: usize = 24;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
@@ -2717,6 +2837,9 @@ mod tests {
             BoundAction::SwitchClient { .. } => 18,
             BoundAction::ChooseTree => 19,
             BoundAction::ConfirmBefore { .. } => 20,
+            BoundAction::BreakPane => 21,
+            BoundAction::KillSession => 22,
+            BoundAction::NewSession => 23,
         }
     }
 
@@ -2757,6 +2880,9 @@ mod tests {
                 ask: SwitchClientAsk::Step(OrderStep::Next),
             },
             BoundAction::ChooseTree,
+            BoundAction::BreakPane,
+            BoundAction::KillSession,
+            BoundAction::NewSession,
             BoundAction::ConfirmBefore {
                 action: Box::new(BoundAction::KillWindow),
             },
@@ -2802,7 +2928,7 @@ mod tests {
             );
             for verb in reached {
                 assert!(
-                    BoundAction::VOCABULARY
+                    BoundAction::vocabulary()
                         .iter()
                         .any(|form| verb_of(form) == verb),
                     "{action} reaches {verb:?}, which the vocabulary does not name",
@@ -2849,7 +2975,7 @@ mod tests {
 
     #[test]
     fn the_vocabulary_lists_every_verb_a_binding_takes() {
-        for form in BoundAction::VOCABULARY {
+        for form in BoundAction::vocabulary() {
             let verb = form.split_whitespace().next().expect("a form names a verb");
             assert!(
                 !matches!(
@@ -2863,7 +2989,7 @@ mod tests {
             let printed = action.to_string();
             let verb = printed.split_whitespace().next().expect("an action prints");
             assert!(
-                BoundAction::VOCABULARY
+                BoundAction::vocabulary()
                     .iter()
                     .any(|form| form.split_whitespace().next() == Some(verb)),
                 "{printed:?} is a binding nobody is told about",
@@ -2871,12 +2997,113 @@ mod tests {
         }
     }
 
-    /// A verb no client has is named back to the user with the ones that exist.
+    /// **THE TABLE'S PROMISE IS THE PARSER'S BEHAVIOUR**, checked in both directions.
+    ///
+    /// [`crate::vocabulary`] is what every surface now reads to decide what a key may say, and it
+    /// is DATA — so it can claim a verb is bindable that this parser has no arm for, and it can
+    /// stay silent about one this parser accepts. Either would be the drift the module was written
+    /// to remove, one level up. The compiler cannot ask for this join because one side is strings.
+    ///
+    /// REVERT-PROOF: say [`Keystroke::Means`] about a verb with no arm here and the first block
+    /// fails on it; move `join-pane` to a refusal and the third block fails naming the reason it
+    /// now gives.
     #[test]
-    fn an_unknown_verb_is_refused_and_the_report_lists_what_exists() {
-        let error = BoundAction::parse("kill-server").expect_err("not a binding action");
-        assert_eq!(error, KeyError::UnknownAction("kill-server".to_owned()));
-        let message = error.to_string();
+    fn the_bindable_forms_are_the_ones_the_parser_takes() {
+        use crate::vocabulary::{Keystroke, Verb};
+        for verb in Verb::ALL {
+            let name = verb.name();
+            let refusal = BoundAction::parse(name);
+            match verb.keystroke() {
+                // A FORM IS A GRAMMAR, so the bare verb may still be refused for its FLAGS
+                // (`split-window` needs an axis). What must not happen is the parser saying it has
+                // never heard of a verb the table offers.
+                Keystroke::Means(form) => {
+                    assert_eq!(
+                        verb_of(form),
+                        name,
+                        "a form must begin with the verb a user types",
+                    );
+                    assert!(
+                        !matches!(
+                            refusal,
+                            Err(KeyError::UnknownAction(_) | KeyError::NotAKeystroke { .. })
+                                | Err(KeyError::NoBindingYet(_))
+                        ),
+                        "{name:?} is offered as bindable and the parser refuses it: {refusal:?}",
+                    );
+                }
+                Keystroke::Cannot(why) => assert_eq!(
+                    refusal,
+                    Err(KeyError::NotAKeystroke {
+                        verb: name.to_owned(),
+                        why,
+                    }),
+                    "{name:?} must be refused with the table's own reason",
+                ),
+                Keystroke::NotBuilt => assert_eq!(
+                    refusal,
+                    Err(KeyError::NoBindingYet(name.to_owned())),
+                    "{name:?} is a keystroke's to mean and is not built",
+                ),
+            }
+        }
+        // THE OTHER DIRECTION: every action this parser can PRODUCE is a verb the table calls
+        // bindable — so an arm added here without a table entry cannot hide.
+        for action in one_of_every_action() {
+            let verb = action.verb();
+            let known = Verb::parse(&verb).unwrap_or_else(|| {
+                panic!("{verb:?} is an action and not a verb of the vocabulary")
+            });
+            assert!(
+                known.bindable(),
+                "{verb:?} parses into an action and the table does not offer it",
+            );
+        }
+    }
+
+    /// A bindable verb is filed under the same SUBJECT by both halves of the vocabulary.
+    ///
+    /// The help view groups the keys in force by [`BoundAction::subject`] and lists the forms
+    /// underneath by [`crate::vocabulary::subject_of`]. Two answers to one question is how a verb
+    /// ends up in one group in the top half of a view and another in the bottom.
+    #[test]
+    fn one_verb_is_in_one_group_in_both_halves_of_the_view() {
+        use crate::vocabulary::{Verb, subject_of};
+        for action in one_of_every_action() {
+            // The GUARD takes the subject of what it wraps, which is a decision `subject`'s own
+            // doc states — so it has no subject of its own to compare.
+            if matches!(action, BoundAction::ConfirmBefore { .. }) {
+                continue;
+            }
+            let verb = action.verb();
+            let known = Verb::parse(&verb).expect("an action's verb is in the vocabulary");
+            assert_eq!(
+                action.subject(),
+                subject_of(known),
+                "{verb:?} is filed in two groups",
+            );
+        }
+    }
+
+    /// **THREE WORDS, THREE ANSWERS** — where until R323 all three got the sentence a typo gets.
+    ///
+    /// This is the head of the round at its smallest: R322 measured `sprag bind-key F9 <verb>`
+    /// answering *"is not an action"* for 33 verbs the same binary dispatches, `kill-server` and
+    /// `capture-pane` among them. A user reading that about a verb they have just run learns
+    /// nothing true. What differs between the three is not politeness — it is what the user should
+    /// do next: look for a typo, stop looking, or run the shell verb instead.
+    ///
+    /// REVERT-PROOF: point `parse`'s fallthrough back at `UnknownAction` and the second and third
+    /// blocks fail on the variant; drop the vocabulary out of the first message and the loop over
+    /// the known forms fails.
+    #[test]
+    fn a_word_that_is_not_a_binding_is_told_which_kind_of_word_it_is() {
+        // 1. A TYPO — a word no surface of this product has. The list of what exists is exactly
+        //    what this user needs, and it is the DERIVED list, so a verb that becomes bindable
+        //    appears here with no edit.
+        let typo = BoundAction::parse("kill-serverr").expect_err("not a verb at all");
+        assert_eq!(typo, KeyError::UnknownAction("kill-serverr".to_owned()));
+        let message = typo.to_string();
         for known in [
             "detach-client",
             "send-prefix",
@@ -2885,10 +3112,50 @@ mod tests {
             // The list is the ONLY place a user learns what a binding can say, so a verb that
             // exists and is absent from it is a verb nobody finds.
             "zoom-pane",
+            // R323's three, which is what makes this loop a check on the DERIVATION rather than on
+            // a list: none of them was in the const this replaced.
+            "break-pane",
+            "kill-session",
         ] {
             assert!(
                 message.contains(known),
                 "{message:?} should mention {known}"
+            );
+        }
+
+        // 2. A VERB THIS PRODUCT HAS, that a keystroke cannot mean. The RULE, and the shell.
+        let real = BoundAction::parse("kill-server").expect_err("a command, not a binding");
+        assert_eq!(
+            real,
+            KeyError::NotAKeystroke {
+                verb: "kill-server".to_owned(),
+                why: crate::vocabulary::NotAKeystroke::OutsideTheClient,
+            },
+        );
+        let said = real.to_string();
+        assert!(
+            said.contains("is a command, not a binding")
+                && said.contains("around the client")
+                && said.contains("`sprag kill-server`"),
+            "{said:?} must name the rule and the way to run it",
+        );
+
+        // 3. A VERB A KEYSTROKE COULD MEAN, that nobody has built a binding for. Not a refusal:
+        //    telling a user their key cannot mean `join-pane` would not be true.
+        let pending = BoundAction::parse("join-pane").expect_err("no binding yet");
+        assert_eq!(pending, KeyError::NoBindingYet("join-pane".to_owned()));
+        assert!(
+            pending.to_string().contains("does not bind it yet"),
+            "{pending:?} must say the gap is sprag's, not the user's",
+        );
+
+        // THE CONTROL: the three sentences differ. A refactor that funnelled them back into one
+        // message would satisfy every `contains` above if they all said the same thing.
+        let sentences = [typo.to_string(), said, pending.to_string()];
+        for (first, second) in [(0, 1), (0, 2), (1, 2)] {
+            assert_ne!(
+                sentences[first], sentences[second],
+                "three kinds of word must not read alike",
             );
         }
     }
@@ -3063,6 +3330,9 @@ mod tests {
                 // there was no prompt surface to guard it with; there is one now, and the bare verb
                 // stays bindable for anyone who wants no question.
                 "& confirm-before kill-window",
+                // tmux's own `prefix !`, and R323's answer to the largest gap R322 measured: the verb
+                // was dispatched by the CLI and refused by the keyboard.
+                "! break-pane",
                 // THE THREE RENAMES (R306) — the first rows here whose verb cannot be carried out
                 // by the keystroke alone, because a name is a string a key does not carry. `,` and
                 // `$` are tmux's own keys; `P` is herdr's, taken because tmux has no pane-rename

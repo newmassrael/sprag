@@ -12,7 +12,7 @@
 //!
 //! Every row here comes out of a keymap in force, through the two authorities that already exist:
 //! [`BoundAction`]'s [`Display`](std::fmt::Display) impl — the canonical spelling `list-keys` prints
-//! and [`BoundAction::parse`] reads back — and [`BoundAction::VOCABULARY`], *"the ONE enumeration"*
+//! and [`BoundAction::parse`] reads back — and [`BoundAction::vocabulary`], *"the ONE enumeration"*
 //! of what a binding may name. Nothing in this module writes down the name of an action, a flag or
 //! a key. **A binding added to the vocabulary appears here the day it exists, and one that is
 //! renamed is renamed here, because there is no second copy to update.**
@@ -30,7 +30,7 @@
 //!
 //! 1. **What do my keys do?** Every binding in force, grouped by [`ActionSubject`] and rendered as
 //!    the chord a user actually presses ([`Keymap::chord`]).
-//! 2. **What else could I bind?** The whole of [`BoundAction::VOCABULARY`], each form marked when
+//! 2. **What else could I bind?** The whole of [`BoundAction::vocabulary`], each form marked when
 //!    no key reaches its verb. herdr can answer the first for the actions somebody remembered to
 //!    list, and cannot answer the second at all — their vocabulary is a struct, so "everything you
 //!    could bind" exists only as fields nobody enumerates.
@@ -88,7 +88,7 @@ pub enum Row {
     },
     /// One form a binding may name, and whether any key reaches its verb.
     Vocabulary {
-        /// The form as [`BoundAction::VOCABULARY`] spells it, flag grammar and all.
+        /// The form as [`BoundAction::vocabulary`] spells it, flag grammar and all.
         form: String,
         /// Whether some binding in force names this verb.
         bound: bool,
@@ -176,7 +176,7 @@ impl KeyHelp {
             .binds()
             .flat_map(|bind| bind.action().reaches())
             .collect();
-        for form in BoundAction::VOCABULARY {
+        for form in BoundAction::vocabulary() {
             rows.push(Row::Vocabulary {
                 form: form.to_owned(),
                 bound: bound.iter().any(|verb| verb == verb_of(form)),
@@ -391,7 +391,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(offered, BoundAction::VOCABULARY.to_vec());
+        assert_eq!(offered, BoundAction::vocabulary());
     }
 
     /// Every binding in force reaches the view — none is filtered out by the grouping.
@@ -414,12 +414,18 @@ mod tests {
         );
     }
 
-    /// The default table reaches every verb the vocabulary has — and the mark MOVES when one stops
-    /// being bound.
+    /// The default table reaches every verb the vocabulary has EXCEPT the two that ship unbound —
+    /// and the mark MOVES when one stops being bound.
     ///
     /// Two assertions in one test on purpose. The first is the claim (sprag ships a complete
     /// vocabulary); the second is its CONTROL, because a `bound` flag that was hardwired to `true`
     /// would satisfy the first and say nothing. Unbinding `?` is what tells them apart.
+    ///
+    /// ⚠ **The first assertion stopped being `[]` at R323 and that is the product decision, stated
+    /// here so it cannot be "fixed" back**: `new` and `kill-session` became bindable and ship on no
+    /// key. tmux binds neither, and `kill-session` is the largest blast radius in the vocabulary —
+    /// so a user's fingers are given nothing they did not ask for, and the two appear in this very
+    /// view, marked unbound, which is where a person goes to find out what they COULD bind.
     #[test]
     fn the_default_table_binds_every_verb_and_the_mark_moves_when_one_stops() {
         let unbound = |keymap: &Keymap| -> Vec<String> {
@@ -432,9 +438,15 @@ mod tests {
                 .collect()
         };
         let mut keymap = Keymap::default();
-        assert_eq!(unbound(&keymap), Vec::<String>::new());
+        // THE TWO THAT SHIP UNBOUND, in the vocabulary's own order. Named rather than counted, so
+        // binding one is a change here and a third joining them cannot slip past as a number.
+        let ships_unbound = vec!["new".to_owned(), "kill-session".to_owned()];
+        assert_eq!(unbound(&keymap), ships_unbound);
         keymap.unbind(KeyTable::Prefix, "?").expect("? is bound");
-        assert_eq!(unbound(&keymap), vec!["list-keys".to_owned()]);
+        // FIRST, not appended: the forms are listed by subject and the client's come first, which
+        // is the same order the binds above them are grouped in.
+        let with_help = [vec!["list-keys".to_owned()], ships_unbound.clone()].concat();
+        assert_eq!(unbound(&keymap), with_help);
         // The GUARD's own control, and the reason `BoundAction::reaches` exists. There are TWO
         // guarded keys now (`prefix &` is `confirm-before kill-window`, `prefix x` is
         // `confirm-before kill-pane`), and taking them one at a time is a sharper control than the
@@ -444,17 +456,25 @@ mod tests {
         keymap.unbind(KeyTable::Prefix, "&").expect("& is bound");
         assert_eq!(
             unbound(&keymap),
-            vec!["list-keys".to_owned(), "kill-window".to_owned()],
+            vec![
+                "list-keys".to_owned(),
+                "kill-window".to_owned(),
+                "new".to_owned(),
+                "kill-session".to_owned(),
+            ],
             "the inner verb goes; `confirm-before` stays reachable through `prefix x`"
         );
         keymap.unbind(KeyTable::Prefix, "x").expect("x is bound");
+        let _ = with_help;
         assert_eq!(
             unbound(&keymap),
             vec![
                 "list-keys".to_owned(),
+                "confirm-before <action>".to_owned(),
                 "kill-pane".to_owned(),
                 "kill-window".to_owned(),
-                "confirm-before <action>".to_owned(),
+                "new".to_owned(),
+                "kill-session".to_owned(),
             ],
             "and with the last guard gone the wrapper itself is out of reach"
         );

@@ -599,6 +599,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                         | BoundAction::MoveWindow { .. }
                         | BoundAction::KillPane
                         | BoundAction::KillWindow
+                        | BoundAction::BreakPane
+                        | BoundAction::KillSession
+                        | BoundAction::NewSession
                         | BoundAction::SwitchClient { .. }),
                     ) => {
                         // The GROUP'S OWN REPORT, computed before the repaint below rather than
@@ -710,7 +713,39 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 }
                                 Report::on_screen()
                             }
-                            _ => unreachable!("the match above admits only the six arms here"),
+                            // R323's THREE, and they belong in THIS group for the group's own
+                            // reason: each can change which window — or which SESSION — this
+                            // client projects, so the pane set is replaced wholesale and the
+                            // screen is cleared rather than differenced.
+                            //
+                            // The pane is the FOCUSED one, which is the only one a keystroke can
+                            // mean; `None` is a client with no pane focused, and the daemon is not
+                            // asked to break a pane nobody named.
+                            BoundAction::BreakPane => match focus.and_then(|pane| {
+                                host.break_pane(pane, None)
+                            }) {
+                                Some(_) => Report::on_screen(),
+                                None => Report::nowhere(&action),
+                            },
+                            // This client's OWN session. What becomes of the client afterwards is
+                            // the daemon's `detach-on-destroy` policy, applied by the wire client.
+                            BoundAction::KillSession => {
+                                host.kill_session(&host.current_session());
+                                Report::on_screen()
+                            }
+                            // CREATE AND FOLLOW — see the arm's own doc for why it is two acts.
+                            // The name read BEFORE is the only way to tell a birth from a refusal:
+                            // `new_session` answers the current session's name when the daemon
+                            // would not make one, which is R316's defect waiting to be rebuilt.
+                            BoundAction::NewSession => {
+                                let before = host.current_session();
+                                if host.new_session() == before {
+                                    Report::nowhere(&action)
+                                } else {
+                                    Report::on_screen()
+                                }
+                            }
+                            _ => unreachable!("the match above admits only the nine arms here"),
                         };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
                         mouse.follow(&host, &tiling);

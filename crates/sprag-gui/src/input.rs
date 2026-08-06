@@ -304,6 +304,11 @@ fn action_label(action: &BoundAction) -> &'static str {
         BoundAction::ResizePaneToward { .. } => "resize-pane",
         BoundAction::ZoomPane { .. } => "zoom-pane",
         BoundAction::KillPane => "kill-pane",
+        BoundAction::BreakPane => "break-pane",
+        BoundAction::KillSession => "kill-session",
+        // The CLI's word, not tmux's `new-session` — a trace line and the `bind-key` that caused it
+        // must read the same, and this shell's verb is `sprag new`.
+        BoundAction::NewSession => "new",
         BoundAction::NewWindow => "new-window",
         BoundAction::SelectWindow { .. } => "select-window",
         BoundAction::SwitchClient { .. } => "switch-client",
@@ -523,6 +528,43 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
                 },
                 // Unreachable: `Ask::of` consumes the asking form and opens a chooser with it.
                 SwitchClientAsk::Ask => Report::on_screen(),
+            }
+        }
+        // R323's THREE, brought over from the CLI. Each takes an argument in a shell that this
+        // client already knows — the focused pane, the attached session — which is the vocabulary's
+        // own rule (a keystroke acts where the user is) read as a reason to BIND rather than as a
+        // reason to refuse.
+        //
+        // The pane is the FOCUSED slot and the name is left off: the window is born with the
+        // daemon's own name, exactly as `new-window` births one. `None` is a hole or a daemon
+        // refusal, and nothing is drawn for it — the strip is what says so.
+        BoundAction::BreakPane => match use_terminal().slots.break_pane(active, None) {
+            Some(_) => Report::on_screen(),
+            None => Report::nowhere(&action),
+        },
+        // THIS CLIENT'S OWN SESSION, which is the only one a keystroke can mean. What happens to
+        // the client afterwards is the daemon's `detach-on-destroy` policy, applied by the wire
+        // client — switch to the neighbour, or detach — so there is nothing here to decide and
+        // nothing to draw over it.
+        BoundAction::KillSession => {
+            let slots = &use_terminal().slots;
+            slots.kill_session(&slots.current_session());
+            Report::on_screen()
+        }
+        // CREATE AND FOLLOW, which is two acts and is stated as a decision on the arm itself: a
+        // person who makes a session and stays where they were has pressed a key that appears to do
+        // nothing. The wire client performs the switch as part of the same call.
+        //
+        // The GUARD is R316's lesson applied by the arm that could most easily reproduce it:
+        // `new_session` answers the CURRENT session's name when the daemon refused, so the only
+        // way to tell a birth from a refusal is to have read the name first.
+        BoundAction::NewSession => {
+            let slots = &use_terminal().slots;
+            let before = slots.current_session();
+            if slots.new_session() == before {
+                Report::nowhere(&action)
+            } else {
+                Report::on_screen()
             }
         }
         // THE ACTIONS THAT ASK reach this function only through their own question being
@@ -1097,6 +1139,60 @@ mod tests {
                 bare, with_shift,
                 "a NAMED key's shift is a modifier a user really holds, and still tells two \
                  bindings apart",
+            );
+        });
+    }
+
+    /// **R323's VERBS AT THIS FRONT: `prefix !` breaks a pane out, and a host that CANNOT make a
+    /// session says so rather than looking dead.**
+    ///
+    /// Two halves, and the second is the one worth having. The in-process host renders the default
+    /// session and nothing else, so its `new_session` answers the name it is already on — a call
+    /// that succeeds and changes nothing, which is precisely the shape R316 measured as a key that
+    /// left a live client byte-for-byte unchanged. The arm reads the name BEFORE the call for
+    /// exactly this, and what the user gets is a sentence.
+    ///
+    /// REVERT-PROOF: drop the `before` read in the `NewSession` arm and the strip goes quiet while
+    /// nothing happens; take `break-pane` out of the default table and the first half stops moving
+    /// a window.
+    #[test]
+    fn the_break_key_makes_a_window_and_a_session_key_that_cannot_says_so() {
+        let (host, _pane0) = two_cats();
+        let owner = Owner::new();
+        owner.run(|| {
+            let (_config, _keys) = Config::seeded("[[bind]]\nkey = \"N\"\naction = \"new\"\n");
+            seed_terminal(host);
+            let slots = &use_terminal().slots;
+            let before = slots.windows().len();
+            assert_eq!(panes(), 2, "the fixture is two panes in one window");
+
+            // `prefix !` — tmux's own key, and a SHIFTED character, so it arrives with the modifier
+            // a keyboard really sends (the R306 rule this front already states beside `%`).
+            let shifted = Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            };
+            assert!(press(0, "b", ctrl()));
+            assert!(press(0, "!", shifted));
+            assert_eq!(
+                slots.windows().len(),
+                before + 1,
+                "the focused pane left its window and made one of its own",
+            );
+            assert_eq!(
+                crate::message::showing(),
+                None,
+                "a break that worked has nothing to say — the new window is the answer",
+            );
+
+            // `prefix N` — a session verb against a host that renders ONE session. Nothing is
+            // created, and the key must not be indistinguishable from an unbound one.
+            assert!(press(0, "b", ctrl()));
+            assert!(press(0, "N", shifted));
+            assert_eq!(
+                crate::message::showing().as_deref(),
+                Some("new: nowhere to go"),
+                "a key that could not do its verb says so, in the verb's own spelling",
             );
         });
     }

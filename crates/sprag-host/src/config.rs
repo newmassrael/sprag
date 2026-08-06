@@ -2412,7 +2412,7 @@ mod tests {
                     .expect_err("refused")
                     .to_string();
                 assert!(message.contains(CONFIG_FILE), "{message:?}");
-                assert!(message.contains("is not an action"), "{message:?}");
+                assert!(message.contains("not a binding"), "{message:?}");
                 assert_eq!(written(), text, "the file is untouched");
             });
         }
@@ -2567,8 +2567,15 @@ mod tests {
                 "[[bind]]\nkey = \"Up\"\naction = \"detach-client\"\n",
                 "is not a key",
             ),
+            // A REAL VERB a keystroke cannot mean, and a word that is no verb at all — two
+            // fixtures since R323, because the reader now tells them apart and a config file is
+            // where a user meets both (one pasted out of a shell, one mistyped).
             (
                 "[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n",
+                "is a command, not a binding",
+            ),
+            (
+                "[[bind]]\nkey = \"x\"\naction = \"kill-serverr\"\n",
                 "is not an action",
             ),
             (
