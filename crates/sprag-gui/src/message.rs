@@ -177,6 +177,49 @@ mod tests {
         });
     }
 
+    /// **`display-time` reaches THIS front**, which is the only thing that drives the option's
+    /// windowed consumer end to end.
+    ///
+    /// Two readings that must DISAGREE on one fixture: `0` is a message that has already expired —
+    /// the option's own documented decision, and the one value that puts back the silence this
+    /// surface exists to remove — and a real duration raises the strip. Without the pair, a client
+    /// that ignored the user's table entirely would pass the second half alone.
+    #[test]
+    fn display_time_reaches_this_front_and_zero_puts_the_silence_back() {
+        let owner = Owner::new();
+        owner.run(|| {
+            let action = BoundAction::SwitchClient {
+                ask: SwitchClientAsk::Named("ghost".into()),
+            };
+            let (_config, _keys) =
+                crate::keys::test_support::Config::seeded("[options]\ndisplay-time = 0\n");
+            show(&Report::no_such(&action));
+            assert_eq!(
+                showing(),
+                None,
+                "`display-time 0` is a message that has already expired",
+            );
+            assert!(view_message(&Theme::default(), (960, 600)).is_none());
+        });
+
+        // A SECOND owner, because the keymap slot is resolved once per scope and this is the other
+        // reading of the same option rather than a re-read of the first.
+        let owner = Owner::new();
+        owner.run(|| {
+            let action = BoundAction::SwitchClient {
+                ask: SwitchClientAsk::Named("ghost".into()),
+            };
+            let (_config, _keys) =
+                crate::keys::test_support::Config::seeded("[options]\ndisplay-time = 60000\n");
+            show(&Report::no_such(&action));
+            assert_eq!(
+                showing().as_deref(),
+                Some("no session called \"ghost\""),
+                "a real duration raises the strip on the same report",
+            );
+        });
+    }
+
     /// The measured defect's sentence reaches this front's surface, in the SAME words the terminal
     /// front paints — both read [`Report::says`], and neither writes one.
     #[test]

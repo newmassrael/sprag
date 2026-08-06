@@ -601,6 +601,7 @@ pub trait HostClient {
     /// property of the daemon's swap rather than something a client arranges.
     ///
     /// Defaulted to `false`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    #[must_use = "`false` is the EDGE, which no repaint can show because nothing moved"]
     fn swap_toward(&self, dir: PaneDir) -> bool {
         let _ = dir;
         false
@@ -624,6 +625,7 @@ pub trait HostClient {
     /// where the fact stops.
     ///
     /// Defaulted to `false`, like [`new_pane`](Self::new_pane) — the wire client overrides it.
+    #[must_use = "`false` is a boundary that had nowhere to go, which no repaint can show"]
     fn resize_toward(&self, dir: PaneDir, cells: u16) -> bool {
         let _ = (dir, cells);
         false
@@ -1125,6 +1127,8 @@ pub trait HostClient {
     /// answer to `select-window` this project removes wherever it appears.
     ///
     /// Defaulted to [`None`] for the in-process arm, which has no chooser to answer.
+    #[must_use = "[`None`] means THAT ROW IS GONE — the one answer a name cannot give, and the \
+                  refusal the chooser paints in place"]
     fn goto(&self, target: crate::chooser::Target) -> Option<String> {
         let _ = target;
         None

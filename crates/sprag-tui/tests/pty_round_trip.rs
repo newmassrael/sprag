@@ -4688,3 +4688,45 @@ fn display_time_zero_reports_nothing_at_all() {
         "the client is still on the session it started from",
     );
 }
+
+/// **The other three "nowhere to go" arms are driven here** — the swap's edge, the resize's
+/// boundary, and a window already at the end of its session's order.
+///
+/// `select-pane -L`'s edge has its own fixture (the arrow walk), and these three had NONE: they are
+/// the "a branch reachable only from a state no test builds" shape, found by the round's own audit
+/// asking which reports had a driver. One fixture reaches all three because a session with ONE
+/// window holding ONE pane is exactly the state each of them refuses in.
+///
+/// The CONTROL is the boot row itself: every press is checked against the row it must NOT leave
+/// alone, and the row returns to naming the session between them.
+#[test]
+fn the_swap_the_resize_and_the_move_all_say_when_they_go_nowhere() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+    let _ = &mut conn;
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    // Each press is separated by a wait for the row to come BACK, so a sentence left over from the
+    // press before cannot be read as this one's — the vacuous shape this file has been caught by.
+    for (keys, want) in [
+        (&b"\x1b[1;2A"[..], "swap-pane -U: nowhere to go"),
+        (&b"\x1b[1;5A"[..], "resize-pane -U 1: nowhere to go"),
+        (&b"<"[..], "move-window -p: nowhere to go"),
+    ] {
+        // PAST THE REPEAT WINDOW: the arrows are `-r`, so inside it the prefix table is still live
+        // and the next chord's first character would be a self-send (R308's hazard, R315's bite).
+        std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+        tui.type_bytes(PREFIX);
+        tui.type_bytes(keys);
+        wait_for(&format!("{want:?} to be painted"), || {
+            settled(tui.row(STATUS_ROW).contains(want), &true)
+                .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        });
+        wait_for("the row to come back before the next press", || {
+            settled(tui.row(STATUS_ROW), &where_it_is)
+        });
+    }
+}
