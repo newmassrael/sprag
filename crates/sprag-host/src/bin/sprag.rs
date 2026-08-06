@@ -184,17 +184,17 @@ use sprag_host::pane_address::{
 };
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, ENDED_KEY, FULL_TEXT_SLOT,
-    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION,
-    PATTERN_PARAM, PaneProcessesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
-    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
-    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
-    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk,
-    ZOOM_PANE_ACTION, events_slot_since, find_slot_for, pane_processes_at, project_slot_for,
-    regex_slot_for, session_activity_at,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
+    ENDED_KEY, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk,
+    NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
+    PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, RELEASE_AGENT_ACTION,
+    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
+    SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
+    WINDOWS_SLOT, WindowBirthAsk, ZOOM_PANE_ACTION, events_slot_since, find_slot_for,
+    pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -248,6 +248,7 @@ fn run() -> io::Result<()> {
         Some("layout") => layout(args.collect()),
         Some("processes") => processes(args.collect()),
         Some("agent") => agent(args.collect()),
+        Some("display-message") => display_message(args.collect()),
         Some("report-agent") => report_agent(args.collect()),
         Some("release-agent") => release_agent(args.collect()),
         Some("install-hooks") => install_hooks(args.collect()),
@@ -870,6 +871,8 @@ const USAGE: &str = "usage: sprag <ls | list-clients [-t SESSION] | new [name]\n
          \x20      sprag report-agent <working|blocked|idle> [-t SESSION] [--pane PANE]\n\
          \x20             [--source S] [--name AGENT] [--seq N]\n\
          \x20      sprag release-agent [-t SESSION] [--pane PANE]\n\
+         \x20      sprag display-message [-t SESSION] [-c CLIENT] [-s note|warn|alert]\n\
+         \x20             MESSAGE\n\
          \x20      sprag <install-hooks | uninstall-hooks> [AGENT…] [--yes] [--dry-run]\n\
          \x20      sprag list-hooks\n\
          \x20      sprag events [-t SESSION] [--since N] [-f [--pane PANE] [--kind KIND]…]\n\
@@ -2398,6 +2401,136 @@ fn agent_refusal(command: &str, pane: u64, fault: &RpcFault) -> io::Error {
 /// Prints what the daemon did with it — `accepted`/`refused`, whether the published verdict `changed`,
 /// and the published `seq` — because a report that arrived out of order is refused silently otherwise,
 /// which is exactly the case a reporter needs to see.
+/// `display-message [-t SESSION] [-c CLIENT] [-s note|warn|alert] MESSAGE` — put a sentence in
+/// front of the people looking at this daemon (tmux `display-message`).
+///
+/// # What it is FOR, measured rather than assumed
+///
+/// Measured at `5acde43`: nothing in this product could put a word on a person's screen from outside
+/// the client they were typing into. `report-agent` moves the terminal's window TITLE and carries a
+/// three-word state; `send-keys` types the words INTO the person's program, which is a corruption of
+/// their command line rather than a message; a pane child's OSC 9 reached the terminal front nowhere
+/// at all. So an agent that finished a build in one pane had no way to say so to the person in
+/// another.
+///
+/// # The two flags, and why they are `-t` and `-c` rather than one target
+///
+/// `-t` is this CLI's SESSION scope everywhere else, and it stays that here: it selects the default
+/// audience — everyone attached to that session. `-c` names ONE client, wherever it is attached,
+/// which is exactly tmux's split of the same two words. A `-c` naming a client that is not attached
+/// is an ERROR rather than an empty delivery: a caller that named a target got the name wrong, which
+/// is a different fact from *nobody is watching*, and answering them alike would send somebody
+/// looking for a person who is right there.
+///
+/// # The answer
+///
+/// WHO it reached, in [`sprag_host::Delivery`]'s own words, and it EXITS 0 either way — including
+/// when it reached nobody. That is a deliberate line: the request was well-formed and the daemon
+/// carried it out; *nobody is attached* is an ANSWER, and printing it as one keeps the exit code
+/// meaning what it means for every other verb here. A caller that must branch on it reads the
+/// sentence, or uses the MCP tool, which answers the list as data.
+fn display_message(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "display-message")?;
+    let mut client: Option<String> = None;
+    let mut severity: Option<String> = None;
+    let mut text: Option<String> = None;
+    let mut it = rest.into_iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-c" => {
+                client = Some(
+                    it.next()
+                        .ok_or_else(|| bad_input("display-message: -c needs a client id"))?,
+                );
+            }
+            "-s" => {
+                let word = it
+                    .next()
+                    .ok_or_else(|| bad_input("display-message: -s needs a severity"))?;
+                // Checked HERE and not left to the daemon's refusal, for `report-agent`'s reason one
+                // verb over: a closed vocabulary is a thing a person mistypes, and `-s error` must
+                // say what the words are rather than come back as a bare "invalid params".
+                if sprag_host::report::Severity::parse(&word).is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "display-message: {word:?} is not a severity (it is one of {})",
+                            sprag_host::report::Severity::words(),
+                        ),
+                    ));
+                }
+                severity = Some(word);
+            }
+            other if text.is_none() && !other.starts_with('-') => text = Some(other.to_owned()),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "display-message: unexpected argument {other:?} (display-message \
+                         [-t SESSION] [-c CLIENT] [-s note|warn|alert] MESSAGE)"
+                    ),
+                ));
+            }
+        }
+    }
+    let text = text.ok_or_else(|| bad_input("display-message: needs a message to show"))?;
+    // The same rules the daemon enforces, applied here so the caller is told WHICH one they broke.
+    // The daemon still checks — this is a second reader of one grammar, never a second grammar — but
+    // a wire refusal cannot carry a payload (PINION-PR82), so without this a newline in a message
+    // comes back as an undifferentiated "invalid params".
+    let text = sprag_host::report::MessageText::parse(&text).map_err(|why| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("display-message: {why}"),
+        )
+    })?;
+    let mut conn = connect(None)?;
+    let mut params = serde_json::json!({ "text": text.as_str() });
+    if let Some(severity) = severity {
+        params["severity"] = Value::String(severity);
+    }
+    if let Some(client) = &client {
+        params["client"] = Value::String(client.clone());
+    }
+    let answer: Value = conn
+        .try_call(
+            "scene/invoke",
+            scoped_invoke(
+                session.as_deref(),
+                mux_action_path(DISPLAY_MESSAGE_ACTION),
+                params,
+            ),
+        )
+        .map_err(|error| match error {
+            CallError::Fault(_) => match &client {
+                Some(client) => io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "display-message refused: no client called {client:?} is attached \
+                         (see `sprag list-clients`)"
+                    ),
+                ),
+                None => bad_input(
+                    "display-message refused: this daemon cannot show messages, or the message \
+                     was not acceptable",
+                ),
+            },
+            CallError::Transport(error) => error,
+        })?;
+    let reached: Vec<&str> = answer["clients"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    match reached.as_slice() {
+        [] => println!("shown to nobody: no client is attached"),
+        [one] => println!("shown to {one}"),
+        many => println!("shown to {} clients: {}", many.len(), many.join(", ")),
+    }
+    Ok(())
+}
+
 fn report_agent(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = scope_and_rest(args, "report-agent")?;
     let mut state: Option<String> = None;
