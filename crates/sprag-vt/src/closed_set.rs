@@ -35,7 +35,7 @@
 /// Declare an enum together with `ALL`, the array of every one of its variants.
 ///
 /// ```
-/// sprag_terminal::closed_set! {
+/// sprag_vt::closed_set! {
 ///     /// A door.
 ///     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 ///     pub enum Door {
@@ -72,7 +72,7 @@ macro_rules! closed_set {
         impl $name {
             /// Every variant, in declaration order.
             ///
-            /// Generated with the enum from ONE variant list (`sprag_terminal::closed_set!`), so it
+            /// Generated with the enum from ONE variant list (`sprag_vt::closed_set!`), so it
             /// cannot be missing a variant and its length cannot disagree with its contents. A caller
             /// that iterates this is iterating the whole type, and a ratchet built on it stays honest
             /// when a variant is added.

@@ -861,6 +861,63 @@ pub struct Notification {
     pub title: Option<String>,
     /// The notification's message text. May be empty (a kitty title-only chunk).
     pub body: String,
+    /// How much the CHILD said this matters — [`Urgency::Normal`] when it could not say.
+    pub urgency: Urgency,
+}
+
+crate::closed_set! {
+    /// How much a child says its own [`Notification`] matters — the `u=` key of kitty's
+    /// `OSC 99` desktop-notification protocol, in its own order.
+    ///
+    /// # Why the emulator models this at all
+    ///
+    /// Because it is the ONE thing in the whole notification path that the child can say and no
+    /// other layer can guess. A multiplexer reading `build finished` off `OSC 9` has no way to know
+    /// whether that sentence may scroll past unread; a child raising `u=2` has said it may not.
+    /// Everything downstream — how long a surface holds the words, whether it waits for a person —
+    /// is a projection of this fact, and a projection cannot recover information the capture threw
+    /// away.
+    ///
+    /// # The default is NORMAL, and it is the protocol's, not a guess
+    ///
+    /// kitty specifies `u=1` (normal) for a notification that omits the key, so a chunk with no `u`
+    /// has said *normal* rather than said nothing. The other two OSC forms are different:
+    /// `OSC 9` and `OSC 777;notify` have no urgency in their grammar at all, so a child using them
+    /// has made no claim, and this type's [`Default`] is what they get — which is the same value,
+    /// arrived at for a different and stated reason.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+    pub enum Urgency {
+        /// `u=0` — background information; miss it and nothing is lost.
+        Low,
+        /// `u=1`, and what a child that did not say gets.
+        #[default]
+        Normal,
+        /// `u=2` — the child says a person is needed.
+        Critical,
+    }
+}
+
+impl Urgency {
+    /// The urgency kitty's `u=<digit>` names, or [`None`] for a digit this protocol does not
+    /// define.
+    ///
+    /// DERIVED by walking [`ALL`](Self::ALL) against [`digit`](Self::digit) rather than by a second
+    /// `match`, so the two directions cannot come to disagree — [`crate::port::MouseEncoding`]'s
+    /// discipline, and the reason the closed set is declared with the enum.
+    #[must_use]
+    pub fn parse(digit: &[u8]) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.digit() == digit)
+    }
+
+    /// The `u=` digit this urgency is spelled with, as the bytes an OSC carries.
+    #[must_use]
+    pub const fn digit(self) -> &'static [u8] {
+        match self {
+            Self::Low => b"0",
+            Self::Normal => b"1",
+            Self::Critical => b"2",
+        }
+    }
 }
 
 /// Which system selection an OSC 52 clipboard operation addresses. A windowing system

@@ -42,8 +42,8 @@ use crate::history::HistoryLimits;
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
     CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, MouseEncoding, MouseProtocol,
-    Notification, Palette, PromptMark, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle, VtPort,
-    Width, char_columns,
+    Notification, Palette, PromptMark, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle,
+    Urgency, VtPort, Width, char_columns,
 };
 
 /// Build a single-char cluster with no heap allocation.
@@ -1046,8 +1046,11 @@ impl Emulator {
             // OSC 9 — the iTerm2/xterm growl notification: a single message, no title.
             // (termwiz routes `OSC 9;4;…` ConEmu progress to its own variant, so a
             // `SystemNotification` reaching here is always a genuine notification.)
+            // `Urgency::default()` and NOT a claim read off the message: this OSC has no urgency in
+            // its grammar, so the child has said nothing about how much it matters and the default
+            // is what "did not say" means.
             OperatingSystemCommand::SystemNotification(message) => {
-                self.raise_notification(None, message);
+                self.raise_notification(None, message, Urgency::default());
             }
             // OSC 777 — urxvt's extension family; `notify` is its desktop notification,
             // `OSC 777 ; notify ; <title> ; <body>` (body optional). Any other urxvt
@@ -1058,7 +1061,8 @@ impl Emulator {
                 {
                     let title = params.get(1).map(String::as_str);
                     let body = params.get(2).map(String::as_str).unwrap_or("");
-                    self.raise_notification(title, body);
+                    // Same as `OSC 9`: urxvt's `notify` grammar carries no urgency either.
+                    self.raise_notification(title, body, Urgency::default());
                 }
             }
             // OSC 99 — kitty's desktop-notification protocol. termwiz does not model it,
@@ -1066,8 +1070,8 @@ impl Emulator {
             // handles the common single-chunk, unencoded case (see its doc for the
             // bounds); a multi-chunk or base64 payload is left uncaptured, not misparsed.
             OperatingSystemCommand::Unspecified(params) => {
-                if let Some((title, body)) = parse_kitty_notification(params) {
-                    self.raise_notification(title.as_deref(), &body);
+                if let Some((title, body, urgency)) = parse_kitty_notification(params) {
+                    self.raise_notification(title.as_deref(), &body, urgency);
                 }
             }
             // OSC 133 (FinalTerm) shell-integration boundary marks — prompt / output / command
@@ -1382,10 +1386,11 @@ impl Emulator {
     /// Latch a captured attention notification (clamping both child-controlled fields)
     /// and bump the monotonic sequence so a consumer can tell it is new. Shared by every
     /// notification OSC so the clamp + counter live in ONE place.
-    fn raise_notification(&mut self, title: Option<&str>, body: &str) {
+    fn raise_notification(&mut self, title: Option<&str>, body: &str, urgency: Urgency) {
         self.notification = Some(Notification {
             title: title.map(|t| clamp_bytes(t, MAX_NOTIFICATION_BYTES)),
             body: clamp_bytes(body, MAX_NOTIFICATION_BYTES),
+            urgency,
         });
         self.notification_seq += 1;
     }
@@ -2994,12 +2999,17 @@ pub fn osc52_reply(target: ClipboardTarget, text: &str) -> Vec<u8> {
 ///   `buttons`, …) are not text to show, so they are dropped.
 /// * `e` — encoding: `1` means the payload is base64. sprag has no base64 decoder in this
 ///   layer, so an encoded payload is dropped rather than shown as gibberish.
+/// * `u` — urgency ([`Urgency`]), the one key whose answer no later layer can reconstruct: it is
+///   the child's own claim about whether its words may go unread. An absent `u` is kitty's
+///   `Urgency::Normal`, and a `u` this protocol does not define (`u=7`) is read as absent rather
+///   than dropping the notification — a bad urgency is no reason to swallow the words, which is
+///   the opposite trade from `p` (a payload type sprag cannot show is not text at all).
 ///
 /// BOUNDS (honestly limited, not misrepresented): a MULTI-CHUNK notification (`d=0`, streamed
 /// across several `OSC 99`s) is NOT reassembled — each chunk is read independently, so a body
 /// split across chunks yields only its first piece; `i`/`d`/actions are ignored. These are the
 /// advanced-protocol tail; the single unencoded chunk is what shells and CLIs emit in practice.
-fn parse_kitty_notification(params: &[Vec<u8>]) -> Option<(Option<String>, String)> {
+fn parse_kitty_notification(params: &[Vec<u8>]) -> Option<(Option<String>, String, Urgency)> {
     // Only OSC 99; anything else in `Unspecified` is some other unhandled OSC.
     if params.first().map(Vec::as_slice) != Some(b"99".as_slice()) {
         return None;
@@ -3015,6 +3025,7 @@ fn parse_kitty_notification(params: &[Vec<u8>]) -> Option<(Option<String>, Strin
 
     let mut payload_type = "title"; // kitty's default when `p` is absent.
     let mut base64 = false;
+    let mut urgency = Urgency::default(); // kitty's own default for an absent `u`.
     for pair in metadata.split(|&b| b == b':') {
         let mut kv = pair.splitn(2, |&b| b == b'=');
         let key = kv.next().unwrap_or(b"");
@@ -3028,6 +3039,9 @@ fn parse_kitty_notification(params: &[Vec<u8>]) -> Option<(Option<String>, Strin
                 };
             }
             b"e" if value == b"1" => base64 = true,
+            // An unknown digit leaves the DEFAULT standing rather than refusing the chunk: see the
+            // doc above for why this key's failure mode differs from `p`'s.
+            b"u" => urgency = Urgency::parse(value).unwrap_or_default(),
             _ => {}
         }
     }
@@ -3035,9 +3049,9 @@ fn parse_kitty_notification(params: &[Vec<u8>]) -> Option<(Option<String>, Strin
         return None; // encoded payload: not decoded in this layer (see the doc bound).
     }
     match payload_type {
-        "body" => Some((None, payload.into_owned())),
+        "body" => Some((None, payload.into_owned(), urgency)),
         // Default / explicit title: the heading, with no separate body in this chunk.
-        _ => Some((Some(payload.into_owned()), String::new())),
+        _ => Some((Some(payload.into_owned()), String::new(), urgency)),
     }
 }
 
@@ -3742,6 +3756,70 @@ mod tests {
         // A non-text payload type (e.g. an icon) captures nothing either.
         em.advance(b"\x1b]99;p=icon;whatever\x07");
         assert_eq!(em.notification_seq(), 2, "a non-text p= is ignored");
+    }
+
+    /// **The one fact in a notification that no later layer can reconstruct**: how much the CHILD
+    /// says it matters. Every urgency kitty defines is read off `u=`, over the whole closed set
+    /// rather than over the two arms that happened to be written down.
+    ///
+    /// The CONTROL is the first assertion: a chunk with no `u` is `Normal`, so a build that ignored
+    /// the key entirely would fail the other two rather than passing them all.
+    #[test]
+    fn a_kitty_notification_carries_the_urgency_its_child_claimed() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]99;;no claim\x07");
+        assert_eq!(
+            em.notification().expect("a notification").urgency,
+            Urgency::Normal,
+            "kitty's own default for an absent u=, and NOT a value this emulator invented",
+        );
+
+        for urgency in Urgency::ALL {
+            let mut osc = b"\x1b]99;u=".to_vec();
+            osc.extend_from_slice(urgency.digit());
+            osc.extend_from_slice(b";claimed\x07");
+            em.advance(&osc);
+            assert_eq!(
+                em.notification().expect("a notification").urgency,
+                urgency,
+                "u={} is {urgency:?}",
+                String::from_utf8_lossy(urgency.digit()),
+            );
+        }
+
+        // A digit this protocol does not define leaves the DEFAULT standing and the WORDS intact —
+        // the opposite trade from `p`, where a payload sprag cannot show is dropped. A child that
+        // mis-spells its urgency has still said something, and swallowing the sentence over it
+        // would be the silent drop this path exists to remove.
+        let before = em.notification_seq();
+        em.advance(b"\x1b]99;u=7;still worth showing\x07");
+        let n = em.notification().expect("a notification");
+        assert_eq!(em.notification_seq(), before + 1, "the words were captured");
+        assert_eq!(n.title.as_deref(), Some("still worth showing"));
+        assert_eq!(n.urgency, Urgency::Normal);
+    }
+
+    /// The two OSCs whose grammar has NO urgency say so by taking the default — a distinction the
+    /// [`Urgency`] doc makes and nothing else in the code would.
+    #[test]
+    fn the_urgency_free_notification_oscs_claim_nothing() {
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b]9;build finished\x07");
+        assert_eq!(em.notification().unwrap().urgency, Urgency::default());
+        em.advance(b"\x1b]777;notify;Build;done\x07");
+        assert_eq!(em.notification().unwrap().urgency, Urgency::default());
+    }
+
+    /// The digit and the urgency are ONE table read in both directions, checked over the whole
+    /// closed set — so a fourth urgency cannot be added with a parse that does not know it.
+    #[test]
+    fn every_urgency_round_trips_through_its_own_digit() {
+        for urgency in Urgency::ALL {
+            assert_eq!(Urgency::parse(urgency.digit()), Some(urgency));
+        }
+        assert_eq!(Urgency::parse(b"7"), None);
+        assert_eq!(Urgency::parse(b""), None);
+        assert!(Urgency::Low < Urgency::Normal && Urgency::Normal < Urgency::Critical);
     }
 
     /// A notification carries NO cells, so — like the title — it must not stamp ROW DAMAGE.

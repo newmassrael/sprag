@@ -15,9 +15,6 @@
 
 pub mod activity;
 pub mod arrangement;
-/// Declaring an enum together with the array of every one of its variants, so the two cannot drift.
-/// A plain `//` on the module below: an outer doc on a `mod` merges with the module's own `//!`.
-pub mod closed_set;
 pub mod command;
 /// Deriving a directory's current git branch — a session-sidebar display fact (crate-internal).
 mod git;
@@ -68,6 +65,14 @@ pub use snapshot::{
     SNAPSHOT_VERSION, SessionSnapshot, Snapshot, SnapshotError, WindowSnapshot, pane_histories,
     snapshot,
 };
+/// Declaring an enum together with the array of every one of its variants, so the two cannot drift.
+///
+/// It LIVES in [`sprag_vt`] — the workspace's bottom crate, which every other sprag crate depends
+/// on — because the emulator declares closed sets too ([`sprag_vt::port::Urgency`]) and a
+/// vocabulary primitive one crate cannot reach is a primitive that gets hand-rolled there instead:
+/// exactly the drifting `ALL` array this macro exists to remove. Re-exported here so the twenty-odd
+/// `sprag_terminal::closed_set!` call sites above this crate keep one spelling.
+pub use sprag_vt::closed_set;
 pub use tiling::{Divider, PaneRect, Projection, Rect, Tiling, fit_window, tile, with_ratio};
 pub use window_name::{WindowName, WindowNameError};
 pub use workspace::{

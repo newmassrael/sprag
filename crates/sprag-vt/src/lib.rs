@@ -5,6 +5,9 @@
 //! is sprag-owned. [`port`] is the library-agnostic seam; [`emulator`]
 //! is the termwiz adapter that fills a [`port::Screen`].
 
+/// Declaring an enum together with the array of every one of its variants, so the two cannot drift.
+/// A plain `//` on the module below: an outer doc on a `mod` merges with the module's own `//!`.
+pub mod closed_set;
 pub mod emulator;
 pub mod history;
 pub mod port;
