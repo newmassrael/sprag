@@ -11713,6 +11713,60 @@
         "STILL OPEN: the status row is NOT optional (no tmux `status off`) and that is a decision — an option that turns off the only surface a refusal can reach would put the silence back; the GUI's strip is not clickable and has no OS-native notification path; a message is CLIENT-LOCAL, so `sprag display-message -t <client>` does not exist and the daemon has no way to speak to a person; and `Report` has no severity, so a refusal and a note are painted the same."
       ]
     },
+    "R317": {
+      "decision_summary": "A message is ADDRESSED, and its delivery is ANSWERED: nothing outside a client could put a sentence in front of the person typing into it, so the daemon routes one to a named client or a session's viewers, holds one per client resolved by a severity ORDER, and answers WHO saw it.",
+      "changes_bullets": [
+        "`Severity` is an ORDER (Note<Warn<Alert) with one `outranks` shared by the client's row and the daemon's slot, so a lower severity can never take the row from a live higher one and no call site can forget.",
+        "An `Alert` carries NO deadline and is cleared by a keystroke: a timer is a bet the person is looking, and the case where missing a message is the failure is the case where they are not. `display-time` stays one number, and 0 still silences every severity.",
+        "`MessageText` is validated at the door (non-blank, 200 bytes, no control characters) and REFUSED with the rule named rather than truncated, because the bytes are written into somebody's terminal.",
+        "`AttachmentRegistry` holds ONE message per client, resolved by the row's own rule, dying with the client; `Delivery` is `#[must_use]` and LISTS who was reached.",
+        "`display_message` (an addressed action) and `client/messages` (a COLLECT resolved from the connection) take `WIRE_PROTOCOL` 14 to 15; `sprag display-message [-t SESSION] [-c CLIENT] [-s note|warn|alert]` and an MCP tool whose answer says NOBODY SAW IT reach it.",
+        "A routed message becomes a `Report`, the same type a keystroke produces, so neither frontend has a second path by which a message reaches its surface."
+      ],
+      "verification_bullets": [
+        "Measured FIRST by running the shipped binaries at 5acde43: with a live sprag-tui on a real pty, `report-agent blocked` from another process left the screen BYTE-FOR-BYTE UNCHANGED (it moves only the window title, carrying a three-word state), `send-keys` put the words INSIDE the person's program, and a child's OSC 9 in an unfocused pane reached the terminal front nowhere at all; the control that CAN move the row is that client's own key.",
+        "Suite exit 0 / 46 targets / 2216 tests (baseline 2185); clippy 0 with no new suppression; doc gate exit 0; pixel smoke 227/0 run TWICE on the final committed tree (baseline 217), eleven new checks driving a routed message and an alert through the shipped GUI binary.",
+        "Protocol skew measured BOTH directions with a control: a new client is refused at client/hello by a protocol-14 daemon, and a raw probe on that same connection shows why the number is what does it (the handshake at 14 succeeds and client/messages then answers -32601, on a path a display client takes every wake); the old CLI against the new daemon is refused by number while the new one delivers.",
+        "12 revert-proofs came back RED and a harmless-edit control stayed GREEN."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "A REVERT-PROOF DRIVER THAT RESTORED WITH `git checkout` DESTROYED FIVE FILES OF THE ROUND'S UNCOMMITTED WORK; the rule is now to snapshot the bytes up front and verify the restore by digest.",
+        "A REVERT-PROOF CAME BACK GREEN THREE LEVELS DOWN AND EACH LEVEL WAS THE FIXTURE: a case the line only mattered in, then an unconsumed wake in flight from the fixture's own setup, and finally an honest \"not attributed\" written into the test — the wake that carries a cross-session message is still unexplained and the bump is kept without claiming it is the mechanism.",
+        "`Severity`'s hand-written `Deserialize` read `<&str>`, which passes `from_str` and FAILS `from_value` — the path the wire client takes — so the daemon reported delivering a message no client ever painted; both deserializers are pinned now.",
+        "The terminal front cleared an alert without repainting, on a comment claiming every path out of that arm paints anyway (false for a key bound to nothing, which is swallowed).",
+        "STILL OPEN: a pane's OSC 9 notification reaches sprag-tui nowhere at all and the GUI drops its words; no OS-native notification and no sound; no key reaches display-message; the delivery claims QUEUED, not READ."
+      ],
+      "publishable_decision_summary": "A message is ADDRESSED, and its delivery is ANSWERED: nothing outside a client could put a sentence in front of the person typing into it, so the daemon routes one to a named client or a session's viewers, holds one per client resolved by a severity ORDER, and answers WHO saw it.",
+      "publishable_changes_bullets": [
+        "`Severity` is an ORDER (Note<Warn<Alert) with one `outranks` shared by the client's row and the daemon's slot, so a lower severity can never take the row from a live higher one and no call site can forget.",
+        "An `Alert` carries NO deadline and is cleared by a keystroke: a timer is a bet the person is looking, and the case where missing a message is the failure is the case where they are not. `display-time` stays one number, and 0 still silences every severity.",
+        "`MessageText` is validated at the door (non-blank, 200 bytes, no control characters) and REFUSED with the rule named rather than truncated, because the bytes are written into somebody's terminal.",
+        "`AttachmentRegistry` holds ONE message per client, resolved by the row's own rule, dying with the client; `Delivery` is `#[must_use]` and LISTS who was reached.",
+        "`display_message` (an addressed action) and `client/messages` (a COLLECT resolved from the connection) take `WIRE_PROTOCOL` 14 to 15; `sprag display-message [-t SESSION] [-c CLIENT] [-s note|warn|alert]` and an MCP tool whose answer says NOBODY SAW IT reach it.",
+        "A routed message becomes a `Report`, the same type a keystroke produces, so neither frontend has a second path by which a message reaches its surface."
+      ],
+      "publishable_verification_bullets": [
+        "Measured FIRST by running the shipped binaries at 5acde43: with a live sprag-tui on a real pty, `report-agent blocked` from another process left the screen BYTE-FOR-BYTE UNCHANGED (it moves only the window title, carrying a three-word state), `send-keys` put the words INSIDE the person's program, and a child's OSC 9 in an unfocused pane reached the terminal front nowhere at all; the control that CAN move the row is that client's own key.",
+        "Suite exit 0 / 46 targets / 2216 tests (baseline 2185); clippy 0 with no new suppression; doc gate exit 0; pixel smoke 227/0 run TWICE on the final committed tree (baseline 217), eleven new checks driving a routed message and an alert through the shipped GUI binary.",
+        "Protocol skew measured BOTH directions with a control: a new client is refused at client/hello by a protocol-14 daemon, and a raw probe on that same connection shows why the number is what does it (the handshake at 14 succeeds and client/messages then answers -32601, on a path a display client takes every wake); the old CLI against the new daemon is refused by number while the new one delivers.",
+        "12 revert-proofs came back RED and a harmless-edit control stayed GREEN."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "A REVERT-PROOF DRIVER THAT RESTORED WITH `git checkout` DESTROYED FIVE FILES OF THE ROUND'S UNCOMMITTED WORK; the rule is now to snapshot the bytes up front and verify the restore by digest.",
+        "A REVERT-PROOF CAME BACK GREEN THREE LEVELS DOWN AND EACH LEVEL WAS THE FIXTURE: a case the line only mattered in, then an unconsumed wake in flight from the fixture's own setup, and finally an honest \"not attributed\" written into the test — the wake that carries a cross-session message is still unexplained and the bump is kept without claiming it is the mechanism.",
+        "`Severity`'s hand-written `Deserialize` read `<&str>`, which passes `from_str` and FAILS `from_value` — the path the wire client takes — so the daemon reported delivering a message no client ever painted; both deserializers are pinned now.",
+        "The terminal front cleared an alert without repainting, on a comment claiming every path out of that arm paints anyway (false for a key bound to nothing, which is swallowed).",
+        "STILL OPEN: a pane's OSC 9 notification reaches sprag-tui nowhere at all and the GUI drops its words; no OS-native notification and no sound; no key reaches display-message; the delivery claims QUEUED, not READ."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
