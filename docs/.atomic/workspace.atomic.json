@@ -11999,6 +11999,52 @@
         "The stand-in daemons cover the verbs they name; the one-spelling ratchet closes the leak they cannot sweep for, but no ratchet derives the verb LIST itself from the dispatch."
       ]
     },
+    "R322b": {
+      "decision_summary": "Four clients, one sentence about a daemon that is older than the build",
+      "changes_bullets": [
+        "The 33rd debt question, asked after the push, found the SAME defect class on the two fronts R322 had not looked at -- and it was a FIX at both, not a registration.",
+        "Measured against a peer that serves nothing and knows no verb: EIGHT OF EIGHT agent tools got it wrong -- six printed `UnknownIntrospectPath` at an AGENT, and `display_message` answered \"the message may be unacceptable (one line, under 200 bytes, no control characters)\" about a message that broke none of those rules.",
+        "Measured against the same peer, `sprag-tui` exited at boot with `scene/query /sprag_mux/external/panes: host rpc error: UnknownIntrospectPath`. Exiting is the RIGHT shape -- a display client with no panes to paint has nothing to do -- and only the sentence was wrong.",
+        "`unknown_slot` and `unknown_action` moved to `sprag_host::wire`, so four clients say one thing about one situation; `sprag_rpc::request_label` is public so a caller using `try_call` renders every OTHER fault byte-identically to `call`.",
+        "The agent surface applies them at the single transport every tool passes through, and the kind is what carries it: a skew is `Unsupported`, so a tool's own disjunction is PREPENDED rather than swapped in."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 46 / 2282; clippy 0 no suppression; doc gate 0; pixel smoke 255/0.",
+        "Agent front: 3 mutations RED -- the transport no longer asking, the skew arriving as a plain refusal (which proves the KIND is what stops a tool replacing the sentence), and the PEER answering everything (the harness's own control).",
+        "Display front: the mutation that restores the pre-round call turns it RED on the variant name.",
+        "⚠ THE FIRST FIX ON THE DISPLAY FRONT CHANGED NOTHING A PERSON SEES, and re-running the probe is what said so: it went into `read_slot`, whose own doc warns that a copy will forget the treatment, and the read that fails FIRST was the copy (`query_panes`). Both go through one query now."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "A running display client still SWALLOWS a skew: `WireHost::request` logs at debug and returns None, which is a deliberate policy for a repaint loop and is now the only unhandled half. What it should do instead is a surface DECISION (it has a message strip since R316/R317), not an oversight.",
+        "The refusing PEER is spelled four times -- `tests/cli.rs` twice, `mcp_stdio.rs`, `pty_round_trip.rs`. Sharing it needs a dev-only support crate, which is a workspace decision."
+      ],
+      "publishable_decision_summary": "Four clients, one sentence about a daemon that is older than the build",
+      "publishable_changes_bullets": [
+        "The 33rd debt question, asked after the push, found the SAME defect class on the two fronts R322 had not looked at -- and it was a FIX at both, not a registration.",
+        "Measured against a peer that serves nothing and knows no verb: EIGHT OF EIGHT agent tools got it wrong -- six printed `UnknownIntrospectPath` at an AGENT, and `display_message` answered \"the message may be unacceptable (one line, under 200 bytes, no control characters)\" about a message that broke none of those rules.",
+        "Measured against the same peer, `sprag-tui` exited at boot with `scene/query /sprag_mux/external/panes: host rpc error: UnknownIntrospectPath`. Exiting is the RIGHT shape -- a display client with no panes to paint has nothing to do -- and only the sentence was wrong.",
+        "`unknown_slot` and `unknown_action` moved to `sprag_host::wire`, so four clients say one thing about one situation; `sprag_rpc::request_label` is public so a caller using `try_call` renders every OTHER fault byte-identically to `call`.",
+        "The agent surface applies them at the single transport every tool passes through, and the kind is what carries it: a skew is `Unsupported`, so a tool's own disjunction is PREPENDED rather than swapped in."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 46 / 2282; clippy 0 no suppression; doc gate 0; pixel smoke 255/0.",
+        "Agent front: 3 mutations RED -- the transport no longer asking, the skew arriving as a plain refusal (which proves the KIND is what stops a tool replacing the sentence), and the PEER answering everything (the harness's own control).",
+        "Display front: the mutation that restores the pre-round call turns it RED on the variant name.",
+        "⚠ THE FIRST FIX ON THE DISPLAY FRONT CHANGED NOTHING A PERSON SEES, and re-running the probe is what said so: it went into `read_slot`, whose own doc warns that a copy will forget the treatment, and the read that fails FIRST was the copy (`query_panes`). Both go through one query now."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "A running display client still SWALLOWS a skew: `WireHost::request` logs at debug and returns None, which is a deliberate policy for a repaint loop and is now the only unhandled half. What it should do instead is a surface DECISION (it has a message strip since R316/R317), not an oversight.",
+        "The refusing PEER is spelled four times -- `tests/cli.rs` twice, `mcp_stdio.rs`, `pty_round_trip.rs`. Sharing it needs a dev-only support crate, which is a workspace decision."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
