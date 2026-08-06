@@ -193,7 +193,7 @@ use sprag_host::wire::{
     RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
     SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    WINDOWS_SLOT, WindowBirthAsk, ZOOM_PANE_ACTION, events_slot_since, find_slot_for,
+    TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, ZOOM_PANE_ACTION, events_slot_since, find_slot_for,
     pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
@@ -963,6 +963,10 @@ fn connect(deadline: Option<Duration>) -> io::Result<HostConn> {
         conn.set_read_deadline(Some(deadline))?;
     }
     conn.handshake(&cli_client_id())?;
+    // Where this process is, asked once and before any command has shaped a request — every params
+    // builder below consults the answer, and a cache filled halfway through a command would make
+    // two requests of one command mean two different sessions.
+    learn_where_we_are(&mut conn);
     Ok(conn)
 }
 
@@ -1908,10 +1912,15 @@ fn kill_one(conn: &mut HostConn, name: &str) -> io::Result<Value> {
     )
 }
 
-/// Split a window subcommand's args into its required `-t SESSION` target and any trailing
-/// positionals. A window lives IN a session, and the daemon holds several — so, like tmux's
-/// window/pane commands, these take `-t`.
-fn target_and_rest(args: Vec<String>, command: &str) -> io::Result<(String, Vec<String>)> {
+/// Split a window subcommand's args into its `-t SESSION` target and any trailing positionals. A
+/// window lives IN a session, and the daemon holds several — so, like tmux's window/pane commands,
+/// these take `-t`.
+///
+/// The target comes back as an OPTION and the "one is required" refusal lives in [`require_target`],
+/// which is where a connection exists: a caller running inside a pane needs no `-t`, and only the
+/// daemon can say which session that pane is in. Deciding it here would mean deciding it before
+/// there is anybody to ask.
+fn target_and_rest(args: Vec<String>, command: &str) -> io::Result<(Option<String>, Vec<String>)> {
     let mut session = None;
     let mut rest = Vec::new();
     let mut it = args.into_iter();
@@ -1928,24 +1937,27 @@ fn target_and_rest(args: Vec<String>, command: &str) -> io::Result<(String, Vec<
             _ => rest.push(arg),
         }
     }
-    let session = session.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{command}: a target session is required (-t SESSION)"),
-        )
-    })?;
     Ok((session, rest))
 }
 
-/// The request params addressing `path`, carrying the out-of-band `session` scope when the caller
-/// named one — the ONE place a scoped request is shaped, so every command spells the scope the same
-/// way the GUI does ([`sprag_host::wire::SESSION_PARAM`]).
+/// The request params addressing `path`, carrying the out-of-band `session` scope — the ONE place a
+/// scoped request is shaped, so every command spells the scope the same way the GUI does
+/// ([`sprag_host::wire::SESSION_PARAM`]).
 ///
-/// `None` sends NO `session` key rather than a name this CLI guessed: absent means "the daemon's
-/// default session", which is a decision the daemon owns and can move, and inventing a name here
-/// would freeze today's answer into the wire.
+/// # Which session an unnamed scope means
+///
+/// The caller's `-t` first, then the session this process is RUNNING IN ([`Here`]), and only then
+/// nothing — which lets the daemon pick its default.
+///
+/// The middle term is the one that changed. It used to go straight from "the caller named none" to
+/// "send no key", under a comment saying that inventing a name here would freeze today's answer
+/// into the wire. That reasoning holds for a name this CLI GUESSES and not for the one it is
+/// standing in: `$SPRAG_PANE` is the daemon's own statement about this process, and reading it back
+/// is the opposite of a guess. What the old default actually froze was the assumption that the
+/// caller is a shell somewhere outside the workspace — see [`Here`] for what it cost the callers
+/// who are not.
 fn scoped_params(session: Option<&str>, path: String) -> Value {
-    match session {
+    match effective_scope(session) {
         Some(name) => json!({ "session": name, "path": path }),
         None => json!({ "path": path }),
     }
@@ -1954,10 +1966,18 @@ fn scoped_params(session: Option<&str>, path: String) -> Value {
 /// The scope ALONE, for the two methods that read no path — `scene/revision` and `scene/waitFor`.
 /// Kept beside [`scoped_params`] so the one way a request names its session is spelled once.
 fn scoped_only(session: Option<&str>) -> Value {
-    match session {
+    match effective_scope(session) {
         Some(name) => json!({ "session": name }),
         None => json!({}),
     }
+}
+
+/// The session a request is about: what the caller named, else where this process is running.
+///
+/// Spelled once because it is the whole behaviour — a second copy in the invoke path is how the
+/// read and the write of one command would come to disagree about which session they meant.
+fn effective_scope(session: Option<&str>) -> Option<&str> {
+    session.or_else(|| here().map(|here| here.session.as_str()))
 }
 
 /// [`scoped_params`] plus an action's `args` — the invoke shape, kept beside the query shape so the
@@ -2024,10 +2044,108 @@ fn connect_scoped(session: Option<&str>) -> io::Result<HostConn> {
     Ok(conn)
 }
 
-/// Name the scope in an error message: the session the caller asked for, or the honest stand-in for
-/// the one they did not name.
+/// Name the scope in an error message: the session the caller asked for, the one it is RUNNING in,
+/// or the honest stand-in for neither.
 fn scope_name(session: Option<&str>) -> &str {
-    session.unwrap_or("the default session")
+    session
+        .or_else(|| here().map(|here| here.session.as_str()))
+        .unwrap_or("the default session")
+}
+
+/// Where this process IS: the pane the daemon gave it at birth, and the session that holds that
+/// pane now.
+///
+/// # The wrong answer this exists to remove
+///
+/// The daemon tells every pane's child which pane it is ([`sprag_host::PANE_ENV_VAR`], tmux's
+/// `$TMUX_PANE`) and nothing on this side ever asked what that meant. So an unscoped command run
+/// INSIDE a pane went to *the daemon's default session*, which is a different session from the
+/// caller's as soon as anybody makes a second one. Measured by running, from a pane of session
+/// `work` on a daemon whose default was `0`:
+///
+/// ```text
+/// sprag panes           -> lists session 0's panes, not work's
+/// sprag layout          -> draws session 0
+/// sprag split-window    -> the new pane appears in session 0, and the command reports success
+/// ```
+///
+/// A person only ever sees this as their command acting on somebody else's session, silently. It is
+/// worse for an AGENT, which is exactly the caller that runs inside a pane and has no other way to
+/// know where it is.
+///
+/// # Why the caller's OWN pane, and not the focused one
+///
+/// The alternative — resolving "here" to whatever pane a person is looking at — is what the rival
+/// does (`herdr`'s `--current` sends no pane and its daemon falls back to
+/// `state.active` + `focused_pane_id()`, `src/app/api/panes.rs`), and it is wrong for the case that
+/// matters most: two agents working in two panes both get the answer for whichever pane a human
+/// happens to be watching, and neither can address itself. `$SPRAG_PANE` is per-CALLER, so it
+/// cannot confuse them. It is also what tmux means by the current pane for a command run inside one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Here {
+    /// The pane this process was born in — [`sprag_host::PANE_ENV_VAR`], as the daemon set it.
+    pane: u64,
+    /// The session holding that pane NOW, read from the registry rather than remembered: a pane's
+    /// session is the daemon's fact, and the environment carries no name to go stale.
+    session: String,
+}
+
+/// This process's [`Here`], or [`None`] when it is not running in a pane THIS daemon holds.
+///
+/// Resolved once by [`learn_where_we_are`] as a condition of connecting, and read from here after —
+/// so the params builders below can consult it without every one of forty call sites growing a
+/// connection argument. A CLI process makes one connection and exits; the value cannot change
+/// underneath it, which is what makes a cache honest rather than a shortcut.
+fn here() -> Option<&'static Here> {
+    HERE.get().and_then(Option::as_ref)
+}
+
+/// [`here`]'s cell. Filled exactly once, by [`learn_where_we_are`].
+static HERE: std::sync::OnceLock<Option<Here>> = std::sync::OnceLock::new();
+
+/// Ask the daemon where `$SPRAG_PANE` is, and remember it for this process.
+///
+/// # It is silent about every failure, deliberately
+///
+/// This runs on the way to every command, and none of its failures is the caller's business: no
+/// `$SPRAG_PANE` means the caller is a shell rather than a pane, a pane id this daemon does not
+/// hold means the variable outlived the daemon that set it (ids restart with a process), and a
+/// daemon too old to serve the tree cannot answer at all. Each of those is the same situation for
+/// the caller — *nobody said which session, so the daemon's default is the one* — which is the
+/// behaviour that was already there. That is why it reads through [`query_raw`] rather than
+/// [`query_slot`]: the skew SENTENCE is right for a command a person typed and wrong for a question
+/// this asked on its own.
+fn learn_where_we_are(conn: &mut HostConn) {
+    if HERE.get().is_some() {
+        return;
+    }
+    let _ = HERE.set(where_we_are(conn));
+}
+
+/// [`learn_where_we_are`]'s body, split out so the resolution is a function of the daemon's answer.
+fn where_we_are(conn: &mut HostConn) -> Option<Here> {
+    let pane: u64 = std::env::var(sprag_host::PANE_ENV_VAR)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let tree = query_raw(conn, json!({ "path": mux_action_path(TREE_SLOT) })).ok()?;
+    let session = tree.as_array()?.iter().find(|session| {
+        session["windows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|window| {
+                window["panes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|held| held["id"].as_u64() == Some(pane))
+            })
+    })?["name"]
+        .as_str()?
+        .to_owned();
+    Some(Here { pane, session })
 }
 
 /// The ids of the panes the scoped session's CURRENT window holds — the one read behind every
@@ -2177,8 +2295,24 @@ fn resolve_optional_pane(
     raw: Option<&str>,
     command: &str,
 ) -> io::Result<Option<PaneSite>> {
-    raw.map(|raw| resolve_pane(conn, session, raw, command))
-        .transpose()
+    if let Some(raw) = raw {
+        return resolve_pane(conn, session, raw, command).map(Some);
+    }
+    // NAMED NOTHING, and running inside a pane: that pane is the one it means. tmux's rule for a
+    // command run inside a pane, and the reading `$SPRAG_PANE` has always deserved.
+    //
+    // Only when the scope IS this process's own session — with an explicit `-t elsewhere` the
+    // ambient pane is not in the session being addressed at all, and substituting it would turn a
+    // scoped command into a wrong answer of exactly the kind [`Here`] exists to remove.
+    let Some(here) = here().filter(|here| effective_scope(session) == Some(here.session.as_str()))
+    else {
+        // Absent means the session's ACTIVE pane, which the DAEMON resolves — reading it back to
+        // send it would race whoever moved it between the two calls.
+        return Ok(None);
+    };
+    // Through the same resolution an argument gets, so the answer carries the window (and so a
+    // stale id fails the same way rather than reaching the daemon as a target that is not there).
+    resolve_pane(conn, session, &here.pane.to_string(), command).map(Some)
 }
 
 /// Every pane of the scoped SESSION as `(window, id, name)`, in the session's window order (R310).
@@ -4385,11 +4519,38 @@ fn require_session(conn: &mut HostConn, session: &str) -> io::Result<()> {
     }
 }
 
+/// The session a `-t`-taking verb acts on: the one the caller named, or the one this process is
+/// RUNNING IN — pre-flighted either way.
+///
+/// # `-t` is required of a caller who could not otherwise be known
+///
+/// These verbs demand a target because a window lives IN a session and the daemon holds several,
+/// so a command from a shell somewhere outside the workspace genuinely cannot be placed. A command
+/// run inside a PANE can: the daemon said which pane at that pane's birth, and [`Here`] reads it
+/// back. Requiring `-t` of that caller asks it to name a session it is already standing in — and,
+/// worse, invites it to name the wrong one, which is the failure the ambient scope exists to
+/// remove for the verbs whose `-t` was already optional.
+///
+/// The refusal is unchanged for the caller who really cannot be placed, and it is the SAME sentence
+/// as before: a shell that forgot `-t` learns exactly what it learnt yesterday.
+fn require_target(conn: &mut HostConn, session: Option<&str>, command: &str) -> io::Result<String> {
+    let session = effective_scope(session)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{command}: a target session is required (-t SESSION)"),
+            )
+        })?
+        .to_owned();
+    require_session(conn, &session)?;
+    Ok(session)
+}
+
 /// `windows -t SESSION`: one line per window — its name, and `(current)` on the active one.
 fn windows(args: Vec<String>) -> io::Result<()> {
     let (session, _rest) = target_and_rest(args, "windows")?;
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "windows")?;
     let windows = query_slot(
         &mut conn,
         json!({ "session": session, "path": mux_action_path(WINDOWS_SLOT) }),
@@ -4443,7 +4604,7 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     }
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "new-window")?;
     // Through the grammar TYPE, not a key spelled here: `WindowBirthAsk` is the one place these
     // keys are written down, so the CLI, the agent surface and the daemon cannot come to spell them
     // three ways — and it is what the wire's shape pin holds the protocol number against.
@@ -4508,7 +4669,7 @@ fn select_window(args: Vec<String>) -> io::Result<()> {
         window => SelectWindowAsk::Named(window.to_owned()),
     };
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "select-window")?;
     let landed = scoped_window_action(
         &mut conn,
         &session,
@@ -4597,7 +4758,7 @@ fn move_window(args: Vec<String>) -> io::Result<()> {
         place: place.clone(),
     };
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "move-window")?;
     // The skew is told APART from a refusal — R307's finding on the verb it added, now
     // [`invoke_action_with`]'s job for every verb: an ADDED ACTION passes `client/hello`, so a
     // daemon that predates this verb refuses it, and reporting that as "no such window" sends the
@@ -4856,7 +5017,7 @@ fn rename_window(args: Vec<String>) -> io::Result<()> {
     // An optional leading positional names the window to rename; absent ⇒ the current one.
     let window = rest.pop();
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "rename-window")?;
     let action_args = match &window {
         Some(window) => json!({ "window": window, "name": new }),
         None => json!({ "name": new }),
@@ -4962,7 +5123,7 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "kill-window")?;
     let window = rest.into_iter().next();
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "kill-window")?;
     let action_args = match &window {
         Some(window) => json!({ "window": window }),
         None => json!({}),
@@ -5142,7 +5303,7 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
     }
 
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "resize-window")?;
     let mut action_args = json!({});
     if let Some(window) = &window {
         action_args["window"] = json!(window);
@@ -5326,7 +5487,7 @@ fn break_pane(args: Vec<String>) -> io::Result<()> {
     let asked = required_pane(rest.next(), "break-pane")?;
     let name = rest.next();
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "break-pane")?;
     // Registry-wide at the daemon (a break derives the source window from the pane's id), so this
     // needs the NAME to resolve and no window narrowing.
     let pane = resolve_pane(&mut conn, Some(&session), &asked, "break-pane")?.id;
@@ -5371,7 +5532,7 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
         )
     })?;
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "join-pane")?;
     // Registry-wide at the daemon for [`break_pane`]'s reason: both windows are derived from the
     // pane's id, so this needs the NAME to resolve and no window narrowing.
     let pane = resolve_pane(&mut conn, Some(&session), &asked, "join-pane")?.id;
@@ -5452,7 +5613,7 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
         ))
     })?;
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "move-pane")?;
     // Registry-wide at the daemon: BOTH windows are derived from the two pane ids (R284), so this
     // needs only the names to resolve.
     let pane = resolve_pane(&mut conn, Some(&session), &asked, "move-pane")?.id;
@@ -5685,7 +5846,7 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
         }
     }
     let mut conn = connect(None)?;
-    require_session(&mut conn, &session)?;
+    let session = require_target(&mut conn, session.as_deref(), "zoom-pane")?;
     // Registry-wide at the daemon (measured: a bare `zoom_pane` reaches a pane one window over),
     // so this needs only the name to resolve.
     let mut args = json!({});

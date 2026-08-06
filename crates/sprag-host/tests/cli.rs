@@ -6487,6 +6487,196 @@ fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
     );
 }
 
+/// A command run INSIDE a pane acts on that pane's session, not on the daemon's default one.
+///
+/// # The wrong answer, as it was measured
+///
+/// The daemon tells every pane's child which pane it is (`$SPRAG_PANE`) and nothing read it back.
+/// So from a pane of session `work`, on a daemon whose default session was `0`, `sprag panes`
+/// listed session 0's panes, `sprag layout` drew session 0, and `sprag split-window` put the new
+/// pane in session 0 — reporting success. A person sees their command act on somebody else's
+/// session; an AGENT, which is the caller that runs inside a pane and has no other way to know
+/// where it is, has no way to see it at all.
+#[test]
+fn a_command_run_inside_a_pane_acts_on_that_panes_session() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["new", "work"]).ok, "a second session");
+    assert!(
+        sprag(&sock, &["split-window", "-t", "work"]).ok,
+        "so work has two panes and the default session has one",
+    );
+
+    // The panes of each session, and the fixture's whole point: they are DIFFERENT panes, so an
+    // answer about the wrong session cannot be mistaken for a right one.
+    let mine = pane_ids_of(&sock, "work");
+    let theirs = pane_ids_of(&sock, "0");
+    assert_eq!(theirs.len(), 1, "the default session holds one pane");
+    assert_eq!(mine.len(), 2, "work holds two: {mine:?}");
+    let (mine_first, mine_second) = (mine[0].clone(), mine[1].clone());
+
+    // A pane of `work` is what this process claims to be running in.
+    let inside = [("SPRAG_PANE", mine_first.as_str())];
+
+    // READING: the listing is work's.
+    let listed = sprag_env(&sock, &["panes"], &inside);
+    assert!(listed.ok, "panes from inside a pane: {}", listed.stderr);
+    assert!(
+        listed.stdout.contains(&format!("{mine_second}: ")),
+        "an unscoped read is about the session the caller is in: {}",
+        listed.stdout,
+    );
+    assert!(
+        !listed.stdout.contains(&format!("{}: ", theirs[0])),
+        "and NOT about the default session's pane: {}",
+        listed.stdout,
+    );
+
+    // ACTING: the new pane lands in work.
+    let split = sprag_env(&sock, &["split-window"], &inside);
+    assert!(split.ok, "split from inside a pane: {}", split.stderr);
+    assert_eq!(
+        pane_ids_of(&sock, "0").len(),
+        1,
+        "an unscoped act does not reach into the session the caller is NOT in",
+    );
+    assert_eq!(
+        pane_ids_of(&sock, "work").len(),
+        3,
+        "it acts where the caller is",
+    );
+
+    // CONTROL 1 — the old behaviour is intact for a caller that is NOT in a pane. Without this the
+    // test could pass on a CLI that had simply stopped honouring the daemon's default.
+    let outside = sprag(&sock, &["panes"]);
+    assert!(outside.ok, "panes from a shell: {}", outside.stderr);
+    assert!(
+        outside.stdout.contains(&format!("{}: ", theirs[0]))
+            && !outside.stdout.contains(&format!("{mine_second}: ")),
+        "a caller outside any pane still lands in the daemon's default session: {}",
+        outside.stdout,
+    );
+
+    // CONTROL 2 — an explicit `-t` still wins from inside a pane, in BOTH directions.
+    let scoped = sprag_env(&sock, &["panes", "-t", "0"], &inside);
+    assert!(
+        scoped.stdout.contains(&format!("{}: ", theirs[0]))
+            && !scoped.stdout.contains(&format!("{mine_second}: ")),
+        "-t names the session, wherever the caller is standing: {}",
+        scoped.stdout,
+    );
+
+    // CONTROL 3 — a `$SPRAG_PANE` this daemon does not hold is IGNORED, not an error. A pane id
+    // outlives the daemon that issued it (ids restart with the process), and the caller of a
+    // command has no business being told about somebody else's stale environment.
+    let stale = sprag_env(&sock, &["panes"], &[("SPRAG_PANE", "99999")]);
+    assert!(
+        stale.ok,
+        "a stale pane id is not an error: {}",
+        stale.stderr
+    );
+    assert!(
+        stale.stdout.contains(&format!("{}: ", theirs[0])),
+        "it falls back to the daemon's default: {}",
+        stale.stdout,
+    );
+
+    // CONTROL 4 — the caller's own pane does NOT travel into a session it names. `-t 0` from a pane
+    // of `work` must act on session 0's own active pane; substituting the ambient one would address
+    // a pane that is not in the named scope at all, which is the same class of wrong answer as the
+    // default this test exists for. Driven because it is a BRANCH (the scope filter in
+    // `resolve_optional_pane`), and a branch nothing drives is a branch nothing checks.
+    let elsewhere = sprag_env(&sock, &["zoom-pane", "-t", "0"], &inside);
+    assert!(
+        elsewhere.ok,
+        "a scoped verb from inside another session's pane: {}",
+        elsewhere.stderr,
+    );
+    assert!(
+        elsewhere.stdout.contains(&format!("pane {} ", theirs[0])),
+        "it acted on the NAMED session's pane, not on the caller's: {}",
+        elsewhere.stdout,
+    );
+}
+
+/// A verb that takes an OPTIONAL pane and is given none acts on the caller's OWN pane — not on
+/// whichever pane of that session somebody else is looking at.
+///
+/// # The fixture is built so the two readings disagree
+///
+/// The caller's pane and the session's ACTIVE pane are deliberately different panes here. With one
+/// pane, or with the caller sitting on the active one, every assertion below would pass against a
+/// CLI that ignored `$SPRAG_PANE` entirely — the vacuous-fixture shape this project keeps catching.
+///
+/// This is also the discriminator against the rival: `herdr`'s `--current` sends no pane and its
+/// daemon falls back to `state.active` + `focused_pane_id()` (`src/app/api/panes.rs`), so two
+/// agents in two panes are both answered about whichever pane a human is watching, and neither can
+/// address itself. Only `pane current` and `pane split` read the caller's own `HERDR_PANE_ID`.
+#[test]
+fn a_verb_given_no_pane_acts_on_the_callers_own_pane() {
+    let (_host, sock) = spawn_host();
+    assert!(sprag(&sock, &["split-window", "-t", "0"]).ok, "two panes");
+    let panes = pane_ids_of(&sock, "0");
+    assert_eq!(panes.len(), 2, "two panes to tell apart: {panes:?}");
+    let (caller, active) = (panes[0].clone(), panes[1].clone());
+
+    // The ACTIVE pane is the other one — the answer a CLI that ignored the caller would give.
+    assert!(
+        sprag(&sock, &["select-pane", "-t", "0", &active]).ok,
+        "the session is left focused on the pane the caller is NOT in",
+    );
+
+    // THE CONTROL RUNS FIRST, because it MOVES what it measures: a zoom selects the pane it
+    // zoomed, so a control run afterwards would be reading the state the probe had just left.
+    // (Measured, not reasoned: written the other way round this read `pane 0` for the shell case
+    // and looked like a product defect.)
+    let outside = sprag(&sock, &["zoom-pane", "-t", "0"]);
+    assert!(outside.ok, "zoom from a shell: {}", outside.stderr);
+    assert!(
+        outside.stdout.contains(&format!("pane {active} ")),
+        "a caller in no pane gets the daemon's own choice — the ACTIVE pane: {}",
+        outside.stdout,
+    );
+    assert!(sprag(&sock, &["zoom-pane", "-u", "-t", "0"]).ok, "unzoom");
+    assert!(
+        sprag(&sock, &["select-pane", "-t", "0", &active]).ok,
+        "and the fixture is put back: the active pane is again the one the caller is NOT in",
+    );
+
+    // THE PROBE: the same verb, with no pane named, run from inside the OTHER pane.
+    let zoomed = sprag_env(&sock, &["zoom-pane"], &[("SPRAG_PANE", caller.as_str())]);
+    assert!(zoomed.ok, "zoom from inside a pane: {}", zoomed.stderr);
+    assert!(
+        zoomed.stdout.contains(&format!("pane {caller} ")),
+        "the verb acted on the caller's own pane, not the focused one: {}",
+        zoomed.stdout,
+    );
+
+    // CONTROL 2 — and that caller must still SAY which session, because nothing else can place it.
+    // The sentence is the one it has always been.
+    let unplaceable = sprag(&sock, &["zoom-pane"]);
+    assert!(!unplaceable.ok, "a shell with no -t is still refused");
+    assert!(
+        unplaceable
+            .stderr
+            .contains("zoom-pane: a target session is required (-t SESSION)"),
+        "and refused in the same words as before: {}",
+        unplaceable.stderr,
+    );
+}
+
+/// The pane ids a session holds, in the order `sprag panes` lists them.
+fn pane_ids_of(sock: &Path, session: &str) -> Vec<String> {
+    let run = sprag(sock, &["panes", "-t", session]);
+    assert!(run.ok, "panes -t {session}: {}", run.stderr);
+    run.stdout
+        .lines()
+        .filter_map(|line| line.split(':').next())
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Every ACTING verb explains a daemon that does not know its verb, instead of blaming the
 /// arguments the user typed.
 ///
