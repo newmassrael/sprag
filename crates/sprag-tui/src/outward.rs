@@ -404,7 +404,10 @@ mod tests {
     #[test]
     fn a_message_follows_the_person_exactly_when_the_policy_says_so() {
         for policy in Forward::ALL {
-            for person in [None, Some(Person::Here), Some(Person::Away)] {
+            // The whole closed set of answers, DERIVED — `None` (never asked) plus every place a
+            // person can be — so a third arm on `Person` would force a decision here rather than
+            // slipping past a list somebody typed out.
+            for person in std::iter::once(None).chain(Person::ALL.map(Some)) {
                 let want = match (policy, person) {
                     (Forward::Off, _) => false,
                     (Forward::Always, _) => true,

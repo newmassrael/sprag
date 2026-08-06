@@ -5570,7 +5570,18 @@ fn each_attention_source_has_its_own_switch() {
 /// painting — which is precisely the state this round found.
 #[test]
 fn a_message_follows_the_person_out_of_the_room() {
-    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(Tui::attach, NOTIFIER);
+    // ⚠ THE POLICY IS READ FROM A CONFIG THIS TEST OWNS, and that is not ceremony: without it the
+    // client reads whichever `config.toml` the machine running the suite happens to have, so a
+    // developer who set `notify-outward = "off"` for themselves would see this fail against correct
+    // code. R318 found exactly that defect in its own option test; this is the same fixture rule one
+    // round later. The value is the DEFAULT, written out, so the test states what it depends on.
+    let config = ConfigHome::new("[options]\nnotify-outward = \"unfocused\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        NOTIFIER,
+    );
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
@@ -5695,7 +5706,17 @@ fn a_childs_own_urgency_reaches_the_persons_terminal() {
     let session = boot_session(&mut conn);
     // The client believes it is running in kitty, which is the one terminal whose own protocol
     // carries an urgency — announced the way kitty announces itself to every child.
-    let mut tui = Tui::attach_with_env(&sock, &session, &[("KITTY_WINDOW_ID", "1")]);
+    // The config is this test's own, for the reason the gate above states: the policy must come from
+    // a file the test wrote, never from the developer's.
+    let config = ConfigHome::new("[options]\nnotify-outward = \"unfocused\"\n");
+    let mut tui = Tui::attach_with_env(
+        &sock,
+        &session,
+        &[
+            ("KITTY_WINDOW_ID", "1"),
+            ("XDG_CONFIG_HOME", config.as_str()),
+        ],
+    );
     wait_for("the client to attach", || {
         match attached(&mut conn, &session) {
             0 => Err("nobody attached".to_owned()),
@@ -5831,4 +5852,92 @@ fn the_outward_policy_is_this_clients_own_and_not_the_daemons() {
 
     // Both are torn down here; `Tui::drop` ends each client.
     let _ = (&mut always, &mut off);
+}
+
+/// **A PERSON'S OWN `Alt-[` STILL REACHES THEIR PANE** — the branch that protects a binding from the
+/// decoder that has to read ahead of it.
+///
+/// Found by the debt sweep, not by the design: `read_input` holds the event it read ahead and routes
+/// it on the next turn, and every test above drives the case where that read-ahead found the OTHER
+/// HALF OF A REPORT. Nothing drove the case where it found a keystroke — which is the case a person
+/// with `Alt-[` bound reaches every time they press it, and the one where a lost event is a key that
+/// silently did nothing.
+///
+/// The read-ahead is ARMED here (`unfocused` is the policy that asks), which is what makes this a
+/// claim about the pushback rather than about a client that never looked: with `off` the bracket is
+/// routed the instant it arrives and this would pass with no pushback in the code at all.
+///
+/// The pane echoes, so what the child received is readable as cells: the line discipline renders the
+/// escape in caret notation, and `^[[x` is `ESC [ x` arriving whole and in order.
+#[test]
+fn a_persons_own_bracket_key_still_reaches_their_pane() {
+    let config = ConfigHome::new("[options]\nnotify-outward = \"unfocused\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+    });
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+    assert!(
+        tui.asked_for_focus_reports(),
+        "the read-ahead must be armed, or this test proves nothing",
+    );
+
+    // `ESC [ x`: the parser makes it `Alt-[` and `x`, the read-ahead finds `x`, and `x` is not a
+    // report — so BOTH have to reach the pane, in order.
+    tui.type_bytes(b"\x1b[x");
+    wait_for(
+        "the person's own bracket and the key behind it to reach the pane",
+        || {
+            let text = pane_text_of(&mut conn, &session, 0);
+            settled(text.contains("^[[x"), &true)
+                .map_err(|got| format!("{got}: pane reads {text:?}"))
+        },
+    );
+}
+
+/// **The terminal is asked to stop reporting focus on the way out** — the release half, which
+/// termwiz cannot do because termwiz did not set the mode.
+///
+/// Found by the debt sweep: `MouseMirror::release` exists for exactly this reason and this client now
+/// owns a second mode with the same lifetime. A client that exited with 1004 still on would leave the
+/// person's SHELL being told about every window switch, which a prompt renders as `^[[I`.
+///
+/// The CONTROL is the first assertion — the mode is ON while the client is live — so a build that
+/// never asked for it at all could not pass this by doing nothing.
+#[test]
+fn the_focus_mode_is_given_back_when_the_client_leaves() {
+    let config = ConfigHome::new("[options]\nnotify-outward = \"unfocused\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+    });
+    assert!(
+        tui.asked_for_focus_reports(),
+        "THE CONTROL: the mode is on while somebody is here to be reported about",
+    );
+
+    tui.type_bytes(&[0x02]); // the prefix
+    tui.type_bytes(b"d"); // detach
+    let status = tui.wait();
+    assert!(
+        status.success(),
+        "the client exits on detach, not {status:?}"
+    );
+    wait_for("the daemon to release the client", || {
+        settled(attached(&mut conn, &session), &0)
+    });
+    assert!(
+        !tui.asked_for_focus_reports(),
+        "a client that left must stop this terminal reporting focus to whatever runs next",
+    );
 }

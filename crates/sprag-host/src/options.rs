@@ -318,6 +318,12 @@ pub const MONITOR_NOTIFICATION: &str = "monitor-notification";
 /// client's would be its desktop's). A prefix would have to be renamed the day the other frontend
 /// performs the same policy.
 ///
+/// **Only `sprag-tui` performs it today**, and that is said here rather than left for a user to
+/// discover: `sprag-gui` paints the message strip and forwards nothing, so setting this changes
+/// nothing for a windowed client. What it would take there is a desktop notifier and a window-focus
+/// read, neither of which exists in that frontend — a gap with a surface decision in it, registered
+/// rather than half-built.
+///
 /// The values and the default live on `sprag_tui::outward::Forward`, whose `word` this table's
 /// vocabulary is checked against by a test in that crate — the arrangement
 /// [`DETACH_ON_DESTROY_VALUES`] documents, for the same reason: the policy lives in a crate this one
