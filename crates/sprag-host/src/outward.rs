@@ -220,19 +220,34 @@ mod tests {
         assert!(!Forward::Always.needs_focus());
     }
 
-    /// The whole decision table, every policy against every state a client can be in — including
+    /// The whole decision table — every policy against every state a client can be in, including
     /// the one a client that never asked reports.
+    ///
+    /// **Both axes are DERIVED**, from [`Forward::ALL`] and from [`Person::ALL`] plus the `None` a
+    /// client that did not ask has. A list typed out by hand is a list that stops covering the type
+    /// the day somebody adds an arm to it, and this is exactly the cell that would be missed: a
+    /// third place a person could be would slip through with no decision made about it. The version
+    /// of this test that lived in `sprag-tui` said so and derived both; the move to this crate
+    /// briefly replaced the derivation with a literal, which is the whole point of the closed set
+    /// going missing in the act of tidying.
     #[test]
     fn a_message_follows_only_a_person_the_policy_asked_about() {
-        for person in [None, Some(Person::Here), Some(Person::Away)] {
-            assert!(!follows(Forward::Off, person), "off never forwards");
-            assert!(follows(Forward::Always, person), "always always forwards");
+        for person in std::iter::once(None).chain(Person::ALL.map(Some)) {
+            for policy in Forward::ALL {
+                let want = match (policy, person) {
+                    (Forward::Off, _) => false,
+                    (Forward::Always, _) => true,
+                    // A client that never asked must not forward under the policy that needs the
+                    // answer: it would be guessing, and the guess reaches somebody's desktop.
+                    (Forward::Unfocused, seen) => seen == Some(Person::Away),
+                };
+                assert_eq!(
+                    follows(policy, person),
+                    want,
+                    "{policy:?} with the person {person:?}",
+                );
+            }
         }
-        assert!(follows(Forward::Unfocused, Some(Person::Away)));
-        assert!(!follows(Forward::Unfocused, Some(Person::Here)));
-        // A client that never asked must not forward under the policy that needs the answer: it
-        // would be guessing, and the guess reaches somebody's desktop.
-        assert!(!follows(Forward::Unfocused, None));
     }
 
     /// A fresh client says the person is HERE, which is the honest reading: nothing has been

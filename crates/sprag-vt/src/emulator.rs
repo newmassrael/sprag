@@ -3812,6 +3812,14 @@ mod tests {
 
     /// The digit and the urgency are ONE table read in both directions, checked over the whole
     /// closed set — so a fourth urgency cannot be added with a parse that does not know it.
+    ///
+    /// The NAMES are pinned here too, beside the digits, because they are the second rendering of
+    /// this one scale and the only test they had lived in another crate: a terminal client writes
+    /// [`Urgency::digit`] into kitty's `OSC 99` and a windowed one hands [`Urgency::word`] to a
+    /// desktop notifier, and the two must stay two spellings of the same three values rather than
+    /// becoming two scales. Pinned as literals on purpose — they are the words kitty's protocol and
+    /// the freedesktop notification specification both use, so a rename here is a change to somebody
+    /// else's grammar and not a refactor.
     #[test]
     fn every_urgency_round_trips_through_its_own_digit() {
         for urgency in Urgency::ALL {
@@ -3820,6 +3828,21 @@ mod tests {
         assert_eq!(Urgency::parse(b"7"), None);
         assert_eq!(Urgency::parse(b""), None);
         assert!(Urgency::Low < Urgency::Normal && Urgency::Normal < Urgency::Critical);
+        assert_eq!(
+            Urgency::ALL.map(Urgency::word),
+            ["low", "normal", "critical"],
+        );
+        // ...and no two urgencies answer the same name, which is what makes a name an address.
+        for urgency in Urgency::ALL {
+            assert_eq!(
+                Urgency::ALL
+                    .iter()
+                    .filter(|other| other.word() == urgency.word())
+                    .count(),
+                1,
+                "{urgency:?} shares its name",
+            );
+        }
     }
 
     /// A notification carries NO cells, so — like the title — it must not stamp ROW DAMAGE.

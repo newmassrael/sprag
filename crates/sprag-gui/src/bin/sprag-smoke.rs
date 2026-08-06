@@ -3168,11 +3168,24 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
         return;
     };
     let state = smoke.state.clone();
+    let client = smoke.gui.id();
+
+    // THE POLICY IS WRITTEN, NOT INHERITED. R318 and R319 both shipped gates that read whatever
+    // `notify-outward` happened to be in force; here the isolation holds (every child gets its own
+    // `XDG_CONFIG_HOME`) but the VALUE would still be whatever the check before this one left, and
+    // a claim about the default policy that silently becomes a claim about somebody else's config
+    // is the same defect one layer in. The isolation was PROVED the way that lesson says: putting
+    // `off` in this file turns the assertions below RED.
+    let policy = smoke.write_user_config("[options]\nnotify-outward = \"unfocused\"\n");
+    report.check(
+        &format!("the outward policy under test is written, not inherited ({policy:?})"),
+        policy.is_ok(),
+    );
 
     // THE CONTROL FIRST, and it is the half that has to be able to fail: a message delivered while
     // the person is LOOKING must reach the strip and nothing else. Put first so a notifier that
     // fired for everything is caught here rather than passing the interesting half by accident.
-    let before = notify_calls(&state).len();
+    let before = notify_calls_by(&state, client).len();
     let focused = smoke.call("scene/window_focus", json!({ "focused": true }));
     report.check(
         &format!("the window can be told it holds OS focus ({focused:?})"),
@@ -3208,9 +3221,9 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     report.check(
         &format!(
             "a message a person can READ is not also thrown at their desktop ({:?})",
-            notify_calls(&state).len() - before,
+            notify_calls_by(&state, client).len() - before,
         ),
-        notify_calls(&state).len() == before,
+        notify_calls_by(&state, client).len() == before,
     );
 
     // THE CLAIM. The person leaves: the WM takes focus off every window this client owns.
@@ -3233,9 +3246,12 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     );
     let followed = smoke.wait_for(|s| {
         let _ = s;
-        (notify_calls(&state).len() > before).then_some(())
+        (notify_calls_by(&state, client).len() > before).then_some(())
     });
-    let argv = notify_calls(&state).last().cloned().unwrap_or_default();
+    let argv = notify_calls_by(&state, client)
+        .last()
+        .cloned()
+        .unwrap_or_default();
     report.check(
         &format!("a message reaches the person's DESKTOP once they have left ({argv:?})"),
         followed.is_ok(),
@@ -3257,14 +3273,141 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             .any(|pair| pair[0] == "-u" && pair[1] == "critical"),
     );
 
-    // WHAT IT LEAVES: the window focused again, which every later check reads.
+    // ...AND THE PANE'S OWN CHILD REACHES THEM TOO, which is the case this whole front exists for:
+    // a build that finishes while somebody is in their browser. It arrives through R318's route (a
+    // child's `OSC 9` becomes an `Announcement` on the same per-client mailbox) so the seam is
+    // shared with the message above — but "shared with something that is tested" is not a test, and
+    // this is the half a person actually meets.
+    //
+    // The alert above is acknowledged FIRST: the mailbox holds one message per client, and a
+    // sentence that waits for a keystroke would otherwise still be the one on the strip when this
+    // one is asserted.
+    let _ = smoke.press(0, "b", true);
+    let _ = smoke.press(0, "q", false);
+    let cleared_first = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!("the alert is acknowledged before the child speaks ({cleared_first:?})"),
+        cleared_first.is_ok(),
+    );
+    // A keystroke is only allowed to move the STRIP, never the window manager — if pressing a key
+    // had re-focused this window the reading below would be about a person who came back.
+    let still_away = smoke.call("scene/window_focus", json!({ "focused": false }));
+    report.check(
+        &format!("the person is still away after the acknowledgement ({still_away:?})"),
+        still_away.is_ok(),
+    );
+    let child_from = notify_calls_by(&state, client).len();
+    let pane = daemon_panes(&mut daemon, &home)
+        .first()
+        .copied()
+        .unwrap_or(0);
+    let raised = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::wire::pane_input_path(u64::from(pane), sprag_host::wire::TEXT_ACTION),
+            "session": home,
+            // `\\033` / `\\007` are LITERAL backslash escapes for the shell's own `printf`, not Rust
+            // ones: written singly, Rust reads `\0` as a NUL and types a nul byte plus `33]9;` into
+            // the pane, which raises nothing. The first draft did exactly that, and the strip check
+            // above is what said so — a bare "the desktop got nothing" had blamed the product.
+            "args": { "text": "printf '\\033]9;the build finished\\007'\r" },
+        }),
+    );
+    report.check(
+        &format!("the pane's shell accepts the notifying command ({raised:?})"),
+        raised.is_ok(),
+    );
+    // THE STRIP FIRST, so this reading can say WHICH failure it is: a child's words that never
+    // reached the client at all and a client that received them and forwarded nothing are opposite
+    // diagnoses, and a bare "the desktop got nothing" cannot tell them apart.
+    let on_strip = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        let strip = tags.get("sprag_message_strip")?;
+        strip
+            .text
+            .join("\u{1f}")
+            .contains("the build finished")
+            .then_some(())
+    });
+    report.check(
+        &format!("the child's words reached this client at all ({on_strip:?})"),
+        on_strip.is_ok(),
+    );
+    let chased = smoke.wait_for(|s| {
+        let _ = s;
+        (notify_calls_by(&state, client).len() > child_from).then_some(())
+    });
+    let child_argv = notify_calls_by(&state, client)
+        .last()
+        .cloned()
+        .unwrap_or_default();
+    report.check(
+        &format!("a PANE CHILD's notification follows the person out too ({child_argv:?})"),
+        chased.is_ok() && child_argv.join(" ").contains("the build finished"),
+    );
+
+    // THE SECOND CONTROL, and the one that makes this a test of the POLICY rather than of the
+    // window manager: the same blurred window under `notify-outward = off` sends NOTHING. Without
+    // it, a client that forwarded on every unfocused message regardless of the setting would pass
+    // everything above — and the setting is the whole reason this is a policy and not a feature.
+    let silenced = smoke.write_user_config("[options]\nnotify-outward = \"off\"\n");
+    report.check(
+        &format!("the policy can be turned off without restarting the client ({silenced:?})"),
+        silenced.is_ok(),
+    );
+    let quiet_from = notify_calls_by(&state, client).len();
+    let refused = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": "/sprag_mux/external/display_message",
+            "session": home,
+            "args": { "text": "a message nobody asked to be chased with", "severity": "alert" },
+        }),
+    );
+    report.check(
+        &format!("the daemon accepts a message under the OFF policy ({refused:?})"),
+        refused.is_ok(),
+    );
+    // Waited for on the STRIP, so the sample below is taken after the delivery has demonstrably
+    // landed — otherwise "nothing was sent" would be indistinguishable from "not yet".
+    let landed = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        let strip = tags.get("sprag_message_strip")?;
+        strip
+            .text
+            .join("\u{1f}")
+            .contains("a message nobody asked to be chased with")
+            .then_some(())
+    });
+    report.check(
+        &format!("...and it still reaches the strip ({landed:?})"),
+        landed.is_ok(),
+    );
+    report.check(
+        &format!(
+            "an OFF policy chases nobody, on the same blurred window ({} calls)",
+            notify_calls_by(&state, client).len() - quiet_from,
+        ),
+        notify_calls_by(&state, client).len() == quiet_from,
+    );
+
+    // WHAT IT LEAVES: the shipped config back, the window focused again, and the strip clear —
+    // every later check reads all three.
+    let put_back = smoke.write_user_config("");
+    report.check(
+        &format!("the shipped config is put back ({put_back:?})"),
+        put_back.is_ok(),
+    );
     let restored = smoke.call("scene/window_focus", json!({ "focused": true }));
     report.check(
         &format!("the window is left holding focus ({restored:?})"),
         restored.is_ok(),
     );
-    // ...and the alert acknowledged, so the strip is clear for whatever runs next. `prefix q` is
-    // bound to nothing, so the acknowledgement is the only thing it can do.
+    // ...and the OFF control's own alert acknowledged, so the strip is clear for whatever runs
+    // next. `prefix q` is bound to nothing, so the acknowledgement is the only thing it can do.
     let _ = smoke.press(0, "b", true);
     let _ = smoke.press(0, "q", false);
     let cleared = smoke.wait_for(|s| {
@@ -3272,7 +3415,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
     report.check(
-        &format!("...and the alert is acknowledged before the next check ({cleared:?})"),
+        &format!("...and the strip is clear before the next check ({cleared:?})"),
         cleared.is_ok(),
     );
 }
@@ -4870,15 +5013,21 @@ fn stand_in_path(state: &Path) -> String {
 
 /// Write the stand-in `notify-send` and make it executable.
 ///
-/// It records the argv, one invocation per line, with a unit separator between arguments so an
-/// argument containing a space cannot be read as two. It exits 0, because the product must not be
-/// tested against a notifier that is failing.
+/// Each line is `<caller pid>` then the argv, with a unit separator between fields so an argument
+/// containing a space cannot be read as two. It exits 0, because the product must not be tested
+/// against a notifier that is failing.
+///
+/// **The pid is what makes a reading an ATTRIBUTION.** Both children inherit this `PATH`, so a
+/// recorder that logged only the argv would answer *somebody ran the notifier* — and the claim under
+/// test is that the CLIENT does, which a daemon doing it would satisfy while being the wrong design.
+/// `$PPID` inside the script is the process that spawned it, which is the client itself: its
+/// notifier thread is a thread of that process, not a helper of its own.
 fn install_notify_stand_in(state: &Path) -> io::Result<()> {
     let dir = notify_stand_in_dir(state);
     std::fs::create_dir_all(&dir)?;
     let record = notify_record(state);
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\037' \"$@\" >> {}\nprintf '\\n' >> {}\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\\037' \"$PPID\" \"$@\" >> {}\nprintf '\\n' >> {}\nexit 0\n",
         record.display(),
         record.display(),
     );
@@ -4888,18 +5037,27 @@ fn install_notify_stand_in(state: &Path) -> io::Result<()> {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
 }
 
-/// Every argv the stand-in has recorded so far, each as its own list of arguments.
-fn notify_calls(state: &Path) -> Vec<Vec<String>> {
+/// Every notifier invocation the stand-in has recorded, as `(caller pid, arguments)`.
+fn notify_records(state: &Path) -> Vec<(u32, Vec<String>)> {
     std::fs::read_to_string(notify_record(state))
         .unwrap_or_default()
         .lines()
         .filter(|line| !line.is_empty())
-        .map(|line| {
-            line.split('\u{1f}')
-                .filter(|argument| !argument.is_empty())
-                .map(str::to_owned)
-                .collect()
+        .filter_map(|line| {
+            let mut fields = line.split('\u{1f}').filter(|field| !field.is_empty());
+            let pid = fields.next()?.parse().ok()?;
+            Some((pid, fields.map(str::to_owned).collect()))
         })
+        .collect()
+}
+
+/// The invocations made by `pid` — the CLIENT's, so a daemon that started notifying could never be
+/// read as the client doing its job.
+fn notify_calls_by(state: &Path, pid: u32) -> Vec<Vec<String>> {
+    notify_records(state)
+        .into_iter()
+        .filter(|(caller, _)| *caller == pid)
+        .map(|(_, argv)| argv)
         .collect()
 }
 
