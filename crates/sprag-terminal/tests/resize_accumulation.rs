@@ -67,9 +67,7 @@ fn bash_session(cols: u16, rows: u16) -> PanePty {
         cmd,
         cols,
         rows,
-        None,
-        None,
-        None,
+        sprag_terminal::PaneHooks::default(),
         &[],
         sprag_vt::DEFAULT_SCROLLBACK_LINES,
     )

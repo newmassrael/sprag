@@ -260,8 +260,14 @@ mod tests {
             cat.arg("cat");
             cat.env("TERM", "dumb");
             let host = Host::new((40, 6));
-            host.spawn(cat, "cat".to_owned(), 40, 6, None, None, None)
-                .unwrap();
+            host.spawn(
+                cat,
+                "cat".to_owned(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
+            .unwrap();
             crate::terminal::seed_terminal(host);
 
             let terminal = crate::terminal::use_terminal();

@@ -5437,9 +5437,15 @@ fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
 /// other. This drives that claim rather than asserting it: the notification is silenced and the bell
 /// still speaks, on ONE daemon reading ONE config file.
 ///
-/// **The CONTROL is the bell**, and it is what makes the first half able to fail: a build where
-/// nothing was routed at all — the state this round found — would pass "the notification is silent"
-/// and fail here.
+/// **THE ORDER IS THE WHOLE TEST, and the first version had it backwards** — found by a revert-proof
+/// that came back GREEN with the switches forced ON. That version sent the notification, then the
+/// bell, then asserted the row did not hold the notification's words: but an equal severity replaces
+/// what is showing, so the bell had taken the row either way and the assertion could not fail.
+///
+/// So the BELL GOES FIRST and is watched all the way through — it paints, then it expires — which
+/// establishes on this daemon, with this config, that the routing path works and that a routed
+/// message reaches the row inside `display-time`. Only then is the silenced source sent, and the
+/// absence is sampled past that measured lifetime rather than at an arbitrary moment.
 #[test]
 fn each_attention_source_has_its_own_switch() {
     let config = ConfigHome::new("[options]\nmonitor-notification = \"off\"\n");
@@ -5468,6 +5474,18 @@ fn each_attention_source_has_its_own_switch() {
     });
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
 
+    // THE CONTROL FIRST: the BELL is a different switch and is still on, so it reaches the row —
+    // and then goes away on its own deadline. Both halves are watched, which is what turns this into
+    // a measured bound for the silence below rather than a guess at one.
+    tui.type_bytes(b"ring\r");
+    wait_for("the bell to reach the row", || {
+        settled(tui.row(STATUS_ROW).contains("pane 0: bell"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    wait_for("...and to expire, leaving the row as it was", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
     // THE SILENCED HALF. The daemon must still LATCH it — the switch is about delivery, not about
     // capture, and a build that stopped capturing would break the pane list's own dot.
     tui.type_bytes(b"notification while switched off\r");
@@ -5483,21 +5501,17 @@ fn each_attention_source_has_its_own_switch() {
             .and_then(|rows| rows.first())
             .map(|row| row["notification"]["body"].clone())
             .unwrap_or(Value::Null);
-        settled(note.as_str().is_some(), &true)
+        settled(note.as_str(), &Some("notification while switched off"))
             .map_err(|got| format!("{got}: the pane row's notification is {note}"))
     });
-
-    // THE CONTROL, on the same daemon and the same config: the BELL is a different switch and is
-    // still on, so it reaches the row. Waiting for it is also what gives the silence above time to
-    // have failed — a message in flight would land before this one does.
-    tui.type_bytes(b"ring\r");
-    wait_for("the bell to reach the row", || {
-        settled(tui.row(STATUS_ROW).contains("pane 0: bell"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
-    });
-    let row = tui.row(STATUS_ROW);
-    assert!(
-        !row.contains("notification while switched off"),
-        "the silenced source must not have painted: {row:?}",
-    );
+    // Sampled past the lifetime the bell above MEASURED on this same client: it painted and cleared
+    // inside this window, so a delivery that had been made would have been visible in it.
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(100));
+        let row = tui.row(STATUS_ROW);
+        assert_eq!(
+            row, where_it_is,
+            "the silenced source must not paint, and nothing else may either",
+        );
+    }
 }

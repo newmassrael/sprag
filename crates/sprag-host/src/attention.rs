@@ -65,8 +65,35 @@ use sprag_vt::Urgency;
 
 use crate::notify::ChannelRegistry;
 use crate::pane_address::PaneAddress;
-use crate::report::{Announcement, MessageText, Severity};
+use crate::report::{Announcement, MessageText, MessageTextError, Severity};
 use crate::{AttachmentRegistry, Audience};
+
+/// The middle of the sentence a refused notification becomes — spelled once, because its LENGTH is
+/// load-bearing (see the assertion below) and a format string counted by eye is a number nothing
+/// checks.
+const CANNOT_SHOW: &str = " raised a notification that cannot be shown: ";
+
+/// **The refusal sentence fits a row, PROVED BY THE COMPILER at the widest input it can have.**
+///
+/// It did not, and that is why this is here: the first version embedded
+/// [`MessageTextError`]'s `Display` — a paragraph explaining why a newline is refused — producing a
+/// 216-byte refusal about a 200-byte limit, under an `expect` claiming the case could not arise.
+///
+/// Every term is a declared bound rather than a guess: `pane ` and [`CANNOT_SHOW`] are this module's
+/// own text, a [`PaneName`](sprag_terminal::PaneName) caps a quoted name at its `MAX_BYTES` plus two
+/// quotes (the widest address — a `u64` id is at most 20 digits), and
+/// [`LONGEST_RULE`](MessageTextError::LONGEST_RULE) caps the reason. A test checks the same thing by
+/// BUILDING the sentence; this checks it before the crate compiles, so a wider rule name or a longer
+/// pane name cannot ship.
+const _: () = assert!(
+    "pane ".len()
+        + 2
+        + sprag_terminal::PaneName::MAX_BYTES
+        + CANNOT_SHOW.len()
+        + MessageTextError::LONGEST_RULE
+        <= MessageText::MAX_BYTES,
+    "the sentence a refused notification becomes must fit a row at its widest",
+);
 
 /// One pane's raised attention, on its way to the router thread.
 ///
@@ -164,6 +191,7 @@ fn route_until_closed(
         // channel is woken — `display_message`'s order, for its reason: announcing under the
         // attachment lock would take the change-channel lock inside it, an order nothing else in
         // this daemon uses.
+        let session_named = session.clone();
         let delivery = {
             let mut attachments = attachments.lock().unwrap_or_else(PoisonError::into_inner);
             attachments.deliver(&Audience::Session(session), &announcement)
@@ -172,7 +200,22 @@ fn route_until_closed(
         // same rule the person's message follows even though the two sets are equal here: a set
         // computed twice is a set that can come to differ, and the failure mode is a client parked
         // forever on a channel that never moved.
-        for session in delivery.sessions() {
+        let woke = delivery.sessions();
+        // **A delivery that reached NOBODY is an answer, and this is the one caller that can only
+        // log it.** R317's `Delivery` exists because "shown to nobody" is a thing an agent must act
+        // on; here the sender is a child in a pane and there is nobody to answer to — so the daemon
+        // records it rather than treating an empty set as a successful nothing. It is the state a
+        // person hits when they detach and their build finishes, and it is exactly what an operator
+        // reading the log needs to see instead of silence.
+        if woke.is_empty() {
+            tracing::info!(
+                target: "sprag_host::attention",
+                pane = raised.pane.0,
+                session = %session_named,
+                "a pane asked for a person and no client is attached to see it",
+            );
+        }
+        for session in woke {
             channels.bump(session);
         }
     }
@@ -213,9 +256,12 @@ fn announce(raised: &Raised, registry: &Mutex<SessionRegistry>) -> Option<(Strin
 /// Whether the user wants to be told about this kind of attention at all.
 ///
 /// Read from the config file per raised attention, which is where this reader's cost decision sits
-/// ([`crate::config::agent_settle`] states the rule): an attention is a rare event — a build
-/// finishing, a shell ringing — so a file read per one is priced like a pane birth's, and
-/// `set-option` takes effect with nothing to restart.
+/// ([`crate::config::agent_settle`] states the rule), and the price is bounded by the SOURCE rather
+/// than by hope: the emulator LATCHES one notification and the reader fires once per output BATCH
+/// (`take_attention`), so a child printing a thousand escapes into one 8 KiB read produces ONE read
+/// of this file — not a thousand. That is what makes "per attention" a rare event even for a
+/// runaway child, and it is why the gate can live here rather than being cached against a clock.
+/// `set-option` therefore takes effect with nothing to restart.
 ///
 /// A config this daemon cannot read leaves the DEFAULT standing (both are `on`), which is the rule
 /// every other reader in [`crate::config`] follows: a user with a typo in their file still gets
@@ -278,10 +324,10 @@ fn holder_of(pane: PaneId, registry: &Mutex<SessionRegistry>) -> Option<(String,
 /// # The fallback's own length is PROVED, not assumed
 ///
 /// It was assumed, and it was wrong: the first version embedded
-/// [`MessageTextError`](crate::report::MessageTextError)'s `Display` — a paragraph explaining why a
+/// [`MessageTextError`]'s `Display` — a paragraph explaining why a
 /// newline is refused — which produced a 216-byte refusal about a 200-byte limit, under an `expect`
 /// claiming the case could not arise. A test found it. The sentence now carries
-/// [`rule`](crate::report::MessageTextError::rule), the SHORT wording, and every term in it is
+/// [`MessageTextError::rule`], the SHORT wording, and every term in it is
 /// bounded: `PaneName` caps a name at 80 bytes, a `u64` id at 20 digits, and
 /// `LONGEST_RULE` caps the reason — so the expect below is unreachable by arithmetic, which
 /// `the_refusal_sentence_fits_a_row_for_the_longest_possible_pane_name` checks at the widest input
@@ -303,11 +349,8 @@ fn words(address: &PaneAddress, attention: &Attention) -> MessageText {
         Attention::Bell => "bell".to_owned(),
     };
     MessageText::parse(&format!("pane {address}: {said}")).unwrap_or_else(|broken| {
-        MessageText::parse(&format!(
-            "pane {address} raised a notification that cannot be shown: {}",
-            broken.rule(),
-        ))
-        .expect("this module's own sentence breaks no rule a terminal row imposes")
+        MessageText::parse(&format!("pane {address}{CANNOT_SHOW}{}", broken.rule(),))
+            .expect("this module's own sentence breaks no rule a terminal row imposes")
     })
 }
 
@@ -475,6 +518,29 @@ mod tests {
         );
         assert!(said.as_str().starts_with("pane 9 raised a notification"));
         assert!(said.as_str().len() <= MessageText::MAX_BYTES);
+    }
+
+    /// **A pane the registry does not hold has nobody to tell, and says so rather than guessing.**
+    ///
+    /// The branch is reachable only from a state no live fixture builds reliably — a pane closed in
+    /// the microseconds between its child raising an attention and the router thread walking the
+    /// registry — which is the third shape the debt sweep hunts. Driven directly instead of left as
+    /// an untested arm, because the WRONG answer here is a delivery to a guessed session.
+    #[test]
+    fn a_pane_that_is_gone_is_addressed_to_nobody_rather_than_to_a_guess() {
+        let registry = Mutex::new(SessionRegistry::new((80, 24)));
+        assert_eq!(holder_of(PaneId(7), &registry), None);
+        assert!(
+            announce(
+                &Raised {
+                    pane: PaneId(7),
+                    attention: raised(None, "the build finished", Urgency::Normal),
+                },
+                &registry,
+            )
+            .is_none(),
+            "there is no session to address, so there is no announcement",
+        );
     }
 
     /// **The child's claim decides how long the row holds** — and only `critical` asks for a person.

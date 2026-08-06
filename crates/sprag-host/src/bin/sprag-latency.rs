@@ -584,9 +584,7 @@ fn live_host() -> HostState {
             format!("pane{index}"),
             COLS,
             ROWS,
-            None,
-            None,
-            None,
+            sprag_terminal::PaneBirthHooks::default(),
         )
         .expect("spawn a pane");
     }
@@ -1514,7 +1512,13 @@ fn main() -> ExitCode {
             let shaped = Host::new((COLS, ROWS));
             for index in 0..panes {
                 let id = shaped
-                    .spawn(painted(), format!("q{index}"), COLS, ROWS, None, None, None)
+                    .spawn(
+                        painted(),
+                        format!("q{index}"),
+                        COLS,
+                        ROWS,
+                        sprag_terminal::PaneBirthHooks::default(),
+                    )
                     .expect("spawn a quiescent pane");
                 if named {
                     shaped
@@ -1569,7 +1573,13 @@ fn main() -> ExitCode {
     {
         let shaped = Host::new((COLS, ROWS));
         shaped
-            .spawn(painted(), "q0".to_owned(), COLS, ROWS, None, None, None)
+            .spawn(
+                painted(),
+                "q0".to_owned(),
+                COLS,
+                ROWS,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .expect("spawn a quiescent pane");
         let shaped = HostState::new(shaped, Arc::new(ChannelRegistry::default()), None);
         let channels = shaped.channels().clone();
@@ -1643,7 +1653,13 @@ fn main() -> ExitCode {
         // an empty pool it would never meet.
         for index in 0..windows {
             shaped
-                .spawn(painted(), format!("w{index}"), COLS, ROWS, None, None, None)
+                .spawn(
+                    painted(),
+                    format!("w{index}"),
+                    COLS,
+                    ROWS,
+                    sprag_terminal::PaneBirthHooks::default(),
+                )
                 .expect("spawn a pane in the current window");
         }
         let shaped = HostState::new(shaped, Arc::new(ChannelRegistry::default()), None);

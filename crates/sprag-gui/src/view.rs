@@ -1001,8 +1001,14 @@ mod tests {
         cmd.env("TERM", "dumb");
 
         let host = Host::new((40, 6));
-        host.spawn(cmd, "img".to_owned(), 40, 6, None, None, None)
-            .unwrap();
+        host.spawn(
+            cmd,
+            "img".to_owned(),
+            40,
+            6,
+            sprag_terminal::PaneBirthHooks::default(),
+        )
+        .unwrap();
 
         let owner = Owner::new();
         owner.run(|| {
@@ -1086,7 +1092,13 @@ mod tests {
 
         let host = Host::new((40, 6));
         let named = host
-            .spawn(cmd, "sh".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                cmd,
+                "sh".to_owned(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .expect("a pane whose child titles itself");
         // THE CONTROL, and the reason there are two panes: an identical child, titling itself
         // identically, with no name. Without it a header showing "vim README" could mean either
@@ -1095,8 +1107,14 @@ mod tests {
         twin.arg("-c");
         twin.arg("printf '\\033]2;vim README\\007'; exec cat");
         twin.env("TERM", "dumb");
-        host.spawn(twin, "sh".to_owned(), 40, 6, None, None, None)
-            .expect("the unnamed twin");
+        host.spawn(
+            twin,
+            "sh".to_owned(),
+            40,
+            6,
+            sprag_terminal::PaneBirthHooks::default(),
+        )
+        .expect("the unnamed twin");
         let workspace = host.workspace();
         assert!(
             workspace

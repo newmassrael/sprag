@@ -66,9 +66,7 @@ fn a_request_projects_only_when_its_method_can_read_a_grid() {
             format!("cat{index}"),
             *cols,
             *rows,
-            None,
-            None,
-            None,
+            sprag_terminal::PaneBirthHooks::default(),
         )
         .expect("spawn a quiescent pane");
     }

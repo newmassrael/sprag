@@ -232,9 +232,11 @@ fn main() -> io::Result<()> {
             args.label,
             args.cols,
             args.rows,
-            Some(bump_on_dirty(&channels.revision(BOOT_SESSION))),
-            Some(pane_exit_hook(&on_pane_exit)),
-            Some(pane_attention_hook(&attention.signal())),
+            sprag_terminal::PaneBirthHooks {
+                on_dirty: Some(bump_on_dirty(&channels.revision(BOOT_SESSION))),
+                on_exit: Some(pane_exit_hook(&on_pane_exit)),
+                on_attention: Some(pane_attention_hook(&attention.signal())),
+            },
         )
         .map_err(io::Error::other)?;
     }

@@ -51,10 +51,10 @@ use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, Attention, CommandBuilder, DividerStep, Ended, HistoryLimitSource,
-    LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError,
-    PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionId, SessionInfo,
-    SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, WindowId, WindowInfo,
-    WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
+    LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneBirthHooks, PaneDir, PaneEnvSource, PaneId,
+    PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionId,
+    SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, WindowId,
+    WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1538,8 +1538,8 @@ impl Host {
     /// `None`). `on_attention` is the "this child is asking for a person" hook the daemon feeds to
     /// its [attention router](crate::attention) (the headless server passes
     /// [`pane_attention_hook`](crate::pane_attention_hook); a windowed / test caller passes `None`).
-    /// All three are pinion-free, so the display, lifetime and notification concerns live above
-    /// while the spawn lives here.
+    /// All three travel as one [`PaneBirthHooks`] and all three are pinion-free, so the display,
+    /// lifetime and notification concerns live above while the spawn lives here.
     ///
     /// # Errors
     ///
@@ -1550,20 +1550,10 @@ impl Host {
         label: String,
         cols: u16,
         rows: u16,
-        on_dirty: Option<Box<dyn Fn() + Send>>,
-        on_exit: Option<Box<dyn Fn() + Send>>,
-        on_attention: Option<Box<dyn Fn(PaneId, Attention) + Send>>,
+        hooks: PaneBirthHooks,
     ) -> Result<PaneId, PanePtyError> {
         let workspace = self.workspace();
-        lock(&workspace).spawn_with_dirty(
-            command,
-            label,
-            cols,
-            rows,
-            on_dirty,
-            on_exit,
-            on_attention,
-        )
+        lock(&workspace).spawn_with_dirty(command, label, cols, rows, hooks)
     }
 
     /// Rebuild this host's registry from a durability [`Snapshot`] and re-spawn its panes — the
@@ -1678,16 +1668,16 @@ impl Host {
                 command,
                 label,
                 size: (pane.cols, pane.rows),
-                on_dirty: on_dirty(&pane.session),
-                on_exit: on_exit(),
-                // Keyed by NOTHING, unlike the wake beside it: the router asks the registry which
-                // session holds the pane, so a restored pane needs no session named here. The ID is
-                // bound HERE rather than by the pool, because a restore does not mint one — the
-                // caller chose it, and it is already in hand.
-                on_attention: on_attention().map(|tell| {
-                    let id = pane.id;
-                    Box::new(move |attention| tell(id, attention)) as Box<dyn Fn(Attention) + Send>
-                }),
+                // The attention hook is keyed by NOTHING, unlike the wake beside it: the router
+                // asks the registry which session holds the pane. The hooks are BOUND here rather
+                // than by the pool, because a restore does not mint an id — the caller chose it, and
+                // it is already in hand.
+                hooks: PaneBirthHooks {
+                    on_dirty: on_dirty(&pane.session),
+                    on_exit: on_exit(),
+                    on_attention: on_attention(),
+                }
+                .bind(pane.id),
                 history: history(pane.id),
             });
             match spawned {
@@ -2840,7 +2830,7 @@ impl HostClient for Host {
         };
         let (command, label) = crate::config::default_pane_command();
         let (cols, rows) = lock(&self.workspace()).default_size();
-        let _ = self.spawn(command, label, cols, rows, None, None, None);
+        let _ = self.spawn(command, label, cols, rows, PaneBirthHooks::default());
         name
     }
 
@@ -2931,11 +2921,20 @@ impl HostClient for Host {
         let mut workspace = lock(&workspace);
         let (cols, rows) = workspace.default_size();
         workspace
-            // NO attention hook, and it is a decision rather than an omission: this is the
-            // IN-PROCESS host's own new-pane path (a windowed shell that owns its registry), which
-            // has no wire clients and therefore nobody a routed message could be addressed to. The
-            // daemon's panes are born through `WorkspaceExternal`, which wires the router.
-            .spawn_with_dirty(command, label, cols, rows, on_dirty, None, None)
+            // NO exit and NO attention hook, and both are decisions rather than omissions: this is
+            // the IN-PROCESS host's own new-pane path (a windowed shell that owns its registry),
+            // which does not self-exit and has no wire clients for a routed message to reach. The
+            // daemon's panes are born through `WorkspaceExternal`, which wires both.
+            .spawn_with_dirty(
+                command,
+                label,
+                cols,
+                rows,
+                PaneBirthHooks {
+                    on_dirty,
+                    ..PaneBirthHooks::default()
+                },
+            )
             .ok()
     }
 
@@ -3232,7 +3231,13 @@ mod tests {
     fn a_host_without_a_pane_environment_publishes_nothing() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                echo_pane_var(),
+                "sh".to_owned(),
+                40,
+                6,
+                PaneBirthHooks::default(),
+            )
             .expect("spawn a pane");
         assert_eq!(printed_row(&host, id), "unset");
     }
@@ -3244,10 +3249,22 @@ mod tests {
         let host = Host::new((40, 6))
             .with_pane_env(pane_env_source(std::path::Path::new("/run/sprag/h.sock")));
         let first = host
-            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                echo_pane_var(),
+                "sh".to_owned(),
+                40,
+                6,
+                PaneBirthHooks::default(),
+            )
             .expect("spawn a pane");
         let second = host
-            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                echo_pane_var(),
+                "sh".to_owned(),
+                40,
+                6,
+                PaneBirthHooks::default(),
+            )
             .expect("spawn a second pane");
         assert_eq!(printed_row(&host, first), first.0.to_string());
         assert_eq!(
@@ -3267,7 +3284,7 @@ mod tests {
     fn a_restored_pane_is_told_which_pane_it_is() {
         let live = Host::new((80, 24));
         let id = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3353,7 +3370,13 @@ mod tests {
         let root = temp_project("local");
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                cat_in(&root),
+                "cat".to_owned(),
+                40,
+                6,
+                PaneBirthHooks::default(),
+            )
             .expect("spawn a pane inside the project");
 
         let project = host
@@ -3376,7 +3399,13 @@ mod tests {
         let root = temp_project("remote");
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                cat_in(&root),
+                "cat".to_owned(),
+                40,
+                6,
+                PaneBirthHooks::default(),
+            )
             .expect("spawn a pane inside the project");
         // Mark it the way `sprag ssh` does once its birth pane exists.
         lock(&host.workspace()).set_pane_remote(
@@ -3405,7 +3434,7 @@ mod tests {
             host.sessions().is_empty(),
             "a fresh host's empty anchor holds no pane and is not listed",
         );
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, PaneBirthHooks::default())
             .unwrap();
         let names: Vec<String> = host.sessions().into_iter().map(|s| s.name).collect();
         assert_eq!(
@@ -3420,7 +3449,7 @@ mod tests {
         let host = Host::new((40, 6));
         assert!(host.pane_ids().is_empty());
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, PaneBirthHooks::default())
             .unwrap();
         assert_eq!(host.pane_ids(), vec![id]);
         assert_eq!(host.pane_grid_size(id), (40, 6));
@@ -3632,7 +3661,7 @@ mod tests {
         command.arg("echo done-and-gone");
         command.env("TERM", "dumb");
         let id = host
-            .spawn(command, "sh".to_owned(), 40, 6, None, None, None)
+            .spawn(command, "sh".to_owned(), 40, 6, PaneBirthHooks::default())
             .expect("spawn a short-lived child");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -3663,7 +3692,7 @@ mod tests {
         assert!(host.pane_is_dead(id), "the client protocol reports it dead");
 
         let live = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, PaneBirthHooks::default())
             .expect("spawn a long-lived child");
         assert!(!host.pane_is_dead(live), "a running child is not dead");
         assert!(
@@ -3715,7 +3744,7 @@ mod tests {
     fn resize_updates_the_grid_geometry() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, PaneBirthHooks::default())
             .unwrap();
         host.resize(id, 100, 30, (0, 0));
         assert_eq!(host.pane_grid_size(id), (100, 30));
@@ -3731,7 +3760,7 @@ mod tests {
     fn restore_replays_a_panes_recorded_history_onto_its_screen() {
         let live = Host::new((80, 24));
         let id = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3773,9 +3802,9 @@ mod tests {
     #[test]
     fn a_restore_claims_the_daemon_for_the_whole_respawn_loop() {
         let live = Host::new((80, 24));
-        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+        live.spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
-        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+        live.spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3863,7 +3892,7 @@ mod tests {
     fn restore_without_history_brings_the_pane_back_blank() {
         let live = Host::new((80, 24));
         let id = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3896,10 +3925,10 @@ mod tests {
         // A live host: two panes in the default session…
         let live = Host::new((80, 24));
         let a = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         let b = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         // …and a second session "work" with one pane of its own.
         lock(live.registry()).new_session(Some("work")).unwrap();
@@ -3938,7 +3967,7 @@ mod tests {
 
         // A fresh spawn on the restored host mints ABOVE the restored ids — never reissuing one.
         let next = restored
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         assert_eq!(
             next,
@@ -3959,10 +3988,10 @@ mod tests {
     fn a_restore_brings_back_who_asked_for_a_pane() {
         let live = Host::new((80, 24));
         let opener = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         let opened = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         lock(&live.workspace()).set_pane_opened_by(opened, opener);
 
@@ -4006,10 +4035,10 @@ mod tests {
     fn a_restore_brings_back_what_a_pane_is_called() {
         let live = Host::new((80, 24));
         let named = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         let anonymous = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, PaneBirthHooks::default())
             .unwrap();
         lock(&live.workspace()).set_pane_name(
             named,
@@ -4273,7 +4302,7 @@ mod tests {
         use std::time::{Duration, Instant};
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, PaneBirthHooks::default())
             .unwrap();
         assert!(host.send_text(id, "hello"));
         // The cooked-mode `cat` echoes it back into the pane's screen.

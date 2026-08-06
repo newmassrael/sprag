@@ -1242,8 +1242,14 @@ mod tests {
     fn seed_panes(count: usize) {
         let host = Host::new((40, 6));
         for _ in 0..count {
-            host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
-                .unwrap();
+            host.spawn(
+                cat(),
+                "cat".to_owned(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
+            .unwrap();
         }
         seed_terminal(host);
     }

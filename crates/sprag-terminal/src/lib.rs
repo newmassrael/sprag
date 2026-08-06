@@ -46,8 +46,8 @@ pub use layout::{
 };
 pub use pane_name::{PaneName, PaneNameError};
 pub use pane_pty::{
-    Attention, CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput,
-    foreground_pgid_of,
+    Attention, CommandBuilder, PaneExit, PaneHooks, PanePty, PanePtyError, PanePtyHandle,
+    RawOutput, foreground_pgid_of,
 };
 pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,
@@ -77,5 +77,6 @@ pub use sprag_vt::closed_set;
 pub use tiling::{Divider, PaneRect, Projection, Rect, Tiling, fit_window, tile, with_ratio};
 pub use window_name::{WindowName, WindowNameError};
 pub use workspace::{
-    HistoryLimitSource, Pane, PaneEnvSource, PaneId, PaneInfo, PaneRebirth, Workspace,
+    HistoryLimitSource, Pane, PaneBirthHooks, PaneEnvSource, PaneId, PaneInfo, PaneRebirth,
+    Workspace,
 };

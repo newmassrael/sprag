@@ -392,15 +392,16 @@ pub(crate) fn use_terminal() -> Rc<TerminalView> {
                     label,
                     cols,
                     rows,
-                    Some(Box::new(move || sink.request_repaint())),
-                    // The in-process host (a test / debug escape hatch) does not self-exit:
-                    // it lives with the GUI process, so no daemon reaper.
-                    None,
-                    // ...and no attention router, for the same kind of reason: nothing ATTACHES to
-                    // an in-process host over a wire, so there is no client a pane's message could
-                    // be addressed to. The shipped GUI is a display client of the daemon, whose
-                    // panes are born wired.
-                    None,
+                    sprag_terminal::PaneBirthHooks {
+                        on_dirty: Some(Box::new(move || sink.request_repaint())),
+                        // The in-process host (a test / debug escape hatch) does not self-exit: it
+                        // lives with the GUI process, so no daemon reaper — and no attention router
+                        // either, for the same kind of reason: nothing ATTACHES to an in-process
+                        // host over a wire, so there is no client a pane's message could be
+                        // addressed to. The shipped GUI is a display client of the daemon, whose
+                        // panes are born wired.
+                        ..sprag_terminal::PaneBirthHooks::default()
+                    },
                 )
                 .expect("spawn a sprag-gui pane");
             }

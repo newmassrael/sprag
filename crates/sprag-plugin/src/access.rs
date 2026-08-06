@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
-    Attention, CommandBuilder, Pane, PaneId, PanePtyHandle, RawOutput, Workspace,
+    Attention, CommandBuilder, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput, Workspace,
 };
 use sprag_vt::Screen;
 
@@ -295,26 +295,21 @@ impl PaneLifecycle for WorkspacePaneAccess {
         // Carry the daemon's death-signal (if any) so a plugin-spawned pane feeds the reaper
         // exactly like a boot/mux one — the opaque hook is just a channel send, so this
         // registry-free layer wires it without learning what it does.
-        let on_exit = self.on_pane_exit.as_ref().map(|hook| {
-            let hook = Arc::clone(hook);
-            Box::new(move || hook()) as Box<dyn Fn() + Send>
-        });
-        // ...and its ATTENTION, on the same terms: opaque, registry-free, wired per birth.
-        let on_attention = self.on_attention.as_ref().map(|signal| {
-            let signal = Arc::clone(signal);
-            Box::new(move |pane, attention| signal(pane, attention))
-                as Box<dyn Fn(PaneId, Attention) + Send>
-        });
+        let hooks = PaneBirthHooks {
+            on_dirty: None,
+            on_exit: self.on_pane_exit.as_ref().map(|hook| {
+                let hook = Arc::clone(hook);
+                Box::new(move || hook()) as Box<dyn Fn() + Send>
+            }),
+            // ...and its ATTENTION, on the same terms: opaque, registry-free, wired per birth.
+            on_attention: self.on_attention.as_ref().map(|signal| {
+                let signal = Arc::clone(signal);
+                Box::new(move |pane, attention| signal(pane, attention))
+                    as Box<dyn Fn(PaneId, Attention) + Send>
+            }),
+        };
         lock(&self.workspace)
-            .spawn_with_dirty(
-                command,
-                program.clone(),
-                cols,
-                rows,
-                None,
-                on_exit,
-                on_attention,
-            )
+            .spawn_with_dirty(command, program.clone(), cols, rows, hooks)
             .map_err(|e| PaneError::Spawn(e.to_string()))
     }
 

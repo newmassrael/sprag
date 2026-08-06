@@ -44,6 +44,47 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// reply and degrades gracefully.
 const RAW_CAPTURE_CAP: usize = 256 * 1024;
 
+/// The three things a pane's READER THREAD can tell its host: something changed, the child is gone,
+/// the child is asking for a person.
+///
+/// # Why a type and not three parameters
+///
+/// Because they are one decision made once, at a birth, by whoever owns the pane's display and
+/// lifetime — and because they arrived one at a time. `on_dirty` came with the repaint seam,
+/// `on_exit` with the self-cleaning daemon, `on_attention` with the routed notification; the third
+/// one pushed [`PanePty::spawn_with_dirty`] to eight parameters, which is where a positional list
+/// stops being readable and a caller starts passing `None, None, None` and hoping. Named fields make
+/// a site that wires two of three say which two.
+///
+/// [`Default`] is every hook absent — a pane whose output nobody is waiting for, which is what this
+/// crate's own tests and [`PanePty::spawn`] want.
+#[derive(Default)]
+pub struct PaneHooks {
+    /// Invoked after each parsed PTY batch is applied to the screen, **and once more when the child
+    /// exits** — after [`is_eof`](PanePty::is_eof) publishes, so a wake can never observe the pane it
+    /// announces as still live. This is the sprag side of the pinion R999 `RepaintSink` seam: a
+    /// windowed host passes `Some(Box::new(move || sink.request_repaint()))`, the headless host
+    /// passes `bump_on_dirty`, which moves the scene revision so a parked `scene/waitFor` wakes.
+    pub on_dirty: Option<Box<dyn Fn() + Send>>,
+    /// Invoked EXACTLY ONCE, when the child has exited (the reader loop reached EOF), after
+    /// `on_dirty`'s exit wake. This is the "this child is gone" event as distinct from "this child
+    /// produced output", so a caller can act on a pane's death without a per-output-batch check: the
+    /// daemon reads it to end its own process when the last live pane dies. Fired after `is_eof`
+    /// publishes, so a liveness scan run from it never counts the pane it announces.
+    pub on_exit: Option<Box<dyn Fn() + Send>>,
+    /// Invoked when a batch RAISED an [`Attention`]: a notification OSC or a bell. Distinct from
+    /// [`Self::on_dirty`] because it is a different question — that one says *something changed,
+    /// repaint*, and this says *the child is asking for a person* — and because a notification
+    /// stamps no cells, so the two are not even the same event about the same bytes.
+    ///
+    /// **It runs ON THE READER THREAD, so it must not take a lock this daemon holds across a pane
+    /// drop.** `PanePty::Drop` JOINS this thread, so a hook that waited on a workspace lock would
+    /// deadlock the moment a pane-drop site held one — the hazard the daemon's reaper seam already
+    /// documents and solves the same way: the hook SENDS on a channel and a dedicated thread does
+    /// the work that needs the registry.
+    pub on_attention: Option<Box<dyn Fn(Attention) + Send>>,
+}
+
 /// A pane's child asking for a PERSON — the fact the reader thread reports through
 /// [`PanePty::spawn_with_dirty`]'s `on_attention` hook the moment the batch carrying it is applied.
 ///
@@ -262,44 +303,18 @@ impl PanePty {
             command,
             cols,
             rows,
-            None,
-            None,
-            None,
+            PaneHooks::default(),
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
     }
 
-    /// [`Self::spawn`] with three reader-thread callbacks:
+    /// [`Self::spawn`] with the pane's reader-thread callbacks — see [`PaneHooks`], which documents
+    /// each one and the reason they travel together.
     ///
-    /// * `on_dirty` — invoked after each parsed PTY batch is applied to the screen,
-    ///   **and once more when the child exits** — after [`is_eof`](Self::is_eof)
-    ///   publishes, so a wake can never observe the pane it announces as still live.
-    ///   This is the sprag side of the pinion R999 `RepaintSink` seam. A windowed host
-    ///   passes `Some(Box::new(move || sink.request_repaint()))`; the headless host
-    ///   passes `bump_on_dirty`, which moves the scene revision so a parked
-    ///   `scene/waitFor` wakes.
-    /// * `on_exit` — invoked EXACTLY ONCE, when the child has exited (the reader loop
-    ///   reached EOF), after `on_dirty`'s exit wake. This is the "this child is gone"
-    ///   event as distinct from "this child produced output", so a caller can act on a
-    ///   pane's death without a per-output-batch check: the daemon reads it to end its
-    ///   own process when the last live pane dies. Fired after `is_eof` publishes, so a
-    ///   liveness scan run from it never counts the pane it announces.
-    /// * `on_attention` — invoked when a batch RAISED an [`Attention`]: a notification OSC or a
-    ///   bell. Distinct from `on_dirty` because it is a different question — `on_dirty` says
-    ///   *something changed, repaint*, and this says *the child is asking for a person* — and
-    ///   because a notification stamps no cells, so the two are not even the same event about the
-    ///   same bytes.
-    ///
-    ///   **It runs ON THE READER THREAD, so it must not take a lock this daemon holds across a
-    ///   pane drop.** `PanePty::Drop` JOINS this thread, so a hook that waited on a workspace lock
-    ///   would deadlock the moment a pane-drop site held one — the hazard [`crate`]'s reaper seam
-    ///   already documents and solves the same way: the daemon's hook SENDS on a channel and a
-    ///   dedicated thread does the work that needs the registry.
-    ///
-    /// Both are deliberately pinion-free (`Box<dyn Fn() + Send>`), so this crate stays
-    /// decoupled from the GUI shell and the host lifetime. `None` is for a caller with
-    /// nothing to do (this crate's own tests, and [`spawn`](Self::spawn)).
+    /// All three are deliberately pinion-free (`Box<dyn Fn() + Send>`), so this crate stays decoupled
+    /// from the GUI shell and the host lifetime. [`PaneHooks::default`] is for a caller with nothing
+    /// to do (this crate's own tests, and [`spawn`](Self::spawn)).
     ///
     /// `history` is a restored pane's recorded scrollback as replayable terminal bytes (empty for
     /// an ordinary spawn). It is applied to the emulator BEFORE the reader thread exists, which is
@@ -317,12 +332,15 @@ impl PanePty {
         command: CommandBuilder,
         cols: u16,
         rows: u16,
-        on_dirty: Option<Box<dyn Fn() + Send>>,
-        on_exit: Option<Box<dyn Fn() + Send>>,
-        on_attention: Option<Box<dyn Fn(Attention) + Send>>,
+        hooks: PaneHooks,
         history: &[u8],
         history_limit: usize,
     ) -> Result<Self, PanePtyError> {
+        let PaneHooks {
+            on_dirty,
+            on_exit,
+            on_attention,
+        } = hooks;
         let cols = cols.max(1);
         let rows = rows.max(1);
         let pty_system = native_pty_system();
@@ -1377,11 +1395,12 @@ mod tests {
             command,
             20,
             4,
-            Some(Box::new(move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-            })),
-            None,
-            None,
+            PaneHooks {
+                on_dirty: Some(Box::new(move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                })),
+                ..PaneHooks::default()
+            },
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
@@ -1833,11 +1852,12 @@ mod tests {
             command,
             20,
             4,
-            Some(Box::new(move || {
-                let _ = tx.send(());
-            })),
-            None,
-            None,
+            PaneHooks {
+                on_dirty: Some(Box::new(move || {
+                    let _ = tx.send(());
+                })),
+                ..PaneHooks::default()
+            },
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
@@ -1869,11 +1889,12 @@ mod tests {
             command,
             20,
             4,
-            None,
-            Some(Box::new(move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-            })),
-            None,
+            PaneHooks {
+                on_exit: Some(Box::new(move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                })),
+                ..PaneHooks::default()
+            },
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
@@ -2046,11 +2067,12 @@ mod tests {
             command,
             40,
             6,
-            None,
-            None,
-            Some(Box::new(move |attention| {
-                lock(&sink).push(attention);
-            })),
+            PaneHooks {
+                on_attention: Some(Box::new(move |attention| {
+                    lock(&sink).push(attention);
+                })),
+                ..PaneHooks::default()
+            },
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
@@ -2085,40 +2107,86 @@ mod tests {
     ///
     /// The replayed scrollback runs the same OSC handling live output does, so the emulator comes
     /// back with `notification_seq` at 1 before the child has written a byte. The reader reads its
-    /// starting marks AFTER that replay, which is what makes the restore silent — and the CONTROL
-    /// is the live notification below it, on the same pane through the same hook, so a build that
-    /// never fired at all could not pass.
+    /// starting marks AFTER that replay, which is what makes the restore silent.
+    ///
+    /// **THE FIXTURE IS THE WHOLE POINT, and the first one was VACUOUS** — found by a revert-proof
+    /// that came back GREEN with the marks forced to zero. That version's child raised a live
+    /// notification of its own, and the emulator LATCHES only the most recent one: the replayed
+    /// notification was already overwritten by the time the reader looked, so the stale seq fired
+    /// the LIVE words and every assertion still held. The child here raises NOTHING and merely
+    /// PRINTS, so a reader that started its marks at zero reports the predecessor's sentence — which
+    /// is the defect, and is now the only thing that can happen.
+    ///
+    /// The CONTROL is the second pane below: same replay, same hook, and a child that DOES raise
+    /// one. Without it a build where the hook never fired at all would pass the silence above.
     #[test]
     fn a_restored_panes_recorded_notification_is_not_raised_again() {
+        let recorded: &[u8] = b"\x1b]9;the one from before the reboot\x07";
         let raised: Arc<Mutex<Vec<Attention>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&raised);
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
-        command.arg("sleep 0.2; printf '\\033]9;this one is live\\007'; cat");
+        // Ordinary output ONLY. Nothing here asks for a person, so anything the hook reports came
+        // from the replay above.
+        command.arg("printf 'working\\n'; cat");
         command.env("TERM", "xterm");
-        let _pty = PanePty::spawn_with_dirty(
+        let _quiet = PanePty::spawn_with_dirty(
             command,
             40,
             6,
-            None,
-            None,
-            Some(Box::new(move |attention| {
-                lock(&sink).push(attention);
-            })),
-            b"\x1b]9;the one from before the reboot\x07",
+            PaneHooks {
+                on_attention: Some(Box::new(move |attention| {
+                    lock(&sink).push(attention);
+                })),
+                ..PaneHooks::default()
+            },
+            recorded,
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
+        )
+        .expect("spawn a pty");
+
+        // THE CONTROL, on its own pane through the same hook: a restored pane whose child DOES raise
+        // one. Waiting for it is what gives the quiet pane above time to have spoken.
+        let control: Arc<Mutex<Vec<Attention>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&control);
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("printf 'working\\n'; sleep 0.2; printf '\\033]9;this one is live\\007'; cat");
+        command.env("TERM", "xterm");
+        let _live = PanePty::spawn_with_dirty(
+            command,
+            40,
+            6,
+            PaneHooks {
+                on_attention: Some(Box::new(move |attention| {
+                    lock(&sink).push(attention);
+                })),
+                ..PaneHooks::default()
+            },
+            recorded,
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
         .expect("spawn a pty");
 
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(5) && lock(&raised).is_empty() {
+        while start.elapsed() < Duration::from_secs(5) && lock(&control).is_empty() {
             sleep(Duration::from_millis(20));
         }
-        let seen = lock(&raised).clone();
-        assert_eq!(seen.len(), 1, "the replay raised nothing: {seen:?}");
-        match &seen[0] {
+        let seen_control = lock(&control).clone();
+        assert_eq!(
+            seen_control.len(),
+            1,
+            "the control's live notification reached the hook: {seen_control:?}",
+        );
+        match &seen_control[0] {
             Attention::Raised(notification) => assert_eq!(notification.body, "this one is live"),
-            other => panic!("only the live notification: {other:?}"),
+            other => panic!("the control raises a notification: {other:?}"),
         }
+
+        let seen_quiet = lock(&raised).clone();
+        assert!(
+            seen_quiet.is_empty(),
+            "a restored pane whose child asked for nothing must ask for nothing: {seen_quiet:?}",
+        );
     }
 }

@@ -192,12 +192,15 @@ impl WorkspaceExternal {
         registry: Arc<Mutex<SessionRegistry>>,
         scope: SessionScope,
         channels: Arc<ChannelRegistry>,
-        on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
-        attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
-        attention: Option<Arc<dyn Fn(PaneId, sprag_terminal::Attention) + Send + Sync>>,
-        agents: Option<Arc<crate::AgentClock>>,
-        samplers: crate::Samplers,
+        daemon: crate::DaemonShared,
     ) -> Self {
+        let crate::DaemonShared {
+            on_pane_exit,
+            attachments,
+            attention,
+            agents,
+            samplers,
+        } = daemon;
         Self {
             registry,
             scope,
@@ -399,11 +402,15 @@ impl WorkspaceExternal {
         if let Some(cwd) = cwd {
             command.cwd(cwd);
         }
-        let on_exit = self.on_pane_exit.as_ref().map(crate::pane_exit_hook);
-        // The attention hook is built over the session this pane is being born INTO, which is sound
-        // for `bump_on_dirty`'s reason: a pane cannot change session, so the answer this closure
-        // bakes cannot go stale.
-        let on_attention = self.attention.as_ref().map(crate::pane_attention_hook);
+        // The three reader-thread hooks a DAEMON's pane gets, as one value: the wake over THIS
+        // session's token (sound because a pane cannot change session), the reaper's death signal,
+        // and the attention signal — which names no session, because the router asks the registry
+        // who holds the pane (see `attention::Raised`).
+        let hooks = sprag_terminal::PaneBirthHooks {
+            on_dirty: Some(bump_on_dirty(&self.channels.revision(self.scope.session()))),
+            on_exit: self.on_pane_exit.as_ref().map(crate::pane_exit_hook),
+            on_attention: self.attention.as_ref().map(crate::pane_attention_hook),
+        };
         let mut workspace = lock(pool);
         let (default_cols, default_rows) = workspace.default_size();
         let id = workspace
@@ -412,9 +419,7 @@ impl WorkspaceExternal {
                 label,
                 cols.unwrap_or(default_cols),
                 rows.unwrap_or(default_rows),
-                Some(bump_on_dirty(&self.channels.revision(self.scope.session()))),
-                on_exit,
-                on_attention,
+                hooks,
             )
             .map_err(|_| InvokeError::Rejected)?;
         // Stamp the remote endpoint onto the just-born pane (metadata the process does not need),
@@ -2698,11 +2703,13 @@ mod tests {
                 Arc::clone(reg),
                 scope,
                 channels,
-                None,
-                None,
-                None,
-                None,
-                sampler(),
+                crate::DaemonShared {
+                    on_pane_exit: None,
+                    attachments: None,
+                    attention: None,
+                    agents: None,
+                    samplers: sampler(),
+                },
             ),
             revision,
         )
@@ -2721,11 +2728,13 @@ mod tests {
                 Arc::clone(reg),
                 scope,
                 channels,
-                None,
-                None,
-                None,
-                Some(Arc::clone(&agents)),
-                sampler(),
+                crate::DaemonShared {
+                    on_pane_exit: None,
+                    attachments: None,
+                    attention: None,
+                    agents: Some(Arc::clone(&agents)),
+                    samplers: sampler(),
+                },
             ),
             agents,
         )
@@ -3348,11 +3357,13 @@ mod tests {
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
             Arc::clone(&channels),
-            None,
-            None,
-            None,
-            None,
-            sampler(),
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: None,
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+            },
         );
 
         channels.announce("0", vec![crate::events::Event::PaneJobChanged(7)]);
@@ -4744,11 +4755,13 @@ mod tests {
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
-            None,
-            Some(attachments),
-            None,
-            None,
-            sampler(),
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: Some(attachments),
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+            },
         );
         assert_eq!(
             session_names(ext.query(SESSIONS_SLOT)),
@@ -5119,11 +5132,13 @@ mod tests {
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
-            Some(signal),
-            None,
-            None,
-            None,
-            sampler(),
+            crate::DaemonShared {
+                on_pane_exit: Some(signal),
+                attachments: None,
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+            },
         );
         // `new_session` sends exactly one signal by itself: the [`crate::BirthPin`] it takes fires
         // on release, deliberately, so a birth that FAILED still lets an idle daemon go. A BLOCKING
@@ -5297,11 +5312,13 @@ mod tests {
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
-            None,
-            Some(Arc::clone(&attachments)),
-            None,
-            None,
-            sampler(),
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: Some(Arc::clone(&attachments)),
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+            },
         );
         assert_eq!(lock(&attachments).attached_count("work"), 2, "two viewers");
 
@@ -5360,11 +5377,13 @@ mod tests {
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
-            Some(signal),
-            None,
-            None,
-            None,
-            sampler(),
+            crate::DaemonShared {
+                on_pane_exit: Some(signal),
+                attachments: None,
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+            },
         );
 
         assert_eq!(
@@ -5689,11 +5708,13 @@ mod tests {
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
-            Some(signal),
-            None,
-            None,
-            None,
-            sampler(),
+            crate::DaemonShared {
+                on_pane_exit: Some(signal),
+                attachments: None,
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+            },
         );
 
         assert_eq!(
@@ -6115,11 +6136,13 @@ mod tests {
             Arc::clone(reg),
             SessionScope::unscoped(reg),
             Arc::new(ChannelRegistry::default()),
-            None,
-            Some(attachments),
-            None,
-            None,
-            sampler(),
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: Some(attachments),
+                attention: None,
+                agents: None,
+                samplers: sampler(),
+            },
         )
     }
 

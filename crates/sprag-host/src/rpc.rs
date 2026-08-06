@@ -207,7 +207,9 @@ impl HostState {
         crate::DaemonShared {
             on_pane_exit: self.on_pane_exit(),
             attachments: Some(Arc::clone(self.attachments())),
-            attention: self.attention.clone(),
+            // The SIGNAL, derived here rather than in each surface: one place hands it over, so two
+            // cannot come to derive it differently.
+            attention: self.attention.as_ref().map(|router| router.signal()),
             agents: self.agents(),
             // The HOST's samplers, not fresh ones: a scene is assembled per request, so a sampler
             // minted here would hold nothing at the moment it was asked and every request would take
@@ -1984,9 +1986,10 @@ mod tests {
             "sh".to_string(),
             cols,
             rows,
-            Some(bump_on_dirty(&channels.revision(BOOT))),
-            None,
-            None,
+            sprag_terminal::PaneBirthHooks {
+                on_dirty: Some(bump_on_dirty(&channels.revision(BOOT))),
+                ..sprag_terminal::PaneBirthHooks::default()
+            },
         )
         .expect("spawn pane");
         HostState::new(host, channels, None)
@@ -2036,8 +2039,14 @@ mod tests {
     fn no_live_panes_tracks_the_registrys_liveness() {
         // A running `cat` keeps it false.
         let host = Host::new((40, 6));
-        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None, None)
-            .expect("spawn cat");
+        host.spawn(
+            sh("exec cat"),
+            "cat".into(),
+            40,
+            6,
+            sprag_terminal::PaneBirthHooks::default(),
+        )
+        .expect("spawn cat");
         assert!(
             !no_live_panes(host.registry()),
             "a running child means panes are live",
@@ -2046,7 +2055,13 @@ mod tests {
         // A sole pane whose child exits flips it true (polled — the child exits async).
         let host = Host::new((40, 6));
         let id = host
-            .spawn(sh("exec true"), "true".into(), 40, 6, None, None, None)
+            .spawn(
+                sh("exec true"),
+                "true".into(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .expect("spawn true");
         wait_for_eof(&host, id);
         assert!(
@@ -2070,7 +2085,13 @@ mod tests {
     fn a_pending_birth_keeps_the_daemon_alive() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(sh("exec true"), "true".into(), 40, 6, None, None, None)
+            .spawn(
+                sh("exec true"),
+                "true".into(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .expect("spawn true");
         wait_for_eof(&host, id);
         assert!(
@@ -2120,9 +2141,10 @@ mod tests {
                 "true".into(),
                 40,
                 6,
-                None,
-                Some(pane_exit_hook(&signal)),
-                None,
+                sprag_terminal::PaneBirthHooks {
+                    on_exit: Some(pane_exit_hook(&signal)),
+                    ..sprag_terminal::PaneBirthHooks::default()
+                },
             )
             .expect("spawn true");
         wait_for_eof(&host, dying);
@@ -2179,9 +2201,10 @@ mod tests {
             "true".into(),
             40,
             6,
-            None,
-            Some(pane_exit_hook(&signal)),
-            None,
+            sprag_terminal::PaneBirthHooks {
+                on_exit: Some(pane_exit_hook(&signal)),
+                ..sprag_terminal::PaneBirthHooks::default()
+            },
         )
         .expect("spawn true");
         // Poll for the fire (the reaper thread scans asynchronously; poll, don't sleep).
@@ -2198,17 +2221,24 @@ mod tests {
         // A pane dying beside a LIVE one must not fire — the daemon serves on.
         let host = Host::new((40, 6));
         let (signal, fired) = recording_reaper(host.registry());
-        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None, None)
-            .expect("spawn cat"); // stays live
+        host.spawn(
+            sh("exec cat"),
+            "cat".into(),
+            40,
+            6,
+            sprag_terminal::PaneBirthHooks::default(),
+        )
+        .expect("spawn cat"); // stays live
         let dying = host
             .spawn(
                 sh("exec true"),
                 "true".into(),
                 40,
                 6,
-                None,
-                Some(pane_exit_hook(&signal)),
-                None,
+                sprag_terminal::PaneBirthHooks {
+                    on_exit: Some(pane_exit_hook(&signal)),
+                    ..sprag_terminal::PaneBirthHooks::default()
+                },
             )
             .expect("spawn true");
         wait_for_eof(&host, dying);
@@ -2282,9 +2312,10 @@ mod tests {
                 "0-true".into(),
                 40,
                 6,
-                None,
-                Some(pane_exit_hook(&signal)),
-                None,
+                sprag_terminal::PaneBirthHooks {
+                    on_exit: Some(pane_exit_hook(&signal)),
+                    ..sprag_terminal::PaneBirthHooks::default()
+                },
             )
             .expect("spawn true into the default");
         wait_for_eof(&host, dying);

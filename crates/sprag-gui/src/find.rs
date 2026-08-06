@@ -569,7 +569,13 @@ mod tests {
     fn the_find_bar_searches_navigates_and_closes_over_a_real_pane() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                cat(),
+                "cat".to_owned(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .unwrap();
         let handle = host.pane_handle(id).expect("pane handle");
         let owner = Owner::new();
@@ -647,7 +653,13 @@ mod tests {
     fn the_chord_opens_the_bar_and_a_key_edits_the_needle_not_the_pane() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                cat(),
+                "cat".to_owned(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .unwrap();
         let handle = host.pane_handle(id).expect("pane handle");
         let owner = Owner::new();
@@ -763,7 +775,13 @@ mod tests {
     fn the_find_bar_searches_in_the_regex_language_when_toggled() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                cat(),
+                "cat".to_owned(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .unwrap();
         let handle = host.pane_handle(id).expect("pane handle");
         let owner = Owner::new();
@@ -825,7 +843,13 @@ mod tests {
     fn an_invalid_pattern_reports_the_refusal_not_an_empty_result() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
+            .spawn(
+                cat(),
+                "cat".to_owned(),
+                40,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
             .unwrap();
         let handle = host.pane_handle(id).expect("pane handle");
         let owner = Owner::new();

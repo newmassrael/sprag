@@ -159,12 +159,17 @@ pub struct DaemonShared {
     /// Per-client session attachment, read when the `sessions` slot is served to fill each
     /// `SessionInfo::attached`. `None` leaves every count at 0 — an honest "no wire clients here".
     pub attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
-    /// The daemon's attention router ([`crate::attention`]), wired into every pane a scene surface
-    /// spawns so a child asking for a person reaches the people looking at that session. `None` off
-    /// a daemon: an in-process host has no wire clients to address, which is the same reason
-    /// [`Self::attachments`] is optional — and the two are the pair that must be present together,
-    /// because a router with nowhere to deliver would run a thread to reach nobody.
-    pub attention: Option<Arc<attention::AttentionRouter>>,
+    /// The daemon's ATTENTION signal ([`attention::AttentionRouter::signal`]), wired into every pane
+    /// a scene surface spawns so a child asking for a person reaches the people looking at that
+    /// session. `None` off a daemon: an in-process host has no wire clients to address, which is the
+    /// same reason [`Self::attachments`] is optional — and the two are the pair that must be present
+    /// together, because a router with nowhere to deliver would run a thread to reach nobody.
+    ///
+    /// The SIGNAL and not the router, so every consumer gets it in the form it wires: a scene is
+    /// assembled per request, and asking each surface to derive its own hook from a router is asking
+    /// two places to agree about something one place can hand over.
+    pub attention:
+        Option<Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>>,
 
     /// The agent-state memory (H3), read by the pane list. `None` leaves the `agent` key absent,
     /// which D8 already defines as "no agent here", so a host without a detector serves the pre-H3
@@ -527,13 +532,12 @@ pub fn workspace_scene(
     daemon: DaemonShared,
     cells: PaneCells,
 ) -> Scene {
-    let DaemonShared {
-        on_pane_exit,
-        attachments,
-        attention,
-        agents,
-        samplers,
-    } = daemon;
+    // The two signals the PLUGIN surface needs, taken before the rest moves into the mux surface.
+    // Both are registry-FREE opaque `Fn`s (see `spawn_reaper` and `attention`), so a plugin-spawned
+    // pane feeds the reaper and can ask for a person exactly like a mux one, without the plugin
+    // layer ever learning what either hook does — the ISP boundary intact.
+    let plugin_exit = daemon.on_pane_exit.clone();
+    let plugin_attention = daemon.attention.clone();
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
     // below cannot nest inside it.
@@ -546,11 +550,6 @@ pub fn workspace_scene(
             .map(|pane| pane_container(pane.id(), pane.pty(), cells))
             .collect()
     };
-    // ONE attention signal, shared by both surfaces below — so a plugin-spawned pane and a
-    // mux-spawned one reach the same people. It names no session: the router asks the REGISTRY who
-    // holds the pane, because a scene's scope is NOT its new pane's session when the action was
-    // `new_session` (see `attention::Raised`, and the live smoke that measured it).
-    let attention = attention.map(|router| router.signal());
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux
     // concerns), so it carries the scope that says WHICH session it may act on...
     children.push(Scene::External(
@@ -558,11 +557,7 @@ pub fn workspace_scene(
             Arc::clone(registry),
             scope.clone(),
             Arc::clone(channels),
-            on_pane_exit.clone(),
-            attachments,
-            attention.clone(),
-            agents,
-            samplers,
+            daemon,
         )))
         .with_tag(MUX_TAG),
     ));
@@ -576,8 +571,8 @@ pub fn workspace_scene(
         ExternalNode::new(Box::new(plugins::PluginsExternal::new(
             Arc::clone(workspace),
             Arc::clone(runs),
-            on_pane_exit,
-            attention,
+            plugin_exit,
+            plugin_attention,
         )))
         .with_tag(PLUGINS_TAG),
     ));
