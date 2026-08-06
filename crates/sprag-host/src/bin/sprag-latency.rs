@@ -895,6 +895,152 @@ fn budget(label: &str, duration: Duration) {
     );
 }
 
+/// **THE POLL PAIR'S RETURN RATE — the instrument for a number this tree cites six times and could
+/// not reproduce.**
+///
+/// R292 measured the pair a follower had before `events/waitFor {since, match}` — `scene/waitFor
+/// {since}` then `events.<since>` — returning **22 431 times a second** against a build-rate pane,
+/// every answer empty. That figure is quoted in `sprag-rpc`, `bin/sprag.rs`, `notify.rs`, two test
+/// files and `sprag-mcp`, and it came from a probe DELETED under the no-temporary-files rule. The
+/// DIRECTION had a permanent test; the RATE was a dated sentence in six places.
+///
+/// # The cursor is the whole mechanism, and the first version of this row got it wrong
+///
+/// A follower's `since` comes from the EVENTS batch — the last journal RECORD's revision — and the
+/// SCENE revision runs away from it, because a pane's output bumps the scene and writes no journal
+/// record. So `scene/waitFor` never parks: it takes the CATCH-UP path and answers at once, forever,
+/// with an events read that is empty every time. That is the defect, not slowness.
+///
+/// The first version of this row fed `waitFor` its OWN answer instead, which parks properly, and
+/// reported ~800 pairs a second — a number about the daemon's wake cadence, wearing the citation's
+/// name. Both readings are taken now, because the DIFFERENCE between them is the finding: the
+/// pair is not expensive, it is running a loop that cannot terminate.
+///
+/// `None` when there is no `sprag-term` to drive, exactly like the socket rows above.
+fn poll_pair_rate() -> Option<PollPair> {
+    /// Long enough that per-call jitter is not the reading, short enough that a person running the
+    /// tool does not think it has hung.
+    const WINDOW: Duration = Duration::from_millis(500);
+
+    let exe = std::env::current_exe().ok()?;
+    let daemon = exe.parent()?.join("sprag-term");
+    if !daemon.is_file() {
+        return None;
+    }
+
+    // A pane flooding as hard as the pty will take it. ⚠ The first fixture forked a `seq` per
+    // iteration and the row reported the pane's FORK rate under the pair's name; a shell builtin and
+    // `yes` agree within noise, which is what says the pane is not the limit.
+    let chatty = chatty_host(&daemon, "exec yes xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")?;
+    // ...and one that says nothing after boot. `cat` blocks on its pty with nobody writing to it, so
+    // the only thing that could move this daemon's revision is this row's own reads.
+    let quiet = chatty_host(&daemon, "exec cat")?;
+
+    Some(PollPair {
+        window: WINDOW,
+        follower: pairs_in(&chatty.0.1, WINDOW, Cursor::Journal, None),
+        parked: pairs_in(&chatty.0.1, WINDOW, Cursor::Scene, None),
+        quiet: pairs_in(&quiet.0.1, WINDOW, Cursor::Journal, Some(WINDOW)),
+    })
+}
+
+/// What [`poll_pair_rate`] measured — three counts over one window, and the row's meaning is in
+/// their ratios rather than in any one of them.
+struct PollPair {
+    window: Duration,
+    /// The pair as a FOLLOWER ran it: `since` from the events journal, which the scene runs away
+    /// from — the catch-up path, and the citation's subject.
+    follower: u64,
+    /// The same pair fed `waitFor`'s OWN answer, which parks — what the loop would cost if the
+    /// cursor matched what it waits on.
+    parked: u64,
+    /// The follower's pair against a QUIET pane — the control, and the only one that may be zero.
+    quiet: u64,
+}
+
+/// Which revision a pair's `since` comes from — the distinction the whole row is about.
+#[derive(Clone, Copy)]
+enum Cursor {
+    /// The events batch's own cursor, which lags the scene: what a follower had.
+    Journal,
+    /// The revision `waitFor` itself answered: what parks.
+    Scene,
+}
+
+/// A daemon whose boot pane runs `program`, plus a connection to it — the two-line version of
+/// [`socket_host`] for a row that needs a pane of its own BEHAVIOUR rather than of its own size.
+fn chatty_host(
+    daemon: &std::path::Path,
+    program: &str,
+) -> Option<(SocketHost, sprag_rpc::HostConn)> {
+    let sock = std::env::temp_dir().join(format!(
+        "sprag-latency-poll-{}-{}.sock",
+        std::process::id(),
+        program.len(),
+    ));
+    let _ = std::fs::remove_file(&sock);
+    let child = std::process::Command::new(daemon)
+        .arg("--size")
+        .arg(format!("{COLS}x{ROWS}"))
+        .arg("--")
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(program)
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .env("SPRAG_HOST_RPC", "1")
+        .env("TERM", "dumb")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let host = SocketHost(child, sock.clone());
+    let conn = sprag_rpc::HostConn::connect(&sock, CONTENT_TIMEOUT).ok()?;
+    Some((host, conn))
+}
+
+/// How many complete `waitFor` + `events` pairs a client gets through in `window`, with `since`
+/// taken from `cursor`.
+///
+/// `deadline` bounds the read, because a pair that parks correctly against a quiet pane would
+/// otherwise hang the tool on a daemon that is behaving exactly as it should.
+fn pairs_in(
+    sock: &std::path::Path,
+    window: Duration,
+    cursor: Cursor,
+    deadline: Option<Duration>,
+) -> u64 {
+    let Ok(mut conn) = sprag_rpc::HostConn::connect(sock, CONTENT_TIMEOUT) else {
+        return 0;
+    };
+    if conn.set_read_deadline(deadline).is_err() {
+        return 0;
+    }
+    let mut since = 0;
+    let start = Instant::now();
+    let mut pairs = 0;
+    while start.elapsed() < window {
+        let Ok(woken) = conn.call("scene/waitFor", json!({ "since": since })) else {
+            break;
+        };
+        let scene = woken["revision"].as_u64().unwrap_or(since);
+        let Ok(batch) = conn.call(
+            "scene/query",
+            json!({ "path": mux_action_path(&sprag_host::wire::events_slot_since(since)) }),
+        ) else {
+            break;
+        };
+        since = match cursor {
+            // The journal's own `next`, which is where a follower's cursor came from — and it does
+            // not move while nothing journal-worthy happens, however much the pane prints.
+            Cursor::Journal => batch["next"].as_u64().unwrap_or(since),
+            Cursor::Scene => scene,
+        };
+        pairs += 1;
+    }
+    pairs
+}
+
 fn main() -> ExitCode {
     if cfg!(debug_assertions) {
         eprintln!("sprag-latency: refusing to measure a debug build.");
@@ -2223,6 +2369,39 @@ fn main() -> ExitCode {
         refresh_present.min.as_secs_f64() / sweep_pass(2).as_secs_f64() * 100.0,
         sweep_pass(2).as_secs_f64() / SWEEP_INTERVAL.as_secs_f64() * 100.0,
     );
+
+    // THE POLL PAIR'S RATE — see `poll_pair_rate` for why this row exists at all.
+    match poll_pair_rate() {
+        None => {
+            println!("\nSKIPPED — the poll pair: no `sprag-term` was found beside this binary.")
+        }
+        Some(pair) => {
+            let per_second = |count: u64| count as f64 / pair.window.as_secs_f64();
+            println!(
+                "\nMEASURED — WHAT POLLING COST, and the reason `events/waitFor {{since, match}}`\n\
+                 exists. The pair a follower had before it, against a pane printing without pause:"
+            );
+            println!(
+                "  {:>9.0} /s  pairs, cursor from the EVENTS BATCH — what a follower did\n  \
+                 {:>9.0} /s  the RETURNS that is, since a pair is two calls\n  \
+                 {:>9.0} /s  pairs, cursor from waitFor's OWN answer — what PARKING costs\n  \
+                 {:>9.0} /s  the follower's pair against a QUIET pane — THE CONTROL\n\
+                 \n  \
+                 The second line is the figure this tree cites in six places (22 431/s on R292's\n  \
+                 box), and the first and third together are WHY: a follower's `since` comes from\n  \
+                 the journal, the SCENE runs away from it because output bumps the scene and writes\n  \
+                 no record, so `waitFor` never parks — it takes the catch-up path and answers at\n  \
+                 once, forever, with an empty events read every time. Fed the revision it actually\n  \
+                 waits on it parks properly and the same loop costs {:.0}x less. The pair was never\n  \
+                 expensive; it was a loop that could not terminate.",
+                per_second(pair.follower),
+                per_second(pair.follower) * 2.0,
+                per_second(pair.parked),
+                per_second(pair.quiet),
+                per_second(pair.follower) / per_second(pair.parked).max(1.0),
+            );
+        }
+    }
 
     if socket_rows.is_empty() {
         println!("\nSKIPPED — the socket rows: no `sprag-term` was found beside this binary.");

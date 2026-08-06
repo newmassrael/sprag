@@ -514,6 +514,9 @@ pub const MESSAGE_FIELD: &str = "message";
 /// change is asking a different question, and answering it with that wake does not work — measured
 /// on a real daemon, the pair `scene/waitFor` + `events.<since>` returns **22 431 times a second**
 /// against a pane producing build-rate output, every answer empty, where a quiet pane returns none.
+/// **The instrument is in the tree** (`sprag-latency`'s poll-pair row, R320): it reproduces the rate
+/// and names the mechanism — a follower's `since` is the JOURNAL's cursor, output bumps the SCENE
+/// and writes no record, so `waitFor` answers from the catch-up path every time instead of parking.
 /// The cursor cannot even advance past it: a batch's `next` is the last RECORD's revision, so the
 /// scene runs away from the reader and every subsequent park is already stale.
 ///

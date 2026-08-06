@@ -3792,7 +3792,8 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
 /// It used to park on `scene/waitFor {since}` and then read `events.<since>`. That pair is released
 /// by **pane OUTPUT**, which advances the scene revision and records nothing — so against a pane
 /// running a build it returned instantly with an empty batch, forever: measured on a real daemon at
-/// **22 431 returns a second** (build-rate pane, every answer empty) against **zero** for a quiet one.
+/// **22 431 returns a second** (build-rate pane, every answer empty) against **zero** for a quiet one
+/// — reproducible since R320 by `sprag-latency`'s poll-pair row, which also prints the zero.
 /// For an agent that meant *"wait until the build in pane 2 finishes"* — the use case this tool's own
 /// description names — could not be expressed at all, and each useless return cost a tool result and
 /// an LLM turn.

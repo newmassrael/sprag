@@ -3520,7 +3520,9 @@ fn events(args: Vec<String>) -> io::Result<()> {
     // change until R298 — see [`EVENTS_SUBSCRIBE_METHOD`]. It parks on the JOURNAL for the same
     // reason the wait did: `scene/waitFor` is released by pane OUTPUT, which records nothing, so a
     // follow built on it spun at socket speed against any pane running a build (measured: 22 431
-    // returns a second, every one empty).
+    // returns a second, every one empty; `sprag-latency`'s poll-pair row reproduces it, and names
+    // the cause: the cursor a follower sends is the JOURNAL's and the scene runs away from it, so
+    // `waitFor` never parks at all).
     //
     // No deadline: waiting is this call's contract, not a hazard (see the doc above).
     conn.set_read_deadline(None)?;

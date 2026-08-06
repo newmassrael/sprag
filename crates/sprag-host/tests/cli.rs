@@ -5043,7 +5043,9 @@ fn following_keeps_delivering_across_several_changes_on_one_request() {
 /// Two halves, and the first is the one that used to be broken. Against a pane writing continuously
 /// the follow loop parked on `scene/waitFor`, which OUTPUT releases — so it read the slot, printed
 /// nothing, and parked again, at socket speed (measured: 22 431 rounds a second). The verb looked
-/// idle to a human while spinning, and a `--pane` filter could not have helped, because there was no
+/// idle to a human while spinning — `sprag-latency`'s poll-pair row reproduces the rate and shows
+/// the same loop costing 16x less when its cursor matches what it waits on. A `--pane` filter could
+/// not have helped, because there was no
 /// record to filter.
 ///
 /// The second half is that it still delivers: the change the caller named arrives, from the same

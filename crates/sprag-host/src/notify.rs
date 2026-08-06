@@ -1316,7 +1316,9 @@ mod tests {
         // ⚠ THE DEFECT, at unit scale. A pane's output bumps the session's revision and appends
         // NOTHING, so a `scene/waitFor` is released by it and answers with an empty batch — measured
         // at 22 431 returns per second against a build-rate pane, every one of them empty, where a
-        // quiet pane returns none. A wait parked HERE sleeps through all of it, because this
+        // quiet pane returns none. REPRODUCIBLE since R320: `sprag-latency`'s poll-pair row
+        // measured 17 152 returns a second on another box, against 542 for the same loop fed the
+        // revision it actually waits on. A wait parked HERE sleeps through all of it, because this
         // journal's wake condition is a RECORD and output is not one.
         let channels = ChannelRegistry::default();
         let replies = park_filtered(&channels, "work", ConnId::allocate(), job_of(2));

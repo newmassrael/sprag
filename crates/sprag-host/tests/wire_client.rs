@@ -3556,7 +3556,10 @@ fn the_events_family_reads_a_change_by_cursor_and_reading_does_not_bump() {
 ///
 /// * `scene/waitFor {since}` returns almost immediately, and the batch that follows it is EMPTY —
 ///   the defect, which cost the agent surface a tool call and an LLM turn per output batch. Measured
-///   at 22 431 returns a second against a build-rate pane, all empty.
+///   at 22 431 returns a second against a build-rate pane, all empty — a rate `sprag-latency`'s
+///   poll-pair row reproduces (17 152/s on another box) and explains: the follower's cursor is the
+///   journal's, the scene runs away from it, and `waitFor` therefore takes the catch-up path every
+///   time instead of parking.
 /// * `events/waitFor {since, match}` trips its deadline instead, because output appends no record
 ///   and this wait's condition is a record.
 ///
