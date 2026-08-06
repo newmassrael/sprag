@@ -12045,6 +12045,68 @@
         "The refusing PEER is spelled four times -- `tests/cli.rs` twice, `mcp_stdio.rs`, `pty_round_trip.rs`. Sharing it needs a dev-only support crate, which is a workspace decision."
       ]
     },
+    "R323": {
+      "decision_summary": "One vocabulary, two mouths: every verb sprag has is named once, and a key reaches every verb a keystroke can mean",
+      "changes_bullets": [
+        "DEBT FIRST: three hand-written lists said what sprag can do and nothing held any two together -- `run()`'s dispatch, the `USAGE` const whose own doc said \"a second list is exactly what nothing checks\", and the keyboard's 19-form array. Measured by running the shipped binary: `run` and `hook` were dispatched and named in `sprag --help` nowhere at all.",
+        "`sprag_host::vocabulary` is the one list: 54 verbs, each stating how a SHELL spells it and what a KEYSTROKE can mean by it, answered by one exhaustive match so a new verb decides every property at once.",
+        "The CLI dispatches through it exhaustively, so a verb in the table with no implementation does not compile; `sprag --help` is BUILT from it, so a dispatched-and-undocumented verb is unrepresentable rather than ratcheted.",
+        "HEAD: measured against the shipped binary, `sprag bind-key F9 <verb>` took 8 of the 47 CLI verbs outright, 6 more with flags, and told the other 33 that the verb \"is not an action\" -- the sentence a TYPO gets, about words the same binary runs.",
+        "A real verb a keystroke cannot mean is now refused with the RULE it falls under (five reasons, closed set) and the way to run it; a verb a keystroke COULD mean and sprag has not built is named as sprag's own gap, which leaves the keyboard's remaining hole countable at four.",
+        "`break-pane`, `kill-session` and `new` became bindable, which is the whole of the CLI's argument asymmetry read the other way: each needs a name or a pane in a shell and needs nothing at all from a client that already knows where it is standing. `prefix !` is tmux's own key; the two session verbs ship bound to nothing.",
+        "The keyboard's list of forms is DERIVED from the table now, so the 19-entry array whose own doc recorded eight rounds of staleness cannot exist twice."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 46 targets / 2298 passed (from 2282); clippy 0 with no suppression; doc gate 0; headless pixel smoke 260 passed / 0 failed, twice consecutively (from 255, five new checks).",
+        "The ratchet is driven at the SHIPPED BINARY, not at the table: every one of the 54 verbs is run, the 49 the table says the shell dispatches must not answer `unknown command`, and the 5 it says are only keystrokes must be refused by name with the line that would bind them.",
+        "`bind-key` is answered for all 54 and the counts are asserted -- 14 bound bare, 8 refused for their flags, 28 refused with a rule, 4 named as unbuilt. The author's arithmetic said 16/6 and the run said 14/8.",
+        "CONTROLS that can fail: a word in no vocabulary still reads as a typo and still exits 2 where a refused real verb exits 1; a bindable verb's refusal is about its FLAGS and never about the verb.",
+        "Six mutations RED and one refused at compile: the derived refusal removed, a variant added and forgotten in ALL, `prefix !` unbound (both fronts red together), the `new` arm's before-read dropped, the keystroke-only sentence silenced, and the daemon's follow removed from `new_session`. Sources restored from an own snapshot, digest-verified; the control green on the restored tree.",
+        "The three verbs are pressed LIVE at both fronts: a real `sprag-tui` on a pty (the broken-out pane is alone in the window it made; a session is born, followed, and killed -- and only the pair proves the follow) and the shipped GUI under lavapipe.",
+        "The break's refusal arm is driven too: `prefix !` with one pane is refused by the daemon, and the client paints `break-pane: nowhere to go` rather than looking broken."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "Four verbs are `NotBuilt` by name -- `run`, `resize-window`, `join-pane`, `move-pane`. Three of the four need a PICK that carries what it is for: `chooser::Pick::commit` goes to a row and nothing else, so a chooser that answered \"join this pane into the window I picked\" is a generalisation of that type rather than a new view.",
+        "`HostClient::kill_session` returns `()`, so the new key's failure is unreportable at either front -- R316's shape, inherited from a signature this round did not widen. The same is true of `kill_window`.",
+        "The GUI palette is a THIRD catalogue (21 arms) with its own grammar, and it is ahead of the keyboard on `join-pane`: a pointer surface carries a target a keystroke cannot. Nothing joins the catalogue to the vocabulary except the `bound()` pairing this round corrected.",
+        "The TUI's break arm with no pane focused, and the GUI's with a hole slot, have no driver.",
+        "`sprag list-keys` names the bindable forms and does not mention the four a keystroke could mean and sprag has not built."
+      ],
+      "publishable_decision_summary": "One vocabulary, two mouths: every verb sprag has is named once, and a key reaches every verb a keystroke can mean",
+      "publishable_changes_bullets": [
+        "DEBT FIRST: three hand-written lists said what sprag can do and nothing held any two together -- `run()`'s dispatch, the `USAGE` const whose own doc said \"a second list is exactly what nothing checks\", and the keyboard's 19-form array. Measured by running the shipped binary: `run` and `hook` were dispatched and named in `sprag --help` nowhere at all.",
+        "`sprag_host::vocabulary` is the one list: 54 verbs, each stating how a SHELL spells it and what a KEYSTROKE can mean by it, answered by one exhaustive match so a new verb decides every property at once.",
+        "The CLI dispatches through it exhaustively, so a verb in the table with no implementation does not compile; `sprag --help` is BUILT from it, so a dispatched-and-undocumented verb is unrepresentable rather than ratcheted.",
+        "HEAD: measured against the shipped binary, `sprag bind-key F9 <verb>` took 8 of the 47 CLI verbs outright, 6 more with flags, and told the other 33 that the verb \"is not an action\" -- the sentence a TYPO gets, about words the same binary runs.",
+        "A real verb a keystroke cannot mean is now refused with the RULE it falls under (five reasons, closed set) and the way to run it; a verb a keystroke COULD mean and sprag has not built is named as sprag's own gap, which leaves the keyboard's remaining hole countable at four.",
+        "`break-pane`, `kill-session` and `new` became bindable, which is the whole of the CLI's argument asymmetry read the other way: each needs a name or a pane in a shell and needs nothing at all from a client that already knows where it is standing. `prefix !` is tmux's own key; the two session verbs ship bound to nothing.",
+        "The keyboard's list of forms is DERIVED from the table now, so the 19-entry array whose own doc recorded eight rounds of staleness cannot exist twice."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 46 targets / 2298 passed (from 2282); clippy 0 with no suppression; doc gate 0; headless pixel smoke 260 passed / 0 failed, twice consecutively (from 255, five new checks).",
+        "The ratchet is driven at the SHIPPED BINARY, not at the table: every one of the 54 verbs is run, the 49 the table says the shell dispatches must not answer `unknown command`, and the 5 it says are only keystrokes must be refused by name with the line that would bind them.",
+        "`bind-key` is answered for all 54 and the counts are asserted -- 14 bound bare, 8 refused for their flags, 28 refused with a rule, 4 named as unbuilt. The author's arithmetic said 16/6 and the run said 14/8.",
+        "CONTROLS that can fail: a word in no vocabulary still reads as a typo and still exits 2 where a refused real verb exits 1; a bindable verb's refusal is about its FLAGS and never about the verb.",
+        "Six mutations RED and one refused at compile: the derived refusal removed, a variant added and forgotten in ALL, `prefix !` unbound (both fronts red together), the `new` arm's before-read dropped, the keystroke-only sentence silenced, and the daemon's follow removed from `new_session`. Sources restored from an own snapshot, digest-verified; the control green on the restored tree.",
+        "The three verbs are pressed LIVE at both fronts: a real `sprag-tui` on a pty (the broken-out pane is alone in the window it made; a session is born, followed, and killed -- and only the pair proves the follow) and the shipped GUI under lavapipe.",
+        "The break's refusal arm is driven too: `prefix !` with one pane is refused by the daemon, and the client paints `break-pane: nowhere to go` rather than looking broken."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "Four verbs are `NotBuilt` by name -- `run`, `resize-window`, `join-pane`, `move-pane`. Three of the four need a PICK that carries what it is for: `chooser::Pick::commit` goes to a row and nothing else, so a chooser that answered \"join this pane into the window I picked\" is a generalisation of that type rather than a new view.",
+        "`HostClient::kill_session` returns `()`, so the new key's failure is unreportable at either front -- R316's shape, inherited from a signature this round did not widen. The same is true of `kill_window`.",
+        "The GUI palette is a THIRD catalogue (21 arms) with its own grammar, and it is ahead of the keyboard on `join-pane`: a pointer surface carries a target a keystroke cannot. Nothing joins the catalogue to the vocabulary except the `bound()` pairing this round corrected.",
+        "The TUI's break arm with no pane focused, and the GUI's with a hole slot, have no driver.",
+        "`sprag list-keys` names the bindable forms and does not mention the four a keystroke could mean and sprag has not built."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
