@@ -918,6 +918,21 @@ impl Urgency {
             Self::Critical => b"2",
         }
     }
+
+    /// This urgency's NAME, for the surfaces that spell the scale in words rather than in digits.
+    ///
+    /// The same three names kitty's own protocol documents its digits with, and the same three the
+    /// freedesktop desktop-notification specification uses — which is why a windowed client can
+    /// hand this straight to a notifier while a terminal client sends [`digit`](Self::digit). One
+    /// scale, two renderings of it, and neither front inventing a third.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::Critical => "critical",
+        }
+    }
 }
 
 /// Which system selection an OSC 52 clipboard operation addresses. A windowing system

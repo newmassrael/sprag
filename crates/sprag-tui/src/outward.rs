@@ -38,7 +38,7 @@
 //!
 //! * **The URGENCY survives.** `build_osc99_notification` hardcodes `i=1:d=0` and never emits a
 //!   `u=` key, so a child that said *a person is needed* is forwarded as an ordinary notification.
-//!   Here the chain is faithful end to end: kitty `u=2` in a pane → [`Severity::Alert`] on the row →
+//!   Here the chain is faithful end to end: kitty `u=2` in a pane → [`Severity::Alert`](sprag_host::report::Severity::Alert) on the row →
 //!   `u=2` out to the person's terminal. Their API caller cannot express urgency at all.
 //! * **The person's focus is read PER CLIENT.** `foreground_client_outer_focus` reads one client —
 //!   whichever their server last promoted — so with two terminals attached, one person's window
@@ -51,91 +51,24 @@
 //!   bytes and answers `shown`; a [`MessageText`] that broke a rule was already turned into a
 //!   sentence NAMING the rule before it got here, so what is forwarded is what the person reads.
 //!
-//! And one honest trade the other way: they also do the OS-NATIVE notification, which reaches a
-//! person whose terminal understands no OSC at all. sprag does not, deliberately — a `notify-send`
-//! runs on the machine the CLIENT is on, and the client this module lives in is the one people run
-//! over ssh, where that machine is a server with nobody in front of it. An `OSC` reaches the terminal
-//! the person is actually sitting at, through the same ssh pipe the panes come down.
+//! And the trade the other way, which has since been HALVED rather than accepted: they also do the
+//! OS-NATIVE notification, which reaches a person whose terminal understands no OSC at all. **This
+//! client still does not, and that remains deliberate** — a `notify-send` runs on the machine the
+//! CLIENT is on, and this is the client people run over ssh, where that machine is a server with
+//! nobody in front of it. An `OSC` reaches the terminal the person is actually sitting at, through
+//! the same ssh pipe the panes come down. What changed is that the argument was only ever about a
+//! TERMINAL client: `sprag-gui` has opened a window on somebody's screen, so the machine it runs on
+//! is by construction the machine the person is at, and [`crate::outward`]'s windowed counterpart
+//! (`sprag_gui::outward`) does the desktop notification there. One policy word, each front doing
+//! what its own medium can.
 
 use std::fmt::Write as _;
 use std::io::Write;
 
-use sprag_host::options::{NOTIFY_OUTWARD, Options};
-use sprag_host::report::{Announcement, MessageText, Severity};
-use sprag_vt::Urgency;
+use sprag_host::options::Options;
+use sprag_host::outward::{Forward, Person, follows, urgency_of};
+use sprag_host::report::{Announcement, MessageText};
 use termwiz::escape::csi::{CSI, DecPrivateMode, DecPrivateModeCode, Mode};
-
-use crate::focus::Person;
-
-sprag_vt::closed_set! {
-    /// WHEN a message is copied out to the terminal this client is running in — the
-    /// `notify-outward` option's three values.
-    ///
-    /// Three and not a switch, because the middle one is the point and the outer two are the
-    /// answers a person gives when it is wrong for them. `off` is the silence sprag had before this
-    /// existed; `always` is for a terminal that reports no focus (mode 1004 is not universal) or a
-    /// person who wants the notification regardless.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-    pub enum Forward {
-        /// Never copy a message out. The row is the only delivery.
-        Off,
-        /// Copy it out only while the person is [`Person::Away`] — the default, for the reason the
-        /// module docs give: a message a person can already read is not news.
-        #[default]
-        Unfocused,
-        /// Copy every message out, whether or not the person is looking.
-        Always,
-    }
-}
-
-impl Forward {
-    /// The word this policy is spelled with in `config.toml` and in `show-options`.
-    ///
-    /// ONE spelling, exactly as [`Severity::word`] is: the option's vocabulary
-    /// ([`sprag_host::options::NOTIFY_OUTWARD_VALUES`]) is checked against these by a test in this
-    /// crate, because the table lives in a crate that cannot depend on this one — the arrangement
-    /// `detach-on-destroy` documents.
-    #[must_use]
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Unfocused => "unfocused",
-            Self::Always => "always",
-        }
-    }
-
-    /// The policy `word` names, DERIVED from [`word`](Self::word) by walking the closed set rather
-    /// than by a second `match` that could disagree with it.
-    #[must_use]
-    pub fn parse(word: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|policy| policy.word() == word)
-    }
-
-    /// The policy the user's file puts in force.
-    ///
-    /// A value this build does not know leaves the DEFAULT standing rather than ending the client:
-    /// every stored value came through the option table's own canonicalisation, so this cannot
-    /// happen for a file sprag wrote — and a display client must not lose a person's panes over an
-    /// internal inconsistency a test already forbids.
-    #[must_use]
-    pub fn of(options: &Options) -> Self {
-        options
-            .get(NOTIFY_OUTWARD)
-            .and_then(Self::parse)
-            .unwrap_or_default()
-    }
-
-    /// Whether this policy needs the terminal to REPORT focus at all.
-    ///
-    /// The gate on DEC private mode 1004 and, with it, on [`crate::focus`]'s read-ahead: a person
-    /// who set `off` or `always` has asked a question whose answer does not depend on where they
-    /// are, so their terminal is never asked and their own `Alt-[` is never read ahead of. The cost
-    /// of the decoder is paid only by the policy that needs it.
-    #[must_use]
-    pub const fn needs_focus(self) -> bool {
-        matches!(self, Self::Unfocused)
-    }
-}
 
 /// How the terminal this client is running in takes a desktop notification.
 ///
@@ -273,22 +206,6 @@ impl Outward {
         let _ = out.flush();
     }
 
-    /// Whether a message must be copied out, given where the person is.
-    ///
-    /// `person` is [`None`] when this client never asked its terminal to report focus, which is
-    /// **not** the same as the person being here: it is the state of a client whose policy does not
-    /// need the answer. [`Forward::Unfocused`] therefore answers `false` for it — unreachable by
-    /// construction (that policy is exactly the one that asks), and answered rather than panicked
-    /// because a display client must not die over its own bookkeeping.
-    #[must_use]
-    pub fn follows(policy: Forward, person: Option<Person>) -> bool {
-        match policy {
-            Forward::Off => false,
-            Forward::Always => true,
-            Forward::Unfocused => person == Some(Person::Away),
-        }
-    }
-
     /// The sentence a person reads in the notification: the session, spelled as the status row
     /// spells it, and the words the row would have shown.
     ///
@@ -317,7 +234,7 @@ impl Outward {
         announcement: &Announcement,
         out: &mut impl Write,
     ) {
-        if !Self::follows(Forward::of(options), person) {
+        if !follows(Forward::of(options), person) {
             return;
         }
         let sequence = self.sequence(session, announcement);
@@ -358,32 +275,6 @@ impl Outward {
     }
 }
 
-/// kitty's `u=` digit for a message of this severity — the OUTWARD half of R318's projection.
-///
-/// # The two directions are not inverses, and that is deliberate
-///
-/// [`sprag_host::attention`] maps a child's [`Urgency`] onto [`Severity`] on the way IN, collapsing
-/// `Low` and `Normal` onto [`Severity::Note`]. This maps back, and `Note` becomes
-/// [`Urgency::Normal`] rather than `Low` — so a child that said `u=0` is forwarded as `u=1`.
-///
-/// That is not information lost by accident. `u=0` means *background information; miss it and
-/// nothing is lost*, and by the time a message is being copied out to a person who has left the
-/// room, the product has already decided it is worth interrupting them for — the row showed it, the
-/// policy said follow them. Forwarding that as *ignorable* would be the sequence contradicting the
-/// decision that produced it. So `Low` is a value this client can RECEIVE and never SENDS, which is
-/// the honest shape of a projection between two scales that mean different things.
-///
-/// [`Severity::Alert`] is the one that matters and it is exact: an alert holds the row until a person
-/// touches a key, and `u=2` is kitty's *the child says a person is needed*. Those are the same claim.
-fn urgency_of(severity: Severity) -> Urgency {
-    match severity {
-        // A warning is *something did not work*, which is not *a person is needed* — `Alert` is the
-        // arm that claims that, and it is the only one that gets kitty's critical.
-        Severity::Note | Severity::Warn => Urgency::Normal,
-        Severity::Alert => Urgency::Critical,
-    }
-}
-
 /// `raw` wrapped so tmux passes it through to the terminal tmux is itself running in.
 ///
 /// Every `ESC` inside the payload is DOUBLED, which is tmux's own documented escaping for its
@@ -405,6 +296,7 @@ fn through_tmux(raw: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sprag_host::report::Severity;
 
     /// An [`Outward`] built from an env table, so a test names what the terminal claims to be
     /// instead of reaching into the process's own environment.
@@ -425,7 +317,7 @@ mod tests {
     fn options(policy: Forward) -> Options {
         let mut options = Options::default();
         options
-            .set(NOTIFY_OUTWARD, policy.word())
+            .set(sprag_host::options::NOTIFY_OUTWARD, policy.word())
             .expect("a policy is a value the option takes");
         options
     }
@@ -434,128 +326,6 @@ mod tests {
         Announcement {
             text: MessageText::parse(text).expect("a legal message"),
             severity,
-        }
-    }
-
-    /// The whole 3x3 of policy against where the person is — because the middle row is the feature
-    /// and the outer two are what a person sets when it is wrong for them, and a table is the only
-    /// way to say that no cell was decided by accident.
-    #[test]
-    fn a_message_follows_the_person_exactly_when_the_policy_says_so() {
-        for policy in Forward::ALL {
-            // The whole closed set of answers, DERIVED — `None` (never asked) plus every place a
-            // person can be — so a third arm on `Person` would force a decision here rather than
-            // slipping past a list somebody typed out.
-            for person in std::iter::once(None).chain(Person::ALL.map(Some)) {
-                let want = match (policy, person) {
-                    (Forward::Off, _) => false,
-                    (Forward::Always, _) => true,
-                    (Forward::Unfocused, seen) => seen == Some(Person::Away),
-                };
-                assert_eq!(
-                    Outward::follows(policy, person),
-                    want,
-                    "{policy:?} with the person {person:?}",
-                );
-            }
-        }
-    }
-
-    /// Only the policy that reads the answer asks the question — so a person on `off` or `always`
-    /// pays neither the mode nor the read-ahead that mode makes necessary.
-    #[test]
-    fn only_the_focus_policy_asks_the_terminal_about_focus() {
-        for policy in Forward::ALL {
-            let mut outward = outward(&[]);
-            let mut person = None;
-            let mut wrote = Vec::new();
-            outward.follow(&options(policy), &mut person, &mut wrote);
-            assert_eq!(outward.watching(), policy.needs_focus(), "{policy:?}");
-            assert_eq!(
-                person.is_some(),
-                policy.needs_focus(),
-                "{policy:?} must track a person exactly when it asks about one",
-            );
-            assert_eq!(
-                wrote.is_empty(),
-                !policy.needs_focus(),
-                "{policy:?} must write the mode exactly when it wants it",
-            );
-        }
-    }
-
-    /// **THE MIRROR: the mode the terminal is in is a function of the setting IN FORCE**, and a
-    /// client that stops watching FORGETS where the person was.
-    ///
-    /// Found by the debt sweep rather than by the design. This client re-reads `config.toml` on
-    /// every keystroke, so a policy frozen at start-up would be the one setting in that file which
-    /// needed a restart — and a stale `Away` left behind by a policy that stopped asking would go on
-    /// forwarding to a person who is sitting right there.
-    #[test]
-    fn the_mode_and_the_person_follow_the_setting_in_force() {
-        let mut outward = outward(&[]);
-        let mut person = None;
-        let mut wrote = Vec::new();
-
-        outward.follow(&options(Forward::Unfocused), &mut person, &mut wrote);
-        assert_eq!(person, Some(Person::Here), "a watched person starts here");
-        assert_eq!(
-            String::from_utf8(std::mem::take(&mut wrote)).expect("utf8"),
-            "\u{1b}[?1004h"
-        );
-
-        // The same policy again writes NOTHING — the mirror moves the terminal, it does not re-tell
-        // it what it already knows, which is what makes this cheap enough to run per keystroke.
-        outward.follow(&options(Forward::Unfocused), &mut person, &mut wrote);
-        assert!(
-            wrote.is_empty(),
-            "an unchanged policy writes nothing: {wrote:?}"
-        );
-
-        // The person leaves...
-        person = Some(Person::Away);
-        // ...and the user turns the feature off. The mode is given back AND the stale answer is
-        // dropped, which is the half a `watching` flag alone would not have covered.
-        outward.follow(&options(Forward::Off), &mut person, &mut wrote);
-        assert_eq!(String::from_utf8(wrote).expect("utf8"), "\u{1b}[?1004l");
-        assert_eq!(person, None, "a client that stopped asking must forget");
-        assert!(!outward.watching());
-    }
-
-    /// The default policy is the one the module argues for, read through the OPTION TABLE rather
-    /// than from this enum's own `Default` — so the file's default and the type's cannot drift.
-    #[test]
-    fn the_option_in_force_with_the_user_silent_is_the_focus_policy() {
-        assert_eq!(Forward::of(&Options::default()), Forward::Unfocused);
-        assert_eq!(Forward::default(), Forward::Unfocused);
-    }
-
-    /// **The option's vocabulary IS this enum's**, both ways: every word the table offers parses to
-    /// a distinct policy, and every policy is offered. The arrangement `detach-on-destroy`
-    /// documents — the table lives in a crate that cannot depend on this one, so nothing but a test
-    /// holds them together.
-    #[test]
-    fn the_options_vocabulary_is_exactly_the_policy_set() {
-        let offered = sprag_host::options::NOTIFY_OUTWARD_VALUES;
-        let from_policy: Vec<&str> = Forward::ALL.iter().map(|policy| policy.word()).collect();
-        assert_eq!(
-            offered, &from_policy,
-            "the option must offer exactly the policies, in the same order",
-        );
-        for word in offered {
-            assert!(
-                Forward::parse(word).is_some(),
-                "{word:?} is offered by the option and parses to no policy",
-            );
-        }
-        // ...and the canonicalisation a user's file goes through preserves them, which is the round
-        // trip the value actually takes.
-        let mut options = Options::default();
-        for policy in Forward::ALL {
-            options
-                .set(NOTIFY_OUTWARD, policy.word())
-                .expect("an offered value is acceptable");
-            assert_eq!(Forward::of(&options), policy);
         }
     }
 

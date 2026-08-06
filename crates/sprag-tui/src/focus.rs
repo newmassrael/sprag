@@ -52,29 +52,14 @@
 
 use termwiz::input::{InputEvent, KeyCode, KeyEvent, Modifiers};
 
-/// Where the PERSON is, as far as this client has been told by its terminal.
+/// Where the PERSON is — [`sprag_host::outward::Person`], re-exported here because this decoder is
+/// what ANSWERS it for a terminal client.
 ///
-/// Two arms and not three: an "unknown" arm would be a state every terminal without mode 1004 sits
-/// in forever, and every reader would then have to decide what to do about it — which is the
-/// decision this type makes ONCE, by starting at [`Self::Here`]. A terminal reports a CHANGE, so a
-/// client that has been told nothing has been told nothing has changed.
-///
-/// Whether this client tracks the answer AT ALL is a separate question, spelled as an
-/// `Option<Person>` by the loop that owns it: `None` says the reports were never asked for, which is
-/// not the same as "the person is here" and must not be readable as it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Person {
-    /// Looking at this terminal — the starting value, for the reason above.
-    #[default]
-    Here,
-    /// Gone: the terminal reported losing focus and has not reported getting it back.
-    Away,
-}
-
-impl Person {
-    /// Both arms, for a test that has to cover the closed set rather than the two it remembered.
-    pub const ALL: [Self; 2] = [Self::Here, Self::Away];
-}
+/// The type moved to the host crate when `sprag-gui` gained an outward of its own: a window manager
+/// answers the same question a DEC 1004 report does, and two spellings of *here* and *away* is the
+/// duplication the option's own policy already avoids. What stays here is the terminal's way of
+/// finding out.
+pub use sprag_host::outward::Person;
 
 /// Whether `event` could be the FIRST half of a focus report — the gate on the read-ahead.
 ///

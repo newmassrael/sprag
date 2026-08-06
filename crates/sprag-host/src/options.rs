@@ -55,6 +55,7 @@
 //! re-reads it live — an exposure limit that a user can edit, and that takes effect without the
 //! daemon restarting, is not an exposure limit.
 
+use crate::outward::Forward;
 use crate::window::WindowSize;
 use std::collections::BTreeMap;
 
@@ -304,38 +305,42 @@ pub const MONITOR_BELL: &str = "monitor-bell";
 /// switch over both would make a chatty notifier cost the user their bell.
 pub const MONITOR_NOTIFICATION: &str = "monitor-notification";
 
-/// Whether a message this client shows also follows the PERSON out to the terminal it is running in
-/// — and when.
+/// Whether a message a display client shows also follows the PERSON out of the client — and when.
 ///
 /// tmux has no counterpart: it can pass a pane's notification escape through to the outer terminal
 /// untouched, which is not the same act at all (it forwards what a CHILD wrote, unconditionally and
 /// without knowing what it says). This forwards what sprag DECIDED to tell a person, as a
-/// notification of its own, only when the row it painted cannot have been read.
+/// notification of its own, only when the surface it painted cannot have been read.
 ///
 /// Not `tui-`prefixed, unlike [`GUI_FONT`]: the question — *should a message reach the person when
-/// they are not looking at this client?* — is frontend-independent, and only the MECHANISM is the
-/// terminal client's (its outward is the host terminal's own notification, where a windowed
-/// client's would be its desktop's). A prefix would have to be renamed the day the other frontend
-/// performs the same policy.
+/// they are not looking at this client?* — is frontend-independent, and only the MECHANISM belongs
+/// to a front. **Both perform it**, each in its own medium and from the same policy word:
 ///
-/// **Only `sprag-tui` performs it today**, and that is said here rather than left for a user to
-/// discover: `sprag-gui` paints the message strip and forwards nothing, so setting this changes
-/// nothing for a windowed client. What it would take there is a desktop notifier and a window-focus
-/// read, neither of which exists in that frontend — a gap with a surface decision in it, registered
-/// rather than half-built.
+/// * `sprag-tui` writes the terminal it is running in an `OSC 9` (kitty's `OSC 99` where that
+///   carries the urgency), because its machine may be a server reached over ssh and the terminal at
+///   the far end of that pipe is where the person is sitting.
+/// * `sprag-gui` asks the DESKTOP, because a process that has opened a window is by construction on
+///   the machine the person is at. It reads where they are from the window manager rather than from
+///   a terminal mode, so it needs nothing of the person's terminal to be true.
 ///
-/// The values and the default live on `sprag_tui::outward::Forward`, whose `word` this table's
-/// vocabulary is checked against by a test in that crate — the arrangement
-/// [`DETACH_ON_DESTROY_VALUES`] documents, for the same reason: the policy lives in a crate this one
-/// cannot depend on.
+/// The values and the default live on [`Forward`], in this crate, which is
+/// what lets [`NOTIFY_OUTWARD_VALUES`] be derived from the policy instead of held level with it by a
+/// cross-crate test — the opposite of the arrangement [`DETACH_ON_DESTROY_VALUES`] documents, and
+/// the reason that one still needs its test.
 pub const NOTIFY_OUTWARD: &str = "notify-outward";
 
 /// [`NOTIFY_OUTWARD`]'s values, in order of increasing loudness.
 ///
-/// Spelled here AND as `sprag_tui::outward::Forward::word`;
-/// `the_options_vocabulary_is_exactly_the_policy_set` in that crate holds the two together, and it
-/// checks the ORDER too so `show-options`'s refusal lists them the way this doc reads them.
-pub const NOTIFY_OUTWARD_VALUES: &[&str] = &["off", "unfocused", "always"];
+/// DERIVED from [`Forward`], which is the policy both display clients
+/// perform — so the words a user may write and the words a client acts on are one list, the way
+/// [`WINDOW_SIZE_VALUES`] already is. It was a second spelling held level by a cross-crate test
+/// until the policy moved into this crate; the test that remains checks what a derivation cannot
+/// (that each word survives this table's own canonicalisation).
+pub const NOTIFY_OUTWARD_VALUES: &[&str] = &[
+    Forward::Off.word(),
+    Forward::Unfocused.word(),
+    Forward::Always.word(),
+];
 
 /// How big a session's window is when several clients of different sizes are attached — tmux's
 /// `window-size`.
