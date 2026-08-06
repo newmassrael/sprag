@@ -969,90 +969,71 @@ impl EventFilter {
     }
 }
 
-/// WHAT KIND of change an [`Event`] is, with no subject attached — the event's own name.
-///
-/// ## Why this exists, and why it is DERIVED rather than declared beside [`Event`]
-///
-/// A waiter says which changes it wants to be woken for ([`EventFilter`]), and the thing it names is
-/// a kind. So the kind has to be a value that can be parsed off the wire and compared, which a
-/// variant of an enum carrying subjects is not.
-///
-/// The load-bearing word is *derived*: [`Event::kind`] is an exhaustive match, so a new [`Event`]
-/// variant **does not compile** until it has a kind, and is therefore filterable by construction.
-/// That is the whole difference between this and a parallel match vocabulary. The rival at
-/// `9a4ce5e1` declares three enumerations of one vocabulary — 26 `EventKind`, 19 `EventMatch`, 27
-/// `Subscription` — with nothing forcing them to agree, and **seven kinds their daemon emits cannot
-/// be named to their `events.wait` at all** (`layout.updated` among them). Nothing here can drift
-/// that way, because there is only one list and the compiler owns it.
-///
-/// [`wire_str`](Self::wire_str) is also the ONE place an event's wire name is spelled. Before this
-/// type the names lived in the serializer, so the word a client read and the word a filter would
-/// have to parse were two independent literals; now [`Event::to_wire`] reads them from here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EventKind {
-    /// [`Event::PaneCreated`].
-    PaneCreated,
-    /// [`Event::PaneClosed`].
-    PaneClosed,
-    /// [`Event::PaneRenamed`].
-    PaneRenamed,
-    /// [`Event::PaneSelected`].
-    PaneSelected,
-    /// [`Event::AgentStateChanged`].
-    PaneAgentStateChanged,
-    /// [`Event::PaneJobChanged`].
-    PaneJobChanged,
-    /// [`Event::PaneMoved`].
-    PaneMoved,
-    /// [`Event::WindowCreated`].
-    WindowCreated,
-    /// [`Event::WindowClosed`].
-    WindowClosed,
-    /// [`Event::WindowSelected`].
-    WindowSelected,
-    /// [`Event::WindowRenamed`].
-    WindowRenamed,
-    /// [`Event::SessionCreated`].
-    SessionCreated,
-    /// [`Event::SessionClosed`].
-    SessionClosed,
-    /// [`Event::SessionRenamed`].
-    SessionRenamed,
-    /// [`Event::LayoutUpdated`].
-    LayoutUpdated,
-    /// [`Event::WindowsReordered`].
-    WindowsReordered,
+sprag_terminal::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// WHAT KIND of change an [`Event`] is, with no subject attached — the event's own name.
+    ///
+    /// ## Why this exists, and why it is DERIVED rather than declared beside [`Event`]
+    ///
+    /// A waiter says which changes it wants to be woken for ([`EventFilter`]), and the thing it names is
+    /// a kind. So the kind has to be a value that can be parsed off the wire and compared, which a
+    /// variant of an enum carrying subjects is not.
+    ///
+    /// The load-bearing word is *derived*: [`Event::kind`] is an exhaustive match, so a new [`Event`]
+    /// variant **does not compile** until it has a kind, and is therefore filterable by construction.
+    /// That is the whole difference between this and a parallel match vocabulary. The rival at
+    /// `9a4ce5e1` declares three enumerations of one vocabulary — 26 `EventKind`, 19 `EventMatch`, 27
+    /// `Subscription` — with nothing forcing them to agree, and **seven kinds their daemon emits cannot
+    /// be named to their `events.wait` at all** (`layout.updated` among them). Nothing here can drift
+    /// that way, because there is only one list and the compiler owns it.
+    ///
+    /// [`wire_str`](Self::wire_str) is also the ONE place an event's wire name is spelled. Before this
+    /// type the names lived in the serializer, so the word a client read and the word a filter would
+    /// have to parse were two independent literals; now [`Event::to_wire`] reads them from here.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum EventKind {
+        /// [`Event::PaneCreated`].
+        PaneCreated,
+        /// [`Event::PaneClosed`].
+        PaneClosed,
+        /// [`Event::PaneRenamed`].
+        PaneRenamed,
+        /// [`Event::PaneSelected`].
+        PaneSelected,
+        /// [`Event::AgentStateChanged`].
+        PaneAgentStateChanged,
+        /// [`Event::PaneJobChanged`].
+        PaneJobChanged,
+        /// [`Event::PaneMoved`].
+        PaneMoved,
+        /// [`Event::WindowCreated`].
+        WindowCreated,
+        /// [`Event::WindowClosed`].
+        WindowClosed,
+        /// [`Event::WindowSelected`].
+        WindowSelected,
+        /// [`Event::WindowRenamed`].
+        WindowRenamed,
+        /// [`Event::SessionCreated`].
+        SessionCreated,
+        /// [`Event::SessionClosed`].
+        SessionClosed,
+        /// [`Event::SessionRenamed`].
+        SessionRenamed,
+        /// [`Event::LayoutUpdated`].
+        LayoutUpdated,
+        /// [`Event::WindowsReordered`].
+        WindowsReordered,
+    }
 }
 
 impl EventKind {
     /// The wire key a RENAME's new name rides under — [`detail_key`](Self::detail_key)'s word for
     /// both renaming kinds, spelled once so the two cannot drift apart.
     pub const RENAME_DETAIL_KEY: &'static str = "name";
-
-    /// Every kind, so a test can walk the whole vocabulary rather than the subset its author
-    /// remembered.
-    ///
-    /// Hand-listed, and kept honest by `all_lists_every_kind_and_each_round_trips`: that test
-    /// asserts this slice's LENGTH against a literal, so a new variant fails it until it is added
-    /// here — the same "assert the count, not just the exit code" discipline R275 cost a round.
-    pub const ALL: &'static [Self] = &[
-        Self::PaneCreated,
-        Self::PaneClosed,
-        Self::PaneRenamed,
-        Self::PaneSelected,
-        Self::PaneAgentStateChanged,
-        Self::PaneJobChanged,
-        Self::PaneMoved,
-        Self::WindowCreated,
-        Self::WindowClosed,
-        Self::WindowSelected,
-        Self::WindowRenamed,
-        Self::SessionCreated,
-        Self::SessionClosed,
-        Self::SessionRenamed,
-        Self::LayoutUpdated,
-        Self::WindowsReordered,
-    ];
 
     /// This kind's name on the wire — the `type` field of an event object, and the word a
     /// [`Clause`] names.
@@ -2049,18 +2030,23 @@ mod tests {
 
     #[test]
     fn all_lists_every_kind_and_each_round_trips_its_wire_name() {
-        // The COUNT is the ratchet on `ALL` itself: the exhaustive match in `sample` forces a new
-        // variant to be handled, but nothing forces it into a hand-written slice — so a walk over
-        // `ALL` would silently not cover it. R275 cost a round to exactly this shape of silence.
-        assert_eq!(
-            EventKind::ALL.len(),
-            16,
-            "a kind was added or removed — update `ALL` and this count together",
+        // ⚠ THE COUNT LITERAL IS GONE, and its absence is the improvement (R316). It used to be
+        // the ratchet on `ALL` itself — a hand-written slice that a new variant would silently not
+        // reach — and it asserted one hand-typed number against one hand-typed list, which is two
+        // things a careless edit updates together and a careful one forgets. `ALL` is GENERATED
+        // with the enum from a single variant list now (`sprag_terminal::closed_set!`), so there is
+        // no second list for a kind to be missing from and no length to disagree with it.
+        //
+        // What is still asserted here is the part a macro cannot know: that every kind's wire word
+        // ROUND TRIPS. The walk below is over the whole type by construction.
+        assert!(
+            !EventKind::ALL.is_empty(),
+            "the walk below must have something to walk",
         );
         for kind in EventKind::ALL {
             assert_eq!(
                 EventKind::from_wire(kind.wire_str()),
-                Some(*kind),
+                Some(kind),
                 "{} must parse back to the kind it prints",
                 kind.wire_str(),
             );
@@ -2079,7 +2065,7 @@ mod tests {
         // the event, so a kind that disagreed with its own events would emit a key with no value or
         // a value with no key.
         for kind in EventKind::ALL {
-            let event = sample(*kind);
+            let event = sample(kind);
             match (kind.subject_key(), event.subject()) {
                 (Some(key), Some(subject)) => assert_eq!(
                     key,

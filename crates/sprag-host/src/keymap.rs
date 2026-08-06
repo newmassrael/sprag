@@ -371,37 +371,35 @@ impl fmt::Display for KeySpec {
     }
 }
 
-/// What a [`BoundAction`] acts on — the four subjects this vocabulary has.
-///
-/// A grouping axis, and it is an enum rather than a string because it is READ: the help view orders
-/// its sections by it, so "which group is this in" has to be a decision with a fixed set of answers
-/// and a fixed order rather than a label each caller invents.
-///
-/// The order is the declaration order, and it is the reading order of the view: the CLIENT's own
-/// actions first, because `list-keys` and `detach-client` are what a user who is lost needs and the
-/// top of a list is where they will look; then outward through the containment the product itself
-/// uses, pane inside window inside session.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum ActionSubject {
-    /// This client and its keyboard — detach, send the prefix, show the keys.
-    Client,
-    /// One pane: splitting, focusing, swapping, sizing, zooming, naming.
-    Pane,
-    /// One window: creating, walking to, killing, naming.
-    Window,
-    /// The session itself.
-    Session,
+sprag_terminal::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// What a [`BoundAction`] acts on — the four subjects this vocabulary has.
+    ///
+    /// A grouping axis, and it is an enum rather than a string because it is READ: the help view orders
+    /// its sections by it, so "which group is this in" has to be a decision with a fixed set of answers
+    /// and a fixed order rather than a label each caller invents.
+    ///
+    /// The order is the declaration order, and it is the reading order of the view: the CLIENT's own
+    /// actions first, because `list-keys` and `detach-client` are what a user who is lost needs and the
+    /// top of a list is where they will look; then outward through the containment the product itself
+    /// uses, pane inside window inside session.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+    pub enum ActionSubject {
+        /// This client and its keyboard — detach, send the prefix, show the keys.
+        Client,
+        /// One pane: splitting, focusing, swapping, sizing, zooming, naming.
+        Pane,
+        /// One window: creating, walking to, killing, naming.
+        Window,
+        /// The session itself.
+        Session,
+    }
 }
 
 impl ActionSubject {
-    /// Every subject, in the reading order the view uses.
-    ///
-    /// An array literal for [`PaneDir::ALL`]'s reason and with [`PaneDir::ALL`]'s residual: Rust has
-    /// no stable way to derive it, so a fifth subject left out of this would compile and simply
-    /// never render a section. The test that walks every [`BoundAction`] and asserts its subject is
-    /// in here is what catches that.
-    pub const ALL: [Self; 4] = [Self::Client, Self::Pane, Self::Window, Self::Session];
-
     /// What the view calls this group.
     #[must_use]
     pub fn heading(self) -> &'static str {

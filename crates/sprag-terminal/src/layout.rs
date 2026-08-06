@@ -95,25 +95,27 @@ pub enum SplitSide {
     Second,
 }
 
-/// One of the four directions a pane can have a NEIGHBOUR in — tmux `select-pane -L/-R/-U/-D`.
-///
-/// Not a fifth vocabulary: a direction IS a pair this module already speaks — an axis
-/// ([`SplitDir`]) and a side of it ([`SplitSide`]). `Left` is the `First` side of a `Horizontal`
-/// division, `Down` the `Second` side of a `Vertical` one. Stating it that way is what lets
-/// [`LayoutTree::neighbor`] be a walk over the tree's own shape instead of a second geometry.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PaneDir {
-    Left,
-    Right,
-    Up,
-    Down,
+crate::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// One of the four directions a pane can have a NEIGHBOUR in — tmux `select-pane -L/-R/-U/-D`.
+    ///
+    /// Not a fifth vocabulary: a direction IS a pair this module already speaks — an axis
+    /// ([`SplitDir`]) and a side of it ([`SplitSide`]). `Left` is the `First` side of a `Horizontal`
+    /// division, `Down` the `Second` side of a `Vertical` one. Stating it that way is what lets
+    /// [`LayoutTree::neighbor`] be a walk over the tree's own shape instead of a second geometry.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum PaneDir {
+        Left,
+        Right,
+        Up,
+        Down,
+    }
 }
 
 impl PaneDir {
-    /// Every direction, in the order tmux's own flags are conventionally listed (`-L -R -U -D`) —
-    /// what a caller asking for a pane's whole neighbourhood iterates.
-    pub const ALL: [Self; 4] = [Self::Left, Self::Right, Self::Up, Self::Down];
-
     /// The English phrase for "past a pane in this direction" — `"to the left of"`, `"above"` — for a
     /// surface that has to SAY there is nothing that way.
     ///

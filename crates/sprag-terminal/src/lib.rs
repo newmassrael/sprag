@@ -15,6 +15,9 @@
 
 pub mod activity;
 pub mod arrangement;
+/// Declaring an enum together with the array of every one of its variants, so the two cannot drift.
+/// A plain `//` on the module below: an outer doc on a `mod` merges with the module's own `//!`.
+pub mod closed_set;
 pub mod command;
 /// Deriving a directory's current git branch — a session-sidebar display fact (crate-internal).
 mod git;

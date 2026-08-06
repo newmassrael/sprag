@@ -62,41 +62,47 @@ use crate::attach::{AttachmentRegistry, ClientSize};
 use crate::lock;
 use crate::scope::SessionScope;
 
-/// The policy that decides a session's window size from its attached clients — tmux's
-/// `window-size` option.
-///
-/// Every variant here is a rule this daemon PERFORMS — see the module docs of [`crate::options`]
-/// for how a refused value is answered with the list of ones that work.
-///
-/// Three of the four DERIVE the window from the clients looking at it. [`Manual`](Self::Manual) is
-/// the one that does not, and that difference is why it needs storage nothing else here needs: a
-/// derived answer can be recomputed from facts the daemon already holds, and a declared one exists
-/// only because somebody said it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub enum WindowSize {
-    /// The largest attached client, per dimension — nobody's view is cropped, and smaller clients
-    /// see part of the window. tmux's `largest`.
-    Largest,
-    /// The smallest attached client, per dimension — nothing is ever cropped, and larger clients
-    /// have margin. tmux's `smallest`.
-    Smallest,
-    /// The client that most recently attached or reported a new area. tmux's `latest`, and what
-    /// sprag did by construction before any of this existed, which is why it is the default: a
-    /// user with one client sees exactly what they always saw.
-    Latest,
-    /// The size an operator PINNED with `resize-window`
-    /// ([`Window::manual_size`](sprag_terminal::Window::manual_size)) — the window stops following
-    /// its clients, and a client bigger than it has margin while a smaller one sees part of it.
-    /// tmux's `manual`.
+sprag_terminal::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// The policy that decides a session's window size from its attached clients — tmux's
+    /// `window-size` option.
     ///
-    /// The point of it is that the window survives who is watching. Measured before this variant
-    /// existed: a session whose panes a user had arranged at 100x30 was reflowed to 80x24 the
-    /// instant any client attached, and stayed there after it left — a program's wrap width decided
-    /// by whoever happened to look at it last, permanently, with nothing that could pin it.
+    /// Every variant here is a rule this daemon PERFORMS — see the module docs of [`crate::options`]
+    /// for how a refused value is answered with the list of ones that work.
     ///
-    /// With NOTHING pinned it is not a rule yet, so it defers to [`DEFAULT`](Self::DEFAULT); see
-    /// [`arbitrate`].
-    Manual,
+    /// Three of the four DERIVE the window from the clients looking at it. [`Manual`](Self::Manual) is
+    /// the one that does not, and that difference is why it needs storage nothing else here needs: a
+    /// derived answer can be recomputed from facts the daemon already holds, and a declared one exists
+    /// only because somebody said it.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+    pub enum WindowSize {
+        /// The largest attached client, per dimension — nobody's view is cropped, and smaller clients
+        /// see part of the window. tmux's `largest`.
+        Largest,
+        /// The smallest attached client, per dimension — nothing is ever cropped, and larger clients
+        /// have margin. tmux's `smallest`.
+        Smallest,
+        /// The client that most recently attached or reported a new area. tmux's `latest`, and what
+        /// sprag did by construction before any of this existed, which is why it is the default: a
+        /// user with one client sees exactly what they always saw.
+        Latest,
+        /// The size an operator PINNED with `resize-window`
+        /// ([`Window::manual_size`](sprag_terminal::Window::manual_size)) — the window stops following
+        /// its clients, and a client bigger than it has margin while a smaller one sees part of it.
+        /// tmux's `manual`.
+        ///
+        /// The point of it is that the window survives who is watching. Measured before this variant
+        /// existed: a session whose panes a user had arranged at 100x30 was reflowed to 80x24 the
+        /// instant any client attached, and stayed there after it left — a program's wrap width decided
+        /// by whoever happened to look at it last, permanently, with nothing that could pin it.
+        ///
+        /// With NOTHING pinned it is not a rule yet, so it defers to [`DEFAULT`](Self::DEFAULT); see
+        /// [`arbitrate`].
+        Manual,
+    }
 }
 
 impl WindowSize {
@@ -118,9 +124,6 @@ impl WindowSize {
             Self::Manual => "manual",
         }
     }
-
-    /// Every value, in the order they are offered to a user who typed one that does not exist.
-    pub const ALL: [Self; 4] = [Self::Largest, Self::Smallest, Self::Latest, Self::Manual];
 
     /// Parse a value from the user's file or the CLI, or `None` for one that is not a policy.
     #[must_use]

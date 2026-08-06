@@ -112,42 +112,45 @@ pub struct SessionId(pub u64);
 )]
 pub struct WindowId(pub u64);
 
-/// One step FORWARD or BACK along an order — tmux's `-n` / `-p` on every verb that takes them.
-///
-/// It names a direction and NOTHING ELSE, which is why it is not `WindowStep` (its name until R314)
-/// and not `RingStep`. Three orders in this product are walked with these two words and they do not
-/// agree about their ends: a session's window ring WRAPS (`select-window -n`), a window's PLACE in
-/// that same order STOPS (`move-window -n`, [`WindowPlace::Step`]), and the daemon's session ring
-/// wraps again (`switch-client -n`, R314). **Whether there is an end is the caller's question**; a
-/// name that answered it here would be wrong at two of the three sites.
-///
-/// A direction rather than a target, and a SEPARATE vocabulary from [`PaneDir`] rather than a reuse
-/// of it, because the two walks are different kinds of question: a pane walk is spatial (four ways,
-/// an edge at each end), an ordinal walk is two ways along a list. Spelling them with one type would
-/// let a caller ask for the window "to the left", which the registry would then have to refuse at
-/// runtime for a mistake the types can prevent.
-///
-/// # The serde derive is a CLIENT's own storage, not the wire
-///
-/// `sprag-gui` holds a bound action in a reactive `Signal`, whose value type carries pinion's
-/// serialization bound — the same reason [`crate::PaneId`] and `sprag_host::prompt::Subject` derive
-/// it. **The WIRE spelling is [`wire_str`](Self::wire_str) and nothing else**, so the derive is
-/// pinned to the same two words with `rename_all`: one vocabulary, however it is written down. A
-/// variant whose serde name and wire word disagreed would be a second spelling of exactly the thing
-/// [`from_wire`](Self::from_wire) exists to keep single.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OrderStep {
-    /// The one AFTER the current member of the order.
-    Next,
-    /// The one BEFORE it.
-    Previous,
+crate::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// One step FORWARD or BACK along an order — tmux's `-n` / `-p` on every verb that takes them.
+    ///
+    /// It names a direction and NOTHING ELSE, which is why it is not `WindowStep` (its name until R314)
+    /// and not `RingStep`. Three orders in this product are walked with these two words and they do not
+    /// agree about their ends: a session's window ring WRAPS (`select-window -n`), a window's PLACE in
+    /// that same order STOPS (`move-window -n`, [`WindowPlace::Step`]), and the daemon's session ring
+    /// wraps again (`switch-client -n`, R314). **Whether there is an end is the caller's question**; a
+    /// name that answered it here would be wrong at two of the three sites.
+    ///
+    /// A direction rather than a target, and a SEPARATE vocabulary from [`PaneDir`] rather than a reuse
+    /// of it, because the two walks are different kinds of question: a pane walk is spatial (four ways,
+    /// an edge at each end), an ordinal walk is two ways along a list. Spelling them with one type would
+    /// let a caller ask for the window "to the left", which the registry would then have to refuse at
+    /// runtime for a mistake the types can prevent.
+    ///
+    /// # The serde derive is a CLIENT's own storage, not the wire
+    ///
+    /// `sprag-gui` holds a bound action in a reactive `Signal`, whose value type carries pinion's
+    /// serialization bound — the same reason [`crate::PaneId`] and `sprag_host::prompt::Subject` derive
+    /// it. **The WIRE spelling is [`wire_str`](Self::wire_str) and nothing else**, so the derive is
+    /// pinned to the same two words with `rename_all`: one vocabulary, however it is written down. A
+    /// variant whose serde name and wire word disagreed would be a second spelling of exactly the thing
+    /// [`from_wire`](Self::from_wire) exists to keep single.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum OrderStep {
+        /// The one AFTER the current member of the order.
+        Next,
+        /// The one BEFORE it.
+        Previous,
+    }
 }
 
 impl OrderStep {
-    /// Every step, for a caller that must be exhaustive over the vocabulary (a flag table, a test).
-    pub const ALL: [Self; 2] = [Self::Next, Self::Previous];
-
     /// How far this moves along the order — the ONE place the direction becomes arithmetic, so the
     /// two arms cannot come to disagree about which way is forward. What happens at the ends is the
     /// caller's: every walk in this tree applies the offset and then either wraps (`rem_euclid`) or
@@ -247,41 +250,39 @@ impl WindowPlace {
     }
 }
 
-/// WHAT HAPPENED to a [`WindowPlace`] request — the answer half of [`Session::move_window`].
-///
-/// Four words where the rival has a `bool`. `herdr`'s `Workspace::move_tab` (`src/workspace.rs:619`
-/// at `9a4ce5e1`) answers `false` for a source out of range, an insert index out of range AND a move
-/// that would change nothing — and its handler then reports SUCCESS with the tab list and emits no
-/// event, so a caller cannot tell "done" from "nothing happened". That is exactly the collapse R301
-/// removed from this project's own swap.
-///
-/// A window that does not exist, or an anchor that does not, is NOT in here: it is a
-/// [`SessionError::Unknown`] refusal, on R301's rule that a request which "succeeded" against
-/// something absent is a sentence rather than an answer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PlaceHow {
-    /// The order changed.
-    Moved,
-    /// The request was well formed and the window is ALREADY in that place.
-    AlreadyThere,
-    /// The session holds ONE window, so there is no arrangement to change. Distinct from
-    /// [`AlreadyThere`](Self::AlreadyThere) — which is also true of a lone window — because the
-    /// CAUSE is what a user needs: "this session has one window" is actionable where "already
-    /// first" invites pressing the key again.
-    Alone,
-    /// The anchor named the window being moved (`move-window alpha --before alpha`).
-    Itself,
+crate::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// WHAT HAPPENED to a [`WindowPlace`] request — the answer half of [`Session::move_window`].
+    ///
+    /// Four words where the rival has a `bool`. `herdr`'s `Workspace::move_tab` (`src/workspace.rs:619`
+    /// at `9a4ce5e1`) answers `false` for a source out of range, an insert index out of range AND a move
+    /// that would change nothing — and its handler then reports SUCCESS with the tab list and emits no
+    /// event, so a caller cannot tell "done" from "nothing happened". That is exactly the collapse R301
+    /// removed from this project's own swap.
+    ///
+    /// A window that does not exist, or an anchor that does not, is NOT in here: it is a
+    /// [`SessionError::Unknown`] refusal, on R301's rule that a request which "succeeded" against
+    /// something absent is a sentence rather than an answer.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum PlaceHow {
+        /// The order changed.
+        Moved,
+        /// The request was well formed and the window is ALREADY in that place.
+        AlreadyThere,
+        /// The session holds ONE window, so there is no arrangement to change. Distinct from
+        /// [`AlreadyThere`](Self::AlreadyThere) — which is also true of a lone window — because the
+        /// CAUSE is what a user needs: "this session has one window" is actionable where "already
+        /// first" invites pressing the key again.
+        Alone,
+        /// The anchor named the window being moved (`move-window alpha --before alpha`).
+        Itself,
+    }
 }
 
 impl PlaceHow {
-    /// Every outcome, for a caller that must be exhaustive over the vocabulary.
-    ///
-    /// ⚠ **An array literal no compiler checks** — the residual [`OrderStep::ALL`] and
-    /// [`PaneDir::ALL`] already carry, stated here rather than hidden: a fifth variant left out of
-    /// it would fail to PARSE silently while [`wire_str`](Self::wire_str) still compiled. Rust has
-    /// no stable way to derive it, and the honest form is to say so at the array.
-    pub const ALL: [Self; 4] = [Self::Moved, Self::AlreadyThere, Self::Alone, Self::Itself];
-
     /// This outcome's wire word — the ONE place each is spelled.
     #[must_use]
     pub const fn wire_str(self) -> &'static str {
@@ -1254,12 +1255,12 @@ impl Ended {
     /// `null`, and the honest reading of that is "it was killed and this daemon cannot say how
     /// far" — never [`Ended::Pane`], which would report a surviving window that may already be
     /// gone. That is why the handshake refuses the skew rather than leaving it to each reader.
-    /// **There is no `ALL` array here, deliberately.** `PaneDir::ALL`, `OrderStep::ALL` and
-    /// `ActionSubject::ALL` are each an array literal no compiler checks — a hazard this project has
-    /// now written into its debt register three times, where a variant left out is a word that
-    /// silently fails to parse. This walks [`escalation`](Self::escalation) instead, which is an
-    /// exhaustive `match`: the chain IS the set, so a fifth level cannot be added without the
-    /// compiler asking, and there is no second list for a test to have to keep.
+    /// **There is no `ALL` array here, deliberately** — and the reason survived the hazard that
+    /// prompted it. It used to be that `PaneDir::ALL` and its siblings were array literals no
+    /// compiler checked, which R316 closed by generating them
+    /// (`crate::closed_set!`); this walks [`escalation`](Self::escalation) instead for
+    /// a reason of its own, which that fix does not supersede: the levels here are a CHAIN, not a
+    /// set, so the escalation IS the ordering and an array would state the same fact a second time.
     #[must_use]
     pub fn from_wire(word: &str) -> Option<Self> {
         let mut level = Some(Self::Pane);

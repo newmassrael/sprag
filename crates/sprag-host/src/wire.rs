@@ -1845,58 +1845,56 @@ impl SelectAsk {
     }
 }
 
-/// The `outcome` key of a [`SELECT_PANE_ACTION`] answer: why the session is on the pane it names.
-///
-/// **Four words, total over the request grammar, each with exactly one cause** — the property that
-/// makes an operator-facing or agent-facing sentence exact rather than a list of possibilities
-/// ([`sprag_terminal::ZoomOutcome`] states the same rule for the zoom's two bools). A `pane` request
-/// can only [`Moved`](Self::Moved) or find itself [`AlreadyActive`](Self::AlreadyActive); a `dir`
-/// request can also stop [`AtEdge`](Self::AtEdge) or be measured from an
-/// [`Untiled`](Self::Untiled) pane.
-///
-/// A `dir` request reaches `AlreadyActive` only by naming an ORIGIN
-/// ([`SelectAsk::Toward::from`]) whose neighbour is the pane the session is already on — the cause
-/// is the same one word for one fact ("the pane it resolved to is the pane it was on"), and the
-/// arms that can produce it grew rather than the vocabulary.
-///
-/// # Why the daemon says it instead of the caller deriving it
-///
-/// Three of the four ARE derivable by a caller that remembers which arm it asked
-/// ([`read`](Self::read) does exactly that for a daemon too old to answer this key). The fourth is
-/// not: telling "nothing that way" from "the pane you are on is floating, so there is no that-way"
-/// takes the arrangement, and a client that read the arrangement to explain its own move would join
-/// two instants to describe one — the torn read the whole directional arm exists to remove.
-///
-/// The rival spends one word here (`PaneFocusDirectionReason::NoNeighbor`, herdr `9a4ce5e1`) and
-/// reports it for both cases: `directional_pane_target` looks the source pane up in the rects of its
-/// last composed frame and answers `None` when it is absent, exactly as it does at an edge.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SelectHow {
-    /// The active pane MOVED to the pane the answer names.
-    Moved,
-    /// The request RESOLVED to the pane the session was already on — a `pane` naming it (a
-    /// re-select, which is a legitimate no-op rather than a failure: a client publishing the focus
-    /// it already shows), or a `dir` whose step from a named origin landed back on it.
-    AlreadyActive,
-    /// A `dir` request whose origin the arrangement holds, with nothing that way: the window's edge.
-    AtEdge,
-    /// A `dir` request whose ORIGIN the arrangement holds NO LEAF for — it is floating, so it has no
-    /// neighbours in any direction. That origin is the active pane unless the request named one.
-    /// Distinct from [`AtEdge`](Self::AtEdge) on purpose: the remedy is different (dock it, or
-    /// select by name), and an edge is a boundary the movement ran into where this is a request with
-    /// no adjacency to walk at all.
-    Untiled,
+sprag_terminal::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// The `outcome` key of a [`SELECT_PANE_ACTION`] answer: why the session is on the pane it names.
+    ///
+    /// **Four words, total over the request grammar, each with exactly one cause** — the property that
+    /// makes an operator-facing or agent-facing sentence exact rather than a list of possibilities
+    /// ([`sprag_terminal::ZoomOutcome`] states the same rule for the zoom's two bools). A `pane` request
+    /// can only [`Moved`](Self::Moved) or find itself [`AlreadyActive`](Self::AlreadyActive); a `dir`
+    /// request can also stop [`AtEdge`](Self::AtEdge) or be measured from an
+    /// [`Untiled`](Self::Untiled) pane.
+    ///
+    /// A `dir` request reaches `AlreadyActive` only by naming an ORIGIN
+    /// ([`SelectAsk::Toward::from`]) whose neighbour is the pane the session is already on — the cause
+    /// is the same one word for one fact ("the pane it resolved to is the pane it was on"), and the
+    /// arms that can produce it grew rather than the vocabulary.
+    ///
+    /// # Why the daemon says it instead of the caller deriving it
+    ///
+    /// Three of the four ARE derivable by a caller that remembers which arm it asked
+    /// ([`read`](Self::read) does exactly that for a daemon too old to answer this key). The fourth is
+    /// not: telling "nothing that way" from "the pane you are on is floating, so there is no that-way"
+    /// takes the arrangement, and a client that read the arrangement to explain its own move would join
+    /// two instants to describe one — the torn read the whole directional arm exists to remove.
+    ///
+    /// The rival spends one word here (`PaneFocusDirectionReason::NoNeighbor`, herdr `9a4ce5e1`) and
+    /// reports it for both cases: `directional_pane_target` looks the source pane up in the rects of its
+    /// last composed frame and answers `None` when it is absent, exactly as it does at an edge.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum SelectHow {
+        /// The active pane MOVED to the pane the answer names.
+        Moved,
+        /// The request RESOLVED to the pane the session was already on — a `pane` naming it (a
+        /// re-select, which is a legitimate no-op rather than a failure: a client publishing the focus
+        /// it already shows), or a `dir` whose step from a named origin landed back on it.
+        AlreadyActive,
+        /// A `dir` request whose origin the arrangement holds, with nothing that way: the window's edge.
+        AtEdge,
+        /// A `dir` request whose ORIGIN the arrangement holds NO LEAF for — it is floating, so it has no
+        /// neighbours in any direction. That origin is the active pane unless the request named one.
+        /// Distinct from [`AtEdge`](Self::AtEdge) on purpose: the remedy is different (dock it, or
+        /// select by name), and an edge is a boundary the movement ran into where this is a request with
+        /// no adjacency to walk at all.
+        Untiled,
+    }
 }
 
 impl SelectHow {
-    /// Every outcome, for a caller enumerating the vocabulary (a test, a description).
-    pub const ALL: [Self; 4] = [
-        Self::Moved,
-        Self::AlreadyActive,
-        Self::AtEdge,
-        Self::Untiled,
-    ];
-
     /// This outcome's wire word — the value of the answer's `outcome` key.
     #[must_use]
     pub fn wire_str(self) -> &'static str {
@@ -2258,50 +2256,53 @@ impl SwapAsk {
     }
 }
 
-/// The `outcome` key of a [`SWAP_PANE_ACTION`] answer: what became of the two panes.
-///
-/// **Four words, total over the request grammar, each with exactly one cause** — the property
-/// [`SelectHow`] states for the verb beside this one, and the reason an operator-facing or
-/// agent-facing sentence can be exact rather than a list of possibilities. A `with` request can only
-/// [`Swapped`](Self::Swapped) or find itself [`SamePane`](Self::SamePane); a `dir` request can only
-/// `Swapped`, stop [`AtEdge`](Self::AtEdge), or be measured from an [`Untiled`](Self::Untiled) pane.
-///
-/// # Why the daemon says it instead of the caller deriving it
-///
-/// [`SelectHow`]'s reason, one verb over. Three of the four ARE derivable by a caller that remembers
-/// which arm it asked and compares `a` with `b` ([`read`](Self::read) does exactly that for a daemon
-/// too old to answer this key). The fourth is not: telling "nothing that way" from "the pane you are
-/// placing is floating, so it has no that-way" takes the arrangement, and a client that read the
-/// arrangement to explain its own swap would join two instants to describe one.
-///
-/// The rival is AHEAD of where sprag was here and this is the axis they lose on:
-/// `PaneSwapReason` (herdr `9a4ce5e1`, `src/api/schema/panes.rs:481`) has FOUR words too —
-/// `NoNeighbor` / `SamePane` / `NotFound` / `CrossTab` — where sprag answered `b: null` for two
-/// different facts. But `NoNeighbor` is still one word for an edge AND for a source missing from the
-/// rectangles they last composed (`directional_pane_target`), which is the same collapse their
-/// directional FOCUS has; `NotFound` is a refusal here rather than an outcome; and `CrossTab` is a
-/// capability sprag has and they refuse.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SwapHow {
-    /// The two panes TRADED PLACES: `a` sits where `b` was and `b` where `a` was.
-    Swapped,
-    /// A `with` request whose two panes are ONE pane. A legitimate no-op rather than a failure — a
-    /// client re-asserting a placement it already has — and never reachable from a `dir` request,
-    /// because a step never lands on the pane it started from.
-    SamePane,
-    /// A `dir` request whose origin the arrangement holds, with nothing that way: the window's edge.
-    AtEdge,
-    /// A `dir` request whose ORIGIN the arrangement holds NO LEAF for — it is floating, so it has no
-    /// neighbours in any direction. Distinct from [`AtEdge`](Self::AtEdge) on purpose: the remedy is
-    /// different (dock it, or name a partner), and an edge is a boundary the movement ran into where
-    /// this is a request with no adjacency to walk at all.
-    Untiled,
+sprag_terminal::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// The `outcome` key of a [`SWAP_PANE_ACTION`] answer: what became of the two panes.
+    ///
+    /// **Four words, total over the request grammar, each with exactly one cause** — the property
+    /// [`SelectHow`] states for the verb beside this one, and the reason an operator-facing or
+    /// agent-facing sentence can be exact rather than a list of possibilities. A `with` request can only
+    /// [`Swapped`](Self::Swapped) or find itself [`SamePane`](Self::SamePane); a `dir` request can only
+    /// `Swapped`, stop [`AtEdge`](Self::AtEdge), or be measured from an [`Untiled`](Self::Untiled) pane.
+    ///
+    /// # Why the daemon says it instead of the caller deriving it
+    ///
+    /// [`SelectHow`]'s reason, one verb over. Three of the four ARE derivable by a caller that remembers
+    /// which arm it asked and compares `a` with `b` ([`read`](Self::read) does exactly that for a daemon
+    /// too old to answer this key). The fourth is not: telling "nothing that way" from "the pane you are
+    /// placing is floating, so it has no that-way" takes the arrangement, and a client that read the
+    /// arrangement to explain its own swap would join two instants to describe one.
+    ///
+    /// The rival is AHEAD of where sprag was here and this is the axis they lose on:
+    /// `PaneSwapReason` (herdr `9a4ce5e1`, `src/api/schema/panes.rs:481`) has FOUR words too —
+    /// `NoNeighbor` / `SamePane` / `NotFound` / `CrossTab` — where sprag answered `b: null` for two
+    /// different facts. But `NoNeighbor` is still one word for an edge AND for a source missing from the
+    /// rectangles they last composed (`directional_pane_target`), which is the same collapse their
+    /// directional FOCUS has; `NotFound` is a refusal here rather than an outcome; and `CrossTab` is a
+    /// capability sprag has and they refuse.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum SwapHow {
+        /// The two panes TRADED PLACES: `a` sits where `b` was and `b` where `a` was.
+        Swapped,
+        /// A `with` request whose two panes are ONE pane. A legitimate no-op rather than a failure — a
+        /// client re-asserting a placement it already has — and never reachable from a `dir` request,
+        /// because a step never lands on the pane it started from.
+        SamePane,
+        /// A `dir` request whose origin the arrangement holds, with nothing that way: the window's edge.
+        AtEdge,
+        /// A `dir` request whose ORIGIN the arrangement holds NO LEAF for — it is floating, so it has no
+        /// neighbours in any direction. Distinct from [`AtEdge`](Self::AtEdge) on purpose: the remedy is
+        /// different (dock it, or name a partner), and an edge is a boundary the movement ran into where
+        /// this is a request with no adjacency to walk at all.
+        Untiled,
+    }
 }
 
 impl SwapHow {
-    /// Every outcome, for a caller enumerating the vocabulary (a test, a description).
-    pub const ALL: [Self; 4] = [Self::Swapped, Self::SamePane, Self::AtEdge, Self::Untiled];
-
     /// This outcome's wire word — the value of the answer's `outcome` key.
     #[must_use]
     pub fn wire_str(self) -> &'static str {
@@ -2494,53 +2495,50 @@ impl ResizeAsk {
     }
 }
 
-/// The `outcome` key of a [`RESIZE_PANE_ACTION`] answer: what became of the boundary.
-///
-/// **Five words, total over the request grammar, each with exactly one cause and one remedy** —
-/// [`SwapHow`]'s property one verb over, and the axis this verb beats the rival on outright: their
-/// `resize_pane` answers a `bool` (herdr `9a4ce5e1`, `src/layout.rs:241`), so an edge, a floating
-/// pane, a zoom and a boundary already as far as it goes are ONE value with four remedies.
-///
-/// A move that was CLAMPED is [`Resized`](Self::Resized) with a smaller `cells` than was asked for,
-/// not a word of its own: it changed, and the number says by how much. That is what keeps
-/// [`changed`](Self::changed) derivable from the word alone — the property every parked client
-/// depends on, since it decides whether there is anything to re-read.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ResizeHow {
-    /// The boundary MOVED. `cells` says how far, which is below what was asked when it ran into
-    /// the last cell a side may keep.
-    Resized,
-    /// There is a boundary and it is already as far that way as it can go — one cell is the least
-    /// a side may keep, which is
-    /// [`Divider::stepped`](sprag_terminal::tiling::Divider::stepped)'s clamp, shared with the
-    /// pointer drag's so the key and the mouse stop in the same place.
-    AtMinimum,
-    /// The arrangement holds the pane and has no division on that axis at all: the pane spans the
-    /// window that way, so there is no boundary to move. Distinct from
-    /// [`AtMinimum`](Self::AtMinimum) because the remedy is different — split first, rather than
-    /// resize the other way.
-    AtEdge,
-    /// The arrangement holds no leaf for the pane: it is floating, so it has no boundaries in any
-    /// direction. [`SwapHow::Untiled`]'s fact, one verb over.
-    Untiled,
-    /// The window is ZOOMED, so its arrangement is not what is on screen.
+sprag_terminal::closed_set! {
+    // `ALL` is GENERATED with this enum from ONE variant list, so it cannot be missing a
+    // variant and its length cannot disagree with its contents — see `closed_set!`. The
+    // hand-written array it replaces was checked by nothing, which three register items
+    // said and none closed (R299/R301/R310).
+    /// The `outcome` key of a [`RESIZE_PANE_ACTION`] answer: what became of the boundary.
     ///
-    /// **The boundary is deliberately NOT moved.** R285 made a zoom a PROJECTION precisely so the
-    /// arrangement is untouched by it; moving a boundary the user cannot see, and answering
-    /// success for it, is the one outcome worse than doing nothing.
-    Zoomed,
+    /// **Five words, total over the request grammar, each with exactly one cause and one remedy** —
+    /// [`SwapHow`]'s property one verb over, and the axis this verb beats the rival on outright: their
+    /// `resize_pane` answers a `bool` (herdr `9a4ce5e1`, `src/layout.rs:241`), so an edge, a floating
+    /// pane, a zoom and a boundary already as far as it goes are ONE value with four remedies.
+    ///
+    /// A move that was CLAMPED is [`Resized`](Self::Resized) with a smaller `cells` than was asked for,
+    /// not a word of its own: it changed, and the number says by how much. That is what keeps
+    /// [`changed`](Self::changed) derivable from the word alone — the property every parked client
+    /// depends on, since it decides whether there is anything to re-read.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum ResizeHow {
+        /// The boundary MOVED. `cells` says how far, which is below what was asked when it ran into
+        /// the last cell a side may keep.
+        Resized,
+        /// There is a boundary and it is already as far that way as it can go — one cell is the least
+        /// a side may keep, which is
+        /// [`Divider::stepped`](sprag_terminal::tiling::Divider::stepped)'s clamp, shared with the
+        /// pointer drag's so the key and the mouse stop in the same place.
+        AtMinimum,
+        /// The arrangement holds the pane and has no division on that axis at all: the pane spans the
+        /// window that way, so there is no boundary to move. Distinct from
+        /// [`AtMinimum`](Self::AtMinimum) because the remedy is different — split first, rather than
+        /// resize the other way.
+        AtEdge,
+        /// The arrangement holds no leaf for the pane: it is floating, so it has no boundaries in any
+        /// direction. [`SwapHow::Untiled`]'s fact, one verb over.
+        Untiled,
+        /// The window is ZOOMED, so its arrangement is not what is on screen.
+        ///
+        /// **The boundary is deliberately NOT moved.** R285 made a zoom a PROJECTION precisely so the
+        /// arrangement is untouched by it; moving a boundary the user cannot see, and answering
+        /// success for it, is the one outcome worse than doing nothing.
+        Zoomed,
+    }
 }
 
 impl ResizeHow {
-    /// Every outcome, for a caller enumerating the vocabulary (a test, a description).
-    pub const ALL: [Self; 5] = [
-        Self::Resized,
-        Self::AtMinimum,
-        Self::AtEdge,
-        Self::Untiled,
-        Self::Zoomed,
-    ];
-
     /// This outcome's wire word — the value of the answer's [`OUTCOME_KEY`].
     #[must_use]
     pub fn wire_str(self) -> &'static str {
