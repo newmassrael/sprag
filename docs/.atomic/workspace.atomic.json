@@ -11941,6 +11941,64 @@
         "R320's debt-clearance pass has no ledger entry of its own; its work is recorded in debt register item 46."
       ]
     },
+    "R322": {
+      "decision_summary": "A command belongs to the pane it was run in, and a verb the daemon cannot perform says so",
+      "changes_bullets": [
+        "DEBT FIRST: measured against a peer that serves every read and knows no action, 21 of 24 acting CLI verbs answered a version-skewed daemon by blaming the user's arguments -- `kill-session 0` said `no session named \"0\"` about a session the daemon was holding.",
+        "One seam now: `invoke_action` / `invoke_action_with` tell `UnknownInvokePath` from a real refusal before any verb's own disjunction is reached, and `unknown_action` names the ADDRESS the caller already built rather than a command name a call site could pass wrong.",
+        "`AgedHost` is a new stand-in: a PROXY over a live daemon that relays every read and refuses only `scene/invoke`, so the acting half of version skew has a standing test for the first time.",
+        "Each wire method the CLI speaks is now spelled exactly once, ratcheted over the binary's own source with a built needle and a control needle that must stay zero.",
+        "HEAD: measured by running, an unscoped command run INSIDE a pane acted on the daemon's DEFAULT session -- `sprag panes` listed another session's panes and `sprag split-window` put the new pane there, reporting success.",
+        "`$SPRAG_PANE` now resolves to a session through `wire::session_holding`, read off the daemon's own decoded tree: an unnamed scope is the caller's session, a verb given no pane acts on the CALLER's pane rather than the focused one, and `-t` is optional from inside a pane and refused as before from a shell.",
+        "The agent front had the same defect and it mattered more there: `list_panes` from a pane of `work` listed session 0's boot pane. The scope is stamped at the one call every MCP tool passes through, which also merged `host_call` and `host_call_kinded` -- two copies of one transport."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 46 targets / 2280 passed; clippy 0 with no suppression; doc gate 0; headless pixel smoke 255 passed / 0 failed, twice.",
+        "Acting-verb skew: 5 mutations RED (the seam's guard removed, the discriminator reading the other fault, ONE verb routed back round the seam, the sentence naming a fixed address, and the PEER no longer refusing invokes), unmutated GREEN, sources restored from an own snapshot and digest-verified.",
+        "Ambient scope: 5 mutations RED at 4 distinct assertions (the unnamed scope forgetting the caller, the pane variable unread, the caller's pane dropped, the caller's pane travelling into a NAMED session, and a `-t` verb refusing the ambient one).",
+        "Shared reader: 3 mutations RED across BOTH clients (`session_holding` answering about the first session turned the CLI and the MCP gates red together; the MCP stamp removed; the tree read made loud).",
+        "Address guard: removing it turns the orphaned-id control RED -- without it the CLI trusts a pane id published beside another daemon's socket.",
+        "Controls that can fail: a verb failing for its own reason keeps its own words; the same argv against the daemon BEHIND the proxy succeeds; a caller outside any pane still lands in the daemon's default session; an explicit `-t` still wins in both directions; a shell with no `-t` is refused in the same words as before.",
+        "`WIRE_PROTOCOL` STAYS 15 -- no wire shape moved; `wire::session_holding` reads a slot the daemon already served."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The bindable vocabulary is still 21 actions against 46 CLI verbs: measured by running, 15 of 15 verbs a person would plausibly bind are refused by `bind-key`, including `break-pane`, `kill-session` and `display-message`.",
+        "`sprag-gui`'s notifier is still `notify-send` alone, so macOS and Windows copy nothing out (R321's open item, untouched).",
+        "The stand-in daemons cover the verbs they name; the one-spelling ratchet closes the leak they cannot sweep for, but no ratchet derives the verb LIST itself from the dispatch."
+      ],
+      "publishable_decision_summary": "A command belongs to the pane it was run in, and a verb the daemon cannot perform says so",
+      "publishable_changes_bullets": [
+        "DEBT FIRST: measured against a peer that serves every read and knows no action, 21 of 24 acting CLI verbs answered a version-skewed daemon by blaming the user's arguments -- `kill-session 0` said `no session named \"0\"` about a session the daemon was holding.",
+        "One seam now: `invoke_action` / `invoke_action_with` tell `UnknownInvokePath` from a real refusal before any verb's own disjunction is reached, and `unknown_action` names the ADDRESS the caller already built rather than a command name a call site could pass wrong.",
+        "`AgedHost` is a new stand-in: a PROXY over a live daemon that relays every read and refuses only `scene/invoke`, so the acting half of version skew has a standing test for the first time.",
+        "Each wire method the CLI speaks is now spelled exactly once, ratcheted over the binary's own source with a built needle and a control needle that must stay zero.",
+        "HEAD: measured by running, an unscoped command run INSIDE a pane acted on the daemon's DEFAULT session -- `sprag panes` listed another session's panes and `sprag split-window` put the new pane there, reporting success.",
+        "`$SPRAG_PANE` now resolves to a session through `wire::session_holding`, read off the daemon's own decoded tree: an unnamed scope is the caller's session, a verb given no pane acts on the CALLER's pane rather than the focused one, and `-t` is optional from inside a pane and refused as before from a shell.",
+        "The agent front had the same defect and it mattered more there: `list_panes` from a pane of `work` listed session 0's boot pane. The scope is stamped at the one call every MCP tool passes through, which also merged `host_call` and `host_call_kinded` -- two copies of one transport."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 46 targets / 2280 passed; clippy 0 with no suppression; doc gate 0; headless pixel smoke 255 passed / 0 failed, twice.",
+        "Acting-verb skew: 5 mutations RED (the seam's guard removed, the discriminator reading the other fault, ONE verb routed back round the seam, the sentence naming a fixed address, and the PEER no longer refusing invokes), unmutated GREEN, sources restored from an own snapshot and digest-verified.",
+        "Ambient scope: 5 mutations RED at 4 distinct assertions (the unnamed scope forgetting the caller, the pane variable unread, the caller's pane dropped, the caller's pane travelling into a NAMED session, and a `-t` verb refusing the ambient one).",
+        "Shared reader: 3 mutations RED across BOTH clients (`session_holding` answering about the first session turned the CLI and the MCP gates red together; the MCP stamp removed; the tree read made loud).",
+        "Address guard: removing it turns the orphaned-id control RED -- without it the CLI trusts a pane id published beside another daemon's socket.",
+        "Controls that can fail: a verb failing for its own reason keeps its own words; the same argv against the daemon BEHIND the proxy succeeds; a caller outside any pane still lands in the daemon's default session; an explicit `-t` still wins in both directions; a shell with no `-t` is refused in the same words as before.",
+        "`WIRE_PROTOCOL` STAYS 15 -- no wire shape moved; `wire::session_holding` reads a slot the daemon already served."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The bindable vocabulary is still 21 actions against 46 CLI verbs: measured by running, 15 of 15 verbs a person would plausibly bind are refused by `bind-key`, including `break-pane`, `kill-session` and `display-message`.",
+        "`sprag-gui`'s notifier is still `notify-send` alone, so macOS and Windows copy nothing out (R321's open item, untouched).",
+        "The stand-in daemons cover the verbs they name; the one-spelling ratchet closes the leak they cannot sweep for, but no ratchet derives the verb LIST itself from the dispatch."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
