@@ -14,7 +14,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
-use sprag_host::wire::{NEW_SESSION_ACTION, PANES_SLOT, SPAWN_ACTION, WINDOWS_SLOT};
+use sprag_host::wire::{
+    BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, JOIN_PANE_ACTION, KEY_ACTION,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    SPAWN_ACTION, SWAP_PANE_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, pane_input_path,
+};
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, INVALID_PARAMS,
     PROTOCOL_FIELD, WIRE_PROTOCOL,
@@ -208,6 +215,152 @@ fn serve_stale(stream: &UnixStream) {
             return;
         }
     }
+}
+
+/// A peer that serves every READ a live daemon serves and knows NO ACTION — an older daemon that
+/// has this build's addresses but not this build's VERBS.
+///
+/// # Why a second stand-in, and why this one is a PROXY
+///
+/// [`StaleHost`] refuses every `scene/query`, which is the skew a slot READER meets. It cannot
+/// express the other one: a verb reaches its `scene/invoke` only AFTER its pre-flight reads have
+/// succeeded (`session_exists`, `resolve_pane`), so against a peer that serves nothing every write
+/// verb stops at a read and the invoke path is never exercised. A stand-in that ANSWERED those reads
+/// out of a table would be a second implementation of the daemon, free to drift from it.
+///
+/// So this one puts a real `sprag-term` behind it and intercepts one method. Every read is the
+/// daemon's own answer — the pane ids, the window names, the session list are all real — and every
+/// action comes back the way a daemon that never heard of it does. That is exactly an older build:
+/// **a slot is additive and so is an action**, so `WIRE_PROTOCOL` deliberately does not rise for
+/// either (R320's ratchet asserts that), and a `sprag` that gained a verb therefore meets
+/// same-numbered daemons that lack it.
+///
+/// It has a second property the sweep depends on: **nothing this peer is asked to do happens**. The
+/// invoke never reaches the daemon behind it, so a sweep may drive `kill-window`, `kill-session` and
+/// `kill-server` against one fixture without tearing down the state the next verb needs.
+struct AgedHost {
+    sock: PathBuf,
+    /// The daemon behind the proxy, reachable directly — how a test PREPARES state (a second pane,
+    /// a second window) that the swept verbs then address through the aged front.
+    upstream: PathBuf,
+    stop: Arc<AtomicBool>,
+    accepting: Option<JoinHandle<()>>,
+    daemon: Option<HostChild>,
+}
+
+impl Drop for AgedHost {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(accepting) = self.accepting.take() {
+            let _ = accepting.join();
+        }
+        let _ = std::fs::remove_file(&self.sock);
+        drop(self.daemon.take());
+    }
+}
+
+/// Bind an [`AgedHost`] in front of a freshly spawned daemon and answer on it until it is dropped.
+fn aged_host() -> AgedHost {
+    let (daemon, upstream) = spawn_host();
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let listener = UnixListener::bind(&sock).expect("bind the aged host socket");
+    listener
+        .set_nonblocking(true)
+        .expect("a stoppable accept loop");
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let behind = upstream.clone();
+    let accepting = std::thread::spawn(move || {
+        while !flag.load(Ordering::Relaxed) {
+            match listener.accept() {
+                // One thread per connection, for [`stale_host`]'s reason: several verbs open a
+                // second connection and serving them in turn would deadlock the run.
+                Ok((stream, _)) => {
+                    let behind = behind.clone();
+                    std::thread::spawn(move || serve_aged(&stream, &behind));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    AgedHost {
+        sock,
+        upstream,
+        stop,
+        accepting: Some(accepting),
+        daemon: Some(daemon),
+    }
+}
+
+/// One [`AgedHost`] connection: every frame is relayed to the daemon behind it, except
+/// `scene/invoke`, which is refused here the way a daemon that lacks the action refuses it.
+///
+/// The refusal's wording is the daemon's own, captured from a live one rather than invented (see
+/// `unknown_action` in `bin/sprag.rs`): an action a daemon does not serve answers
+/// `{"code":-32602,"message":"Invalid params","data":"UnknownInvokePath"}`, where a genuine refusal
+/// of an action it DOES serve answers `"InvokeRejected"`.
+fn serve_aged(client: &UnixStream, upstream: &Path) {
+    // The daemon binds its socket a moment after it is spawned, and this connects on the FIRST
+    // client rather than at bind time — a bounded wait, not a sleep.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let up = loop {
+        match UnixStream::connect(upstream) {
+            Ok(up) => break up,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return,
+        }
+    };
+    let to_client = Arc::new(std::sync::Mutex::new(
+        client.try_clone().expect("split the aged connection"),
+    ));
+
+    // The daemon also writes UNPROMPTED (`events/subscribe` notifications), so the return path is
+    // its own pump rather than a reply read after each request.
+    let pumping = Arc::clone(&to_client);
+    let from_daemon = up.try_clone().expect("split the upstream connection");
+    let pump = std::thread::spawn(move || {
+        for line in BufReader::new(from_daemon).lines() {
+            let Ok(line) = line else { return };
+            let mut out = pumping.lock().expect("the aged host's writer");
+            if writeln!(out, "{line}").is_err() {
+                return;
+            }
+        }
+    });
+
+    let mut to_daemon = up;
+    for line in BufReader::new(client.try_clone().expect("split the aged connection")).lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(request) = serde_json::from_str::<Value>(line.trim()) else {
+            break;
+        };
+        if request["method"].as_str() == Some("scene/invoke") {
+            let reply = json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "error": {
+                    "code": INVALID_PARAMS,
+                    "message": "Invalid params",
+                    "data": "UnknownInvokePath",
+                },
+            });
+            let mut out = to_client.lock().expect("the aged host's writer");
+            if writeln!(out, "{reply}").is_err() {
+                break;
+            }
+        } else if writeln!(to_daemon, "{line}").is_err() {
+            break;
+        }
+    }
+    drop(to_daemon);
+    let _ = pump.join();
 }
 
 #[test]
@@ -6332,4 +6485,208 @@ fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
         sprag(&real_sock, &["windows", "-t", "0"]).ok,
         "and the scoped pre-flight still finds a session that IS there",
     );
+}
+
+/// Every ACTING verb explains a daemon that does not know its verb, instead of blaming the
+/// arguments the user typed.
+///
+/// # Why this is the sharper half of the skew
+///
+/// The reading half ([`every_slot_reader_explains_a_daemon_that_does_not_serve_it`]) printed a Rust
+/// variant name at an operator: ugly, and honest about having failed. The acting half is worse,
+/// because a refused INVOKE and a refused REQUEST arrive under one JSON-RPC code — so a verb that
+/// maps every fault to its own disjunction tells the user their WINDOW NAME is taken, or their pane
+/// is not there, when the truth is that their daemon predates the verb. R317 measured exactly that
+/// against a parent-commit daemon: `sprag rename-session` answered *"prod" is already another
+/// session's name* about a name no session held.
+///
+/// The state is REACHABLE for the same reason the reading one is: an action is additive, so
+/// `WIRE_PROTOCOL` does not rise when one is added, and a `sprag` that gained a verb meets
+/// same-numbered daemons that lack it.
+#[test]
+fn every_acting_verb_explains_a_daemon_that_does_not_know_its_verb() {
+    let host = aged_host();
+    let sock = host.sock.clone();
+
+    // PREPARE through the daemon itself: a second pane and a second window, so the verbs that
+    // address one are refused by the PEER rather than by their own client-side reads.
+    let real = host.upstream.clone();
+    assert!(
+        sprag(&real, &["split-window", "-t", "0"]).ok,
+        "the fixture's second pane",
+    );
+    assert!(
+        sprag(&real, &["new-window", "-t", "0", "-d", "spare"]).ok,
+        "the fixture's second window",
+    );
+    let panes = sprag(&real, &["panes", "-t", "0"]);
+    assert!(panes.ok, "the fixture reads back: {}", panes.stderr);
+    let ids: Vec<String> = panes
+        .stdout
+        .lines()
+        .filter_map(|line| line.split(':').next())
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_owned)
+        .collect();
+    assert!(ids.len() >= 2, "two panes to address: {}", panes.stdout);
+    let (first, second) = (ids[0].as_str(), ids[1].as_str());
+
+    // (argv, the address the verb's act asks for). The address is asserted too, for the reading
+    // sweep's reason: a sentence naming the WRONG act would pass a "no variant name" check while
+    // sending the reader somewhere else. Every one is DERIVED from the wire vocabulary rather than
+    // spelled, so a verb that is re-pointed at another action moves this table with it.
+    let mux = |action: &str| mux_action_path(action);
+    let acting: Vec<(Vec<&str>, String)> = vec![
+        (vec!["new", "work"], mux(NEW_SESSION_ACTION)),
+        (
+            vec!["new-window", "-t", "0", "extra"],
+            mux(NEW_WINDOW_ACTION),
+        ),
+        (
+            vec!["select-window", "-t", "0", "-n"],
+            mux(SELECT_WINDOW_ACTION),
+        ),
+        (
+            vec!["rename-window", "-t", "0", "renamed"],
+            mux(RENAME_WINDOW_ACTION),
+        ),
+        (
+            vec!["move-window", "-t", "0", "--first"],
+            mux(MOVE_WINDOW_ACTION),
+        ),
+        (vec!["kill-window", "-t", "0"], mux(KILL_WINDOW_ACTION)),
+        (
+            vec!["resize-window", "-t", "0", "-x", "80", "-y", "24"],
+            mux(RESIZE_WINDOW_ACTION),
+        ),
+        (vec!["split-window", "-t", "0"], mux(SPAWN_ACTION)),
+        (vec!["kill-pane", "-t", "0", second], mux(CLOSE_ACTION)),
+        // BOTH of `resize-pane`'s arms, and they reach DIFFERENT actions — the exact size is the
+        // pane's own `resize`, the boundary walk is the mux's `resize_pane`. The boundary one was
+        // the only acting arm in the tree that already told the skew apart (R297 wrote it after
+        // measuring this exact wrong answer), so it is this sweep's own positive case: an assertion
+        // nothing could satisfy would pass the list by being impossible rather than by being met.
+        (
+            vec!["resize-pane", "-t", "0", second, "-x", "40", "-y", "10"],
+            mux(RESIZE_ACTION),
+        ),
+        (
+            vec!["resize-pane", "-t", "0", second, "-L", "3"],
+            mux(RESIZE_PANE_ACTION),
+        ),
+        (
+            vec!["select-pane", "-t", "0", second],
+            mux(SELECT_PANE_ACTION),
+        ),
+        (
+            vec!["swap-pane", "-t", "0", first, second],
+            mux(SWAP_PANE_ACTION),
+        ),
+        (
+            vec!["move-pane", "-t", "0", second, "-h", first],
+            mux(MOVE_PANE_ACTION),
+        ),
+        (
+            vec!["break-pane", "-t", "0", second],
+            mux(BREAK_PANE_ACTION),
+        ),
+        (
+            vec!["join-pane", "-t", "0", second, "spare"],
+            mux(JOIN_PANE_ACTION),
+        ),
+        (vec!["zoom-pane", "-t", "0", first], mux(ZOOM_PANE_ACTION)),
+        (
+            vec!["rename-pane", "-t", "0", first, "named"],
+            mux(RENAME_PANE_ACTION),
+        ),
+        // The one act that is not a MUX action: a key goes to the pane's own input surface.
+        (
+            vec!["send-keys", "-t", "0", first, "x"],
+            pane_input_path(first.parse().expect("a pane id"), KEY_ACTION),
+        ),
+        (
+            vec!["rename-session", "-t", "0", "prod"],
+            mux(RENAME_SESSION_ACTION),
+        ),
+        (
+            vec!["display-message", "-t", "0", "hello"],
+            mux(DISPLAY_MESSAGE_ACTION),
+        ),
+        (
+            vec!["report-agent", "blocked", "-t", "0", "--pane", first],
+            mux(REPORT_AGENT_ACTION),
+        ),
+        (
+            vec!["release-agent", "-t", "0", "--pane", first],
+            mux(RELEASE_AGENT_ACTION),
+        ),
+        (vec!["kill-session", "0"], mux(KILL_SESSION_ACTION)),
+    ];
+
+    // Collected rather than asserted one at a time: the first failure is not the finding, the LIST
+    // is, and a sweep that stops at the first leak cannot say how wide the class is. Measured
+    // before the seam existed, this list came back TWENTY-ONE of twenty-four.
+    let mut wrong = Vec::new();
+    for (argv, address) in &acting {
+        let run = sprag(&sock, argv);
+        if run.ok {
+            wrong.push(format!(
+                "{argv:?} SUCCEEDED against a daemon that refused the action"
+            ));
+            continue;
+        }
+        if run.stderr.contains("UnknownInvokePath") {
+            wrong.push(format!(
+                "{argv:?} printed the variant name: {}",
+                run.stderr.trim()
+            ));
+        } else if !run.stderr.contains(&format!("does not perform {address}")) {
+            wrong.push(format!(
+                "{argv:?} did not name {address} — it said: {}",
+                run.stderr.trim()
+            ));
+        } else if !run.stderr.contains("sprag kill-server") {
+            wrong.push(format!("{argv:?} carries no remedy: {}", run.stderr.trim()));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "an acting verb must say the daemon is older than this `sprag`:\n  {}",
+        wrong.join("\n  "),
+    );
+
+    // NOT IN THE LIST, and the reason is a property worth pinning rather than an omission:
+    // `set-option` writes the user's `config.toml` and never asks the daemon at all, so it is the
+    // one verb that reads as an act and cannot meet this skew. It succeeds here, which is correct.
+    assert!(
+        sprag(&sock, &["set-option", "window-size", "manual"]).ok,
+        "a verb that acts on the CONFIG FILE is not a verb the daemon can be too old for",
+    );
+
+    // CONTROL 1 — the sentence is not blanket-applied: a verb that fails for its OWN reason keeps
+    // its own words, so the sweep is about the skew path and not about "any failure".
+    let own = sprag(&sock, &["send-keys", "-t", "0", first]);
+    assert!(!own.ok, "the control fails too");
+    assert!(
+        own.stderr.contains("send-keys needs at least one key name")
+            && !own.stderr.contains("does not know this verb"),
+        "a verb's own refusal is untouched: {}",
+        own.stderr,
+    );
+
+    // CONTROL 2 — the verbs are not simply broken. The same argv against the daemon BEHIND the
+    // proxy succeeds, which is what makes every failure above attributable to the peer.
+    for argv in [
+        &["rename-window", "-t", "0", "renamed"][..],
+        &["display-message", "-t", "0", "hello"][..],
+        &["zoom-pane", "-t", "0", first][..],
+    ] {
+        let run = sprag(&real, argv);
+        assert!(
+            run.ok,
+            "{argv:?} works against the daemon that knows it: {}",
+            run.stderr,
+        );
+    }
 }
