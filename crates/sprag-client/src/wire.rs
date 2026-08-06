@@ -2674,6 +2674,14 @@ impl HostClient for WireHost {
     /// is a design already in force, not because anything here proves it; recorded rather than
     /// claimed.
     ///
+    /// ⚠ **The debt register predicted that a LIVE TUI ZOOM TEST would close this, and R319 built
+    /// one and MEASURED the prediction wrong**: with `the_zoom_key_gives_the_focused_pane_the_whole_
+    /// area_and_gives_it_back` driving a real `sprag-tui` through `prefix z`, deleting this block
+    /// still leaves it green. What it protects is ONE FRAME of lag on the person's own keystroke,
+    /// and a test that waits for a condition cannot see a frame that corrected itself. So this is a
+    /// DECISION with a stated cost, not a gap waiting for a harness — which is the honest end of the
+    /// story rather than a test somebody keeps expecting.
+    ///
     /// A re-assertion that moved nothing skips the read entirely: `changed` is exactly the fact that
     /// says whether there is anything to re-read.
     fn zoom_pane(&self, target: PaneId, on: Option<bool>) -> Option<ZoomOutcome> {
