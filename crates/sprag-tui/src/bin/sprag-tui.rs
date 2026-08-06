@@ -297,9 +297,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         // rather than at the next keystroke, and a timeout that exists only while a sentence is on
         // screen leaves the idle cost exactly where it was. This is the one timer in this loop and
         // it is bounded by `display-time`.
+        // `None` for a message with no deadline (a `Severity::Alert`, R317) as well as for no
+        // message at all — and the two are the same instruction to this poll: block forever. An
+        // alert is cleared by the person, in the key arm below, so there is nothing here to wake up
+        // for; giving it a timeout would be a client waking to re-decide that it should still be
+        // showing what it is showing.
         let waiting = message
             .as_ref()
-            .map(|said| said.until().saturating_sub(now()));
+            .and_then(|said| said.until())
+            .map(|until| until.saturating_sub(now()));
         match screen.terminal().poll_input(waiting)? {
             // The message's own deadline came and went with nothing else happening: take the row
             // back. `poll_input` answers `None` on a timeout, which is the same answer it gives for
@@ -316,6 +322,24 @@ fn run() -> Result<(), Box<dyn Error>> {
             // is used: a repaint cannot change what a key means. Routed in a `let` before the match
             // so the borrow the re-read takes ends before an arm reads the prefix back out.
             Some(InputEvent::Key(event)) => {
+                // A message that waits to be ACKNOWLEDGED is cleared by this keystroke (R317). It
+                // is the only thing that can clear one — an alert has no deadline precisely because
+                // a timer is a bet that somebody is looking, and a key is the one event that proves
+                // somebody is.
+                //
+                // ⚠ IT REPAINTS THE ROW ITSELF, and a live test is what settled that: the first
+                // draft cleared the state with a comment claiming every path out of this arm paints
+                // anyway. It does not — a key bound to nothing is SWALLOWED, and a report with
+                // nothing to say paints nothing — so the sentence stayed on the terminal after the
+                // client had forgotten it. The one keystroke that must clear the row is exactly the
+                // one least likely to be doing anything else.
+                if message
+                    .as_ref()
+                    .is_some_and(Message::waits_to_be_acknowledged)
+                {
+                    message = None;
+                    paint_status(&mut screen, &host, split.status, None)?;
+                }
                 // AN OVERLAY OWNS THE KEYBOARD while it is up, and this is checked before the key
                 // is looked at rather than after: a user answering a question — or reading the key
                 // table — is not addressing the keymap, the prefix or the pane, and an unhandled
@@ -818,7 +842,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                 // pressed a key that spoke and then typed into a pane is still owed the sentence
                 // for its remaining lifetime, and the deadline is what takes it away.
                 if let Some(said) = Message::of(&report, now(), display_time(keymap.options())) {
-                    message = Some(said);
+                    // `over` and not a plain assignment: a key that says something must not take the
+                    // row from a live ALERT somebody sent this client (R317). One rule, in
+                    // `sprag_host::report`, so this front and the windowed one cannot rank two
+                    // messages differently.
+                    message = Some(said.over(message.take(), now()));
                     // The row is repainted HERE and not by the arm above, because the arm painted
                     // before this message existed. One row, diffed by the surface, so a keystroke
                     // that says nothing costs nothing.
@@ -1024,6 +1052,23 @@ fn run() -> Result<(), Box<dyn Error>> {
             // list is safe rather than disruptive.
             if let Overlay::Asking(Asking::Choose { pick, .. }) = &mut overlay {
                 pick.refresh(&host.tree(), &host.current_session());
+            }
+            // WHAT SOMEBODY ELSE ASKED THIS CLIENT TO SAY (R317), taken on the same wake. It becomes
+            // a `Report` — the very type this client's own keys produce — so there is no second path
+            // by which a message reaches the row, and `over` decides between it and whatever is
+            // already up by the one rule in `sprag_host::report`.
+            //
+            // The row is not painted here: the frame below paints it, and it reads `message` through
+            // the same `showing` the whole loop does.
+            if let Some(announcement) = host.take_message() {
+                let said = Message::of(
+                    &Report::said(&announcement),
+                    now(),
+                    display_time(keymap.options()),
+                );
+                if let Some(said) = said {
+                    message = Some(said.over(message.take(), now()));
+                }
             }
             // Reconciled, not merely repainted: the host's notification covers the ARRANGEMENT as
             // well as the cells, so a split made from another client — or a pane whose shell just

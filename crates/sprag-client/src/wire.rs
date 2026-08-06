@@ -88,6 +88,7 @@ use serde_json::{Value, json};
 use sprag_grid::ProjectionToken;
 use sprag_host::ClientSize;
 use sprag_host::chooser::Target;
+use sprag_host::report::Announcement;
 use sprag_host::wire::ActivityWire;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, AttachAsk, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION,
@@ -108,8 +109,8 @@ use sprag_host::{
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn, HostEndpoint, ROWS_PARAM,
-    new_gui_client_id,
+    CLIENT_ATTACH_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn,
+    HostEndpoint, MESSAGE_FIELD, ROWS_PARAM, new_gui_client_id,
 };
 use sprag_terminal::{
     Ended, LayoutSnapshot, LayoutWire, OrderStep, PaneDir, PaneExit, PaneId, PlaceHow, SessionInfo,
@@ -644,6 +645,59 @@ fn store_session(session: &SessionMirror, name: String) {
     *lock_session(session) = name;
 }
 
+/// The one message the daemon has handed this client and its surface has not yet shown, mirrored —
+/// filled by the poll thread's collection and EMPTIED by the paint path's
+/// [`take_message`](HostClient::take_message).
+///
+/// The same shape every other mirror here has, and it holds ONE value for the reason the daemon's
+/// own mailbox does: two undelivered messages are resolved by [`Announcement::over`], not queued, so
+/// there is no capacity to exceed and nothing to discard by a rule nobody wrote down.
+type MessageMirror = Arc<Mutex<Option<Announcement>>>;
+
+/// Lock the mirrored message, poison-tolerant (see [`lock_cache`] for the discipline).
+fn lock_message(message: &Mutex<Option<Announcement>>) -> MutexGuard<'_, Option<Announcement>> {
+    message.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// COLLECT whatever the daemon is holding for this connection's client — the ONE place
+/// [`CLIENT_MESSAGES_METHOD`] is called.
+///
+/// # Why it rides the poll thread's wake and not the paint path
+///
+/// A paint happens whenever a pane produces output, and a synchronous round trip on that path would
+/// be a new cost class in the loop this client's whole idle cost rests on. The poll thread already
+/// makes four reads per wake (the session name, the window list, the pane set, the layout) and it
+/// runs on its own connection, parked host-side while the scene is quiet — so this is a fifth read
+/// on a path that is already paid for, and it happens exactly when the daemon says something moved.
+///
+/// The daemon BUMPS the change channel of every session it delivered into, so the wake that carries
+/// a message is the message's own. There is no timer here and none is wanted: a client watching a
+/// quiet session is not woken, and a message to it wakes it.
+fn query_message(conn: &mut HostConn) -> io::Result<Option<Announcement>> {
+    let answer = conn
+        .call(CLIENT_MESSAGES_METHOD, json!({}))
+        .map_err(io::Error::other)?;
+    match answer.get(MESSAGE_FIELD) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(io::Error::other),
+    }
+}
+
+/// Put `collected` in front of whatever this client has not yet shown — the ONE place the mirror is
+/// written.
+///
+/// [`Announcement::over`] and not a plain replace: a note arriving while an alert is still waiting to
+/// be painted must not displace it, which is the row's own rule asked one step earlier. The daemon
+/// applies the same rule to its own slot, through the same function, so a message cannot win here
+/// and lose there.
+fn store_message(mirror: &MessageMirror, collected: Announcement) {
+    let mut held = lock_message(mirror);
+    let waiting = held.take();
+    *held = Some(collected.over(waiting));
+}
+
 /// Announce `conn`'s CLIENT id to the daemon and agree on the wire's SHAPE
 /// ([`HostConn::handshake`]) — the group key a client's several connections share, plus the check
 /// that this build and that daemon speak the same wire.
@@ -1037,6 +1091,17 @@ pub struct WireHost {
     /// poll thread and the readers are the paint path, the same arrangement as every other mirror
     /// here.
     session: SessionMirror,
+    /// The message the daemon has handed this client and its surface has not shown yet
+    /// ([`MessageMirror`], R317) — `sprag display-message`, collected by the poll thread on the wake
+    /// the delivery itself caused.
+    ///
+    /// Beside the session name and refreshed by the same thread, but the OPPOSITE kind of fact: a
+    /// name is a level this client re-reads and can read twice harmlessly, and this is an EDGE that
+    /// must be consumed exactly once. That is why the reader takes it
+    /// ([`take_message`](HostClient::take_message)) rather than reading it, and why it survives a
+    /// session SWITCH untouched: the message was addressed to this client, not to the session it
+    /// happened to be watching when somebody sent it.
+    message: MessageMirror,
     /// The host endpoint this client connect-or-spawned on — kept so a session switch can open a
     /// FRESH poll connection to the same daemon (the request conn is re-scoped in place; the poll
     /// thread is torn down and a new one spawned on a new connection).
@@ -1659,6 +1724,11 @@ impl WireHost {
             conn: RefCell::new(conn),
             client_id: client_id.clone(),
             session: Arc::new(Mutex::new(session.clone())),
+            // Empty at boot and NOT read here: a message is addressed to a client, and this one has
+            // not attached yet — `client/attach` is what puts it in the set `display-message`
+            // reaches. Anything sent between now and the first wake is collected by that wake, which
+            // the delivery's own bump causes.
+            message: Arc::new(Mutex::new(None)),
             endpoint: endpoint.clone(),
             boot_dims: (cols, rows),
             lost_session: Arc::new(AtomicBool::new(false)),
@@ -1746,6 +1816,7 @@ impl WireHost {
             Arc::clone(&self.sessions),
             Arc::clone(&self.activity),
             Arc::clone(&self.session),
+            Arc::clone(&self.message),
             Arc::clone(&self.on_change),
             Arc::clone(&self.quit),
             Arc::new(detach_on_destroy),
@@ -3167,6 +3238,15 @@ impl HostClient for WireHost {
             .and_then(|pane| pane.notification.clone())
     }
 
+    /// TAKE the message the poll thread collected — the client-side half of the hand-off the daemon
+    /// started, and the reason both halves REMOVE rather than read.
+    ///
+    /// Served from the mirror the poll thread fills, so a surface asks for it on the reconcile it
+    /// already does and never touches the wire from the paint path.
+    fn take_message(&self) -> Option<Announcement> {
+        lock_message(&self.message).take()
+    }
+
     /// The pane's agent verdict (H3), served from the same poll-refreshed mirror as
     /// [`Self::pane_notification`] and re-adopted each wake — so a state that MOVED reaches a title
     /// on the wake that carried it, and a pane whose agent exited stops claiming one.
@@ -4070,6 +4150,7 @@ fn spawn_poll(
     sessions: SessionsMirror,
     activity: ActivityMirror,
     session: SessionMirror,
+    message: MessageMirror,
     on_change: Arc<dyn Fn() + Send + Sync>,
     quit: Arc<dyn QuitSink>,
     policy: Arc<dyn Fn() -> DetachOnDestroy + Send + Sync>,
@@ -4115,6 +4196,24 @@ fn spawn_poll(
                 // name, which is a stale label on a working client — the same degradation, not a
                 // reason to stop painting. A definitive failure is caught by the window read below,
                 // which is not best-effort.
+                // WHAT SOMEBODY ASKED THIS CLIENT TO SAY, collected first — before the reads that
+                // decide what the panes look like, because a message is the only thing on this path
+                // that is an EDGE rather than a level: every read below can be missed and healed on
+                // the next wake, and this one cannot (the daemon has already handed it over). Doing
+                // it first means a wake that dies half way through still delivered it.
+                //
+                // BEST-EFFORT like the session name and unlike the window list: a daemon that cannot
+                // answer it is a client that shows no message, which is the degradation this feature
+                // had before it existed. A definitive failure is caught by the window read below.
+                match query_message(&mut conn) {
+                    Ok(None) => {}
+                    Ok(Some(collected)) => store_message(&message, collected),
+                    Err(error) => tracing::debug!(
+                        target: "sprag_gui::wire",
+                        %error,
+                        "message collection failed this wake; nothing is shown for it",
+                    ),
+                }
                 match query_session(&mut conn) {
                     Ok(name) => store_session(&session, name),
                     Err(error) => tracing::debug!(
@@ -4746,6 +4845,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4827,6 +4927,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4911,6 +5012,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(None)),
             on_change,
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),
@@ -4971,6 +5073,7 @@ mod tests {
                 Arc::new(Mutex::new(Vec::new())),
                 Arc::new(Mutex::new(None)),
                 Arc::new(Mutex::new(String::new())),
+                Arc::new(Mutex::new(None)),
                 on_change,
                 Arc::clone(&quit) as Arc<dyn QuitSink>,
                 Arc::new(move || policy),
@@ -5018,6 +5121,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Next),
@@ -5066,6 +5170,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Next),
@@ -5137,6 +5242,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
+            Arc::new(Mutex::new(None)),
             Arc::new(|| {}),
             Arc::clone(&quit) as Arc<dyn QuitSink>,
             Arc::new(|| DetachOnDestroy::Detach),

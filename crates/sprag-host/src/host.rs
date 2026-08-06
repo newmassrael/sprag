@@ -1211,6 +1211,22 @@ pub trait HostClient {
         None
     }
 
+    /// TAKE whatever somebody asked this client to show a person — `sprag display-message`, routed
+    /// by the daemon and collected on the wake this client already has (R317).
+    ///
+    /// **It TAKES**, which is why it is `&self` returning an owned value rather than a read: a
+    /// message is shown once, so the second caller in one frame must get `None`. The removal has
+    /// already happened at the daemon (`client/messages` collects); this empties the client's own
+    /// side of the same hand-off, so a client that reconciles twice between two messages does not
+    /// paint the first one twice.
+    ///
+    /// Defaulted to `None` so an in-process host — a GUI hosting its own panes, a unit test — needs
+    /// no implementation: nothing attaches to those over a wire, so there is no client to address
+    /// and no daemon to route from.
+    fn take_message(&self) -> Option<crate::report::Announcement> {
+        None
+    }
+
     /// The pane's monotonic BELL count (`\a`) — the tmux `monitor-bell` signal, `0` if it has
     /// rung none (or the pane is absent). LIVE, child-controlled, kept SEPARATE from
     /// [`pane_notification`](Self::pane_notification) (a bell carries no text) so the two
