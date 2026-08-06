@@ -71,10 +71,12 @@ pub struct PluginsExternal {
     /// daemon — passed to each pane a plugin spawns so it feeds the reaper. Registry-free, so
     /// carrying it does not breach the plugin layer's session-tree-free boundary.
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
-    /// The daemon's opaque ATTENTION signal ([`crate::attention`]), on exactly the terms above, so a
-    /// pane a PLUGIN spawns can ask for a person like any other. `None` off a daemon.
-    on_attention:
-        Option<Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>>,
+    /// The daemon's attention ROUTER ([`crate::attention`]), on exactly the terms above, so a pane a
+    /// PLUGIN spawns can ask for a person like any other. `None` off a daemon.
+    ///
+    /// The router rather than one closure, for the reason [`crate::DaemonShared::attention`] states:
+    /// a hook is minted per birth so the reader thread running it takes no lock.
+    on_attention: Option<Arc<crate::attention::AttentionRouter>>,
 }
 
 impl PluginsExternal {
@@ -85,9 +87,7 @@ impl PluginsExternal {
         workspace: Arc<Mutex<Workspace>>,
         runs: Arc<Mutex<RunRegistry>>,
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
-        on_attention: Option<
-            Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>,
-        >,
+        on_attention: Option<Arc<crate::attention::AttentionRouter>>,
     ) -> Self {
         Self {
             workspace,
@@ -227,7 +227,13 @@ impl PluginsExternal {
         let run_ctx = RunContext::new(Arc::clone(&cancel));
         let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace))
             .with_pane_exit(self.on_pane_exit.clone())
-            .with_attention(self.on_attention.clone());
+            // The router becomes a MINTER at this boundary: the plugin layer asks for a hook per
+            // pane and never learns what a router is, which is the same opaque-`Fn` discipline the
+            // death signal beside it follows.
+            .with_attention(self.on_attention.as_ref().map(|router| {
+                let router = Arc::clone(router);
+                Arc::new(move || router.signal()) as sprag_plugin::access::AttentionMinter
+            }));
         let handle = thread::spawn(move || {
             let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access, &run_ctx);
             // The worker still owns the plugin after the run, so it can read any

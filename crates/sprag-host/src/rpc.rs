@@ -207,9 +207,7 @@ impl HostState {
         crate::DaemonShared {
             on_pane_exit: self.on_pane_exit(),
             attachments: Some(Arc::clone(self.attachments())),
-            // The SIGNAL, derived here rather than in each surface: one place hands it over, so two
-            // cannot come to derive it differently.
-            attention: self.attention.as_ref().map(|router| router.signal()),
+            attention: self.attention.clone(),
             agents: self.agents(),
             // The HOST's samplers, not fresh ones: a scene is assembled per request, so a sampler
             // minted here would hold nothing at the moment it was asked and every request would take
@@ -355,19 +353,19 @@ pub fn pane_exit_hook(signal: &Arc<dyn Fn() + Send + Sync>) -> Box<dyn Fn() + Se
     Box::new(move || signal())
 }
 
-/// [`pane_exit_hook`]'s twin for the ATTENTION signal ([`crate::attention::AttentionRouter::signal`]):
-/// the per-pane `on_attention` callback a spawn site passes, over the one shared signal.
+/// [`pane_exit_hook`]'s twin for the ATTENTION router: the per-pane `on_attention` callback a spawn
+/// site passes.
 ///
-/// The same shape for the same reason — a shared `Arc<dyn Fn>` cannot be handed to
-/// [`Workspace::spawn_with_dirty`](sprag_terminal::Workspace::spawn_with_dirty), which takes an
-/// owned `Box` per pane — and spelled here beside its twin so a third signal of this kind is
-/// written the way the first two were.
+/// Spelled here beside its twin so a third signal of this kind is written the way the first two were —
+/// but it is NOT the same shape, and the difference is the point. The reaper's signal is one bare
+/// `Fn` every pane shares; this one is MINTED per pane
+/// ([`AttentionRouter::signal`](crate::attention::AttentionRouter::signal)) so each hook owns its own
+/// channel sender and the PTY reader thread running it takes no lock of ours.
 #[must_use]
 pub fn pane_attention_hook(
-    signal: &Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>,
+    router: &Arc<crate::attention::AttentionRouter>,
 ) -> Box<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send> {
-    let signal = Arc::clone(signal);
-    Box::new(move |pane, attention| signal(pane, attention))
+    router.signal()
 }
 
 /// Whether NO pane in ANY session's ANY window is still live (every one has reached

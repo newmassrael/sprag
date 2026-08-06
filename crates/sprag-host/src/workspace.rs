@@ -129,13 +129,12 @@ pub struct WorkspaceExternal {
     /// the writes, off the frame's connection id, which no external sees). `None` leaves every
     /// `attached` at 0 — an honest "no wire clients here".
     attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
-    /// The daemon's ATTENTION signal ([`crate::attention::AttentionRouter::signal`]), already bound
-    /// to this scene's session, or `None` off a daemon. Each pane this surface SPAWNS is wired with
-    /// it, so a child raising a notification or a bell reaches the people looking at that session —
-    /// the same injection and the same per-birth wiring [`Self::on_pane_exit`] gets, and for the
-    /// same reason: this library never decides who hears about a pane, it only makes sure the pane
-    /// can be heard.
-    attention: Option<Arc<dyn Fn(PaneId, sprag_terminal::Attention) + Send + Sync>>,
+    /// The daemon's attention ROUTER ([`crate::attention::AttentionRouter`]), or `None` off a daemon.
+    /// Each pane this surface SPAWNS asks it for a hook, so a child raising a notification or a bell
+    /// reaches the people looking at the session that holds it — the same injection and the same
+    /// per-birth wiring [`Self::on_pane_exit`] gets, and for the same reason: this library never
+    /// decides who hears about a pane, it only makes sure the pane can be heard.
+    attention: Option<Arc<crate::attention::AttentionRouter>>,
     /// The daemon's agent-state memory ([`crate::AgentRegistry`]), or `None` off a daemon — the same
     /// injection [`Self::attachments`] gets, for the same two reasons.
     ///

@@ -2065,6 +2065,80 @@ mod tests {
         );
     }
 
+    /// **Every switch the code names is a DECLARED switch**, checked over the whole family rather
+    /// than over the two that happen to exist — so a third one added without a table entry is caught
+    /// here instead of by [`option_is_on`]'s panic in a daemon.
+    ///
+    /// The switches are found BY WALKING THE TABLE, not by listing them here: a hand-written list is
+    /// the drifting-array defect this workspace closed nine of.
+    #[test]
+    fn every_switch_in_the_table_is_readable_and_defaults_to_a_word_it_accepts() {
+        let switches: Vec<&'static str> = options::OPTIONS
+            .iter()
+            .filter(
+                |spec| matches!(spec.kind, options::OptionKind::Choice(v) if v == options::ON_OFF),
+            )
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            switches.contains(&options::MONITOR_BELL)
+                && switches.contains(&options::MONITOR_NOTIFICATION),
+            "the two attention switches are in the table: {switches:?}",
+        );
+        for name in switches {
+            let spec = options::spec(name).expect("a switch is a declared option");
+            assert!(
+                options::ON_OFF.contains(&spec.default),
+                "{name}'s default {:?} is not one of its own words",
+                spec.default,
+            );
+            // ...and the READER agrees with the table on a file that says nothing — the assertion
+            // that would catch a default parsed but never applied. Under `with_config` because
+            // otherwise this reads whichever `config.toml` the machine running the suite happens to
+            // have, and a developer who switched their own bell off would see a failing test about
+            // code that is fine.
+            with_config(None, || {
+                assert_eq!(
+                    option_is_on(name),
+                    spec.default == "on",
+                    "{name}'s reader and its declared default disagree",
+                );
+            });
+            // ...and a file that SAYS the other word is followed, which is what makes the line above
+            // a claim about the reader rather than about a constant.
+            let other = if spec.default == "on" { "off" } else { "on" };
+            with_config(Some(&format!("[options]\n{name} = \"{other}\"\n")), || {
+                assert_eq!(
+                    option_is_on(name),
+                    other == "on",
+                    "{name} = {other:?} in the file must reach the reader",
+                );
+            });
+        }
+    }
+
+    /// **The reader REFUSES a name that is not a switch, rather than answering about it.**
+    ///
+    /// A caller asking whether `display-time` is `on` has asked a question with no answer, and the
+    /// wrong thing to do is say `false` — that is a silent "off" for a setting the user may have
+    /// turned on. It is a programming error in this crate (the name is a `&'static str` from
+    /// [`crate::options`]), so it panics; the branch is DRIVEN here rather than left as the one arm
+    /// of this function nothing reaches.
+    #[test]
+    #[should_panic(expected = "is not a switch")]
+    fn asking_whether_a_number_is_on_is_refused() {
+        // The guard fires before any file is read, so this needs no config of its own.
+        let _ = option_is_on(options::DISPLAY_TIME);
+    }
+
+    /// The same for a name no table declares — the other guard, and the reason a caller may pass a
+    /// bare `&'static str` at all.
+    #[test]
+    #[should_panic(expected = "declared option")]
+    fn asking_about_an_option_that_does_not_exist_is_refused() {
+        let _ = option_is_on("monitor-nothing");
+    }
+
     /// The two spellings of the settle window must not drift: the options table's string and
     /// [`sprag_detect::DEFAULT_SETTLE`] are the same duration.
     ///

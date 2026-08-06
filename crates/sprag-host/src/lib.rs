@@ -159,17 +159,17 @@ pub struct DaemonShared {
     /// Per-client session attachment, read when the `sessions` slot is served to fill each
     /// `SessionInfo::attached`. `None` leaves every count at 0 — an honest "no wire clients here".
     pub attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
-    /// The daemon's ATTENTION signal ([`attention::AttentionRouter::signal`]), wired into every pane
-    /// a scene surface spawns so a child asking for a person reaches the people looking at that
-    /// session. `None` off a daemon: an in-process host has no wire clients to address, which is the
-    /// same reason [`Self::attachments`] is optional — and the two are the pair that must be present
-    /// together, because a router with nowhere to deliver would run a thread to reach nobody.
+    /// The daemon's attention ROUTER ([`attention::AttentionRouter`]), asked for a fresh hook by every
+    /// pane a scene surface spawns, so a child asking for a person reaches the people looking at the
+    /// session that holds it. `None` off a daemon: an in-process host has no wire clients to address,
+    /// which is the same reason [`Self::attachments`] is optional — and the two are the pair that must
+    /// be present together, because a router with nowhere to deliver would run a thread to reach
+    /// nobody.
     ///
-    /// The SIGNAL and not the router, so every consumer gets it in the form it wires: a scene is
-    /// assembled per request, and asking each surface to derive its own hook from a router is asking
-    /// two places to agree about something one place can hand over.
-    pub attention:
-        Option<Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>>,
+    /// The ROUTER and not one shared closure, and the difference is WHERE A LOCK IS TAKEN: a hook is
+    /// minted per BIRTH with its own channel sender, so the PTY reader thread that runs it takes none.
+    /// See [`attention::AttentionRouter::signal`].
+    pub attention: Option<Arc<attention::AttentionRouter>>,
 
     /// The agent-state memory (H3), read by the pane list. `None` leaves the `agent` key absent,
     /// which D8 already defines as "no agent here", so a host without a detector serves the pre-H3

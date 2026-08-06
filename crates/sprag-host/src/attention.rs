@@ -119,13 +119,25 @@ struct Raised {
 /// thread ends when this is dropped (the sender disconnects), which is the same self-terminating
 /// shape the reaper uses — nothing has to remember to stop it.
 pub struct AttentionRouter {
-    tx: Sender<Raised>,
+    /// The channel into the router thread, behind a mutex ONLY so this type is `Sync` and can live
+    /// in the `Arc` every scene surface holds.
+    ///
+    /// **The lock is taken at a SPAWN and never at an attention**, which is the whole shape of
+    /// [`Self::signal`]: it clones a [`Sender`] out of here once per pane birth, and the hook that
+    /// clone lives in then sends with no lock of ours at all. The first version locked inside the
+    /// hook — on the PTY READER THREAD, per raised attention — which is a second lock over the one
+    /// `mpsc` already holds, on the hottest thread in the daemon, for no reason but that `Sender`
+    /// is `Send` and not `Sync`. R296's rule: nothing expensive on the reader thread.
+    tx: Mutex<Sender<Raised>>,
 }
 
 impl AttentionRouter {
-    /// The `on_attention` signal every pane is wired with — SHARED, exactly as
-    /// [`crate::spawn_reaper`]'s death signal is, so every surface that spawns a pane wires the same
-    /// one and no pane category can be quietly left out.
+    /// The `on_attention` hook for ONE pane about to be born — a fresh [`Sender`] clone, which is
+    /// what `mpsc` is for and what keeps the reader thread's path lock-free.
+    ///
+    /// Every surface that spawns a pane calls this, so no pane category can be quietly left out; what
+    /// is shared is this ROUTER, not one closure, which is the difference from
+    /// [`crate::spawn_reaper`]'s death signal (a bare `Fn` with nothing to clone).
     ///
     /// **It names no session**, and that is a measured decision. The first version baked one in, the
     /// way [`crate::bump_on_dirty`] bakes its revision token — and the GUI's live smoke found it
@@ -142,14 +154,15 @@ impl AttentionRouter {
     /// dropped rather than logged: a message nobody could have been shown, during teardown, is not
     /// news.
     #[must_use]
-    pub fn signal(&self) -> Arc<dyn Fn(PaneId, Attention) + Send + Sync> {
-        let tx = Mutex::new(self.tx.clone());
-        Arc::new(move |pane, attention| {
-            // `Sender` is `Send` but not `Sync`, and this signal is shared across the surfaces that
-            // spawn panes — so the clone lives behind the same mutex any shared handle would need.
-            // It is taken for the length of one non-blocking send on an unbounded channel, which is
-            // what keeps it off the reader thread's critical path.
-            let tx = tx.lock().unwrap_or_else(PoisonError::into_inner);
+    pub fn signal(&self) -> Box<dyn Fn(PaneId, Attention) + Send> {
+        // The clone happens HERE, once per pane, so the hook below owns its own `Sender` and takes no
+        // lock of ours when a child asks for a person. See the field for why that ordering matters.
+        let tx = self
+            .tx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        Box::new(move |pane, attention| {
             let _ = tx.send(Raised { pane, attention });
         })
     }
@@ -173,7 +186,7 @@ pub fn spawn_attention_router(
         .name("sprag-attention".to_string())
         .spawn(move || route_until_closed(&rx, &registry, &attachments, &channels))
         .expect("spawn the attention router thread");
-    AttentionRouter { tx }
+    AttentionRouter { tx: Mutex::new(tx) }
 }
 
 /// The router thread's loop: one raised attention at a time until the last sender is dropped.

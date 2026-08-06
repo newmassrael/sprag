@@ -163,6 +163,18 @@ pub trait PaneRawCapture {
     fn pane_raw_output(&self, id: PaneId) -> Option<RawOutput>;
 }
 
+/// A MINTER for one pane's attention hook: called per birth, answering a hook that pane owns.
+///
+/// A named type because the shape is genuinely three-deep (`Arc<dyn Fn() -> Box<dyn Fn(..)>>`) and
+/// reads as noise inline — and because the field it fills and the builder
+/// ([`WorkspacePaneAccess::with_attention`]) that sets it must say the same thing.
+///
+/// **Why a minter and not one shared closure**: the hook the daemon hands out owns a channel sender
+/// per pane, and asking for it per birth is what keeps the PTY reader thread that runs it from taking
+/// a lock. This layer expresses that as *"give me a hook"* without knowing why — the same opaque
+/// discipline the pane-exit death signal follows.
+pub type AttentionMinter = Arc<dyn Fn() -> Box<dyn Fn(PaneId, Attention) + Send> + Send + Sync>;
+
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
 pub struct WorkspacePaneAccess {
     workspace: Arc<Mutex<Workspace>>,
@@ -174,15 +186,21 @@ pub struct WorkspacePaneAccess {
     /// Set only by the host's plugin surface via [`with_pane_exit`](Self::with_pane_exit); the
     /// default is `None`, so nothing but the daemon wires it.
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
-    /// The daemon's ATTENTION signal, on exactly the terms above: an opaque `Fn` this layer never
-    /// learns the meaning of, so a plugin-spawned pane whose child asks for a person reaches that
-    /// person like a mux-spawned one. Wired by the host's plugin surface, `None` everywhere else.
+    /// A MINTER for the daemon's attention hook: called once per pane this surface spawns to get
+    /// that pane its own `on_attention`. Opaque, exactly as [`Self::on_pane_exit`] is — this layer
+    /// never learns what the hook does, so a plugin-spawned pane whose child asks for a person
+    /// reaches that person like a mux-spawned one. Wired by the host's plugin surface, `None`
+    /// everywhere else.
+    ///
+    /// **A minter and not one shared closure**, because the hook the daemon hands out owns a channel
+    /// sender per pane; asking for it per birth is what keeps the PTY reader thread that runs it from
+    /// taking a lock. This layer expresses that as *"give me a hook"* without knowing why.
     ///
     /// **A separate signal and not a second use of the exit hook**, because they answer different
     /// questions about different moments — and because a pane category quietly left out of one of
-    /// them is exactly the shape this round exists to remove: the notification path had every layer
-    /// carrying the fact and one surface obliged to read it.
-    on_attention: Option<Arc<dyn Fn(PaneId, Attention) + Send + Sync>>,
+    /// them is exactly the shape the notification path was in: every layer carrying the fact and one
+    /// surface obliged to read it.
+    on_attention: Option<AttentionMinter>,
 }
 
 impl WorkspacePaneAccess {
@@ -209,11 +227,8 @@ impl WorkspacePaneAccess {
     /// Attach the daemon's opaque ATTENTION signal, so a pane this surface spawns can ask for a
     /// person. A builder for [`with_pane_exit`](Self::with_pane_exit)'s reason.
     #[must_use]
-    pub fn with_attention(
-        mut self,
-        signal: Option<Arc<dyn Fn(PaneId, Attention) + Send + Sync>>,
-    ) -> Self {
-        self.on_attention = signal;
+    pub fn with_attention(mut self, mint: Option<AttentionMinter>) -> Self {
+        self.on_attention = mint;
         self
     }
 
@@ -301,12 +316,9 @@ impl PaneLifecycle for WorkspacePaneAccess {
                 let hook = Arc::clone(hook);
                 Box::new(move || hook()) as Box<dyn Fn() + Send>
             }),
-            // ...and its ATTENTION, on the same terms: opaque, registry-free, wired per birth.
-            on_attention: self.on_attention.as_ref().map(|signal| {
-                let signal = Arc::clone(signal);
-                Box::new(move |pane, attention| signal(pane, attention))
-                    as Box<dyn Fn(PaneId, Attention) + Send>
-            }),
+            // ...and its ATTENTION, on the same terms: opaque, registry-free, and minted for THIS
+            // pane rather than shared with every other one.
+            on_attention: self.on_attention.as_ref().map(|mint| mint()),
         };
         lock(&self.workspace)
             .spawn_with_dirty(command, program.clone(), cols, rows, hooks)
