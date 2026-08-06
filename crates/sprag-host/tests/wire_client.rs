@@ -18,12 +18,13 @@ use serde_json::{Value, json};
 use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DROP_FILE_ACTION,
-    FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT,
-    MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
-    RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, project_slot_for,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
+    DROP_FILE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT,
+    LINKS_SLOT, MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
+    PASTE_ACTION, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
+    project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -4688,5 +4689,95 @@ fn a_pick_naming_a_pane_selects_it_and_a_dead_one_refuses_the_whole_path() {
         active,
         Some(pane_id),
         "the picked PANE is the one the window is on now — which is what a pane row means",
+    );
+}
+
+/// **The `display_message` GRAMMAR, pinned at the wire** — the surface R317 added and the file that
+/// pins every other action's grammar had no case for.
+///
+/// Found by the round's second debt sweep asking which arms had no driver. The CLI and the MCP tool
+/// both check the grammar before sending, so a daemon that stopped enforcing it would leave every
+/// higher gate green — which is exactly why the refusals belong HERE, one layer under both readers.
+///
+/// Four claims, and the last two are the arms nothing else can reach:
+///
+/// * A well-formed message is accepted and answers a `clients` LIST (empty here — no display client
+///   is attached to this daemon, which is the honest state of a wire test).
+/// * Each RULE is refused at the daemon: a control character, a blank, an over-long line, and a
+///   severity this build does not know. A caller that skipped the client-side check gets no further.
+/// * `client/messages` on a connection that never said hello answers `null` rather than refusing —
+///   deliberate, so a probe's first read is not a protocol error, and reachable from no CLI.
+/// * A `client` naming nobody is REJECTED, which is what keeps "you got the name wrong" distinct
+///   from "nobody is watching".
+#[test]
+fn the_display_message_grammar_is_enforced_by_the_daemon_itself() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the host");
+
+    let say = |conn: &mut HostConn, args: Value| -> Result<Value, sprag_rpc::CallError> {
+        conn.try_call(
+            "scene/invoke",
+            json!({ "path": mux_action_path(DISPLAY_MESSAGE_ACTION), "args": args }),
+        )
+    };
+
+    // A well-formed message: accepted, and the answer is a LIST. Nobody is attached to a daemon
+    // nothing has displayed on, so it is empty — which is the fact `Delivery` exists to state.
+    let answer = say(&mut conn, json!({ "text": "the build finished" }))
+        .expect("a well-formed message crosses the socket");
+    assert_eq!(
+        answer["clients"],
+        json!([]),
+        "the answer is a delivery LIST, empty because no display client is attached: {answer}",
+    );
+
+    // EVERY RULE, refused at the daemon rather than only at the two clients that also check.
+    for (name, args) in [
+        ("a control character", json!({ "text": "two\nrows" })),
+        ("a blank line", json!({ "text": "   " })),
+        (
+            "an over-long line",
+            json!({ "text": "x".repeat(sprag_host::report::MessageText::MAX_BYTES + 1) }),
+        ),
+        (
+            "an unknown severity",
+            json!({ "text": "fine", "severity": "shout" }),
+        ),
+        (
+            "a severity that is not a string",
+            json!({ "text": "fine", "severity": 3 }),
+        ),
+        (
+            "a client that is not a string",
+            json!({ "text": "fine", "client": 7 }),
+        ),
+        ("no text at all", json!({ "severity": "note" })),
+    ] {
+        assert!(
+            say(&mut conn, args.clone()).is_err(),
+            "{name} must be refused by the DAEMON, not only by its callers: {args}",
+        );
+    }
+
+    // A named client that is not attached is a REFUSAL, not an empty delivery — the distinction that
+    // stops an agent hunting for a person who is right there.
+    assert!(
+        say(
+            &mut conn,
+            json!({ "text": "fine", "client": "gui-nobody-0" })
+        )
+        .is_err(),
+        "a client that is not attached is a caller's mistake, not an empty audience",
+    );
+
+    // ...and the READ half: a connection that never said hello has no mailbox and is answered
+    // `null`. Deliberate — a refusal here would make a probe's first read look like a skew.
+    let collected: Value = conn
+        .call(sprag_rpc::CLIENT_MESSAGES_METHOD, json!({}))
+        .expect("collecting is a well-formed call with no hello");
+    assert_eq!(
+        collected[sprag_rpc::MESSAGE_FIELD],
+        Value::Null,
+        "a connection with no client has nothing waiting: {collected}",
     );
 }
