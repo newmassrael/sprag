@@ -200,7 +200,7 @@ fn main() -> io::Result<()> {
                 &sprag_host::restore_allowlist(),
                 |session| Some(bump_on_dirty(&channels.revision(session))),
                 || Some(pane_exit_hook(&on_pane_exit)),
-                |session| Some(pane_attention_hook(&attention.signal(session))),
+                || Some(pane_attention_hook(&attention.signal())),
                 |id| match hist_limits.lines {
                     0 => Vec::new(),
                     _ => load_pane_history(&hist_dir, id),
@@ -234,7 +234,7 @@ fn main() -> io::Result<()> {
             args.rows,
             Some(bump_on_dirty(&channels.revision(BOOT_SESSION))),
             Some(pane_exit_hook(&on_pane_exit)),
-            Some(pane_attention_hook(&attention.signal(BOOT_SESSION))),
+            Some(pane_attention_hook(&attention.signal())),
         )
         .map_err(io::Error::other)?;
     }

@@ -3058,6 +3058,73 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         acknowledged.is_ok(),
     );
 
+    // ----- R318: a message this window's OWN PANE raised, on the same strip -----
+    //
+    // Measured at `3114923`: `sprag-gui` showed a DOT on the pane title and DROPPED the words. The
+    // dot is still right (it persists until the pane is viewed); what was missing is that the
+    // sentence reached nobody. This drives it through the shipped binary, from a real child.
+    let quiet_first = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!("the strip is empty before the pane raises anything ({quiet_first:?})"),
+        quiet_first.is_ok(),
+    );
+    // The CHILD raises it: a `printf` typed into the pane's own shell, which is how a build script
+    // or a test runner does it. Typed through the DAEMON's input external — the client's socket
+    // cannot reach a pane's input, which is the seam `Smoke::daemon` exists for.
+    let pane = daemon_panes(&mut daemon, "smoke-report")
+        .first()
+        .copied()
+        .unwrap_or(0);
+    let typed = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::wire::pane_input_path(u64::from(pane), sprag_host::wire::TEXT_ACTION),
+            "session": "smoke-report",
+            "args": { "text": "printf '\\033]9;build finished: 3 errors\\007'\r" },
+        }),
+    );
+    report.check(
+        &format!("the pane's shell accepts the notifying command ({typed:?})"),
+        typed.is_ok(),
+    );
+    // The DAEMON's own view first, which separates "the child never raised one" from "nothing
+    // delivered it" — the two failures that look identical from an empty strip.
+    let latched = smoke.wait_for(|_| {
+        let panes = daemon
+            .call(
+                "scene/query",
+                json!({ "session": "smoke-report", "path": sprag_host::wire::mux_action_path(sprag_host::wire::PANES_SLOT) }),
+            )
+            .ok()?;
+        let seen = panes
+            .as_array()?
+            .iter()
+            .any(|row| row["notification"]["body"].as_str() == Some("build finished: 3 errors"));
+        seen.then_some(())
+    });
+    report.check(
+        &format!("the DAEMON latched the child's notification ({latched:?})"),
+        latched.is_ok(),
+    );
+    let from_the_pane = smoke.wait_for_tag("sprag_message_strip");
+    let said_pane = from_the_pane
+        .as_ref()
+        .ok()
+        .and_then(|tags| tags.get("sprag_message_strip"))
+        .map(|painted| painted.text.join("\u{1f}"))
+        .unwrap_or_default();
+    report.check(
+        &format!("a pane CHILD's own notification reaches this window ({said_pane:?})"),
+        said_pane.contains("build finished: 3 errors"),
+    );
+    report.check(
+        &format!("...and the strip NAMES the pane it came from ({said_pane:?})"),
+        said_pane.contains(&format!("pane {pane}")),
+    );
+
     // WHAT IT LEAVES: the shipped table back, and this client where it started.
     let restored = smoke.write_user_config("");
     report.check(

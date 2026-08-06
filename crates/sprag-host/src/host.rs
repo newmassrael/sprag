@@ -1614,7 +1614,7 @@ impl Host {
         allowlist: &std::collections::HashSet<String>,
         mut on_dirty: impl FnMut(&str) -> Option<Box<dyn Fn() + Send>>,
         mut on_exit: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
-        mut on_attention: impl FnMut(&str) -> Option<Box<dyn Fn(PaneId, Attention) + Send>>,
+        mut on_attention: impl FnMut() -> Option<Box<dyn Fn(PaneId, Attention) + Send>>,
         history: impl Fn(PaneId) -> Vec<u8>,
     ) -> Result<usize, SnapshotError> {
         // Build the new shape FIRST (fallible), so a bad snapshot leaves the boot registry intact.
@@ -1680,11 +1680,11 @@ impl Host {
                 size: (pane.cols, pane.rows),
                 on_dirty: on_dirty(&pane.session),
                 on_exit: on_exit(),
-                // Keyed by SESSION like the wake is, because that is who a message from this pane
-                // is addressed to — and a restored pane's session is the one it comes back into.
-                // The ID is bound HERE rather than by the pool, because a restore does not mint one:
-                // the caller chose it, and it is already in hand.
-                on_attention: on_attention(&pane.session).map(|tell| {
+                // Keyed by NOTHING, unlike the wake beside it: the router asks the registry which
+                // session holds the pane, so a restored pane needs no session named here. The ID is
+                // bound HERE rather than by the pool, because a restore does not mint one — the
+                // caller chose it, and it is already in hand.
+                on_attention: on_attention().map(|tell| {
                     let id = pane.id;
                     Box::new(move |attention| tell(id, attention)) as Box<dyn Fn(Attention) + Send>
                 }),
@@ -3284,7 +3284,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3742,7 +3742,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |pane| format!("output of pane {pane}\r\n").into_bytes(),
             )
             .expect("a valid snapshot restores");
@@ -3787,7 +3787,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |_| {
                     seen.set(seen.get() + 1);
                     assert!(
@@ -3842,7 +3842,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || Some(crate::pane_exit_hook(&signal)),
-                |_| None,
+                || None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3874,7 +3874,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3919,7 +3919,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3973,7 +3973,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -4023,7 +4023,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -4105,7 +4105,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
-                |_| None,
+                || None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -4165,7 +4165,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, |_| None, || None, |_| None, |_| Vec::new())
+            host.restore(snap, &allow, |_| None, || None, || None, |_| Vec::new())
                 .expect("restores"),
             1,
         );
@@ -4239,7 +4239,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, |_| None, || None, |_| None, |_| Vec::new())
+            host.restore(snap, &allow, |_| None, || None, || None, |_| Vec::new())
                 .expect("restores"),
             2,
         );

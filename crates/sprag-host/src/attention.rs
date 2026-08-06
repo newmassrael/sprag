@@ -70,12 +70,17 @@ use crate::{AttachmentRegistry, Audience};
 
 /// One pane's raised attention, on its way to the router thread.
 ///
-/// The SESSION rides along rather than being looked up, because it is knowable at spawn and not
-/// knowable afterwards without a walk: a pane cannot change session (`break_pane` / `join_pane` move
-/// one between WINDOWS), which is the same invariant [`crate::bump_on_dirty`] bakes its revision
-/// token on, recorded there and relied on here.
+/// **No session, and that is a measured decision rather than a simplification.** The first version
+/// baked the session into the hook, the way [`crate::bump_on_dirty`] bakes its revision token — and
+/// the GUI's live smoke found it wrong: `new_session` births its first pane through a surface whose
+/// SCOPE is the requesting connection's default session, not the one being created, which is the
+/// hazard `bump_on_dirty`'s own doc names two lines further down. So a pane in a brand-new session
+/// asked for a person and the people looking at that session were never told.
+///
+/// The router therefore asks the REGISTRY who holds this pane, which is the only authority on it,
+/// and gets the address out of the same walk. That makes the wrong answer unrepresentable rather
+/// than merely fixed at one birth site.
 struct Raised {
-    session: String,
     pane: PaneId,
     attention: Attention,
 }
@@ -91,43 +96,45 @@ pub struct AttentionRouter {
 }
 
 impl AttentionRouter {
-    /// The `on_attention` signal for panes born into `session` — SHARED, exactly as
-    /// [`crate::spawn_reaper`]'s death signal is, so every surface that spawns a pane into that
-    /// session wires the same one and no pane category can be quietly left out.
+    /// The `on_attention` signal every pane is wired with — SHARED, exactly as
+    /// [`crate::spawn_reaper`]'s death signal is, so every surface that spawns a pane wires the same
+    /// one and no pane category can be quietly left out.
     ///
-    /// Registry-FREE by construction: it captures a [`String`] and a [`Sender`] and does nothing but
-    /// send. That is what makes it safe to run on the reader thread, and it is a property of this
-    /// function rather than a rule a caller has to keep — see the module docs for the deadlock it
-    /// avoids.
+    /// **It names no session**, and that is a measured decision. The first version baked one in, the
+    /// way [`crate::bump_on_dirty`] bakes its revision token — and the GUI's live smoke found it
+    /// wrong: `new_session` births its first pane through a surface whose SCOPE is the requesting
+    /// connection's default session, not the one being created. So a pane in a brand-new session
+    /// asked for a person and the people looking at that session were never told. The router asks
+    /// the REGISTRY who holds the pane instead, which is the only authority on it.
+    ///
+    /// Registry-FREE by construction: it captures a [`Sender`] and does nothing but send. That is
+    /// what makes it safe to run on the reader thread, and it is a property of this function rather
+    /// than a rule a caller has to keep — see the module docs for the deadlock it avoids.
     ///
     /// A send that fails means the router thread is gone (the daemon is shutting down), and it is
     /// dropped rather than logged: a message nobody could have been shown, during teardown, is not
     /// news.
     #[must_use]
-    pub fn signal(&self, session: &str) -> Arc<dyn Fn(PaneId, Attention) + Send + Sync> {
+    pub fn signal(&self) -> Arc<dyn Fn(PaneId, Attention) + Send + Sync> {
         let tx = Mutex::new(self.tx.clone());
-        let session = session.to_owned();
         Arc::new(move |pane, attention| {
             // `Sender` is `Send` but not `Sync`, and this signal is shared across the surfaces that
             // spawn panes — so the clone lives behind the same mutex any shared handle would need.
             // It is taken for the length of one non-blocking send on an unbounded channel, which is
             // what keeps it off the reader thread's critical path.
             let tx = tx.lock().unwrap_or_else(PoisonError::into_inner);
-            let _ = tx.send(Raised {
-                session: session.clone(),
-                pane,
-                attention,
-            });
+            let _ = tx.send(Raised { pane, attention });
         })
     }
 }
 
 /// Start the router thread and answer the handle that feeds it.
 ///
-/// `registry` is read to NAME the pane (a walk into one workspace), `attachments` to queue the
-/// message, and `channels` to wake the clients it reached — the same three steps, in the same order,
-/// that [`WorkspaceExternal::display_message`](crate::WorkspaceExternal) performs for a person's
-/// message, because it is the same delivery.
+/// `registry` is read to find WHO HOLDS the pane and what to call it (one walk answering both),
+/// `attachments` to queue the message, and `channels` to wake the clients it reached — the same
+/// three steps, in the same order, that
+/// [`WorkspaceExternal::display_message`](crate::WorkspaceExternal) performs for a person's message,
+/// because it is the same delivery.
 #[must_use]
 pub fn spawn_attention_router(
     registry: Arc<Mutex<SessionRegistry>>,
@@ -150,7 +157,7 @@ fn route_until_closed(
     channels: &ChannelRegistry,
 ) {
     while let Ok(raised) = rx.recv() {
-        let Some(announcement) = announce(&raised, registry) else {
+        let Some((session, announcement)) = announce(&raised, registry) else {
             continue;
         };
         // The attachment lock is taken, the delivery is read out, and the lock is DROPPED before any
@@ -159,7 +166,7 @@ fn route_until_closed(
         // this daemon uses.
         let delivery = {
             let mut attachments = attachments.lock().unwrap_or_else(PoisonError::into_inner);
-            attachments.deliver(&Audience::Session(raised.session.clone()), &announcement)
+            attachments.deliver(&Audience::Session(session), &announcement)
         };
         // The wake is derived from the DELIVERY rather than from the pane's session, which is the
         // same rule the person's message follows even though the two sets are equal here: a set
@@ -171,19 +178,36 @@ fn route_until_closed(
     }
 }
 
-/// What to say about `raised`, or [`None`] when the user has asked not to hear it.
+/// WHO to tell and what to say about `raised`, or [`None`] when there is nobody to tell or the user
+/// has asked not to hear it.
 ///
-/// Split out from the loop so the whole sentence — the option gate, the address, the words and the
-/// severity — is testable without a thread, a daemon or a pane.
-fn announce(raised: &Raised, registry: &Mutex<SessionRegistry>) -> Option<Announcement> {
+/// Split out from the loop so the whole sentence — the option gate, the audience, the address, the
+/// words and the severity — is testable without a thread, a daemon or a pane.
+///
+/// A pane the registry does not hold answers [`None`], and that is the honest end of the story
+/// rather than a fallback: the pane was CLOSED between raising the attention and this thread
+/// reading, so there is no session to address — and guessing one (the connection that spawned it,
+/// say) is exactly the wrong answer this function's own history is about. It is logged at `warn`,
+/// because a message that reached nobody is the outcome this whole path exists to make visible.
+fn announce(raised: &Raised, registry: &Mutex<SessionRegistry>) -> Option<(String, Announcement)> {
     if !monitored(&raised.attention) {
         return None;
     }
-    let address = address_of(raised.pane, registry);
-    Some(Announcement {
-        text: words(&address, &raised.attention),
-        severity: severity_of(&raised.attention),
-    })
+    let Some((session, address)) = holder_of(raised.pane, registry) else {
+        tracing::warn!(
+            target: "sprag_host::attention",
+            pane = raised.pane.0,
+            "a pane asked for a person and was closed before anyone could be told",
+        );
+        return None;
+    };
+    Some((
+        session,
+        Announcement {
+            text: words(&address, &raised.attention),
+            severity: severity_of(&raised.attention),
+        },
+    ))
 }
 
 /// Whether the user wants to be told about this kind of attention at all.
@@ -204,33 +228,40 @@ fn monitored(attention: &Attention) -> bool {
     crate::config::option_is_on(name)
 }
 
-/// How a person is told to reach the pane that spoke — its NAME if it has one, else its id, in
-/// [`PaneAddress`]'s own spelling.
+/// Which session holds `pane`, and how a person is told to reach it — its NAME if it has one, else
+/// its id, in [`PaneAddress`]'s own spelling.
 ///
-/// A pane the walk cannot find is addressed by its id: the pane died between raising the attention
-/// and this thread reading the registry, and the number is still the true thing to say. Inventing
-/// "a pane that is gone" would be a sentence about the daemon's timing rather than about what the
-/// child said.
-fn address_of(pane: PaneId, registry: &Mutex<SessionRegistry>) -> PaneAddress {
-    let pools: Vec<_> = {
+/// **ONE walk answering both**, because they are one question: the audience is whoever is looking at
+/// the session that holds this pane, and the address is what that pane is called there. Asked
+/// separately they could disagree — a pane closed between the two reads would be addressed in a
+/// session that no longer holds it.
+///
+/// The registry lock is RELEASED before any workspace lock is taken — never nested, the discipline
+/// `sweep_once` measured the cost of and states. [`None`] means no session holds the pane.
+fn holder_of(pane: PaneId, registry: &Mutex<SessionRegistry>) -> Option<(String, PaneAddress)> {
+    let pools: Vec<(String, Arc<Mutex<sprag_terminal::Workspace>>)> = {
         let reg = registry.lock().unwrap_or_else(PoisonError::into_inner);
         reg.sessions()
             .iter()
-            .flat_map(|session| session.windows())
-            .map(|window| Arc::clone(window.workspace()))
+            .flat_map(|session| {
+                let name = session.name().to_owned();
+                session
+                    .windows()
+                    .iter()
+                    .map(move |window| (name.clone(), Arc::clone(window.workspace())))
+            })
             .collect()
     };
-    // The registry lock is RELEASED before any workspace lock is taken — never nested, which is the
-    // discipline `sweep_once` measured the cost of and states.
-    for pool in pools {
+    for (session, pool) in pools {
         let pool = pool.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = pool.panes().iter().find(|held| held.id() == pane) {
-            return found.name().map_or(PaneAddress::Number(pane.0), |name| {
+            let address = found.name().map_or(PaneAddress::Number(pane.0), |name| {
                 PaneAddress::Name(name.as_str().to_owned())
             });
+            return Some((session, address));
         }
     }
-    PaneAddress::Number(pane.0)
+    None
 }
 
 /// The sentence a person reads, already checked against every rule a terminal row imposes.

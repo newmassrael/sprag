@@ -546,12 +546,11 @@ pub fn workspace_scene(
             .map(|pane| pane_container(pane.id(), pane.pty(), cells))
             .collect()
     };
-    // The attention signal is bound to THIS scene's session ONCE, here, and shared by both
-    // surfaces below — so a plugin-spawned pane and a mux-spawned one reach the same people. Bound
-    // here rather than inside each surface because this is where the scope and the router are both
-    // in hand, and because a second binding site is a second chance to bind the wrong session.
-    let attention =
-        attention.map(|router| router.signal(scope.session()) as Arc<dyn Fn(_, _) + Send + Sync>);
+    // ONE attention signal, shared by both surfaces below — so a plugin-spawned pane and a
+    // mux-spawned one reach the same people. It names no session: the router asks the REGISTRY who
+    // holds the pane, because a scene's scope is NOT its new pane's session when the action was
+    // `new_session` (see `attention::Raised`, and the live smoke that measured it).
+    let attention = attention.map(|router| router.signal());
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux
     // concerns), so it carries the scope that says WHICH session it may act on...
     children.push(Scene::External(
