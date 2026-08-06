@@ -165,6 +165,12 @@ fn main() -> ExitCode {
             // this one SPLITS until the pane set can attribute its own cost. It also leaves those
             // panes standing, so nothing that counts panes may follow it.
             check_the_host_projects_panes_only_for_a_grid_reader(&mut smoke, &mut report);
+            // AFTER the check above, and it needs exactly what that one leaves: SEVERAL panes in
+            // one window. A break from a window's only pane moves it into a window of its own,
+            // which is indistinguishable from nothing happening — so this check cannot build its
+            // own fixture more cheaply than by inheriting one. It leaves a window behind, and
+            // nothing after it counts windows.
+            check_the_break_key_gives_a_pane_a_window_of_its_own(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -2576,6 +2582,72 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
     report.check(
         &format!("`prefix n` wrapped onto the session's first window ({walked:?})"),
         walked.is_ok(),
+    );
+}
+
+/// **`prefix !` takes the focused pane into a window of its own, through the shipped GUI binary
+/// (R323).**
+///
+/// The GUI half of `sprag-tui`'s pty gate, and the reason both exist is R318's: a claim is driven at
+/// every front that has one, because the two clients perform a bound action through their own code.
+/// Measured before this round, `break-pane` was a verb the CLI dispatched and `bind-key` refused —
+/// so there was no key to press at either front.
+///
+/// **A SHIFTED CHARACTER**, which is its own small claim on this front: winit delivers `!` with the
+/// shift bit set, and `KeySpec::matches` masks shift off a character key (R306). A client that
+/// compared the modifier exactly would leave this key dead while `prefix c` worked.
+///
+/// Judged against the DAEMON's window list, not against pixels: which window holds which pane is a
+/// fact only the daemon has, and this client's tab strip is its projection of it.
+fn check_the_break_key_gives_a_pane_a_window_of_its_own(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session for the break key", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the break key", false);
+        return;
+    };
+    let Ok(panes) = smoke.pane_count() else {
+        report.check("the smoke can count panes for the break key", false);
+        return;
+    };
+    // THE FIXTURE IS THE CLAIM'S PRECONDITION, asserted rather than assumed: with one pane in the
+    // window the break has no observable half, so a green check would mean nothing.
+    report.check(
+        &format!("the window holds more than one pane to break out of ({panes})"),
+        panes > 1,
+    );
+    if !smoke.focus_pane(0) {
+        report.check("a pane can be focused to drive the break key", false);
+        return;
+    }
+    let before = windows_of(&mut daemon, &session);
+    // PAST THE REPEAT WINDOW, on R308's hazard — see the guarded kill's own statement of it.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "!", false).is_ok();
+    report.check("the GUI accepts `prefix !`", pressed);
+    let grown = smoke.wait_for(|s| {
+        let _ = s;
+        let now = windows_of(&mut daemon, &session);
+        (now.len() > before.len()).then_some(now)
+    });
+    report.check(
+        &format!("`prefix !` gave the pane a window of its own ({grown:?})"),
+        grown.is_ok(),
+    );
+    let Ok(grown) = grown else { return };
+    report.check(
+        "...and the daemon selected it, which is what this client then projects",
+        grown.last().is_some_and(|(_, current)| *current),
+    );
+    // THE PANE WENT WITH IT, and this client followed the daemon onto the window it made: what is
+    // docked now is ONE pane, where a client that merely created an empty window would still be
+    // projecting the several it started with.
+    let alone = smoke.wait_for(|s| s.pane_count().ok().filter(|now| *now == 1));
+    report.check(
+        &format!("the broken-out pane is alone in the window it made ({alone:?})"),
+        alone.is_ok(),
     );
 }
 

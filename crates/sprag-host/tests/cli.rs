@@ -4334,11 +4334,28 @@ fn list_keys_reads_the_users_config_with_no_daemon() {
 /// default table, which would leave a user believing their config was accepted.
 #[test]
 fn list_keys_refuses_a_broken_config_and_names_it() {
+    // A REAL VERB a keystroke cannot mean — the likeliest broken line in anybody's config,
+    // because it is a word they read in `sprag --help`. Since R323 the refusal says which RULE
+    // stops it rather than claiming the verb does not exist.
     let config = ConfigHome::new("[[bind]]\nkey = \"x\"\naction = \"kill-server\"\n");
     let run = sprag_env(
         &socket_path(),
         &["list-keys"],
         &[("XDG_CONFIG_HOME", config.as_str())],
+    );
+    assert!(!run.ok, "a broken config fails");
+    assert!(
+        run.stderr.contains("config.toml") && run.stderr.contains("is a command, not a binding"),
+        "naming the file and the fault: {}",
+        run.stderr,
+    );
+    // AND A WORD THAT IS NO VERB AT ALL, which must still read as a typo — the control that keeps
+    // the sentence above from being the only thing this binary can say about a bad action.
+    let typo = ConfigHome::new("[[bind]]\nkey = \"x\"\naction = \"kill-serverr\"\n");
+    let run = sprag_env(
+        &socket_path(),
+        &["list-keys"],
+        &[("XDG_CONFIG_HOME", typo.as_str())],
     );
     assert!(!run.ok, "a broken config fails");
     assert!(
@@ -6152,8 +6169,13 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
             "rename-pane" => vec!["renamed"],
             "send-keys" => vec!["Escape"],
             "report-agent" => vec!["working"],
-            "break-pane" | "processes" | "kill-pane" | "zoom-pane" | "capture-pane" | "agent"
-            | "release-agent" | "events" => vec![],
+            // `run` with NO name LISTS the pane's project commands, which resolves the pane and
+            // prints — everything this ratchet needs. It entered the sweep at R323, when the usage
+            // stopped being a hand-written list and started naming every verb the binary
+            // dispatches: this verb had been dispatched and undocumented, so nothing derived from
+            // the usage could see it.
+            "run" | "break-pane" | "processes" | "kill-pane" | "zoom-pane" | "capture-pane"
+            | "agent" | "release-agent" | "events" => vec![],
             other => panic!(
                 "the usage says {other:?} takes a PANE and this ratchet has no other arguments for \
                  it. Add them — a skipped verb is a verb this test believes it covered."
@@ -6162,56 +6184,29 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
     };
 
     // Every verb the usage spells with a PANE, and HOW it takes one (positionally or behind
-    // `--pane`). Parsed from the usage rather than listed, so the two cannot drift.
+    // `--pane`). Read out of the usage rather than listed here, so the two cannot drift — and the
+    // usage is itself DERIVED from `sprag_host::vocabulary` since R323, so what this walks is the
+    // vocabulary's own claim about which verbs take a pane.
     //
-    // The usage groups a run of verbs as `sprag <A | B | C> [-t SESSION]`, and a single verb's own
-    // alternatives as `report-agent <working|blocked|idle>`. Both put a `|` inside `<…>`, so depth
-    // alone cannot tell them apart — what does is WHERE the group opens: immediately after
-    // `sprag ` it lists verbs, anywhere else it lists one verb's arguments.
+    // ⚠ THE PARSE USED TO BE THE HARD PART and is now four lines. The text it read was a packed
+    // `sprag <A | B | C> [-t SESSION]` block, so telling a run of VERBS from one verb's own
+    // alternatives needed a bracket-depth walk. One verb per line needs none of that: a verb line
+    // is indented four spaces and begins with its own name.
     let usage = sprag(&sock, &["--help"]).stderr;
-    let flat = usage.replace('\n', " ");
-    let mut forms: Vec<String> = Vec::new();
-    for run in flat.split("sprag ").skip(1) {
-        let run = run.trim();
-        let Some(group) = run.strip_prefix('<') else {
-            forms.push(run.to_owned());
+    let mut verbs: Vec<(String, bool)> = Vec::new();
+    for line in usage.lines() {
+        let Some(form) = line.strip_prefix("    ") else {
             continue;
         };
-        let mut current = String::new();
-        let mut depth = 0_i32;
-        // `[` counts as well as `<`: `split-window [-h|-v [-b] [PANE]]` puts a `|` inside square
-        // brackets, and reading `-v` as a verb is what a bracket-blind split does.
-        for ch in group.chars() {
-            match ch {
-                '<' | '[' => {
-                    depth += 1;
-                    current.push(ch);
-                }
-                '>' if depth == 0 => break,
-                '>' | ']' => {
-                    depth -= 1;
-                    current.push(ch);
-                }
-                '|' if depth == 0 => forms.push(std::mem::take(&mut current)),
-                _ => current.push(ch),
-            }
-        }
-        forms.push(current);
-    }
-    let mut verbs: Vec<(String, bool)> = Vec::new();
-    for form in &forms {
-        let form = form.trim();
         let Some(verb) = form.split_whitespace().next() else {
             continue;
         };
-        let verb = verb.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
-        if verb.is_empty() || form.contains("PANE is a pane's id") {
+        // The trailing note is indented like a verb line and is not one; a line whose first word
+        // is not this vocabulary's verb is skipped rather than guessed at.
+        if sprag_host::vocabulary::Verb::parse(verb).is_none() {
             continue;
         }
-        if form.contains("PANE")
-            && !form.starts_with("PANE")
-            && !verbs.iter().any(|(known, _)| known == verb)
-        {
+        if form.contains("PANE") && !verbs.iter().any(|(known, _)| known == verb) {
             verbs.push((verb.to_owned(), form.contains("--pane PANE")));
         }
     }
@@ -6981,4 +6976,218 @@ fn every_acting_verb_explains_a_daemon_that_does_not_know_its_verb() {
             run.stderr,
         );
     }
+}
+
+/// **THE RATCHET: every verb the vocabulary has, driven at the SHIPPED BINARY.**
+///
+/// Register item 48 asked for a sweep that a newly added verb enters by itself, and this is the
+/// half no library test can make: `sprag_host::vocabulary` is a table, and a table can say anything.
+/// What the table CLAIMS is that this binary dispatches 49 words and refuses five others by name —
+/// so every one of them is run, and the answers are held against the claim.
+///
+/// # The three answers, and the control
+///
+/// * a verb the table says the shell RUNS must not come back `unknown command` — it may fail for
+///   any reason of its own (there is no daemon on this socket, which most of them need);
+/// * a verb the table says is only ever a KEYSTROKE must be refused by NAME, with the line that
+///   would bind it — where until R323 `sprag switch-client -n` answered `unknown command
+///   "switch-client"` about a verb this product has had since R314;
+/// * a word that is in no vocabulary is `unknown command`, which is the CONTROL: without it, a
+///   binary that answered every word the same way would satisfy the first rule completely.
+///
+/// The EXIT CODES discriminate too, and they are deliberately different: an unknown word exits 2
+/// (tmux's usage exit), an argument error exits 1. A refusal that merged them would tell a script
+/// that a real verb was a typo.
+#[test]
+fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
+    use sprag_host::vocabulary::Verb;
+    let absent = socket_path();
+    let mut ran = 0_usize;
+    let mut refused = 0_usize;
+    for verb in Verb::ALL {
+        let name = verb.name();
+        let run = sprag(&absent, &[name]);
+        if verb.runs_in_shell() {
+            ran += 1;
+            assert!(
+                !run.stderr.contains("unknown command"),
+                "{name:?} is a verb this binary dispatches and it answered: {}",
+                run.stderr,
+            );
+        } else {
+            refused += 1;
+            assert!(
+                run.stderr.contains(name)
+                    && run.stderr.contains("is a key binding, not a command")
+                    && run.stderr.contains("bind-key"),
+                "{name:?} must be refused as the keystroke it is: {}",
+                run.stderr,
+            );
+        }
+    }
+    assert_eq!(
+        (ran, refused),
+        (49, 5),
+        "the shell half and the keyboard-only half of the vocabulary",
+    );
+
+    // THE CONTROL — a word in no vocabulary, and the exit code that says so. Without it every
+    // assertion above is satisfied by a binary that never says `unknown command` at all.
+    let nonsense = sprag(&absent, &["kill-serverr"]);
+    assert!(
+        nonsense.stderr.contains("unknown command \"kill-serverr\""),
+        "a word that is no verb is a typo: {}",
+        nonsense.stderr,
+    );
+    assert!(!nonsense.ok, "and it fails");
+
+    // ...and the two failures are told apart by their exit code, not only by their words.
+    let keystroke = std::process::Command::new(env!("CARGO_BIN_EXE_sprag"))
+        .arg("switch-client")
+        .env("SPRAG_HOST_RPC_SOCK", &absent)
+        .output()
+        .expect("run the sprag CLI");
+    let typo = std::process::Command::new(env!("CARGO_BIN_EXE_sprag"))
+        .arg("kill-serverr")
+        .env("SPRAG_HOST_RPC_SOCK", &absent)
+        .output()
+        .expect("run the sprag CLI");
+    assert_eq!(
+        (keystroke.status.code(), typo.status.code()),
+        (Some(1), Some(2)),
+        "a real verb refused is an argument error; a word nobody has is the usage exit",
+    );
+}
+
+/// **THE HELP NAMES EVERY VERB THIS BINARY DISPATCHES** — the drift that opened R323, measured.
+///
+/// The usage text was a hand-written `const` whose OWN DOC said *"a second list is exactly what
+/// nothing checks"*. It was right, and nobody had checked: `run` and `hook` were dispatched by the
+/// shipped binary and named in it nowhere, so two of the CLI's verbs could be found only by reading
+/// its source.
+///
+/// **This is deliberately not a comparison against the table** — the help is BUILT from the table
+/// now, so that assertion would be circular and would pass on a table missing a verb. It reads the
+/// help the binary PRINTS, and drives every word it finds there back at the binary.
+#[test]
+fn the_help_names_the_verbs_and_every_word_it_names_is_dispatched() {
+    let absent = socket_path();
+    let help = sprag(&absent, &["--help"]).stderr;
+    let named: Vec<String> = help
+        .lines()
+        .filter_map(|line| line.strip_prefix("    "))
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+        .map(str::to_owned)
+        .collect();
+    // The two the const had lost, named here rather than counted: this test exists because of
+    // them, and a regression that dropped one again must fail by name.
+    for lost in ["run", "hook"] {
+        assert!(
+            named.iter().any(|word| word == lost),
+            "{lost:?} is dispatched and the help must name it: {help}",
+        );
+    }
+    assert!(
+        named.len() >= 49,
+        "the help lists {} verbs, which is fewer than this binary had at R323: {help}",
+        named.len(),
+    );
+    for verb in &named {
+        let run = sprag(&absent, &[verb]);
+        assert!(
+            !run.stderr.contains("unknown command"),
+            "the help names {verb:?} and the binary does not have it: {}",
+            run.stderr,
+        );
+    }
+}
+
+/// **`bind-key` ANSWERS FOR EVERY VERB THE PRODUCT HAS** — the head of R323, at the surface a user
+/// meets it.
+///
+/// R322 measured this by hand and wrote the number down: of the 47 verbs the CLI dispatched,
+/// `sprag bind-key F9 <verb>` took 8 outright, 6 more with flags, and told the other 33 that the
+/// verb *"is not an action"* — the sentence a TYPO gets, about words the same binary runs. This
+/// asserts the whole sweep instead, so the number is derived and a new verb enters it by existing.
+///
+/// Each of the four answers is a different sentence, and which one a verb gets is the table's claim:
+/// bound, refused for its FLAGS (a real verb, wrong grammar), refused with a RULE, or named as a
+/// gap sprag has not closed. The CONTROL is a word that is no verb at all — it must still read as
+/// a typo, which is what stops "every refusal now has a reason" from meaning "every refusal now
+/// reads alike".
+#[test]
+fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
+    use sprag_host::vocabulary::{Keystroke, Verb};
+    let absent = socket_path();
+    let config = ConfigHome::new("");
+    let bind = |name: &str| {
+        sprag_env(
+            &absent,
+            &["bind-key", "F9", name],
+            &[("XDG_CONFIG_HOME", config.as_str())],
+        )
+    };
+    let mut counts = (0_usize, 0_usize, 0_usize, 0_usize);
+    for verb in Verb::ALL {
+        let name = verb.name();
+        let run = bind(name);
+        match verb.keystroke() {
+            // A form is a GRAMMAR: `split-window` alone is a real verb with an incomplete flag
+            // list, and its refusal must be about the FLAGS rather than about the verb.
+            Keystroke::Means(_) => {
+                if run.ok {
+                    counts.0 += 1;
+                } else {
+                    counts.1 += 1;
+                    assert!(
+                        run.stderr.contains(name)
+                            && !run.stderr.contains("is not an action")
+                            && !run.stderr.contains("not a binding"),
+                        "{name:?} is bindable, so a refusal is about its flags: {}",
+                        run.stderr,
+                    );
+                }
+            }
+            Keystroke::Cannot(why) => {
+                counts.2 += 1;
+                assert!(!run.ok, "{name:?} must be refused");
+                assert!(
+                    run.stderr.contains("is a command, not a binding")
+                        && run.stderr.contains(why.why())
+                        && run.stderr.contains(&format!("`sprag {name}`")),
+                    "{name:?} must be refused with its own rule and the way to run it: {}",
+                    run.stderr,
+                );
+            }
+            Keystroke::NotBuilt => {
+                counts.3 += 1;
+                assert!(!run.ok, "{name:?} must be refused");
+                assert!(
+                    run.stderr.contains("does not bind it yet"),
+                    "{name:?} is a gap of sprag's, and the sentence must say so: {}",
+                    run.stderr,
+                );
+            }
+        }
+    }
+    // MEASURED, not predicted: the author's arithmetic said 16/6 and the run said 14/8, because
+    // `switch-client` and `confirm-before` are bindable verbs whose BARE form is incomplete — the
+    // same shape as `split-window`. The numbers are here so a verb changing category has to change
+    // one.
+    assert_eq!(
+        counts,
+        (14, 8, 28, 4),
+        "bound outright / refused for flags / refused with a rule / not built yet",
+    );
+
+    // THE CONTROL: a word that is in no vocabulary still reads as a typo, and the list it is
+    // offered is the DERIVED one — `break-pane` is in it because the table says so.
+    let typo = bind("kill-serverr");
+    assert!(!typo.ok);
+    assert!(
+        typo.stderr.contains("is not an action") && typo.stderr.contains("break-pane"),
+        "a word nobody has is a typo, answered with what exists: {}",
+        typo.stderr,
+    );
 }

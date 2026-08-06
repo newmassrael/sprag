@@ -245,6 +245,21 @@ fn boot_session(conn: &mut HostConn) -> String {
         .to_owned()
 }
 
+/// Every session the daemon holds, by name, in its own order — what a test about a session being
+/// BORN or ENDING asserts on.
+fn session_names(conn: &mut HostConn) -> Vec<String> {
+    conn.call(
+        "scene/query",
+        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
+    )
+    .ok()
+    .and_then(|value| value.as_array().cloned())
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|row| Some(row["name"].as_str()?.to_owned()))
+    .collect()
+}
+
 /// How many clients the daemon counts as attached to `session`. An unattached session omits the
 /// field, which reads back as 0.
 fn attached(conn: &mut HostConn, session: &str) -> u64 {
@@ -1277,6 +1292,131 @@ fn the_window_keys_create_and_walk_the_sessions_windows() {
         tui.liveness(),
         "running",
         "and the client is still alive, having driven three window keys",
+    );
+}
+
+/// **R323's PANE VERB, PRESSED** — `prefix !` on a real client, and the DAEMON's own window list.
+///
+/// Measured at `b588a41`, before this round: `sprag bind-key F9 break-pane` answered *"break-pane"
+/// is not an action* — about a verb the SAME BINARY dispatches, and one whose client-side call
+/// (`HostClient::break_pane`) had existed since the GUI palette got the gesture. The keyboard could
+/// not say a word the product had. It is tmux's own `prefix !`, so a tmux user's fingers already
+/// carry it.
+///
+/// **The split is what makes the break visible**, and that is not fixture ceremony: breaking a
+/// window's ONLY pane moves it into a window of its own, which looks exactly like nothing
+/// happening. The window must hold two panes for the act to have an observable half.
+///
+/// The three assertions each fail differently: a window is CREATED; the pane that moved is the one
+/// that had FOCUS (not the window's first); and the client is still alive afterwards.
+#[test]
+fn the_break_key_puts_the_focused_pane_in_a_window_of_its_own() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &sock;
+
+    // Typed first, so the key below is proven to act on a client that was WORKING.
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("0".to_owned(), true)],
+        "the session boots with one window, which is what makes the break visible",
+    );
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    wait_for("the split to give the window two panes", || {
+        settled(pane_ids(&mut conn, &session).len(), &2)
+    });
+    let focused = active_pane(&mut conn, &session).expect("the split selects the pane it made");
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"!");
+    wait_for("the break key to give the pane a window of its own", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        )
+    });
+    // `panes` reads the CURRENT window, which the break selects — so this says the new window holds
+    // exactly the pane that had focus, and the one left behind is elsewhere.
+    assert_eq!(
+        pane_ids(&mut conn, &session),
+        vec![focused],
+        "the pane that moved is the one the user was on, alone in the window it made",
+    );
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "and the client is still alive, having broken a pane out from under itself",
+    );
+}
+
+/// **R323's TWO SESSION VERBS, PRESSED** — and the pair is what proves the FOLLOW.
+///
+/// `new` and `kill-session` ship BOUND TO NOTHING (tmux binds neither, and the second has the
+/// largest blast radius in the vocabulary), so this writes a config that binds them — which makes
+/// the test a statement about the whole path a user walks: a `config.toml`, read by a shipped
+/// client, reaching a daemon.
+///
+/// # Why the two are one test
+///
+/// `new` is TWO acts — create a session, and point this client at it — and the second is invisible
+/// to any assertion about the registry: a client that created a session and stayed where it was
+/// would leave the same two rows behind. What discriminates is killing "this client's session"
+/// NEXT: if the follow did not happen, the kill takes the BOOT session instead, and the row that
+/// disappears is the wrong one. Two keys, and only the pair can tell the two worlds apart.
+///
+/// Measured before this round: both verbs answered *"is not an action"* at `bind-key`, so neither
+/// key existed to press.
+#[test]
+fn the_session_keys_make_a_session_follow_it_and_kill_the_one_they_landed_on() {
+    let config = ConfigHome::new(
+        "[[bind]]\nkey = \"N\"\naction = \"new\"\n\n[[bind]]\nkey = \"Q\"\naction = \"kill-session\"\n",
+    );
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    assert_eq!(
+        session_names(&mut conn),
+        vec![session.clone()],
+        "the daemon holds one session, which is what makes the birth visible",
+    );
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"N");
+    wait_for("the key to make a second session", || {
+        settled(session_names(&mut conn).len(), &2)
+    });
+    let born = session_names(&mut conn)
+        .into_iter()
+        .find(|name| *name != session)
+        .expect("a session that is not the one we booted on");
+    // THE FOLLOW, read from the daemon's own attachment count rather than from this client's
+    // screen: the client is the thing under test, so its picture of where it is proves nothing.
+    wait_for("the client to be attached to the session it made", || {
+        settled(
+            (attached(&mut conn, &session), attached(&mut conn, &born)),
+            &(0, 1),
+        )
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"Q");
+    wait_for(
+        "the kill key to end the session this client landed on",
+        || settled(session_names(&mut conn), &vec![session.clone()]),
+    );
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "and the client is alive on the session that is left, having killed the one it was on",
     );
 }
 
@@ -4023,19 +4163,26 @@ fn the_key_table_shows_the_users_own_table_and_gives_the_panes_back() {
         tui.rows(),
     );
 
-    // IT SCROLLS. The vocabulary section is past the bottom of a 24-row terminal, so reaching it is
-    // a statement that the page key moved the view rather than that the rows happened to fit.
-    let vocabulary = sprag_host::keyhelp::KeyHelp::VOCABULARY_HEADING;
+    // IT SCROLLS. The LAST ROW of the table is past the bottom of a 24-row terminal, so reaching it
+    // is a statement that the page key moved the view rather than that the rows happened to fit.
+    //
+    // ⚠ It watched for the vocabulary HEADING until R323, and three new forms pushed that heading
+    // off the TOP of the last page — a test that failed because the table grew, which is the shape
+    // of a check anchored to a position rather than to an end. The last FORM is derived from the
+    // vocabulary itself, so it moves with it.
+    let last_form = *sprag_host::keymap::BoundAction::vocabulary()
+        .last()
+        .expect("the vocabulary is not empty");
     assert!(
-        !tui.rows().iter().any(|row| row.contains(vocabulary)),
-        "the last section must be off screen before the scroll, or paging proves nothing: {:?}",
+        !tui.rows().iter().any(|row| row.contains(last_form)),
+        "the last row must be off screen before the scroll, or paging proves nothing: {:?}",
         tui.rows(),
     );
     tui.type_bytes(b"\x1b[6~"); // PageDown
     tui.type_bytes(b"\x1b[6~");
     tui.type_bytes(b"\x1b[6~");
     wait_for("the page key to reach the end of the table", || {
-        if tui.rows().iter().any(|row| row.contains(vocabulary)) {
+        if tui.rows().iter().any(|row| row.contains(last_form)) {
             Ok(())
         } else {
             Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
@@ -4175,9 +4322,14 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
     tui.type_bytes(b"\x1b[6~");
     tui.type_bytes(b"\x1b[6~");
     tui.type_bytes(b"\x1b[6~");
-    let vocabulary = sprag_host::keyhelp::KeyHelp::VOCABULARY_HEADING;
+    // The table's LAST ROW, derived — not its vocabulary HEADING, which three new forms pushed off
+    // the top of the last page at R323. A barrier anchored to a position stops being a barrier the
+    // moment the thing it is inside grows.
+    let last_form = *sprag_host::keymap::BoundAction::vocabulary()
+        .last()
+        .expect("the vocabulary is not empty");
     wait_for("the client to have consumed everything sent since", || {
-        if tui.rows().iter().any(|row| row.contains(vocabulary)) {
+        if tui.rows().iter().any(|row| row.contains(last_form)) {
             Ok(())
         } else {
             Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
@@ -4741,13 +4893,19 @@ fn display_time_zero_reports_nothing_at_all() {
     );
 }
 
-/// **The other three "nowhere to go" arms are driven here** — the swap's edge, the resize's
-/// boundary, and a window already at the end of its session's order.
+/// **The other FOUR "nowhere to go" arms are driven here** — the swap's edge, the resize's
+/// boundary, a window already at the end of its session's order, and (R323) a break with nothing to
+/// break out of.
 ///
-/// `select-pane -L`'s edge has its own fixture (the arrow walk), and these three had NONE: they are
+/// `select-pane -L`'s edge has its own fixture (the arrow walk), and these had NONE: they are
 /// the "a branch reachable only from a state no test builds" shape, found by the round's own audit
-/// asking which reports had a driver. One fixture reaches all three because a session with ONE
+/// asking which reports had a driver. One fixture reaches all four because a session with ONE
 /// window holding ONE pane is exactly the state each of them refuses in.
+///
+/// The BREAK's is the likeliest of the four to be met by an actual person: `prefix !` pressed with
+/// one pane on screen. Measured against a live daemon — it answers *"pane 0 is its window's only
+/// pane, no window holds it, or the name is taken"* — so the client either says something or looks
+/// broken.
 ///
 /// The CONTROL is the boot row itself: every press is checked against the row it must NOT leave
 /// alone, and the row returns to naming the session between them.
@@ -4767,6 +4925,7 @@ fn the_swap_the_resize_and_the_move_all_say_when_they_go_nowhere() {
         (&b"\x1b[1;2A"[..], "swap-pane -U: nowhere to go"),
         (&b"\x1b[1;5A"[..], "resize-pane -U 1: nowhere to go"),
         (&b"<"[..], "move-window -p: nowhere to go"),
+        (&b"!"[..], "break-pane: nowhere to go"),
     ] {
         // PAST THE REPEAT WINDOW: the arrows are `-r`, so inside it the prefix table is still live
         // and the next chord's first character would be a self-send (R308's hazard, R315's bite).
