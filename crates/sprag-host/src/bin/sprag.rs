@@ -335,10 +335,7 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
             .ok_or_else(|| bad("run: the window holds no pane".to_owned()))?,
     };
 
-    let answer: Value = conn.call(
-        "scene/query",
-        scoped(mux_action_path(&project_slot_for(pane))),
-    )?;
+    let answer: Value = query_slot(&mut conn, scoped(mux_action_path(&project_slot_for(pane))))?;
     if answer.is_null() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -997,19 +994,15 @@ fn cli_client_id() -> String {
 /// costs this command one `/proc` walk, which is a cost it asked for.
 fn ls() -> io::Result<()> {
     let mut conn = connect(None)?;
-    let sessions = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
-    )?;
+    let sessions = query_slot(&mut conn, json!({ "path": mux_action_path(SESSIONS_SLOT) }))?;
     // Best-effort: a daemon too old to serve the family leaves every line in its structural form
     // rather than failing a listing (`sprag ls` answers "what may I name?" first and foremost). The
     // wire protocol makes that skew a refusal at the door, so this is belt to that suspenders.
-    let activity = conn
-        .call(
-            "scene/query",
-            json!({ "path": mux_action_path(&session_activity_at(0)) }),
-        )
-        .unwrap_or(Value::Null);
+    let activity = query_slot(
+        &mut conn,
+        json!({ "path": mux_action_path(&session_activity_at(0)) }),
+    )
+    .unwrap_or(Value::Null);
     for session in sessions.as_array().into_iter().flatten() {
         let name = session["name"].as_str().unwrap_or("?");
         let windows = session["windows"].as_u64().unwrap_or(0);
@@ -1073,10 +1066,7 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
     if let Some(session) = &filter {
         require_session(&mut conn, session)?;
     }
-    let clients = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(CLIENTS_SLOT) }),
-    )?;
+    let clients = query_slot(&mut conn, json!({ "path": mux_action_path(CLIENTS_SLOT) }))?;
     for client in clients.as_array().into_iter().flatten() {
         let id = client["client"].as_str().unwrap_or("?");
         let session = client["session"].as_str().unwrap_or("?");
@@ -1155,8 +1145,8 @@ fn find(args: Vec<String>) -> io::Result<()> {
     };
     let mut truncated = false;
     for (window, pane) in panes {
-        let answer: Value = conn.call(
-            "scene/query",
+        let answer: Value = query_slot(
+            &mut conn,
             windowed_params(
                 session.as_deref(),
                 pane_input_path(pane, &slot),
@@ -1632,10 +1622,7 @@ fn await_window(conn: &mut HostConn, child: &mut std::process::Child) -> io::Res
                 "sprag-gui exited with {status} before its window attached"
             )));
         }
-        let clients: Value = conn.call(
-            "scene/query",
-            json!({ "path": mux_action_path(CLIENTS_SLOT) }),
-        )?;
+        let clients: Value = query_slot(conn, json!({ "path": mux_action_path(CLIENTS_SLOT) }))?;
         if clients
             .as_array()
             .into_iter()
@@ -1728,17 +1715,32 @@ fn own_session(cmd: &mut Command) -> &mut Command {
 /// `windows` is the request because a scope is resolved BEFORE any handler runs (`crate::rpc`'s
 /// `handle_parsed`), so any scoped path answers the question; this is the cheapest one, and its
 /// own answer is discarded.
+/// # A scoped query carries TWO things that can be invalid, and this used to read them as one
+///
+/// The comment here said *"a scoped query carries nothing else that can be invalid"*, and the
+/// stand-in daemon in `tests/cli.rs` refuted it by running: an unknown ADDRESS is
+/// `UnknownIntrospectPath` under the SAME `INVALID_PARAMS` code a refused scope arrives under, so
+/// against a daemon that does not serve `windows` this function answered `false` and
+/// `sprag windows -t 0` reported **`no session named "0"`** about a session that was there. A
+/// wrong answer that parses, from the pre-flight every scoped command runs — the exact failure
+/// [`query_slot`] exists to prevent, in the one reader that could not use it.
+///
+/// So the code is the first half of the test and [`unknown_slot`] is the second. A refused SCOPE
+/// is still read from the code rather than from a sentence, for the reason it always was: matching
+/// wording would make this file depend on how another crate phrases itself.
 fn session_exists(conn: &mut HostConn, name: &str) -> io::Result<bool> {
-    match conn.try_call(
-        "scene/query",
-        json!({ "session": name, "path": mux_action_path(WINDOWS_SLOT) }),
-    ) {
+    let path = mux_action_path(WINDOWS_SLOT);
+    match query_raw(conn, json!({ "session": name, "path": path.clone() })) {
         Ok(_) => Ok(true),
-        // The daemon heard the request and refused the SCOPE — that IS the answer. Read from the
-        // JSON-RPC code rather than from its sentence: a scoped query carries nothing else that
-        // can be invalid, and matching wording would make this file depend on how another crate
-        // phrases itself.
-        Err(CallError::Fault(fault)) if fault.code == INVALID_PARAMS => Ok(false),
+        Err(CallError::Fault(fault)) if fault.code == INVALID_PARAMS => {
+            // The ADDRESS was refused, not the scope: this call learned nothing about the session
+            // and must say so rather than answer for it.
+            match unknown_slot(&path, &fault) {
+                Some(skew) => Err(skew),
+                // The daemon heard the request and refused the SCOPE — that IS the answer.
+                None => Ok(false),
+            }
+        }
         // Anything else — a dead socket, a protocol mismatch, a fault of another code — is this
         // call FAILING, and must never read as "no such session".
         Err(error) => Err(error.into()),
@@ -1856,10 +1858,7 @@ fn kill_server(args: Vec<String>) -> io::Result<()> {
         ));
     }
     let mut conn = connect(None)?;
-    let sessions = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(SESSIONS_SLOT) }),
-    )?;
+    let sessions = query_slot(&mut conn, json!({ "path": mux_action_path(SESSIONS_SLOT) }))?;
     let names: Vec<String> = sessions
         .as_array()
         .into_iter()
@@ -2035,10 +2034,7 @@ fn scope_name(session: Option<&str>) -> &str {
 /// pane-id check and the `panes` listing, so a client and the daemon cannot disagree on which panes
 /// are addressable.
 fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> {
-    let listed: Value = conn.call(
-        "scene/query",
-        scoped_params(session, mux_action_path(PANES_SLOT)),
-    )?;
+    let listed: Value = query_slot(conn, scoped_params(session, mux_action_path(PANES_SLOT)))?;
     Ok(listed
         .as_array()
         .into_iter()
@@ -2197,8 +2193,8 @@ fn session_panes(
 ) -> io::Result<Vec<(String, u64, Option<String>)>> {
     let mut out = Vec::new();
     for window in window_names(conn, session)? {
-        let listed: Value = conn.call(
-            "scene/query",
+        let listed: Value = query_slot(
+            conn,
             windowed_params(session, mux_action_path(PANES_SLOT), Some(&window)),
         )?;
         for pane in listed.as_array().into_iter().flatten() {
@@ -2213,10 +2209,7 @@ fn session_panes(
 
 /// The scoped session's window names, in the order the session arranges them.
 fn window_names(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<String>> {
-    let listed: Value = conn.call(
-        "scene/query",
-        scoped_params(session, mux_action_path(WINDOWS_SLOT)),
-    )?;
+    let listed: Value = query_slot(conn, scoped_params(session, mux_action_path(WINDOWS_SLOT)))?;
     Ok(listed
         .as_array()
         .into_iter()
@@ -2227,10 +2220,7 @@ fn window_names(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<St
 
 /// The scoped session's CURRENT window, which is what a [`PaneSite`] with no window means.
 fn current_window(conn: &mut HostConn, session: Option<&str>) -> io::Result<String> {
-    let listed: Value = conn.call(
-        "scene/query",
-        scoped_params(session, mux_action_path(WINDOWS_SLOT)),
-    )?;
+    let listed: Value = query_slot(conn, scoped_params(session, mux_action_path(WINDOWS_SLOT)))?;
     Ok(listed
         .as_array()
         .into_iter()
@@ -2279,15 +2269,42 @@ fn site_params(session: Option<&str>, site: &PaneSite, path: String) -> Value {
 ///
 /// Every OTHER fault passes through untouched. This translates one refusal whose cause it can state;
 /// dressing up faults it cannot explain would be the guess-as-fact [`agent_refusal`] refuses to make.
-fn query_slot(conn: &mut HostConn, path: &str, command: &str) -> io::Result<Value> {
-    match conn.try_call("scene/query", json!({ "path": path })) {
+///
+/// # It takes the whole `params`, and that is what let the other sixteen readers in
+///
+/// It used to take a bare `path` and build `{"path": …}` itself, so the one shape it accepted was
+/// the UNSCOPED read — and every other reader in this file passes [`scoped_params`],
+/// [`windowed_params`] or [`site_params`]. That is why the register's *"one line each"* estimate
+/// was wrong when R319 measured it: adoption was blocked by a signature, not by sixteen edits.
+/// Taking the params the caller already built makes every call site a one-line change, which is
+/// what it is now.
+///
+/// The COMMAND name is gone from the sentence with it. It said `processes: this daemon does not
+/// serve …`, which reads well until a verb makes two reads — `ls` reads `sessions` and
+/// `session_activity`, `agent` reads the manifests and the panes — and then the verb is the half
+/// the person already typed while the ADDRESS is the half that says which read stopped. Keeping it
+/// would have meant threading a command name through [`pane_ids`], [`window_names`],
+/// [`current_window`] and [`session_panes`], each shared by a dozen verbs, to print a word the
+/// shell line above the error already shows.
+fn query_slot(conn: &mut HostConn, params: Value) -> io::Result<Value> {
+    // Read BEFORE the call, which consumes the params; the sentence needs the address that failed.
+    let path = params["path"].as_str().unwrap_or_default().to_owned();
+    match query_raw(conn, params) {
         Ok(value) => Ok(value),
         Err(CallError::Fault(fault)) => {
-            Err(unknown_slot(command, path, &fault)
-                .unwrap_or_else(|| CallError::Fault(fault).into()))
+            Err(unknown_slot(&path, &fault).unwrap_or_else(|| CallError::Fault(fault).into()))
         }
         Err(other) => Err(other.into()),
     }
+}
+
+/// The ONE place this binary names the query method, so a reader added later cannot reach the
+/// daemon without passing the site where the skew sentence is decided.
+///
+/// [`query_slot`] is what all but one caller wants. The exception is [`session_exists`], which
+/// needs the fault itself because for it one particular refusal is an ANSWER rather than a failure.
+fn query_raw(conn: &mut HostConn, params: Value) -> Result<Value, CallError> {
+    conn.try_call("scene/query", params)
 }
 
 /// The refusal above as a pure function of the fault — `None` for anything else, which is what keeps
@@ -2298,14 +2315,18 @@ fn query_slot(conn: &mut HostConn, path: &str, command: &str) -> io::Result<Valu
 /// presentation decision, and it would also fire on a daemon that merely mentioned the word.
 /// Captured from a live daemon rather than invented — the reply is
 /// `{"code":-32602,"message":"Invalid params","data":"UnknownIntrospectPath"}`.
-fn unknown_slot(command: &str, path: &str, fault: &RpcFault) -> Option<io::Error> {
+///
+/// It is also the DISCRIMINATOR [`session_exists`] reads, which is why it is a function of the
+/// fault alone and not a branch inside [`query_slot`]: an unknown address and a refused scope
+/// arrive under one JSON-RPC code, and only the `data` tells them apart.
+fn unknown_slot(path: &str, fault: &RpcFault) -> Option<io::Error> {
     if fault.data.as_ref().and_then(Value::as_str)? != "UnknownIntrospectPath" {
         return None;
     }
     Some(io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "{command}: this daemon does not serve {path} — it is older than this `sprag`. \
+            "this daemon does not serve {path} — it is older than this `sprag`. \
              Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
              from the durability snapshot)",
         ),
@@ -3059,8 +3080,8 @@ fn panes(args: Vec<String>) -> io::Result<()> {
         ));
     }
     let mut conn = connect_scoped(session.as_deref())?;
-    let listed: Value = conn.call(
-        "scene/query",
+    let listed: Value = query_slot(
+        &mut conn,
         scoped_params(session.as_deref(), mux_action_path(PANES_SLOT)),
     )?;
     // The whole entry, not just the id — this is the one command whose subject is the LIST, so it
@@ -3146,8 +3167,8 @@ fn layout(args: Vec<String>) -> io::Result<()> {
         )));
     }
     let mut conn = connect_scoped(session.as_deref())?;
-    let answer: Value = conn.call(
-        "scene/query",
+    let answer: Value = query_slot(
+        &mut conn,
         scoped_params(session.as_deref(), mux_action_path(LAYOUT_SLOT)),
     )?;
     // Through the SSOT type, never by walking the arena JSON by hand: the served shape is a flat
@@ -3221,8 +3242,7 @@ fn processes(args: Vec<String>) -> io::Result<()> {
         resolve_optional_pane(&mut conn, None, asked.as_deref(), "processes")?.map(|site| site.id);
     let reading = query_slot(
         &mut conn,
-        &mux_action_path(&pane_processes_at(0)),
-        "processes",
+        json!({ "path": mux_action_path(&pane_processes_at(0)) }),
     )?;
     let wire: PaneProcessesWire = serde_json::from_value(reading).map_err(|error| {
         bad_input(&format!(
@@ -3331,8 +3351,8 @@ fn agent(args: Vec<String>) -> io::Result<()> {
     // FIRST, and on stderr. Every line below was produced by a ruleset that is not the user's, so
     // the caveat has to arrive before the readings it qualifies — and a script slicing `ID: STATE`
     // out of stdout must not have to skip a sentence to find them.
-    let manifests: Value = conn.call(
-        "scene/query",
+    let manifests: Value = query_slot(
+        &mut conn,
         scoped_params(session.as_deref(), mux_action_path(AGENT_MANIFESTS_SLOT)),
     )?;
     if let Some(error) = manifests["error"].as_str() {
@@ -3345,8 +3365,8 @@ fn agent(args: Vec<String>) -> io::Result<()> {
     // The listing is read in the RESOLVED pane's window, so `sprag agent buildout` answers about a
     // pane one window over — where a sibling agent most often is, since an agent's work pane and a
     // person's reading pane are why a session has more than one window.
-    let listed: Value = conn.call(
-        "scene/query",
+    let listed: Value = query_slot(
+        &mut conn,
         match &site {
             Some(site) => site_params(session.as_deref(), site, mux_action_path(PANES_SLOT)),
             None => scoped_params(session.as_deref(), mux_action_path(PANES_SLOT)),
@@ -3503,8 +3523,8 @@ fn events(args: Vec<String>) -> io::Result<()> {
     // that already has a match immediately, so the backlog arrives through the one matcher instead of
     // through a second one here.
     if filter.is_none() {
-        let batch: Value = conn.call(
-            "scene/query",
+        let batch: Value = query_slot(
+            &mut conn,
             scoped_params(
                 session.as_deref(),
                 mux_action_path(&events_slot_since(cursor)),
@@ -4293,8 +4313,8 @@ fn capture_pane(args: Vec<String>) -> io::Result<()> {
     // request learned to say which window. A wrong id still surfaces as "no such pane" rather than
     // as an unknown address, which is what the pre-flight was for and what the resolver keeps.
     let site = resolve_pane(&mut conn, session.as_deref(), &pane, "capture-pane")?;
-    let answer: Value = conn.call(
-        "scene/query",
+    let answer: Value = query_slot(
+        &mut conn,
         site_params(
             session.as_deref(),
             &site,
@@ -4328,8 +4348,8 @@ fn windows(args: Vec<String>) -> io::Result<()> {
     let (session, _rest) = target_and_rest(args, "windows")?;
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
-    let windows = conn.call(
-        "scene/query",
+    let windows = query_slot(
+        &mut conn,
         json!({ "session": session, "path": mux_action_path(WINDOWS_SLOT) }),
     )?;
     for window in windows.as_array().into_iter().flatten() {
@@ -6136,10 +6156,13 @@ mod tests {
         );
     }
 
-    /// The live half — that a daemon built at the PARENT commit refuses exactly this for
-    /// `pane_processes.0` while answering `panes` cleanly — was proven with a worktree build and a
-    /// control, and cannot be a standing test: this suite spawns the CURRENT daemon, which serves
-    /// every slot this binary knows.
+    /// The live half is no longer missing. It said here for three rounds that it *"cannot be a
+    /// standing test: this suite spawns the CURRENT daemon, which serves every slot this binary
+    /// knows"* — true of the daemon and false of the harness. `tests/cli.rs`'s `StaleHost` is a peer
+    /// that passes the handshake and serves NO address, and
+    /// `every_slot_reader_explains_a_daemon_that_does_not_serve_it` drives twelve verbs through it.
+    /// What stays here is the pure mapping, which that test cannot reach: the three faults this
+    /// must NOT claim.
     #[test]
     fn an_unserved_slot_is_reported_as_an_old_daemon_and_nothing_else_is() {
         let fault = |data: Value| RpcFault {
@@ -6147,43 +6170,35 @@ mod tests {
             message: "Invalid params".to_owned(),
             data: Some(data),
         };
-        let error = unknown_slot(
-            "processes",
-            "/x/y.0",
-            &fault(json!("UnknownIntrospectPath")),
-        )
-        .expect("an unknown path is explained");
+        let error = unknown_slot("/x/y.0", &fault(json!("UnknownIntrospectPath")))
+            .expect("an unknown path is explained");
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(
             error.to_string(),
-            "processes: this daemon does not serve /x/y.0 — it is older than this `sprag`. \
+            "this daemon does not serve /x/y.0 — it is older than this `sprag`. \
              Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
              from the durability snapshot)",
         );
 
         // THE CONTROL, and the reason this is a `data` match rather than a substring one: a
         // different refusal is left alone, and so is a fault whose rendered line merely mentions it.
+        // The FIRST of these is now load-bearing twice over: it is also what `session_exists` reads
+        // to tell a refused SCOPE from an unknown ADDRESS, so a widening here would turn a missing
+        // session into a claim about the daemon's age.
         assert!(
-            unknown_slot(
-                "processes",
-                "/x/y.0",
-                &fault(json!("no session named \"x\""))
-            )
-            .is_none(),
+            unknown_slot("/x/y.0", &fault(json!("no session named \"x\""))).is_none(),
             "another refusal keeps its own words",
         );
         assert!(
             unknown_slot(
-                "processes",
                 "/x/y.0",
-                &fault(json!("a pane named UnknownIntrospectPath")),
+                &fault(json!("a pane named UnknownIntrospectPath"))
             )
             .is_none(),
             "and a mention is not the refusal",
         );
         assert!(
             unknown_slot(
-                "processes",
                 "/x/y.0",
                 &RpcFault {
                     code: -32602,

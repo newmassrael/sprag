@@ -3,14 +3,22 @@
 //! Both binaries are the built artifacts (`CARGO_BIN_EXE_*`), so a break in the wire vocabulary
 //! the CLI shares with the daemon — or in the CLI's own output — fails in CI, not by hand.
 
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{NEW_SESSION_ACTION, PANES_SLOT, SPAWN_ACTION, WINDOWS_SLOT};
-use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
+use sprag_rpc::{
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, INVALID_PARAMS,
+    PROTOCOL_FIELD, WIRE_PROTOCOL,
+};
 
 /// Reaps the spawned host process and its socket file on drop — including on a panicked
 /// assertion, so a failed run leaks neither.
@@ -91,6 +99,114 @@ fn sprag_env(sock: &Path, args: &[&str], envs: &[(&str, &str)]) -> CliRun {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         ok: output.status.success(),
+    }
+}
+
+/// A stand-in daemon that PASSES the wire handshake and serves NO ADDRESS: every `scene/query`
+/// comes back `UnknownIntrospectPath`.
+///
+/// # Why this exists at all
+///
+/// The debt register recorded, for two rounds, that the version-skew half of the slot readers
+/// "cannot become a standing test — the CLI suite spawns the CURRENT daemon, which serves every
+/// slot this binary knows", and so only the pure fault-to-sentence mapping was pinned. That is a
+/// claim about the HARNESS, not about the product: the state is unreachable with a real
+/// `sprag-term` and perfectly reachable with a peer that answers the way an older one does. The
+/// socket is an env var ([`spawn_host_with`] already sets it), the handshake is two constants, and
+/// the fault was captured from a live daemon (see `unknown_slot` in `bin/sprag.rs`).
+///
+/// It speaks the same [`WIRE_PROTOCOL`] this build does ON PURPOSE. The protocol number guards a
+/// shape the two ends must agree on, and R320 ratcheted it against the surface the daemon serves —
+/// but a mounted external's addresses appear only when the thing behind it is there, so "the
+/// numbers match and the address is unknown" stays reachable and is exactly what the sentence
+/// under test is for. A stand-in that failed the handshake would test the door instead.
+struct StaleHost {
+    sock: PathBuf,
+    stop: Arc<AtomicBool>,
+    accepting: Option<JoinHandle<()>>,
+}
+
+impl Drop for StaleHost {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(accepting) = self.accepting.take() {
+            let _ = accepting.join();
+        }
+        let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+/// Bind a [`StaleHost`] and answer on it until it is dropped.
+fn stale_host() -> StaleHost {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let listener = UnixListener::bind(&sock).expect("bind the stand-in host socket");
+    listener
+        .set_nonblocking(true)
+        .expect("a stoppable accept loop");
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let accepting = std::thread::spawn(move || {
+        while !flag.load(Ordering::Relaxed) {
+            match listener.accept() {
+                // One thread per connection: a CLI invocation holds its connection open for its
+                // whole life and several verbs open a SECOND one (`connect_scoped`), so serving
+                // them in turn would deadlock the run rather than answer it.
+                Ok((stream, _)) => {
+                    std::thread::spawn(move || serve_stale(&stream));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    StaleHost {
+        sock,
+        stop,
+        accepting: Some(accepting),
+    }
+}
+
+/// One [`StaleHost`] connection: hello is answered, every read is refused, everything else is a
+/// null result.
+///
+/// The refusal is confined to `scene/query` deliberately. An older daemon still HAS the method —
+/// what it lacks is the address — so answering every method would test a peer that does not exist
+/// and would hide which call site the sentence came from.
+fn serve_stale(stream: &UnixStream) {
+    let reader = BufReader::new(stream.try_clone().expect("split the stand-in connection"));
+    let mut writer = stream;
+    for line in reader.lines() {
+        let Ok(line) = line else { return };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(request) = serde_json::from_str::<Value>(line.trim()) else {
+            return;
+        };
+        let id = request["id"].clone();
+        let reply = match request["method"].as_str() {
+            Some(CLIENT_HELLO_METHOD) => {
+                json!({ "jsonrpc": "2.0", "id": id, "result": { PROTOCOL_FIELD: WIRE_PROTOCOL } })
+            }
+            Some("scene/query") => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": INVALID_PARAMS,
+                    "message": "Invalid params",
+                    "data": "UnknownIntrospectPath",
+                },
+            }),
+            _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
+        };
+        let mut frame = reply.to_string();
+        frame.push('\n');
+        if writer.write_all(frame.as_bytes()).is_err() {
+            return;
+        }
     }
 }
 
@@ -6107,5 +6223,113 @@ fn an_operator_works_on_a_named_pane_in_another_window() {
     assert!(
         sprag(&sock, &["zoom-pane", &far, "-t", "0"]).ok,
         "and the verb that ALWAYS reached still does — the two agree now",
+    );
+}
+
+/// Every slot-reading verb explains a daemon that does not serve its address, instead of printing
+/// the name of a Rust enum variant at an operator.
+///
+/// # What this is, and why it took three rounds to exist
+///
+/// The debt register carried this as *"every other slot-reading CLI verb still leaks a Rust variant
+/// name"* from R290, with the note that only the pure fault-to-sentence mapping could be pinned
+/// because the suite spawns the CURRENT daemon. [`StaleHost`] is the refutation: the peer is the
+/// thing under test's counterpart, not the thing under test, and it can be anything the protocol
+/// permits.
+///
+/// The state is REACHABLE, which is what makes the sentence worth having. A slot is additive, so
+/// `WIRE_PROTOCOL` deliberately does NOT rise when one is added (R320's ratchet says so in its own
+/// assertion message) — and a client that gained an address therefore meets same-numbered daemons
+/// that never had it. `sprag processes` is the lived example: R290 added `pane_processes` under an
+/// unchanged number, and this is the sentence its author wrote for exactly this run.
+///
+/// The verbs are named one by one rather than swept, because a list is a claim a reader can check.
+#[test]
+fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
+    let host = stale_host();
+    let sock = host.sock.clone();
+
+    // (argv, the address the verb's FIRST read asks for). The address is asserted too: a sentence
+    // that named the wrong slot would still pass a "no variant name" check while sending the
+    // reader to the wrong place.
+    let readers: &[(&[&str], &str)] = &[
+        (&["ls"], "/sprag_mux/external/sessions"),
+        (&["panes"], "/sprag_mux/external/panes"),
+        (&["layout"], "/sprag_mux/external/layout"),
+        (&["windows", "-t", "0"], "/sprag_mux/external/windows"),
+        (&["list-clients"], "/sprag_mux/external/clients"),
+        (&["agent"], "/sprag_mux/external/agent_manifests"),
+        (&["events"], "/sprag_mux/external/events.0"),
+        (&["capture-pane", "1"], "/sprag_mux/external/panes"),
+        (&["kill-server"], "/sprag_mux/external/sessions"),
+        (&["processes"], "/sprag_mux/external/pane_processes.0"),
+        (&["find", "x"], "/sprag_mux/external/panes"),
+        (&["select-pane", "1"], "/sprag_mux/external/panes"),
+    ];
+
+    for (argv, address) in readers {
+        let run = sprag(&sock, argv);
+        assert!(!run.ok, "{argv:?} fails against a daemon serving nothing");
+        assert!(
+            !run.stderr.contains("UnknownIntrospectPath"),
+            "{argv:?} must not print a Rust variant name at an operator: {}",
+            run.stderr,
+        );
+        assert!(
+            run.stderr
+                .contains(&format!("this daemon does not serve {address}")),
+            "{argv:?} names the address it could not read: {}",
+            run.stderr,
+        );
+        assert!(
+            run.stderr.contains("sprag kill-server"),
+            "{argv:?} carries the remedy: {}",
+            run.stderr,
+        );
+    }
+
+    // THE ANSWER THAT WAS WRONG RATHER THAN UGLY. Every scoped verb pre-flights through
+    // `session_exists`, which read the JSON-RPC code alone — and an unknown ADDRESS arrives under
+    // the same `INVALID_PARAMS` a refused SCOPE does. So this verb used to report `no session
+    // named "0"` about a session the daemon was holding: a wrong answer that parses, from the
+    // check that exists to make addresses trustworthy.
+    let scoped = sprag(&sock, &["windows", "-t", "0"]);
+    assert!(
+        !scoped.stderr.contains("no session named"),
+        "an unknown address is not a missing session: {}",
+        scoped.stderr,
+    );
+
+    // CONTROL 1 — the sentence is not blanket-applied. A verb that fails for its OWN reason keeps
+    // its own words, so the assertions above are about the skew path and not about "any failure".
+    let own = sprag(&sock, &["send-keys", "-t", "0", "x"]);
+    assert!(!own.ok, "the control fails too");
+    assert!(
+        own.stderr.contains("send-keys needs at least one key name")
+            && !own.stderr.contains("this daemon does not serve"),
+        "a verb's own refusal is untouched: {}",
+        own.stderr,
+    );
+
+    // CONTROL 2 — the verbs are not simply broken. The SAME argv against a REAL daemon succeeds,
+    // which is what makes the failures above attributable to the peer.
+    let (_real_host, real_sock) = spawn_host();
+    for argv in [
+        &["ls"][..],
+        &["panes"][..],
+        &["layout"][..],
+        &["list-clients"][..],
+        &["processes"][..],
+    ] {
+        let run = sprag(&real_sock, argv);
+        assert!(
+            run.ok,
+            "{argv:?} works against a daemon that serves it: {}",
+            run.stderr,
+        );
+    }
+    assert!(
+        sprag(&real_sock, &["windows", "-t", "0"]).ok,
+        "and the scoped pre-flight still finds a session that IS there",
     );
 }
