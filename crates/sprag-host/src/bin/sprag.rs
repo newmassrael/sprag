@@ -6238,6 +6238,56 @@ mod tests {
         );
     }
 
+    /// Each wire METHOD this binary speaks is spelled EXACTLY ONCE, so a reader or an actor added
+    /// later cannot reach the daemon without passing the site where the skew sentence is decided.
+    ///
+    /// # Why a claim about the SOURCE is the right shape here
+    ///
+    /// Both seams — [`query_slot`] for reading and [`invoke_action`] for acting — protect a sentence
+    /// an operator sees, and both rest on the same unstated property: that they are the only way out
+    /// of this file. That property was written in [`query_raw`]'s docs as a fact ("the ONE place this
+    /// binary names the query method") and enforced by nothing, which is this project's own
+    /// *"a not-built sentence is a claim"*. The register carried the gap as *"a slot reader added
+    /// later that forgets `query_slot` is caught by nothing"*.
+    ///
+    /// The two CLI sweeps in `tests/cli.rs` cannot close it: they drive the verbs they NAME, so a
+    /// verb added next round is covered by neither until somebody remembers. This is the assertion
+    /// that does not need remembering — the new call site fails it at the moment it is written,
+    /// which is also the moment its author is looking at the alternative.
+    ///
+    /// The needle is BUILT rather than written, so this test's own assertion is not one of the
+    /// spellings it counts — which is the difference between a ratchet and a test that passes
+    /// because it contains the thing it is looking for.
+    #[test]
+    fn every_wire_method_this_binary_speaks_is_spelled_once() {
+        let source = include_str!("sprag.rs");
+        for (method, seam) in [
+            ("query", "query_raw"),
+            ("invoke", "invoke_action_with"),
+            ("revision", "wait_for_output"),
+        ] {
+            let spelling = format!("\"scene/{method}\"");
+            let spelled = source.matches(spelling.as_str()).count();
+            assert_eq!(
+                spelled, 1,
+                "{spelling} belongs to {seam} alone: a second spelling is a call site that can \
+                 reach the daemon without the sentence {seam} decides. Route it through the seam \
+                 rather than widening this count.",
+            );
+        }
+
+        // THE CONTROL, and it has to be able to fail: a needle this file does NOT contain must come
+        // back zero. Without it a broken `matches` (or a needle built wrong) would report one
+        // spelling of everything and pass by measuring nothing.
+        assert_eq!(
+            source
+                .matches(format!("\"scene/{}\"", "nonesuch").as_str())
+                .count(),
+            0,
+            "the count is a real count",
+        );
+    }
+
     /// tmux's modifier spelling maps onto the wire's flags, and the KEY NAME passes through
     /// untouched — the two halves of [`parse_key_token`]'s contract.
     ///
