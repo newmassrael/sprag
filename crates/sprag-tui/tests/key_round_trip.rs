@@ -199,3 +199,61 @@ fn a_kitty_pane_gets_kitty_bytes_from_the_same_keystroke() {
     // The same bytes, an ordinary pane, the legacy encoding — the control.
     assert_eq!(typed(&[0x01]), &[0x01]);
 }
+
+/// **MEASURED, not assumed: this termwiz has no focus event, and a focus report comes back as two
+/// KEYSTROKES** — which is why `sprag_tui::focus` exists and why asking a terminal for DEC private
+/// mode 1004 without it would type garbage into somebody's shell.
+///
+/// `InputEvent` has no focus variant at all (checked in `termwiz-0.23.3/src/input.rs`), so `CSI I` /
+/// `CSI O` fall through the parser's keymap and are resolved by its Meta rule: an `ESC` with more
+/// data behind it becomes an ALT modifier on the next key. What a person would see, on a client that
+/// enabled the mode and routed what it read, is `^[[I` appearing at their prompt every time they
+/// switched windows.
+///
+/// This is a claim about a DEPENDENCY, so it is pinned rather than trusted: a termwiz that grew a
+/// focus event would fail here, which is the notice sprag needs to delete its own decoder rather than
+/// keep a second one running beside it.
+///
+/// The last case is the one the decoder's whole discriminator rests on: a report followed by ordinary
+/// text arrives as ONE parse, so both halves are available with no further read.
+#[test]
+fn a_host_terminals_focus_report_arrives_as_two_keystrokes() {
+    let bracket = InputEvent::Key(termwiz::input::KeyEvent {
+        key: termwiz::input::KeyCode::Char('['),
+        modifiers: termwiz::input::Modifiers::ALT,
+    });
+    let letter = |letter: char| {
+        InputEvent::Key(termwiz::input::KeyEvent {
+            key: termwiz::input::KeyCode::Char(letter),
+            modifiers: termwiz::input::Modifiers::NONE,
+        })
+    };
+    for (bytes, second) in [(&b"\x1b[I"[..], 'I'), (&b"\x1b[O"[..], 'O')] {
+        let mut got = Vec::new();
+        InputParser::new().parse(bytes, |event| got.push(event), false);
+        assert_eq!(
+            got,
+            vec![bracket.clone(), letter(second)],
+            "{bytes:?} must be the pair sprag_tui::focus decodes",
+        );
+        // ...and sprag's decoder reads that pair back as the report it was.
+        assert!(sprag_tui::focus::opens_report(&got[0]));
+        assert_eq!(
+            sprag_tui::focus::edge(&got[0], got.get(1)),
+            Some(match second {
+                'I' => sprag_tui::focus::Person::Here,
+                _ => sprag_tui::focus::Person::Away,
+            }),
+        );
+    }
+
+    // A report with text behind it: one parse, every event queued — the property that lets a
+    // zero-wait read-ahead tell a terminal's report from a person's two keystrokes.
+    let mut mixed = Vec::new();
+    InputParser::new().parse(b"\x1b[Oab", |event| mixed.push(event), false);
+    assert_eq!(
+        mixed,
+        vec![bracket, letter('O'), letter('a'), letter('b')],
+        "a report and the keys behind it arrive from ONE parse",
+    );
+}

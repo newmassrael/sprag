@@ -17,6 +17,12 @@
 //! [`Change`](termwiz::surface::Change)s, [`wire_key`] turns this terminal's keystrokes back into
 //! the names the wire carries, and a binary owns a terminal to do all three against.
 //!
+//! Two modules answer a question the daemon cannot: [`focus`] reads whether the PERSON is looking at
+//! this terminal, and [`outward`] decides whether a message they could not have seen has to follow
+//! them out to it as a desktop notification. Both are here rather than in `sprag-client` for the
+//! reason everything else here is: they are about the terminal this client borrowed, which the
+//! windowed frontend does not have.
+//!
 //! Output and input are inverses of each other in spirit — one carries a pane's cells OUT to a
 //! screen, the other carries a user's keystrokes IN to a pane — and between them sits the only
 //! thing a MULTI-pane client needs that a single-pane one does not: an answer to "which pane is
@@ -38,6 +44,9 @@
 mod key;
 mod mouse;
 mod paint;
+
+pub mod focus;
+pub mod outward;
 
 pub use key::{WireKey, wire_key};
 // The cell-space tiler moved to `sprag-terminal` so `sprag-gui` computes pane sizes through the
