@@ -454,6 +454,28 @@ fn painted(tui: &mut Tui, want: &str) -> Result<(), String> {
     Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
 }
 
+/// Wait until `read` answers the SAME value twice in a row, a settle window apart, and answer it.
+///
+/// A "STILL" test rather than a "DONE" test, and the file already records why that distinction
+/// matters (the smoke's `8 reads of a NUMBER` intermittent). What it is FOR here is making an
+/// assertion about a wake able to FAIL: a fixture whose own setup still has a change in flight
+/// delivers the next thing on that change's wake, so a check that a delivery woke a client would
+/// pass with the delivery's wake deleted. Settling first leaves the act under test as the only
+/// thing that can move anything.
+fn wait_for_still<T: PartialEq + Copy + std::fmt::Debug>(mut read: impl FnMut() -> T) -> T {
+    let deadline = Instant::now() + DEADLINE;
+    let mut last = read();
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(150));
+        let now = read();
+        if now == last {
+            return now;
+        }
+        last = now;
+    }
+    panic!("timed out after {DEADLINE:?} waiting for a reading to stop moving (last {last:?})");
+}
+
 /// `Ok` when SOME row of the client's screen contains `want`, else the whole screen.
 ///
 /// [`painted`] pins the TOP row exactly, which is right for a pane's own output. A prompt is drawn
@@ -4729,4 +4751,426 @@ fn the_swap_the_resize_and_the_move_all_say_when_they_go_nowhere() {
             settled(tui.row(STATUS_ROW), &where_it_is)
         });
     }
+}
+
+// ----- what somebody ELSE asked this client to say (R317) -----
+
+/// **THE GATE for R317: a sentence chosen by ANOTHER PROCESS reaches a person's screen.**
+///
+/// The measurement this round opened with, inverted. At `5acde43`, against exactly this fixture,
+/// every route a second process had left the screen unmoved: `report-agent blocked` was accepted and
+/// changed nothing on it, `send-keys` put the words INSIDE the person's program, and a pane child's
+/// OSC 9 reached the terminal front nowhere at all. Only that client's own keyboard could write the
+/// row.
+///
+/// Four claims, in the order that makes the middle two discriminating:
+///
+/// * **The CONTROL first.** Before anything is sent, the row says where the client is. Without this,
+///   a row that had somehow been showing the sentence all along would pass.
+/// * **The sentence arrives** — chosen by a `sprag` process that shares nothing with this client but
+///   a daemon, and painted on the row a keystroke writes.
+/// * **The CLI is told WHO it reached**, by client id, which is what makes the answer a value rather
+///   than an `ok`.
+/// * **The words never reach the SHELL.** The boot pane runs `cat`, which echoes what it is given,
+///   so a message that had gone down `send-keys`'s road — the one route that existed before this —
+///   would be visible in the pane's own text. This is what separates a MESSAGE from typing.
+///
+/// REVERT-PROOF: drop the `store_message` call from the wire poll thread's wake (i.e. collect the
+/// message and throw it away) and the second claim times out with the row still naming the session,
+/// while `sprag display-message` goes on reporting the delivery — which is precisely the shape of
+/// defect R316 was about, one seam further out.
+#[test]
+fn a_message_sent_by_another_process_reaches_the_person_at_this_client() {
+    let (_daemon, sock, mut conn, session, tui) = attached_client();
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    let out = Command::new(sprag_cli_bin())
+        .args(["display-message", "-t", &session, "the deploy finished"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .output()
+        .expect("run the sprag CLI");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "display-message failed: {}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    wait_for("the message to be painted on the status row", || {
+        settled(tui.row(STATUS_ROW).contains("the deploy finished"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    // WHO it reached, named. A delivery to nobody and a delivery to this client must not read alike,
+    // which is the whole reason the verb answers a list.
+    assert!(
+        said.starts_with("shown to gui-"),
+        "the answer names the client it reached, not just `ok`: {said:?}",
+    );
+    assert!(
+        !said.contains("nobody"),
+        "a client IS attached, so this is not the empty delivery: {said:?}",
+    );
+
+    // ...and it was a MESSAGE, not typing: `cat` echoes what it is given, so a word that had gone
+    // into the pane would be in the pane's own text.
+    let text = pane_text_of(&mut conn, &session, 0);
+    assert!(
+        !text.contains("deploy"),
+        "the sentence is the CLIENT's to paint and must never reach the child: {text:?}",
+    );
+}
+
+/// **A message with nobody attached says so, and a message to a client that is not there is
+/// REFUSED** — the two negatives, which must not read alike.
+///
+/// The first is an ANSWER (the daemon did what was asked; there was no audience) and the second is a
+/// caller's MISTAKE (they named a target that does not exist). Collapsing them would send an agent
+/// looking for a person who is right there — R301's "one set of bytes for three causes", in the verb
+/// this round adds.
+///
+/// The CONTROL is the third call: the same message, to the client that IS attached, on the same
+/// daemon at the same instant. Without it, a build that refused everything would pass the first two.
+#[test]
+fn a_message_to_nobody_and_a_message_to_a_stranger_answer_differently() {
+    let (_daemon, sock, mut conn, session, tui) = attached_client();
+    let _ = &mut conn;
+    let _ = &tui;
+
+    let run = |args: &[&str]| -> (bool, String, String) {
+        let out = Command::new(sprag_cli_bin())
+            .args(args)
+            .env("SPRAG_HOST_RPC_SOCK", &sock)
+            .output()
+            .expect("run the sprag CLI");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    // A session NOBODY is attached to — the empty audience. It is created here rather than reusing
+    // the boot session, because this client is attached to that one.
+    let (made, _, why) = run(&["new", "quiet"]);
+    assert!(made, "a second session for the empty audience: {why}");
+    let (ok, out, err) = run(&["display-message", "-t", "quiet", "anybody there"]);
+    assert!(ok, "an empty audience is an ANSWER, not a failure: {err}");
+    assert_eq!(out.trim(), "shown to nobody: no client is attached");
+
+    // A client that does not exist — the caller's mistake.
+    let (ok, out, err) = run(&[
+        "display-message",
+        "-t",
+        &session,
+        "-c",
+        "gui-nobody-0",
+        "hello",
+    ]);
+    assert!(
+        !ok,
+        "a target that is not there is refused, not delivered to nobody: {out:?}"
+    );
+    assert!(
+        err.contains("gui-nobody-0") && err.contains("list-clients"),
+        "the refusal names what was asked for and where to look: {err:?}",
+    );
+
+    // THE CONTROL, on the same daemon at the same instant: the real audience still works, so the two
+    // refusals above are about their targets rather than about a build that cannot deliver at all.
+    let (ok, out, err) = run(&["display-message", "-t", &session, "and this one lands"]);
+    assert!(ok, "the control must succeed: {err}");
+    assert!(
+        out.starts_with("shown to gui-"),
+        "the control reached the attached client: {out:?}",
+    );
+}
+
+/// **An ALERT stays until a person touches a key**, where a note goes away on `display-time`.
+///
+/// The property this round claims over every rival surface: a timer is a bet that somebody is
+/// looking, and the case where missing a message is the failure is exactly the case where they are
+/// not. herdr's most urgent toast is an eight-second one (`sync_toast_deadline`, read at
+/// `9a4ce5e1`); tmux has no such state at all.
+///
+/// The CONTROL is the NOTE, sent first through the same verb on the same client: it expires with
+/// nothing pressed, which is what proves the alert's persistence is the severity's doing rather than
+/// a client that stopped clearing messages.
+#[test]
+fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
+    let config = ConfigHome::new("[options]\ndisplay-time = 300\n");
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    let _ = &mut conn;
+
+    let where_it_is = format!("[{session}] 0:0*");
+    let send = |severity: &str, text: &str| {
+        let out = Command::new(sprag_cli_bin())
+            .args(["display-message", "-t", &session, "-s", severity, text])
+            .env("SPRAG_HOST_RPC_SOCK", &sock)
+            .env("XDG_CONFIG_HOME", config.as_str())
+            .output()
+            .expect("run the sprag CLI");
+        assert!(
+            out.status.success(),
+            "display-message -s {severity} failed: {}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+    };
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    // THE CONTROL: a NOTE expires on its own, with nothing pressed.
+    send("note", "a passing note");
+    wait_for("the note to be painted", || {
+        settled(tui.row(STATUS_ROW).contains("a passing note"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    wait_for("the note to expire with no keystroke", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    // ...and an ALERT does not. Sampled over a window many times `display-time`, so a client that
+    // treated every message alike would be caught rather than merely raced.
+    send("alert", "the deploy needs you");
+    wait_for("the alert to be painted", || {
+        settled(tui.row(STATUS_ROW).contains("the deploy needs you"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    let deadline = Instant::now() + Duration::from_millis(1800);
+    while Instant::now() < deadline {
+        assert!(
+            tui.row(STATUS_ROW).contains("the deploy needs you"),
+            "an alert has no deadline; the row reads {:?} after {:?} of a {}ms display-time",
+            tui.row(STATUS_ROW),
+            deadline - Instant::now(),
+            300,
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    }
+
+    // ...until a person touches a key. `Escape` is bound to nothing and reaches no pane arm, so what
+    // clears the row is the ACKNOWLEDGEMENT and not something the key happened to do.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"\x1b");
+    wait_for("the keystroke to acknowledge the alert", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+}
+
+/// **A message a person sent does not take the row from a live ALERT** — the precedence rule, driven
+/// end to end through two `sprag` processes and a real client.
+///
+/// A unit test pins `Message::over`; this pins that both the daemon's slot and the client's row
+/// actually consult it, which is the "a unit test on a method is not a test that the caller calls
+/// it" rule this project keeps re-learning.
+///
+/// The CONTROL is the second half: the SAME two messages in the other order, where the alert DOES
+/// take the row from the note. Without it, a client that simply ignored every message after the
+/// first would pass.
+#[test]
+fn a_note_does_not_take_the_row_from_a_live_alert() {
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let _ = &mut conn;
+
+    let where_it_is = format!("[{session}] 0:0*");
+    let send = |severity: &str, text: &str| {
+        let out = Command::new(sprag_cli_bin())
+            .args(["display-message", "-t", &session, "-s", severity, text])
+            .env("SPRAG_HOST_RPC_SOCK", &sock)
+            .output()
+            .expect("run the sprag CLI");
+        assert!(out.status.success(), "display-message -s {severity} failed");
+    };
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    send("alert", "the deploy needs you");
+    wait_for("the alert to be painted", || {
+        settled(tui.row(STATUS_ROW).contains("the deploy needs you"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    send("note", "a passing note");
+    // Sampled rather than looked at once: the note would have to WIN to fail this, and a single read
+    // could take place before it ever arrived. Long enough for several wakes.
+    let deadline = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < deadline {
+        assert!(
+            !tui.row(STATUS_ROW).contains("a passing note"),
+            "a note must not take the row from a live alert: {:?}",
+            tui.row(STATUS_ROW),
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(
+        tui.row(STATUS_ROW).contains("the deploy needs you"),
+        "and the alert is still the one being shown: {:?}",
+        tui.row(STATUS_ROW),
+    );
+
+    // THE CONTROL, the other way round: acknowledge, put a NOTE up, and the alert takes it.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"\x1b");
+    wait_for("the alert to be acknowledged", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    send("note", "a passing note");
+    wait_for("the note to be painted", || {
+        settled(tui.row(STATUS_ROW).contains("a passing note"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    send("alert", "the deploy needs you");
+    wait_for("the alert to take the row from the note", || {
+        settled(tui.row(STATUS_ROW).contains("the deploy needs you"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+}
+
+/// **A `-c` message reaches a client attached to a DIFFERENT session than the request's scope.**
+///
+/// The address is the point: `-t` scopes the request and `-c` names the person, and the two need
+/// not agree. A build in which `-c` quietly fell back to the scope would deliver to nobody here, so
+/// the CONTROL is the scope itself — `elsewhere` is a session this client is not attached to.
+///
+/// ⚠ **WHAT A REVERT-PROOF SETTLED, AND WHAT IT DID NOT.** Deleting the `channels.bump` from
+/// `display_message` leaves this GREEN. Chasing that produced two facts and one open question,
+/// recorded here rather than guessed at:
+///
+/// * The first version of this test had an unconsumed wake in flight from its own setup, so it
+///   could not have failed either way. The settle below is what fixed that, and it is the shape
+///   R315 named: choose a fixture where the two readings actually disagree.
+/// * Measured after settling: a cross-session mutation (`new-window`, `rename-session`, a message
+///   delivered to nobody) does NOT move this client's `scene/revision`, so clients are not woken by
+///   other sessions' traffic — `sprag_host::notify`'s stated contract holds.
+/// * **STILL OPEN**: the message arrives promptly with the bump deleted, and this client's session
+///   revision does not visibly move for the delivery either way. So the wake that carries a
+///   cross-session message is NOT attributed. The bump is kept because it is the only wake this
+///   code owns and it is correct; what is missing is the assertion that it is the one doing the
+///   work. Do not read the green above as proof that it is.
+#[test]
+fn a_named_client_is_reached_from_a_request_scoped_to_another_session() {
+    let (_daemon, sock, mut conn, session, tui) = attached_client();
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    let run = |args: &[&str]| -> (bool, String, String) {
+        let out = Command::new(sprag_cli_bin())
+            .args(args)
+            .env("SPRAG_HOST_RPC_SOCK", &sock)
+            .output()
+            .expect("run the sprag CLI");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    // A session this client is NOT attached to, for the request to be scoped to.
+    let (made, _, why) = run(&["new", "elsewhere"]);
+    assert!(made, "a second session to scope the request to: {why}");
+    let (listed, clients, why) = run(&["list-clients", "-t", &session]);
+    assert!(listed, "list-clients failed: {why}");
+    let client = clients
+        .split(':')
+        .next()
+        .expect("a client id")
+        .trim()
+        .to_owned();
+    assert!(
+        client.starts_with("gui-"),
+        "the fixture needs the attached client's id: {clients:?}",
+    );
+
+    // ⚠ SETTLE FIRST — see the note above. Until this session's revision has stopped moving, a
+    // change left over from the setup can deliver the message and the assertion below cannot fail.
+    let revision = |conn: &mut HostConn, session: &str| -> u64 {
+        conn.call("scene/revision", json!({ "session": session }))
+            .ok()
+            .and_then(|value| value["revision"].as_u64().or_else(|| value.as_u64()))
+            .expect("the daemon answers its own scene revision")
+    };
+    let settled_at = wait_for_still(|| revision(&mut conn, &session));
+
+    let (ok, out, err) = run(&[
+        "display-message",
+        "-t",
+        "elsewhere",
+        "-c",
+        &client,
+        "across the sessions",
+    ]);
+    assert!(ok, "a `-c` target outside the scope is reachable: {err}");
+    assert!(
+        out.contains(&client),
+        "the delivery names the client it crossed to: {out:?}",
+    );
+    wait_for("the cross-session message to be painted", || {
+        settled(tui.row(STATUS_ROW).contains("across the sessions"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    let _ = settled_at;
+    assert_eq!(
+        attached(&mut conn, &session),
+        1,
+        "a message moves nobody: the client is still on the session it was watching",
+    );
+}
+
+/// **A message carrying a control character never reaches the terminal** — refused at the CLI, with
+/// the rule named, and refused again at the daemon so no other caller can slip past.
+///
+/// The words are written into somebody's terminal, so a newline forges a row of the status line and
+/// an escape is obeyed by the emulator. The rival TRUNCATES and strips silently
+/// (`sanitized_notification_text`, read at `9a4ce5e1`) and answers `shown`, so a caller whose message
+/// was mangled never learns.
+///
+/// The CONTROL is the same sentence with the escape removed, which is accepted — so the refusal is
+/// about the character rather than about the verb.
+#[test]
+fn a_message_with_an_escape_in_it_is_refused_by_name() {
+    let (_daemon, sock, mut conn, session, tui) = attached_client();
+    let _ = &mut conn;
+    let _ = &tui;
+
+    let run = |text: &str| -> (bool, String, String) {
+        let out = Command::new(sprag_cli_bin())
+            .args(["display-message", "-t", &session, text])
+            .env("SPRAG_HOST_RPC_SOCK", &sock)
+            .output()
+            .expect("run the sprag CLI");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (ok, _, err) = run("wiped: \u{1b}[2J");
+    assert!(!ok, "an escape sequence must not be paintable");
+    assert!(
+        err.contains("control characters") && err.contains("escape"),
+        "the refusal names the rule and why it exists: {err:?}",
+    );
+    let (ok, _, err) = run("two\nrows");
+    assert!(!ok, "a newline must not forge a second row: {err:?}");
+
+    // THE CONTROL: the same sentence without the escape is accepted, so the refusal is the
+    // character's doing.
+    let (ok, out, err) = run("wiped: nothing");
+    assert!(ok, "the control must be accepted: {err}");
+    assert!(out.starts_with("shown to gui-"), "{out:?}");
 }

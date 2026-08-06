@@ -2944,6 +2944,120 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         said_edge.contains("select-pane -L: nowhere to go"),
     );
 
+    // ----- R317: a message somebody ELSE sent, on the same strip -----
+    //
+    // The strip so far has only ever carried what THIS client's own keyboard did. These drive the
+    // other half: a `display_message` sent over the wire — the CLI's and an agent's path — reaching
+    // the shipped GUI binary, and an ALERT that does not go away on a clock.
+    let cleared_before = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!("the strip is empty before the routed message ({cleared_before:?})"),
+        cleared_before.is_ok(),
+    );
+    let sent = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": "/sprag_mux/external/display_message",
+            "session": "smoke-report",
+            "args": { "text": "the deploy finished", "severity": "note" },
+        }),
+    );
+    report.check(
+        &format!("the daemon accepts a message for this client's session ({sent:?})"),
+        sent.is_ok(),
+    );
+    // ...AND SAYS WHO. The delivery is a list, and this client must be in it — a `{clients: []}`
+    // here would mean the daemon believed nobody was attached while a window was on screen.
+    let delivered = sent
+        .as_ref()
+        .ok()
+        .and_then(|answer| answer["clients"].as_array().cloned())
+        .unwrap_or_default();
+    report.check(
+        &format!("...and names the client it reached ({delivered:?})"),
+        delivered.len() == 1,
+    );
+    let routed = smoke.wait_for_tag("sprag_message_strip");
+    let said_routed = routed
+        .as_ref()
+        .ok()
+        .and_then(|tags| tags.get("sprag_message_strip"))
+        .map(|painted| painted.text.join("\u{1f}"))
+        .unwrap_or_default();
+    report.check(
+        &format!("a message SENT BY ANOTHER PROCESS reaches this window ({said_routed:?})"),
+        said_routed.contains("the deploy finished"),
+    );
+    // A NOTE clears itself, with nothing pressed — the CONTROL for the alert below, which must not.
+    let note_cleared = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!("...and a NOTE clears on its own deadline ({note_cleared:?})"),
+        note_cleared.is_ok(),
+    );
+
+    // THE ALERT. No deadline: it waits for a person, which is the property no rival surface has.
+    let alerted = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": "/sprag_mux/external/display_message",
+            "session": "smoke-report",
+            "args": { "text": "the deploy needs you", "severity": "alert" },
+        }),
+    );
+    report.check(
+        &format!("the daemon accepts an ALERT ({alerted:?})"),
+        alerted.is_ok(),
+    );
+    let raised = smoke.wait_for_tag("sprag_message_strip");
+    report.check(
+        &format!("the alert raises the strip ({raised:?})"),
+        raised
+            .as_ref()
+            .ok()
+            .and_then(|tags| tags.get("sprag_message_strip"))
+            .map(|painted| painted.text.join("\u{1f}"))
+            .unwrap_or_default()
+            .contains("the deploy needs you"),
+    );
+    // Sampled well past the note's whole lifetime — the note above cleared inside this window, so a
+    // client that treated every message alike is caught rather than merely raced.
+    let mut still_up = true;
+    for _ in 0..20 {
+        std::thread::sleep(POLL);
+        still_up = smoke
+            .tags()
+            .map(|tags| tags.contains_key("sprag_message_strip"))
+            .unwrap_or(false);
+        if !still_up {
+            break;
+        }
+    }
+    report.check(
+        "an ALERT does not expire on a clock, where the note beside it did",
+        still_up,
+    );
+    // ...and a keystroke takes it away. `prefix q`: `q` is bound to NOTHING, so the client swallows
+    // it — it reaches no pane and runs no action — which makes the ACKNOWLEDGEMENT the only thing
+    // that could have cleared the strip. It also leaves the prefix consumed, so the cleanup below
+    // starts from the steady state (the first draft pressed the prefix ALONE and the cleanup's own
+    // chord was then eaten as a `send-prefix`, which is what the failing run said).
+    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "q", false).is_ok();
+    report.check("the GUI accepts the acknowledging keystroke", pressed);
+    let acknowledged = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!("...and a keystroke is what clears it ({acknowledged:?})"),
+        acknowledged.is_ok(),
+    );
+
     // WHAT IT LEAVES: the shipped table back, and this client where it started.
     let restored = smoke.write_user_config("");
     report.check(
