@@ -242,6 +242,155 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(CLIPBOARD_ANSWER_ACTION, "action"),
 ];
 
+/// Every address the MULTIPLEXER surface serves — the actions a client invokes and the slots it
+/// queries, in the order a reader of `show-options`-style output would want them: the verbs, then
+/// the facts.
+///
+/// Declared HERE for [`PANE_SCHEMA`]'s reason, one surface along: this module claims to be the ONE
+/// definition of the wire's grammar, and a schema that lived at its use site would be a second copy
+/// of exactly the vocabulary this module exists to hold. It moved here when the surface acquired a
+/// RATCHET (`the_wire_surface_cannot_move_under_the_protocol_number`), which needs both schemas
+/// readable from one place without constructing a daemon.
+/// **The wire's whole SURFACE, pinned to the protocol version that serves it** — the ratchet that
+/// turns [`sprag_rpc::WIRE_PROTOCOL`] from a ritual into a decision somebody has to
+/// take.
+///
+/// # The defect this removes
+///
+/// Recorded by R313 and re-verified unchanged at R315 and again at R319, each time by RUNNING it:
+/// **reverting the protocol number left the entire suite green** (exit 0, 2268 tests at `4f471bb`).
+/// The number's correctness rested on a SKEW RUN performed by hand, both directions, every round —
+/// which is a ritual, and a ritual is a gate that fails the moment somebody is in a hurry.
+///
+/// # What it can and cannot prove
+///
+/// It cannot decide COMPATIBILITY: whether a client of version N still works against a daemon that
+/// gained an action is a judgement about meaning, and no test makes it. What it makes impossible is
+/// making the change SILENTLY. The pair moves together or the suite goes red, and the failure names
+/// the decision:
+///
+/// * a name ADDED — an older client never asks for it, so the number usually stands;
+/// * a name REMOVED or RENAMED — an older client's request now fails, so the number must rise;
+/// * the number moved with no surface change — legitimate (a MEANING changed under a name), and the
+///   pin below has to be re-stamped to say so.
+///
+/// The list is deliberately the flat set of NAMES rather than a digest: a digest fails with two hex
+/// strings and leaves the reader to diff by hand, where this fails naming the address that appeared
+/// or vanished.
+///
+/// ⚠ **It is STAMPED FROM THE DERIVATION, never typed** — the first version was hand-written and the
+/// ratchet refuted it on its first run: a parametric field's ARGUMENT is part of its published
+/// address (`cells.<offset>`, `events.<since>`), and two slots were spelled here by their const's
+/// name rather than by the string it holds. So renaming an ARG moves this surface too, which is
+/// right: an agent reading the schema learns the argument's name from it.
+pub const PINNED_SURFACE: (u32, &[&str]) = (
+    15,
+    &[
+        "agent_manifests",
+        "application_cursor_keys",
+        "break_pane",
+        "cells.<offset>",
+        "clients",
+        "clipboard_answer",
+        "clipboard_write",
+        "close",
+        "commands",
+        "display_message",
+        "drop_file",
+        "events.<since>",
+        "find.<needle>",
+        "focus",
+        "frames",
+        "full_text",
+        "grid_work",
+        "image_data.<id>",
+        "join_pane",
+        "key",
+        "kill_session",
+        "kill_window",
+        "last_command",
+        "layout",
+        "links",
+        "mouse",
+        "move_pane",
+        "move_window",
+        "neighbors.<pane>",
+        "new_session",
+        "new_window",
+        "pane_processes.<max_age_ms>",
+        "panes",
+        "paste",
+        "project.<pane>",
+        "prompt_marks",
+        "regex.<pattern>",
+        "rename_pane",
+        "rename_session",
+        "rename_window",
+        "resize",
+        "resize_pane",
+        "resize_window",
+        "select_pane",
+        "select_window",
+        "session",
+        "session_activity.<max_age_ms>",
+        "sessions",
+        "set_floating",
+        "set_layout",
+        "spawn",
+        "split",
+        "swap_pane",
+        "text",
+        "tree",
+        "window_size",
+        "windows",
+        "zoom_pane",
+    ],
+);
+
+pub const MUX_SCHEMA: &[SchemaField] = &[
+    SchemaField::new(SPAWN_ACTION, "action"),
+    SchemaField::new(SPLIT_ACTION, "action"),
+    SchemaField::new(CLOSE_ACTION, "action"),
+    SchemaField::new(RESIZE_ACTION, "action"),
+    SchemaField::new(RENAME_PANE_ACTION, "action"),
+    SchemaField::new(SET_LAYOUT_ACTION, "action"),
+    SchemaField::new(SET_FLOATING_ACTION, "action"),
+    SchemaField::new(NEW_SESSION_ACTION, "action"),
+    SchemaField::new(KILL_SESSION_ACTION, "action"),
+    SchemaField::new(NEW_WINDOW_ACTION, "action"),
+    SchemaField::new(SELECT_WINDOW_ACTION, "action"),
+    SchemaField::new(MOVE_WINDOW_ACTION, "action"),
+    SchemaField::new(SELECT_PANE_ACTION, "action"),
+    SchemaField::new(RENAME_WINDOW_ACTION, "action"),
+    SchemaField::new(RENAME_SESSION_ACTION, "action"),
+    SchemaField::new(DISPLAY_MESSAGE_ACTION, "action"),
+    SchemaField::new(KILL_WINDOW_ACTION, "action"),
+    SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
+    SchemaField::new(BREAK_PANE_ACTION, "action"),
+    SchemaField::new(JOIN_PANE_ACTION, "action"),
+    SchemaField::new(MOVE_PANE_ACTION, "action"),
+    SchemaField::new(SWAP_PANE_ACTION, "action"),
+    SchemaField::new(RESIZE_PANE_ACTION, "action"),
+    SchemaField::new(ZOOM_PANE_ACTION, "action"),
+    SchemaField::new(DROP_FILE_ACTION, "action"),
+    SchemaField::new(PANES_SLOT, "list"),
+    SchemaField::new(LAYOUT_SLOT, "tree"),
+    SchemaField::new(SESSIONS_SLOT, "list"),
+    SchemaField::new(TREE_SLOT, "list"),
+    SchemaField::new(SESSION_SLOT, "string"),
+    SchemaField::new(CLIENTS_SLOT, "list"),
+    SchemaField::new(GRID_WORK_SLOT, "object"),
+    SchemaField::new(WINDOWS_SLOT, "list"),
+    SchemaField::new(WINDOW_SIZE_SLOT, "object"),
+    SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
+    SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
+    PROJECT_FIELD,
+    NEIGHBORS_FIELD,
+    EVENTS_FIELD,
+    SESSION_ACTIVITY_FIELD,
+    PANE_PROCESSES_FIELD,
+];
+
 /// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`
 /// alongside `path` / `args`, never part of the address.
 ///
@@ -2760,7 +2909,6 @@ pub fn find_slot_for(needle: &str) -> String {
 pub fn regex_slot_for(pattern: &str) -> String {
     format!("{}{pattern}", REGEX_FIELD.literal_prefix())
 }
-
 #[cfg(test)]
 mod tests {
     use pinion_core::external::ArgDomain;
@@ -3814,4 +3962,45 @@ mod tests {
     const BUMP: &str = "THE WIRE SHAPE CHANGED. An older peer cannot read this, and it will find \
                         out as a type error mid-boot rather than as a sentence. Bump \
                         sprag_rpc::WIRE_PROTOCOL and update this pin, in that order.";
+
+    /// **THE RATCHET: the wire's surface cannot move under the protocol number.**
+    ///
+    /// See [`PINNED_SURFACE`] for what this can and cannot prove. Measured before it was written, by
+    /// running: at `4f471bb`, reverting `WIRE_PROTOCOL` from 15 to 14 left the whole suite green —
+    /// six rounds after R313 first wrote that down.
+    ///
+    /// Both halves are asserted, because they fail differently and a build could pass one while
+    /// breaking the other: the NAMES against the two schemas the daemon actually serves, and the
+    /// NUMBER against the one a client actually sends.
+    #[test]
+    fn the_wire_surface_cannot_move_under_the_protocol_number() {
+        let mut served: Vec<&str> = PANE_SCHEMA
+            .iter()
+            .chain(MUX_SCHEMA.iter())
+            .map(|field| field.path)
+            .collect();
+        served.sort_unstable();
+        let mut pinned: Vec<&str> = PINNED_SURFACE.1.to_vec();
+        pinned.sort_unstable();
+        assert_eq!(
+            served, pinned,
+            "THE WIRE'S SURFACE MOVED. Update PINNED_SURFACE, and decide what it means for \
+             WIRE_PROTOCOL: a name ADDED leaves an older client's requests working (the number \
+             usually stands); a name REMOVED or RENAMED breaks them (the number must rise). \
+             Then run the skew check both ways, which is the half no test can do for you.",
+        );
+        assert_eq!(
+            PINNED_SURFACE.0,
+            sprag_rpc::WIRE_PROTOCOL,
+            "THE PROTOCOL NUMBER MOVED WITH THE SURFACE UNCHANGED. That is legitimate when a \
+             MEANING changed under a name that did not — re-stamp PINNED_SURFACE's version to say \
+             so — and it is a mistake when the number was edited by hand.",
+        );
+        // ...and no address is served TWICE, which the two schemas being separate makes possible:
+        // a client addressing a duplicated name reaches whichever surface the dispatcher tries
+        // first, which is a decision nothing here would have made deliberately.
+        let mut unique = served.clone();
+        unique.dedup();
+        assert_eq!(served, unique, "one address, one surface");
+    }
 }

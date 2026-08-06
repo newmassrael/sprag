@@ -6058,3 +6058,113 @@ fn an_edited_notify_outward_takes_effect_without_a_restart() {
         || settled(tui.asked_for_focus_reports(), &false),
     );
 }
+
+/// **`prefix z` ZOOMS, in a live terminal client** — closing the one keymap arm the register
+/// (item 15, R288/R289) recorded as having no live driver at all.
+///
+/// ⚠ **The entry's WORDING was stale and is corrected by measuring it**: it said this file *"mentions
+/// zoom zero times"*, and it now mentions it five times — every one of them in the KEY TABLE checks
+/// (`list-keys` printing the `zoom-pane` row). The substance stood: nothing drove the ARM, which is
+/// the client's own `zoom_pane` + reconcile + repaint in one breath. *A register item's wording is a
+/// claim* — the sixth instance.
+///
+/// The zoom is a claim about what this client DRAWS and not about the pane set, which is what makes
+/// the divider the right observable: the daemon still holds two panes of the same size throughout, so
+/// a test reading `pane_sizes` would see nothing happen at all.
+///
+/// Four claims, ordered so each can fail on its own:
+///
+/// * **THE CONTROL, first**: two panes with a divider between them, which is the state a zoom has to
+///   change and the state a build that zoomed nothing would leave.
+/// * **The zoom takes the whole area**: the divider column is gone and the zoomed pane's own text is
+///   painted past where the divider stood — so a client that merely stopped drawing the LINE would
+///   fail the second half.
+/// * **The daemon still holds both panes**, unchanged in size: a zoom that had closed or resized one
+///   would be a different bug wearing this one's clothes.
+/// * **It comes back**: the same key un-zooms, which a one-way flag would fail.
+#[test]
+fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    // Something to recognise the zoomed pane BY: an empty pane filling the screen is
+    // indistinguishable from an empty pane that did not move.
+    tui.type_bytes(b"zoomee");
+    wait_for("the typed text to come back painted", || {
+        painted(&mut tui, "zoomee")
+    });
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+
+    let (near, far) = halves(BOOT_PANES.0);
+    wait_for("both panes to reach their own half's size", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
+        )
+    });
+    // THE CONTROL: the divider is standing, so the absence asserted below is a change.
+    wait_for("a divider to stand between the two panes", || {
+        let column = tui.pane_column(near);
+        settled(column.chars().all(|glyph| glyph == '\u{2502}'), &true)
+            .map_err(|got| format!("{got}: column {near} reads {column:?}"))
+    });
+    // The split left the focus on the NEW pane, so go back to the one whose text we can name.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"o");
+    wait_for(
+        "the focus to come back to the pane that has text in it",
+        || settled(active_pane(&mut conn, &session), &Some(0)),
+    );
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"z");
+    wait_for(
+        "the divider to go, leaving the zoomed pane the whole area",
+        || {
+            let column = tui.pane_column(near);
+            settled(column.contains('\u{2502}'), &false)
+                .map_err(|got| format!("{got}: column {near} still reads {column:?}"))
+        },
+    );
+    // ...and the pane really OCCUPIES it: its own text is painted, and the columns the divider and
+    // the other pane had are this pane's now.
+    wait_for("the zoomed pane to be painted across the terminal", || {
+        settled(tui.span(0, 0..BOOT_PANES.0).starts_with("zoomee"), &true)
+            .map_err(|got| format!("{got}: row 0 reads {:?}", tui.row(0)))
+    });
+
+    // ⚠ AND THE CHILD IS TOLD, which is what I expected NOT to happen and measured wrong: the first
+    // version of this assertion said a zoom "must not resize a pane" and the daemon answered
+    // `[(80, 23), (40, 23)]`. It is right and the assertion was wrong — a zoom that left the child
+    // at half width would leave an editor reflowed for a pane it is no longer being shown in, which
+    // is tmux's behaviour too. The pane SET is what a zoom may not touch; the zoomed pane's SIZE is
+    // exactly what it changes.
+    wait_for(
+        "the zoomed pane's own child to be told it has the whole area",
+        || {
+            settled(
+                pane_sizes(&mut conn, &session),
+                &vec![(BOOT_PANES.0, BOOT_PANES.1), (far, BOOT_PANES.1)],
+            )
+        },
+    );
+
+    // ...and it comes back.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"z");
+    wait_for("the divider to come back when the zoom is released", || {
+        let column = tui.pane_column(near);
+        settled(column.chars().all(|glyph| glyph == '\u{2502}'), &true)
+            .map_err(|got| format!("{got}: column {near} reads {column:?}"))
+    });
+    // ...and the child is told THAT too, which is the half a client that only repainted would miss.
+    wait_for(
+        "the released pane's child to be given its half back",
+        || {
+            settled(
+                pane_sizes(&mut conn, &session),
+                &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
+            )
+        },
+    );
+}

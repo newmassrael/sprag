@@ -58,7 +58,6 @@ use std::time::{Duration, Instant};
 
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
-    SchemaField,
 };
 use serde_json::{Map, Value, json};
 use sprag_terminal::{
@@ -81,12 +80,12 @@ use crate::wire::{
     DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT,
     GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
     MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD, PaneProcessesWire,
-    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PaneProcessesWire, RELEASE_AGENT_ACTION,
+    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
+    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The mux-management engine `External`: a control surface over the shared
@@ -1851,53 +1850,11 @@ rpc_external_impl!(WorkspaceExternal);
 
 impl ExternalIntrospect for WorkspaceExternal {
     fn schema(&self) -> IntrospectSchema {
-        IntrospectSchema::new(
-            const {
-                &[
-                    SchemaField::new(SPAWN_ACTION, "action"),
-                    SchemaField::new(SPLIT_ACTION, "action"),
-                    SchemaField::new(CLOSE_ACTION, "action"),
-                    SchemaField::new(RESIZE_ACTION, "action"),
-                    SchemaField::new(RENAME_PANE_ACTION, "action"),
-                    SchemaField::new(SET_LAYOUT_ACTION, "action"),
-                    SchemaField::new(SET_FLOATING_ACTION, "action"),
-                    SchemaField::new(NEW_SESSION_ACTION, "action"),
-                    SchemaField::new(KILL_SESSION_ACTION, "action"),
-                    SchemaField::new(NEW_WINDOW_ACTION, "action"),
-                    SchemaField::new(SELECT_WINDOW_ACTION, "action"),
-                    SchemaField::new(MOVE_WINDOW_ACTION, "action"),
-                    SchemaField::new(SELECT_PANE_ACTION, "action"),
-                    SchemaField::new(RENAME_WINDOW_ACTION, "action"),
-                    SchemaField::new(RENAME_SESSION_ACTION, "action"),
-                    SchemaField::new(DISPLAY_MESSAGE_ACTION, "action"),
-                    SchemaField::new(KILL_WINDOW_ACTION, "action"),
-                    SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
-                    SchemaField::new(BREAK_PANE_ACTION, "action"),
-                    SchemaField::new(JOIN_PANE_ACTION, "action"),
-                    SchemaField::new(MOVE_PANE_ACTION, "action"),
-                    SchemaField::new(SWAP_PANE_ACTION, "action"),
-                    SchemaField::new(RESIZE_PANE_ACTION, "action"),
-                    SchemaField::new(ZOOM_PANE_ACTION, "action"),
-                    SchemaField::new(DROP_FILE_ACTION, "action"),
-                    SchemaField::new(PANES_SLOT, "list"),
-                    SchemaField::new(LAYOUT_SLOT, "tree"),
-                    SchemaField::new(SESSIONS_SLOT, "list"),
-                    SchemaField::new(TREE_SLOT, "list"),
-                    SchemaField::new(SESSION_SLOT, "string"),
-                    SchemaField::new(CLIENTS_SLOT, "list"),
-                    SchemaField::new(GRID_WORK_SLOT, "object"),
-                    SchemaField::new(WINDOWS_SLOT, "list"),
-                    SchemaField::new(WINDOW_SIZE_SLOT, "object"),
-                    SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
-                    SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
-                    PROJECT_FIELD,
-                    NEIGHBORS_FIELD,
-                    EVENTS_FIELD,
-                    SESSION_ACTIVITY_FIELD,
-                    PANE_PROCESSES_FIELD,
-                ]
-            },
-        )
+        // Declared in `wire`, beside the addresses and beside the pane surface's own
+        // ([`PANE_SCHEMA`](crate::wire::PANE_SCHEMA)) — this vocabulary has ONE home, and the
+        // ratchet that keeps the wire's surface from moving under the protocol number reads it
+        // from there rather than from a second copy.
+        IntrospectSchema::new(crate::wire::MUX_SCHEMA)
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
@@ -2409,7 +2366,7 @@ impl WorkspaceExternal {
 
 /// The `project.<pane>` answer for one pane: the commands the project it sits in declares.
 ///
-/// Three outcomes, each distinct on the wire (see [`PROJECT_FIELD`]): `null` for a pane in no
+/// Three outcomes, each distinct on the wire (see [`crate::wire::PROJECT_FIELD`]): `null` for a pane in no
 /// project — or one whose cwd is not local, or that has since gone; the project object for a
 /// usable config; and
 /// `{error}` for a project whose config is unusable, because a typo must be reported rather than
