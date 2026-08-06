@@ -2926,6 +2926,24 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         cleared.is_ok(),
     );
 
+    // THE DIRECTIONAL EDGE, on the same client and through the same strip: `prefix ArrowLeft` on
+    // the leftmost pane has nowhere to go, and the arm that says so is `perform`'s — this front's
+    // own code, which the terminal front's live fixture cannot speak for.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let edged = smoke.press(0, "b", true).is_ok() && smoke.press(0, "ArrowLeft", false).is_ok();
+    report.check("the GUI accepts `prefix ArrowLeft`", edged);
+    let at_edge = smoke.wait_for_tag("sprag_message_strip");
+    let said_edge = at_edge
+        .as_ref()
+        .ok()
+        .and_then(|tags| tags.get("sprag_message_strip"))
+        .map(|painted| painted.text.join("\u{1f}"))
+        .unwrap_or_default();
+    report.check(
+        &format!("a directional key at the edge says so here too ({said_edge:?})"),
+        said_edge.contains("select-pane -L: nowhere to go"),
+    );
+
     // WHAT IT LEAVES: the shipped table back, and this client where it started.
     let restored = smoke.write_user_config("");
     report.check(
