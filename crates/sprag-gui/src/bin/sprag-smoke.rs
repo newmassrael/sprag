@@ -131,6 +131,10 @@ fn main() -> ExitCode {
             // DEFAULT prefix in force. It writes a config of its own and puts the shipped table
             // back before it returns, exactly as the keymap gate above does.
             check_a_key_that_finds_nothing_says_so_on_the_screen(&mut smoke, &mut report);
+            // Straight after the message checks above, which have proved the strip works and left
+            // the client on its own session with the shipped table in force. It BLURS the window
+            // and puts the focus back before it returns, so every later check reads a focused one.
+            check_a_message_follows_the_person_out_of_the_window(&mut smoke, &mut report);
             check_the_rename_key_asks_and_the_answer_reaches_the_daemon(&mut smoke, &mut report);
             // Straight after the renames, and for their reason: the DEFAULT prefix is in force. It
             // splits a pane and leaves BOTH standing with an uneven share — every later check
@@ -3144,6 +3148,135 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
     );
 }
 
+/// **A message reaches the person after they have left the window** — the windowed half of R319.
+///
+/// # What was measured before this existed
+///
+/// `sprag-tui` copies a message out to its host terminal as `OSC 9` when the person is not looking.
+/// `sprag-gui` did nothing at all: `notify-outward` was a setting a windowed client read and never
+/// acted on, so a message delivered to a blurred window was painted onto a strip nobody could see —
+/// R318's *"every layer carried it and nothing was obliged to read it"*, one front further along.
+/// This check drives that claim through the SHIPPED binary against a recorder standing in for the
+/// desktop's own notifier, so what it reads is the argv the product actually built.
+fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, report: &mut Report) {
+    let Some(home) = smoke.attached_session() else {
+        report.check("the window names its session for the outward copy", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the outward copy", false);
+        return;
+    };
+    let state = smoke.state.clone();
+
+    // THE CONTROL FIRST, and it is the half that has to be able to fail: a message delivered while
+    // the person is LOOKING must reach the strip and nothing else. Put first so a notifier that
+    // fired for everything is caught here rather than passing the interesting half by accident.
+    let before = notify_calls(&state).len();
+    let focused = smoke.call("scene/window_focus", json!({ "focused": true }));
+    report.check(
+        &format!("the window can be told it holds OS focus ({focused:?})"),
+        focused.is_ok(),
+    );
+    let seen = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": "/sprag_mux/external/display_message",
+            "session": home,
+            "args": { "text": "a message the person can see", "severity": "note" },
+        }),
+    );
+    report.check(
+        &format!("the daemon accepts a message for a WATCHED window ({seen:?})"),
+        seen.is_ok(),
+    );
+    let painted = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        let strip = tags.get("sprag_message_strip")?;
+        strip
+            .text
+            .join("\u{1f}")
+            .contains("a message the person can see")
+            .then_some(())
+    });
+    report.check(
+        &format!("...and it reaches the strip ({painted:?})"),
+        painted.is_ok(),
+    );
+    // Sampled AFTER the strip proved the delivery landed, so this is "nothing was sent", not
+    // "nothing had been sent yet".
+    report.check(
+        &format!(
+            "a message a person can READ is not also thrown at their desktop ({:?})",
+            notify_calls(&state).len() - before,
+        ),
+        notify_calls(&state).len() == before,
+    );
+
+    // THE CLAIM. The person leaves: the WM takes focus off every window this client owns.
+    let blurred = smoke.call("scene/window_focus", json!({ "focused": false }));
+    report.check(
+        &format!("the window can be told it lost OS focus ({blurred:?})"),
+        blurred.is_ok(),
+    );
+    let sent = daemon.call(
+        "scene/invoke",
+        json!({
+            "path": "/sprag_mux/external/display_message",
+            "session": home,
+            "args": { "text": "the deploy needs you", "severity": "alert" },
+        }),
+    );
+    report.check(
+        &format!("the daemon accepts a message for an UNWATCHED window ({sent:?})"),
+        sent.is_ok(),
+    );
+    let followed = smoke.wait_for(|s| {
+        let _ = s;
+        (notify_calls(&state).len() > before).then_some(())
+    });
+    let argv = notify_calls(&state).last().cloned().unwrap_or_default();
+    report.check(
+        &format!("a message reaches the person's DESKTOP once they have left ({argv:?})"),
+        followed.is_ok(),
+    );
+    // The words, the session it came from, and the URGENCY — the three things a desktop
+    // notification has to carry for it to be worth more than a beep.
+    let joined = argv.join(" ");
+    report.check(
+        &format!("...carrying the words the strip would have shown ({joined:?})"),
+        joined.contains("the deploy needs you"),
+    );
+    report.check(
+        &format!("...naming the session it came from ({joined:?})"),
+        joined.contains(&home),
+    );
+    report.check(
+        &format!("...and an ALERT asks for the CRITICAL urgency ({joined:?})"),
+        argv.windows(2)
+            .any(|pair| pair[0] == "-u" && pair[1] == "critical"),
+    );
+
+    // WHAT IT LEAVES: the window focused again, which every later check reads.
+    let restored = smoke.call("scene/window_focus", json!({ "focused": true }));
+    report.check(
+        &format!("the window is left holding focus ({restored:?})"),
+        restored.is_ok(),
+    );
+    // ...and the alert acknowledged, so the strip is clear for whatever runs next. `prefix q` is
+    // bound to nothing, so the acknowledgement is the only thing it can do.
+    let _ = smoke.press(0, "b", true);
+    let _ = smoke.press(0, "q", false);
+    let cleared = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        (!tags.contains_key("sprag_message_strip")).then_some(())
+    });
+    report.check(
+        &format!("...and the alert is acknowledged before the next check ({cleared:?})"),
+        cleared.is_ok(),
+    );
+}
+
 /// **`prefix >` and `prefix <` move a WINDOW's place, through the shipped GUI binary.**
 ///
 /// The GUI half of what `sprag-tui`'s pty test drives, and it exists for the reason the check above
@@ -4089,6 +4222,7 @@ impl Smoke {
         let gui_sock = PathBuf::from(format!("/tmp/sp{unique}g.sock"));
         let state = PathBuf::from(format!("/tmp/sp{unique}state"));
         std::fs::create_dir_all(&state)?;
+        install_notify_stand_in(&state)?;
 
         let daemon_log = state.join("daemon.log");
         let gui_log = state.join("gui.log");
@@ -4687,6 +4821,11 @@ impl Drop for Smoke {
 fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path, log: &Path) -> io::Result<Child> {
     let log = std::fs::File::create(log)?;
     Command::new(binary)
+        // The stand-in `notify-send` FIRST on the path — see [`install_notify_stand_in`]. It is set
+        // for the whole run rather than for one check because the claim under test is partly a
+        // NEGATIVE one ("nothing reached the desktop while the person was here"), and a recorder
+        // installed only around the positive half could not see the messages that came before it.
+        .env("PATH", stand_in_path(state))
         .env("SPRAG_HOST_RPC_SOCK", host)
         .env("SPRAG_GUI_HOST_SOCK", host)
         .env("SPRAG_RPC_SOCK", gui)
@@ -4707,6 +4846,61 @@ fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path, log: &Path) -> io
         .stdout(std::process::Stdio::null())
         .stderr(log)
         .spawn()
+}
+
+/// Where the stand-in `notify-send` is written, and what its record file is called.
+///
+/// The GUI's desktop notification is a PROGRAM it runs, so the honest way to read what it sent is
+/// to be that program. A recorder on `PATH` sees the real argv the real binary built — no seam in
+/// the product, no injection point that a shipped path could route around.
+fn notify_stand_in_dir(state: &Path) -> PathBuf {
+    state.join("bin")
+}
+
+/// The file the stand-in appends one line per invocation to.
+fn notify_record(state: &Path) -> PathBuf {
+    state.join("notify-send.log")
+}
+
+/// `PATH` with the stand-in's directory in FRONT of the inherited one.
+fn stand_in_path(state: &Path) -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{inherited}", notify_stand_in_dir(state).display())
+}
+
+/// Write the stand-in `notify-send` and make it executable.
+///
+/// It records the argv, one invocation per line, with a unit separator between arguments so an
+/// argument containing a space cannot be read as two. It exits 0, because the product must not be
+/// tested against a notifier that is failing.
+fn install_notify_stand_in(state: &Path) -> io::Result<()> {
+    let dir = notify_stand_in_dir(state);
+    std::fs::create_dir_all(&dir)?;
+    let record = notify_record(state);
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\037' \"$@\" >> {}\nprintf '\\n' >> {}\nexit 0\n",
+        record.display(),
+        record.display(),
+    );
+    let path = dir.join("notify-send");
+    std::fs::write(&path, script)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+}
+
+/// Every argv the stand-in has recorded so far, each as its own list of arguments.
+fn notify_calls(state: &Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(notify_record(state))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            line.split('\u{1f}')
+                .filter(|argument| !argument.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .collect()
 }
 
 /// Wait for `path` to exist — the socket bind race between spawning a server and connecting to it.

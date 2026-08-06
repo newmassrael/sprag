@@ -253,6 +253,7 @@ mod input;
 mod keyhelp;
 mod keys;
 mod message;
+mod outward;
 mod palette;
 mod prompt;
 mod reflow;
@@ -772,6 +773,17 @@ impl WidgetCore for TerminalViewer {
         // TAKEN, not read: a message is shown once, and the take is what makes reconciling twice
         // between two messages paint the first one once.
         if let Some(announcement) = terminal.slots.take_message() {
+            // ...AND IT FOLLOWS THE PERSON OUT OF THE WINDOW (R319's windowed half). The strip is
+            // the primary delivery and the desktop notification is a COPY, sent only when the
+            // window manager says nobody is looking at any window this client owns. Both halves
+            // read live state at this instant — the session from the slots, the policy from the
+            // user's file — because a client can switch session and the file can be edited while it
+            // runs, and a copy of either taken earlier would name the one the person left.
+            outward::follow(
+                &terminal.slots.current_session(),
+                &announcement,
+                &keys::use_client_keys().options(),
+            );
             message::show_announcement(&announcement);
         }
         // (2) Grow each occupied pane's scroll bound to its live scrollback depth, then
