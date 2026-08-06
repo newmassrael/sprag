@@ -950,12 +950,12 @@ struct PollPair {
     window: Duration,
     /// The pair as a FOLLOWER ran it: `since` from the events journal, which the scene runs away
     /// from — the catch-up path, and the citation's subject.
-    follower: u64,
+    follower: Counted,
     /// The same pair fed `waitFor`'s OWN answer, which parks — what the loop would cost if the
     /// cursor matched what it waits on.
-    parked: u64,
+    parked: Counted,
     /// The follower's pair against a QUIET pane — the control, and the only one that may be zero.
-    quiet: u64,
+    quiet: Counted,
 }
 
 /// Which revision a pair's `since` comes from — the distinction the whole row is about.
@@ -1000,35 +1000,44 @@ fn chatty_host(
 }
 
 /// How many complete `waitFor` + `events` pairs a client gets through in `window`, with `since`
-/// taken from `cursor`.
+/// taken from `cursor` — and WHY it stopped, which is the half a bare count cannot carry.
 ///
-/// `deadline` bounds the read, because a pair that parks correctly against a quiet pane would
-/// otherwise hang the tool on a daemon that is behaving exactly as it should.
+/// ⚠ **The first version answered a bare `u64`, and the debt question caught what that costs**: a
+/// pair that parked correctly against a quiet pane and a pair whose socket had failed both came back
+/// `0`, and the row's whole meaning rests on that zero being the CONTROL. An error and a legitimate
+/// answer collapsing onto one value is the defect this project keeps finding one surface at a time;
+/// here it would have turned a broken instrument into a finding.
+///
+/// `deadline` bounds the read, because a pair that parks correctly would otherwise hang the tool on
+/// a daemon behaving exactly as it should — and the timeout it then trips is the control's own
+/// positive statement rather than a failure.
 fn pairs_in(
     sock: &std::path::Path,
     window: Duration,
     cursor: Cursor,
     deadline: Option<Duration>,
-) -> u64 {
+) -> Counted {
     let Ok(mut conn) = sprag_rpc::HostConn::connect(sock, CONTENT_TIMEOUT) else {
-        return 0;
+        return Counted::Broke(0);
     };
     if conn.set_read_deadline(deadline).is_err() {
-        return 0;
+        return Counted::Broke(0);
     }
     let mut since = 0;
     let start = Instant::now();
     let mut pairs = 0;
     while start.elapsed() < window {
-        let Ok(woken) = conn.call("scene/waitFor", json!({ "since": since })) else {
-            break;
+        let woken = match conn.call("scene/waitFor", json!({ "since": since })) {
+            Ok(answer) => answer,
+            Err(error) => return Counted::stopped(pairs, &error),
         };
         let scene = woken["revision"].as_u64().unwrap_or(since);
-        let Ok(batch) = conn.call(
+        let batch = match conn.call(
             "scene/query",
             json!({ "path": mux_action_path(&sprag_host::wire::events_slot_since(since)) }),
-        ) else {
-            break;
+        ) {
+            Ok(answer) => answer,
+            Err(error) => return Counted::stopped(pairs, &error),
         };
         since = match cursor {
             // The journal's own `next`, which is where a follower's cursor came from — and it does
@@ -1038,7 +1047,56 @@ fn pairs_in(
         };
         pairs += 1;
     }
-    pairs
+    Counted::Ran(pairs)
+}
+
+/// How a counted window ENDED, so a zero can say which zero it is.
+#[derive(Clone, Copy)]
+enum Counted {
+    /// The window elapsed with the loop still going — the honest count.
+    Ran(u64),
+    /// The pair PARKED until the read deadline tripped. Against a quiet pane this is the control's
+    /// positive statement: it is not that nothing was counted, it is that the client was asleep.
+    Parked(u64),
+    /// The pair stopped answering for some other reason. NOT a control, and a row that printed this
+    /// as a number would be reporting a broken instrument as a finding.
+    Broke(u64),
+}
+
+impl Counted {
+    /// Which ending an error means — a tripped read deadline is a park, anything else is a break.
+    ///
+    /// ⚠ **BOTH SPELLINGS, and the first version matched only one.** A socket read deadline surfaces
+    /// as `WouldBlock` on this platform and `TimedOut` on others; `HostConn::read_frame` treats them
+    /// as one thing and says so, and a classifier here that knew only `TimedOut` called a correctly
+    /// PARKED control a broken instrument — on the first run, which is what the distinction was
+    /// added to catch. The rule belongs to the connection, so it is read off the connection.
+    fn stopped(pairs: u64, error: &std::io::Error) -> Self {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) {
+            Self::Parked(pairs)
+        } else {
+            Self::Broke(pairs)
+        }
+    }
+
+    /// The count, whatever the ending — for the rows where the ending is printed beside it.
+    fn pairs(self) -> u64 {
+        match self {
+            Self::Ran(pairs) | Self::Parked(pairs) | Self::Broke(pairs) => pairs,
+        }
+    }
+
+    /// How to read this count out loud.
+    fn ending(self) -> &'static str {
+        match self {
+            Self::Ran(_) => "the window elapsed",
+            Self::Parked(_) => "PARKED until the deadline",
+            Self::Broke(_) => "⚠ THE PAIR STOPPED ANSWERING — this row is not a measurement",
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -2376,7 +2434,7 @@ fn main() -> ExitCode {
             println!("\nSKIPPED — the poll pair: no `sprag-term` was found beside this binary.")
         }
         Some(pair) => {
-            let per_second = |count: u64| count as f64 / pair.window.as_secs_f64();
+            let per_second = |count: Counted| count.pairs() as f64 / pair.window.as_secs_f64();
             println!(
                 "\nMEASURED — WHAT POLLING COST, and the reason `events/waitFor {{since, match}}`\n\
                  exists. The pair a follower had before it, against a pane printing without pause:"
@@ -2385,7 +2443,7 @@ fn main() -> ExitCode {
                 "  {:>9.0} /s  pairs, cursor from the EVENTS BATCH — what a follower did\n  \
                  {:>9.0} /s  the RETURNS that is, since a pair is two calls\n  \
                  {:>9.0} /s  pairs, cursor from waitFor's OWN answer — what PARKING costs\n  \
-                 {:>9.0} /s  the follower's pair against a QUIET pane — THE CONTROL\n\
+                 {:>9.0} /s  the follower's pair against a QUIET pane — THE CONTROL ({})\n\
                  \n  \
                  The second line is the figure this tree cites in six places (22 431/s on R292's\n  \
                  box), and the first and third together are WHY: a follower's `since` comes from\n  \
@@ -2398,6 +2456,7 @@ fn main() -> ExitCode {
                 per_second(pair.follower) * 2.0,
                 per_second(pair.parked),
                 per_second(pair.quiet),
+                pair.quiet.ending(),
                 per_second(pair.follower) / per_second(pair.parked).max(1.0),
             );
         }
