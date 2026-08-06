@@ -2124,11 +2124,7 @@ fn learn_where_we_are(conn: &mut HostConn) {
 
 /// [`learn_where_we_are`]'s body, split out so the resolution is a function of the daemon's answer.
 fn where_we_are(conn: &mut HostConn) -> Option<Here> {
-    let pane: u64 = std::env::var(sprag_host::PANE_ENV_VAR)
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
+    let pane = our_pane()?;
     let answer = query_raw(conn, json!({ "path": mux_action_path(TREE_SLOT) })).ok()?;
     let tree: Vec<sprag_terminal::TreeSession> = serde_json::from_value(answer).ok()?;
     // The lookup itself belongs to neither client: `sprag-mcp` asks the same question of the same
@@ -2136,6 +2132,32 @@ fn where_we_are(conn: &mut HostConn) -> Option<Here> {
     // this pane" is a torn answer waiting to happen.
     let session = sprag_host::wire::session_holding(&tree, PaneId(pane))?.to_owned();
     Some(Here { pane, session })
+}
+
+/// The pane this process was born in — but only when the environment ALSO carries the address that
+/// pane was published beside, and that address is the daemon this command is talking to.
+///
+/// # A pane id means nothing without the daemon it belongs to
+///
+/// Pane ids are per-daemon and start at zero, so a box running two sprag terminals has two pane
+/// `1`s. An id read on its own therefore names a real, plausible pane of whichever daemon is being
+/// asked — and the session it resolves to would be wrong in the one way nobody can see. That is why
+/// [`sprag_host::pane_env_source`] publishes the id and the socket TOGETHER at each pane's birth:
+/// they are one fact, and half of it is not a smaller truth.
+///
+/// `sprag-mcp` has had this guard since it started reading the variable at all (`own_pane`, which
+/// compares the two as PATHS rather than as text). This is the same rule at the other client — a
+/// rule kept by one of two doors is the shape this project keeps finding defects in.
+fn our_pane() -> Option<u64> {
+    let published = std::env::var_os(HOST_SOCKET.path_env)?;
+    // As a PATH, not as text: two spellings of one socket are one daemon.
+    (std::path::Path::new(&published) == HostEndpoint::for_opts(HOST_SOCKET).path())
+        .then_some(())?;
+    std::env::var(sprag_host::PANE_ENV_VAR)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// The ids of the panes the scoped session's CURRENT window holds — the one read behind every

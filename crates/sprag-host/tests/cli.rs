@@ -6594,6 +6594,17 @@ fn a_command_run_inside_a_pane_acts_on_that_panes_session() {
         stale.stdout,
     );
 
+    // A REGISTRY-WIDE read is not narrowed by the scope it now carries. `ls` answers about every
+    // session, so a scope reaching it must change nothing — the arm that would break if the ambient
+    // session were applied as a FILTER rather than as a scope.
+    let listing = sprag_env(&sock, &["ls"], &inside);
+    assert!(listing.ok, "ls from inside a pane: {}", listing.stderr);
+    assert!(
+        listing.stdout.contains("work") && listing.stdout.contains("0:"),
+        "every session is still listed: {}",
+        listing.stdout,
+    );
+
     // A SESSION-LEVEL verb still means what it says from inside a pane. `new` reaches an action
     // that creates a session rather than acting within one, and it now travels with a scope it
     // never used to carry — so this drives the arm rather than assuming the daemon ignores it.
@@ -6601,7 +6612,38 @@ fn a_command_run_inside_a_pane_acts_on_that_panes_session() {
     assert!(born.ok, "new from inside a pane: {}", born.stderr);
     assert_eq!(born.stdout.trim(), "third", "and it created what was asked");
 
-    // CONTROL 4 — the caller's own pane does NOT travel into a session it names. `-t 0` from a pane
+    // CONTROL 4 — an id with NO ADDRESS beside it is not ours. Pane ids are per-daemon and start
+    // at zero, so a box running two sprag terminals has two pane `1`s: an id inherited without the
+    // socket it was published beside names a real, plausible pane of whichever daemon is being
+    // asked, and the session it resolved to would be wrong in the one way nobody can see.
+    //
+    // Driven by reaching this daemon the OTHER way — through `XDG_RUNTIME_DIR`, where the endpoint
+    // falls back when the variable is absent — so the CLI still talks to the test's own daemon and
+    // never to the machine's (the R278 rule: a probe reaches the endpoint its resolver names).
+    let runtime = default_named_runtime_dir(&sock);
+    let orphaned = sprag_no_sock(
+        &["panes"],
+        &[
+            (
+                "XDG_RUNTIME_DIR",
+                runtime.to_str().expect("a utf-8 temp dir"),
+            ),
+            ("SPRAG_PANE", mine_first.as_str()),
+        ],
+    );
+    assert!(
+        orphaned.ok,
+        "the CLI still reaches this test's daemon: {}",
+        orphaned.stderr,
+    );
+    assert!(
+        orphaned.stdout.contains(&format!("{}: ", theirs[0]))
+            && !orphaned.stdout.contains(&format!("{mine_second}: ")),
+        "an id with no address beside it is ignored, not trusted: {}",
+        orphaned.stdout,
+    );
+
+    // CONTROL 5 — the caller's own pane does NOT travel into a session it names. `-t 0` from a pane
     // of `work` must act on session 0's own active pane; substituting the ambient one would address
     // a pane that is not in the named scope at all, which is the same class of wrong answer as the
     // default this test exists for. Driven because it is a BRANCH (the scope filter in
@@ -6683,6 +6725,45 @@ fn a_verb_given_no_pane_acts_on_the_callers_own_pane() {
         "and refused in the same words as before: {}",
         unplaceable.stderr,
     );
+}
+
+/// Run the CLI WITHOUT `SPRAG_HOST_RPC_SOCK`, so the endpoint resolves the other way.
+///
+/// Every other run here names the socket, which is the guard that keeps this suite off the author's
+/// live daemon. The one claim that cannot be made that way is what happens to a pane id inherited
+/// with no address beside it — so this reaches the same daemon through `XDG_RUNTIME_DIR` instead,
+/// which is where the endpoint falls back. `envs` MUST point that variable at a directory holding
+/// this test's own socket.
+fn sprag_no_sock(args: &[&str], envs: &[(&str, &str)]) -> CliRun {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sprag"));
+    cmd.args(args).env_remove("SPRAG_HOST_RPC_SOCK");
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().expect("run the sprag CLI");
+    CliRun {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        ok: output.status.success(),
+    }
+}
+
+/// A directory holding a link to `sock` under the WELL-KNOWN name, for [`sprag_no_sock`] to point
+/// `XDG_RUNTIME_DIR` at. A hard link rather than a copy: a socket is not a file whose bytes mean
+/// anything, and the link names the same inode the daemon is listening on.
+fn default_named_runtime_dir(sock: &Path) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "sprag-cli-rt-{}-{}",
+        std::process::id(),
+        sock.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("x"),
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let link = dir.join(sprag_rpc::HOST_SOCKET_NAME);
+    let _ = std::fs::remove_file(&link);
+    std::fs::hard_link(sock, &link).expect("link the test daemon's socket under the default name");
+    dir
 }
 
 /// The pane ids a session holds, in the order `sprag panes` lists them.
