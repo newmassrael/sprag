@@ -378,7 +378,7 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
         })?;
     // Delivered as a PASTE — the same action the GUI palette uses, and bracketed so the whole line
     // arrives as one inert unit at the prompt.
-    conn.call("scene/invoke", {
+    invoke_action(&mut conn, {
         let mut params = scoped(pane_input_path(pane, PASTE_ACTION));
         params["args"] = json!({ "text": action.command_line() });
         params
@@ -1371,8 +1371,8 @@ fn new(name: Option<String>) -> io::Result<()> {
         Some(name) => json!({ "name": name }),
         None => json!({}),
     };
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": args }),
     );
     match answer {
@@ -1428,8 +1428,8 @@ fn ssh(args: Vec<String>) -> io::Result<()> {
     // restore + dropped-file scp), alongside the argv the pane actually runs.
     let remote = serde_json::to_value(target.remote()).expect("SshRemote serialises");
     let mut conn = connect(None)?;
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({
             "path": mux_action_path(NEW_SESSION_ACTION),
             "args": { "cmd": target.ssh_argv(), "remote": remote },
@@ -1902,8 +1902,8 @@ fn server_gone(error: &io::Error) -> bool {
 /// `kill-server` discards it (it is killing every session by construction, so "the server went too"
 /// is not news); `kill-session` renders it.
 fn kill_one(conn: &mut HostConn, name: &str) -> io::Result<Value> {
-    conn.call(
-        "scene/invoke",
+    invoke_action(
+        conn,
         json!({ "path": mux_action_path(KILL_SESSION_ACTION), "args": { "name": name } }),
     )
 }
@@ -2340,7 +2340,7 @@ fn unknown_slot(path: &str, fault: &RpcFault) -> Option<io::Error> {
 ///
 /// Both arrive as `-32602 Invalid params`, so a verb that maps every fault to its own sentence
 /// tells a user their name was taken when the truth is that their daemon predates the verb. That is
-/// not hypothetical — it is what this round's skew run MEASURED, one direction at a time, against a
+/// not hypothetical — it is what R297's skew run MEASURED, one direction at a time, against a
 /// parent-commit daemon: `sprag rename-session` said *"prod" is already another session's name*
 /// about a name no session held.
 ///
@@ -2349,18 +2349,76 @@ fn unknown_slot(path: &str, fault: &RpcFault) -> Option<io::Error> {
 /// of an action it DOES serve answers `"InvokeRejected"`. Matched on the structured `data` for
 /// [`unknown_slot`]'s reason — a substring test against a rendering is a test against a
 /// presentation decision.
-fn unknown_action(command: &str, fault: &RpcFault) -> Option<io::Error> {
+///
+/// # It names the ADDRESS, not the verb
+///
+/// It took a command name until this round, and three call sites passed one. A name a caller hands
+/// in is a name a caller can hand in WRONG — copied with the line it was pasted from — and it is
+/// the half of the sentence the shell line above the error already shows. The address is the half
+/// that says WHICH act the daemon lacks, it comes from the params the caller already built, and it
+/// makes this the exact twin of [`unknown_slot`] rather than a second style. Same argument, same
+/// round, as the one [`query_slot`] records for the reading side.
+fn unknown_action(path: &str, fault: &RpcFault) -> Option<io::Error> {
     if fault.data.as_ref().and_then(Value::as_str)? != "UnknownInvokePath" {
         return None;
     }
     Some(io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "{command}: this daemon does not know this verb — it is older than this `sprag`. \
+            "this daemon does not perform {path} — it is older than this `sprag`. \
              Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
              from the durability snapshot)",
         ),
     ))
+}
+
+/// Every ACTING verb's request: the refusal this build can explain is told apart from the refusal
+/// the daemon MEANT, before the verb's own sentence is ever reached.
+///
+/// # The wrong answer this exists to stop
+///
+/// A refused invoke and an UNKNOWN invoke arrive under one JSON-RPC code, so a verb that maps every
+/// fault to its own disjunction reports the user's arguments as the fault. Measured against a peer
+/// that serves every read and knows no action (`AgedHost` in `tests/cli.rs`), **twenty-one of the
+/// twenty-four acting verbs did exactly that**: `kill-session 0` answered *no session named "0"*
+/// about a session the daemon was holding, `new work` answered *a session named "work" already
+/// exists* about a name nothing held, and `rename-pane` offered five causes of which none was the
+/// true one. The three that got it right were the three whose authors had hit the skew by hand and
+/// written [`unknown_action`] in at their own call site.
+///
+/// So the guard moved to the seam every acting verb passes through, which is the same move R321
+/// made for the reading side ([`query_slot`]): the wrong thing is not caught by a rule authors must
+/// remember, it is the thing the one available call does not do.
+///
+/// The verb's own sentence stays the verb's own — it arrives as [`io::ErrorKind::Other`], the kind
+/// a JSON-RPC fault has always had here, so a call site that already told a refusal from a
+/// transport failure keeps working unchanged and a NEW one written in that shape is right by
+/// default.
+fn invoke_action(conn: &mut HostConn, params: Value) -> io::Result<Value> {
+    invoke_action_with(conn, params, |fault| CallError::Fault(fault).into())
+}
+
+/// [`invoke_action`] for the verbs whose refusal sentence needs the FAULT itself rather than only
+/// the fact of one — `resize-pane`'s two-cause disjunction and the agent verbs' pane reading.
+///
+/// The skew is settled here, so what reaches `refused` is a fault this build's daemon produced on
+/// purpose. That is what makes those sentences safe to write as assertions about panes: before this
+/// existed, `report-agent` deduced *"the pane RESOLVED, so what is left is that this host runs no
+/// agent detector"* and appended the raw `UnknownInvokePath` it had just reasoned past.
+fn invoke_action_with(
+    conn: &mut HostConn,
+    params: Value,
+    refused: impl FnOnce(RpcFault) -> io::Error,
+) -> io::Result<Value> {
+    // Read BEFORE the call, which consumes the params — [`query_slot`]'s reason exactly.
+    let path = params["path"].as_str().unwrap_or_default().to_owned();
+    match conn.try_call("scene/invoke", params) {
+        Ok(answer) => Ok(answer),
+        Err(CallError::Fault(fault)) => {
+            Err(unknown_action(&path, &fault).unwrap_or_else(|| refused(fault)))
+        }
+        Err(CallError::Transport(error)) => Err(error),
+    }
 }
 
 /// Turn a refused agent invoke into a sentence about PANES — what [`report_agent`] and
@@ -2513,31 +2571,27 @@ fn display_message(args: Vec<String>) -> io::Result<()> {
     if let Some(client) = &client {
         params["client"] = Value::String(client.clone());
     }
-    let answer: Value = conn
-        .try_call(
-            "scene/invoke",
-            scoped_invoke(
-                session.as_deref(),
-                mux_action_path(DISPLAY_MESSAGE_ACTION),
-                params,
+    let answer: Value = invoke_action_with(
+        &mut conn,
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(DISPLAY_MESSAGE_ACTION),
+            params,
+        ),
+        |_| match &client {
+            Some(client) => io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "display-message refused: no client called {client:?} is attached \
+                     (see `sprag list-clients`)"
+                ),
             ),
-        )
-        .map_err(|error| match error {
-            CallError::Fault(_) => match &client {
-                Some(client) => io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "display-message refused: no client called {client:?} is attached \
-                         (see `sprag list-clients`)"
-                    ),
-                ),
-                None => bad_input(
-                    "display-message refused: this daemon cannot show messages, or the message \
-                     was not acceptable",
-                ),
-            },
-            CallError::Transport(error) => error,
-        })?;
+            None => bad_input(
+                "display-message refused: this daemon cannot show messages, or the message \
+                 was not acceptable",
+            ),
+        },
+    )?;
     let reached: Vec<&str> = answer["clients"]
         .as_array()
         .into_iter()
@@ -2638,31 +2692,28 @@ fn report_agent(args: Vec<String>) -> io::Result<()> {
     if let Some(seq) = seq {
         params["seq"] = Value::from(seq);
     }
-    // `try_call`, so a refusal stays a REFUSAL rather than becoming a rendered sentence this side
-    // would then have to match on ([`agent_refusal`]). A transport failure is passed through
-    // untouched: it is not about panes, and dressing it as if it were would be the same class of
-    // wrong answer this replaces.
-    let answer: Value = conn
-        .try_call(
-            "scene/invoke",
-            match &site {
-                Some(site) => site_invoke(
-                    session.as_deref(),
-                    site,
-                    mux_action_path(REPORT_AGENT_ACTION),
-                    params,
-                ),
-                None => scoped_invoke(
-                    session.as_deref(),
-                    mux_action_path(REPORT_AGENT_ACTION),
-                    params,
-                ),
-            },
-        )
-        .map_err(|error| match error {
-            CallError::Fault(fault) => agent_refusal("report-agent", pane, &fault),
-            CallError::Transport(error) => error,
-        })?;
+    // The refusal stays a REFUSAL rather than becoming a rendered sentence this side would then
+    // have to match on ([`agent_refusal`]). A transport failure is passed through untouched: it is
+    // not about panes, and dressing it as if it were would be the same class of wrong answer this
+    // replaces — and so is a SKEW, which [`invoke_action_with`] has already taken out of the fault
+    // by the time the sentence below reasons about detectors.
+    let answer: Value = invoke_action_with(
+        &mut conn,
+        match &site {
+            Some(site) => site_invoke(
+                session.as_deref(),
+                site,
+                mux_action_path(REPORT_AGENT_ACTION),
+                params,
+            ),
+            None => scoped_invoke(
+                session.as_deref(),
+                mux_action_path(REPORT_AGENT_ACTION),
+                params,
+            ),
+        },
+        |fault| agent_refusal("report-agent", pane, &fault),
+    )?;
     let accepted = answer["accepted"].as_bool().unwrap_or(false);
     println!(
         "pane {pane}: {} {} seq={}",
@@ -2721,27 +2772,23 @@ fn release_agent(args: Vec<String>) -> io::Result<()> {
         Some(site) => site.id,
         None => own_pane("release-agent")?,
     };
-    let answer: Value = conn
-        .try_call(
-            "scene/invoke",
-            match &site {
-                Some(site) => site_invoke(
-                    session.as_deref(),
-                    site,
-                    mux_action_path(RELEASE_AGENT_ACTION),
-                    serde_json::json!({ "id": pane }),
-                ),
-                None => scoped_invoke(
-                    session.as_deref(),
-                    mux_action_path(RELEASE_AGENT_ACTION),
-                    serde_json::json!({ "id": pane }),
-                ),
-            },
-        )
-        .map_err(|error| match error {
-            CallError::Fault(fault) => agent_refusal("release-agent", pane, &fault),
-            CallError::Transport(error) => error,
-        })?;
+    let answer: Value = invoke_action_with(
+        &mut conn,
+        match &site {
+            Some(site) => site_invoke(
+                session.as_deref(),
+                site,
+                mux_action_path(RELEASE_AGENT_ACTION),
+                serde_json::json!({ "id": pane }),
+            ),
+            None => scoped_invoke(
+                session.as_deref(),
+                mux_action_path(RELEASE_AGENT_ACTION),
+                serde_json::json!({ "id": pane }),
+            ),
+        },
+        |fault| agent_refusal("release-agent", pane, &fault),
+    )?;
     if answer["released"].as_bool().unwrap_or(false) {
         println!("pane {pane}: released — its state comes from the screen again");
     } else {
@@ -3011,12 +3058,11 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
         ),
         hooks::Outcome::Release => (RELEASE_AGENT_ACTION, json!({ "id": pane })),
     };
-    let _: Value = conn
-        .call(
-            "scene/invoke",
-            scoped_invoke(None, mux_action_path(action), params),
-        )
-        .ok()?;
+    let _: Value = invoke_action(
+        &mut conn,
+        scoped_invoke(None, mux_action_path(action), params),
+    )
+    .ok()?;
     Some(())
 }
 
@@ -3748,8 +3794,8 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
         }
         None => SPAWN_ACTION,
     };
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         match &target {
             Some(site) => site_invoke(
                 session.as_deref(),
@@ -3822,8 +3868,8 @@ fn kill_pane(args: Vec<String>) -> io::Result<()> {
     }
     let mut conn = connect_scoped(session.as_deref())?;
     let site = resolve_optional_pane(&mut conn, session.as_deref(), asked.as_deref(), "kill-pane")?;
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         match &site {
             Some(site) => site_invoke(
                 session.as_deref(),
@@ -3989,8 +4035,8 @@ fn resize_pane(args: Vec<String>) -> io::Result<()> {
         "resize-pane",
     )?;
     let pane = site.as_ref().map(|site| site.id);
-    conn.call(
-        "scene/invoke",
+    invoke_action(
+        &mut conn,
         match &site {
             Some(site) => site_invoke(
                 session.as_deref(),
@@ -4061,22 +4107,19 @@ fn resize_toward(
         ),
         None => scoped_invoke(session, mux_action_path(RESIZE_PANE_ACTION), ask.to_args()),
     };
-    let answer: Value = match conn.try_call("scene/invoke", params) {
-        Ok(answer) => answer,
-        // The session was pre-flighted, so a refusal is one of the two things the daemon refuses
-        // for. Which one is this end's to guess, because `InvokeError::Rejected` carries no payload
-        // (upstream PINION-PR82) — and unlike the disjunctions that class usually produces, both
-        // halves here have a remedy a reader can act on.
-        //
-        // **THE VERSION SKEW IS TOLD APART, and this round's skew run is why.** This verb is the
-        // FIRST thing a daemon can be too old for that is not a bump: a `WIRE_PROTOCOL` change is
-        // refused by number at `client/hello`, but an ADDED ACTION leaves the handshake happy and
-        // fails at the invoke. Measured against a parent-commit daemon before this arm existed:
-        // the sentence below claimed *"there is no pane 0"* about a pane that was there, with the
-        // window pinned, sending a reader to look for a pane rather than to restart their daemon.
-        Err(CallError::Fault(fault)) => return Err(resize_refusal(ask, session, &fault)),
-        Err(other) => return Err(other.into()),
-    };
+    // The session was pre-flighted, so a refusal is one of the two things the daemon refuses for.
+    // Which one is this end's to guess, because `InvokeError::Rejected` carries no payload
+    // (upstream PINION-PR82) — and unlike the disjunctions that class usually produces, both halves
+    // have a remedy a reader can act on.
+    //
+    // **THE VERSION SKEW IS TOLD APART, and R297's skew run is why.** This verb was the FIRST thing
+    // a daemon could be too old for that is not a bump: a `WIRE_PROTOCOL` change is refused by
+    // number at `client/hello`, but an ADDED ACTION leaves the handshake happy and fails at the
+    // invoke. Measured against a parent-commit daemon before that arm existed, the sentence below
+    // claimed *"there is no pane 0"* about a pane that was there, with the window pinned. The arm
+    // is now [`invoke_action_with`]'s, for every verb at once — this one had it and the twenty-one
+    // beside it did not.
+    let answer: Value = invoke_action_with(&mut conn, params, |_| resize_refusal(ask, session))?;
     println!(
         "{}",
         resize_sentence(
@@ -4095,34 +4138,33 @@ fn resize_toward(
 }
 
 /// What the BOUNDARY form of `resize-pane` says when the daemon refuses, as a pure function of the
-/// fault — so BOTH arms are pinned by a test rather than only the one a live daemon can be driven
-/// into.
+/// fault — so the sentence is pinned by a test rather than only by whichever state a live daemon
+/// can be driven into.
 ///
-/// A pure function rather than a closure inside [`resize_toward`] for exactly that reason: a test
-/// that called [`unknown_action`] directly would pin the mechanism and say nothing about whether
-/// this verb reaches it — the shape R291 records as *"a unit test on a method is not a test that the
-/// caller calls it"*, and the one `rename-session`'s own version of this still has.
-fn resize_refusal(ask: ResizeAsk, session: Option<&str>, fault: &RpcFault) -> io::Error {
-    unknown_action("resize-pane", fault).unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "resize-pane refused: {} — a cell has no length until a client reports an area \
-                 or `window-size manual` plus `sprag resize-window` pins one",
-                ask.pane.map_or_else(
-                    || format!("{} holds no pane to size", scope_name(session)),
-                    // Two causes, both of them still possible. The third the sentence used to
-                    // lead with — "there is no pane N" — cannot happen any more: the pane was
-                    // RESOLVED before this request went out.
-                    |pane| format!(
-                        "pane {} is floating or has no boundary that way, or nothing is watching \
-                         that window",
-                        pane.0
-                    )
-                ),
+/// It used to ask [`unknown_action`] first, and it was the only refusal in the file that did.
+/// [`invoke_action_with`] asks for every acting verb now, so what reaches this is a fault this
+/// build's daemon produced on purpose — which is what makes the disjunction below exhaustive again,
+/// and what let the fault itself leave the signature: there is nothing in it this sentence still
+/// has to rule out.
+fn resize_refusal(ask: ResizeAsk, session: Option<&str>) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "resize-pane refused: {} — a cell has no length until a client reports an area \
+             or `window-size manual` plus `sprag resize-window` pins one",
+            ask.pane.map_or_else(
+                || format!("{} holds no pane to size", scope_name(session)),
+                // Two causes, both of them still possible. The third the sentence used to
+                // lead with — "there is no pane N" — cannot happen any more: the pane was
+                // RESOLVED before this request went out.
+                |pane| format!(
+                    "pane {} is floating or has no boundary that way, or nothing is watching \
+                     that window",
+                    pane.0
+                )
             ),
-        )
-    })
+        ),
+    )
 }
 
 /// What the BOUNDARY form of `resize-pane` prints, as a pure function of the daemon's answer — so
@@ -4210,8 +4252,8 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
                 json!({ "key": key, "ctrl": ctrl, "alt": alt, "shift": shift }),
             )
         };
-        conn.call(
-            "scene/invoke",
+        invoke_action(
+            &mut conn,
             site_invoke(
                 session.as_deref(),
                 &site,
@@ -4415,8 +4457,8 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
     if let Some(name) = &name {
         action_args["name"] = json!(name);
     }
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({ "session": session, "path": mux_action_path(NEW_WINDOW_ACTION), "args": action_args }),
     );
     match answer {
@@ -4556,33 +4598,29 @@ fn move_window(args: Vec<String>) -> io::Result<()> {
     };
     let mut conn = connect(None)?;
     require_session(&mut conn, &session)?;
-    let answer = match conn.try_call(
-        "scene/invoke",
+    // The skew is told APART from a refusal — R307's finding on the verb it added, now
+    // [`invoke_action_with`]'s job for every verb: an ADDED ACTION passes `client/hello`, so a
+    // daemon that predates this verb refuses it, and reporting that as "no such window" sends the
+    // user hunting for a typo in a name that is fine.
+    let answer = invoke_action_with(
+        &mut conn,
         json!({
             "session": session,
             "path": mux_action_path(MOVE_WINDOW_ACTION),
             "args": ask.to_args(),
         }),
-    ) {
-        Ok(answer) => answer,
-        // Told APART from a refusal, which is R307's finding on the verb it added: an ADDED ACTION
-        // passes `client/hello`, so a daemon that predates this verb refuses it — and reporting
-        // that as "no such window" sends the user hunting for a typo in a name that is fine.
-        Err(CallError::Fault(fault)) => {
-            return Err(unknown_action("move-window", &fault).unwrap_or_else(|| {
-                let subject = match (&window, place.anchor()) {
-                    (_, Some(anchor)) => format!("no window named {anchor:?} to anchor to"),
-                    (Some(window), None) => format!("no window named {window:?}"),
-                    (None, None) => "the session could not be read".to_owned(),
-                };
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("move-window refused: {subject} in session {session:?}"),
-                )
-            }));
-        }
-        Err(other) => return Err(other.into()),
-    };
+        |_| {
+            let subject = match (&window, place.anchor()) {
+                (_, Some(anchor)) => format!("no window named {anchor:?} to anchor to"),
+                (Some(window), None) => format!("no window named {window:?}"),
+                (None, None) => "the session could not be read".to_owned(),
+            };
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("move-window refused: {subject} in session {session:?}"),
+            )
+        },
+    )?;
     let Some((moved, how)) = MoveWindowAsk::read_answer(&answer) else {
         return Err(io::Error::other(
             "move-window: this daemon answered something this build cannot read",
@@ -4708,44 +4746,43 @@ fn select_pane(args: Vec<String>) -> io::Result<()> {
             )));
         }
     };
-    let answer = conn
-        .call(
-            "scene/invoke",
-            match &site {
-                Some(site) => site_invoke(
-                    session.as_deref(),
-                    site,
-                    mux_action_path(SELECT_PANE_ACTION),
-                    ask.to_args(),
-                ),
-                None => scoped_invoke(
-                    session.as_deref(),
-                    mux_action_path(SELECT_PANE_ACTION),
-                    ask.to_args(),
-                ),
-            },
-        )
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::Other {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    // Which pane the daemon could not find is this end's to say, because
-                    // `InvokeError::Rejected` carries no payload (upstream PINION-PR82) and only the
-                    // caller knows whether the id it sent was a target or an origin.
-                    // Both panes RESOLVED, so "no such pane" is no longer among the causes: what
-                    // is left is the arrangement refusing the step.
-                    match (pane, from) {
-                        (Some(pane), _) => format!("pane {pane} cannot be selected here"),
-                        (None, Some(from)) => {
-                            format!("pane {from} is not in an arrangement to step from")
-                        }
-                        (None, None) => "this session's current window holds no panes".to_owned(),
-                    },
-                )
-            } else {
-                error
-            }
-        })?;
+    let answer = invoke_action(
+        &mut conn,
+        match &site {
+            Some(site) => site_invoke(
+                session.as_deref(),
+                site,
+                mux_action_path(SELECT_PANE_ACTION),
+                ask.to_args(),
+            ),
+            None => scoped_invoke(
+                session.as_deref(),
+                mux_action_path(SELECT_PANE_ACTION),
+                ask.to_args(),
+            ),
+        },
+    )
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::Other {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                // Which pane the daemon could not find is this end's to say, because
+                // `InvokeError::Rejected` carries no payload (upstream PINION-PR82) and only the
+                // caller knows whether the id it sent was a target or an origin.
+                // Both panes RESOLVED, so "no such pane" is no longer among the causes: what
+                // is left is the arrangement refusing the step.
+                match (pane, from) {
+                    (Some(pane), _) => format!("pane {pane} cannot be selected here"),
+                    (None, Some(from)) => {
+                        format!("pane {from} is not in an arrangement to step from")
+                    }
+                    (None, None) => "this session's current window holds no panes".to_owned(),
+                },
+            )
+        } else {
+            error
+        }
+    })?;
     let selected = answer["pane"].as_u64().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -4882,34 +4919,28 @@ fn rename_session(args: Vec<String>) -> io::Result<()> {
         ));
     }
     let mut conn = connect_scoped(session.as_deref())?;
-    let answer = match conn.try_call(
-        "scene/invoke",
+    // The causes, listed because the daemon knows which and cannot say — `InvokeError::Rejected`
+    // carries no payload (upstream PINION-PR82). An UNKNOWN scope never reaches here: it is refused
+    // at the door as a scope error carrying its own sentence. The version-skew case is told APART
+    // rather than folded in — saying "that name is taken" to somebody whose daemon simply predates
+    // the verb sends them to fix the wrong thing — and that arm is [`invoke_action_with`]'s now.
+    let answer = invoke_action_with(
+        &mut conn,
         scoped_invoke(
             session.as_deref(),
             mux_action_path(RENAME_SESSION_ACTION),
             json!({ "name": new }),
         ),
-    ) {
-        Ok(answer) => answer,
-        // The causes, listed because the daemon knows which and cannot say — `InvokeError::Rejected`
-        // carries no payload (upstream PINION-PR82). An UNKNOWN scope never reaches here: it is
-        // refused at the door as a scope error carrying its own sentence. The version-skew case is
-        // told APART rather than folded in: a daemon older than this verb answers a different
-        // fault, and saying "that name is taken" to somebody whose daemon simply predates the verb
-        // sends them to fix the wrong thing.
-        Err(CallError::Fault(fault)) => {
-            return Err(unknown_action("rename-session", &fault).unwrap_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!(
-                        "rename-session refused: {new:?} is already another session's name, or is \
-                         blank, over 80 bytes, or contains a control character"
-                    ),
-                )
-            }));
-        }
-        Err(other) => return Err(other.into()),
-    };
+        |_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "rename-session refused: {new:?} is already another session's name, or is \
+                     blank, over 80 bytes, or contains a control character"
+                ),
+            )
+        },
+    )?;
     // What the DAEMON recorded, never the argument that was sent: a name is trimmed on the way in,
     // so `rename-session "  work  "` lands as `work`, and echoing the argument would report an
     // address that does not resolve. `rename-pane` prints the same way for the same reason.
@@ -4936,8 +4967,8 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
         Some(window) => json!({ "window": window }),
         None => json!({}),
     };
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({ "session": session, "path": mux_action_path(KILL_WINDOW_ACTION), "args": action_args }),
     );
     let target = window.as_deref().unwrap_or("the current window");
@@ -5176,8 +5207,8 @@ fn scoped_window_action(
     action_args: Value,
     message: &str,
 ) -> io::Result<Value> {
-    conn.call(
-        "scene/invoke",
+    invoke_action(
+        conn,
         json!({ "session": session, "path": mux_action_path(action), "args": action_args }),
     )
     .map_err(|error| {
@@ -5228,38 +5259,37 @@ fn rename_pane(args: Vec<String>) -> io::Result<()> {
     } else {
         json!({ "pane": pane, "name": new })
     };
-    let answer: Value = conn
-        .call(
-            "scene/invoke",
-            site_invoke(
-                session.as_deref(),
-                &site,
-                mux_action_path(RENAME_PANE_ACTION),
-                action_args,
-            ),
-        )
-        // The daemon knows WHICH of these it refused and cannot say so — `InvokeError::Rejected`
-        // carries no payload (upstream PINION-PR82) — so the sentence lists the causes rather than
-        // guessing one. It closes for every verb at once when that lands.
-        //
-        // CLEARING lists only one, because it can only fail one way: there is no name to be taken,
-        // too long or malformed. A disjunction that named causes the request cannot have is worse
-        // than no disjunction at all — it sends the reader looking for a mistake they did not make.
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::Other {
-                let why = if clearing {
-                    format!("rename-pane: no pane {pane}")
-                } else {
-                    format!(
-                        "rename-pane: no pane {pane}, or {new:?} is already taken, blank, over 80 \
-                         bytes, all digits, or contains a control character"
-                    )
-                };
-                io::Error::new(io::ErrorKind::NotFound, why)
+    let answer: Value = invoke_action(
+        &mut conn,
+        site_invoke(
+            session.as_deref(),
+            &site,
+            mux_action_path(RENAME_PANE_ACTION),
+            action_args,
+        ),
+    )
+    // The daemon knows WHICH of these it refused and cannot say so — `InvokeError::Rejected`
+    // carries no payload (upstream PINION-PR82) — so the sentence lists the causes rather than
+    // guessing one. It closes for every verb at once when that lands.
+    //
+    // CLEARING lists only one, because it can only fail one way: there is no name to be taken,
+    // too long or malformed. A disjunction that named causes the request cannot have is worse
+    // than no disjunction at all — it sends the reader looking for a mistake they did not make.
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::Other {
+            let why = if clearing {
+                format!("rename-pane: no pane {pane}")
             } else {
-                error
-            }
-        })?;
+                format!(
+                    "rename-pane: no pane {pane}, or {new:?} is already taken, blank, over 80 \
+                         bytes, all digits, or contains a control character"
+                )
+            };
+            io::Error::new(io::ErrorKind::NotFound, why)
+        } else {
+            error
+        }
+    })?;
     // What the DAEMON recorded, never the argument that was sent: a name is trimmed on the way in,
     // so `rename-pane 0 " build "` lands as `build`, and echoing the argument would report a name
     // the pane does not have. Quoted for the listing's reason one function down.
@@ -5304,8 +5334,8 @@ fn break_pane(args: Vec<String>) -> io::Result<()> {
     if let Some(name) = &name {
         action_args["name"] = json!(name);
     }
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({ "session": session, "path": mux_action_path(BREAK_PANE_ACTION), "args": action_args }),
     );
     match answer {
@@ -5345,8 +5375,8 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
     // Registry-wide at the daemon for [`break_pane`]'s reason: both windows are derived from the
     // pane's id, so this needs the NAME to resolve and no window narrowing.
     let pane = resolve_pane(&mut conn, Some(&session), &asked, "join-pane")?.id;
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({ "session": session, "path": mux_action_path(JOIN_PANE_ACTION), "args": { "pane": pane, "window": window } }),
     );
     match answer {
@@ -5427,8 +5457,8 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
     // needs only the names to resolve.
     let pane = resolve_pane(&mut conn, Some(&session), &asked, "move-pane")?.id;
     let target = resolve_pane(&mut conn, Some(&session), &asked_target, "move-pane")?.id;
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({
             "session": session,
             "path": mux_action_path(MOVE_PANE_ACTION),
@@ -5544,44 +5574,42 @@ fn swap_pane(args: Vec<String>) -> io::Result<()> {
             ));
         }
     };
-    let answer = conn
-        .call(
-            "scene/invoke",
-            scoped_invoke(
-                session.as_deref(),
-                mux_action_path(SWAP_PANE_ACTION),
-                ask.to_args(),
-            ),
-        )
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::Other {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    // Which pane the daemon could not find is this end's to say, because
-                    // `InvokeError::Rejected` carries no payload (upstream PINION-PR82) and only
-                    // the caller knows which ids it sent. It stays a disjunction of the ids it
-                    // actually named rather than of every id in the session.
-                    match ask {
-                        SwapAsk::With { pane, with } => format!(
-                            "swap-pane refused: {} is not a tiled pane of this session",
-                            match pane {
-                                Some(pane) => format!("pane {}, or pane {with},", pane.0),
-                                None => format!("pane {with}, or the active pane,", with = with.0),
-                            }
-                        ),
-                        SwapAsk::Toward {
-                            pane: Some(pane), ..
-                        } => format!("swap-pane refused: this session holds no pane {}", pane.0),
-                        SwapAsk::Toward { pane: None, .. } => {
-                            "swap-pane refused: this session's current window holds no panes"
-                                .to_owned()
+    let answer = invoke_action(
+        &mut conn,
+        scoped_invoke(
+            session.as_deref(),
+            mux_action_path(SWAP_PANE_ACTION),
+            ask.to_args(),
+        ),
+    )
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::Other {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                // Which pane the daemon could not find is this end's to say, because
+                // `InvokeError::Rejected` carries no payload (upstream PINION-PR82) and only
+                // the caller knows which ids it sent. It stays a disjunction of the ids it
+                // actually named rather than of every id in the session.
+                match ask {
+                    SwapAsk::With { pane, with } => format!(
+                        "swap-pane refused: {} is not a tiled pane of this session",
+                        match pane {
+                            Some(pane) => format!("pane {}, or pane {with},", pane.0),
+                            None => format!("pane {with}, or the active pane,", with = with.0),
                         }
-                    },
-                )
-            } else {
-                error
-            }
-        })?;
+                    ),
+                    SwapAsk::Toward {
+                        pane: Some(pane), ..
+                    } => format!("swap-pane refused: this session holds no pane {}", pane.0),
+                    SwapAsk::Toward { pane: None, .. } => {
+                        "swap-pane refused: this session's current window holds no panes".to_owned()
+                    }
+                },
+            )
+        } else {
+            error
+        }
+    })?;
     println!(
         "{}",
         swap_sentence(
@@ -5669,8 +5697,8 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
     if let Some(on) = on {
         args["on"] = json!(on);
     }
-    let answer = conn.call(
-        "scene/invoke",
+    let answer = invoke_action(
+        &mut conn,
         json!({ "session": session, "path": mux_action_path(ZOOM_PANE_ACTION), "args": args }),
     );
     match answer {
@@ -5850,48 +5878,45 @@ mod tests {
         );
     }
 
-    /// A daemon too OLD for this verb is told apart from one that refuses it — the fault
-    /// `resize-pane` shares with `rename-session`, and the second caller that mechanism has ever
-    /// had.
+    /// What a daemon that HAS this verb and refuses it is told — the sentence that survives now
+    /// that the skew is settled before it.
     ///
-    /// **This is not hypothetical: it is what this round's skew run MEASURED.** Against a
+    /// **The skew half of this test moved, and where it went matters.** It used to assert that
+    /// `resize_refusal` asked [`unknown_action`] first, because this verb was the only one in the
+    /// file that did, and R297 wrote that arm after MEASURING the wrong answer: against a
     /// parent-commit daemon, with a pane that existed and a window that was pinned, the verb said
-    /// *"there is no pane 0 … or nothing is watching that window"* — a confident sentence about two
-    /// things that were both false, sending a reader to look for a pane instead of restarting their
-    /// daemon. It is the first thing in this project a daemon can be too old for WITHOUT a
-    /// `WIRE_PROTOCOL` bump: a number change is refused at `client/hello`, where an ADDED ACTION
-    /// leaves the handshake happy and fails at the invoke.
+    /// *"there is no pane 0 … or nothing is watching that window"* — two things that were both
+    /// false. The arm is [`invoke_action_with`]'s now, so the claim is a claim about every acting
+    /// verb, and it is driven at the CLI by
+    /// `every_acting_verb_explains_a_daemon_that_does_not_know_its_verb` — including this exact
+    /// argv, `resize-pane -L`, so nothing this test used to cover went uncovered.
+    ///
+    /// What is left here is the half a live daemon cannot easily be driven into: that the refusal
+    /// keeps the verb's OWN disjunction, both halves of which are still possible, unlike the
+    /// *"there is no pane N"* it once led with.
     #[test]
-    fn a_daemon_too_old_for_the_boundary_verb_is_told_apart_from_one_refusing_it() {
-        let fault = |data: Value| RpcFault {
-            code: -32602,
-            message: "Invalid params".to_owned(),
-            data: Some(data),
-        };
+    fn a_refused_boundary_resize_keeps_the_verbs_own_disjunction() {
         let ask = ResizeAsk {
             pane: Some(PaneId(0)),
             dir: PaneDir::Right,
             cells: 5,
         };
-        // Through the VERB's own refusal path, not through the mechanism directly: a test that
-        // called `unknown_action` here would pin that function and say nothing about whether this
-        // verb reaches it.
-        let error = resize_refusal(ask, None, &fault(json!("UnknownInvokePath")));
-        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-        assert!(
-            error.to_string().contains("older than this `sprag`")
-                && error.to_string().contains("kill-server"),
-            "it names the cause and the remedy: {error}",
-        );
-        // THE CONTROL — the fault a daemon that HAS the verb sends when it refuses one, which must
-        // keep this verb's own disjunction. Without it the message would be right for the rare case
-        // and wrong for the common one.
-        let refused = resize_refusal(ask, None, &fault(json!("InvokeRejected"))).to_string();
+        let refused = resize_refusal(ask, None).to_string();
         assert!(
             refused.contains("pane 0 is floating or has no boundary that way")
                 && refused.contains("nothing is watching"),
-            "a real refusal keeps the verb's own disjunction — both halves of which are still \
-             possible, unlike the \"there is no pane 0\" it used to lead with: {refused}",
+            "a real refusal keeps the verb's own disjunction: {refused}",
+        );
+
+        // The OTHER arm: no pane resolved at all, so the sentence is about the scope instead. It is
+        // reachable only when the session's current window is empty, which is why it is pinned here
+        // rather than driven.
+        let empty = ResizeAsk { pane: None, ..ask };
+        assert!(
+            resize_refusal(empty, Some("work"))
+                .to_string()
+                .contains("work holds no pane to size"),
+            "and a scope with nothing in it is named as the scope",
         );
     }
 
@@ -6117,11 +6142,16 @@ mod tests {
     /// An action a daemon has never heard of is reported as a daemon too OLD, and a genuine
     /// refusal of an action it DOES serve keeps the verb's own sentence.
     ///
-    /// Both faults were CAPTURED from a parent-commit daemon during this round's skew run, not
-    /// invented: `/sprag_mux/external/rename_session` answered `UnknownInvokePath` there while
-    /// `rename_window` with a bad window answered `InvokeRejected`. Before this told them apart,
-    /// `sprag rename-session` against that daemon said the new name was already taken — about a
-    /// name no session held.
+    /// Both faults were CAPTURED from a parent-commit daemon during R297's skew run, not invented:
+    /// `/sprag_mux/external/rename_session` answered `UnknownInvokePath` there while `rename_window`
+    /// with a bad window answered `InvokeRejected`. Before this told them apart, `sprag
+    /// rename-session` against that daemon said the new name was already taken — about a name no
+    /// session held.
+    ///
+    /// What stays HERE is the pure mapping and the three faults it must NOT claim; that every
+    /// acting verb reaches it is `every_acting_verb_explains_a_daemon_that_does_not_know_its_verb`
+    /// in `tests/cli.rs`, which is the half this one structurally cannot see — and the half that
+    /// came back twenty-one-of-twenty-four the first time it was run.
     #[test]
     fn an_unknown_action_is_reported_as_an_old_daemon_and_a_refusal_is_not() {
         let fault = |data: Value| RpcFault {
@@ -6129,29 +6159,26 @@ mod tests {
             message: "Invalid params".to_owned(),
             data: Some(data),
         };
-        let error = unknown_action("rename-session", &fault(json!("UnknownInvokePath")))
+        let path = mux_action_path(RENAME_SESSION_ACTION);
+        let error = unknown_action(&path, &fault(json!("UnknownInvokePath")))
             .expect("an action this daemon lacks is explained");
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(
             error.to_string(),
-            "rename-session: this daemon does not know this verb — it is older than this \
-             `sprag`. Restart it to bring it to this build — `sprag kill-server` (sessions are \
-             restored from the durability snapshot)",
+            "this daemon does not perform /sprag_mux/external/rename_session — it is older than \
+             this `sprag`. Restart it to bring it to this build — `sprag kill-server` (sessions \
+             are restored from the durability snapshot)",
         );
 
         // THE CONTROL — the fault a daemon that HAS the verb sends when it refuses one, which
         // must keep the verb's own disjunction. Without this the message would be right for the
         // rare case and wrong for the common one.
         assert!(
-            unknown_action("rename-session", &fault(json!("InvokeRejected"))).is_none(),
+            unknown_action(&path, &fault(json!("InvokeRejected"))).is_none(),
             "a real refusal keeps the verb's own words",
         );
         assert!(
-            unknown_action(
-                "rename-session",
-                &fault(json!("a session named UnknownInvokePath")),
-            )
-            .is_none(),
+            unknown_action(&path, &fault(json!("a session named UnknownInvokePath"))).is_none(),
             "and a mention is not the refusal",
         );
     }
