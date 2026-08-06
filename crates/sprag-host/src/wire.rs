@@ -12,8 +12,11 @@
 //! externals match on these consts, and the client builds its request paths from the
 //! same builders, so the ABI is defined once.
 
+use std::io;
+
 use pinion_core::external::{SchemaArg, SchemaField};
 use serde_json::{Map, Value};
+use sprag_rpc::RpcFault;
 use sprag_terminal::{OrderStep, PaneDir, PaneId, PlaceHow, SessionId, WindowId, WindowPlace};
 
 use crate::{INPUT_TAG, MUX_TAG};
@@ -755,6 +758,90 @@ pub const SESSIONS_SLOT: &str = "sessions";
 /// whose levels disagreed, which is the torn read this project has removed twice; see
 /// [`sprag_terminal::TreeSession`] for the exact bound one call gives and the one it does not.
 pub const TREE_SLOT: &str = "tree";
+
+/// A READ refused because this daemon does not have the address at all, as a sentence — `None` for
+/// anything else, which is what keeps a caller from dressing up a fault it cannot explain.
+///
+///
+/// # Why they live here and not in the client that first needed them
+///
+/// A slot and an action are both ADDITIVE — [`WIRE_PROTOCOL`] deliberately does not rise when
+/// either is added, and the ratchet over this surface says so in its own assertion. So a client
+/// that gained an address or a verb meets same-numbered daemons that lack it, and every client has
+/// to be able to say which of those happened. THREE do: the `sprag` CLI reads slots and performs
+/// actions, and `sprag-mcp` does both on an agent's behalf.
+///
+/// They were the CLI's private functions until an agent surface was measured against a peer that
+/// serves nothing and knows no verb: **eight of eight tools** either printed the Rust variant name
+/// at an agent or blamed the agent's own arguments — `display_message` answered *"the message may
+/// be unacceptable"* about a message that was fine. One definition, because the alternative is two
+/// clients disagreeing about what an old daemon is called.
+///
+/// The rest of the mechanism:
+///
+/// Matched on the fault's structured `data`, never on its rendered line: `Display` prefers `data`
+/// and so the two agree today, but a substring test against a rendering is a test against a
+/// presentation decision, and it would also fire on a daemon that merely mentioned the word.
+/// Captured from a live daemon rather than invented — the reply is
+/// `{"code":-32602,"message":"Invalid params","data":"UnknownIntrospectPath"}`.
+///
+/// It is also the DISCRIMINATOR the CLI's scoped pre-flight reads, which is why it is a function
+/// of the fault alone and not a branch inside a caller: an unknown address and a refused SCOPE
+/// arrive under one JSON-RPC code, and only the `data` tells them apart.
+#[must_use]
+pub fn unknown_slot(path: &str, fault: &RpcFault) -> Option<io::Error> {
+    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownIntrospectPath" {
+        return None;
+    }
+    Some(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "this daemon does not serve {path} — it is older than this build of sprag. \
+             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
+             from the durability snapshot)",
+        ),
+    ))
+}
+
+/// An invoke refused because this daemon has never HEARD of the action — the invoke-side twin of
+/// [`unknown_slot`], and `None` for any other fault so a caller's own disjunction still runs.
+///
+/// # Why it is worth telling apart from a refusal
+///
+/// Both arrive as `-32602 Invalid params`, so a verb that maps every fault to its own sentence
+/// tells a user their name was taken when the truth is that their daemon predates the verb. That is
+/// not hypothetical — it is what R297's skew run MEASURED, one direction at a time, against a
+/// parent-commit daemon: `sprag rename-session` said *"prod" is already another session's name*
+/// about a name no session held.
+///
+/// Captured from that live daemon rather than invented: an action it does not serve answers
+/// `{"code":-32602,"message":"Invalid params","data":"UnknownInvokePath"}`, where a genuine refusal
+/// of an action it DOES serve answers `"InvokeRejected"`. Matched on the structured `data` for
+/// [`unknown_slot`]'s reason — a substring test against a rendering is a test against a
+/// presentation decision.
+///
+/// # It names the ADDRESS, not the verb
+///
+/// It took a command name until this round, and three call sites passed one. A name a caller hands
+/// in is a name a caller can hand in WRONG — copied with the line it was pasted from — and it is
+/// the half of the sentence the shell line above the error already shows. The address is the half
+/// that says WHICH act the daemon lacks, it comes from the params the caller already built, and it
+/// makes this the exact twin of [`unknown_slot`] rather than a second style. Same argument, same
+/// round, as the one `sprag`'s `query_slot` records for the reading side.
+#[must_use]
+pub fn unknown_action(path: &str, fault: &RpcFault) -> Option<io::Error> {
+    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownInvokePath" {
+        return None;
+    }
+    Some(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "this daemon does not perform {path} — it is older than this build of sprag. \
+             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
+             from the durability snapshot)",
+        ),
+    ))
+}
 
 /// Which session holds `pane`, read off a [`TREE_SLOT`] answer — how a process that knows only
 /// which PANE it is in finds out which session it is in.

@@ -463,14 +463,46 @@ fn current_window_name(list: &[WindowInfo]) -> Option<String> {
 /// One helper rather than the four hand-rolled `from_value(..).map_err(..)` copies it replaces:
 /// they were identical except for the type, which is exactly the shape where the fifth copy
 /// forgets the `map_err` and re-opens the hole.
+/// # The THIRD failure it names: a daemon that does not have the slot at all
+///
+/// A slot is ADDITIVE, so `WIRE_PROTOCOL` does not rise when one is added and this client meets
+/// same-numbered daemons that lack an address it reads. Measured by running, against a peer that
+/// passes the handshake and serves nothing, `sprag-tui` exited at boot with
+/// `scene/query /sprag_mux/external/panes: host rpc error: UnknownIntrospectPath` — a Rust enum
+/// variant at an operator, which is the class R283/R290/R321/R322 have been removing verb by verb.
+///
+/// Exiting is the RIGHT shape (a display client with no panes to paint has nothing to do); only the
+/// sentence was wrong. It is the daemon's own vocabulary now, shared with the `sprag` CLI and the
+/// agent surface, so the three cannot describe one situation three ways.
 fn read_slot<T: serde::de::DeserializeOwned>(conn: &mut HostConn, path: String) -> io::Result<T> {
-    let value = conn.call("scene/query", json!({ "path": path.clone() }))?;
+    let value = query_slot(conn, &path)?;
     serde_json::from_value(value).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{path} answered a shape this client cannot read: {error}"),
         )
     })
+}
+
+/// One BOOT read of one slot, with the refusal a daemon that lacks the address sends turned into
+/// the sentence it means.
+///
+/// The ONE place this crate spells the query method for a boot read, and it exists because there
+/// were TWO: [`read_slot`] and `query_panes` each called `HostConn::call` directly, and the fix
+/// applied to the first changed nothing a person sees, because the read that actually fails first
+/// is the second one. [`read_slot`]'s own doc warned about exactly that shape — *"the fifth copy
+/// forgets the `map_err` and re-opens the hole"* — one function above the copy that did it.
+fn query_slot(conn: &mut HostConn, path: &str) -> io::Result<Value> {
+    let params = json!({ "path": path });
+    // Rendered exactly as `HostConn::call` would have, through the same function it uses, so every
+    // other failure this boot has ever printed is byte-identical.
+    let label = sprag_rpc::request_label("scene/query", &params);
+    conn.try_call("scene/query", params)
+        .map_err(|error| match error {
+            sprag_rpc::CallError::Fault(fault) => sprag_host::wire::unknown_slot(path, &fault)
+                .unwrap_or_else(|| io::Error::other(format!("{label}: {fault}"))),
+            sprag_rpc::CallError::Transport(error) => error,
+        })
 }
 
 /// Read the host's arrangement off the wire — the ONE place the `layout` slot is queried,
@@ -3593,10 +3625,7 @@ struct PaneSeed {
 /// Query the host's pane list (`/sprag_mux/external/panes`), returning a [`PaneSeed`]
 /// per pane in host order.
 fn query_panes(conn: &mut HostConn) -> io::Result<Vec<PaneSeed>> {
-    let value = conn.call(
-        "scene/query",
-        json!({ "path": mux_action_path(PANES_SLOT) }),
-    )?;
+    let value = query_slot(conn, &mux_action_path(PANES_SLOT))?;
     let array = value
         .as_array()
         .ok_or_else(|| io::Error::other("panes query did not return an array"))?;

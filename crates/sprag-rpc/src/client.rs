@@ -703,7 +703,14 @@ pub fn gui_client_prefix(pid: u32) -> String {
 /// a cell buffer) and an error line that quotes a screenful of text is unreadable in exactly the
 /// situation it is read in. `path` is the slot, which is the discriminating half — two failures
 /// of `scene/query` are told apart by it, and nothing else in the params tells them apart at all.
-fn request_label(method: &str, params: &Value) -> String {
+///
+/// Public because [`call`](HostConn::call) applies it to faults and
+/// [`try_call`](HostConn::try_call) hands faults out unrendered: a caller that must ACT on which
+/// fault it was, and then report the ones it cannot explain, needs to name them the way the other
+/// method would. Without this it would keep a second copy of this format and be free to drift from
+/// the messages every other caller prints.
+#[must_use]
+pub fn request_label(method: &str, params: &Value) -> String {
     match params.get("path").and_then(Value::as_str) {
         Some(path) => format!("{method} {path}"),
         None => method.to_owned(),

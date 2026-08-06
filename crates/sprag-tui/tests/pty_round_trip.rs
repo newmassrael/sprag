@@ -6168,3 +6168,145 @@ fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
         },
     );
 }
+
+/// A display client meeting a daemon that lacks an address it reads says the daemon is OLD, in the
+/// same words the CLI and the agent surface use.
+///
+/// # Measured, and the first fix changed nothing
+///
+/// Against a peer that passes the handshake and serves no address, this client exited at boot with
+/// `scene/query /sprag_mux/external/panes: host rpc error: UnknownIntrospectPath` — a Rust enum
+/// variant at an operator. **Exiting is the right shape**: a display client with no panes to paint
+/// has nothing to do, and failing loudly at boot beats painting a broken screen. Only the sentence
+/// was wrong.
+///
+/// It is worth having as a live test rather than as a unit test over the mapping, because the first
+/// attempt at the fix went into `read_slot` — a helper whose own doc warns that a copy will forget
+/// the treatment — and the read that actually fails first was the copy. **Re-running this probe is
+/// what said the fix had changed nothing a person sees.**
+#[test]
+fn a_client_meeting_an_older_daemon_says_so_instead_of_naming_a_variant() {
+    let peer = stale_peer();
+    let tui = Tui::attach_with_env(&peer.sock, "0", &[]);
+
+    // It EXITS, and what it left on the terminal is the sentence.
+    // Read WITHOUT whitespace, on both sides: a sentence this long wraps, and a terminal wraps
+    // mid-word — so a row-joined screen contains `build o` + `f sprag` and matches no phrase
+    // anybody wrote. The claim is about the words that reached the person, not about where the
+    // 80th column fell.
+    let flat = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut said = String::new();
+    while Instant::now() < deadline {
+        said = tui.rows().join("");
+        if flat(&said).contains(&flat("does not serve")) || said.contains("UnknownIntrospectPath") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let screen = flat(&said);
+    assert!(
+        !screen.contains("UnknownIntrospectPath"),
+        "a Rust variant name must not reach an operator: {said}",
+    );
+    for phrase in [
+        "this daemon does not serve /sprag_mux/external/panes",
+        "older than this build",
+        "sprag kill-server",
+    ] {
+        assert!(
+            screen.contains(&flat(phrase)),
+            "the sentence names {phrase:?}: {said}",
+        );
+    }
+}
+
+/// A peer that passes the wire handshake and serves NO address — a daemon older than this client.
+///
+/// It answers at THIS build's protocol on purpose: a slot is additive, so the number does not rise
+/// when one is added, and "the numbers agree and the address is missing" is exactly the state the
+/// sentence under test is for. A peer that failed the handshake would test the door instead.
+struct StalePeer {
+    sock: PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    accepting: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for StalePeer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(accepting) = self.accepting.take() {
+            let _ = accepting.join();
+        }
+        let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+/// Bind a [`StalePeer`] and answer on it until it is dropped.
+fn stale_peer() -> StalePeer {
+    let sock = std::env::temp_dir().join(format!("sprag-tui-stale-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
+    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind the stale peer");
+    listener
+        .set_nonblocking(true)
+        .expect("a stoppable accept loop");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let accepting = std::thread::spawn(move || {
+        while !flag.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    std::thread::spawn(move || serve_stale(&stream));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    StalePeer {
+        sock,
+        stop,
+        accepting: Some(accepting),
+    }
+}
+
+/// One [`StalePeer`] connection: the handshake is answered, every read is refused with the fault a
+/// live daemon actually sends, and everything else is a null result.
+fn serve_stale(stream: &std::os::unix::net::UnixStream) {
+    let reader = std::io::BufReader::new(stream.try_clone().expect("split the stale connection"));
+    let mut writer = stream;
+    for line in std::io::BufRead::lines(reader) {
+        let Ok(line) = line else { return };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(request) = serde_json::from_str::<Value>(line.trim()) else {
+            return;
+        };
+        let id = request["id"].clone();
+        let reply = match request["method"].as_str() {
+            Some(sprag_rpc::CLIENT_HELLO_METHOD) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { sprag_rpc::PROTOCOL_FIELD: sprag_rpc::WIRE_PROTOCOL },
+            }),
+            Some("scene/query") => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": sprag_rpc::INVALID_PARAMS,
+                    "message": "Invalid params",
+                    "data": "UnknownIntrospectPath",
+                },
+            }),
+            _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
+        };
+        let mut frame = reply.to_string();
+        frame.push('\n');
+        if writer.write_all(frame.as_bytes()).is_err() {
+            return;
+        }
+    }
+}

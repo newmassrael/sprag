@@ -4621,10 +4621,46 @@ fn host_call_unscoped(method: &str, params: Value) -> Result<Value, (String, io:
             kind,
         )
     })?;
-    conn.call(method, params).map_err(|e| {
-        let kind = e.kind();
-        (e.to_string(), kind)
-    })
+    // Both built BEFORE the call, which consumes the params.
+    let label = sprag_rpc::request_label(method, &params);
+    let path = params["path"].as_str().unwrap_or_default().to_owned();
+    match conn.try_call(method, params) {
+        Ok(answer) => Ok(answer),
+        Err(CallError::Fault(fault)) => Err(older_daemon(method, &path, &fault).map_or_else(
+            // Rendered exactly as `HostConn::call` would have, through the same function it uses,
+            // so every sentence this surface has ever printed for a refusal is byte-identical.
+            || (format!("{label}: {fault}"), io::ErrorKind::Other),
+            |old| (old.to_string(), old.kind()),
+        )),
+        Err(CallError::Transport(error)) => {
+            let kind = error.kind();
+            Err((error.to_string(), kind))
+        }
+    }
+}
+
+/// The sentence for a daemon that has never heard of what was just asked of it — or [`None`] for a
+/// fault it produced on purpose, which is the caller's own business.
+///
+/// # Why an agent needs this more than an operator does
+///
+/// A slot and an action are both additive, so `WIRE_PROTOCOL` does not rise when either is added
+/// and a client that gained one meets same-numbered daemons that lack it. The CLI has told the two
+/// apart since R321/R322; this surface never had. Measured against a peer that serves nothing and
+/// knows no verb, **eight of eight tools** got it wrong: six printed `UnknownIntrospectPath` at an
+/// AGENT, and `display_message` answered *"the message may be unacceptable (it must be one line,
+/// under 200 bytes …)"* about a message that broke none of those rules.
+///
+/// The kind is what stops the tools' own sentences from replacing it: [`refusal_sentence`] swaps
+/// its own words in only for [`io::ErrorKind::Other`], so a skew — which is
+/// [`io::ErrorKind::Unsupported`] — reaches the agent WITH the tool's context rather than instead
+/// of it.
+fn older_daemon(method: &str, path: &str, fault: &sprag_rpc::RpcFault) -> Option<io::Error> {
+    match method {
+        "scene/query" => sprag_host::wire::unknown_slot(path, fault),
+        "scene/invoke" => sprag_host::wire::unknown_action(path, fault),
+        _ => None,
+    }
 }
 
 /// Stamp the session this server's PANE is in onto a request that names none.

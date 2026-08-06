@@ -194,7 +194,8 @@ use sprag_host::wire::{
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
     SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
     TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, ZOOM_PANE_ACTION, events_slot_since, find_slot_for,
-    pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
+    pane_processes_at, project_slot_for, regex_slot_for, session_activity_at, unknown_action,
+    unknown_slot,
 };
 use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -2451,71 +2452,6 @@ fn query_slot(conn: &mut HostConn, params: Value) -> io::Result<Value> {
 /// needs the fault itself because for it one particular refusal is an ANSWER rather than a failure.
 fn query_raw(conn: &mut HostConn, params: Value) -> Result<Value, CallError> {
     conn.try_call("scene/query", params)
-}
-
-/// The refusal above as a pure function of the fault — `None` for anything else, which is what keeps
-/// [`query_slot`] from dressing up a fault it cannot explain.
-///
-/// Matched on the fault's structured `data`, never on its rendered line: `Display` prefers `data`
-/// and so the two agree today, but a substring test against a rendering is a test against a
-/// presentation decision, and it would also fire on a daemon that merely mentioned the word.
-/// Captured from a live daemon rather than invented — the reply is
-/// `{"code":-32602,"message":"Invalid params","data":"UnknownIntrospectPath"}`.
-///
-/// It is also the DISCRIMINATOR [`session_exists`] reads, which is why it is a function of the
-/// fault alone and not a branch inside [`query_slot`]: an unknown address and a refused scope
-/// arrive under one JSON-RPC code, and only the `data` tells them apart.
-fn unknown_slot(path: &str, fault: &RpcFault) -> Option<io::Error> {
-    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownIntrospectPath" {
-        return None;
-    }
-    Some(io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "this daemon does not serve {path} — it is older than this `sprag`. \
-             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
-             from the durability snapshot)",
-        ),
-    ))
-}
-
-/// An invoke refused because this daemon has never HEARD of the action — the invoke-side twin of
-/// [`unknown_slot`], and `None` for any other fault so a caller's own disjunction still runs.
-///
-/// # Why it is worth telling apart from a refusal
-///
-/// Both arrive as `-32602 Invalid params`, so a verb that maps every fault to its own sentence
-/// tells a user their name was taken when the truth is that their daemon predates the verb. That is
-/// not hypothetical — it is what R297's skew run MEASURED, one direction at a time, against a
-/// parent-commit daemon: `sprag rename-session` said *"prod" is already another session's name*
-/// about a name no session held.
-///
-/// Captured from that live daemon rather than invented: an action it does not serve answers
-/// `{"code":-32602,"message":"Invalid params","data":"UnknownInvokePath"}`, where a genuine refusal
-/// of an action it DOES serve answers `"InvokeRejected"`. Matched on the structured `data` for
-/// [`unknown_slot`]'s reason — a substring test against a rendering is a test against a
-/// presentation decision.
-///
-/// # It names the ADDRESS, not the verb
-///
-/// It took a command name until this round, and three call sites passed one. A name a caller hands
-/// in is a name a caller can hand in WRONG — copied with the line it was pasted from — and it is
-/// the half of the sentence the shell line above the error already shows. The address is the half
-/// that says WHICH act the daemon lacks, it comes from the params the caller already built, and it
-/// makes this the exact twin of [`unknown_slot`] rather than a second style. Same argument, same
-/// round, as the one [`query_slot`] records for the reading side.
-fn unknown_action(path: &str, fault: &RpcFault) -> Option<io::Error> {
-    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownInvokePath" {
-        return None;
-    }
-    Some(io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "this daemon does not perform {path} — it is older than this `sprag`. \
-             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
-             from the durability snapshot)",
-        ),
-    ))
 }
 
 /// Every ACTING verb's request: the refusal this build can explain is told apart from the refusal
@@ -6339,8 +6275,8 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "this daemon does not perform /sprag_mux/external/rename_session — it is older than \
-             this `sprag`. Restart it to bring it to this build — `sprag kill-server` (sessions \
-             are restored from the durability snapshot)",
+             this build of sprag. Restart it to bring it to this build — `sprag kill-server` \
+             (sessions are restored from the durability snapshot)",
         );
 
         // THE CONTROL — the fault a daemon that HAS the verb sends when it refuses one, which
@@ -6375,7 +6311,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(
             error.to_string(),
-            "this daemon does not serve /x/y.0 — it is older than this `sprag`. \
+            "this daemon does not serve /x/y.0 — it is older than this build of sprag. \
              Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
              from the durability snapshot)",
         );

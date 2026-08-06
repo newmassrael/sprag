@@ -3496,3 +3496,134 @@ fn spawn_pane_in(sock: &Path, session: &str) -> u64 {
     .as_u64()
     .expect("the spawn action answers with a pane id")
 }
+
+/// A peer that passes the wire handshake, serves NO address and knows NO action — a daemon older
+/// than this build, from the agent surface's side.
+///
+/// The CLI's suite has had two of these since R321/R322 (`StaleHost`, `AgedHost`) and this front had
+/// none, which is why nothing here had ever asked what an agent is TOLD by a daemon that predates
+/// its tools. It refuses reads and invokes with the two faults a live daemon actually sends,
+/// captured rather than invented.
+struct OldHost {
+    sock: PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    accepting: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for OldHost {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(accepting) = self.accepting.take() {
+            let _ = accepting.join();
+        }
+        let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+/// Bind an [`OldHost`] and answer on it until it is dropped.
+fn old_host() -> OldHost {
+    let sock = socket_path();
+    let _ = std::fs::remove_file(&sock);
+    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind the old host socket");
+    listener
+        .set_nonblocking(true)
+        .expect("a stoppable accept loop");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let accepting = std::thread::spawn(move || {
+        while !flag.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    std::thread::spawn(move || serve_old(&stream));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    OldHost {
+        sock,
+        stop,
+        accepting: Some(accepting),
+    }
+}
+
+/// One [`OldHost`] connection: the handshake is answered at this build's protocol (a slot and an
+/// action are both ADDITIVE, so the number does not rise for either — the skew is reachable with
+/// the numbers matching), and every read and every act is refused the way an older daemon does.
+fn serve_old(stream: &std::os::unix::net::UnixStream) {
+    let reader = BufReader::new(stream.try_clone().expect("split the old connection"));
+    let mut writer = stream;
+    for line in reader.lines() {
+        let Ok(line) = line else { return };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(request) = serde_json::from_str::<Value>(line.trim()) else {
+            return;
+        };
+        let id = request["id"].clone();
+        let refuse = |data: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id.clone(),
+                "error": {
+                    "code": sprag_rpc::INVALID_PARAMS,
+                    "message": "Invalid params",
+                    "data": data,
+                },
+            })
+        };
+        let reply = match request["method"].as_str() {
+            Some(sprag_rpc::CLIENT_HELLO_METHOD) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { sprag_rpc::PROTOCOL_FIELD: sprag_rpc::WIRE_PROTOCOL },
+            }),
+            Some("scene/query") => refuse("UnknownIntrospectPath"),
+            Some("scene/invoke") => refuse("UnknownInvokePath"),
+            _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
+        };
+        let mut frame = reply.to_string();
+        frame.push('\n');
+        if writer.write_all(frame.as_bytes()).is_err() {
+            return;
+        }
+    }
+}
+
+/// An agent asking a daemon that predates its tools is told the daemon is OLD, not that its
+/// arguments are wrong.
+#[test]
+fn a_tool_against_an_older_daemon_says_so() {
+    let host = old_host();
+    // IN a pane, so the tools that need a caller identity reach the wire instead of stopping at
+    // their own pre-flight. The peer serves nothing, so working out which session that pane is in
+    // fails too — silently, which is what leaves each sentence below attributable to its own tool.
+    let mut server = McpServer::spawn_in_pane(&host.sock, 1);
+    let mut wrong = Vec::new();
+    for (tool, args) in [
+        ("list_panes", json!({})),
+        ("read_pane", json!({ "pane": 1 })),
+        ("pane_layout", json!({})),
+        ("select_pane", json!({ "pane": 1 })),
+        ("send_keys", json!({ "pane": 1, "keys": ["Enter"] })),
+        ("write_pane", json!({ "pane": 1, "text": "x" })),
+        ("open_pane", json!({ "dir": "right" })),
+        ("display_message", json!({ "message": "hi" })),
+    ] {
+        let said = server.call_tool_error(tool, args);
+        if said.contains("UnknownIntrospectPath") || said.contains("UnknownInvokePath") {
+            wrong.push(format!("{tool} printed a Rust variant name: {said}"));
+        } else if !said.contains("older than this") {
+            wrong.push(format!("{tool} did not say the daemon is old: {said}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "an agent must be told its daemon predates the tool:\n  {}",
+        wrong.join("\n  "),
+    );
+}
