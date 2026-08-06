@@ -46,7 +46,8 @@ pub use layout::{
 };
 pub use pane_name::{PaneName, PaneNameError};
 pub use pane_pty::{
-    CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput, foreground_pgid_of,
+    Attention, CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle, RawOutput,
+    foreground_pgid_of,
 };
 pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,

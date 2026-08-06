@@ -13,7 +13,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sprag_input::{Modifiers, encode};
-use sprag_terminal::{CommandBuilder, Pane, PaneId, PanePtyHandle, RawOutput, Workspace};
+use sprag_terminal::{
+    Attention, CommandBuilder, Pane, PaneId, PanePtyHandle, RawOutput, Workspace,
+};
 use sprag_vt::Screen;
 
 /// One screen row: its damage `generation` paired with its (trailing-trimmed)
@@ -172,6 +174,15 @@ pub struct WorkspacePaneAccess {
     /// Set only by the host's plugin surface via [`with_pane_exit`](Self::with_pane_exit); the
     /// default is `None`, so nothing but the daemon wires it.
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The daemon's ATTENTION signal, on exactly the terms above: an opaque `Fn` this layer never
+    /// learns the meaning of, so a plugin-spawned pane whose child asks for a person reaches that
+    /// person like a mux-spawned one. Wired by the host's plugin surface, `None` everywhere else.
+    ///
+    /// **A separate signal and not a second use of the exit hook**, because they answer different
+    /// questions about different moments — and because a pane category quietly left out of one of
+    /// them is exactly the shape this round exists to remove: the notification path had every layer
+    /// carrying the fact and one surface obliged to read it.
+    on_attention: Option<Arc<dyn Fn(PaneId, Attention) + Send + Sync>>,
 }
 
 impl WorkspacePaneAccess {
@@ -182,6 +193,7 @@ impl WorkspacePaneAccess {
         Self {
             workspace,
             on_pane_exit: None,
+            on_attention: None,
         }
     }
 
@@ -191,6 +203,17 @@ impl WorkspacePaneAccess {
     #[must_use]
     pub fn with_pane_exit(mut self, hook: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         self.on_pane_exit = hook;
+        self
+    }
+
+    /// Attach the daemon's opaque ATTENTION signal, so a pane this surface spawns can ask for a
+    /// person. A builder for [`with_pane_exit`](Self::with_pane_exit)'s reason.
+    #[must_use]
+    pub fn with_attention(
+        mut self,
+        signal: Option<Arc<dyn Fn(PaneId, Attention) + Send + Sync>>,
+    ) -> Self {
+        self.on_attention = signal;
         self
     }
 
@@ -276,8 +299,22 @@ impl PaneLifecycle for WorkspacePaneAccess {
             let hook = Arc::clone(hook);
             Box::new(move || hook()) as Box<dyn Fn() + Send>
         });
+        // ...and its ATTENTION, on the same terms: opaque, registry-free, wired per birth.
+        let on_attention = self.on_attention.as_ref().map(|signal| {
+            let signal = Arc::clone(signal);
+            Box::new(move |pane, attention| signal(pane, attention))
+                as Box<dyn Fn(PaneId, Attention) + Send>
+        });
         lock(&self.workspace)
-            .spawn_with_dirty(command, program.clone(), cols, rows, None, on_exit)
+            .spawn_with_dirty(
+                command,
+                program.clone(),
+                cols,
+                rows,
+                None,
+                on_exit,
+                on_attention,
+            )
             .map_err(|e| PaneError::Spawn(e.to_string()))
     }
 

@@ -274,6 +274,36 @@ pub const AGENT_SETTLE_TIME: &str = "agent-settle-time";
 /// must parse to a distinct policy there, or the table offers a value nothing performs.
 pub const DETACH_ON_DESTROY_VALUES: &[&str] = &["on", "off", "no-detached", "next", "previous"];
 
+/// The values of a plain switch — tmux's own two words, and the vocabulary
+/// [`option_is_on`](crate::config::option_is_on) reads.
+///
+/// Shared by every switch rather than spelled per option, so a third one cannot arrive accepting
+/// `true` / `yes` while the two below take `on` / `off`.
+pub const ON_OFF: &[&str] = &["on", "off"];
+
+/// Whether a pane's BELL reaches the people looking at that session — tmux's `monitor-bell`.
+///
+/// tmux's own name and tmux's own default (`on`), so a tmux user needs to learn nothing. What
+/// differs is the ACTION, and the difference is a property of the product rather than a setting:
+/// tmux has `bell-action` because it can pass the bell through to the terminal it is running in,
+/// and a daemon serving a GUI window and a terminal client cannot ring anything — so sprag's bell
+/// is always the visual one. Turning this off is how a user asks for the silence they had before.
+pub const MONITOR_BELL: &str = "monitor-bell";
+
+/// Whether a pane's desktop-style NOTIFICATION (`OSC 9` / `OSC 777;notify` / `OSC 99`) reaches the
+/// people looking at that session.
+///
+/// tmux has no counterpart: it passes these escapes through to the outer terminal and models
+/// nothing, so there is nothing to switch. The name follows [`MONITOR_BELL`]'s family because it is
+/// the same question about the other attention source, and the default is `on` for the reason the
+/// round exists — measured at `3114923`, a child raising one reached a live client's screen NOWHERE,
+/// and a feature that ships off by default is the same silence with a switch beside it.
+///
+/// A user who finds their build tool chatty turns this off and keeps the bell, or the reverse; the
+/// two sources are separate options because the emulator keeps their sequences separate, and one
+/// switch over both would make a chatty notifier cost the user their bell.
+pub const MONITOR_NOTIFICATION: &str = "monitor-notification";
+
 /// How big a session's window is when several clients of different sizes are attached — tmux's
 /// `window-size`.
 ///
@@ -359,6 +389,17 @@ pub const OPTIONS: &[OptionSpec] = &[
         // `sprag_vt::DEFAULT_SCROLLBACK_LINES`; `the_history_limit_default_is_the_emulators_own`
         // holds the two together, the treatment `prefix` gets against the keymap.
         default: "1000",
+    },
+    OptionSpec {
+        name: MONITOR_BELL,
+        kind: OptionKind::Choice(ON_OFF),
+        // tmux's own default, so a tmux user's bell behaves as they expect.
+        default: "on",
+    },
+    OptionSpec {
+        name: MONITOR_NOTIFICATION,
+        kind: OptionKind::Choice(ON_OFF),
+        default: "on",
     },
     OptionSpec {
         name: PREFIX,

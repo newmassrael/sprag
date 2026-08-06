@@ -50,11 +50,11 @@ use pinion_core::GridBuffer;
 use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    ActivityReading, CommandBuilder, DividerStep, Ended, HistoryLimitSource, LayoutSnapshot,
-    LayoutWire, OrderStep, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError, PanePtyHandle,
-    PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionId, SessionInfo, SessionRegistry,
-    Snapshot, SnapshotError, SplitDir, SplitSide, WindowId, WindowInfo, WindowPlace, Workspace,
-    ZoomOutcome, tile, with_ratio,
+    ActivityReading, Attention, CommandBuilder, DividerStep, Ended, HistoryLimitSource,
+    LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneDir, PaneEnvSource, PaneId, PanePtyError,
+    PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionId, SessionInfo,
+    SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, WindowId, WindowInfo,
+    WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1535,8 +1535,11 @@ impl Host {
     /// server passes `bump_on_dirty`. `on_exit` is the "this child is gone" hook the daemon
     /// feeds to its reaper to end its own process when the last live pane dies (the headless
     /// server passes [`pane_exit_hook`](crate::pane_exit_hook); a windowed / test caller passes
-    /// `None`). Both are `Box<dyn Fn() + Send>` (not pinion types), so the display and
-    /// lifetime concerns live above while the spawn lives here.
+    /// `None`). `on_attention` is the "this child is asking for a person" hook the daemon feeds to
+    /// its [attention router](crate::attention) (the headless server passes
+    /// [`pane_attention_hook`](crate::pane_attention_hook); a windowed / test caller passes `None`).
+    /// All three are pinion-free, so the display, lifetime and notification concerns live above
+    /// while the spawn lives here.
     ///
     /// # Errors
     ///
@@ -1549,9 +1552,18 @@ impl Host {
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
         on_exit: Option<Box<dyn Fn() + Send>>,
+        on_attention: Option<Box<dyn Fn(PaneId, Attention) + Send>>,
     ) -> Result<PaneId, PanePtyError> {
         let workspace = self.workspace();
-        lock(&workspace).spawn_with_dirty(command, label, cols, rows, on_dirty, on_exit)
+        lock(&workspace).spawn_with_dirty(
+            command,
+            label,
+            cols,
+            rows,
+            on_dirty,
+            on_exit,
+            on_attention,
+        )
     }
 
     /// Rebuild this host's registry from a durability [`Snapshot`] and re-spawn its panes — the
@@ -1602,6 +1614,7 @@ impl Host {
         allowlist: &std::collections::HashSet<String>,
         mut on_dirty: impl FnMut(&str) -> Option<Box<dyn Fn() + Send>>,
         mut on_exit: impl FnMut() -> Option<Box<dyn Fn() + Send>>,
+        mut on_attention: impl FnMut(&str) -> Option<Box<dyn Fn(PaneId, Attention) + Send>>,
         history: impl Fn(PaneId) -> Vec<u8>,
     ) -> Result<usize, SnapshotError> {
         // Build the new shape FIRST (fallible), so a bad snapshot leaves the boot registry intact.
@@ -1667,6 +1680,14 @@ impl Host {
                 size: (pane.cols, pane.rows),
                 on_dirty: on_dirty(&pane.session),
                 on_exit: on_exit(),
+                // Keyed by SESSION like the wake is, because that is who a message from this pane
+                // is addressed to — and a restored pane's session is the one it comes back into.
+                // The ID is bound HERE rather than by the pool, because a restore does not mint one:
+                // the caller chose it, and it is already in hand.
+                on_attention: on_attention(&pane.session).map(|tell| {
+                    let id = pane.id;
+                    Box::new(move |attention| tell(id, attention)) as Box<dyn Fn(Attention) + Send>
+                }),
                 history: history(pane.id),
             });
             match spawned {
@@ -2819,7 +2840,7 @@ impl HostClient for Host {
         };
         let (command, label) = crate::config::default_pane_command();
         let (cols, rows) = lock(&self.workspace()).default_size();
-        let _ = self.spawn(command, label, cols, rows, None, None);
+        let _ = self.spawn(command, label, cols, rows, None, None, None);
         name
     }
 
@@ -2910,7 +2931,11 @@ impl HostClient for Host {
         let mut workspace = lock(&workspace);
         let (cols, rows) = workspace.default_size();
         workspace
-            .spawn_with_dirty(command, label, cols, rows, on_dirty, None)
+            // NO attention hook, and it is a decision rather than an omission: this is the
+            // IN-PROCESS host's own new-pane path (a windowed shell that owns its registry), which
+            // has no wire clients and therefore nobody a routed message could be addressed to. The
+            // daemon's panes are born through `WorkspaceExternal`, which wires the router.
+            .spawn_with_dirty(command, label, cols, rows, on_dirty, None, None)
             .ok()
     }
 
@@ -3207,7 +3232,7 @@ mod tests {
     fn a_host_without_a_pane_environment_publishes_nothing() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None)
+            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None, None)
             .expect("spawn a pane");
         assert_eq!(printed_row(&host, id), "unset");
     }
@@ -3219,10 +3244,10 @@ mod tests {
         let host = Host::new((40, 6))
             .with_pane_env(pane_env_source(std::path::Path::new("/run/sprag/h.sock")));
         let first = host
-            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None)
+            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None, None)
             .expect("spawn a pane");
         let second = host
-            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None)
+            .spawn(echo_pane_var(), "sh".to_owned(), 40, 6, None, None, None)
             .expect("spawn a second pane");
         assert_eq!(printed_row(&host, first), first.0.to_string());
         assert_eq!(
@@ -3242,7 +3267,7 @@ mod tests {
     fn a_restored_pane_is_told_which_pane_it_is() {
         let live = Host::new((80, 24));
         let id = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3259,6 +3284,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3327,7 +3353,7 @@ mod tests {
         let root = temp_project("local");
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None, None)
             .expect("spawn a pane inside the project");
 
         let project = host
@@ -3350,7 +3376,7 @@ mod tests {
         let root = temp_project("remote");
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat_in(&root), "cat".to_owned(), 40, 6, None, None, None)
             .expect("spawn a pane inside the project");
         // Mark it the way `sprag ssh` does once its birth pane exists.
         lock(&host.workspace()).set_pane_remote(
@@ -3379,7 +3405,7 @@ mod tests {
             host.sessions().is_empty(),
             "a fresh host's empty anchor holds no pane and is not listed",
         );
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         let names: Vec<String> = host.sessions().into_iter().map(|s| s.name).collect();
         assert_eq!(
@@ -3394,7 +3420,7 @@ mod tests {
         let host = Host::new((40, 6));
         assert!(host.pane_ids().is_empty());
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         assert_eq!(host.pane_ids(), vec![id]);
         assert_eq!(host.pane_grid_size(id), (40, 6));
@@ -3606,7 +3632,7 @@ mod tests {
         command.arg("echo done-and-gone");
         command.env("TERM", "dumb");
         let id = host
-            .spawn(command, "sh".to_owned(), 40, 6, None, None)
+            .spawn(command, "sh".to_owned(), 40, 6, None, None, None)
             .expect("spawn a short-lived child");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -3637,7 +3663,7 @@ mod tests {
         assert!(host.pane_is_dead(id), "the client protocol reports it dead");
 
         let live = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .expect("spawn a long-lived child");
         assert!(!host.pane_is_dead(live), "a running child is not dead");
         assert!(
@@ -3689,7 +3715,7 @@ mod tests {
     fn resize_updates_the_grid_geometry() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         host.resize(id, 100, 30, (0, 0));
         assert_eq!(host.pane_grid_size(id), (100, 30));
@@ -3705,7 +3731,7 @@ mod tests {
     fn restore_replays_a_panes_recorded_history_onto_its_screen() {
         let live = Host::new((80, 24));
         let id = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3716,6 +3742,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |pane| format!("output of pane {pane}\r\n").into_bytes(),
             )
             .expect("a valid snapshot restores");
@@ -3746,9 +3773,9 @@ mod tests {
     #[test]
     fn a_restore_claims_the_daemon_for_the_whole_respawn_loop() {
         let live = Host::new((80, 24));
-        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
-        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+        live.spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3760,6 +3787,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |_| {
                     seen.set(seen.get() + 1);
                     assert!(
@@ -3814,6 +3842,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || Some(crate::pane_exit_hook(&signal)),
+                |_| None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3834,7 +3863,7 @@ mod tests {
     fn restore_without_history_brings_the_pane_back_blank() {
         let live = Host::new((80, 24));
         let id = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         let snap = sprag_terminal::snapshot(live.registry());
 
@@ -3845,6 +3874,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3866,10 +3896,10 @@ mod tests {
         // A live host: two panes in the default session…
         let live = Host::new((80, 24));
         let a = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         let b = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         // …and a second session "work" with one pane of its own.
         lock(live.registry()).new_session(Some("work")).unwrap();
@@ -3889,6 +3919,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3907,7 +3938,7 @@ mod tests {
 
         // A fresh spawn on the restored host mints ABOVE the restored ids — never reissuing one.
         let next = restored
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         assert_eq!(
             next,
@@ -3928,10 +3959,10 @@ mod tests {
     fn a_restore_brings_back_who_asked_for_a_pane() {
         let live = Host::new((80, 24));
         let opener = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         let opened = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         lock(&live.workspace()).set_pane_opened_by(opened, opener);
 
@@ -3942,6 +3973,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -3974,10 +4006,10 @@ mod tests {
     fn a_restore_brings_back_what_a_pane_is_called() {
         let live = Host::new((80, 24));
         let named = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         let anonymous = live
-            .spawn(cat(), "sh".to_owned(), 80, 24, None, None)
+            .spawn(cat(), "sh".to_owned(), 80, 24, None, None, None)
             .unwrap();
         lock(&live.workspace()).set_pane_name(
             named,
@@ -3991,6 +4023,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -4072,6 +4105,7 @@ mod tests {
                 &std::collections::HashSet::new(),
                 |_| None,
                 || None,
+                |_| None,
                 |_| Vec::new(),
             )
             .expect("a valid snapshot restores");
@@ -4131,7 +4165,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, |_| None, || None, |_| Vec::new())
+            host.restore(snap, &allow, |_| None, || None, |_| None, |_| Vec::new())
                 .expect("restores"),
             1,
         );
@@ -4205,7 +4239,7 @@ mod tests {
 
         let host = Host::new((80, 24));
         assert_eq!(
-            host.restore(snap, &allow, |_| None, || None, |_| Vec::new())
+            host.restore(snap, &allow, |_| None, || None, |_| None, |_| Vec::new())
                 .expect("restores"),
             2,
         );
@@ -4239,7 +4273,7 @@ mod tests {
         use std::time::{Duration, Instant};
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         assert!(host.send_text(id, "hello"));
         // The cooked-mode `cat` echoes it back into the pane's screen.

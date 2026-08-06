@@ -71,6 +71,10 @@ pub struct PluginsExternal {
     /// daemon — passed to each pane a plugin spawns so it feeds the reaper. Registry-free, so
     /// carrying it does not breach the plugin layer's session-tree-free boundary.
     on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The daemon's opaque ATTENTION signal ([`crate::attention`]), on exactly the terms above, so a
+    /// pane a PLUGIN spawns can ask for a person like any other. `None` off a daemon.
+    on_attention:
+        Option<Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>>,
 }
 
 impl PluginsExternal {
@@ -81,11 +85,15 @@ impl PluginsExternal {
         workspace: Arc<Mutex<Workspace>>,
         runs: Arc<Mutex<RunRegistry>>,
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+        on_attention: Option<
+            Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>,
+        >,
     ) -> Self {
         Self {
             workspace,
             runs,
             on_pane_exit,
+            on_attention,
         }
     }
 
@@ -218,7 +226,8 @@ impl PluginsExternal {
         let cancel = Arc::new(AtomicBool::new(false));
         let run_ctx = RunContext::new(Arc::clone(&cancel));
         let access = WorkspacePaneAccess::new(Arc::clone(&self.workspace))
-            .with_pane_exit(self.on_pane_exit.clone());
+            .with_pane_exit(self.on_pane_exit.clone())
+            .with_attention(self.on_attention.clone());
         let handle = thread::spawn(move || {
             let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access, &run_ctx);
             // The worker still owns the plugin after the run, so it can read any

@@ -19,5 +19,5 @@ pub use port::{
     Color, ColorTarget, Cursor, CursorShape, DEFAULT_SCROLLBACK_LINES, FIND_MATCH_CAP, FindLine,
     FindMatch, FindResult, Hyperlink, Image, InputModes, KittyKeyboardFlags, LastCommand, LinkRun,
     MouseEncoding, MouseProtocol, Notification, Palette, PromptMark, REGEX_SIZE_LIMIT, Rgb, Screen,
-    ScreenKind, ShellState, UnderlineStyle, VtPort, Width, char_columns,
+    ScreenKind, ShellState, UnderlineStyle, Urgency, VtPort, Width, char_columns,
 };

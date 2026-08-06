@@ -344,9 +344,9 @@ mod tests {
     #[test]
     fn the_break_out_command_moves_the_target_pane_into_a_new_window() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         Owner::new().run(|| {
             seed_terminal(host); // use_terminal() now returns these two cat panes
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn the_copy_row_still_copies_with_no_pane_captured() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         Owner::new().run(|| {
             seed_terminal(host);
@@ -424,9 +424,9 @@ mod tests {
     #[test]
     fn the_move_to_command_joins_the_target_pane_into_the_named_window() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         Owner::new().run(|| {
             seed_terminal(host);

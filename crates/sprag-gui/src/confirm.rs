@@ -869,7 +869,7 @@ mod tests {
     /// A one-pane in-process host, seeded so `use_terminal()` answers.
     fn seed_one_pane() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         seed_terminal(host);
     }

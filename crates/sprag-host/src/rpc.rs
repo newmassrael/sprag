@@ -108,6 +108,10 @@ pub struct HostState {
     /// (which measures the pane list, so a detector it did not ask for would land in the instrument)
     /// and the test harnesses. Nothing outside this crate builds a [`HostState`] at all.
     agents: Option<Arc<crate::AgentClock>>,
+    /// The daemon's attention router ([`crate::attention`]), shared into the mux control surface per
+    /// assembly like [`Self::attachments`], so every pane the daemon spawns is wired to it. `None`
+    /// for a host with no wire clients to address — see [`crate::DaemonShared::attention`].
+    attention: Option<Arc<crate::attention::AttentionRouter>>,
 }
 
 impl HostState {
@@ -138,7 +142,37 @@ impl HostState {
             on_pane_exit,
             attachments: Arc::new(Mutex::new(AttachmentRegistry::default())),
             agents: None,
+            attention: None,
         }
+    }
+
+    /// Use `attachments` as this state's per-client map instead of the empty one [`Self::new`] built.
+    ///
+    /// **The daemon's map exists before its `HostState` does**, and that ordering is forced rather
+    /// than chosen: the attention router reads the map, and the BOOT pane — spawned before this
+    /// state, because the standalone contract is `sprag-term -- cmd` — has to be wired to that
+    /// router at birth. So the daemon creates the map, hands it to the router, and hands it here.
+    ///
+    /// A builder called at construction and nowhere else. Replacing the map of a state that has
+    /// already served a request would strand every client in the old one, which is why this is not
+    /// a setter and why the doc says so rather than a comment at the one call site.
+    #[must_use]
+    pub fn with_attachments(mut self, attachments: Arc<Mutex<AttachmentRegistry>>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Install the attention router, so a pane's child asking for a person reaches the people
+    /// looking at that session.
+    ///
+    /// A builder for [`with_agents`](Self::with_agents)'s reason: it is the daemon's, and the other
+    /// host owners have no wire clients for a message to reach. It must be the router built over
+    /// the same map [`with_attachments`](Self::with_attachments) installs — `sprag-term`'s boot is
+    /// the one caller and does both in one expression.
+    #[must_use]
+    pub fn with_attention(mut self, attention: Arc<crate::attention::AttentionRouter>) -> Self {
+        self.attention = Some(attention);
+        self
     }
 
     /// Install the agent-state memory (H3), sharing it with whoever drives the settle waker.
@@ -173,6 +207,7 @@ impl HostState {
         crate::DaemonShared {
             on_pane_exit: self.on_pane_exit(),
             attachments: Some(Arc::clone(self.attachments())),
+            attention: self.attention.clone(),
             agents: self.agents(),
             // The HOST's samplers, not fresh ones: a scene is assembled per request, so a sampler
             // minted here would hold nothing at the moment it was asked and every request would take
@@ -316,6 +351,21 @@ pub fn spawn_reaper(
 pub fn pane_exit_hook(signal: &Arc<dyn Fn() + Send + Sync>) -> Box<dyn Fn() + Send> {
     let signal = Arc::clone(signal);
     Box::new(move || signal())
+}
+
+/// [`pane_exit_hook`]'s twin for the ATTENTION signal ([`crate::attention::AttentionRouter::signal`]):
+/// the per-pane `on_attention` callback a spawn site passes, over the one shared signal.
+///
+/// The same shape for the same reason — a shared `Arc<dyn Fn>` cannot be handed to
+/// [`Workspace::spawn_with_dirty`](sprag_terminal::Workspace::spawn_with_dirty), which takes an
+/// owned `Box` per pane — and spelled here beside its twin so a third signal of this kind is
+/// written the way the first two were.
+#[must_use]
+pub fn pane_attention_hook(
+    signal: &Arc<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send + Sync>,
+) -> Box<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send> {
+    let signal = Arc::clone(signal);
+    Box::new(move |pane, attention| signal(pane, attention))
 }
 
 /// Whether NO pane in ANY session's ANY window is still live (every one has reached
@@ -1936,6 +1986,7 @@ mod tests {
             rows,
             Some(bump_on_dirty(&channels.revision(BOOT))),
             None,
+            None,
         )
         .expect("spawn pane");
         HostState::new(host, channels, None)
@@ -1985,7 +2036,7 @@ mod tests {
     fn no_live_panes_tracks_the_registrys_liveness() {
         // A running `cat` keeps it false.
         let host = Host::new((40, 6));
-        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None)
+        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None, None)
             .expect("spawn cat");
         assert!(
             !no_live_panes(host.registry()),
@@ -1995,7 +2046,7 @@ mod tests {
         // A sole pane whose child exits flips it true (polled — the child exits async).
         let host = Host::new((40, 6));
         let id = host
-            .spawn(sh("exec true"), "true".into(), 40, 6, None, None)
+            .spawn(sh("exec true"), "true".into(), 40, 6, None, None, None)
             .expect("spawn true");
         wait_for_eof(&host, id);
         assert!(
@@ -2019,7 +2070,7 @@ mod tests {
     fn a_pending_birth_keeps_the_daemon_alive() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(sh("exec true"), "true".into(), 40, 6, None, None)
+            .spawn(sh("exec true"), "true".into(), 40, 6, None, None, None)
             .expect("spawn true");
         wait_for_eof(&host, id);
         assert!(
@@ -2071,6 +2122,7 @@ mod tests {
                 6,
                 None,
                 Some(pane_exit_hook(&signal)),
+                None,
             )
             .expect("spawn true");
         wait_for_eof(&host, dying);
@@ -2129,6 +2181,7 @@ mod tests {
             6,
             None,
             Some(pane_exit_hook(&signal)),
+            None,
         )
         .expect("spawn true");
         // Poll for the fire (the reaper thread scans asynchronously; poll, don't sleep).
@@ -2145,7 +2198,7 @@ mod tests {
         // A pane dying beside a LIVE one must not fire — the daemon serves on.
         let host = Host::new((40, 6));
         let (signal, fired) = recording_reaper(host.registry());
-        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None)
+        host.spawn(sh("exec cat"), "cat".into(), 40, 6, None, None, None)
             .expect("spawn cat"); // stays live
         let dying = host
             .spawn(
@@ -2155,6 +2208,7 @@ mod tests {
                 6,
                 None,
                 Some(pane_exit_hook(&signal)),
+                None,
             )
             .expect("spawn true");
         wait_for_eof(&host, dying);
@@ -2230,6 +2284,7 @@ mod tests {
                 6,
                 None,
                 Some(pane_exit_hook(&signal)),
+                None,
             )
             .expect("spawn true into the default");
         wait_for_eof(&host, dying);

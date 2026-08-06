@@ -962,9 +962,9 @@ mod tests {
     fn two_cats() -> (Host, PanePtyHandle) {
         let host = Host::new((40, 6));
         let id0 = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .expect("pane 0");
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .expect("pane 1");
         let handle = host.pane_handle(id0).expect("pane 0 handle");
         (host, handle)
@@ -1510,10 +1510,10 @@ mod tests {
     fn apply_key_routes_to_the_focused_pane_only() {
         let host = Host::new((40, 6));
         let id0 = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         let id1 = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         let h0 = host.pane_handle(id0).expect("pane 0 handle");
         let h1 = host.pane_handle(id1).expect("pane 1 handle");
@@ -1581,7 +1581,7 @@ mod tests {
     #[test]
     fn a_key_cannot_reach_a_pane_while_a_destructive_prompt_is_up() {
         let host = Host::new((40, 6));
-        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+        host.spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         let owner = Owner::new();
         owner.run(|| {
@@ -1680,7 +1680,7 @@ mod tests {
     fn apply_composition_commit_writes_to_the_focused_pane() {
         let host = Host::new((40, 6));
         let id = host
-            .spawn(cat(), "cat".to_owned(), 40, 6, None, None)
+            .spawn(cat(), "cat".to_owned(), 40, 6, None, None, None)
             .unwrap();
         let handle = host.pane_handle(id).expect("pane handle");
         let owner = Owner::new();

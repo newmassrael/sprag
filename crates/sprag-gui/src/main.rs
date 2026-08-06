@@ -1557,6 +1557,7 @@ mod tests {
             6,
             None,
             None,
+            None,
         )
         .unwrap();
         host.spawn(
@@ -1564,6 +1565,7 @@ mod tests {
             "sh".to_owned(),
             DROP_PANE_COLS,
             6,
+            None,
             None,
             None,
         )
@@ -1633,6 +1635,7 @@ mod tests {
             "sh".to_owned(),
             DROP_PANE_COLS,
             6,
+            None,
             None,
             None,
         )
@@ -1726,6 +1729,7 @@ mod tests {
             6,
             None,
             None,
+            None,
         )
         .unwrap();
         host.spawn(
@@ -1733,6 +1737,7 @@ mod tests {
             "sh".to_owned(),
             DROP_PANE_COLS,
             6,
+            None,
             None,
             None,
         )
@@ -1797,6 +1802,7 @@ mod tests {
                 6,
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -1854,11 +1860,12 @@ mod tests {
                 6,
                 None,
                 None,
+                None,
             )
             .unwrap();
         // A second pane so floating the first is not refused (the last docked pane cannot
         // float — `float_would_empty_the_dock`). Its title is irrelevant here.
-        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None, None)
             .unwrap();
 
         let start = Instant::now();
@@ -1917,11 +1924,12 @@ mod tests {
                 6,
                 None,
                 None,
+                None,
             )
             .unwrap();
         // A child that sets NO title, so the fallback assertion below is a FACT rather than
         // a race against the child's own `printf` (see `untitled_pane`).
-        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None)
+        host.spawn(untitled_pane(), "sh".to_owned(), 40, 6, None, None, None)
             .unwrap();
 
         let start = Instant::now();

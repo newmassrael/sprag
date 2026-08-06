@@ -5274,3 +5274,157 @@ fn the_verb_refuses_a_bad_severity_and_works_with_no_target_at_all() {
         .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
 }
+
+// ----- what a pane's OWN CHILD asked for (R318) -----
+
+/// A boot pane whose child turns each line it is given into an `OSC 9` notification, with the tty's
+/// echo OFF — so the typing itself paints nothing and the ONLY thing that can move the screen is
+/// the notification. `cat` at the end keeps the pane alive between raises.
+///
+/// The child is the notifier rather than the test writing the OSC through some side channel,
+/// because the claim is about what a PANE'S CHILD can do: a build script, a test runner, anything a
+/// person actually leaves running.
+const NOTIFIER: &[&str] = &[
+    "sh",
+    "-c",
+    "stty -echo; while IFS= read -r line; do printf '\\033]9;%s\\007' \"$line\"; done; cat",
+];
+
+/// **THE GATE for R318: the words a pane's child raised reach the person watching that session.**
+///
+/// Measured at `3114923`, against exactly this fixture: the daemon latched the notification (the
+/// `panes` slot answered `{"title":null,"body":"build finished: 3 errors","seq":1}`) and the
+/// client's screen was **byte-for-byte unchanged** — all twenty-four rows identical before and
+/// after — while `sprag display-message` moved the row on the same client at the same instant. The
+/// whole feature ended at a latch nobody was obliged to read.
+///
+/// Four claims, in the order that makes them discriminating:
+///
+/// * **The CONTROL first.** The row says where the client is before anything is raised, so a row
+///   that had somehow been showing the sentence all along would fail here rather than pass below.
+/// * **The DAEMON sees it**, which separates "the emulator did not capture it" from "nothing
+///   delivered it" — the two failures that look identical from the screen.
+/// * **The WORDS arrive on the row, naming the pane** in the spelling that reaches it, so a person
+///   reading the message knows what to pass to `select-pane -t`.
+/// * **The words never reach the SHELL.** A message is painted BY the client, not typed INTO the
+///   pane; the child here echoes nothing, so anything in the pane's own text would mean the
+///   sentence went down `send-keys`'s road.
+///
+/// REVERT-PROOF: delete the `on_attention` wiring at the daemon's boot spawn (`sprag-term.rs`) and
+/// the third claim times out with the row still naming the session, while the second still passes —
+/// which is precisely the state this round found.
+#[test]
+fn a_notification_a_pane_child_raised_reaches_the_person_at_this_client() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(Tui::attach, NOTIFIER);
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    // Settle the session so the raise below is the only thing in flight — without this a wake
+    // already on its way could carry the delivery and the assertion could not fail (R315's rule).
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+
+    tui.type_bytes(b"build finished: 3 errors\r");
+
+    wait_for("the DAEMON to latch the pane's notification", || {
+        let panes = conn
+            .call(
+                "scene/query",
+                json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("panes answers");
+        let note = panes
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|row| row["notification"].clone())
+            .unwrap_or(Value::Null);
+        settled(
+            note["body"].as_str() == Some("build finished: 3 errors"),
+            &true,
+        )
+        .map_err(|got| format!("{got}: the pane row's notification is {note}"))
+    });
+
+    wait_for("the child's words to be painted on the status row", || {
+        settled(
+            tui.row(STATUS_ROW)
+                .contains("pane 0: build finished: 3 errors"),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    // ...and it was a MESSAGE the client painted, not text in the pane: this child echoes nothing
+    // and prints only the escape, which carries no cells.
+    let text = pane_text_of(&mut conn, &session, 0);
+    assert!(
+        !text.contains("build finished"),
+        "a notification stamps no cells; the sentence is the CLIENT's to paint: {text:?}",
+    );
+}
+
+/// **A child that says its notification is CRITICAL gets a row that waits for a person** — where an
+/// ordinary one goes away on `display-time`.
+///
+/// This is the property no rival has. tmux models no severity at all; herdr's API caller cannot
+/// express one (`handle_notification_show` hardcodes its LOWEST toast kind) and their most urgent
+/// toast is an eight-second timer, so stepping away from the desk loses it either way. Here the
+/// CHILD chooses, through kitty's `u=` urgency, and `u=2` means the words stay until a keystroke.
+///
+/// The CONTROL is the ORDINARY notification raised first through the same path on the same client:
+/// it expires, so a build where every message stayed forever would fail here before reaching the
+/// claim.
+#[test]
+fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        Tui::attach,
+        &[
+            "sh",
+            "-c",
+            "stty -echo; while IFS= read -r line; do printf '\\033]99;u=%s;%s\\007' \
+             \"${line%% *}\" \"${line#* }\"; done; cat",
+        ],
+    );
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+
+    // THE CONTROL: `u=1`, an ordinary notification. It paints and then goes away on its own.
+    tui.type_bytes(b"1 the ordinary one\r");
+    wait_for("the ordinary notification to paint", || {
+        settled(tui.row(STATUS_ROW).contains("the ordinary one"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    wait_for("...and to expire without anybody touching a key", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    // THE CLAIM: `u=2`. It paints, and it is STILL there after several display-times.
+    tui.type_bytes(b"2 the build needs you\r");
+    wait_for("the critical notification to paint", || {
+        settled(tui.row(STATUS_ROW).contains("the build needs you"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    let held = tui.row(STATUS_ROW);
+    assert!(
+        held.contains("the build needs you"),
+        "an alert waits for a person, not for a clock: {held:?}",
+    );
+    assert!(
+        held.contains("alert"),
+        "and it is MARKED, so a person who did not see it arrive knows why the row is not \
+         clearing: {held:?}",
+    );
+
+    // A keystroke acknowledges it — `prefix q` is bound to nothing, so it reaches no pane and runs
+    // no action: the row clearing is the acknowledgement and nothing else.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"q");
+    wait_for("the alert to clear once a person touched a key", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+}

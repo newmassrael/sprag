@@ -44,6 +44,41 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// reply and degrades gracefully.
 const RAW_CAPTURE_CAP: usize = 256 * 1024;
 
+/// A pane's child asking for a PERSON — the fact the reader thread reports through
+/// [`PanePty::spawn_with_dirty`]'s `on_attention` hook the moment the batch carrying it is applied.
+///
+/// # Why an EVENT and not another poll field
+///
+/// The emulator has latched both of these since R-PR67, and the pane list has published them since:
+/// a display client polls `notification` / `bell_seq` and paints a dot. Measured at `3114923` by
+/// running the shipped binaries, that is where the whole feature ended — a child raising
+/// `OSC 9 build finished: 3 errors` in an unfocused pane left a live `sprag-tui` **byte-for-byte
+/// unchanged**, and `sprag-gui` showed a dot with the WORDS dropped. A latch nobody is obliged to
+/// read is a fact with no delivery; the hook is what turns the moment it happened into something the
+/// daemon can route while it is still true.
+///
+/// # The two arms are the two sources, kept apart because they carry different things
+///
+/// A notification carries WORDS a person can act on; a bell carries only that something happened.
+/// The emulator keeps their sequences separate for exactly that reason, and folding them here would
+/// force every consumer to invent a sentence for the bell or drop the notification's text.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Attention {
+    /// A desktop-style notification OSC (`OSC 9` / `OSC 777;notify` / `OSC 99`), as latched.
+    ///
+    /// **What it does NOT claim**: that every notification the batch carried is here. The emulator
+    /// latches ONE, so a batch that raised two reports the second — the same bound the pane list
+    /// has always had, stated where a caller can read it rather than implied by a counter. A queue
+    /// would need a bound and a bound needs a discard rule, which is the silent drop this seam
+    /// exists to remove.
+    Raised(Notification),
+    /// A `BEL` — tmux's `monitor-bell` signal, with no words to carry.
+    ///
+    /// Reported once per BATCH rather than once per byte: a shell that rings three times while the
+    /// reader is between wakeups has asked for a person once.
+    Bell,
+}
+
 /// A snapshot of a pane child's raw output: the captured source bytes paired
 /// with whether the capture hit its cap (so it is incomplete — a structured
 /// reader treats a truncated capture as unparseable and degrades). Named, not a
@@ -229,12 +264,13 @@ impl PanePty {
             rows,
             None,
             None,
+            None,
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
     }
 
-    /// [`Self::spawn`] with two reader-thread callbacks:
+    /// [`Self::spawn`] with three reader-thread callbacks:
     ///
     /// * `on_dirty` — invoked after each parsed PTY batch is applied to the screen,
     ///   **and once more when the child exits** — after [`is_eof`](Self::is_eof)
@@ -249,6 +285,17 @@ impl PanePty {
     ///   pane's death without a per-output-batch check: the daemon reads it to end its
     ///   own process when the last live pane dies. Fired after `is_eof` publishes, so a
     ///   liveness scan run from it never counts the pane it announces.
+    /// * `on_attention` — invoked when a batch RAISED an [`Attention`]: a notification OSC or a
+    ///   bell. Distinct from `on_dirty` because it is a different question — `on_dirty` says
+    ///   *something changed, repaint*, and this says *the child is asking for a person* — and
+    ///   because a notification stamps no cells, so the two are not even the same event about the
+    ///   same bytes.
+    ///
+    ///   **It runs ON THE READER THREAD, so it must not take a lock this daemon holds across a
+    ///   pane drop.** `PanePty::Drop` JOINS this thread, so a hook that waited on a workspace lock
+    ///   would deadlock the moment a pane-drop site held one — the hazard [`crate`]'s reaper seam
+    ///   already documents and solves the same way: the daemon's hook SENDS on a channel and a
+    ///   dedicated thread does the work that needs the registry.
     ///
     /// Both are deliberately pinion-free (`Box<dyn Fn() + Send>`), so this crate stays
     /// decoupled from the GUI shell and the host lifetime. `None` is for a caller with
@@ -272,6 +319,7 @@ impl PanePty {
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
         on_exit: Option<Box<dyn Fn() + Send>>,
+        on_attention: Option<Box<dyn Fn(Attention) + Send>>,
         history: &[u8],
         history_limit: usize,
     ) -> Result<Self, PanePtyError> {
@@ -331,6 +379,16 @@ impl PanePty {
         let raw_output: SharedRawCapture = Arc::new(Mutex::new(RawCapture::new()));
         let eof = Arc::new(AtomicBool::new(false));
         let exit: SharedExit = Arc::new(Mutex::new(None));
+        // WHERE THE ATTENTION COUNTERS START, and it is load-bearing. A restored pane replays its
+        // recorded scrollback into the emulator above, and that replay runs the same OSC handling
+        // live output does — so a pane whose child once raised `OSC 9 build finished` comes back
+        // with `notification_seq` already at 1. Reading the marks HERE, after the replay and before
+        // the reader thread exists, is what makes a restore silent: the hook fires on what this
+        // child says, never on what its predecessor said. Zero for an ordinary spawn.
+        let mut attention_marks = {
+            let emu = lock(&emulator);
+            (emu.notification_seq(), emu.bell_seq())
+        };
         let reader_emulator = Arc::clone(&emulator);
         let reader_raw = Arc::clone(&raw_output);
         let reader_eof = Arc::clone(&eof);
@@ -361,7 +419,7 @@ impl PanePty {
                             // Apply the batch, then drain any device response it produced UNDER the
                             // same lock (so a response is consistent with the state that made it),
                             // and write it back OUTSIDE the emulator lock (the writer has its own).
-                            let (responses, present) = {
+                            let (responses, present, attention) = {
                                 let mut emu = lock(&reader_emulator);
                                 emu.advance(&buf[..n]);
                                 // Synchronized output (DEC 2026): while the child holds an
@@ -371,10 +429,30 @@ impl PanePty {
                                 // on-screen present waits. When the update closes in this same
                                 // batch, `synchronized_output()` reads false and we wake normally —
                                 // the consumer then re-reads the already-complete Screen once.
-                                (emu.take_responses(), !emu.synchronized_output())
+                                //
+                                // The attention is read under the SAME lock as the `advance` that
+                                // may have raised it — two field reads — and acted on outside it,
+                                // which is the discipline the response drain above already follows.
+                                (
+                                    emu.take_responses(),
+                                    !emu.synchronized_output(),
+                                    take_attention(&emu, &mut attention_marks),
+                                )
                             };
                             if !responses.is_empty() {
                                 let _ = write_shared(&reader_writer, &responses);
+                            }
+                            // ATTENTION, outside the emulator lock and BEFORE the repaint wake: a
+                            // pane's child asking for a person is not a repaint, and the two are
+                            // ordered so that a consumer woken by the bump below can already see
+                            // whatever the attention hook published. Deliberately NOT gated on
+                            // `present` — a child that raises a notification inside a synchronized
+                            // update is still asking for a person, and the frame it is composing
+                            // has nothing to do with that.
+                            for raised in attention {
+                                if let Some(ref tell) = on_attention {
+                                    tell(raised);
+                                }
                             }
                             // R999 seam: wake the windowed host to repaint now that this batch is
                             // applied (no-op headless) — UNLESS a synchronized-output update is
@@ -997,6 +1075,31 @@ pub fn foreground_pgid_of(_pid: u32) -> Option<u32> {
     None
 }
 
+/// What the batch just applied to `emu` ASKED FOR — read against the counters this reader thread
+/// last saw, which it then advances.
+///
+/// Called with the emulator lock held (two field reads) and its answer acted on outside it. The
+/// marks live on the reader thread's own stack, so there is no shared "last seen" for a second
+/// observer to race on and no bookkeeping to reset: this thread is the only caller by construction.
+///
+/// A batch that raised BOTH reports both, notification first — the words are the part a person can
+/// act on, and a surface holding one message at a time should have them rather than the bell that
+/// arrived in the same 8 KiB.
+fn take_attention(emu: &Emulator, marks: &mut (u64, u64)) -> Vec<Attention> {
+    let mut raised = Vec::new();
+    let (notification_seq, bell_seq) = (emu.notification_seq(), emu.bell_seq());
+    if notification_seq > marks.0
+        && let Some(notification) = emu.notification()
+    {
+        raised.push(Attention::Raised(notification.clone()));
+    }
+    if bell_seq > marks.1 {
+        raised.push(Attention::Bell);
+    }
+    *marks = (notification_seq, bell_seq);
+    raised
+}
+
 /// Lock a pty mutex (emulator or raw capture), recovering the guard if a
 /// holder panicked (the grid stays structurally valid and the byte buffer is
 /// plain data; neither `advance` nor `push` panics in practice).
@@ -1277,6 +1380,7 @@ mod tests {
             Some(Box::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             })),
+            None,
             None,
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
@@ -1733,6 +1837,7 @@ mod tests {
                 let _ = tx.send(());
             })),
             None,
+            None,
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
@@ -1768,6 +1873,7 @@ mod tests {
             Some(Box::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             })),
+            None,
             &[],
             sprag_vt::DEFAULT_SCROLLBACK_LINES,
         )
@@ -1915,5 +2021,104 @@ mod tests {
             vec![(30, 5), (40, 6)],
             "disconnect (Drop) flushes the final pending size, never stranding it",
         );
+    }
+    /// **A child asking for a person reaches the hook the moment it asks** — driven through a real
+    /// pseudoterminal, because the whole point of this seam is that it fires from the reader thread
+    /// and no polling consumer is involved.
+    ///
+    /// Three claims:
+    ///
+    /// * the WORDS arrive, with the urgency the child claimed — a hook that only said "something
+    ///   happened" would leave the sentence to a poller, which is the state this replaces;
+    /// * a BELL arrives as its own arm, so a surface is never asked to invent a sentence for it;
+    /// * and the CONTROL: ordinary output that raises neither fires NOTHING. Without it a hook that
+    ///   ran on every batch would pass the two above.
+    #[test]
+    fn a_childs_attention_reaches_the_hook_from_the_reader_thread() {
+        let raised: Arc<Mutex<Vec<Attention>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&raised);
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // Plain text FIRST (the control's subject), then the notification, then the bell.
+        command.arg("printf 'working\\n'; sleep 0.2; printf '\\033]99;u=2;the build needs you\\007'; sleep 0.2; printf '\\007'; cat");
+        command.env("TERM", "xterm");
+        let _pty = PanePty::spawn_with_dirty(
+            command,
+            40,
+            6,
+            None,
+            None,
+            Some(Box::new(move |attention| {
+                lock(&sink).push(attention);
+            })),
+            &[],
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
+        )
+        .expect("spawn a pty");
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) && lock(&raised).len() < 2 {
+            sleep(Duration::from_millis(20));
+        }
+        let seen = lock(&raised).clone();
+        assert_eq!(
+            seen.len(),
+            2,
+            "exactly the two things the child ASKED with — the `working` line is output, not a \
+             request for a person: {seen:?}",
+        );
+        match &seen[0] {
+            Attention::Raised(notification) => {
+                assert_eq!(notification.title.as_deref(), Some("the build needs you"));
+                assert_eq!(
+                    notification.urgency,
+                    sprag_vt::Urgency::Critical,
+                    "the child's own claim survives the whole path to the hook",
+                );
+            }
+            other => panic!("the notification arrives first: {other:?}"),
+        }
+        assert_eq!(seen[1], Attention::Bell);
+    }
+
+    /// **A RESTORED pane does not raise its predecessor's notification.**
+    ///
+    /// The replayed scrollback runs the same OSC handling live output does, so the emulator comes
+    /// back with `notification_seq` at 1 before the child has written a byte. The reader reads its
+    /// starting marks AFTER that replay, which is what makes the restore silent — and the CONTROL
+    /// is the live notification below it, on the same pane through the same hook, so a build that
+    /// never fired at all could not pass.
+    #[test]
+    fn a_restored_panes_recorded_notification_is_not_raised_again() {
+        let raised: Arc<Mutex<Vec<Attention>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&raised);
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("sleep 0.2; printf '\\033]9;this one is live\\007'; cat");
+        command.env("TERM", "xterm");
+        let _pty = PanePty::spawn_with_dirty(
+            command,
+            40,
+            6,
+            None,
+            None,
+            Some(Box::new(move |attention| {
+                lock(&sink).push(attention);
+            })),
+            b"\x1b]9;the one from before the reboot\x07",
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
+        )
+        .expect("spawn a pty");
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) && lock(&raised).is_empty() {
+            sleep(Duration::from_millis(20));
+        }
+        let seen = lock(&raised).clone();
+        assert_eq!(seen.len(), 1, "the replay raised nothing: {seen:?}");
+        match &seen[0] {
+            Attention::Raised(notification) => assert_eq!(notification.body, "this one is live"),
+            other => panic!("only the live notification: {other:?}"),
+        }
     }
 }

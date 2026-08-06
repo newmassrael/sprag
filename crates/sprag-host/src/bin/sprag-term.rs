@@ -70,11 +70,13 @@ use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGINT, SIGTERM};
 use sprag_host::agent::SWEEP_INTERVAL;
+use sprag_host::attention::spawn_attention_router;
 use sprag_host::{
-    AgentClock, ChannelRegistry, FrameIngress, Host, HostState, JobWatch, RunRegistry,
-    SavedHistory, bump_on_dirty, dispatch_channel, dispatch_frames, history_dir, history_limits,
-    load_pane_history, load_snapshot, pane_exit_hook, save_histories_if_changed, save_if_changed,
-    snapshot_path, spawn_reaper, stdin_frames, sweep_once,
+    AgentClock, AttachmentRegistry, ChannelRegistry, FrameIngress, Host, HostState, JobWatch,
+    RunRegistry, SavedHistory, bump_on_dirty, dispatch_channel, dispatch_frames, history_dir,
+    history_limits, load_pane_history, load_snapshot, pane_attention_hook, pane_exit_hook,
+    save_histories_if_changed, save_if_changed, snapshot_path, spawn_reaper, stdin_frames,
+    sweep_once,
 };
 use sprag_rpc::HOST_SOCKET;
 use sprag_terminal::{CommandBuilder, PaneId, SessionRegistry, Snapshot};
@@ -178,6 +180,16 @@ fn main() -> io::Result<()> {
     // whatever is already on disk untouched (`kill-server --purge` is the one destroying verb).
     let hist_dir = history_dir(&sock);
     let hist_limits = history_limits();
+    // The per-client attachment map and the ATTENTION ROUTER, built HERE — before any pane exists —
+    // because a pane's child can ask for a person from its very first batch of output, and the boot
+    // pane is spawned below. The map is handed to `HostState` further down, so the router's
+    // deliveries and the dispatch layer's reads are one map rather than two that agree at first.
+    let attachments = Arc::new(std::sync::Mutex::new(AttachmentRegistry::default()));
+    let attention = Arc::new(spawn_attention_router(
+        Arc::clone(host.registry()),
+        Arc::clone(&attachments),
+        Arc::clone(&channels),
+    ));
     if args.daemon {
         if let Some(snapshot) = load_snapshot(&snap_path) {
             // Run it with the exact-command allowlist (read once from the environment here,
@@ -188,6 +200,7 @@ fn main() -> io::Result<()> {
                 &sprag_host::restore_allowlist(),
                 |session| Some(bump_on_dirty(&channels.revision(session))),
                 || Some(pane_exit_hook(&on_pane_exit)),
+                |session| Some(pane_attention_hook(&attention.signal(session))),
                 |id| match hist_limits.lines {
                     0 => Vec::new(),
                     _ => load_pane_history(&hist_dir, id),
@@ -221,6 +234,7 @@ fn main() -> io::Result<()> {
             args.rows,
             Some(bump_on_dirty(&channels.revision(BOOT_SESSION))),
             Some(pane_exit_hook(&on_pane_exit)),
+            Some(pane_attention_hook(&attention.signal(BOOT_SESSION))),
         )
         .map_err(io::Error::other)?;
     }
@@ -245,7 +259,10 @@ fn main() -> io::Result<()> {
         Arc::clone(&channels),
         manifests,
     );
-    let state = HostState::new(host, channels, Some(on_pane_exit)).with_agents(agents);
+    let state = HostState::new(host, channels, Some(on_pane_exit))
+        .with_attachments(attachments)
+        .with_attention(attention)
+        .with_agents(agents);
 
     // One dispatch owner (this thread) serialises all dispatch; the always-on
     // socket and stdin are producers of RpcFrames into it, so a socket client

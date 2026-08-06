@@ -129,6 +129,13 @@ pub struct WorkspaceExternal {
     /// the writes, off the frame's connection id, which no external sees). `None` leaves every
     /// `attached` at 0 — an honest "no wire clients here".
     attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
+    /// The daemon's ATTENTION signal ([`crate::attention::AttentionRouter::signal`]), already bound
+    /// to this scene's session, or `None` off a daemon. Each pane this surface SPAWNS is wired with
+    /// it, so a child raising a notification or a bell reaches the people looking at that session —
+    /// the same injection and the same per-birth wiring [`Self::on_pane_exit`] gets, and for the
+    /// same reason: this library never decides who hears about a pane, it only makes sure the pane
+    /// can be heard.
+    attention: Option<Arc<dyn Fn(PaneId, sprag_terminal::Attention) + Send + Sync>>,
     /// The daemon's agent-state memory ([`crate::AgentRegistry`]), or `None` off a daemon — the same
     /// injection [`Self::attachments`] gets, for the same two reasons.
     ///
@@ -187,6 +194,7 @@ impl WorkspaceExternal {
         channels: Arc<ChannelRegistry>,
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
         attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
+        attention: Option<Arc<dyn Fn(PaneId, sprag_terminal::Attention) + Send + Sync>>,
         agents: Option<Arc<crate::AgentClock>>,
         samplers: crate::Samplers,
     ) -> Self {
@@ -196,6 +204,7 @@ impl WorkspaceExternal {
             channels,
             on_pane_exit,
             attachments,
+            attention,
             agents,
             samplers,
         }
@@ -391,6 +400,10 @@ impl WorkspaceExternal {
             command.cwd(cwd);
         }
         let on_exit = self.on_pane_exit.as_ref().map(crate::pane_exit_hook);
+        // The attention hook is built over the session this pane is being born INTO, which is sound
+        // for `bump_on_dirty`'s reason: a pane cannot change session, so the answer this closure
+        // bakes cannot go stale.
+        let on_attention = self.attention.as_ref().map(crate::pane_attention_hook);
         let mut workspace = lock(pool);
         let (default_cols, default_rows) = workspace.default_size();
         let id = workspace
@@ -401,6 +414,7 @@ impl WorkspaceExternal {
                 rows.unwrap_or(default_rows),
                 Some(bump_on_dirty(&self.channels.revision(self.scope.session()))),
                 on_exit,
+                on_attention,
             )
             .map_err(|_| InvokeError::Rejected)?;
         // Stamp the remote endpoint onto the just-born pane (metadata the process does not need),
@@ -2687,6 +2701,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 sampler(),
             ),
             revision,
@@ -2706,6 +2721,7 @@ mod tests {
                 Arc::clone(reg),
                 scope,
                 channels,
+                None,
                 None,
                 None,
                 Some(Arc::clone(&agents)),
@@ -3332,6 +3348,7 @@ mod tests {
             Arc::clone(&reg),
             SessionScope::unscoped(&reg),
             Arc::clone(&channels),
+            None,
             None,
             None,
             None,
@@ -4730,6 +4747,7 @@ mod tests {
             None,
             Some(attachments),
             None,
+            None,
             sampler(),
         );
         assert_eq!(
@@ -5104,6 +5122,7 @@ mod tests {
             Some(signal),
             None,
             None,
+            None,
             sampler(),
         );
         // `new_session` sends exactly one signal by itself: the [`crate::BirthPin`] it takes fires
@@ -5281,6 +5300,7 @@ mod tests {
             None,
             Some(Arc::clone(&attachments)),
             None,
+            None,
             sampler(),
         );
         assert_eq!(lock(&attachments).attached_count("work"), 2, "two viewers");
@@ -5341,6 +5361,7 @@ mod tests {
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
             Some(signal),
+            None,
             None,
             None,
             sampler(),
@@ -5669,6 +5690,7 @@ mod tests {
             SessionScope::unscoped(&reg),
             Arc::new(ChannelRegistry::default()),
             Some(signal),
+            None,
             None,
             None,
             sampler(),
@@ -6095,6 +6117,7 @@ mod tests {
             Arc::new(ChannelRegistry::default()),
             None,
             Some(attachments),
+            None,
             None,
             sampler(),
         )

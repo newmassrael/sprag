@@ -61,8 +61,16 @@ fn a_request_projects_only_when_its_method_can_read_a_grid() {
     let channels = Arc::new(ChannelRegistry::default());
     let host = Host::new(PANES[0]);
     for (index, (cols, rows)) in PANES.iter().enumerate() {
-        host.spawn(quiescent(), format!("cat{index}"), *cols, *rows, None, None)
-            .expect("spawn a quiescent pane");
+        host.spawn(
+            quiescent(),
+            format!("cat{index}"),
+            *cols,
+            *rows,
+            None,
+            None,
+            None,
+        )
+        .expect("spawn a quiescent pane");
     }
     let state = HostState::new(host, channels, None);
 

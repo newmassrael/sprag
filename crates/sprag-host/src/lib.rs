@@ -49,6 +49,7 @@
 
 pub mod agent;
 pub mod attach;
+pub mod attention;
 pub mod chooser;
 pub mod config;
 pub mod durability;
@@ -115,8 +116,8 @@ pub use plugins::PluginsExternal;
 pub use project::{PROJECT_FILE, Project, ProjectAction, ProjectError};
 pub use rpc::{
     BirthPin, FrameIngress, HostState, IngressEvent, SUPPORTED_METHODS, bump_on_dirty,
-    dispatch_channel, dispatch_frames, handle_parsed, handle_request, pane_exit_hook, spawn_reaper,
-    stdin_frames,
+    dispatch_channel, dispatch_frames, handle_parsed, handle_request, pane_attention_hook,
+    pane_exit_hook, spawn_reaper, stdin_frames,
 };
 pub use runs::{RunId, RunRegistry, RunState};
 pub use scope::{ScopeError, SessionScope};
@@ -158,6 +159,13 @@ pub struct DaemonShared {
     /// Per-client session attachment, read when the `sessions` slot is served to fill each
     /// `SessionInfo::attached`. `None` leaves every count at 0 — an honest "no wire clients here".
     pub attachments: Option<Arc<Mutex<AttachmentRegistry>>>,
+    /// The daemon's attention router ([`crate::attention`]), wired into every pane a scene surface
+    /// spawns so a child asking for a person reaches the people looking at that session. `None` off
+    /// a daemon: an in-process host has no wire clients to address, which is the same reason
+    /// [`Self::attachments`] is optional — and the two are the pair that must be present together,
+    /// because a router with nowhere to deliver would run a thread to reach nobody.
+    pub attention: Option<Arc<attention::AttentionRouter>>,
+
     /// The agent-state memory (H3), read by the pane list. `None` leaves the `agent` key absent,
     /// which D8 already defines as "no agent here", so a host without a detector serves the pre-H3
     /// wire shape rather than a wrong answer.
@@ -522,6 +530,7 @@ pub fn workspace_scene(
     let DaemonShared {
         on_pane_exit,
         attachments,
+        attention,
         agents,
         samplers,
     } = daemon;
@@ -537,6 +546,12 @@ pub fn workspace_scene(
             .map(|pane| pane_container(pane.id(), pane.pty(), cells))
             .collect()
     };
+    // The attention signal is bound to THIS scene's session ONCE, here, and shared by both
+    // surfaces below — so a plugin-spawned pane and a mux-spawned one reach the same people. Bound
+    // here rather than inside each surface because this is where the scope and the router are both
+    // in hand, and because a second binding site is a second chance to bind the wrong session.
+    let attention =
+        attention.map(|router| router.signal(scope.session()) as Arc<dyn Fn(_, _) + Send + Sync>);
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux
     // concerns), so it carries the scope that says WHICH session it may act on...
     children.push(Scene::External(
@@ -546,6 +561,7 @@ pub fn workspace_scene(
             Arc::clone(channels),
             on_pane_exit.clone(),
             attachments,
+            attention.clone(),
             agents,
             samplers,
         )))
@@ -562,6 +578,7 @@ pub fn workspace_scene(
             Arc::clone(workspace),
             Arc::clone(runs),
             on_pane_exit,
+            attention,
         )))
         .with_tag(PLUGINS_TAG),
     ));

@@ -260,7 +260,7 @@ mod tests {
             cat.arg("cat");
             cat.env("TERM", "dumb");
             let host = Host::new((40, 6));
-            host.spawn(cat, "cat".to_owned(), 40, 6, None, None)
+            host.spawn(cat, "cat".to_owned(), 40, 6, None, None, None)
                 .unwrap();
             crate::terminal::seed_terminal(host);
 

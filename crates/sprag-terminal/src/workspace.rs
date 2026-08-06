@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use sprag_vt::{ClipboardQuery, ClipboardWrite, Image, MouseProtocol, Notification, ShellState};
 
-use crate::pane_pty::{CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle};
+use crate::pane_pty::{Attention, CommandBuilder, PaneExit, PanePty, PanePtyError, PanePtyHandle};
 use crate::remote::SshRemote;
 
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
@@ -373,6 +373,14 @@ pub struct PaneRebirth {
     pub on_dirty: Option<Box<dyn Fn() + Send>>,
     /// The child-exited signal, as [`Workspace::spawn_with_dirty`] takes it.
     pub on_exit: Option<Box<dyn Fn() + Send>>,
+    /// The child-is-asking-for-a-person signal, as [`Workspace::spawn_with_dirty`] takes it — and
+    /// with the same [`PaneId`] already bound, because the caller chose this pane's id.
+    ///
+    /// A restored pane replays its recorded scrollback, which may contain the OSC that raised a
+    /// notification BEFORE the reboot. That replay does not fire this: the reader thread reads its
+    /// starting marks after the replay ([`PanePty::spawn_with_dirty`]), so a restore is silent and
+    /// only what THIS child says reaches a person.
+    pub on_attention: Option<Box<dyn Fn(Attention) + Send>>,
     /// The pane's recorded scrollback as replayable terminal bytes, applied to the fresh emulator
     /// before its child can write a byte. EMPTY brings the pane back blank — the behaviour before
     /// history was persisted, and what a disabled or unreadable history degrades to.
@@ -588,12 +596,18 @@ impl Workspace {
         cols: u16,
         rows: u16,
     ) -> Result<PaneId, PanePtyError> {
-        self.spawn_with_dirty(command, label, cols, rows, None, None)
+        self.spawn_with_dirty(command, label, cols, rows, None, None, None)
     }
 
-    /// [`Self::spawn`] with the pane's two PTY-reader callbacks (threaded to
-    /// [`PanePty::spawn_with_dirty`]): `on_dirty` (per output batch + at exit) and
-    /// `on_exit` (once, at the child's exit).
+    /// [`Self::spawn`] with the pane's three PTY-reader callbacks (threaded to
+    /// [`PanePty::spawn_with_dirty`]): `on_dirty` (per output batch + at exit),
+    /// `on_exit` (once, at the child's exit) and `on_attention` (when the child asks for a person).
+    ///
+    /// `on_attention` is taken as `Fn(PaneId, Attention)` and handed DOWN already bound to the id
+    /// minted here, because that is the only place the two are together: [`PanePty`] does not know
+    /// its pane's id, and the id does not exist until this function mints it. A caller that had to
+    /// bind it itself would be binding it from a `Result` it has not received yet — the gap that
+    /// makes "which pane raised this?" the wrong question to answer with a cell filled in later.
     ///
     /// A windowed host passes `on_dirty = Some(Box::new(move || sink.request_repaint()))`
     /// (the pinion R999 `RepaintSink` seam) so this pane's output wakes the shell to
@@ -619,6 +633,7 @@ impl Workspace {
         rows: u16,
         on_dirty: Option<Box<dyn Fn() + Send>>,
         on_exit: Option<Box<dyn Fn() + Send>>,
+        on_attention: Option<Box<dyn Fn(PaneId, Attention) + Send>>,
     ) -> Result<PaneId, PanePtyError> {
         // Capture the launch argv BEFORE the builder is moved into the spawn, so a snapshot can
         // later re-run it (an allowlisted program) or fall back to a shell.
@@ -642,8 +657,20 @@ impl Workspace {
         for (key, value) in (self.pane_env)(id) {
             command.env(key, value);
         }
-        let pty =
-            PanePty::spawn_with_dirty(command, cols, rows, on_dirty, on_exit, &[], history_limit)?;
+        // The id binds HERE, which is the whole reason this layer takes the hook: below this line
+        // there is a pane with an id and a child, and above it there is neither.
+        let on_attention = on_attention
+            .map(|tell| Box::new(move |raised| tell(id, raised)) as Box<dyn Fn(Attention) + Send>);
+        let pty = PanePty::spawn_with_dirty(
+            command,
+            cols,
+            rows,
+            on_dirty,
+            on_exit,
+            on_attention,
+            &[],
+            history_limit,
+        )?;
         self.panes.push(Pane {
             id,
             pty,
@@ -681,6 +708,7 @@ impl Workspace {
             size: (cols, rows),
             on_dirty,
             on_exit,
+            on_attention,
             history,
         } = pane;
         let argv = argv_of(&command);
@@ -703,6 +731,7 @@ impl Workspace {
             rows,
             on_dirty,
             on_exit,
+            on_attention,
             &history,
             history_limit,
         )?;
@@ -1055,6 +1084,7 @@ mod tests {
             size: (20, 4),
             on_dirty: None,
             on_exit: None,
+            on_attention: None,
             history: Vec::new(),
         })
         .unwrap();
@@ -1228,6 +1258,7 @@ mod tests {
             size: (80, 24),
             on_dirty: None,
             on_exit: None,
+            on_attention: None,
             history: Vec::new(),
         })
         .unwrap();
@@ -1238,6 +1269,7 @@ mod tests {
             size: (80, 24),
             on_dirty: None,
             on_exit: None,
+            on_attention: None,
             history: Vec::new(),
         })
         .unwrap();

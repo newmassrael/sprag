@@ -308,6 +308,47 @@ pub fn history_limit_lines() -> usize {
     configured.map_or(sprag_vt::DEFAULT_SCROLLBACK_LINES, |lines| lines as usize)
 }
 
+/// Whether the switch option `name` is `on` — the reader for every
+/// [`ON_OFF`](crate::options::ON_OFF) option.
+///
+/// One reader for the family, so two switches cannot come to disagree about what an unreadable
+/// config means. It means the DEFAULT: the registry has already refused any value that is not one of
+/// the two words, so a table that answers something else would mean the spec and this reader
+/// disagree, and `every_option_default_is_a_value_that_option_accepts` is what keeps that
+/// unreachable.
+///
+/// Where it is called is the cost decision, and [`agent_settle`] states the rule at length. This
+/// one's caller is [`crate::attention`]'s router thread, once per attention a child raises — a rare
+/// event, priced like a pane birth's read rather than a per-batch one.
+///
+/// # Panics
+///
+/// If `name` is not a declared option, or is not a switch. Both are programming errors in this
+/// crate rather than user input: the caller passes a `&'static str` from
+/// [`crate::options`], and a caller that passed a `Number` option would be asking a question with
+/// no answer.
+#[must_use]
+pub fn option_is_on(name: &'static str) -> bool {
+    let spec = options::spec(name).expect("a switch this crate names is a declared option");
+    assert!(
+        matches!(spec.kind, options::OptionKind::Choice(values) if values == options::ON_OFF),
+        "{name} is not a switch, so `on` is not a value it can hold",
+    );
+    let configured = match options() {
+        Ok(options) => options.get(name).map(str::to_owned),
+        Err(error) => {
+            tracing::warn!(
+                target: "sprag_host::config",
+                %error,
+                option = name,
+                "using the default for a switch",
+            );
+            None
+        }
+    };
+    configured.as_deref().unwrap_or(spec.default) == "on"
+}
+
 /// The agent-state settle window in force — the user's
 /// [`agent-settle-time`](crate::options::AGENT_SETTLE_TIME), or the detector's own default if they
 /// have not set one.
