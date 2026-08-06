@@ -11767,6 +11767,64 @@
         "STILL OPEN: a pane's OSC 9 notification reaches sprag-tui nowhere at all and the GUI drops its words; no OS-native notification and no sound; no key reaches display-message; the delivery claims QUEUED, not READ."
       ]
     },
+    "R318": {
+      "decision_summary": "A notification a pane's own child raises is a message from that pane: the reader thread reports it, the daemon routes it to the people looking at the session that HOLDS the pane, and the child's own urgency decides whether the row waits for a person.",
+      "changes_bullets": [
+        "A pane child's OSC 9 / 777 / 99 or BEL now reaches the person watching that session, as a routed message naming the pane in the spelling that reaches it",
+        "The reader thread reports an Attention the moment the batch carrying it is applied; a dedicated router thread resolves the pane and delivers, so no lock is taken on a thread PanePty::Drop joins",
+        "A kitty u=2 notification becomes a Severity::Alert, which has no deadline and waits for a keystroke - the child chooses, which no rival's caller can",
+        "monitor-bell (tmux's own, on) and monitor-notification (on) switch the two sources independently, because the emulator keeps their sequences apart",
+        "A notification whose words a terminal row refuses becomes a sentence naming the pane and the rule, never sanitised and never dropped; the bound is proved at compile time",
+        "closed_set! moved to the workspace's bottom crate so the emulator can declare Urgency with a compiler-checked ALL",
+        "A pane's three reader-thread callbacks travel as PaneBirthHooks, whose bind is the one moment a hook meets its pane id"
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 46 targets / 2236 tests (baseline 2219); clippy 0 warnings with no new suppression; doc gate exit 0",
+        "Pixel smoke 232/0, run TWICE on the final committed tree (baseline 227; five new checks drive a pane child's notification through the shipped GUI binary)",
+        "MEASURED FIRST by running at 3114923: the daemon latched {\"body\":\"build finished: 3 errors\",\"seq\":1} and a live sprag-tui's screen was byte-for-byte unchanged over all 24 rows, while display-message painted the row on the same client at the same instant",
+        "8 revert-proofs RED naming their arm, one harmless-edit control GREEN; the driver snapshots bytes and verifies each restore by digest",
+        "WIRE_PROTOCOL STAYS 15 - the diff touches neither sprag-rpc nor sprag-host/src/wire.rs, checked by diff rather than by reading",
+        "Three vacuous tests of my own were found by the revert-proofs and rebuilt: a restore fixture the emulator's latch defeated, a switch test the bell's own row replaced, and four proofs that ran against a daemon binary the mutation never rebuilt"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The OUTBOUND half is NOT done and is measured, not estimated: termwiz 0.23.3's InputEvent carries no focus variant, so sprag-tui cannot learn whether the person is looking without decoding CSI I / CSI O itself - which is the design question gating \"forward outward only when nobody is looking\"",
+        "No OS-native notification and no sound, which is herdr's remaining lead on this axis",
+        "PaneNotification does not carry the urgency on the wire, so a client cannot mark its attention dot by it; the projection onto Severity happens daemon-side",
+        "The GUI now shows BOTH a persistent dot and a one-off message for one notification, which is intended and stated nowhere in the code"
+      ],
+      "publishable_decision_summary": "A notification a pane's own child raises is a message from that pane: the reader thread reports it, the daemon routes it to the people looking at the session that HOLDS the pane, and the child's own urgency decides whether the row waits for a person.",
+      "publishable_changes_bullets": [
+        "A pane child's OSC 9 / 777 / 99 or BEL now reaches the person watching that session, as a routed message naming the pane in the spelling that reaches it",
+        "The reader thread reports an Attention the moment the batch carrying it is applied; a dedicated router thread resolves the pane and delivers, so no lock is taken on a thread PanePty::Drop joins",
+        "A kitty u=2 notification becomes a Severity::Alert, which has no deadline and waits for a keystroke - the child chooses, which no rival's caller can",
+        "monitor-bell (tmux's own, on) and monitor-notification (on) switch the two sources independently, because the emulator keeps their sequences apart",
+        "A notification whose words a terminal row refuses becomes a sentence naming the pane and the rule, never sanitised and never dropped; the bound is proved at compile time",
+        "closed_set! moved to the workspace's bottom crate so the emulator can declare Urgency with a compiler-checked ALL",
+        "A pane's three reader-thread callbacks travel as PaneBirthHooks, whose bind is the one moment a hook meets its pane id"
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 46 targets / 2236 tests (baseline 2219); clippy 0 warnings with no new suppression; doc gate exit 0",
+        "Pixel smoke 232/0, run TWICE on the final committed tree (baseline 227; five new checks drive a pane child's notification through the shipped GUI binary)",
+        "MEASURED FIRST by running at 3114923: the daemon latched {\"body\":\"build finished: 3 errors\",\"seq\":1} and a live sprag-tui's screen was byte-for-byte unchanged over all 24 rows, while display-message painted the row on the same client at the same instant",
+        "8 revert-proofs RED naming their arm, one harmless-edit control GREEN; the driver snapshots bytes and verifies each restore by digest",
+        "WIRE_PROTOCOL STAYS 15 - the diff touches neither sprag-rpc nor sprag-host/src/wire.rs, checked by diff rather than by reading",
+        "Three vacuous tests of my own were found by the revert-proofs and rebuilt: a restore fixture the emulator's latch defeated, a switch test the bell's own row replaced, and four proofs that ran against a daemon binary the mutation never rebuilt"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The OUTBOUND half is NOT done and is measured, not estimated: termwiz 0.23.3's InputEvent carries no focus variant, so sprag-tui cannot learn whether the person is looking without decoding CSI I / CSI O itself - which is the design question gating \"forward outward only when nobody is looking\"",
+        "No OS-native notification and no sound, which is herdr's remaining lead on this axis",
+        "PaneNotification does not carry the urgency on the wire, so a client cannot mark its attention dot by it; the projection onto Severity happens daemon-side",
+        "The GUI now shows BOTH a persistent dot and a one-off message for one notification, which is intended and stated nowhere in the code"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
