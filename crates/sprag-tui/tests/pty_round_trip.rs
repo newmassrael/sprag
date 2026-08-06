@@ -2593,6 +2593,12 @@ impl ConfigHome {
     fn as_str(&self) -> &str {
         self.0.to_str().expect("a utf-8 temp path")
     }
+
+    /// Replace the config a live client is reading — the edit a person makes in their editor while
+    /// their client is running, which `ClientConfig::refresh` notices on the next keystroke.
+    fn rewrite(&self, text: &str) {
+        std::fs::write(self.0.join("sprag").join("config.toml"), text).expect("rewrite config");
+    }
 }
 
 /// **THE GATE for H2: a keymap in the user's file reaches the SHIPPED BINARY.**
@@ -5939,5 +5945,116 @@ fn the_focus_mode_is_given_back_when_the_client_leaves() {
     assert!(
         !tui.asked_for_focus_reports(),
         "a client that left must stop this terminal reporting focus to whatever runs next",
+    );
+}
+
+/// **THE NOTIFICATION NAMES THE SESSION THE PERSON IS ON NOW** — not the one their client attached
+/// to.
+///
+/// Found by the debt sweep, not by the design: the first version held the session in `Outward`,
+/// taken once at start-up. A client can move (`switch-client`, R314; the chooser, R315) without
+/// exiting, so that copy went stale the moment somebody pressed `prefix )` — and it went stale
+/// against the STATUS ROW beside it, which re-derives the session every frame. The two surfaces
+/// would have named different sessions for the same instant.
+///
+/// The CONTROL is the first forward, from the session the client started on: without it a build that
+/// named no session at all would pass the claim below by accident.
+#[test]
+fn the_copy_names_the_session_the_client_is_on_now() {
+    // `always`, so the claim is about WHICH session is named rather than about focus — one variable.
+    let config = ConfigHome::new("[options]\nnotify-outward = \"always\"\n");
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "alpha" } }),
+    )
+    .expect("new_session answers");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+    });
+
+    // THE CONTROL: a message from where it started, naming where it started.
+    let first = sprag_on(
+        &sock,
+        &config,
+        &["display-message", "-t", &session, "before"],
+    );
+    assert!(first.status.success(), "display-message succeeded");
+    wait_for("the first copy to name the session it started on", || {
+        let (note, seq) = tui.forwarded();
+        settled(
+            note.as_ref().map(|note| note.body.clone()),
+            &Some(format!("[{session}] before")),
+        )
+        .map_err(|got| format!("{got}: seq is {seq}"))
+    });
+
+    // `prefix )` — the client steps onto alpha and stays alive.
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b")");
+    wait_for("the client to step onto alpha", || {
+        settled(attached(&mut conn, "alpha"), &1)
+    });
+
+    // THE CLAIM: the next copy names where it IS.
+    let second = sprag_on(&sock, &config, &["display-message", "-t", "alpha", "after"]);
+    assert!(second.status.success(), "display-message succeeded");
+    wait_for("the copy to name the session the client moved to", || {
+        let (note, seq) = tui.forwarded();
+        settled(
+            note.as_ref().map(|note| note.body.clone()),
+            &Some("[alpha] after".to_owned()),
+        )
+        .map_err(|got| format!("{got}: seq is {seq}"))
+    });
+}
+
+/// **A CHANGED `notify-outward` TAKES EFFECT WITHOUT RESTARTING THE CLIENT** — the same live-file
+/// promise `sprag bind-key` rests on, applied to the one option this round added.
+///
+/// Found by the debt sweep. This client re-reads `config.toml` on every keystroke
+/// (`ClientConfig::refresh`), so a policy frozen at start-up would have been the single setting in
+/// that file needing a restart — and the failure would be invisible: the user edits, nothing
+/// happens, and there is nothing to read that says why.
+///
+/// The claim is made through the TERMINAL's own mode rather than through a forward, because that is
+/// the observable a person actually has: `off` means their terminal stops being asked about focus.
+/// Both directions are driven, so a mirror that could only turn the mode on would fail.
+#[test]
+fn an_edited_notify_outward_takes_effect_without_a_restart() {
+    let config = ConfigHome::new("[options]\nnotify-outward = \"off\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+    });
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+    assert!(
+        !tui.asked_for_focus_reports(),
+        "THE CONTROL: `off` asks this terminal nothing",
+    );
+
+    // The user edits their file and presses a key — the edge this client re-reads on.
+    config.rewrite("[options]\nnotify-outward = \"unfocused\"\n");
+    tui.type_bytes(&[0x02]); // the prefix: a key that reaches no pane and runs no action
+    wait_for("the client to ask for focus reports after the edit", || {
+        settled(tui.asked_for_focus_reports(), &true)
+    });
+
+    // ...and back, which is the direction a mirror that only ever turned things on would fail.
+    config.rewrite("[options]\nnotify-outward = \"off\"\n");
+    tui.type_bytes(&[0x02]);
+    wait_for(
+        "the client to give the mode back after the second edit",
+        || settled(tui.asked_for_focus_reports(), &false),
     );
 }

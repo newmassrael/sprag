@@ -218,19 +218,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         }),
     )?;
 
-    // WHERE A MESSAGE GOES WHEN THE PERSON IS NOT HERE (R319) — built now because both of its
-    // inputs are settled: the option came from the file read at the top of this function, and the
-    // session is the one the host just answered. Nothing about either can change under it.
-    let outward = Outward::of(keymap.options(), host.current_session(), |name| {
-        std::env::var(name).ok()
-    });
-    // Where the person is, or `None` when this client never asked its terminal to say — which is
+    // WHERE A MESSAGE GOES WHEN THE PERSON IS NOT HERE (R319). This holds only what cannot change
+    // under a running client — what its terminal IS — because the policy is re-read from the user's
+    // file on every keystroke and the session this client is viewing can change without it exiting.
+    let mut outward = Outward::of(|name| std::env::var(name).ok());
+    // Where the person is, or `None` while this client is not asking its terminal to say — which is
     // NOT the same as their being here, and is why this is an `Option` rather than a `Person` with a
-    // third arm. Only [`Forward::Unfocused`] needs the answer, so only it pays for the mode and for
-    // the read-ahead that mode makes necessary (see `sprag_tui::focus`).
-    let mut person = outward
-        .needs_focus()
-        .then(sprag_tui::focus::Person::default);
+    // third arm. `Outward::follow` owns this and the mode together, so the two cannot disagree.
+    let mut person: Option<Person> = None;
 
     // Only now is the terminal taken. The hook goes in FIRST so that a panic between here and the
     // end of the loop still leaves a usable shell behind.
@@ -240,9 +235,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // AFTER `set_raw_mode`, which calls `tcsetattr` with `TCSAFLUSH` and purges the input queue: a
     // report answering a mode asked for before that would be discarded, and the first thing this
     // client would learn about the person is a change from a state it never saw.
-    if outward.needs_focus() {
-        Outward::watch_focus(true, &mut outward_tty);
-    }
+    outward.follow(keymap.options(), &mut person, &mut outward_tty);
     let mut screen = BufferedTerminal::new(terminal)?;
     // `BufferedTerminal::new` sizes its surface from the terminal's raw answer, so the fallback
     // has to be applied here too or a terminal that reports nothing paints into a 0x0 surface.
@@ -462,6 +455,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                     }
                     Overlay::None => command(&mut keys, refreshed(&mut keymap), &event),
                 };
+                // The keystroke above RE-READ the user's file, so this is where a changed
+                // `notify-outward` takes effect — the same edge that makes an edited BINDING live,
+                // and the only one that can: a person editing their config is a person typing.
+                outward.follow(keymap.options(), &mut person, &mut outward_tty);
                 // An action that cannot be carried out without an ANSWER opens the prompt instead
                 // of acting. Asked here for EVERY action rather than per arm, so the decision is
                 // `Ask::of`'s alone — the same discipline `Routed::next` applies to the prefix
@@ -1113,7 +1110,16 @@ fn run() -> Result<(), Box<dyn Error>> {
                 // Only what the DAEMON routed is copied out. A `Report` this client builds for its
                 // own keys is not: it answers a keystroke, and a keystroke is proof somebody is
                 // sitting here to read the answer.
-                outward.forward(person, &announcement, &mut outward_tty);
+                outward.forward(
+                    keymap.options(),
+                    person,
+                    // The session is read HERE and not held: this client can be viewing a different
+                    // one than it attached to (`switch-client`, the chooser), and a notification
+                    // naming the session the person LEFT would be worse than one naming none.
+                    &host.current_session(),
+                    &announcement,
+                    &mut outward_tty,
+                );
                 let said = Message::of(
                     &Report::said(&announcement),
                     now(),
@@ -1150,7 +1156,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Before the terminal is given back: see [`MouseMirror::release`], and — for the same reason,
     // one mode along — stop asking it about focus. termwiz restores what IT set and it set neither.
     mouse.release();
-    if outward.needs_focus() {
+    if outward.watching() {
         Outward::watch_focus(false, &mut outward_tty);
     }
 

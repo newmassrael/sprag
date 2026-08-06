@@ -160,19 +160,28 @@ enum Form {
     Osc99,
 }
 
-/// This client's outward notification: the policy, who to say it is from, and what its terminal
-/// understands.
+/// This client's outward notification: what its terminal understands, and what that terminal has
+/// been TOLD to report.
 ///
-/// Built once at start-up because every input is fixed for the client's life: the option comes from
-/// the file the client already read, and the terminal it is talking to cannot change underneath it.
+/// # What is NOT here, and why that is the shape of this type
+///
+/// Neither the POLICY nor the SESSION. Both were fields in the first version and both were wrong for
+/// the same reason: this client re-reads `config.toml` on every keystroke
+/// ([`ClientConfig::refresh`](sprag_host::config::ClientConfig::refresh), the mechanism that makes
+/// `sprag bind-key` a runtime command) and it can change which session it is viewing without
+/// exiting (`switch-client`, R314; the chooser, R315). A copy of either taken at start-up goes stale
+/// while the surface beside it stays live — the row would name the session the person switched TO
+/// and the notification the one they left.
+///
+/// So this holds only what cannot change under a running client: what its terminal IS (`TERM`,
+/// `KITTY_WINDOW_ID` and `TMUX` are fixed for the process) and what this client last told that
+/// terminal. Everything else is read where it is used, so there is no second copy to disagree with.
+///
+/// [`follow`](Self::follow) is therefore a MIRROR in exactly the sense this client's mouse one is,
+/// for the same reason: the mode the terminal is in has to be a function of the setting IN FORCE,
+/// not of the setting that was in force when the client started.
 #[derive(Clone, Debug)]
 pub struct Outward {
-    /// When to forward — see [`Forward`].
-    policy: Forward,
-    /// The session this client is showing, so a person with four of them is told WHICH one wants
-    /// them. Spelled `[name]` in the sentence, which is the status row's own prefix rather than a
-    /// second wording invented for the notification.
-    session: String,
     /// What the host terminal understands.
     form: Form,
     /// Whether this client is running inside tmux, so the sequence has to be passed THROUGH it.
@@ -183,33 +192,60 @@ pub struct Outward {
     /// is discarded whole, which is the same silence as not sending it and never garbage on a
     /// person's screen.
     tmux: bool,
+    /// Whether this terminal has been TOLD to report focus — what a change of policy has to undo,
+    /// and what lets [`follow`](Self::follow) write only when something actually moved.
+    watching: bool,
 }
 
 impl Outward {
-    /// Read the policy from `options` and the terminal from `env` — a lookup rather than
-    /// [`std::env::var`] so both halves are testable, which the rival's `detect_backend` is not.
+    /// Read what the host terminal IS from `env` — a lookup rather than [`std::env::var`] so it is
+    /// testable, which the rival's `detect_backend` is not.
     ///
-    /// `session` is the session this client is attached to.
+    /// No policy and no session: see the type's own docs for why neither may be held here. A client
+    /// that has just started has told its terminal nothing, so it is watching nothing.
     #[must_use]
-    pub fn of(options: &Options, session: String, env: impl Fn(&str) -> Option<String>) -> Self {
+    pub fn of(env: impl Fn(&str) -> Option<String>) -> Self {
         // kitty announces itself two ways and both are its own: the window id it exports into every
         // child, and its terminfo name. Either is enough, and asking for both is what makes this
         // work inside a shell that scrubbed one of them.
         let kitty = env("KITTY_WINDOW_ID").is_some()
             || env("TERM").is_some_and(|term| term == "xterm-kitty");
         Self {
-            policy: Forward::of(options),
-            session,
             form: if kitty { Form::Osc99 } else { Form::Osc9 },
             tmux: env("TMUX").is_some(),
+            watching: false,
         }
     }
 
-    /// Whether this client should ask its terminal to report focus — [`Forward::needs_focus`],
-    /// re-exposed because the loop holds the policy through this type.
+    /// Put this terminal — and this client's idea of where the person is — in step with the policy
+    /// the user's file NOW holds, writing only when something actually moved.
+    ///
+    /// The mouse mirror's own shape, for its reason: the state of a borrowed terminal
+    /// must be a function of the setting in force. A user who turns `notify-outward` on gets the mode
+    /// without restarting their client, exactly as a user who edits a binding gets the binding; one
+    /// who turns it off gets their terminal back.
+    ///
+    /// **`person` moves with it, and that is the invariant this method exists to hold.** A client
+    /// that stopped watching must FORGET where the person was, or a stale `Away` would go on
+    /// forwarding under a policy that no longer asks — and one that starts watching begins at
+    /// [`Person::Here`], which is the same honest value a fresh client uses: nothing has been
+    /// reported since the mode was asked for.
+    pub fn follow(&mut self, options: &Options, person: &mut Option<Person>, out: &mut impl Write) {
+        let wanted = Forward::of(options).needs_focus();
+        if wanted == self.watching {
+            return;
+        }
+        self.watching = wanted;
+        *person = wanted.then(Person::default);
+        Self::watch_focus(wanted, out);
+    }
+
+    /// Whether this client has asked its terminal to report focus — the one fact
+    /// [`follow`](Self::follow) leaves for a caller to read, so the exit path can give back exactly
+    /// what was taken.
     #[must_use]
-    pub const fn needs_focus(&self) -> bool {
-        self.policy.needs_focus()
+    pub const fn watching(&self) -> bool {
+        self.watching
     }
 
     /// Ask the terminal to report focus changes (DEC private mode 1004), or stop asking.
@@ -245,8 +281,8 @@ impl Outward {
     /// construction (that policy is exactly the one that asks), and answered rather than panicked
     /// because a display client must not die over its own bookkeeping.
     #[must_use]
-    pub fn follows(&self, person: Option<Person>) -> bool {
-        match self.policy {
+    pub fn follows(policy: Forward, person: Option<Person>) -> bool {
+        match policy {
             Forward::Off => false,
             Forward::Always => true,
             Forward::Unfocused => person == Some(Person::Away),
@@ -263,13 +299,9 @@ impl Outward {
     /// re-validated, and a name that breaks a rule (a control character, or a length that pushes the
     /// whole line past the cap) falls back to the announcement's own text, which is a value already
     /// known to be safe. There is no `expect` here to be wrong about: the fallback is the input.
-    fn sentence(&self, announcement: &Announcement) -> MessageText {
-        MessageText::parse(&format!(
-            "[{}] {}",
-            self.session,
-            announcement.text.as_str()
-        ))
-        .unwrap_or_else(|_| announcement.text.clone())
+    fn sentence(session: &str, announcement: &Announcement) -> MessageText {
+        MessageText::parse(&format!("[{session}] {}", announcement.text.as_str()))
+            .unwrap_or_else(|_| announcement.text.clone())
     }
 
     /// Copy `announcement` out to the host terminal if the policy and `person` call for it.
@@ -279,14 +311,16 @@ impl Outward {
     /// terminal that will not take a notification will not take a diagnostic either.
     pub fn forward(
         &self,
+        options: &Options,
         person: Option<Person>,
+        session: &str,
         announcement: &Announcement,
         out: &mut impl Write,
     ) {
-        if !self.follows(person) {
+        if !Self::follows(Forward::of(options), person) {
             return;
         }
-        let sequence = self.sequence(announcement);
+        let sequence = self.sequence(session, announcement);
         let _ = out.write_all(&sequence);
         let _ = out.flush();
     }
@@ -295,8 +329,8 @@ impl Outward {
     ///
     /// Separate from [`forward`](Self::forward) so the whole encoding — the form, the urgency, the
     /// sentence and the tmux wrapper — is testable without a terminal.
-    fn sequence(&self, announcement: &Announcement) -> Vec<u8> {
-        let said = self.sentence(announcement);
+    fn sequence(&self, session: &str, announcement: &Announcement) -> Vec<u8> {
+        let said = Self::sentence(session, announcement);
         // ST (`ESC \`) and not BEL, in both forms: it is the terminator both protocols document, and
         // the one a `DCS tmux;` wrapper can carry — a BEL inside the wrapper would end nothing and
         // reach the outer terminal as a bell.
@@ -374,21 +408,26 @@ mod tests {
 
     /// An [`Outward`] built from an env table, so a test names what the terminal claims to be
     /// instead of reaching into the process's own environment.
-    fn outward(policy: Forward, env: &[(&str, &str)]) -> Outward {
-        let mut options = Options::default();
-        options
-            .set(NOTIFY_OUTWARD, policy.word())
-            .expect("a policy is a value the option takes");
+    fn outward(env: &[(&str, &str)]) -> Outward {
         let owned: Vec<(String, String)> = env
             .iter()
             .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
             .collect();
-        Outward::of(&options, "work".to_owned(), move |want| {
+        Outward::of(move |want| {
             owned
                 .iter()
                 .find(|(key, _)| key == want)
                 .map(|(_, value)| value.clone())
         })
+    }
+
+    /// The options a user's file would hold with `notify-outward` set to `policy`.
+    fn options(policy: Forward) -> Options {
+        let mut options = Options::default();
+        options
+            .set(NOTIFY_OUTWARD, policy.word())
+            .expect("a policy is a value the option takes");
+        options
     }
 
     fn said(text: &str, severity: Severity) -> Announcement {
@@ -414,7 +453,7 @@ mod tests {
                     (Forward::Unfocused, seen) => seen == Some(Person::Away),
                 };
                 assert_eq!(
-                    outward(policy, &[]).follows(person),
+                    Outward::follows(policy, person),
                     want,
                     "{policy:?} with the person {person:?}",
                 );
@@ -426,9 +465,61 @@ mod tests {
     /// pays neither the mode nor the read-ahead that mode makes necessary.
     #[test]
     fn only_the_focus_policy_asks_the_terminal_about_focus() {
-        assert!(outward(Forward::Unfocused, &[]).needs_focus());
-        assert!(!outward(Forward::Off, &[]).needs_focus());
-        assert!(!outward(Forward::Always, &[]).needs_focus());
+        for policy in Forward::ALL {
+            let mut outward = outward(&[]);
+            let mut person = None;
+            let mut wrote = Vec::new();
+            outward.follow(&options(policy), &mut person, &mut wrote);
+            assert_eq!(outward.watching(), policy.needs_focus(), "{policy:?}");
+            assert_eq!(
+                person.is_some(),
+                policy.needs_focus(),
+                "{policy:?} must track a person exactly when it asks about one",
+            );
+            assert_eq!(
+                wrote.is_empty(),
+                !policy.needs_focus(),
+                "{policy:?} must write the mode exactly when it wants it",
+            );
+        }
+    }
+
+    /// **THE MIRROR: the mode the terminal is in is a function of the setting IN FORCE**, and a
+    /// client that stops watching FORGETS where the person was.
+    ///
+    /// Found by the debt sweep rather than by the design. This client re-reads `config.toml` on
+    /// every keystroke, so a policy frozen at start-up would be the one setting in that file which
+    /// needed a restart — and a stale `Away` left behind by a policy that stopped asking would go on
+    /// forwarding to a person who is sitting right there.
+    #[test]
+    fn the_mode_and_the_person_follow_the_setting_in_force() {
+        let mut outward = outward(&[]);
+        let mut person = None;
+        let mut wrote = Vec::new();
+
+        outward.follow(&options(Forward::Unfocused), &mut person, &mut wrote);
+        assert_eq!(person, Some(Person::Here), "a watched person starts here");
+        assert_eq!(
+            String::from_utf8(std::mem::take(&mut wrote)).expect("utf8"),
+            "\u{1b}[?1004h"
+        );
+
+        // The same policy again writes NOTHING — the mirror moves the terminal, it does not re-tell
+        // it what it already knows, which is what makes this cheap enough to run per keystroke.
+        outward.follow(&options(Forward::Unfocused), &mut person, &mut wrote);
+        assert!(
+            wrote.is_empty(),
+            "an unchanged policy writes nothing: {wrote:?}"
+        );
+
+        // The person leaves...
+        person = Some(Person::Away);
+        // ...and the user turns the feature off. The mode is given back AND the stale answer is
+        // dropped, which is the half a `watching` flag alone would not have covered.
+        outward.follow(&options(Forward::Off), &mut person, &mut wrote);
+        assert_eq!(String::from_utf8(wrote).expect("utf8"), "\u{1b}[?1004l");
+        assert_eq!(person, None, "a client that stopped asking must forget");
+        assert!(!outward.watching());
     }
 
     /// The default policy is the one the module argues for, read through the OPTION TABLE rather
@@ -472,8 +563,7 @@ mod tests {
     /// names it — so a person with four sessions is told which one wants them.
     #[test]
     fn an_ordinary_terminal_is_sent_an_osc_9_naming_the_session() {
-        let sequence =
-            outward(Forward::Always, &[]).sequence(&said("pane 3: done", Severity::Note));
+        let sequence = outward(&[]).sequence("work", &said("pane 3: done", Severity::Note));
         assert_eq!(
             String::from_utf8(sequence).expect("utf8"),
             "\u{1b}]9;[work] pane 3: done\u{1b}\\",
@@ -487,14 +577,15 @@ mod tests {
     /// severity could not be added without deciding what a person's terminal should be told.
     #[test]
     fn kitty_is_sent_the_severity_as_an_urgency() {
-        let kitty = outward(Forward::Always, &[("TERM", "xterm-kitty")]);
+        let kitty = outward(&[("TERM", "xterm-kitty")]);
         for severity in Severity::ALL {
             let want = match severity {
                 Severity::Alert => 2,
                 Severity::Note | Severity::Warn => 1,
             };
             let sequence =
-                String::from_utf8(kitty.sequence(&said("pane 1: build", severity))).expect("utf8");
+                String::from_utf8(kitty.sequence("work", &said("pane 1: build", severity)))
+                    .expect("utf8");
             assert_eq!(
                 sequence,
                 format!("\u{1b}]99;u={want};[work] pane 1: build\u{1b}\\"),
@@ -513,10 +604,9 @@ mod tests {
             vec![("TERM", "xterm-kitty")],
             vec![("KITTY_WINDOW_ID", "3"), ("TERM", "xterm-256color")],
         ] {
-            let sequence = String::from_utf8(
-                outward(Forward::Always, &env).sequence(&said("x", Severity::Note)),
-            )
-            .expect("utf8");
+            let sequence =
+                String::from_utf8(outward(&env).sequence("work", &said("x", Severity::Note)))
+                    .expect("utf8");
             assert!(
                 sequence.starts_with("\u{1b}]99;"),
                 "{env:?} must select kitty's own protocol: {sequence:?}",
@@ -524,8 +614,7 @@ mod tests {
         }
         // The control: a terminal that claims neither gets the widely-understood form.
         let plain = String::from_utf8(
-            outward(Forward::Always, &[("TERM", "xterm-256color")])
-                .sequence(&said("x", Severity::Note)),
+            outward(&[("TERM", "xterm-256color")]).sequence("work", &said("x", Severity::Note)),
         )
         .expect("utf8");
         assert!(plain.starts_with("\u{1b}]9;"), "{plain:?}");
@@ -535,8 +624,8 @@ mod tests {
     /// the wrapper at the payload's own terminator and print the tail.
     #[test]
     fn inside_tmux_the_notification_is_passed_through_it() {
-        let sequence = outward(Forward::Always, &[("TMUX", "/tmp/tmux-1000/default,42,0")])
-            .sequence(&said("pane 0: done", Severity::Note));
+        let sequence = outward(&[("TMUX", "/tmp/tmux-1000/default,42,0")])
+            .sequence("work", &said("pane 0: done", Severity::Note));
         assert_eq!(
             sequence,
             b"\x1bPtmux;\x1b\x1b]9;[work] pane 0: done\x1b\x1b\\\x1b\\".to_vec(),
@@ -555,14 +644,10 @@ mod tests {
             "w\u{1b}]9;forged",
             &"n".repeat(MessageText::MAX_BYTES),
         ] {
-            let mut options = Options::default();
-            options
-                .set(NOTIFY_OUTWARD, Forward::Always.word())
-                .expect("always is a policy");
-            let outward = Outward::of(&options, hostile.to_owned(), |_| None);
-            let sequence =
-                String::from_utf8(outward.sequence(&said("pane 2: it finished", Severity::Note)))
-                    .expect("utf8");
+            let sequence = String::from_utf8(
+                outward(&[]).sequence(hostile, &said("pane 2: it finished", Severity::Note)),
+            )
+            .expect("utf8");
             assert_eq!(
                 sequence, "\u{1b}]9;pane 2: it finished\u{1b}\\",
                 "{hostile:?} must cost the prefix and nothing else",
@@ -588,21 +673,39 @@ mod tests {
     fn forwarding_writes_the_sequence_and_declining_writes_nothing() {
         let announcement = said("pane 0: bell", Severity::Note);
         let mut sent = Vec::new();
-        outward(Forward::Unfocused, &[]).forward(Some(Person::Away), &announcement, &mut sent);
+        outward(&[]).forward(
+            &options(Forward::Unfocused),
+            Some(Person::Away),
+            "work",
+            &announcement,
+            &mut sent,
+        );
         assert_eq!(
             String::from_utf8(sent).expect("utf8"),
             "\u{1b}]9;[work] pane 0: bell\u{1b}\\",
         );
 
         let mut silent = Vec::new();
-        outward(Forward::Unfocused, &[]).forward(Some(Person::Here), &announcement, &mut silent);
+        outward(&[]).forward(
+            &options(Forward::Unfocused),
+            Some(Person::Here),
+            "work",
+            &announcement,
+            &mut silent,
+        );
         assert!(
             silent.is_empty(),
             "a person who is looking at the row gets no second copy: {silent:?}",
         );
 
         let mut off = Vec::new();
-        outward(Forward::Off, &[]).forward(Some(Person::Away), &announcement, &mut off);
+        outward(&[]).forward(
+            &options(Forward::Off),
+            Some(Person::Away),
+            "work",
+            &announcement,
+            &mut off,
+        );
         assert!(
             off.is_empty(),
             "`off` is the silence sprag had before: {off:?}"
