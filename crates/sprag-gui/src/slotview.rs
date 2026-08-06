@@ -767,6 +767,16 @@ impl SlotView {
         self.id(slot).and_then(|id| self.host.pane_notification(id))
     }
 
+    /// TAKE what somebody asked this client to show a person (R317) — `sprag display-message`,
+    /// routed by the daemon and collected on this client's own wake.
+    ///
+    /// Not keyed by a slot, and that is the fact it carries: a message is addressed to the CLIENT,
+    /// not to a pane or a window or even a session, so it survives a session switch and belongs to
+    /// whoever is at this keyboard rather than to what they happen to be looking at.
+    pub(crate) fn take_message(&self) -> Option<sprag_host::report::Announcement> {
+        self.host.take_message()
+    }
+
     /// What the AGENT in slot `slot` is doing (H3), `None` for a hole or a pane no manifest claims.
     ///
     /// A DISPLAY fact like [`pane_title`](Self::pane_title), and read by the title SSOT

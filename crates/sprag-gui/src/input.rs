@@ -567,6 +567,12 @@ pub(crate) fn route_key(
     // armed in a pane must not survive a character typed into a find field. One place that can end the
     // mode is one place that can forget to; the single re-arm is in `keys::ClientKeys::route`.
     let prefixed = use_client_keys().take();
+    // A message that waits to be ACKNOWLEDGED is cleared by this keystroke (R317), and like the
+    // prefix above it happens BEFORE anything looks at what the key is or where it is going: an
+    // alert is acknowledged by a person touching a key, and which key it was — or which of the
+    // surfaces below swallows it — has nothing to do with it. A gate further down would be a client
+    // that stops acknowledging as soon as somebody opens the palette.
+    crate::message::acknowledge();
     // The destructive-command prompt, FIRST and gated on the prompt being UP rather than on what holds
     // focus: while the client is asking whether to destroy something, no key may reach anything else —
     // not a pane behind the scrim, not the palette row that armed it. Every other route below is keyed

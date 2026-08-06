@@ -72,9 +72,45 @@ pub(crate) fn show(report: &Report) {
     ) else {
         return;
     };
-    let until = said.until();
-    use_message().set(Some(said));
-    wake_at(until);
+    let held = use_message();
+    // `over` and not a plain `set`: a key that says something must not take the strip from a live
+    // ALERT somebody sent this client (R317). The rule is `sprag_host::report`'s, shared with the
+    // terminal front, so the two cannot rank two messages differently.
+    let shown = said.over(held.get(), now());
+    let until = shown.until();
+    held.set(Some(shown));
+    // `None` is a message with NO deadline — an alert, cleared by a keystroke rather than by a
+    // clock (see `Severity`). Nothing to wake for, so no thread is spawned: a timer here would be
+    // this client waking up to decide that it should still be showing what it is showing.
+    if let Some(until) = until {
+        wake_at(until);
+    }
+}
+
+/// Show what somebody ELSE asked this client to say — `sprag display-message`, routed by the daemon
+/// and collected on this client's own wake (R317).
+///
+/// It goes through [`show`] and therefore through [`Report`], which is the whole design: a message a
+/// person sent and a refusal this client built for itself are one value by the time either reaches a
+/// surface, so this front has no way to paint them differently.
+pub(crate) fn show_announcement(announcement: &sprag_host::report::Announcement) {
+    show(&Report::said(announcement));
+}
+
+/// Clear a message that waits to be ACKNOWLEDGED — what a keystroke does to an alert.
+///
+/// A no-op for a message on a deadline and for an empty strip, so the key path calls it
+/// unconditionally rather than asking first: an alert is the only thing a keystroke may take away,
+/// and a caller that had to check would be a caller that could forget to.
+pub(crate) fn acknowledge() {
+    let held = use_message();
+    if held
+        .get()
+        .as_ref()
+        .is_some_and(Message::waits_to_be_acknowledged)
+    {
+        held.set(None);
+    }
 }
 
 /// The sentence to paint right now, or `None` once the deadline has passed.

@@ -764,6 +764,16 @@ impl WidgetCore for TerminalViewer {
         // move the cursor, and a view that mutated what it draws would repaint from a state one
         // frame ahead of the one it was asked for.
         chooser::refresh();
+        // (2d) WHAT SOMEBODY ELSE ASKED THIS CLIENT TO SAY (R317) — `sprag display-message`, taken
+        // from the mirror the wire's poll thread filled on the wake the delivery caused. It sits
+        // beside the chooser refresh for the same reason: it can change what the frame shows, so it
+        // must run before the paint rather than inside it.
+        //
+        // TAKEN, not read: a message is shown once, and the take is what makes reconciling twice
+        // between two messages paint the first one once.
+        if let Some(announcement) = terminal.slots.take_message() {
+            message::show_announcement(&announcement);
+        }
         // (2) Grow each occupied pane's scroll bound to its live scrollback depth, then
         // feed its OSC-8 hover-oracle the current link map (R-71, pinion R1405) and open
         // any click-activated URI. The link map comes from the SAME projection the view
