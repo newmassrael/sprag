@@ -11825,6 +11825,64 @@
         "The GUI now shows BOTH a persistent dot and a one-off message for one notification, which is intended and stated nowhere in the code"
       ]
     },
+    "R319": {
+      "decision_summary": "A message follows the person out of the room: the terminal client learns whether anybody is looking at it, and a message that arrives while nobody is also reaches that terminal as a desktop notification carrying the severity as an urgency.",
+      "changes_bullets": [
+        "A message this client shows now FOLLOWS the person: while their terminal is unfocused it is also written to it as a desktop notification, so a build that finishes while they are elsewhere reaches them",
+        "sprag-tui decodes DEC 1004 focus reports itself, because termwiz 0.23.3 has no focus event and turns CSI I into the two keystrokes Alt-[ and I - enabling the mode without the decoder would type them into the person's own program",
+        "notify-outward = off | unfocused | always, defaulting to the messages a person could not have seen; the policy is per CLIENT and re-read from the file on every keystroke",
+        "The child's own urgency survives the whole chain: kitty u=2 in a pane becomes a Severity::Alert on the row and u=2 out to the terminal the person is sitting at",
+        "kitty's OSC 99 is selected by its own announcement and everything else gets OSC 9, which is as safe as the window title this client already sets undetected; inside tmux the sequence is passed through",
+        "A plugin-spawned pane's attention hook and a pane restored after a reboot each got their first driver, closing what R318 left wired and undriven"
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 46 targets / 2267 tests (baseline 2239); clippy 0 with no new suppression; doc gate exit 0 after it caught a public item linking to a private module",
+        "Pixel smoke 232/0 on the final tree, unchanged from baseline - the GUI performs no outward policy and the entry says so",
+        "MEASURED FIRST by running: a pane child's notification with the client's terminal unfocused left focus_tracking false and notification_seq 0 on the terminal, while the row painted",
+        "13 revert-proofs RED naming their arm, one harmless-edit control GREEN; the driver snapshots bytes, verifies each restore by digest, and rebuilds --workspace --bins per mutation",
+        "WIRE_PROTOCOL STAYS 15 - no option crosses the wire and the diff touches neither sprag-rpc nor sprag-host/src/wire.rs",
+        "The debt question, asked twice before the push, found five: two gates reading the DEVELOPER's config.toml, a frozen session, a frozen policy, and two branches nothing drove - all fixed"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "sprag-gui performs no outward policy at all: it paints the strip and forwards nothing, so notify-outward changes nothing for a windowed client - it needs a desktop notifier and a window-focus read",
+        "No OS-NATIVE notification, which stays herdr's lead; sprag argues the OSC form reaches a person over ssh where a notify-send on the client's machine reaches an empty room",
+        "A person who lands Alt-[ and a letter inside ONE tty read has them read as a focus report, and a terminal that splits its own report across two reads types them into the pane - both bounded, stated, and unreachable by hand",
+        "The forward is one message per delivery with no rate limit of its own; the daemon's one-message-per-client mailbox is the only thing bounding a burst",
+        "A message this client builds for its OWN keys is deliberately not forwarded, because a keystroke is proof somebody is here - stated in the loop, driven by no test"
+      ],
+      "publishable_decision_summary": "A message follows the person out of the room: the terminal client learns whether anybody is looking at it, and a message that arrives while nobody is also reaches that terminal as a desktop notification carrying the severity as an urgency.",
+      "publishable_changes_bullets": [
+        "A message this client shows now FOLLOWS the person: while their terminal is unfocused it is also written to it as a desktop notification, so a build that finishes while they are elsewhere reaches them",
+        "sprag-tui decodes DEC 1004 focus reports itself, because termwiz 0.23.3 has no focus event and turns CSI I into the two keystrokes Alt-[ and I - enabling the mode without the decoder would type them into the person's own program",
+        "notify-outward = off | unfocused | always, defaulting to the messages a person could not have seen; the policy is per CLIENT and re-read from the file on every keystroke",
+        "The child's own urgency survives the whole chain: kitty u=2 in a pane becomes a Severity::Alert on the row and u=2 out to the terminal the person is sitting at",
+        "kitty's OSC 99 is selected by its own announcement and everything else gets OSC 9, which is as safe as the window title this client already sets undetected; inside tmux the sequence is passed through",
+        "A plugin-spawned pane's attention hook and a pane restored after a reboot each got their first driver, closing what R318 left wired and undriven"
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 46 targets / 2267 tests (baseline 2239); clippy 0 with no new suppression; doc gate exit 0 after it caught a public item linking to a private module",
+        "Pixel smoke 232/0 on the final tree, unchanged from baseline - the GUI performs no outward policy and the entry says so",
+        "MEASURED FIRST by running: a pane child's notification with the client's terminal unfocused left focus_tracking false and notification_seq 0 on the terminal, while the row painted",
+        "13 revert-proofs RED naming their arm, one harmless-edit control GREEN; the driver snapshots bytes, verifies each restore by digest, and rebuilds --workspace --bins per mutation",
+        "WIRE_PROTOCOL STAYS 15 - no option crosses the wire and the diff touches neither sprag-rpc nor sprag-host/src/wire.rs",
+        "The debt question, asked twice before the push, found five: two gates reading the DEVELOPER's config.toml, a frozen session, a frozen policy, and two branches nothing drove - all fixed"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "sprag-gui performs no outward policy at all: it paints the strip and forwards nothing, so notify-outward changes nothing for a windowed client - it needs a desktop notifier and a window-focus read",
+        "No OS-NATIVE notification, which stays herdr's lead; sprag argues the OSC form reaches a person over ssh where a notify-send on the client's machine reaches an empty room",
+        "A person who lands Alt-[ and a letter inside ONE tty read has them read as a focus report, and a terminal that splits its own report across two reads types them into the pane - both bounded, stated, and unreachable by hand",
+        "The forward is one message per delivery with no rate limit of its own; the daemon's one-message-per-client mailbox is the only thing bounding a burst",
+        "A message this client builds for its OWN keys is deliberately not forwarded, because a keystroke is proof somebody is here - stated in the loop, driven by no test"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
