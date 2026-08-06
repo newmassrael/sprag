@@ -491,9 +491,30 @@ impl Message {
     }
 
     /// How much this message matters — what a surface marks it with.
+    ///
+    /// READ BY BOTH FRONTS, which is the point: `sprag-gui` picks the strip's container role from it
+    /// and `sprag-tui` prefixes [`mark`](Self::mark) onto its row. The audit that asked *which new
+    /// method has no caller* found this one with none, next to a doc claiming a surface marked
+    /// something — a claim with nothing behind it, which is the shape this project spends rounds
+    /// removing.
     #[must_use]
     pub const fn severity(&self) -> Severity {
         self.severity
+    }
+
+    /// The word a surface puts in front of this message, or [`None`] for one that needs none.
+    ///
+    /// **Only an [`Alert`](Severity::Alert) is marked**, and the reason is what marking is FOR: a
+    /// note and a warning explain themselves and go away, so a word in front of them is noise over a
+    /// sentence the user can already read. An alert is the one that STAYS, and a person who did not
+    /// see it arrive needs to know why their row is not clearing. Derived here so both fronts mark
+    /// it identically and neither writes a word of its own.
+    #[must_use]
+    pub const fn mark(&self) -> Option<&'static str> {
+        match self.severity {
+            Severity::Alert => Some(Severity::Alert.word()),
+            Severity::Note | Severity::Warn => None,
+        }
     }
 
     /// When this message stops being shown — what a client blocking on input must wake at, so the

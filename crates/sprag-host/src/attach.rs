@@ -599,12 +599,6 @@ impl Delivery {
         sessions.dedup();
         sessions
     }
-
-    /// Whether the message reached nobody at all.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.to.is_empty()
-    }
 }
 
 /// The sentence a surface prints — ONE wording, so the CLI and any other reader cannot describe one
@@ -686,7 +680,6 @@ mod tests {
         );
         assert_eq!(delivery.clients(), ["one", "two"]);
         assert_eq!(delivery.sessions(), ["build"], "one channel, not two");
-        assert!(!delivery.is_empty());
 
         assert!(registry.collect(watching).is_some());
         assert!(registry.collect(also).is_some());
@@ -727,7 +720,6 @@ mod tests {
             &Audience::Session("build".into()),
             &say("nobody is here", crate::report::Severity::Warn),
         );
-        assert!(delivery.is_empty());
         assert_eq!(delivery.clients(), Vec::<&str>::new());
         assert_eq!(delivery.sessions(), Vec::<&str>::new());
         assert_eq!(

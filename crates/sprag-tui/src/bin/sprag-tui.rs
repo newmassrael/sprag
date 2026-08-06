@@ -371,7 +371,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     clear: Clear::Yes,
                                     overlay: &overlay,
                                     status: split.status,
-                                    message: showing(&message),
+                                    message: showing(&message).as_deref(),
                                 },
                                 &mut held,
                             )?;
@@ -390,7 +390,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     clear: Clear::Yes,
                                     overlay: &overlay,
                                     status: split.status,
-                                    message: showing(&message),
+                                    message: showing(&message).as_deref(),
                                 },
                                 &mut held,
                             )?;
@@ -415,7 +415,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     clear: Clear::Yes,
                                     overlay: &overlay,
                                     status: split.status,
-                                    message: showing(&message),
+                                    message: showing(&message).as_deref(),
                                 },
                                 &mut held,
                             )?;
@@ -499,7 +499,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::No,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -539,7 +539,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::No,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -689,7 +689,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::Yes,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -725,7 +725,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::No,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -755,7 +755,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::No,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -792,7 +792,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::No,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -828,7 +828,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::No,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -850,7 +850,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                     // The row is repainted HERE and not by the arm above, because the arm painted
                     // before this message existed. One row, diffed by the surface, so a keystroke
                     // that says nothing costs nothing.
-                    paint_status(&mut screen, &host, split.status, showing(&message))?;
+                    paint_status(
+                        &mut screen,
+                        &host,
+                        split.status,
+                        showing(&message).as_deref(),
+                    )?;
                 }
             }
             // A bracketed paste arrives as ONE event rather than a key per character, and this arm
@@ -959,7 +964,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                             clear: Clear::Yes,
                                             overlay: &overlay,
                                             status: split.status,
-                                            message: showing(&message),
+                                            message: showing(&message).as_deref(),
                                         },
                                         &mut held,
                                     )?;
@@ -988,7 +993,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 clear: Clear::No,
                                 overlay: &overlay,
                                 status: split.status,
-                                message: showing(&message),
+                                message: showing(&message).as_deref(),
                             },
                             &mut held,
                         )?;
@@ -1026,7 +1031,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         clear: Clear::Yes,
                         overlay: &overlay,
                         status: split.status,
-                        message: showing(&message),
+                        message: showing(&message).as_deref(),
                     },
                     &mut held,
                 )?;
@@ -1088,7 +1093,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     clear: Clear::No,
                     overlay: &overlay,
                     status: split.status,
-                    message: showing(&message),
+                    message: showing(&message).as_deref(),
                 },
                 &mut held,
             )?;
@@ -1504,8 +1509,15 @@ fn window_area(host: &WireHost, screen: Rect) -> Rect {
 /// call site forgot to check the clock. The clock is read HERE rather than passed in for the reason
 /// [`Frame::message`] states: the loop and the paint must agree, and they agree by there being one
 /// function.
-fn showing(message: &Option<Message>) -> Option<&str> {
-    message.as_ref().and_then(|said| said.showing(now()))
+fn showing(message: &Option<Message>) -> Option<String> {
+    let said = message.as_ref()?;
+    let line = said.showing(now())?;
+    // MARKED, from `Message::mark` — the shared derivation, so this row and the windowed strip put
+    // the same word in front of the same message. Only an ALERT carries one; see there for why.
+    Some(
+        said.mark()
+            .map_or_else(|| line.to_owned(), |mark| format!("{mark}: {line}")),
+    )
 }
 
 /// Repaint the status row ALONE and flush it.

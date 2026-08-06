@@ -4958,11 +4958,38 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
         std::thread::sleep(Duration::from_millis(40));
     }
 
+    // THE MARK: an alert says so in front of its sentence. The audit's finding was that
+    // `Message::severity` had NO reader while its own doc claimed a surface marked something.
+    assert!(
+        tui.row(STATUS_ROW).contains("alert: the deploy needs you"),
+        "an alert is MARKED, so a person can see why the row is not clearing: {:?}",
+        tui.row(STATUS_ROW),
+    );
+
     // ...until a person touches a key. `Escape` is bound to nothing and reaches no pane arm, so what
     // clears the row is the ACKNOWLEDGEMENT and not something the key happened to do.
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"\x1b");
     wait_for("the keystroke to acknowledge the alert", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    // A WARNING is on the clock like a note and carries NO mark — the arm between the two, which
+    // nothing drove through the verb until the audit asked.
+    send("warn", "the retry did not help");
+    wait_for("the warning to be painted", || {
+        settled(
+            tui.row(STATUS_ROW).contains("the retry did not help"),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    assert!(
+        !tui.row(STATUS_ROW).contains("warn:"),
+        "only an ALERT is marked; a warning explains itself: {:?}",
+        tui.row(STATUS_ROW),
+    );
+    wait_for("the warning to expire on the clock, like a note", || {
         settled(tui.row(STATUS_ROW), &where_it_is)
     });
 }

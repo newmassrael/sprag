@@ -119,7 +119,27 @@ pub(crate) fn acknowledge() {
 /// repaints again shows a stale line to nobody — [`Message::showing`]'s own rule.
 #[must_use]
 pub(crate) fn showing() -> Option<String> {
-    use_message().get()?.showing(now()).map(str::to_owned)
+    let said = use_message().get()?;
+    let line = said.showing(now())?;
+    // MARKED, from `Message::mark` — the shared derivation `sprag-tui`'s row reads too, so the two
+    // fronts put the same word in front of the same message and neither writes one.
+    Some(
+        said.mark()
+            .map_or_else(|| line.to_owned(), |mark| format!("{mark}: {line}")),
+    )
+}
+
+/// The container role the strip is filled with — READ OFF THE SEVERITY, which is the windowed
+/// front's half of the same fact the row marks in words.
+///
+/// `ErrorContainer` for an alert, because an alert is the state a person has to act on and the
+/// theme's error role is what every other surface in this client uses to say so; the ordinary
+/// surface role otherwise, so a note is a sentence rather than an alarm.
+fn strip_role() -> ColorRole {
+    match use_message().get().map(|said| said.severity()) {
+        Some(sprag_host::report::Severity::Alert) => ColorRole::ErrorContainer,
+        _ => ColorRole::SurfaceContainerHigh,
+    }
 }
 
 /// Ask for a repaint once `until` has passed, so the strip clears on its own deadline.
@@ -157,7 +177,7 @@ pub(crate) fn view_message(theme: &Theme, window: (u32, u32)) -> Option<Scene> {
         .with_style(
             // The ERROR container role, because everything this strip can say is a thing that did
             // not happen — see [`sprag_host::report`], where a landing is deliberately silent.
-            BoxStyle::filled(theme.resolve(ColorRole::SurfaceContainerHigh)).with_corner_radius(6),
+            BoxStyle::filled(theme.resolve(strip_role())).with_corner_radius(6),
         )
         .with_layout(
             LayoutStyle::new()
