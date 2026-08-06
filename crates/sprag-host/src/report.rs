@@ -250,6 +250,34 @@ pub enum MessageTextError {
     Control,
 }
 
+impl MessageTextError {
+    /// The longest [`rule`](Self::rule) any variant answers, so a caller building a sentence AROUND
+    /// one can prove its own length rather than hoping.
+    ///
+    /// Derived from the words below by a test (`the_rule_names_stay_inside_their_own_bound`) rather
+    /// than counted here, because a constant nothing checks is the drifting-array defect wearing a
+    /// different hat.
+    pub const LONGEST_RULE: usize = 18;
+
+    /// Which rule was broken, as a SHORT noun phrase — two or three words, for a sentence that has
+    /// to say why inside a row it is already sharing.
+    ///
+    /// **[`Display`](fmt::Display) is the other audience and that is why there are two.** A caller at
+    /// a command line gets the paragraph: they wrote the message, they can fix it, and the reason a
+    /// newline is refused is exactly what they need. A reader of a STATUS ROW cannot fix anything —
+    /// the words came from a child in one of their panes — so what they need is the pane and the
+    /// rule, in a line that still fits. [`crate::attention`] is the caller, and the bound above is
+    /// what lets its fallback be provably showable instead of merely short enough so far.
+    #[must_use]
+    pub const fn rule(self) -> &'static str {
+        match self {
+            Self::Blank => "no words",
+            Self::TooLong(_) => "too long",
+            Self::Control => "control characters",
+        }
+    }
+}
+
 impl fmt::Display for MessageTextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -943,6 +971,32 @@ mod tests {
             said.contains("newline") && said.contains("escape"),
             "the refusal says WHY, not just no: {said}",
         );
+    }
+
+    /// **The two audiences get two lengths, and the SHORT one is bounded** — which is what lets
+    /// [`crate::attention`]'s fallback sentence prove it fits a row instead of hoping.
+    ///
+    /// The bound is asserted rather than trusted, and the reason is that it was WRONG: the first
+    /// version of that fallback embedded the `Display` paragraph, which pushed a refusal sentence to
+    /// 216 bytes — over the very limit it was reporting — and the `expect` beside it claimed the
+    /// case was unreachable. A test found it. Every rule is checked here, not the one that broke.
+    #[test]
+    fn the_rule_names_stay_inside_their_own_bound() {
+        for broken in [
+            MessageTextError::Blank,
+            MessageTextError::TooLong(MessageText::MAX_BYTES + 1),
+            MessageTextError::Control,
+        ] {
+            assert!(
+                broken.rule().len() <= MessageTextError::LONGEST_RULE,
+                "{broken:?}'s rule name is {} bytes, past the declared bound",
+                broken.rule().len(),
+            );
+            assert!(
+                broken.to_string().len() > broken.rule().len(),
+                "the two audiences must not have collapsed into one wording: {broken:?}",
+            );
+        }
     }
 
     /// A blank message is refused rather than shown as an empty row, and whitespace-only counts as

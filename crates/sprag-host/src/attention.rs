@@ -244,8 +244,17 @@ fn address_of(pane: PaneId, registry: &Mutex<SessionRegistry>) -> PaneAddress {
 /// a build failure invisible for a reason nobody can see, and a sanitised one is the rival's trade
 /// (`sanitized_notification_text` truncates to 80 bytes and answers `shown`).
 ///
-/// The fallback is built from this module's own words and the address, so it cannot itself be
-/// refused — which is why the expect below is unreachable rather than merely unlikely.
+/// # The fallback's own length is PROVED, not assumed
+///
+/// It was assumed, and it was wrong: the first version embedded
+/// [`MessageTextError`](crate::report::MessageTextError)'s `Display` — a paragraph explaining why a
+/// newline is refused — which produced a 216-byte refusal about a 200-byte limit, under an `expect`
+/// claiming the case could not arise. A test found it. The sentence now carries
+/// [`rule`](crate::report::MessageTextError::rule), the SHORT wording, and every term in it is
+/// bounded: `PaneName` caps a name at 80 bytes, a `u64` id at 20 digits, and
+/// `LONGEST_RULE` caps the reason — so the expect below is unreachable by arithmetic, which
+/// `the_refusal_sentence_fits_a_row_for_the_longest_possible_pane_name` checks at the widest input
+/// rather than at a convenient one.
 fn words(address: &PaneAddress, attention: &Attention) -> MessageText {
     let said = match attention {
         // Title and body joined the way a desktop notification reads, skipping whichever the source
@@ -264,7 +273,8 @@ fn words(address: &PaneAddress, attention: &Attention) -> MessageText {
     };
     MessageText::parse(&format!("pane {address}: {said}")).unwrap_or_else(|broken| {
         MessageText::parse(&format!(
-            "pane {address} raised a notification that cannot be shown: {broken}",
+            "pane {address} raised a notification that cannot be shown: {}",
+            broken.rule(),
         ))
         .expect("this module's own sentence breaks no rule a terminal row imposes")
     })
@@ -401,6 +411,26 @@ mod tests {
             hostile.as_str().contains("control characters"),
             "and which rule it broke: {hostile}",
         );
+    }
+
+    /// **The refusal sentence fits a row at the WIDEST input it can be built from** — the longest
+    /// legal pane name, the longest rule wording. This is the assertion the `expect` in [`words`]
+    /// rests on, and it is here because the first version of that sentence did NOT fit: it embedded
+    /// the operator-facing paragraph and came to 216 bytes.
+    #[test]
+    fn the_refusal_sentence_fits_a_row_for_the_longest_possible_pane_name() {
+        let longest = "n".repeat(sprag_terminal::PaneName::MAX_BYTES);
+        let name = sprag_terminal::PaneName::parse(&longest).expect("the longest legal pane name");
+        let said = words(
+            &PaneAddress::Name(name.as_str().to_owned()),
+            &raised(None, "two\nrows", Urgency::Normal),
+        );
+        assert!(
+            said.as_str().len() <= MessageText::MAX_BYTES,
+            "the refusal is {} bytes at the widest input",
+            said.as_str().len(),
+        );
+        assert!(said.as_str().contains("control characters"));
     }
 
     /// A body longer than a row is refused the same way, which is the case that proves the fallback
