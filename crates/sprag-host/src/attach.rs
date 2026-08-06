@@ -35,6 +35,8 @@ use serde::{Deserialize, Serialize};
 use sprag_terminal::SessionId;
 use std::collections::HashMap;
 
+use crate::report::Announcement;
+
 /// An opaque, client-minted lifecycle token shared by every connection of one logical client.
 /// Not identity (says nothing about who the peer is), only "these connections are one client".
 pub type ClientId = String;
@@ -172,6 +174,18 @@ pub struct AttachmentRegistry {
     /// (which is the order both frontends use, so the first arbitration already counts it) and an
     /// attached client may never report one.
     client_size: HashMap<ClientId, Reported>,
+    /// The one message waiting for each present client, put there by
+    /// [`deliver`](AttachmentRegistry::deliver) and taken by [`collect`](AttachmentRegistry::collect).
+    ///
+    /// Keyed by CLIENT and not by connection, for the reason the size beside it is: a client's
+    /// several connections are one surface with one status row, and a message queued per connection
+    /// would be shown twice or — worse — once on whichever connection happened to ask first.
+    ///
+    /// Bounded by construction: one entry per present client, one message per entry. It is dropped
+    /// with the client in [`disconnect`](AttachmentRegistry::disconnect), so a message nobody
+    /// collected cannot outlive the client it was addressed to and become a sentence a LATER client
+    /// with the same id is shown — the capture the history beside it already refuses.
+    client_mail: HashMap<ClientId, Announcement>,
     /// The stamp the next report takes. Monotone for the life of the daemon — it orders reports,
     /// it does not count them, so wrapping is not a concern at one per window change.
     next_ordinal: u64,
@@ -359,6 +373,9 @@ impl AttachmentRegistry {
         // a client id is a lifecycle token: the next client to hold one is a different client, and
         // inheriting somebody else's "go back" is the same capture in a different key.
         self.client_history.remove(&client);
+        // ...and so does anything still waiting to be said to it. A client id is a lifecycle token,
+        // so leaving the mailbox would hand a stranger a sentence meant for somebody who has gone.
+        self.client_mail.remove(&client);
         self.client_session.remove(&client)
     }
 
@@ -448,6 +465,167 @@ impl AttachmentRegistry {
         });
         clients
     }
+
+    /// Put `announcement` in front of everyone `audience` names, and answer WHO — see [`Delivery`].
+    ///
+    /// **A message goes to ATTACHED clients only, and that is the whole reason this lives here.** A
+    /// client that has said hello but attached to nothing is viewing no session and painting no row,
+    /// so it has nowhere to put a sentence; queueing for it would let the answer claim a delivery
+    /// that could never be shown. The set this walks is [`clients`](Self::clients)'s own, so the
+    /// listing a caller reads to choose a `-c` target and the set a message reaches are one map.
+    ///
+    /// Each client keeps ONE waiting message, resolved by [`Announcement::over`] — see there for why
+    /// a slot rather than a queue.
+    pub fn deliver(&mut self, audience: &Audience, announcement: &Announcement) -> Delivery {
+        let mut to: Vec<ClientInfo> = self
+            .clients()
+            .into_iter()
+            .filter(|client| audience.reaches(client))
+            .collect();
+        to.sort_by(|a, b| a.client.cmp(&b.client));
+        for client in &to {
+            let waiting = self.client_mail.remove(&client.client);
+            self.client_mail
+                .insert(client.client.clone(), announcement.clone().over(waiting));
+        }
+        Delivery { to }
+    }
+
+    /// Take the message waiting for the client owning `conn`, if any — a COLLECTION, so one message
+    /// is shown once.
+    ///
+    /// Removing rather than reading is what makes the delivery exactly-once for a live client: a
+    /// client that re-asks after painting is not handed the same sentence again, and no cursor has to
+    /// be threaded through the wire to say so. A client that dies between the queueing and the
+    /// collection loses the message with its mailbox, which is the honest bound
+    /// [`Delivery`] documents rather than papers over.
+    pub fn collect(&mut self, conn: ConnId) -> Option<Announcement> {
+        let client = self.conn_client.get(&conn)?;
+        self.client_mail.remove(client)
+    }
+
+    /// Whether `client` is present — a client id that [`deliver`](Self::deliver) could name.
+    #[must_use]
+    pub fn is_attached(&self, client: &str) -> bool {
+        self.client_session.contains_key(client)
+    }
+}
+
+/// Who a message is for.
+///
+/// Two arms, because there are exactly two questions a caller can answer about an audience it
+/// cannot see: *this one particular client* and *whoever is looking at this session*. There is no
+/// "everybody on the box" arm and that is deliberate — a message is shown to a person, and a daemon
+/// serving several people's sessions has no business letting one of them interrupt all of them.
+///
+/// The rival has no arm at all: `notification.show` carries no target, its `ToastNotification` has a
+/// `target` field the API path always fills with `None`, and delivery is to "the foreground client"
+/// or to `NoForegroundClient` (`handle_notification_show`, `app/api.rs`, read at `9a4ce5e1`). That is
+/// not a gap in their design so much as a consequence of it — they are one process with one UI, so
+/// the question cannot arise. sprag is a daemon with N clients on M sessions, so it must be asked,
+/// and answering it is what makes `-c` mean something.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Audience {
+    /// One named client, wherever it is attached — tmux `display-message -c`.
+    Client(ClientId),
+    /// Every client attached to one session — the default, and what "tell whoever is watching this"
+    /// means when the caller is a script that knows a session and not a window on somebody's desk.
+    Session(String),
+}
+
+impl Audience {
+    /// Whether this audience includes `client`.
+    #[must_use]
+    fn reaches(&self, client: &ClientInfo) -> bool {
+        match self {
+            Self::Client(id) => client.client == *id,
+            Self::Session(session) => client.session == *session,
+        }
+    }
+}
+
+/// Who a message actually reached.
+///
+/// # Why the answer is a VALUE and not a `bool`
+///
+/// R316's whole finding one level up: an outcome nobody reads is a defect waiting for a user to find.
+/// An agent that says *"the deploy needs you"* into a daemon where nobody is attached has told
+/// nobody, and `ok` is the wrong answer to that. So the verb answers the LIST, `#[must_use]`, and
+/// every surface has to decide what to do with it.
+///
+/// # What "delivered" claims, exactly
+///
+/// That the message is in front of that client and will be painted on its next frame — not that a
+/// person has read it. A read receipt would need an acknowledgement round trip, and a client that
+/// dies in the millisecond after this answer loses its mailbox with itself. The honest bound is
+/// stated here rather than implied by a hopeful word.
+///
+/// The rival answers one word for one implicit destination (`shown` plus a reason:
+/// `Disabled | RateLimited | NoForegroundClient | Busy`), which is a better answer than "ok" and
+/// worse than a list — with two windows open it cannot say which one got it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+#[must_use = "a message that reached nobody is exactly the outcome this type exists to report — \
+              read the delivery, or the caller has been told `ok` for a sentence no person saw"]
+pub struct Delivery {
+    /// The clients the message was put in front of, ordered by client id.
+    to: Vec<ClientInfo>,
+}
+
+impl Delivery {
+    /// The clients the message reached, ordered by client id.
+    #[must_use]
+    pub fn clients(&self) -> Vec<&str> {
+        self.to
+            .iter()
+            .map(|client| client.client.as_str())
+            .collect()
+    }
+
+    /// The sessions whose change channels must be woken so the clients above repaint promptly —
+    /// deduplicated, because two clients on one session share one channel.
+    ///
+    /// Derived from the delivery rather than recomputed by the caller: the set that must be woken is
+    /// exactly the set that was written to, and a caller free to compute its own could wake a
+    /// different one. That is [`crate::notify`]'s standing hazard — a client parked forever because
+    /// the bump landed on the wrong session — kept impossible by construction.
+    #[must_use]
+    pub fn sessions(&self) -> Vec<&str> {
+        let mut sessions: Vec<&str> = self
+            .to
+            .iter()
+            .map(|client| client.session.as_str())
+            .collect();
+        sessions.sort_unstable();
+        sessions.dedup();
+        sessions
+    }
+
+    /// Whether the message reached nobody at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.to.is_empty()
+    }
+}
+
+/// The sentence a surface prints — ONE wording, so the CLI and any other reader cannot describe one
+/// delivery differently.
+impl std::fmt::Display for Delivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.to.as_slice() {
+            [] => write!(f, "shown to nobody: no client is attached"),
+            [one] => write!(f, "shown to {} on session \"{}\"", one.client, one.session),
+            many => {
+                write!(f, "shown to {} clients: ", many.len())?;
+                for (n, client) in many.iter().enumerate() {
+                    if n > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} on session \"{}\"", client.client, client.session)?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -479,6 +657,225 @@ mod tests {
             hash = hash.wrapping_mul(0x100_0000_01b3);
         }
         SessionId(hash)
+    }
+
+    /// An announcement at `severity`, for the delivery tests below.
+    fn say(text: &str, severity: crate::report::Severity) -> Announcement {
+        Announcement {
+            text: crate::report::MessageText::parse(text).expect("a plain sentence"),
+            severity,
+        }
+    }
+
+    /// **A message reaches every client attached to the session and NOBODY ELSE** — the default
+    /// audience, with a client on another session as the control that must not be reached.
+    #[test]
+    fn a_session_message_reaches_that_sessions_viewers_only() {
+        let mut registry = AttachmentRegistry::default();
+        let (watching, also, elsewhere) = (conn(1), conn(2), conn(3));
+        registry.hello(watching, "one".into());
+        registry.hello(also, "two".into());
+        registry.hello(elsewhere, "three".into());
+        registry.attach(watching, "build".into(), sid("build"));
+        registry.attach(also, "build".into(), sid("build"));
+        registry.attach(elsewhere, "notes".into(), sid("notes"));
+
+        let delivery = registry.deliver(
+            &Audience::Session("build".into()),
+            &say("the deploy finished", crate::report::Severity::Note),
+        );
+        assert_eq!(delivery.clients(), ["one", "two"]);
+        assert_eq!(delivery.sessions(), ["build"], "one channel, not two");
+        assert!(!delivery.is_empty());
+
+        assert!(registry.collect(watching).is_some());
+        assert!(registry.collect(also).is_some());
+        assert!(
+            registry.collect(elsewhere).is_none(),
+            "the client on another session is the CONTROL: it must have been given nothing",
+        );
+    }
+
+    /// A `-c` message reaches ONE named client, even when a second client shares its session.
+    #[test]
+    fn a_named_client_is_the_only_one_reached() {
+        let mut registry = AttachmentRegistry::default();
+        let (named, neighbour) = (conn(1), conn(2));
+        registry.hello(named, "one".into());
+        registry.hello(neighbour, "two".into());
+        registry.attach(named, "build".into(), sid("build"));
+        registry.attach(neighbour, "build".into(), sid("build"));
+
+        let delivery = registry.deliver(
+            &Audience::Client("one".into()),
+            &say("your turn", crate::report::Severity::Alert),
+        );
+        assert_eq!(delivery.clients(), ["one"]);
+        assert!(registry.collect(named).is_some());
+        assert!(registry.collect(neighbour).is_none());
+    }
+
+    /// **A message to nobody says so.** The daemon holds nothing, the delivery is empty, and its own
+    /// sentence names the reason — the outcome R316's thesis says must not come back as `ok`.
+    #[test]
+    fn a_message_with_no_client_attached_reaches_nobody_and_says_which() {
+        let mut registry = AttachmentRegistry::default();
+        let hello_only = conn(1);
+        registry.hello(hello_only, "one".into());
+
+        let delivery = registry.deliver(
+            &Audience::Session("build".into()),
+            &say("nobody is here", crate::report::Severity::Warn),
+        );
+        assert!(delivery.is_empty());
+        assert_eq!(delivery.clients(), Vec::<&str>::new());
+        assert_eq!(delivery.sessions(), Vec::<&str>::new());
+        assert_eq!(
+            delivery.to_string(),
+            "shown to nobody: no client is attached",
+        );
+        assert!(
+            registry.collect(hello_only).is_none(),
+            "a client that has said hello but attached to nothing is painting no row",
+        );
+    }
+
+    /// A message is collected ONCE — the second ask gets nothing, so a client that repaints does not
+    /// show the same sentence again.
+    #[test]
+    fn a_message_is_handed_over_exactly_once() {
+        let mut registry = AttachmentRegistry::default();
+        let client = conn(1);
+        registry.hello(client, "one".into());
+        registry.attach(client, "build".into(), sid("build"));
+
+        let _ = registry.deliver(
+            &Audience::Session("build".into()),
+            &say("once", crate::report::Severity::Note),
+        );
+        assert_eq!(
+            registry.collect(client).map(|a| a.text.as_str().to_owned()),
+            Some("once".to_owned()),
+        );
+        assert!(registry.collect(client).is_none());
+    }
+
+    /// **A note arriving behind an undelivered alert does not displace it**, and the reverse does —
+    /// the row's own precedence rule, held one step earlier so a client is never handed the message
+    /// it would then have refused to show.
+    #[test]
+    fn a_waiting_alert_is_not_displaced_by_a_note() {
+        let mut registry = AttachmentRegistry::default();
+        let client = conn(1);
+        registry.hello(client, "one".into());
+        registry.attach(client, "build".into(), sid("build"));
+        let audience = Audience::Session("build".into());
+
+        let _ = registry.deliver(&audience, &say("your turn", crate::report::Severity::Alert));
+        let _ = registry.deliver(&audience, &say("a note", crate::report::Severity::Note));
+        assert_eq!(
+            registry.collect(client).map(|a| a.text.as_str().to_owned()),
+            Some("your turn".to_owned()),
+            "the alert kept the slot",
+        );
+
+        let _ = registry.deliver(&audience, &say("a note", crate::report::Severity::Note));
+        let _ = registry.deliver(&audience, &say("your turn", crate::report::Severity::Alert));
+        assert_eq!(
+            registry.collect(client).map(|a| a.text.as_str().to_owned()),
+            Some("your turn".to_owned()),
+            "and it takes the slot from a note",
+        );
+    }
+
+    /// A message nobody collected dies with the client it was addressed to — a client id is a
+    /// lifecycle token, so the next holder of one must not inherit somebody else's sentence.
+    #[test]
+    fn an_uncollected_message_does_not_outlive_its_client() {
+        let mut registry = AttachmentRegistry::default();
+        let gone = conn(1);
+        registry.hello(gone, "one".into());
+        registry.attach(gone, "build".into(), sid("build"));
+        let _ = registry.deliver(
+            &Audience::Session("build".into()),
+            &say("never read", crate::report::Severity::Alert),
+        );
+        registry.disconnect(gone);
+
+        let reborn = conn(2);
+        registry.hello(reborn, "one".into());
+        registry.attach(reborn, "build".into(), sid("build"));
+        assert!(
+            registry.collect(reborn).is_none(),
+            "the new client wearing the same id inherits nothing",
+        );
+    }
+
+    /// A client with TWO connections is one mailbox: the message is queued once and whichever
+    /// connection asks first gets it, so a two-connection client cannot show one sentence twice.
+    #[test]
+    fn a_clients_several_connections_share_one_mailbox() {
+        let mut registry = AttachmentRegistry::default();
+        let (requests, poll) = (conn(1), conn(2));
+        registry.hello(requests, "one".into());
+        registry.hello(poll, "one".into());
+        registry.attach(requests, "build".into(), sid("build"));
+
+        let delivery = registry.deliver(
+            &Audience::Session("build".into()),
+            &say("once", crate::report::Severity::Note),
+        );
+        assert_eq!(
+            delivery.clients(),
+            ["one"],
+            "one client, not two connections"
+        );
+        assert!(registry.collect(poll).is_some());
+        assert!(registry.collect(requests).is_none());
+    }
+
+    /// The wording a surface prints is this type's, in all three shapes — so a listing cannot say
+    /// "1 clients" or omit which session a client is watching.
+    #[test]
+    fn the_delivery_says_who_in_its_own_words() {
+        let mut registry = AttachmentRegistry::default();
+        let (one, two) = (conn(1), conn(2));
+        registry.hello(one, "gui-1".into());
+        registry.hello(two, "gui-2".into());
+        registry.attach(one, "build".into(), sid("build"));
+        let audience = Audience::Session("build".into());
+
+        assert_eq!(
+            registry
+                .deliver(&audience, &say("x", crate::report::Severity::Note))
+                .to_string(),
+            "shown to gui-1 on session \"build\"",
+        );
+        registry.attach(two, "build".into(), sid("build"));
+        assert_eq!(
+            registry
+                .deliver(&audience, &say("x", crate::report::Severity::Note))
+                .to_string(),
+            "shown to 2 clients: gui-1 on session \"build\", gui-2 on session \"build\"",
+        );
+    }
+
+    /// `is_attached` answers about the same set `clients` lists, which is what makes a `-c` refusal
+    /// able to say the name is not one of these rather than guessing.
+    #[test]
+    fn a_client_is_addressable_exactly_while_it_is_listed() {
+        let mut registry = AttachmentRegistry::default();
+        let client = conn(1);
+        registry.hello(client, "one".into());
+        assert!(
+            !registry.is_attached("one"),
+            "hello alone is not an attachment",
+        );
+        registry.attach(client, "build".into(), sid("build"));
+        assert!(registry.is_attached("one"));
+        assert!(!registry.is_attached("two"));
+        registry.disconnect(client);
+        assert!(!registry.is_attached("one"));
     }
 
     #[test]

@@ -78,7 +78,8 @@ use crate::window::{SizeRequest, WindowSize};
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
-    DETACHED_KEY, DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT,
+    DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, EVENTS_FIELD,
+    GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT,
     JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION,
     MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
     PANE_PROCESSES_FIELD, PANES_SLOT, PROJECT_FIELD, PaneProcessesWire, RELEASE_AGENT_ACTION,
@@ -718,6 +719,72 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(
             serde_json::json!({ "released": agents.release(id) }),
         ))
+    }
+
+    /// `display_message` action: put a sentence in front of the people looking at this daemon — see
+    /// [`crate::wire::DISPLAY_MESSAGE_ACTION`] for the argument vocabulary and the address.
+    ///
+    /// Three things happen and their ORDER is the correctness here, exactly as it is one method up
+    /// in [`report_agent`](Self::report_agent): the message is queued under the attachment lock, the
+    /// lock is DROPPED, and only then are the sessions it landed in woken. Announcing while holding
+    /// the registry would take the change-channel lock inside the attachment one, which is an order
+    /// nothing else in this daemon uses — and [`crate::notify`]'s own rule is that nothing expensive
+    /// happens under a lock a keystroke has to pass through.
+    ///
+    /// **The wake is derived from the delivery** ([`crate::Delivery::sessions`]) rather than from the
+    /// request's scope, and that is not tidiness: a `client` target may be attached to a session
+    /// other than this request's, so bumping the scope would leave the one client that was actually
+    /// written to parked on a channel that never moved — a message queued forever behind a wake that
+    /// went somewhere else.
+    fn display_message(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let text = map
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or(InvokeError::TypeMismatch)?;
+        // Refused rather than trimmed: the rules are the ones a terminal row imposes, and a caller
+        // whose sentence broke one has a bug that a silent truncation would hide (which is what the
+        // rival's `sanitized_notification_text` does).
+        let text = crate::report::MessageText::parse(text).map_err(|_| InvokeError::TypeMismatch)?;
+        // Absent is `note`: a caller that did not think about severity has not claimed urgency. A
+        // word this build does not know is a TypeMismatch rather than a silent fall-back to that —
+        // `-s alrt` must not quietly become a note.
+        let severity = match map.get("severity") {
+            None | Some(Value::Null) => crate::report::Severity::default(),
+            Some(Value::String(word)) => {
+                crate::report::Severity::parse(word).ok_or(InvokeError::TypeMismatch)?
+            }
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let audience = match map.get("client") {
+            None | Some(Value::Null) => crate::Audience::Session(self.scope.session().to_owned()),
+            Some(Value::String(client)) => crate::Audience::Client(client.clone()),
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let Some(attachments) = self.attachments.as_ref() else {
+            // No attachment map on this host (a GUI's in-process host, a unit test): there are no
+            // wire clients to address, and inventing a delivery here would report a sentence shown to
+            // somebody who does not exist.
+            return Err(InvokeError::Rejected);
+        };
+        let delivery = {
+            let mut attachments = lock(attachments);
+            // A NAMED client that is not attached is a caller's mistake, not an empty audience, and
+            // the two must not answer alike: `{clients: []}` for a typo would read as "nobody is
+            // watching" and send an agent looking for a person who is right there.
+            if let crate::Audience::Client(client) = &audience
+                && !attachments.is_attached(client)
+            {
+                return Err(InvokeError::Rejected);
+            }
+            attachments.deliver(&audience, &crate::report::Announcement { text, severity })
+        };
+        for session in delivery.sessions() {
+            self.channels.bump(session);
+        }
+        Ok(IntrospectValue::Json(serde_json::json!({
+            "clients": delivery.clients(),
+        })))
     }
 
     /// Whether the DAEMON holds a pane with this id — any session, any window.
@@ -1784,6 +1851,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                     SchemaField::new(SELECT_PANE_ACTION, "action"),
                     SchemaField::new(RENAME_WINDOW_ACTION, "action"),
                     SchemaField::new(RENAME_SESSION_ACTION, "action"),
+                    SchemaField::new(DISPLAY_MESSAGE_ACTION, "action"),
                     SchemaField::new(KILL_WINDOW_ACTION, "action"),
                     SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
                     SchemaField::new(BREAK_PANE_ACTION, "action"),
@@ -2315,6 +2383,7 @@ impl WorkspaceExternal {
             DROP_FILE_ACTION => self.drop_file(&args),
             REPORT_AGENT_ACTION => self.report_agent(&args),
             RELEASE_AGENT_ACTION => self.release_agent(&args),
+            DISPLAY_MESSAGE_ACTION => self.display_message(&args),
             _ => Err(InvokeError::UnknownPath),
         }
     }

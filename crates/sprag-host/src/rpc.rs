@@ -44,8 +44,9 @@ use crate::notify::{ChannelRegistry, OutputQuery};
 use crate::runs::RunRegistry;
 use crate::scope::{ScopeError, SessionScope};
 use crate::wire::{
-    AttachAsk, AttachFault, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM,
-    CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD, EVENTS_UNSUBSCRIBE_METHOD,
+    AttachAsk, AttachFault, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_MESSAGES_METHOD,
+    CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM, EVENTS_SUBSCRIBE_METHOD,
+    EVENTS_UNSUBSCRIBE_METHOD, MESSAGE_FIELD,
     EVENTS_WAIT_METHOD, GOTO_PANE_PARAM, GOTO_PARAM, GOTO_SESSION_PARAM, GOTO_WINDOW_PARAM,
     INVALID_PARAMS, LAST_PARAM, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PATTERN_PARAM,
     PROTOCOL_FIELD, PROTOCOL_PARAM, ROWS_PARAM, SINCE_PARAM, STEP_PARAM, SUBSCRIPTION_PARAM,
@@ -1139,6 +1140,33 @@ fn handle_size(state: &HostState, conn: ConnId, request: &Request) -> Option<Str
     }
 }
 
+/// Hand this connection's client whatever the daemon is holding for it
+/// ([`CLIENT_MESSAGES_METHOD`]) — the read half of `sprag display-message`.
+///
+/// Beside [`handle_size`] and BEFORE scope resolution, for its reason exactly: a mailbox is per
+/// CLIENT, so the request carries no session and the one it would have carried is irrelevant. A
+/// client asks on the wake it already has, so this is on a display client's reconcile path and does
+/// no work when there is nothing to hand over.
+///
+/// **A connection that never said hello is answered `null`, not refused.** It is not a malformed
+/// request — a connection with no client simply has no mailbox, which is the same answer as an empty
+/// one — and the CLI's own connections take this path with nothing addressed to them. Refusing would
+/// make a probe's first read look like a protocol error.
+fn handle_messages(state: &HostState, conn: ConnId, request: &Request) -> Option<String> {
+    let collected = lock(state.attachments()).collect(conn);
+    lifecycle_answer(
+        request,
+        serde_json::json!({
+            MESSAGE_FIELD: collected.map(|announcement| {
+                serde_json::json!({
+                    "text": announcement.text.as_str(),
+                    "severity": announcement.severity,
+                })
+            }),
+        }),
+    )
+}
+
 fn handle_attach(
     state: &HostState,
     conn: ConnId,
@@ -1636,6 +1664,15 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
             // it moves is the one that client is attached to, which only the registry knows.
             if parsed.method.as_str() == CLIENT_SIZE_METHOD {
                 if let Some(response) = handle_size(state, conn, &parsed) {
+                    reply.send(response);
+                }
+                return;
+            }
+            // `client/messages` collects what the daemon is holding for this connection's client.
+            // Beside the size and BEFORE scope resolution for the same reason: a mailbox is per
+            // CLIENT, so the request carries no session and could not be scoped by one anyway.
+            if parsed.method.as_str() == CLIENT_MESSAGES_METHOD {
+                if let Some(response) = handle_messages(state, conn, &parsed) {
                     reply.send(response);
                 }
                 return;

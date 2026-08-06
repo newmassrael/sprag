@@ -292,12 +292,14 @@ pub use sprag_rpc::ATTACHED_PARAM;
 /// ([`CLIENT_PARAM`]); [`CLIENT_ATTACH_METHOD`] declares/switches that client's attached session
 /// (reusing [`SESSION_PARAM`]); [`CLIENT_SIZE_METHOD`] reports the cell area that client can give a
 /// window ([`COLS_PARAM`] / [`ROWS_PARAM`]), which is the input tmux's `window-size` arbitrates
-/// over. All three are intercepted before the generic dispatch core, since they act on the frame's
-/// connection id, which no scene external sees. The reader's contract lives in [`crate::rpc`] (the
-/// dispatch owner's client-lifecycle intercept); the writer's is on each `sprag_rpc` const.
+/// over; [`CLIENT_MESSAGES_METHOD`] collects whatever the daemon is holding to SAY to that client
+/// ([`MESSAGE_FIELD`], R317). All four are intercepted before the generic dispatch core, since they
+/// act on the frame's connection id, which no scene external sees. The reader's contract lives in
+/// [`crate::rpc`] (the dispatch owner's client-lifecycle intercept); the writer's is on each
+/// `sprag_rpc` const.
 pub use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM,
-    ROWS_PARAM,
+    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_PARAM,
+    CLIENT_SIZE_METHOD, COLS_PARAM, MESSAGE_FIELD, ROWS_PARAM,
 };
 
 /// The [`CLIENT_ATTACH_METHOD`] `params` key asking to be moved to the session this client was
@@ -1210,6 +1212,49 @@ pub const REPORT_AGENT_ACTION: &str = "report_agent";
 /// pass re-derives one from its screen, which the release itself asks for (the waker is signalled and
 /// the pane owes a look).
 pub const RELEASE_AGENT_ACTION: &str = "release_agent";
+
+/// The mux control external action that puts a sentence in front of the people looking at this
+/// daemon — `{text, severity?, client?}` → `{clients: [<client id>…]}` — tmux `display-message`.
+///
+/// # The gap it closes, measured rather than argued
+///
+/// Measured at `5acde43` by running the shipped binaries: with a real `sprag-tui` on a real
+/// pseudoterminal, **nothing outside that client could put a word on its screen**. `report-agent
+/// blocked` from another process left the screen byte-for-byte unchanged (it moves the terminal's
+/// window TITLE, and carries a three-word state rather than a sentence); `send-keys` put the words
+/// *inside the person's program*, which is typing and not a message; and a pane child's OSC 9 —
+/// which this daemon latches — showed the terminal front nothing at all. The one thing that could
+/// reach the status row R316 built was that client's own keyboard.
+///
+/// # The address
+///
+/// * `client` absent ⇒ every client attached to the request's SCOPED session
+///   ([`crate::Audience::Session`]). That is what a script or a hook means: it knows a session, not
+///   a window on somebody's desk.
+/// * `client` present ⇒ that ONE client, wherever it is attached ([`crate::Audience::Client`]) —
+///   tmux `display-message -c`. A client id that is not attached is `Rejected` rather than delivered
+///   to nobody, because a caller that named a target got the name wrong, which is a different fact
+///   from *nobody is watching*.
+///
+/// The ids are the ones the `clients` slot lists ([`CLIENTS_SLOT`], `sprag list-clients`), so the
+/// listing a caller reads to choose a target and the set this reaches are one map.
+///
+/// # The answer
+///
+/// `{clients: […]}` — WHO it reached, ordered by client id, empty when nobody is attached. Not a
+/// bool and not `ok`: an agent that says *"the deploy needs you"* into a daemon nobody is watching
+/// has told nobody, and R316's whole finding is that an outcome no caller reads is a defect waiting
+/// for a user to find. See [`crate::Delivery`] for what "reached" claims and what it does not.
+///
+/// # The text
+///
+/// A [`MessageText`](crate::report::MessageText): non-blank, bounded, and **free of control
+/// characters**, because these bytes are written into somebody's terminal — a newline forges a row
+/// and an escape is obeyed. Refused (`TypeMismatch`) rather than sanitised, so a caller whose
+/// message was unacceptable learns it instead of watching it be quietly truncated.
+///
+/// `severity` is one of [`Severity`](crate::report::Severity)'s own words, defaulting to `note`.
+pub const DISPLAY_MESSAGE_ACTION: &str = "display_message";
 
 /// The `project.<pane>` query path for pane `id` — the ONE place that name is built, so a client and
 /// the host cannot spell it differently.

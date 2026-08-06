@@ -87,7 +87,8 @@ pub mod wire;
 pub mod workspace;
 pub use agent::{AgentClock, AgentFacts, AgentRegistry};
 pub use attach::{
-    AttachOutcome, AttachmentRegistry, ClientId, ClientInfo, ClientSize, SizeOutcome,
+    AttachOutcome, AttachmentRegistry, Audience, ClientId, ClientInfo, ClientSize, Delivery,
+    SizeOutcome,
 };
 pub use config::{CONFIG_FILE, ConfigError, UserConfig};
 pub use durability::{

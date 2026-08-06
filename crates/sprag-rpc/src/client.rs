@@ -397,7 +397,21 @@ impl ScopeAsk {
 ///   The other direction is refused by number and needs to be, for the usual reason: an old client
 ///   never sends the key and never reads the slot, so a new daemon changes nothing for it — but a
 ///   new client whose pick was dropped would report that it had gone somewhere.
-pub const WIRE_PROTOCOL: u32 = 14;
+/// * **15** — a message can be ADDRESSED to a client and the daemon says who got it
+///   (`sprag_host::wire::DISPLAY_MESSAGE_ACTION`, [`CLIENT_MESSAGES_METHOD`], R317). The THIRD bump
+///   caused by a whole new capability rather than by an added argument, and it was measured both
+///   ways against a parent-commit daemon with a control on each side:
+///   a NEW client against an OLD daemon is refused at `client/hello` by number, naming both versions
+///   and the remedy — and the raw probe behind that shows WHY the number is what does it: a
+///   protocol-14 handshake on the same connection SUCCEEDS, and `client/messages` then comes back
+///   `-32601 'client/messages' is unsupported`. That read is on a display client's reconcile path,
+///   so without the number a build skew would surface as an error on every wake rather than as one
+///   sentence at the door.
+///   The other direction is the one that MUST have the number: an OLD daemon has no mailbox at all,
+///   so a message sent to it reaches nobody — and there is no key whose absence could say so, since
+///   the whole answer is a delivery list that does not exist. Measured: the old CLI against the new
+///   daemon is refused by number, while the new CLI on the same daemon delivers.
+pub const WIRE_PROTOCOL: u32 = 15;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request
@@ -452,6 +466,35 @@ pub const CLIENT_PARAM: &str = "client";
 /// the size without touching the attachment, and re-declaring an attachment to say so would make
 /// every resize look like a `switch-client`.
 pub const CLIENT_SIZE_METHOD: &str = "client/size";
+
+/// The JSON-RPC method a connection sends to COLLECT whatever the daemon is holding for its client
+/// — `params: {}`, answering `{ "message": { "text": <string>, "severity": <word> } | null }`.
+///
+/// The read half of `sprag display-message`. A message is addressed to a CLIENT, so it cannot ride a
+/// session-scoped slot: two clients on one session must not read each other's. It is resolved from
+/// the frame's connection exactly as [`CLIENT_SIZE_METHOD`] and [`CLIENT_ATTACH_METHOD`] are, which
+/// is also why a caller cannot ask for somebody else's — the parameter that would let it does not
+/// exist.
+///
+/// ## It COLLECTS, and that word is load-bearing
+///
+/// The answer removes the message from the daemon, so one message is shown once. A cursor would have
+/// been the alternative and is the wrong shape here: `events`'s `since` exists so a RECONNECTING
+/// client resumes exactly where it left off, and a status-line sentence has no such need — a message
+/// worth showing is worth showing now, and one whose client has gone is one nobody can be told about.
+/// See `sprag_host::AttachmentRegistry::collect`.
+///
+/// ## When a client asks
+///
+/// On the wake it already has. The daemon bumps the change channel of every session it delivered
+/// into, so the target's parked `scene/waitFor` returns and its reconcile — which re-reads
+/// everything else the daemon owns — reads this too. No new poll, no new thread, and a client that is
+/// not looking at anything is not woken.
+pub const CLIENT_MESSAGES_METHOD: &str = "client/messages";
+
+/// The [`CLIENT_MESSAGES_METHOD`] reply key carrying the collected message, or `null` when the
+/// daemon was holding nothing for this client.
+pub const MESSAGE_FIELD: &str = "message";
 
 /// The JSON-RPC method a client sends to BLOCK until a change it named actually happens —
 /// `params: { "since": <cursor>, "match": [<clause>…]? }`, answering the same
