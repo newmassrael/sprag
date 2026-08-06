@@ -304,6 +304,33 @@ pub const MONITOR_BELL: &str = "monitor-bell";
 /// switch over both would make a chatty notifier cost the user their bell.
 pub const MONITOR_NOTIFICATION: &str = "monitor-notification";
 
+/// Whether a message this client shows also follows the PERSON out to the terminal it is running in
+/// — and when.
+///
+/// tmux has no counterpart: it can pass a pane's notification escape through to the outer terminal
+/// untouched, which is not the same act at all (it forwards what a CHILD wrote, unconditionally and
+/// without knowing what it says). This forwards what sprag DECIDED to tell a person, as a
+/// notification of its own, only when the row it painted cannot have been read.
+///
+/// Not `tui-`prefixed, unlike [`GUI_FONT`]: the question — *should a message reach the person when
+/// they are not looking at this client?* — is frontend-independent, and only the MECHANISM is the
+/// terminal client's (its outward is the host terminal's own notification, where a windowed
+/// client's would be its desktop's). A prefix would have to be renamed the day the other frontend
+/// performs the same policy.
+///
+/// The values and the default live on `sprag_tui::outward::Forward`, whose `word` this table's
+/// vocabulary is checked against by a test in that crate — the arrangement
+/// [`DETACH_ON_DESTROY_VALUES`] documents, for the same reason: the policy lives in a crate this one
+/// cannot depend on.
+pub const NOTIFY_OUTWARD: &str = "notify-outward";
+
+/// [`NOTIFY_OUTWARD`]'s values, in order of increasing loudness.
+///
+/// Spelled here AND as `sprag_tui::outward::Forward::word`;
+/// `the_options_vocabulary_is_exactly_the_policy_set` in that crate holds the two together, and it
+/// checks the ORDER too so `show-options`'s refusal lists them the way this doc reads them.
+pub const NOTIFY_OUTWARD_VALUES: &[&str] = &["off", "unfocused", "always"];
+
 /// How big a session's window is when several clients of different sizes are attached — tmux's
 /// `window-size`.
 ///
@@ -400,6 +427,15 @@ pub const OPTIONS: &[OptionSpec] = &[
         name: MONITOR_NOTIFICATION,
         kind: OptionKind::Choice(ON_OFF),
         default: "on",
+    },
+    OptionSpec {
+        name: NOTIFY_OUTWARD,
+        kind: OptionKind::Choice(NOTIFY_OUTWARD_VALUES),
+        // The middle value: exactly the messages a person could not have seen. `off` is the silence
+        // sprag had before it existed and `always` is for a terminal that reports no focus — both
+        // are answers to this one being wrong for somebody, which is why it is the default rather
+        // than the safe-looking `off`.
+        default: "unfocused",
     },
     OptionSpec {
         name: PREFIX,
