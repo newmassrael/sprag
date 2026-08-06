@@ -3374,3 +3374,56 @@ fn a_window_an_agent_opens_starts_where_it_asks() {
         "and a bad path is a sentence naming it: {refused}",
     );
 }
+
+/// **An agent is told when its message reached NOBODY** — the answer that must not read like
+/// success, driven against a real daemon through the shipped server.
+///
+/// An MCP server is not a display client: it connects to the daemon and attaches to nothing, so
+/// this fixture IS the "no window is attached" case rather than a simulation of it. That makes the
+/// claim exact: an agent calling `display_message` on a terminal nobody is watching is told so, in
+/// words that tell it what to do instead.
+///
+/// The CONTROL is the refusal below it: a message the grammar rejects comes back as an ERROR, so
+/// the empty delivery above is a SUCCESS carrying bad news rather than the tool failing for
+/// everything. Two different outcomes, two different shapes — which is the distinction R301 spent a
+/// round on and this verb inherits.
+#[test]
+fn a_message_that_reached_nobody_says_so_rather_than_reporting_success() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    let answer = server.call_tool_raw(
+        "display_message",
+        json!({ "message": "the build finished", "severity": "alert" }),
+    );
+    assert_ne!(
+        answer["result"]["isError"],
+        json!(true),
+        "an empty audience is an ANSWER, not a tool failure: {answer}",
+    );
+    let text = tool_text(&answer["result"]);
+    assert!(
+        text.contains("NOBODY SAW IT"),
+        "the agent must be told plainly, not congratulated: {text:?}",
+    );
+    assert!(
+        text.contains("Do not treat it as delivered"),
+        "...and told what to do instead: {text:?}",
+    );
+
+    // THE CONTROL: a message the grammar refuses is an ERROR, and it names the rule rather than
+    // being truncated into acceptability the way the rival's is.
+    let refused = server.call_tool_error("display_message", json!({ "message": "two\nrows" }));
+    assert!(
+        refused.contains("control characters"),
+        "a refusal names the rule it broke: {refused}",
+    );
+    let refused = server.call_tool_error(
+        "display_message",
+        json!({ "message": "fine", "severity": "shout" }),
+    );
+    assert!(
+        refused.contains("note|warn|alert") && refused.contains("shout"),
+        "an unknown severity names what was offered and what exists: {refused}",
+    );
+}

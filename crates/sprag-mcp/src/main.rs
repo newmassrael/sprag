@@ -113,14 +113,16 @@ use sprag_host::events::EventFilter;
 use sprag_host::pane_address::{
     NamedPane, PaneListing, ambiguous_pane_name, unknown_pane_name_with,
 };
+use sprag_host::report::Severity;
 use sprag_host::shellword::shell_quote;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, CLOSE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, KEY_ACTION,
-    KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, NEW_WINDOW_ACTION, OUTCOME_KEY,
-    PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION,
-    ResizeAsk, ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM,
-    SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow,
-    TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, find_slot_for, pane_processes_at, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD,
+    FULL_TEXT_SLOT, KEY_ACTION, KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT,
+    NEW_WINDOW_ACTION, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
+    RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk,
+    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk,
+    find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -296,6 +298,14 @@ fn handle_initialize(message: &Value) -> Value {
             are theirs). \
             `select_pane` moves where the USER is typing, so use it only when you have \
             something for them to look at. \
+            To SAY something to the person rather than show them something, `display_message` puts \
+            one line on the status line of every window attached to this terminal — the only way \
+            to reach somebody who is looking at a different pane. Use it when you have finished \
+            what they were waiting on or when you are blocked and need them, not to narrate; send \
+            it as an `alert` when missing it would make the message useless, since a note goes \
+            away by itself and an alert waits for a keypress. Its answer says WHO saw it, and \
+            \"nobody\" is one of the answers: if no window is attached, the person was not told \
+            and you must leave the evidence somewhere they will find it. \
             For work that needs MORE ROOM than a pane beside somebody, `open_window` gives you a \
             whole screenful of your own — created WITHOUT moving the user, who cannot see it until \
             you call `select_window`. That split is deliberate: making a place and showing it are \
@@ -799,6 +809,45 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "display_message",
+                "description": "Say something to the PERSON at this terminal — one line on the \
+                    status line of every window attached to it. Use it when you have finished \
+                    something they are waiting on, or when you are blocked and need them: a long \
+                    build that failed, a question you cannot answer yourself, a deploy that wants \
+                    a decision. It is the ONLY way to reach somebody who is looking at a different \
+                    pane; send_keys types into their program instead of telling them anything, and \
+                    a line you print in your own pane is invisible to a person working elsewhere. \
+                    DO NOT narrate with it: one message when something needs them, not progress \
+                    reports. It is one line — under 200 bytes, no newlines or escape codes — and \
+                    the terminal refuses anything else rather than quietly cutting it. \
+                    `severity` decides what happens if they are not looking: `note` (the default) \
+                    and `warn` go away by themselves after a moment, so a person away from the \
+                    keyboard misses them; `alert` stays on the row until they press a key, and a \
+                    lower severity can never wipe a live one. Reserve `alert` for things that are \
+                    useless if missed. THE ANSWER TELLS YOU WHO SAW IT: if no window is attached \
+                    it says so, and you must not treat the message as delivered — leave the \
+                    evidence somewhere durable as well.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "The one line to show. Write it for somebody who has \
+                                not been watching: say what happened and what it needs, not \
+                                'done'."
+                        },
+                        "severity": {
+                            "type": "string",
+                            "enum": Severity::ALL.map(Severity::word),
+                            "description": "How much it matters. `note` (default) and `warn` \
+                                expire on their own; `alert` stays until the person presses a key."
+                        }
+                    },
+                    "required": ["message"],
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "select_pane",
                 "description": "Make a pane the ACTIVE one for this terminal session — where \
                     the user's keystrokes go, what every attached window shows a focus ring \
@@ -1037,6 +1086,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "open_window" => tool_open_window(&args),
         "select_window" => tool_select_window(&args),
         "close_window" => tool_close_window(&args),
+        "display_message" => tool_display_message(&args),
         "rename_window" => tool_rename_window(&args),
         "list_sessions" => tool_list_sessions(),
         "pane_layout" => tool_pane_layout(&args),
@@ -1580,6 +1630,90 @@ fn tool_close_window(args: &Value) -> Result<String, String> {
 }
 
 /// `rename_window` — rename a window the agent opened, refusing a person's.
+/// `display_message` — say something to the PERSON at this terminal.
+///
+/// # Why an agent needs this at all, measured rather than assumed
+///
+/// Measured at `5acde43` by running the shipped binaries: an agent working in one pane had NO way to
+/// put a sentence in front of the person in another. `send_keys` types into their program (their
+/// command line, their editor) rather than telling them anything; `report_agent` carries a
+/// three-word state to a window title; a pane's own OSC 9 reached the terminal front nowhere at all.
+///
+/// # It is not a substitute for working in your own pane
+///
+/// The description leans hard on WHEN, because the failure mode of a tool like this is an agent that
+/// narrates. The daemon has no rate limit and deliberately none: a limit would be this process
+/// deciding how often somebody else may be spoken to, and the honest place for that judgement is
+/// here, in the words an agent reads before calling it.
+fn tool_display_message(args: &Value) -> Result<String, String> {
+    let text = match args.get("message") {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => return Err(format!("'message' must be a string, not {other}")),
+        None => return Err("display_message needs a 'message' to show".to_owned()),
+    };
+    // The same grammar the daemon enforces, read here so the agent is told WHICH rule it broke — a
+    // wire refusal cannot carry a payload (PINION-PR82), and "invalid params" would send a caller
+    // guessing at a newline it did not know it had.
+    let text = sprag_host::report::MessageText::parse(&text)
+        .map_err(|why| format!("that message cannot be shown: {why}"))?;
+    let severity = match args.get("severity") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(word)) => Some(
+            sprag_host::report::Severity::parse(word)
+                .ok_or_else(|| {
+                    format!(
+                        "'severity' is one of {}, not {word:?}",
+                        sprag_host::report::Severity::words(),
+                    )
+                })?
+                .word(),
+        ),
+        Some(other) => return Err(format!("'severity' must be a string, not {other}")),
+    };
+    let mut invoke_args = json!({ "text": text.as_str() });
+    if let Some(severity) = severity {
+        invoke_args["severity"] = Value::String(severity.to_owned());
+    }
+    let answer = host_call_kinded(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(DISPLAY_MESSAGE_ACTION),
+            "args": invoke_args,
+        }),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            "could not show that message: this terminal may be older than the message surface, or \
+             the message may be unacceptable (it must be one line, under 200 bytes, and free of \
+             control characters).",
+        )
+    })?;
+    let reached: Vec<&str> = answer["clients"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    // NOBODY IS A REAL ANSWER and it is said first, because it is the one an agent must act on: a
+    // message shown to no one has not been delivered, and going on as though a person had read it is
+    // exactly the mistake this tool exists to make impossible.
+    if reached.is_empty() {
+        return Ok(
+            "NOBODY SAW IT: no window is attached to this terminal right now, so the message was \
+             shown to no one. Do not treat it as delivered — if something needs a person, leave the \
+             evidence where they will find it (in a pane, in a file, in your reply) as well."
+                .to_owned(),
+        );
+    }
+    Ok(format!(
+        "Shown to {} attached window(s): {}. It is on their status line now and goes away on its \
+         own unless you sent it as an `alert`, which stays until they press a key.",
+        reached.len(),
+        reached.join(", "),
+    ))
+}
+
 fn tool_rename_window(args: &Value) -> Result<String, String> {
     let window = resolve_window(args, SelectWindowAsk::WINDOW_KEY)?;
     let new = match args.get("name") {
@@ -4708,6 +4842,7 @@ mod tests {
                 "open_pane",
                 "close_pane",
                 "rename_pane",
+                "display_message",
                 "select_pane",
                 "swap_pane",
                 "resize_pane",
