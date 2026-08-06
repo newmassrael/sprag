@@ -251,102 +251,6 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
 /// of exactly the vocabulary this module exists to hold. It moved here when the surface acquired a
 /// RATCHET (`the_wire_surface_cannot_move_under_the_protocol_number`), which needs both schemas
 /// readable from one place without constructing a daemon.
-/// **The wire's whole SURFACE, pinned to the protocol version that serves it** — the ratchet that
-/// turns [`sprag_rpc::WIRE_PROTOCOL`] from a ritual into a decision somebody has to
-/// take.
-///
-/// # The defect this removes
-///
-/// Recorded by R313 and re-verified unchanged at R315 and again at R319, each time by RUNNING it:
-/// **reverting the protocol number left the entire suite green** (exit 0, 2268 tests at `4f471bb`).
-/// The number's correctness rested on a SKEW RUN performed by hand, both directions, every round —
-/// which is a ritual, and a ritual is a gate that fails the moment somebody is in a hurry.
-///
-/// # What it can and cannot prove
-///
-/// It cannot decide COMPATIBILITY: whether a client of version N still works against a daemon that
-/// gained an action is a judgement about meaning, and no test makes it. What it makes impossible is
-/// making the change SILENTLY. The pair moves together or the suite goes red, and the failure names
-/// the decision:
-///
-/// * a name ADDED — an older client never asks for it, so the number usually stands;
-/// * a name REMOVED or RENAMED — an older client's request now fails, so the number must rise;
-/// * the number moved with no surface change — legitimate (a MEANING changed under a name), and the
-///   pin below has to be re-stamped to say so.
-///
-/// The list is deliberately the flat set of NAMES rather than a digest: a digest fails with two hex
-/// strings and leaves the reader to diff by hand, where this fails naming the address that appeared
-/// or vanished.
-///
-/// ⚠ **It is STAMPED FROM THE DERIVATION, never typed** — the first version was hand-written and the
-/// ratchet refuted it on its first run: a parametric field's ARGUMENT is part of its published
-/// address (`cells.<offset>`, `events.<since>`), and two slots were spelled here by their const's
-/// name rather than by the string it holds. So renaming an ARG moves this surface too, which is
-/// right: an agent reading the schema learns the argument's name from it.
-pub const PINNED_SURFACE: (u32, &[&str]) = (
-    15,
-    &[
-        "agent_manifests",
-        "application_cursor_keys",
-        "break_pane",
-        "cells.<offset>",
-        "clients",
-        "clipboard_answer",
-        "clipboard_write",
-        "close",
-        "commands",
-        "display_message",
-        "drop_file",
-        "events.<since>",
-        "find.<needle>",
-        "focus",
-        "frames",
-        "full_text",
-        "grid_work",
-        "image_data.<id>",
-        "join_pane",
-        "key",
-        "kill_session",
-        "kill_window",
-        "last_command",
-        "layout",
-        "links",
-        "mouse",
-        "move_pane",
-        "move_window",
-        "neighbors.<pane>",
-        "new_session",
-        "new_window",
-        "pane_processes.<max_age_ms>",
-        "panes",
-        "paste",
-        "project.<pane>",
-        "prompt_marks",
-        "regex.<pattern>",
-        "rename_pane",
-        "rename_session",
-        "rename_window",
-        "resize",
-        "resize_pane",
-        "resize_window",
-        "select_pane",
-        "select_window",
-        "session",
-        "session_activity.<max_age_ms>",
-        "sessions",
-        "set_floating",
-        "set_layout",
-        "spawn",
-        "split",
-        "swap_pane",
-        "text",
-        "tree",
-        "window_size",
-        "windows",
-        "zoom_pane",
-    ],
-);
-
 pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::new(SPAWN_ACTION, "action"),
     SchemaField::new(SPLIT_ACTION, "action"),
@@ -3963,6 +3867,176 @@ mod tests {
                         out as a type error mid-boot rather than as a sentence. Bump \
                         sprag_rpc::WIRE_PROTOCOL and update this pin, in that order.";
 
+    /// **The wire's whole SURFACE, pinned to the protocol version that serves it** — the ratchet that
+    /// turns [`sprag_rpc::WIRE_PROTOCOL`] from a ritual into a decision somebody has to
+    /// take.
+    ///
+    /// # The defect this removes
+    ///
+    /// Recorded by R313 and re-verified unchanged at R315 and again at R319, each time by RUNNING it:
+    /// **reverting the protocol number left the entire suite green** (exit 0, 2268 tests at `4f471bb`).
+    /// The number's correctness rested on a SKEW RUN performed by hand, both directions, every round —
+    /// which is a ritual, and a ritual is a gate that fails the moment somebody is in a hurry.
+    ///
+    /// # What it can and cannot prove
+    ///
+    /// It cannot decide COMPATIBILITY: whether a client of version N still works against a daemon that
+    /// gained an action is a judgement about meaning, and no test makes it. What it makes impossible is
+    /// making the change SILENTLY. The pair moves together or the suite goes red, and the failure names
+    /// the decision:
+    ///
+    /// * a name ADDED — an older client never asks for it, so the number usually stands;
+    /// * a name REMOVED or RENAMED — an older client's request now fails, so the number must rise;
+    /// * the number moved with no surface change — legitimate (a MEANING changed under a name), and the
+    ///   pin below has to be re-stamped to say so.
+    ///
+    /// ⚠ **THE FIRST VERSION OF THIS RATCHET READ THE CONSTANTS AND NOT THE DAEMON**, which is the
+    /// *one family is not the API* defect committed by the round that closed a six-round-old debt: it
+    /// covered `PANE_SCHEMA` + [`MUX_SCHEMA`] directly, so emptying `WorkspaceExternal::schema()`
+    /// left it GREEN (measured) and the PLUGIN surface's four addresses — mounted in the daemon's own
+    /// scene at `PLUGINS_TAG` — were missing from it entirely. It walks `workspace_scene` now: what
+    /// the daemon SERVES, through the same `introspect()` the wire itself resolves a path with.
+    ///
+    /// The list is deliberately the flat set of NAMES rather than a digest: a digest fails with two hex
+    /// strings and leaves the reader to diff by hand, where this fails naming the address that appeared
+    /// or vanished.
+    ///
+    /// ⚠ **It is STAMPED FROM THE DERIVATION, never typed** — the first version was hand-written and the
+    /// ratchet refuted it on its first run: a parametric field's ARGUMENT is part of its published
+    /// address (`cells.<offset>`, `events.<since>`), and two slots were spelled here by their const's
+    /// name rather than by the string it holds. So renaming an ARG moves this surface too, which is
+    /// right: an agent reading the schema learns the argument's name from it.
+    const PINNED_SURFACE: (u32, &[&str]) = (
+        15,
+        &[
+            "agent_manifests",
+            "application_cursor_keys",
+            "break_pane",
+            "cancel",
+            "cells.<offset>",
+            "clients",
+            "clipboard_answer",
+            "clipboard_write",
+            "close",
+            "commands",
+            "display_message",
+            "drop_file",
+            "events.<since>",
+            "find.<needle>",
+            "focus",
+            "frames",
+            "full_text",
+            "grid_work",
+            "image_data.<id>",
+            "join_pane",
+            "key",
+            "kill_session",
+            "kill_window",
+            "last_command",
+            "layout",
+            "links",
+            "mouse",
+            "move_pane",
+            "move_window",
+            "neighbors.<pane>",
+            "new_session",
+            "new_window",
+            "pane_processes.<max_age_ms>",
+            "panes",
+            "paste",
+            "plugins",
+            "project.<pane>",
+            "prompt_marks",
+            "regex.<pattern>",
+            "rename_pane",
+            "rename_session",
+            "rename_window",
+            "resize",
+            "resize_pane",
+            "resize_window",
+            "run",
+            "runs",
+            "select_pane",
+            "select_window",
+            "session",
+            "session_activity.<max_age_ms>",
+            "sessions",
+            "set_floating",
+            "set_layout",
+            "spawn",
+            "split",
+            "swap_pane",
+            "text",
+            "tree",
+            "window_size",
+            "windows",
+            "zoom_pane",
+        ],
+    );
+
+    /// Every address the DAEMON SERVES, read off the scene it assembles for a request — the whole
+    /// point of the correction: a schema this module declares and a schema the daemon returns are
+    /// two different facts, and only the second one is the wire.
+    ///
+    /// Walked through `External::introspect`, which is the same accessor `scene/query` resolves a
+    /// path with, so a surface reachable by a client is a surface counted here.
+    fn served_addresses() -> Vec<String> {
+        let registry = std::sync::Arc::new(std::sync::Mutex::new(
+            sprag_terminal::SessionRegistry::new((80, 24)),
+        ));
+        // ⚠ A PANE HAS TO EXIST, and the first version of this fixture had none: the pane surfaces
+        // hang under one container per pane, so an empty registry produces a scene serving the mux
+        // and the plugins and NOTHING a client types into. A ratchet over that state would have
+        // pinned two thirds of the wire and called it whole — the same shape as reading the
+        // constants instead of the daemon, one level down.
+        {
+            let scope = crate::SessionScope::unscoped(&registry);
+            let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            crate::lock(scope.workspace())
+                .spawn(command, "cat".to_owned(), 20, 4)
+                .expect("a pane the pane surface can hang under");
+        }
+        let scene = crate::workspace_scene(
+            &crate::SessionScope::unscoped(&registry),
+            &registry,
+            &std::sync::Arc::new(std::sync::Mutex::new(crate::runs::RunRegistry::default())),
+            &std::sync::Arc::new(crate::notify::ChannelRegistry::default()),
+            crate::DaemonShared::default(),
+            crate::PaneCells::Omitted,
+        );
+        let mut found = Vec::new();
+        walk(&scene, &mut found);
+        found
+    }
+
+    /// Collect every external's declared addresses, depth first — a container's children included,
+    /// because the pane surfaces hang under one.
+    fn walk(scene: &pinion_core::scene::Scene, found: &mut Vec<String>) {
+        use pinion_core::scene::Scene;
+        match scene {
+            Scene::External(node) => {
+                if let Some(introspect) = node.handle.introspect() {
+                    found.extend(
+                        introspect
+                            .schema()
+                            .fields
+                            .iter()
+                            .map(|field| field.path.to_owned()),
+                    );
+                }
+            }
+            Scene::Container(node) => {
+                for child in &node.children {
+                    walk(child, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// **THE RATCHET: the wire's surface cannot move under the protocol number.**
     ///
     /// See [`PINNED_SURFACE`] for what this can and cannot prove. Measured before it was written, by
@@ -3974,13 +4048,9 @@ mod tests {
     /// NUMBER against the one a client actually sends.
     #[test]
     fn the_wire_surface_cannot_move_under_the_protocol_number() {
-        let mut served: Vec<&str> = PANE_SCHEMA
-            .iter()
-            .chain(MUX_SCHEMA.iter())
-            .map(|field| field.path)
-            .collect();
+        let mut served = served_addresses();
         served.sort_unstable();
-        let mut pinned: Vec<&str> = PINNED_SURFACE.1.to_vec();
+        let mut pinned: Vec<String> = PINNED_SURFACE.1.iter().map(|n| (*n).to_owned()).collect();
         pinned.sort_unstable();
         assert_eq!(
             served, pinned,
