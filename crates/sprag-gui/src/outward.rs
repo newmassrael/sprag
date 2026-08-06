@@ -92,9 +92,14 @@ const DESK_KEY: &str = "sprag_gui.outward_desk";
 /// the REAP. The reap is not tidiness: a notifier nobody waits for becomes a zombie, one per message,
 /// for the life of a window that may be open for days.
 pub(crate) struct Desk {
-    /// The argv queue. `None` when this client could not start its notifier thread, which is a
-    /// state nothing else in the client should have to think about — [`Desk::send`] then drops the
-    /// message, exactly as a failed write does in the terminal client.
+    /// The queue of ARGUMENTS — the notifier's own name is [`NOTIFIER`] and is spelled by the thread
+    /// that runs it, so a queued message cannot be one this client has no program for. The first
+    /// draft queued the whole argv and the thread split the program back off it, which left a
+    /// "queued an empty argv" arm that nothing could ever produce and no test could ever drive.
+    ///
+    /// `None` when this client could not start its notifier thread — a state nothing else in the
+    /// client should have to think about, so [`Desk::send`] drops the message exactly as a failed
+    /// write does in the terminal client.
     outbox: Option<Sender<Vec<String>>>,
 }
 
@@ -108,13 +113,10 @@ impl Desk {
         let spawned = std::thread::Builder::new()
             .name("sprag-outward".to_owned())
             .spawn(move || {
-                for argv in inbox {
-                    let Some((program, arguments)) = argv.split_first() else {
-                        continue;
-                    };
+                for arguments in inbox {
                     // Both halves here, and the WAIT is why this is a thread: an unwaited child is a
                     // zombie and a waited one is an unbounded block.
-                    if let Ok(mut child) = Command::new(program)
+                    if let Ok(mut child) = Command::new(NOTIFIER)
                         .args(arguments)
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
@@ -130,18 +132,23 @@ impl Desk {
         }
     }
 
-    /// Hand one argv to the notifier thread, dropping it if there is nobody to take it.
+    /// Hand one message's arguments to the notifier thread, dropping them if there is nobody to
+    /// take them.
     ///
     /// A failure is dropped for the terminal client's reason: the only place this client could
     /// report it is the strip it is painting the message onto, and a person whose desktop will not
     /// take a notification is not helped by a second sentence in the window they are not looking at.
-    fn send(&self, argv: Vec<String>) {
+    fn send(&self, arguments: Vec<String>) {
         if let Some(outbox) = &self.outbox {
-            let _ = outbox.send(argv);
+            let _ = outbox.send(arguments);
         }
     }
 
-    /// The argv that asks the desktop to show `announcement`, as a pure function of it.
+    /// The ARGUMENTS that ask the desktop to show `announcement`, as a pure function of it.
+    ///
+    /// These are exactly what the smoke's recorder reads as `"$@"`, which is deliberate: a test and
+    /// a running client should be looking at the same list, not at one that differs by a leading
+    /// program name only one of them can see.
     ///
     /// Pure so the whole shape is testable without a desktop, a window or a subprocess — the seam
     /// the rival's `detect_backend` does not have and the reason their equivalent can only be tested
@@ -155,7 +162,6 @@ impl Desk {
     /// the boundary that cares about it.
     fn argv(session: &str, announcement: &Announcement) -> Vec<String> {
         vec![
-            NOTIFIER.to_owned(),
             // The application this came from, so a desktop that groups or themes by app can, and so
             // the person reads sprag's name rather than the notifier's.
             "-a".to_owned(),
@@ -206,6 +212,16 @@ fn person(policy: Forward, os_focused: Option<&str>) -> Option<Person> {
 /// can change which session it is viewing without exiting, so anything cached here would go stale
 /// against the strip painted beside it. Both are read at the message, from the same sources the
 /// frame is drawn from.
+///
+/// # What does NOT come through here, deliberately
+///
+/// A message this client builds for its OWN keyboard — [`crate::message::show`], which every bound
+/// action's [`Report`](sprag_host::report::Report) ends at. Only a message that ARRIVED
+/// ([`crate::slotview::SlotView::take_message`]: somebody else's `display-message`, a pane child's
+/// own notification) is copied out. The terminal client draws the same line for the same reason and
+/// this front makes it sharper: a keystroke reached this window, so the window manager had given it
+/// focus, so the person was here to read the answer. Forwarding it would be telling somebody about
+/// the key they just pressed.
 pub(crate) fn follow(session: &str, announcement: &Announcement, options: &Options) {
     let policy = Forward::of(options);
     let os_focused = pinion_core::window_focus_state::os_focused_window();
@@ -268,7 +284,6 @@ mod tests {
         assert_eq!(
             Desk::argv("work", &said("pane 3: done", Severity::Note)),
             [
-                "notify-send",
                 "-a",
                 "sprag",
                 "-u",
