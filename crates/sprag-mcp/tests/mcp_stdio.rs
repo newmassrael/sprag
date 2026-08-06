@@ -66,8 +66,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{
-    KILL_WINDOW_ACTION, NEW_WINDOW_ACTION, RENAME_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION, SelectAsk, ZOOM_PANE_ACTION,
+    KILL_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, RENAME_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SET_FLOATING_ACTION, SPAWN_ACTION, SPLIT_ACTION, SelectAsk,
+    ZOOM_PANE_ACTION,
 };
 use sprag_rpc::HostConn;
 
@@ -3426,4 +3427,72 @@ fn a_message_that_reached_nobody_says_so_rather_than_reporting_success() {
         refused.contains("note|warn|alert") && refused.contains("shout"),
         "an unknown severity names what was offered and what exists: {refused}",
     );
+}
+
+/// An agent's tools answer about the session the agent's PANE is in, not about the daemon's
+/// default one.
+///
+/// # Why this front needs its own drive
+///
+/// The `sprag` CLI had this defect and was fixed at its params builder; this server is a second
+/// client with its own, and *"a claim must be driven at every front that has one"*. It matters more
+/// here than there: a person typing `sprag` at a shell can see which session they are in, and an
+/// agent cannot — running inside a pane is the only thing it knows about its own position, and
+/// every tool below reads the workspace on its behalf.
+///
+/// The fixture puts the agent's pane in a session the daemon would NOT pick, which is what makes
+/// each answer attributable: a server that ignored its own pane would answer about `0` throughout.
+#[test]
+fn an_agents_tools_answer_about_the_session_its_pane_is_in() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], (80, 24));
+    // A second session, with two panes of its own. Over the wire, like every other fixture here.
+    let created = mux_invoke(&sock, NEW_SESSION_ACTION, json!({ "name": "work" }));
+    assert_eq!(created.as_str(), Some("work"), "the second session exists");
+    let mine = spawn_pane_in(&sock, "work");
+    let sibling = spawn_pane_in(&sock, "work");
+
+    let mut server = McpServer::spawn_in_pane(&sock, mine);
+    // Asserted on `id=`, never on the row number: a row is numbered by POSITION in this listing, so
+    // `pane 2:` names the second row of whatever session came back — which is exactly the string a
+    // wrong answer would also contain. (Written the other way first, and the control below is what
+    // said so.)
+    let listed = server.call_tool("list_panes", json!({}));
+    assert!(
+        listed.contains(&format!("id={mine} ")) && listed.contains(&format!("id={sibling} ")),
+        "the agent is listed its OWN session's panes ({mine}, {sibling}): {listed}",
+    );
+    assert!(
+        !listed.contains("id=0 "),
+        "and not the default session's, which holds the daemon's boot pane: {listed}",
+    );
+
+    // THE CONTROL — a server that is in NO pane still gets the daemon's default session, which is
+    // the behaviour every caller outside the workspace has. Without it this test would also pass
+    // against a server that had simply stopped reading the default.
+    let mut outside = McpServer::spawn(&sock);
+    let theirs = outside.call_tool("list_panes", json!({}));
+    assert!(
+        theirs.contains("id=0 ") && !theirs.contains(&format!("id={sibling} ")),
+        "a caller in no pane is answered about the daemon's default session: {theirs}",
+    );
+}
+
+/// Spawn a pane INSIDE a named session — the scope is a sibling of `path`, never a member of
+/// `args`, which is the daemon's own grammar (`sprag_host::wire::SESSION_PARAM`).
+///
+/// Written after the daemon refused the other spelling with `InvokeTypeMismatch`: a session name
+/// smuggled into an action's arguments is an unknown argument, and it says so rather than guessing.
+fn spawn_pane_in(sock: &Path, session: &str) -> u64 {
+    let mut conn = HostConn::connect(sock, DEADLINE).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(SPAWN_ACTION),
+            "args": { "cmd": ["cat"] },
+        }),
+    )
+    .expect("spawn a pane in the named session")
+    .as_u64()
+    .expect("the spawn action answers with a pane id")
 }

@@ -4592,6 +4592,20 @@ fn refusal_sentence((raw, kind): &(String, io::ErrorKind), instead: &str) -> Str
 /// failure ([`refusal_sentence`]). The plain form drops it, because every other tool here reports
 /// the daemon's own sentence unchanged.
 fn host_call_kinded(method: &str, params: Value) -> Result<Value, (String, io::ErrorKind)> {
+    host_call_unscoped(method, in_our_session(params))
+}
+
+fn host_call(method: &str, params: Value) -> Result<Value, String> {
+    host_call_kinded(method, params).map_err(|(sentence, _)| sentence)
+}
+
+/// [`host_call_kinded`] WITHOUT the ambient scope — the one request that must not carry it, because
+/// it is the request that works out what it would be.
+///
+/// It is also the whole of the transport: the two public forms above differ only in how much of a
+/// failure they hand back, and they were two copies of this body until the scope needed stamping in
+/// exactly one place. Two doors onto one act is the shape this project keeps finding defects in.
+fn host_call_unscoped(method: &str, params: Value) -> Result<Value, (String, io::ErrorKind)> {
     let sock = host_sock().ok_or_else(|| {
         (
             "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
@@ -4613,15 +4627,63 @@ fn host_call_kinded(method: &str, params: Value) -> Result<Value, (String, io::E
     })
 }
 
-fn host_call(method: &str, params: Value) -> Result<Value, String> {
-    let sock = host_sock().ok_or_else(|| {
-        "not inside a sprag terminal (no SPRAG_HOST_RPC_SOCK in this process or any \
-         ancestor); these pane tools do not apply to this session"
-            .to_owned()
-    })?;
-    let mut conn = HostConn::connect(&sock, CONNECT_TIMEOUT)
-        .map_err(|e| format!("cannot reach the sprag host at {}: {e}", sock.display()))?;
-    conn.call(method, params).map_err(|e| e.to_string())
+/// Stamp the session this server's PANE is in onto a request that names none.
+///
+/// # What an agent was being told before this
+///
+/// Every request here went out unscoped, so the daemon answered about ITS default session. An agent
+/// working in a pane of `work` asked `list_panes` and was listed the panes of session `0` —
+/// measured, with the boot pane of a session it is not in coming back as *"1 pane(s) in this
+/// window"*. It is the same defect the `sprag` CLI had, and it is worse here: a person at a shell
+/// can see which session they are in, and an agent's pane is the only thing it knows about its own
+/// position.
+///
+/// A caller that already named a session keeps it — nothing here does today, and a stamp that
+/// overwrote one would be a scope this server invented.
+fn in_our_session(mut params: Value) -> Value {
+    if let (Some(session), Some(map)) = (our_session(), params.as_object_mut())
+        && !map.contains_key(sprag_host::wire::SESSION_PARAM)
+    {
+        map.insert(
+            sprag_host::wire::SESSION_PARAM.to_owned(),
+            Value::String(session.to_owned()),
+        );
+    }
+    params
+}
+
+/// The session holding [`own_pane`], asked once.
+///
+/// [`None`] when this server is not running in a pane of this daemon — a client that forwarded the
+/// socket and not the id, an id left over from a daemon that has exited, or a daemon too old to
+/// serve the tree. Each of those means the same thing to a caller (*nobody said which session*),
+/// which is the behaviour that was already there, so none of them is worth an error.
+fn our_session() -> Option<&'static str> {
+    static OURS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    OURS.get_or_init(|| {
+        let pane = own_pane()?;
+        let tree = host_call_unscoped(
+            "scene/query",
+            json!({ "path": mux_action_path(sprag_host::wire::TREE_SLOT) }),
+        )
+        .ok()?;
+        tree.as_array()?.iter().find(|session| {
+            session["windows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|window| {
+                    window["panes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|held| held["id"].as_u64() == Some(pane))
+                })
+        })?["name"]
+            .as_str()
+            .map(str::to_owned)
+    })
+    .as_deref()
 }
 
 /// Resolve the host socket path: this process's `SPRAG_HOST_RPC_SOCK`, else the first
