@@ -11883,6 +11883,64 @@
         "A message this client builds for its OWN keys is deliberately not forwarded, because a keystroke is proof somebody is here - stated in the loop, driven by no test"
       ]
     },
+    "R321": {
+      "decision_summary": "A message follows the person out of the WINDOW: the outward policy moves to sprag_host::outward so both display clients read one vocabulary, sprag-gui gains a desktop notifier gated on the window manager's focus, and the CLI's slot readers all route through the one site that explains a daemon serving no such address.",
+      "changes_bullets": [
+        "sprag_host::outward holds Forward, Person, follows and urgency_of, so one policy vocabulary serves both display clients and NOTIFY_OUTWARD_VALUES derives from it.",
+        "sprag-gui copies a message to the desktop notifier when the window manager reports no window of this client activated, with the severity as the urgency.",
+        "The notifier's spawn and reap run on a dedicated thread; the frame hook only sends on a channel.",
+        "query_slot takes the whole scene/query params, so all seventeen CLI slot readers route through the one site that explains a daemon serving no such address.",
+        "session_exists tells an unknown ADDRESS from a refused SCOPE, which arrive under one JSON-RPC code."
+      ],
+      "verification_bullets": [
+        "Full suite exit 0, 46 targets, 2275 tests (from 2269); clippy 0 with no suppression; doc gate 0.",
+        "Pixel smoke 244 passed 0 failed (from 232/0), including a stand-in notify-send recorder on the client's PATH.",
+        "Measured before the change by running: a blurred sprag-gui painted the strip and invoked the notifier zero times.",
+        "Revert-proof, GUI outward: four mutations RED (policy guard dropped, focus always Here, hook unwired, alert no louder than a note); sources restored by digest.",
+        "Revert-proof, CLI skew: three mutations RED (session_exists on the code alone, layout bypassing the helper, unknown_slot not recognising the fault); unmutated GREEN.",
+        "A stand-in daemon serving no address showed eleven of twelve slot readers leaking UnknownIntrospectPath, and sprag windows -t 0 reporting no session named \"0\" about a session that existed."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The GUI notifier is notify-send, so macOS and Windows sprag-gui copy nothing out; the seam is Desk::argv plus its thread.",
+        "No replace-id, so a burst stacks toasts; notify-send -p is not used because an unknown flag is a total silent failure.",
+        "Desk::start's thread-spawn failure arm has no test driver, and a dropped notification is reported nowhere by design.",
+        "kill-server is the remedy the skew sentence names and it reads a slot; unreachable at protocol 15 but a wire surface decision to close.",
+        "Nothing sweeps for a slot reader added later that forgets query_slot; the structural half is one spelling of scene/query in the binary.",
+        "R320's debt-clearance pass has no ledger entry of its own; its work is recorded in debt register item 46."
+      ],
+      "publishable_decision_summary": "A message follows the person out of the WINDOW: the outward policy moves to sprag_host::outward so both display clients read one vocabulary, sprag-gui gains a desktop notifier gated on the window manager's focus, and the CLI's slot readers all route through the one site that explains a daemon serving no such address.",
+      "publishable_changes_bullets": [
+        "sprag_host::outward holds Forward, Person, follows and urgency_of, so one policy vocabulary serves both display clients and NOTIFY_OUTWARD_VALUES derives from it.",
+        "sprag-gui copies a message to the desktop notifier when the window manager reports no window of this client activated, with the severity as the urgency.",
+        "The notifier's spawn and reap run on a dedicated thread; the frame hook only sends on a channel.",
+        "query_slot takes the whole scene/query params, so all seventeen CLI slot readers route through the one site that explains a daemon serving no such address.",
+        "session_exists tells an unknown ADDRESS from a refused SCOPE, which arrive under one JSON-RPC code."
+      ],
+      "publishable_verification_bullets": [
+        "Full suite exit 0, 46 targets, 2275 tests (from 2269); clippy 0 with no suppression; doc gate 0.",
+        "Pixel smoke 244 passed 0 failed (from 232/0), including a stand-in notify-send recorder on the client's PATH.",
+        "Measured before the change by running: a blurred sprag-gui painted the strip and invoked the notifier zero times.",
+        "Revert-proof, GUI outward: four mutations RED (policy guard dropped, focus always Here, hook unwired, alert no louder than a note); sources restored by digest.",
+        "Revert-proof, CLI skew: three mutations RED (session_exists on the code alone, layout bypassing the helper, unknown_slot not recognising the fault); unmutated GREEN.",
+        "A stand-in daemon serving no address showed eleven of twelve slot readers leaking UnknownIntrospectPath, and sprag windows -t 0 reporting no session named \"0\" about a session that existed."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The GUI notifier is notify-send, so macOS and Windows sprag-gui copy nothing out; the seam is Desk::argv plus its thread.",
+        "No replace-id, so a burst stacks toasts; notify-send -p is not used because an unknown flag is a total silent failure.",
+        "Desk::start's thread-spawn failure arm has no test driver, and a dropped notification is reported nowhere by design.",
+        "kill-server is the remedy the skew sentence names and it reads a slot; unreachable at protocol 15 but a wire surface decision to close.",
+        "Nothing sweeps for a slot reader added later that forgets query_slot; the structural half is one spelling of scene/query in the binary.",
+        "R320's debt-clearance pass has no ledger entry of its own; its work is recorded in debt register item 46."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
