@@ -267,9 +267,7 @@ impl Command {
             // it needs none), where every split a key can name carries a direction — advertising
             // `prefix %` here would teach a chord that does something else.
             | Self::NewPane
-            | Self::BreakOut
             | Self::JoinInto(_)
-            | Self::NewSession
             // A kill deliberately advertises no chord even where one exists: this column is where
             // the eye looks for a shortcut, and what a destructive row WOULD say belongs on the
             // confirmation prompt instead — the only place a consequence can be read in time to
@@ -278,8 +276,11 @@ impl Command {
             | Self::KillPane
             | Self::KillWindow(_)
             | Self::KillSession(_) => None,
-            // Answered above, off the live keymap — never from here.
-            Self::LastSession
+            // Answered above, off the live keymap — never from here. `BreakOut` and `NewSession`
+            // joined them at R323, when the keyboard gained the verbs.
+            Self::BreakOut
+            | Self::NewSession
+            | Self::LastSession
             | Self::SwitchSession(_)
             | Self::ShowKeys
             | Self::ChooseTree
@@ -349,16 +350,24 @@ impl Command {
             Self::SwitchSession(name) => Some(BoundAction::SwitchClient {
                 ask: SwitchClientAsk::Named(name.clone()),
             }),
+            // PAIRED SINCE R323, when the keyboard gained the two verbs. ⚠ Both were `None` here
+            // for a reason that STOPPED BEING TRUE the moment the vocabulary grew — and
+            // `break-pane` ships on `prefix !`, so this row was a row with a default chord that
+            // taught nothing. That is R308's original defect and R314's repeat of it, found by
+            // asking the debt question of a surface this round did not otherwise touch.
+            Self::BreakOut => Some(BoundAction::BreakPane),
+            Self::NewSession => Some(BoundAction::NewSession),
             Self::Find
             | Self::Copy
             | Self::Paste
             | Self::SelectAll
             | Self::ToggleFloat
-            | Self::BreakOut
             | Self::JoinInto(_)
             | Self::NewPane
             | Self::KillPane
-            | Self::NewSession
+            // NOT PAIRED, though `kill-session` is a binding now — `Kill window <name>`'s rule one
+            // level up: this row names a SESSION and the keystroke can only ever mean the one this
+            // client is attached to, so the two are different acts that share a verb.
             | Self::KillWindow(_)
             | Self::KillSession(_)
             | Self::Declared(_) => None,
@@ -1197,6 +1206,18 @@ mod tests {
             "a row that names a window is not the keystroke that can only mean the current one",
         );
         assert_eq!(Command::NewPane.bound(), None);
+        // R323's two, and the asymmetry between them and the row below is the whole rule: a break
+        // and a new session are the same act at both surfaces, where a kill that NAMES a session is
+        // not the keystroke that can only mean the current one.
+        assert_eq!(
+            Command::BreakOut.bound(),
+            Some(sprag_host::keymap::BoundAction::BreakPane),
+        );
+        assert_eq!(
+            Command::NewSession.bound(),
+            Some(sprag_host::keymap::BoundAction::NewSession),
+        );
+        assert_eq!(Command::KillSession("work".to_owned()).bound(), None);
     }
 
     use std::cell::RefCell;
