@@ -674,12 +674,15 @@ impl Command {
                 }
                 Report::on_screen()
             }
-            Self::BreakOut => {
-                if let Some(pane) = target {
-                    slots.break_pane(pane, None);
-                }
-                Report::on_screen()
-            }
+            // ⚠ THE ANSWER WAS DROPPED UNTIL R323, and pairing the row with `break-pane` is what
+            // made that a contradiction: `bound()`'s own doc says a row and the key that reaches it
+            // must not report differently, and the key says `nowhere to go` for exactly the refusal
+            // this discarded. The daemon refuses a window's ONLY pane, which is the likeliest press
+            // of all.
+            Self::BreakOut => match target.and_then(|pane| slots.break_pane(pane, None)) {
+                Some(_) => Report::on_screen(),
+                None => self.reported(Report::nowhere),
+            },
             Self::JoinInto(name) => {
                 if let Some(pane) = target {
                     slots.join_pane(pane, name);
@@ -720,10 +723,16 @@ impl Command {
                 Some((_, sprag_terminal::PlaceHow::Moved)) => Report::on_screen(),
                 Some((_, _)) | None => self.reported(Report::nowhere),
             },
+            // Creates AND switches, like the rail's "+". The name is read BEFORE for the reason
+            // the bound arm states: `new_session` answers the CURRENT name when the daemon would
+            // not make one, so without this the row reports a birth that did not happen.
             Self::NewSession => {
-                // Creates AND switches, like the rail's "+".
-                let _ = slots.new_session();
-                Report::on_screen()
+                let before = slots.current_session();
+                if slots.new_session() == before {
+                    self.reported(Report::nowhere)
+                } else {
+                    Report::on_screen()
+                }
             }
             Self::SwitchSession(name) => {
                 slots.switch_session(name);
@@ -1288,6 +1297,10 @@ mod tests {
         /// The live pane set. Ids are deliberately NOT their slot numbers, so a test asserting on a
         /// recorded id proves the slot→id mapping was applied rather than an accidental identity.
         panes: Vec<PaneId>,
+        /// A daemon that REFUSES — a break with nothing to break out of, and a session it will not
+        /// make. Both are states the real daemon reaches (a window's only pane; a registry that
+        /// cannot mint), and neither is reachable from the answers above, which always succeed.
+        refuses: bool,
     }
 
     impl HostClient for CatalogHost {
@@ -1363,7 +1376,7 @@ mod tests {
         }
         fn break_pane(&self, id: PaneId, _name: Option<&str>) -> Option<String> {
             self.log.borrow_mut().broken_panes.push(id);
-            Some("w".to_owned())
+            (!self.refuses).then(|| "w".to_owned())
         }
         fn zoom_pane(&self, id: PaneId, on: Option<bool>) -> Option<sprag_terminal::ZoomOutcome> {
             self.log.borrow_mut().zoomed.push((id, on));
@@ -1432,7 +1445,13 @@ mod tests {
         }
         fn new_session(&self) -> String {
             self.log.borrow_mut().new_sessions += 1;
-            "s".to_owned()
+            // The REFUSAL is the current session's own name, which is what the wire client answers
+            // when the daemon would not make one — the shape both the row and the key read.
+            if self.refuses {
+                self.current.clone()
+            } else {
+                "s".to_owned()
+            }
         }
         fn kill_session(&self, name: &str) {
             self.log.borrow_mut().killed_sessions.push(name.to_owned());
@@ -1544,10 +1563,38 @@ mod tests {
             manifests: None,
             // Offset so no id equals its slot (see the field's own note).
             panes: (0..panes).map(|i| PaneId(7 + i as u64)).collect(),
+            refuses: false,
         };
         let slots = SlotView::new(Box::new(host));
         slots.reconcile();
         (slots, log)
+    }
+
+    /// A `SlotView` whose daemon REFUSES the two acts R323 paired with keys — a break with nothing
+    /// to break out of, and a session it will not make.
+    ///
+    /// Both are states the real daemon reaches and neither is reachable from
+    /// [`slots_with`]'s host, whose every answer succeeds: without this fixture the two rows'
+    /// refusal arms are branches no test builds.
+    fn slots_refusing() -> SlotView {
+        let host = CatalogHost {
+            windows: vec![WindowInfo {
+                name: "main".to_owned(),
+                current: true,
+                opened_by: None,
+            }],
+            sessions: vec!["0".to_owned()],
+            current: "0".to_owned(),
+            log: Rc::default(),
+            project: None,
+            global: None,
+            manifests: None,
+            panes: vec![PaneId(7)],
+            refuses: true,
+        };
+        let slots = SlotView::new(Box::new(host));
+        slots.reconcile();
+        slots
     }
 
     /// A `SlotView` whose host answers `project` with `answer`.
@@ -1568,6 +1615,7 @@ mod tests {
             global: None,
             manifests: None,
             panes: vec![PaneId(7)],
+            refuses: false,
         };
         let slots = SlotView::new(Box::new(host));
         slots.reconcile();
@@ -1595,6 +1643,7 @@ mod tests {
             global,
             manifests,
             panes: vec![PaneId(7)],
+            refuses: false,
         };
         let slots = SlotView::new(Box::new(host));
         slots.reconcile();
@@ -2096,6 +2145,37 @@ mod tests {
             Some("switch-client -l: nowhere to go"),
             "a client that has visited nothing still alive has nowhere to go back to",
         );
+    }
+
+    /// **A ROW AND THE KEY THAT REACHES IT SAY THE SAME THING WHEN THE DAEMON REFUSES** (R323).
+    ///
+    /// `bound()`'s own doc states the rule — *"a row and the key that reaches it must not report
+    /// differently, and the only way to guarantee that is for neither to write a sentence"* — and
+    /// pairing these two rows with the bindings R323 added is what turned their dropped answers
+    /// into a contradiction. `Break pane out` discarded an `Option` (R316's defect, in the arm a
+    /// person hits by pressing it on a lone pane) and `New session` reported a birth that the
+    /// daemon may not have performed.
+    ///
+    /// The CONTROL is the same two rows against a host that CAN: without it, an arm that always
+    /// said `nowhere to go` would pass every assertion above.
+    #[test]
+    fn a_row_the_daemon_refuses_says_what_the_key_paired_with_it_says() {
+        let refusing = slots_refusing();
+        assert_eq!(
+            Command::BreakOut.run(Some(0), &refusing).says(),
+            Some("break-pane: nowhere to go"),
+            "the words are `break-pane`'s, taken from the binding this row is paired with",
+        );
+        assert_eq!(
+            Command::NewSession.run(None, &refusing).says(),
+            Some("new: nowhere to go"),
+            "and the session row's are `new`'s",
+        );
+
+        // THE CONTROL — a host that carries both out says nothing at all.
+        let (able, _log) = slots_with(&[("main", true)], &["0"], "0");
+        assert_eq!(Command::BreakOut.run(Some(0), &able).says(), None);
+        assert_eq!(Command::NewSession.run(None, &able).says(), None);
     }
 
     #[test]
