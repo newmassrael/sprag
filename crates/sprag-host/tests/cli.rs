@@ -6453,6 +6453,20 @@ fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
         scoped.stderr,
     );
 
+    // A CALLER INSIDE A PANE gets the same sentence. Working out which session it is standing in
+    // needs a slot this peer does not serve either, and that question is one this CLI asked on its
+    // own behalf — so its failure must stay invisible and leave the verb's own skew sentence
+    // untouched. The arm is otherwise reachable only from a daemon too old to serve the tree.
+    let in_a_pane = sprag_env(&sock, &["panes"], &[("SPRAG_PANE", "1")]);
+    assert!(!in_a_pane.ok, "it still fails, for the verb's own reason");
+    assert!(
+        in_a_pane
+            .stderr
+            .contains("this daemon does not serve /sprag_mux/external/panes"),
+        "a scope this CLI could not work out is silent, not an error of its own: {}",
+        in_a_pane.stderr,
+    );
+
     // CONTROL 1 — the sentence is not blanket-applied. A verb that fails for its OWN reason keeps
     // its own words, so the assertions above are about the skew path and not about "any failure".
     let own = sprag(&sock, &["send-keys", "-t", "0", "x"]);
@@ -6579,6 +6593,13 @@ fn a_command_run_inside_a_pane_acts_on_that_panes_session() {
         "it falls back to the daemon's default: {}",
         stale.stdout,
     );
+
+    // A SESSION-LEVEL verb still means what it says from inside a pane. `new` reaches an action
+    // that creates a session rather than acting within one, and it now travels with a scope it
+    // never used to carry — so this drives the arm rather than assuming the daemon ignores it.
+    let born = sprag_env(&sock, &["new", "third"], &inside);
+    assert!(born.ok, "new from inside a pane: {}", born.stderr);
+    assert_eq!(born.stdout.trim(), "third", "and it created what was asked");
 
     // CONTROL 4 — the caller's own pane does NOT travel into a session it names. `-t 0` from a pane
     // of `work` must act on session 0's own active pane; substituting the ambient one would address

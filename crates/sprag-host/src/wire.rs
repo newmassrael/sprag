@@ -756,6 +756,40 @@ pub const SESSIONS_SLOT: &str = "sessions";
 /// [`sprag_terminal::TreeSession`] for the exact bound one call gives and the one it does not.
 pub const TREE_SLOT: &str = "tree";
 
+/// Which session holds `pane`, read off a [`TREE_SLOT`] answer — how a process that knows only
+/// which PANE it is in finds out which session it is in.
+///
+/// # Why this is one function and not one per client
+///
+/// The daemon publishes a pane id into every pane's environment
+/// ([`crate::PANE_ENV_VAR`]) and two clients need it turned back into a scope: the `sprag` CLI, so
+/// an unscoped command acts where its caller is standing, and `sprag-mcp`, so an agent's tools
+/// answer about the agent's own session. Written twice, the two would be free to disagree about
+/// which session a pane is in — a torn answer between the tool an agent reads with and the command
+/// it acts with, in a mux whose whole subject is which session a thing belongs to.
+///
+/// It takes the DECODED tree rather than the raw JSON so the shape is the daemon's published type:
+/// a wire change that moved panes under windows would stop this compiling instead of quietly
+/// finding nothing.
+///
+/// [`None`] means the tree does not hold that pane at all, which is what a caller sees when its
+/// `$SPRAG_PANE` outlived the daemon that set it (ids restart with the process). That is not an
+/// error anywhere: it means nobody said which session, so the daemon's default is the one.
+#[must_use]
+pub fn session_holding(
+    tree: &[sprag_terminal::TreeSession],
+    pane: sprag_terminal::PaneId,
+) -> Option<&str> {
+    tree.iter()
+        .find(|session| {
+            session
+                .windows
+                .iter()
+                .any(|window| window.panes.iter().any(|held| held.id == pane))
+        })
+        .map(|session| session.name.as_str())
+}
+
 /// The mux control external query FAMILY: every session's live ACTIVITY — where it is working, on
 /// what branch, and what it is serving — with the AGE of the sample they were all taken in.
 ///

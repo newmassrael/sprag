@@ -2129,22 +2129,12 @@ fn where_we_are(conn: &mut HostConn) -> Option<Here> {
         .trim()
         .parse()
         .ok()?;
-    let tree = query_raw(conn, json!({ "path": mux_action_path(TREE_SLOT) })).ok()?;
-    let session = tree.as_array()?.iter().find(|session| {
-        session["windows"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|window| {
-                window["panes"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|held| held["id"].as_u64() == Some(pane))
-            })
-    })?["name"]
-        .as_str()?
-        .to_owned();
+    let answer = query_raw(conn, json!({ "path": mux_action_path(TREE_SLOT) })).ok()?;
+    let tree: Vec<sprag_terminal::TreeSession> = serde_json::from_value(answer).ok()?;
+    // The lookup itself belongs to neither client: `sprag-mcp` asks the same question of the same
+    // slot so an agent's tools answer about its own session, and two copies of "which session holds
+    // this pane" is a torn answer waiting to happen.
+    let session = sprag_host::wire::session_holding(&tree, PaneId(pane))?.to_owned();
     Some(Here { pane, session })
 }
 

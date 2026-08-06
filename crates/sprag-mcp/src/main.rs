@@ -4662,26 +4662,15 @@ fn our_session() -> Option<&'static str> {
     static OURS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     OURS.get_or_init(|| {
         let pane = own_pane()?;
-        let tree = host_call_unscoped(
+        let answer = host_call_unscoped(
             "scene/query",
             json!({ "path": mux_action_path(sprag_host::wire::TREE_SLOT) }),
         )
         .ok()?;
-        tree.as_array()?.iter().find(|session| {
-            session["windows"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|window| {
-                    window["panes"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .any(|held| held["id"].as_u64() == Some(pane))
-                })
-        })?["name"]
-            .as_str()
-            .map(str::to_owned)
+        let tree: Vec<sprag_terminal::TreeSession> = serde_json::from_value(answer).ok()?;
+        // Through the daemon's own reader, shared with the `sprag` CLI, so the tool an agent reads
+        // with and the command it acts with cannot disagree about which session its pane is in.
+        sprag_host::wire::session_holding(&tree, sprag_terminal::PaneId(pane)).map(str::to_owned)
     })
     .as_deref()
 }
