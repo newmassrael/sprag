@@ -522,4 +522,86 @@ mod tests {
             "unknown pane is None"
         );
     }
+
+    /// **A pane a PLUGIN spawned can ask for a person** — the wiring
+    /// [`WorkspacePaneAccess::with_attention`] exists for, driven end to end rather than merely
+    /// present.
+    ///
+    /// It was present and undriven: every live caller of the attention path went through the mux
+    /// surface, so a minter that was never called — or one called once and shared, which is the
+    /// defect the type exists to prevent — would have left every test green while a dialogue
+    /// plugin's own pane told nobody its build had finished.
+    ///
+    /// Three claims, and the third is the one a shared closure would fail:
+    ///
+    /// * the hook fires at all, carrying the CHILD's own words;
+    /// * it names the pane THIS surface spawned, so the router can find who holds it;
+    /// * each pane gets its OWN hook — two births, two mints — which is what keeps the sender the
+    ///   hook owns per-pane and the PTY reader thread free of a lock.
+    #[test]
+    fn a_pane_a_plugin_spawned_can_ask_for_a_person() {
+        let raised: Arc<Mutex<Vec<(PaneId, Attention)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mints = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let access = WorkspacePaneAccess::new(Arc::new(Mutex::new(Workspace::new((40, 6)))))
+            .with_attention(Some({
+                let (raised, mints) = (Arc::clone(&raised), Arc::clone(&mints));
+                Arc::new(move || {
+                    mints.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let raised = Arc::clone(&raised);
+                    Box::new(move |pane, attention| {
+                        raised
+                            .lock()
+                            .expect("the raised log")
+                            .push((pane, attention));
+                    }) as Box<dyn Fn(PaneId, Attention) + Send>
+                }) as AttentionMinter
+            }));
+
+        // The CHILD raises it, exactly as a build script inside a plugin's pane would.
+        let pane = access
+            .spawn(
+                &[
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "printf '\\033]9;the plugin pane needs you\\007'; exec cat".to_owned(),
+                ],
+                40,
+                6,
+            )
+            .expect("a plugin spawns a pane");
+        // A second pane, so the mint count below is a claim about PER-BIRTH minting rather than
+        // about the one call every wiring would make.
+        let other = access
+            .spawn(
+                &["/bin/sh".to_owned(), "-c".to_owned(), "exec cat".to_owned()],
+                40,
+                6,
+            )
+            .expect("a plugin spawns a second pane");
+        assert_ne!(pane, other);
+
+        let start = Instant::now();
+        while raised.lock().expect("the raised log").is_empty()
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            sleep(Duration::from_millis(20));
+        }
+        let seen = raised.lock().expect("the raised log").clone();
+        let (told, attention) = seen.first().unwrap_or_else(|| {
+            panic!("the plugin pane's child asked for a person and the hook never fired: {seen:?}")
+        });
+        assert_eq!(*told, pane, "the hook must name the pane that raised it");
+        match attention {
+            Attention::Raised(notification) => assert_eq!(
+                notification.body, "the plugin pane needs you",
+                "the child's own words must arrive",
+            ),
+            other => panic!("an OSC 9 is a raised notification, not {other:?}"),
+        }
+        assert_eq!(
+            mints.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "a hook is minted PER BIRTH — one shared closure would be minted once",
+        );
+    }
 }

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use sprag_host::mux_action_path;
 use sprag_host::wire::{NEW_SESSION_ACTION, PANES_SLOT, SPAWN_ACTION, WINDOWS_SLOT};
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
@@ -1865,6 +1865,166 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
         found,
         "the restored pane lost its scrollback (stdout {:?}, stderr {:?})",
         run.stdout, run.stderr,
+    );
+    drop(guard);
+}
+
+/// **A pane that came back from a REBOOT can still ask for a person** (R319, closing R318's item
+/// 44) — the `on_attention` hook the RESTORE path wires, driven for the first time.
+///
+/// R318 wired it (`host.restore(.., || Some(pane_attention_hook(&attention)), ..)`) and drove the
+/// PanePty half only: a restored pane's replayed `OSC 9` does not re-fire, which is a claim about the
+/// emulator's latch and not about the hook. Nothing anywhere asked whether a pane that survived a
+/// crash can still reach a person — and the wiring is one closure argument, in a call whose other
+/// five arguments a passing test would not distinguish it from.
+///
+/// The message is read at the DAEMON's mailbox (`client/messages`) rather than off a screen, because
+/// this file has no display: what is under test is the routing, and R318's own gate already proves a
+/// routed message reaches a terminal front's row.
+///
+/// **THE CONTROL GOES FIRST and is watched all the way through** — R318's lesson, where a control
+/// sent second had already replaced the row the claim was then read from. `sprag display-message`
+/// takes the same mailbox to the same client on the same daemon, so it establishes that the
+/// attachment, the delivery and the collect all work here; it is then COLLECTED, leaving the mailbox
+/// provably empty, so the sentence the claim reads cannot be the control's.
+///
+/// Linux-gated: it finds the forked daemon through `/proc`, like its two siblings above.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-attention-durability-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    // Unique per run, so a sentence found below can only have come from THIS test's child.
+    let needle = format!("REBOOTED-PANE-ASKS-{}", std::process::id());
+
+    // Daemon A, and a session whose pane prints a marker then blocks on its pty — the marker is
+    // what makes the durable wait below a wait on the CONDITION rather than on a timer.
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": {
+                "name": "work",
+                "cmd": ["sh", "-c", format!("printf 'MARKER-{needle}\\n'; exec cat")],
+            },
+        }),
+    )
+    .expect("new_session answers");
+    drop(conn);
+    assert!(
+        wait_for(Duration::from_secs(30), || saved_history_contains(
+            &state,
+            &format!("MARKER-{needle}")
+        )),
+        "the daemon never persisted the pane under {}",
+        state.display(),
+    );
+
+    // The reboot: killed outright, then its successor on the same socket and state.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the second daemon never started serving",
+    );
+    assert!(
+        wait_for(Duration::from_secs(15), || sprag(&sock, &["ls"])
+            .stdout
+            .contains("work")),
+        "the restore never brought the session back",
+    );
+
+    // A client the message can be addressed TO. Held open for the rest of the test: the router
+    // walks the attachment map at the moment the child speaks, so a connection that had dropped
+    // would make the claim below fail for the wrong reason.
+    let mut viewer = HostConn::connect(&sock, Duration::from_secs(5)).expect("the viewer connects");
+    viewer
+        .call(
+            CLIENT_HELLO_METHOD,
+            json!({ CLIENT_PARAM: "reboot-viewer" }),
+        )
+        .expect("client/hello accepted");
+    viewer
+        .call(
+            CLIENT_ATTACH_METHOD,
+            json!({ sprag_rpc::SESSION_PARAM: "work" }),
+        )
+        .expect("client/attach accepted");
+    assert!(
+        wait_for(Duration::from_secs(5), || sprag(&sock, &["list-clients"])
+            .stdout
+            .contains("reboot-viewer: work")),
+        "the daemon never counted the viewer, so nothing could be addressed to it",
+    );
+
+    let collect = |conn: &mut HostConn| -> Value {
+        conn.call(sprag_rpc::CLIENT_MESSAGES_METHOD, json!({}))
+            .expect("collecting a message is a well-formed call")[sprag_rpc::MESSAGE_FIELD]
+            .clone()
+    };
+
+    // THE CONTROL, FIRST: a person's own message takes this mailbox to this client on this daemon.
+    let control = format!("CONTROL-{needle}");
+    let said = sprag(&sock, &["display-message", "-t", "work", &control]);
+    assert!(said.ok, "display-message succeeded: {}", said.stderr);
+    let mut saw = Value::Null;
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            saw = collect(&mut viewer);
+            saw["text"].as_str().is_some_and(|text| text == control)
+        }),
+        "the control never arrived, so the mailbox is not what this test thinks it is: {saw}",
+    );
+    // ...and it is COLLECTED: the mailbox is empty now, so the claim's sentence cannot be this one.
+    assert_eq!(
+        collect(&mut viewer),
+        Value::Null,
+        "a collected message must leave the mailbox empty",
+    );
+
+    // THE CLAIM: the RESTORED pane's own child raises a notification. The pane came back as a plain
+    // shell (a recorded `sh -c` is never re-run), so `send-keys` gives it a command line to run —
+    // and `printf` in the pane is the only thing here that can produce an `ESC` the emulator parses.
+    let raise = format!("printf '\\033]9;{needle}\\007'");
+    let typed = sprag(&sock, &["send-keys", "-t", "work", "0", "-l", &raise]);
+    assert!(typed.ok, "send-keys -l succeeded: {}", typed.stderr);
+    let entered = sprag(&sock, &["send-keys", "-t", "work", "0", "Enter"]);
+    assert!(entered.ok, "send-keys Enter succeeded: {}", entered.stderr);
+
+    let mut got = Value::Null;
+    assert!(
+        wait_for(Duration::from_secs(20), || {
+            let next = collect(&mut viewer);
+            if !next.is_null() {
+                got = next;
+            }
+            got["text"]
+                .as_str()
+                .is_some_and(|text| text.contains(&needle))
+        }),
+        "a pane that survived the reboot asked for a person and nobody was told: {got}",
+    );
+    let text = got["text"].as_str().expect("the message carries text");
+    assert!(
+        text.starts_with("pane "),
+        "the sentence must name the pane the way a person types it back: {text:?}",
     );
     drop(guard);
 }
