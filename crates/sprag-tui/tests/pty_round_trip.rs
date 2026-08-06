@@ -664,6 +664,30 @@ impl Tui {
         VtPort::title(&*self.screen.lock().expect("the screen mutex")).map(str::to_owned)
     }
 
+    /// Whether the client has asked THIS terminal to report focus changes (DEC private mode 1004) —
+    /// read off the emulator that consumed the mode, like every other assertion here.
+    ///
+    /// The enabling half of R319: a client that never asked cannot know the person left, so this is
+    /// the claim that fails first if the outward path is torn out at its source.
+    fn asked_for_focus_reports(&self) -> bool {
+        self.local_modes().focus_tracking
+    }
+
+    /// The desktop notification the client FORWARDED to this terminal, and how many it has sent —
+    /// the emulator standing in for the person's own terminal emulator.
+    ///
+    /// This is why the reading emulator is sprag's own: the bytes a client writes outward are
+    /// exactly the bytes a pane's child writes inward, so the surface that latches one latches the
+    /// other. What a real kitty would pop up as a toast, this reads back as a `Notification` —
+    /// including the URGENCY, which is the part no rival forwards at all.
+    fn forwarded(&self) -> (Option<sprag_vt::Notification>, u64) {
+        let emulator = self.screen.lock().expect("the screen mutex");
+        (
+            VtPort::notification(&*emulator).cloned(),
+            VtPort::notification_seq(&*emulator),
+        )
+    }
+
     /// Every row of the client's painted screen — the failure diagnostic, never an assertion.
     fn rows(&self) -> Vec<String> {
         let emulator = self.screen.lock().expect("the screen mutex");
@@ -5514,4 +5538,297 @@ fn each_attention_source_has_its_own_switch() {
             "the silenced source must not paint, and nothing else may either",
         );
     }
+}
+
+// ----- where a message goes when the person is NOT HERE (R319) -----
+
+/// **THE GATE for R319: a message follows the person out of the room, and only then.**
+///
+/// Measured at `f3eca8f` against exactly this fixture: a pane's child raised a notification with the
+/// client's terminal UNFOCUSED, the row was painted, and this terminal was asked for nothing and told
+/// nothing — `input_modes().focus_tracking` false, `notification_seq()` zero. The delivery ended at a
+/// row in a window nobody was looking at, which is R318's own defect one layer further out.
+///
+/// Five claims, in the order that makes them discriminating:
+///
+/// * **The client ASKS.** Without DEC private mode 1004 on this terminal there is no way to learn
+///   the person left, so this is the enabling fact and it fails first if the path is torn out.
+/// * **THE CONTROL, FIRST and watched all the way through**: with the person HERE the words reach
+///   the row and then expire, and NOTHING is copied out. That is a measured bound rather than a
+///   guess at one — a build that copied every message would fail here instead of passing below.
+/// * **The person leaves, and the next message follows them** — as a notification carrying the
+///   session's own name, so somebody with four sessions is told which one wants them.
+/// * **The focus report never reaches the SHELL.** `termwiz 0.23.3` turns `CSI O` into the two
+///   keystrokes `Alt-[` and `O` (pinned in `key_round_trip.rs`), so a client that asked for the mode
+///   without decoding it would type them into whatever the person left running. This child echoes
+///   nothing and prints only what it is told to, so anything in the pane's text is the defect.
+/// * **They come back, and the copies stop.** The state is an edge in both directions; a decoder
+///   that only ever set `Away` would pass every claim above.
+///
+/// REVERT-PROOF: drop the `Outward::watch_focus(true, ..)` call in `run()` and the first claim fails;
+/// drop the `outward.forward(..)` beside `take_message` and the third does, with the row still
+/// painting — which is precisely the state this round found.
+#[test]
+fn a_message_follows_the_person_out_of_the_room() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(Tui::attach, NOTIFIER);
+
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    // Settle the session so the raise below is the only thing in flight (R315's rule).
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+
+    assert!(
+        tui.asked_for_focus_reports(),
+        "the client must ask this terminal to report focus, or it cannot know the person left",
+    );
+
+    // THE CONTROL: the person is HERE (a terminal reports a CHANGE, so nothing said means nothing
+    // has changed since the mode was set). The words reach the row and expire on their own.
+    tui.type_bytes(b"the first one\r");
+    wait_for("the control's words to reach the row", || {
+        settled(tui.row(STATUS_ROW).contains("pane 0: the first one"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    wait_for("...and to expire, leaving the row as it was", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    assert_eq!(
+        tui.forwarded().1,
+        0,
+        "a person reading the row needs no second copy of it: {:?}",
+        tui.forwarded().0,
+    );
+
+    // THE PERSON LEAVES. `CSI O` is what a terminal writes when its window loses focus.
+    tui.type_bytes(b"\x1b[O");
+    tui.type_bytes(b"the second one\r");
+
+    // THE FOCUS REPORT WAS DECODED, and this is where that is provable rather than where it looks
+    // provable. The child reads a LINE and echoes nothing, so a report routed to it as keystrokes
+    // would be swallowed into the line it is waiting on — and come back inside its own notification,
+    // where the emulator would end the OSC at the escape and stamp the tail into the pane as cells.
+    // So the discriminating claim is that the daemon latched the child's words EXACTLY, and that the
+    // pane holds none of them.
+    //
+    // ⚠ The obvious assertion here — that the pane's text contains no `[` or `O` — is VACUOUS
+    // against this fixture, which is why it is not the one being made: `stty -echo` means nothing
+    // typed at the child stamps a cell whatever it is.
+    wait_for("the DAEMON to latch exactly what the child said", || {
+        let panes = conn
+            .call(
+                "scene/query",
+                json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("panes answers");
+        let note = panes
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|row| row["notification"]["body"].clone())
+            .unwrap_or(Value::Null);
+        settled(note.as_str(), &Some("the second one"))
+            .map_err(|got| format!("{got}: the pane row's notification is {note}"))
+    });
+
+    wait_for("the copy to reach the person's own terminal", || {
+        let (note, seq) = tui.forwarded();
+        settled(
+            note.as_ref().map(|note| note.body.clone()),
+            &Some(format!("[{session}] pane 0: the second one")),
+        )
+        .map_err(|got| format!("{got}: seq is {seq}"))
+    });
+    // ...and the row still says it too: the copy is a copy, not a redirection.
+    wait_for("the row to say it as well", || {
+        settled(
+            tui.row(STATUS_ROW).contains("pane 0: the second one"),
+            &true,
+        )
+        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+
+    let text = pane_text_of(&mut conn, &session, 0);
+    assert!(
+        !text.contains("the second one"),
+        "a notification stamps no cells, and a report routed to the child would put its tail \
+         here: {text:?}",
+    );
+
+    // THEY COME BACK, and the copies stop — the edge in the other direction.
+    tui.type_bytes(b"\x1b[I");
+    tui.type_bytes(b"the third one\r");
+    wait_for("the third message to reach the row", || {
+        settled(tui.row(STATUS_ROW).contains("pane 0: the third one"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    let (note, seq) = tui.forwarded();
+    assert_eq!(
+        seq, 1,
+        "a person who came back gets no copy: the terminal holds {note:?}",
+    );
+}
+
+/// **A child's own URGENCY reaches the person's desktop** — the whole chain, across three processes:
+/// kitty `u=2` in a pane, `Severity::Alert` on the daemon's routed message, `u=2` out to the terminal
+/// the person is actually sitting at.
+///
+/// This is the property no rival has, and it is the reason the outward form is detected at all.
+/// herdr's `build_osc99_notification` hardcodes `i=1:d=0` and emits no `u=` key, so a build that says
+/// *a person is needed* is forwarded as an ordinary notification; their API caller cannot express
+/// urgency in the first place.
+///
+/// The CONTROL is an ORDINARY notification through the same path on the same client: it is forwarded
+/// too, at `u=1`, so a build that hardcoded either digit would fail one of the two.
+///
+/// The payload lands in the notification's TITLE rather than its body, and that is kitty's protocol
+/// rather than a choice here: a single unencoded chunk with no `p=` key IS the title.
+#[test]
+fn a_childs_own_urgency_reaches_the_persons_terminal() {
+    let (_daemon, sock) = spawn_daemon_running(&[
+        "sh",
+        "-c",
+        "stty -echo; while IFS= read -r line; do printf '\\033]99;u=%s;%s\\007' \
+         \"${line%% *}\" \"${line#* }\"; done; cat",
+    ]);
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+    // The client believes it is running in kitty, which is the one terminal whose own protocol
+    // carries an urgency — announced the way kitty announces itself to every child.
+    let mut tui = Tui::attach_with_env(&sock, &session, &[("KITTY_WINDOW_ID", "1")]);
+    wait_for("the client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+    tui.type_bytes(b"\x1b[O");
+
+    // THE CONTROL: an ordinary notification is forwarded, and it is forwarded as ORDINARY.
+    tui.type_bytes(b"1 the ordinary one\r");
+    wait_for("the ordinary notification to reach the terminal", || {
+        let (note, seq) = tui.forwarded();
+        settled(
+            note.as_ref()
+                .map(|note| (note.title.clone().unwrap_or_default(), note.urgency)),
+            &Some((
+                format!("[{session}] pane 0: the ordinary one"),
+                sprag_vt::Urgency::Normal,
+            )),
+        )
+        .map_err(|got| format!("{got}: seq is {seq}"))
+    });
+
+    // THE CLAIM: the child says a person is needed, and the person's terminal is told exactly that.
+    tui.type_bytes(b"2 the build needs you\r");
+    wait_for(
+        "the critical notification to reach the terminal as critical",
+        || {
+            let (note, seq) = tui.forwarded();
+            settled(
+                note.as_ref()
+                    .map(|note| (note.title.clone().unwrap_or_default(), note.urgency)),
+                &Some((
+                    format!("[{session}] pane 0: the build needs you"),
+                    sprag_vt::Urgency::Critical,
+                )),
+            )
+            .map_err(|got| format!("{got}: seq is {seq}"))
+        },
+    );
+}
+
+/// **THE POLICY IS THIS CLIENT'S OWN** — two clients on ONE daemon, reading two config files, taking
+/// two different decisions about the SAME message at the same instant.
+///
+/// This is the axis herdr cannot reach: their suppression reads
+/// `foreground_client_outer_focus`, which is whichever client their server last promoted, so one
+/// person's window decides for everybody attached. R317 made the mailbox per-client and this makes
+/// the policy per-client, which is the same fact about the same person.
+///
+/// It is also the only test that proves the option is read from the USER'S FILE by the shipped
+/// binary — every unit test around it hands the policy in — and the only one that drives `off`,
+/// whose whole content is an absence and which is therefore only meaningful beside a client that
+/// DOES forward the same message.
+///
+/// Neither client asks for focus reports, and that is a claim rather than a detail: the two policies
+/// here do not depend on where the person is, so the mode and the read-ahead it makes necessary are
+/// not paid for.
+#[test]
+fn the_outward_policy_is_this_clients_own_and_not_the_daemons() {
+    let (_daemon, sock) = spawn_daemon_running(&["cat"]);
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let loud = ConfigHome::new("[options]\nnotify-outward = \"always\"\n");
+    let silent = ConfigHome::new("[options]\nnotify-outward = \"off\"\n");
+    let mut always = Tui::attach_with_env(&sock, &session, &[("XDG_CONFIG_HOME", loud.as_str())]);
+    let mut off = Tui::attach_with_env(&sock, &session, &[("XDG_CONFIG_HOME", silent.as_str())]);
+    wait_for("both clients to attach", || {
+        match attached(&mut conn, &session) {
+            2 => Ok(()),
+            n => Err(format!("{n} attached")),
+        }
+    });
+    let where_it_is = format!("[{session}] 0:0*");
+    for tui in [&always, &off] {
+        wait_for("each row to say where its client is", || {
+            settled(tui.row(STATUS_ROW), &where_it_is)
+        });
+    }
+    let _ = wait_for_still(|| pane_size(&mut conn, &session));
+    for (tui, name) in [(&always, "always"), (&off, "off")] {
+        assert!(
+            !tui.asked_for_focus_reports(),
+            "{name} does not depend on where the person is, so its terminal must not be asked",
+        );
+    }
+
+    // ONE message, addressed to the session, delivered to both mailboxes.
+    let said = sprag_on(
+        &sock,
+        &loud,
+        &[
+            "display-message",
+            "-t",
+            &session,
+            "one message, two clients",
+        ],
+    );
+    assert!(said.status.success(), "display-message succeeded");
+
+    // THE CONTROL: it reaches BOTH rows, so the difference below is about the policy and not about
+    // one client having missed the message.
+    for (tui, name) in [(&always, "always"), (&off, "off")] {
+        wait_for("the message to reach both rows", || {
+            settled(
+                tui.row(STATUS_ROW).contains("one message, two clients"),
+                &true,
+            )
+            .map_err(|got| format!("{got} at {name}: row reads {:?}", tui.row(STATUS_ROW)))
+        });
+    }
+
+    // THE CLAIM: only the client whose file said `always` copied it out.
+    wait_for("the loud client to copy it out", || {
+        let (note, seq) = always.forwarded();
+        settled(
+            note.as_ref().map(|note| note.body.clone()),
+            &Some(format!("[{session}] one message, two clients")),
+        )
+        .map_err(|got| format!("{got}: seq is {seq}"))
+    });
+    let (note, seq) = off.forwarded();
+    assert_eq!(
+        seq, 0,
+        "`off` is the silence sprag had before this existed: the terminal holds {note:?}",
+    );
+
+    // Both are torn down here; `Tui::drop` ends each client.
+    let _ = (&mut always, &mut off);
 }

@@ -107,7 +107,7 @@ use std::fmt::Write as _;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
@@ -121,6 +121,8 @@ use sprag_host::status::Status;
 use sprag_host::wire::SelectWindowAsk;
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{PaneId, PlaceHow, SplitId};
+use sprag_tui::focus::{self, Person};
+use sprag_tui::outward::Outward;
 use sprag_tui::{
     Divider, MouseEdges, PaintCache, PanePaint, Rect, Split, Tiling, WireKey, agent_window_title,
     chooser_changes, cursor_changes, divider_changes, help_changes, help_viewport, prompt_changes,
@@ -171,6 +173,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         .write(true)
         .open("/dev/tty")?;
     let mut terminal = SystemTerminal::new_with(local_capabilities()?, &tty, &tty)?;
+    // A SECOND handle on the same terminal, for the OTHER conversation this client has with it: the
+    // mouse mirror owns the modes, this one carries a notification out to the person (R319). Two
+    // handles rather than one shared writer because they are two concerns with two lifetimes, and it
+    // is sound here for a reason rather than by luck — this client is single-threaded, so the two
+    // never write at once, and each sequence goes out as one `write_all`.
+    let mut outward_tty = tty.try_clone()?;
     let mut mouse = MouseMirror::new(tty);
     // The terminal, cut into the rectangle every pane's is carved out of and the row this client
     // speaks in. Mutable because a window change replaces it, and kept as ONE value rather than a
@@ -210,11 +218,31 @@ fn run() -> Result<(), Box<dyn Error>> {
         }),
     )?;
 
+    // WHERE A MESSAGE GOES WHEN THE PERSON IS NOT HERE (R319) — built now because both of its
+    // inputs are settled: the option came from the file read at the top of this function, and the
+    // session is the one the host just answered. Nothing about either can change under it.
+    let outward = Outward::of(keymap.options(), host.current_session(), |name| {
+        std::env::var(name).ok()
+    });
+    // Where the person is, or `None` when this client never asked its terminal to say — which is
+    // NOT the same as their being here, and is why this is an `Option` rather than a `Person` with a
+    // third arm. Only [`Forward::Unfocused`] needs the answer, so only it pays for the mode and for
+    // the read-ahead that mode makes necessary (see `sprag_tui::focus`).
+    let mut person = outward
+        .needs_focus()
+        .then(sprag_tui::focus::Person::default);
+
     // Only now is the terminal taken. The hook goes in FIRST so that a panic between here and the
     // end of the loop still leaves a usable shell behind.
     install_restore_hook();
     terminal.set_raw_mode()?;
     terminal.enter_alternate_screen()?;
+    // AFTER `set_raw_mode`, which calls `tcsetattr` with `TCSAFLUSH` and purges the input queue: a
+    // report answering a mode asked for before that would be discarded, and the first thing this
+    // client would learn about the person is a change from a state it never saw.
+    if outward.needs_focus() {
+        Outward::watch_focus(true, &mut outward_tty);
+    }
     let mut screen = BufferedTerminal::new(terminal)?;
     // `BufferedTerminal::new` sizes its surface from the terminal's raw answer, so the fallback
     // has to be applied here too or a terminal that reports nothing paints into a 0x0 surface.
@@ -290,6 +318,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     // WHAT THE LAST KEY DID, while it is still worth reading — see [`sprag_host::report::Message`].
     // `None` is the steady state, and the status row then says where this client is instead.
     let mut message: Option<Message> = None;
+    // The one event this loop read AHEAD of itself and has not routed yet — see [`read_input`]. Empty
+    // in the steady state: only a possible focus report puts anything here, and only for the one turn
+    // it takes to find out that it was not one.
+    let mut pending: Option<InputEvent> = None;
     loop {
         // The poll blocks until the terminal has something OR the waker fires — the select this
         // client's whole idle cost rests on. It blocks FOREVER unless a message is up, in which
@@ -306,22 +338,28 @@ fn run() -> Result<(), Box<dyn Error>> {
             .as_ref()
             .and_then(|said| said.until())
             .map(|until| until.saturating_sub(now()));
-        match screen.terminal().poll_input(waiting)? {
+        match read_input(&mut screen, waiting, &mut pending, person.as_mut())? {
             // The message's own deadline came and went with nothing else happening: take the row
             // back. `poll_input` answers `None` on a timeout, which is the same answer it gives for
             // a spurious wake — so the state is re-derived rather than assumed, and a `None` with
             // no message up costs one comparison.
-            None if message
-                .as_ref()
-                .is_some_and(|said| said.showing(now()).is_none()) =>
+            Input::Nothing
+                if message
+                    .as_ref()
+                    .is_some_and(|said| said.showing(now()).is_none()) =>
             {
                 message = None;
                 paint_status(&mut screen, &host, split.status, None)?;
             }
+            // The person left this terminal, or came back to it. Nothing to route and nothing to
+            // repaint: what it changes is where the NEXT message goes, and it deliberately does not
+            // touch the one that is up — an alert waits for a KEY because a key is what proves
+            // somebody read it, and a window regaining focus proves only that it has focus.
+            Input::Focus => {}
             // The table is re-read HERE, and only here, because this is the one moment its answer
             // is used: a repaint cannot change what a key means. Routed in a `let` before the match
             // so the borrow the re-read takes ends before an arm reads the prefix back out.
-            Some(InputEvent::Key(event)) => {
+            Input::Event(InputEvent::Key(event)) => {
                 // A message that waits to be ACKNOWLEDGED is cleared by this keystroke (R317). It
                 // is the only thing that can clear one — an alert has no deadline precisely because
                 // a timer is a bet that somebody is looking, and a key is the one event that proves
@@ -870,7 +908,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // A PASTE, and the prompt gets first refusal on it for the same reason it gets first
             // refusal on a keystroke: a name pasted into an open question must not land in the
             // shell behind it. Found by the debt audit — the key path was closed and this was not.
-            Some(InputEvent::Paste(text)) => match &mut overlay {
+            Input::Event(InputEvent::Paste(text)) => match &mut overlay {
                 Overlay::Asking(open) => {
                     // A yes/no has nowhere to put text, so only the line takes it — and the row is
                     // redrawn either way, which costs one idempotent repaint and means this arm has
@@ -920,7 +958,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             //
             // Found by the debt audit, not by a test: the arm below had no idea an overlay existed,
             // and the round that added a full-screen one is the round that had to notice.
-            Some(InputEvent::Mouse(event))
+            Input::Event(InputEvent::Mouse(event))
                 if !matches!(
                     overlay,
                     Overlay::Showing(_) | Overlay::Asking(Asking::Choose { .. })
@@ -1008,7 +1046,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // every PANE, so the programs inside them reflow into their new rectangles. Clearing is
             // what keeps a shrunken screen honest — a partition of the OLD size says nothing about
             // cells the new one does not have.
-            Some(InputEvent::Resized { .. }) => {
+            Input::Event(InputEvent::Resized { .. }) => {
                 // Re-read through `screen_size` rather than trusting the event's payload or
                 // `BufferedTerminal::check_for_resize`: both take the terminal's raw answer, so a
                 // terminal that reports 0 would undo the boot fallback and leave a 0x0 surface.
@@ -1037,7 +1075,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 )?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
-            Some(_) | None => {}
+            Input::Event(_) | Input::Nothing => {}
         }
         if quit.load(Ordering::Acquire) {
             break;
@@ -1066,6 +1104,16 @@ fn run() -> Result<(), Box<dyn Error>> {
             // The row is not painted here: the frame below paints it, and it reads `message` through
             // the same `showing` the whole loop does.
             if let Some(announcement) = host.take_message() {
+                // ⚠ THE COPY GOES OUT FIRST, and independently of whether a row is built below
+                // (R319). A person who set `display-time 0` has asked for no ROW — a decision about
+                // this screen — and a message that cannot be shown to somebody who is not here
+                // either would be the silence this whole front exists to remove. The two deliveries
+                // answer different questions and neither gates the other.
+                //
+                // Only what the DAEMON routed is copied out. A `Report` this client builds for its
+                // own keys is not: it answers a keystroke, and a keystroke is proof somebody is
+                // sitting here to read the answer.
+                outward.forward(person, &announcement, &mut outward_tty);
                 let said = Message::of(
                     &Report::said(&announcement),
                     now(),
@@ -1099,12 +1147,86 @@ fn run() -> Result<(), Box<dyn Error>> {
             )?;
         }
     }
-    // Before the terminal is given back: see [`MouseMirror::release`].
+    // Before the terminal is given back: see [`MouseMirror::release`], and — for the same reason,
+    // one mode along — stop asking it about focus. termwiz restores what IT set and it set neither.
     mouse.release();
+    if outward.needs_focus() {
+        Outward::watch_focus(false, &mut outward_tty);
+    }
 
     // `BufferedTerminal`'s inner terminal restores the termios, the cursor and the alternate
     // screen on drop, so the normal exit path needs nothing here beyond letting it drop.
     Ok(())
+}
+
+/// What one turn of the loop has to act on.
+///
+/// A named type rather than the `Option<InputEvent>` [`Terminal::poll_input`] answers, because there
+/// are now THREE outcomes and two of them are that answer's `None`: a timeout (which may expire a
+/// message) and a focus change (which must not). Collapsing them would make the row's own deadline
+/// depend on whether somebody switched windows.
+enum Input {
+    /// The terminal delivered something that has to be routed.
+    Event(InputEvent),
+    /// The person left this terminal or came back to it — already recorded, nothing to route.
+    Focus,
+    /// A timeout, or a wake with nothing behind it.
+    Nothing,
+}
+
+/// The next thing the loop must act on, with any FOCUS REPORT taken out of the stream (R319).
+///
+/// # Why the read-ahead, and why it is bounded to one event
+///
+/// `termwiz 0.23.3` has no focus event and no seam at the bytes, so a terminal's `CSI I` arrives as
+/// the two keystrokes `Alt-[` and `I` (measured — see [`sprag_tui::focus`]). Routing those would type
+/// them into whatever the person left running. What separates a report from somebody typing those two
+/// keys is that the report is ONE WRITE and therefore lands in ONE read: termwiz parses a read whole
+/// and queues every event it found, and `poll_input` drains that queue before it polls, so a second
+/// event available with NO WAIT came from the same read.
+///
+/// So a bracket — and only a bracket — costs one zero-wait poll. What comes back is either the other
+/// half of a report, or an event that has to be routed on the NEXT turn, which is what `pending`
+/// holds. Nothing is dropped and nothing is delayed by more than the turn it takes to decide.
+///
+/// `person` is [`None`] when this client never asked its terminal to report focus, and then this is
+/// exactly `poll_input` with a pushback: no bracket is read ahead of, so no binding can be swallowed
+/// for a person who switched the feature off.
+fn read_input(
+    screen: &mut BufferedTerminal<SystemTerminal>,
+    waiting: Option<Duration>,
+    pending: &mut Option<InputEvent>,
+    person: Option<&mut Person>,
+) -> Result<Input, Box<dyn Error>> {
+    // The read-ahead's leftover comes first and WITHOUT polling: it was read before this call, so a
+    // poll here could park on a timeout while an event this loop already holds waits behind it.
+    let event = match pending.take() {
+        Some(held) => Some(held),
+        None => screen.terminal().poll_input(waiting)?,
+    };
+    let Some(event) = event else {
+        return Ok(Input::Nothing);
+    };
+    let Some(person) = person else {
+        return Ok(Input::Event(event));
+    };
+    if !focus::opens_report(&event) {
+        return Ok(Input::Event(event));
+    }
+    // ZERO, not a small wait: the whole discriminator is that a report's second half is ALREADY
+    // queued. A wait — any wait — would start catching people's keystrokes instead.
+    let next = screen.terminal().poll_input(Some(Duration::ZERO))?;
+    match focus::edge(&event, next.as_ref()) {
+        Some(seen) => {
+            *person = seen;
+            Ok(Input::Focus)
+        }
+        // Not a report: the bracket is the person's, and so is whatever came back behind it.
+        None => {
+            *pending = next;
+            Ok(Input::Event(event))
+        }
+    }
 }
 
 /// What this client has already put on the terminal — the baseline every frame is a difference
