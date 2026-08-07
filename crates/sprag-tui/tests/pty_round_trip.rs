@@ -5064,9 +5064,12 @@ fn a_message_to_nobody_and_a_message_to_a_stranger_answer_differently() {
         !ok,
         "a target that is not there is refused, not delivered to nobody: {out:?}"
     );
+    // NAMES WHO IS THERE. It used to point at `sprag list-clients`, because a payload-free refusal
+    // gave the CLI nothing but another command to suggest; since R325 the daemon answers with the
+    // fact that verb would have printed.
     assert!(
-        err.contains("gui-nobody-0") && err.contains("list-clients"),
-        "the refusal names what was asked for and where to look: {err:?}",
+        err.contains("gui-nobody-0") && err.contains("these are: gui-"),
+        "the refusal names what was asked for AND who is actually attached: {err:?}",
     );
 
     // THE CONTROL, on the same daemon at the same instant: the real audience still works, so the two

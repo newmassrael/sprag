@@ -118,6 +118,19 @@ fn stale_host() -> sprag_peer::OldDaemon {
 /// second pane, a second window) through the daemon directly and then drives the swept verbs
 /// through the aged front. The daemon is handed back so its lifetime is the test's — dropping it
 /// ends the process.
+/// A daemon that HAS every verb and refuses one WITHOUT SAYING WHY — every pinion before
+/// PINION-PR82, and the degradation R325's deleted guesses used to cover.
+///
+/// A PROXY for [`aged_host`]'s reason: an acting path is reached only after its pre-flight reads
+/// succeed, so a peer that serves nothing never gets there.
+fn refusing_peer(upstream: &Path) -> sprag_peer::OldDaemon {
+    sprag_peer::OldDaemon::proxying(
+        &socket_path(),
+        upstream,
+        sprag_peer::Missing::refusing_without_reason(),
+    )
+}
+
 fn aged_host() -> (sprag_peer::OldDaemon, HostChild, PathBuf) {
     let (daemon, upstream) = spawn_host();
     let peer =
@@ -669,10 +682,11 @@ fn the_cli_breaks_and_joins_panes_over_the_socket() {
     // The boot window "0" has one pane; break-pane on the ONLY pane is refused, cleanly.
     let refused = sprag(&sock, &["break-pane", "-t", "0", "0"]);
     assert!(!refused.ok, "breaking the only pane is refused");
-    assert!(
-        refused.stderr.contains("break-pane refused"),
-        "clean refusal: {}",
-        refused.stderr,
+    assert_eq!(
+        refused.stderr.trim(),
+        "sprag: cannot break the only pane in a window",
+        "the refusal is `PaneMoveError::LastPane`'s own sentence — it used to be a three-cause \
+         guess (*\"is its window's only pane, no window holds it, or the name is taken\"*)",
     );
     // A missing pane id is an argument error.
     let noarg = sprag(&sock, &["break-pane", "-t", "0"]);
@@ -716,11 +730,19 @@ fn the_cli_breaks_and_joins_panes_over_the_socket() {
     );
     assert_eq!(pane_count(&mut c), 2, "both panes back in window 0");
 
-    // join-pane to a non-existent window is a clean refusal.
+    // join-pane to a non-existent window is a clean refusal — and it names the DESTINATION, which
+    // is the one of this verb's three arguments that was wrong. It used to name all three
+    // (*"no window named x, no pane N, or it already lives there"*), two of which were false here.
     let ghost = sprag(&sock, &["join-pane", "-t", "0", &extra.to_string(), "nope"]);
+    assert!(!ghost.ok, "an absent destination is refused");
+    assert_eq!(
+        ghost.stderr.trim(),
+        "sprag: no window named \"nope\"",
+        "clean refusal, naming only what was observed",
+    );
     assert!(
-        !ghost.ok && ghost.stderr.contains("join-pane refused"),
-        "clean refusal: {}",
+        !ghost.stderr.contains(&extra.to_string()),
+        "and it does NOT cast doubt on the pane, which resolved: {}",
         ghost.stderr,
     );
 }
@@ -2643,10 +2665,10 @@ fn a_session_can_be_renamed_and_its_address_takes_its_clients_with_it() {
     assert!(sprag(&sock, &["new", "spare"]).ok);
     let taken = sprag(&sock, &["rename-session", "-t", "prod", "spare"]);
     assert!(!taken.ok, "a duplicate address is refused");
-    assert!(
-        taken.stderr.contains("already another session's name"),
-        "the refusal names the cause: {:?}",
-        taken.stderr,
+    assert_eq!(
+        taken.stderr.trim(),
+        "sprag: a session named \"spare\" already exists",
+        "the refusal is the registry's own sentence, not a list of four the CLI imagined",
     );
     assert!(
         sprag(&sock, &["panes", "-t", "prod"]).ok,
@@ -2674,8 +2696,15 @@ fn a_session_name_is_an_address_and_the_grammar_holds_at_both_ends() {
         "and `work` is the address that resolves",
     );
 
-    // Every rule, at the RENAME end.
-    for hostile in ["", "   ", "a\nb", "x\u{1b}[31m", &"z".repeat(81)] {
+    // Every rule, at the RENAME end — and each one is answered with the rule IT broke. Until R325
+    // every line here read the same sentence, a list of all four rules, because the daemon's
+    // `SessionNameError` could not cross the wire; the pairs below are what it had known all along.
+    for (hostile, rule) in [
+        ("", "blank"),
+        ("   ", "blank"),
+        ("a\nb", "control character"),
+        ("x\u{1b}[31m", "control character"),
+    ] {
         let refused = sprag(&sock, &["rename-session", "-t", "work", hostile]);
         assert!(
             !refused.ok,
@@ -2683,11 +2712,20 @@ fn a_session_name_is_an_address_and_the_grammar_holds_at_both_ends() {
             refused.stdout,
         );
         assert!(
-            refused.stderr.contains("control character"),
-            "the refusal lists the rules a user can act on: {:?}",
+            refused.stderr.contains(rule),
+            "the refusal names the rule {hostile:?} broke, not every rule there is: {:?}",
             refused.stderr,
         );
     }
+    let long = "z".repeat(81);
+    let refused = sprag(&sock, &["rename-session", "-t", "work", &long]);
+    assert!(!refused.ok, "an over-long name is refused");
+    assert!(
+        !refused.stderr.contains("control character"),
+        "and an over-long name is NOT told about control characters — the discriminator this \
+         round bought, and the assertion that fails if the guess comes back: {:?}",
+        refused.stderr,
+    );
     assert!(
         sprag(&sock, &["panes", "-t", "work"]).ok,
         "and every refusal left the address alone",
@@ -2873,21 +2911,24 @@ fn a_pane_can_be_named_from_the_command_line_and_the_listing_says_so() {
     );
     assert!(sprag(&sock, &["rename-pane", "0", "build"]).ok);
 
-    // A SECOND pane cannot take it. The sentence is pinned whole (R279/R283's rule) because it is
-    // the only thing an operator gets: the daemon knows which of the five causes it was and cannot
-    // say so over the wire while PINION-PR82 is unlanded.
+    // A SECOND pane cannot take it. The sentence is pinned whole (R279/R283's rule) and it is the
+    // DAEMON'S — since R325 consumed PINION-PR82, a refused action carries the producer's own
+    // reason. This line used to read *"no pane N, or \"build\" is already taken, blank, over 80
+    // bytes, all digits, or contains a control character"*: SIX causes, of which the daemon knew
+    // exactly one and had no way to say which.
     let second = sprag(&sock, &["split-window"]);
     assert!(second.ok, "split-window: {}", second.stderr);
     let taken = sprag(&sock, &["rename-pane", second.stdout.trim(), "build"]);
     assert!(!taken.ok, "a name in use is refused: {:?}", taken.stdout);
     assert_eq!(
         taken.stderr.trim(),
-        format!(
-            "sprag: rename-pane: no pane {}, or \"build\" is already taken, blank, over 80 bytes, \
-             all digits, or contains a control character",
-            second.stdout.trim(),
-        ),
-        "and the refusal lists what the daemon could not tell it",
+        "sprag: pane 0 is already called \"build\"",
+        "the refusal is the ONE fact the daemon observed, naming the pane that holds the name",
+    );
+    assert!(
+        !taken.stderr.contains(" or "),
+        "and it is not a disjunction — that is the whole point of the round: {:?}",
+        taken.stderr,
     );
 
     // A name that is all digits is refused too — the rule that keeps a name and a pane NUMBER from
@@ -3983,6 +4024,14 @@ fn send_keys_reaches_the_child_and_capture_pane_reads_it_back() {
     assert!(
         unknown.stderr.contains("W3C key name"),
         "and names the vocabulary: {}",
+        unknown.stderr,
+    );
+    // ...and the sentence is the ENCODER'S, not this client's guess at what the encoder knows.
+    // `send_key` answered one `bool` for "unencodable" and "the child is gone" until R325, so the
+    // CLI wrote both possibilities itself; now the end that owns the vocabulary states it.
+    assert!(
+        !unknown.stderr.contains("PTY refused"),
+        "a key the encoder does not know is not reported as a dead child: {}",
         unknown.stderr,
     );
 
@@ -6951,5 +7000,146 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         typo.stderr.contains("is not an action") && typo.stderr.contains("break-pane"),
         "a word nobody has is a typo, answered with what exists: {}",
         typo.stderr,
+    );
+}
+
+/// **THE GATE for R325: a refused act is answered with the ONE fact the daemon observed, and no
+/// client anywhere writes a list of causes.**
+///
+/// # What this replaces, measured at `87cde88` before a line was written
+///
+/// Every acting verb answered a refusal with a client-side DISJUNCTION, because
+/// `InvokeError::Rejected` was a payload-free variant and the reason the daemon already held could
+/// not cross the wire (register item 9, filed upstream as PINION-PR82). Driven at this binary
+/// against an isolated daemon, four survived to the end and each named more causes than were true:
+///
+/// | verb | what an operator read | causes | true |
+/// |---|---|---|---|
+/// | `rename-session` | *"is already another session's name, or is blank, over 80 bytes, or contains a control character"* | 4 | 1 |
+/// | `break-pane` | *"is its window's only pane, no window holds it, or the name is taken"* | 3 | 1 |
+/// | `join-pane` | *"no window named x, no pane N, or it already lives there"* | 3 | 1 |
+/// | `rename-window` | *"window not found, or \"0\" is already taken"* | 2 | 1 |
+///
+/// PINION-PR82 landed upstream (pinion R1564, `a refused invoke states why`); R325 bumped the pin
+/// onto it, made every one of this daemon's ninety-odd refusal sites state its fact, and deleted
+/// the guesses.
+///
+/// # Why the disjunction check is the load-bearing half
+///
+/// Pinning the four sentences alone would pass on a build that printed the right words AND kept a
+/// guess beside them. What cannot survive the return of a client-side list is the second assertion
+/// in each block: the refusal contains no `" or "`. That is the property the round is about, and it
+/// is checked on the STDERR a person reads rather than on any function's return type.
+///
+/// # And one of these sentences was WRONG when it first became visible
+///
+/// `rename-window` onto a taken name answered *a **session** named "0" already exists* — the
+/// registry used `SessionError::Duplicate` for every window-level clash, the exact collapse
+/// `SessionError::MalformedWindow`'s own doc forbids two variants over. It had been invisible for
+/// as long as the CLI was overwriting it. `DuplicateWindow` / `UnknownWindow` / `UnknownAnchor`
+/// exist because making a sentence reach a person is what tests it.
+#[test]
+fn a_refusal_is_the_one_fact_the_daemon_observed() {
+    let (_host, sock) = spawn_host();
+    let session = "0";
+
+    // Two windows and a spare session, so every refusal below is reached with its pre-flight
+    // PASSED — the state that could only ever be described by the daemon.
+    assert!(sprag(&sock, &["new-window", "-t", session]).ok);
+    assert!(sprag(&sock, &["new", "beta"]).ok);
+    let pane = sprag(&sock, &["panes", "-t", session]).stdout;
+    let pane = pane
+        .lines()
+        .next()
+        .and_then(|row| row.split(':').next())
+        .expect("a pane row")
+        .to_owned();
+
+    // (the command, the ONE fact, what the guess used to also say)
+    let cases: [(&[&str], &str, &str); 4] = [
+        (
+            &["rename-window", "-t", "0", "1", "0"],
+            "a window named \"0\" already exists",
+            // The guess said "window not found" too — and, once visible, the sentence itself said
+            // SESSION about a window.
+            "not found",
+        ),
+        (
+            &["rename-session", "-t", "0", "beta"],
+            "a session named \"beta\" already exists",
+            "over 80 bytes",
+        ),
+        (
+            &["break-pane", "-t", "0"],
+            "cannot break the only pane in a window",
+            "the name is taken",
+        ),
+        (
+            &["join-pane", "-t", "0", "ghostwin"],
+            "no window named \"ghostwin\"",
+            "already lives there",
+        ),
+    ];
+    for (args, fact, retired) in cases {
+        // `break-pane` / `join-pane` take the pane id this daemon happened to mint, so it is read
+        // rather than assumed — R295's rule about positions applies to ids a fixture guesses too.
+        let mut argv: Vec<&str> = args.to_vec();
+        if matches!(args[0], "break-pane" | "join-pane") {
+            argv.insert(1, &pane);
+        }
+        let run = sprag(&sock, &argv);
+        assert!(!run.ok, "{argv:?} must be refused: {}", run.stdout);
+        assert_eq!(
+            run.stderr.trim(),
+            format!("sprag: {fact}"),
+            "{argv:?} is answered with the fact the daemon observed",
+        );
+        // THE LOAD-BEARING HALF: no list of causes, and none of the retired ones.
+        assert!(
+            !run.stderr.contains(" or "),
+            "{argv:?} must not offer a disjunction: {:?}",
+            run.stderr,
+        );
+        assert!(
+            !run.stderr.contains(retired),
+            "{argv:?} must not name {retired:?}, which was never true here: {:?}",
+            run.stderr,
+        );
+    }
+
+    // THE CONTROL, on the same daemon at the same instant: a well-formed act still WORKS, so the
+    // four refusals above are about their arguments rather than about a build that refuses
+    // everything. Without it, a `sprag` that failed every invoke would pass every line above.
+    let worked = sprag(&sock, &["rename-window", "-t", "0", "1", "spare"]);
+    assert!(worked.ok, "the control must succeed: {}", worked.stderr);
+}
+
+/// **A daemon that refuses and says NOTHING is reported as the SKEW it is** — the degradation the
+/// gate above leaves, and the reason the ten guesses could be deleted rather than kept as a
+/// fallback.
+///
+/// On this build a refusal cannot be anonymous (`InvokeError::rejected` requires the sentence), so
+/// a bare one means a daemon older than the build that made it mandatory. Driven against
+/// [`sprag_peer`]'s proxy, which relays every read to a real daemon and answers the invoke itself —
+/// the only shape that reaches an acting path at all (R322/R324).
+///
+/// What must NOT appear is `InvokeRejected`, a Rust variant name: that was register item 9's
+/// original leak, and deleting the guesses re-opened the hole for exactly this peer until
+/// `wire::unstated_refusal` closed it.
+#[test]
+fn a_refusal_that_states_nothing_is_reported_as_an_old_daemon() {
+    let (_host, upstream) = spawn_host();
+    let peer = refusing_peer(&upstream);
+    let run = sprag(peer.sock(), &["kill-window", "-t", "0"]);
+    assert!(!run.ok, "a refusal is a failure: {}", run.stdout);
+    assert!(
+        !run.stderr.contains("InvokeRejected"),
+        "a Rust variant name must not reach a person: {}",
+        run.stderr,
+    );
+    assert!(
+        run.stderr.contains("did not say why") && run.stderr.contains("Restart"),
+        "it is told as the skew it is, with the remedy: {}",
+        run.stderr,
     );
 }

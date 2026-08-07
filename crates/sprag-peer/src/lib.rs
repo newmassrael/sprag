@@ -80,6 +80,18 @@ pub struct Missing {
     /// It does not have the ACTION a `scene/invoke` names — every write is refused with
     /// [`sprag_rpc::UNKNOWN_ACTION_FAULT`].
     pub actions: bool,
+    /// It HAS the action a `scene/invoke` names, refuses it, and CANNOT SAY WHY — every write is
+    /// refused with the payload-free [`sprag_rpc::UNSTATED_REFUSAL_FAULT`].
+    ///
+    /// The one shape here that is not an absence, and it belongs with the others anyway: this is
+    /// precisely what every daemon built before PINION-PR82 (pinion R1564) did, because
+    /// `InvokeError::Rejected` was a unit variant and a producer that knew exactly why it was
+    /// refusing had nowhere to put the sentence. So *"older"* has a third meaning on the acting
+    /// side — not *"cannot do that"* but *"will not, and cannot tell you"* — and a consumer that
+    /// treats the two alike sends a person to restart a daemon whose answer was about their
+    /// argument. R325 measured that hole open on this crate's own front: deleting ten client-side
+    /// guesses left a Rust variant name reaching an operator until the sentence for it existed.
+    pub refuses_without_reason: bool,
     /// It is missing exactly THESE addresses, whatever the two flags above say.
     ///
     /// The sharpest shape, and the most realistic: a daemon one build behind lacks the addresses
@@ -96,6 +108,7 @@ impl Missing {
         Self {
             slots: true,
             actions: true,
+            refuses_without_reason: false,
             paths: Vec::new(),
         }
     }
@@ -106,6 +119,7 @@ impl Missing {
         Self {
             slots: true,
             actions: false,
+            refuses_without_reason: false,
             paths: Vec::new(),
         }
     }
@@ -116,6 +130,22 @@ impl Missing {
         Self {
             slots: false,
             actions: true,
+            refuses_without_reason: false,
+            paths: Vec::new(),
+        }
+    }
+
+    /// A daemon that HAS every verb, refuses the one it is asked for, and cannot say why — the
+    /// acting-side skew PINION-PR82 removed.
+    ///
+    /// See [`refuses_without_reason`](Missing::refuses_without_reason) for why this is *"older"*
+    /// rather than *"broken"*.
+    #[must_use]
+    pub fn refusing_without_reason() -> Self {
+        Self {
+            slots: false,
+            actions: false,
+            refuses_without_reason: true,
             paths: Vec::new(),
         }
     }
@@ -127,6 +157,7 @@ impl Missing {
         Self {
             slots: false,
             actions: false,
+            refuses_without_reason: false,
             paths: paths.to_vec(),
         }
     }
@@ -142,6 +173,11 @@ impl Missing {
         let data = match method {
             Some("scene/query") if self.slots || named => sprag_rpc::UNKNOWN_SLOT_FAULT,
             Some("scene/invoke") if self.actions || named => sprag_rpc::UNKNOWN_ACTION_FAULT,
+            // AFTER the missing-action arm, so a peer configured as both answers the sharper
+            // fact: not having a verb is a different situation from having it and declining.
+            Some("scene/invoke") if self.refuses_without_reason => {
+                sprag_rpc::UNSTATED_REFUSAL_FAULT
+            }
             _ => return None,
         };
         Some(json!({
