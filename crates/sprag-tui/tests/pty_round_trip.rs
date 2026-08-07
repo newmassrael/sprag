@@ -6537,11 +6537,48 @@ fn a_window_kill_that_took_the_session_says_so() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"&");
     tui.type_bytes(b"y");
-    wait_for("the row to say the session went with the window", || {
+
+    // ⚠ EVERY DISTINCT ROW OVER ONE WINDOW, not three `wait_for`s in a row. A claim about a TIMED
+    // message cannot be made by waiting for it and then asserting again later: `wait_for` returns on
+    // its FIRST match and the row moves on, so a second assertion reads whatever replaced it. R325.1
+    // misdiagnosed a working fix on exactly that, and R326's own first cut of the third assertion
+    // below was VACUOUS for exactly that — it sampled only after the row had settled, by which time
+    // a message that should not have existed had already come and gone. The mutation that put the
+    // second sentence back came out GREEN, which is what said so.
+    let mut rows: Vec<String> = Vec::new();
+    let watching = Instant::now();
+    while watching.elapsed() < Duration::from_secs(3) {
         let row = tui.row(STATUS_ROW);
-        settled(row.contains("the session went with it"), &true)
-            .map_err(|got| format!("{got}: row reads {row:?}"))
-    });
+        if rows.last() != Some(&row) {
+            rows.push(row);
+        }
+        std::thread::sleep(POLL);
+    }
+
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("the session went with it")),
+        "the kill reached past the window it named and must say so: {rows:?}",
+    );
+
+    // ONE GESTURE, ONE SENTENCE. The out-of-band path says *"session ... was destroyed"* — a passive
+    // sentence about somebody ELSE's act — and for 150 ms R326 said it here too, over the top of this
+    // gesture's own answer a fifth of the way into its `display-time`. A person who pressed
+    // `prefix &` is not told their session was destroyed by parties unknown.
+    assert!(
+        !rows.iter().any(|row| row.contains("was destroyed")),
+        "the gesture answered already; a second sentence blaming nobody must not follow it: {rows:?}",
+    );
+
+    // R326 CLOSES THE HALF R325.1 MEASURED AND LEFT: once the sentence expired the row named the
+    // session that had just died (*"the client had switched to `beta` and the row went back to
+    // `[0] 0:0*`"*). The switch happens inside this gesture's own dispatch now, so the row this
+    // client settles on already names where it landed.
+    assert_eq!(
+        rows.last().map(String::as_str),
+        Some("[beta] 0:0*"),
+        "the row this client settles on must name where it IS, not the session that died: {rows:?}",
+    );
 
     // ...and it is TRUE, read from the daemon rather than from the client that said it.
     wait_for("the daemon to be holding only the spare session", || {
@@ -6551,5 +6588,153 @@ fn a_window_kill_that_took_the_session_says_so() {
         tui.liveness(),
         "running",
         "the client switched rather than leaving, which is what makes the sentence worth painting",
+    );
+}
+
+/// A live `sprag-tui` under `detach-on-destroy = policy`, with a spare session `beta` to land in
+/// and its own boot session destroyed OUT OF BAND by the `sprag` CLI.
+///
+/// Handed back after the kill has been ACKNOWLEDGED by the daemon, so the caller's first `wait_for`
+/// is watching the client rather than racing the killer.
+fn client_whose_session_is_destroyed(policy: &str) -> (Daemon, ConfigHome, HostConn, String, Tui) {
+    let config = ConfigHome::new(&format!("[options]\ndetach-on-destroy = \"{policy}\"\n"));
+    let (daemon, sock, conn, session, tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    // A spare session to land in, made through the CLI so the fixture does not depend on the client
+    // under test having created it.
+    let made = Command::new(sprag_cli_bin())
+        .args(["new", "beta"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .output()
+        .expect("run sprag new");
+    assert!(made.status.success(), "the spare session must exist");
+
+    // THE CONTROL, and it runs BEFORE the kill because the kill is what moves what it measures: the
+    // row names the session this client booted into, so every reading below is the kill's doing.
+    let where_it_was = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_was)
+    });
+
+    // OUT OF BAND: another process destroys this client's session. Not a key, deliberately — a
+    // gesture gets its own answer (`Report::cascaded`), and this path is the one where nobody at
+    // this keyboard did anything.
+    let killed = Command::new(sprag_cli_bin())
+        .args(["kill-session", &session])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .output()
+        .expect("run sprag kill-session");
+    assert!(
+        killed.status.success(),
+        "the killer must have worked: {:?}",
+        String::from_utf8_lossy(&killed.stderr),
+    );
+    (daemon, config, conn, session, tui)
+}
+
+/// **THE GATE for R326: a session destroyed under a terminal client MOVES it, and it says so.**
+///
+/// # The measurement this opened on, at `6884445`
+///
+/// A live `sprag-tui`, `detach-on-destroy = "next"`, a spare session to land in, and `sprag
+/// kill-session 0` run from another process. The client **stayed exactly where it was** — still
+/// `running`, still painting `[0] 0:0*`, naming a session the daemon no longer held, for as long as
+/// it was left alone. The same reading under `off`, `previous` and `no-detached`.
+///
+/// The default policy worked, and it worked for a reason that has nothing to do with this front: a
+/// DETACH is performed by the wire client's own poll thread and needs no client's cooperation. The
+/// four SWITCH policies need a UI-thread resolve, `sprag-gui` called it from its per-frame
+/// reconcile, and **this front had never called it at all** — so four of the five values of a
+/// documented option did nothing on half the product.
+///
+/// # Three claims, and the third is the one R325.1 left behind
+///
+/// 1. **It says what happened**, in [`sprag_host::report::Report::lost_session`]'s wording — the
+///    one place either frontend takes the sentence from.
+/// 2. **It is TRUE**, read from the daemon's own session list rather than from the client saying it.
+/// 3. **The row then names where it landed** — asserted AFTER the sentence expires, which is the
+///    half R325.1 measured and left: *"the status row still names the dead session"*. The order of
+///    these two waits is the test: a row read too early sees the message, and a message read too
+///    late has expired ([`wait_for`] prints its LAST observation, which is how that reading was
+///    misdiagnosed once already).
+#[test]
+fn a_destroyed_session_moves_the_terminal_client_and_says_so() {
+    let (_daemon, _config, mut conn, session, mut tui) = client_whose_session_is_destroyed("next");
+
+    let says = format!("session {session:?} was destroyed; now on \"beta\"");
+    wait_for("the row to say the session was destroyed", || {
+        let row = tui.row(STATUS_ROW);
+        settled(row.contains(says.as_str()), &true)
+            .map_err(|got| format!("{got}: row reads {row:?}"))
+    });
+
+    // ...and it is TRUE, read from the daemon rather than from the client that said it.
+    wait_for("the daemon to be holding only the spare session", || {
+        settled(session_names(&mut conn), &vec!["beta".to_owned()])
+    });
+
+    // ...and once the sentence expires the row names WHERE THIS CLIENT IS, not the session that
+    // died. `Status` is derived from the host every frame, so this is a claim about the ATTACHMENT
+    // having moved and not about a repaint.
+    wait_for("the row to settle on the session it landed in", || {
+        settled(tui.row(STATUS_ROW), &"[beta] 0:0*".to_owned())
+    });
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "a switch policy moves the client; it does not end it",
+    );
+}
+
+/// **All four SWITCH policies move this client** — the property that was false for every one of
+/// them, so a gate for one would leave three unmeasured.
+///
+/// The landing is `beta` for all four here and that is not an accident worth hiding: with exactly
+/// two sessions, the ±1 list neighbour and both MRU fallbacks resolve to the same survivor. What
+/// separates the policies is which session they PREFER among several, which
+/// `destroy_successor`'s own unit tests decide; what this drives is the half those tests cannot
+/// reach — that the policy is applied at all, by the shipped binary, on a real pseudoterminal.
+///
+/// The DEFAULT is the fifth value and is not here: it detaches, and it is driven by
+/// [`the_client_leaves_when_its_session_is_destroyed`] on the path it has always taken.
+#[test]
+fn every_switch_policy_moves_the_terminal_client() {
+    for policy in ["off", "no-detached", "next", "previous"] {
+        let (_daemon, _config, _conn, _session, mut tui) =
+            client_whose_session_is_destroyed(policy);
+        wait_for(
+            &format!("`detach-on-destroy = {policy:?}` to move the client to the survivor"),
+            || settled(tui.row(STATUS_ROW), &"[beta] 0:0*".to_owned()),
+        );
+        assert_eq!(
+            tui.liveness(),
+            "running",
+            "`detach-on-destroy = {policy:?}` must switch, not leave",
+        );
+    }
+}
+
+/// The DEFAULT policy detaches, which is tmux's rule and the one value of this option that worked
+/// before R326 — kept as the CONTROL for the four above: without it, a build that detached under
+/// every policy would satisfy nothing here and a build that switched under every policy would look
+/// the same as a correct one.
+#[test]
+fn the_client_leaves_when_its_session_is_destroyed() {
+    let (_daemon, _config, mut conn, _session, mut tui) = client_whose_session_is_destroyed("on");
+    wait_for(
+        "the client to leave the terminal it cannot serve",
+        || match tui.liveness() {
+            gone if gone.starts_with("EXITED") => Ok(()),
+            still => Err(still),
+        },
+    );
+    assert_eq!(
+        session_names(&mut conn),
+        vec!["beta".to_owned()],
+        "the spare session outlives the client that could not reach it",
     );
 }

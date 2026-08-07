@@ -171,6 +171,12 @@ fn main() -> ExitCode {
             // own fixture more cheaply than by inheriting one. It leaves a window behind, and
             // nothing after it counts windows.
             check_the_break_key_gives_a_pane_a_window_of_its_own(&mut smoke, &mut report);
+            // Straight before the check below, which needs the DEFAULT destroy policy: this one
+            // writes `detach-on-destroy = "next"`, proves the windowed client MOVES rather than
+            // leaving, and puts an empty `[options]` back before it returns. It leaves this client
+            // on a DIFFERENT session than it found it on, which the check below discovers rather
+            // than assumes.
+            check_a_destroyed_session_moves_the_windowed_client(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -925,6 +931,93 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         &format!("a live pane holds the keyboard after a PALETTE window change ({after:?})"),
         after.is_ok(),
     );
+}
+
+/// **R326's windowed half: a session destroyed under this client MOVES it, and it says so.**
+///
+/// # Why this front needs its own gate at all
+///
+/// It was the front that WORKED. The measured defect was `sprag-tui`'s — four of the five
+/// `detach-on-destroy` values did nothing there — and `sprag-gui` had called the resolve from its
+/// frame loop since R176. Gating only the front that was broken would be gating the fix rather than
+/// the property, and this project has already paid for that once: R318's live smoke found a defect
+/// the terminal front's pty gate structurally could not reach.
+///
+/// It is also the front where the SENTENCE is new. The resolve moved a person silently here for as
+/// long as it has existed — the session rail simply changed under them — so the strip assertion
+/// below is not a re-test of the terminal front's, it is the first test of this one's.
+///
+/// # The landing is DISCOVERED, never predicted
+///
+/// `next` walks the daemon's own creation order, and by this point in the run several checks have
+/// left sessions behind — so naming the survivor here would be asserting the order of everything
+/// that ran before. What is asserted instead is stronger and order-free: **the sentence names the
+/// session the client is actually on**, which a client that moved somewhere else and said the wrong
+/// name would fail.
+fn check_a_destroyed_session_moves_the_windowed_client(smoke: &mut Smoke, report: &mut Report) {
+    if smoke
+        .write_user_config("[options]\ndetach-on-destroy = \"next\"\n")
+        .is_err()
+    {
+        report.check("a destroy policy can be written", false);
+        return;
+    }
+    let Some(mine) = smoke.attached_session() else {
+        report.check("the client says which session it is attached to", false);
+        return;
+    };
+    // A guaranteed survivor, so this check does not depend on what earlier ones left standing.
+    let spare = smoke.cli(&["new", "smoke-spare"]);
+    report.check(
+        &format!("a spare session exists to land in ({spare:?})"),
+        spare.is_ok(),
+    );
+
+    // OUT OF BAND: the `sprag` CLI, not this client's palette. The distinction is the whole subject
+    // — a gesture gets its own answer, and this is the path where nobody at this keyboard acted.
+    let killed = smoke.cli(&["kill-session", &mine]);
+    report.check(
+        &format!("the CLI destroys the session this client is attached to ({killed:?})"),
+        killed.is_ok(),
+    );
+
+    // The STRIP first, because it is the transient: the sentence expires on `display-time` while
+    // the session rail keeps its new name forever, so a check that read the rail first could find
+    // the message already gone and call it an absence.
+    let said = smoke.wait_for(|s| {
+        let tags = s.tags().ok()?;
+        let strip = tags.get("sprag_message_strip")?;
+        let text = strip.text.join("\u{1f}");
+        text.contains("was destroyed").then_some(text)
+    });
+    report.check(
+        &format!("the client SAYS its session was destroyed ({said:?})"),
+        said.as_deref().is_ok_and(|text| text.contains(&mine)),
+    );
+
+    let moved = smoke.wait_for(|s| s.attached_session().filter(|now| *now != mine));
+    report.check(
+        &format!("...and it MOVED rather than sitting on a session that is gone ({moved:?})"),
+        moved.is_ok(),
+    );
+    // THE SENTENCE AGREES WITH THE RAIL. A client that moved and named somewhere else would pass
+    // both checks above and still be lying to the person reading the strip.
+    report.check(
+        "...and the sentence names the session it actually landed on",
+        match (&said, &moved) {
+            (Ok(text), Ok(now)) => text.contains(now.as_str()),
+            _ => false,
+        },
+    );
+    report.check(
+        "...and the client is still running, which is what a SWITCH policy means",
+        !smoke.gui_exited(),
+    );
+
+    // Put the DEFAULT policy back for the check that follows, which needs a client that LEAVES.
+    if smoke.write_user_config("[options]\n").is_err() {
+        report.check("the default destroy policy can be restored", false);
+    }
 }
 
 /// The last unproven step of the destroy arc. The poll thread's classification of a dead session was
