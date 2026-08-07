@@ -43,11 +43,114 @@
 //! paints a modal, and what must not differ — which rows exist, which one is picked, what a pick
 //! MEANS — is decided here.
 
-use sprag_terminal::{PaneId, SessionId, TreeSession, WindowId};
+use sprag_terminal::{PaneId, SessionId, SplitDir, TreeSession, WindowId};
 
 use crate::HostClient;
 use crate::prompt::{Line, Typed};
 use sprag_input::Modifiers;
+
+/// What a chooser is FOR — what picking a row DOES, and which rows may be picked at all.
+///
+/// # Why the chooser had to learn this, and why it is one type rather than two views
+///
+/// Until R328 a chooser had exactly one errand and it was implicit: [`Pick::commit`] called
+/// [`HostClient::goto`] and nothing else. That is why `move-pane` was one of the four verbs a
+/// keystroke could mean and sprag did not bind — not because the surface was missing (the tree
+/// chooser has shown every pane since R315) but because a pick could only ever mean *"go there"*.
+///
+/// Making it a value rather than a second chooser is what keeps the two honest about each other:
+/// the rows, the filtering, the identity discipline and the live refresh are ONE implementation, and
+/// what differs is stated here — in one closed set that [`Pick::commit`] matches exhaustively, so a
+/// third errand cannot be added without deciding what it does AND what it may be done to.
+///
+/// # An errand decides which rows are PICKABLE, and that is half its value
+///
+/// A chooser opened to move a pane must not let a person commit a SESSION row: there is no act on
+/// the other side of it. So [`accepts`](Self::accepts) gates the cursor as well as the commit —
+/// non-pickable rows stay VISIBLE (a pane row means nothing without the session and window above
+/// it) and the cursor steps over them. A surface cannot get this wrong by forgetting to check,
+/// because the check is not on the surface.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Errand {
+    /// GO to the row picked — tmux `choose-tree`, and every row is a place, so every row is
+    /// pickable.
+    Goto,
+    /// Put the pane the key was pressed on BESIDE the pane picked — tmux `move-pane`.
+    ///
+    /// The moving pane travels in the errand because a keystroke can only ever mean the pane the
+    /// person is on (`BoundAction`'s rule for every pane verb), and the TARGET is the thing a
+    /// person picks — which is exactly the split that made this a chooser errand rather than a
+    /// binding with a pane argument.
+    MovePane {
+        /// The pane that MOVES: the focused one, resolved when the key was pressed.
+        pane: PaneId,
+        /// The axis the target pane is divided on — tmux's `-h` (side by side) / `-v` (stacked).
+        dir: SplitDir,
+        /// tmux's `-b`: the near side of the target rather than the far one.
+        before: bool,
+    },
+}
+
+impl Errand {
+    /// Whether `row` may be PICKED for this errand — the cursor lands only on rows this admits, and
+    /// [`Pick::commit`] can only ever be reached from one.
+    ///
+    /// A pane cannot be moved beside ITSELF, and the daemon says so
+    /// ([`PaneMoveError::SamePane`](sprag_terminal::PaneMoveError)); refusing the row is not a
+    /// second authority on that rule but the surface declining to offer a press whose only possible
+    /// answer is a refusal.
+    ///
+    /// **A target in ANOTHER session is admitted here and refused by the daemon.** The `move_pane`
+    /// action resolves both panes inside the request's own scope, so a cross-session pick cannot be
+    /// honoured — but the reason belongs to the daemon, which states it (R325), and a client that
+    /// hid the rows would be deciding a scope question from a mirror. The rows are visible either
+    /// way; what this refuses is only what is CERTAINLY not an act.
+    #[must_use]
+    pub const fn accepts(&self, row: &Row) -> bool {
+        match (self, row.target) {
+            (Self::Goto, _) => true,
+            (Self::MovePane { pane, .. }, Target::Pane(_, _, target)) => target.0 != pane.0,
+            (Self::MovePane { .. }, _) => false,
+        }
+    }
+
+    /// What this chooser is asking, in words — the line a frontend paints above the list.
+    ///
+    /// Built HERE for [`Row`]'s stated reason one level up: two surfaces describing one question two
+    /// ways is the drift these shared types exist to prevent, and a chooser that looked identical
+    /// for two errands would be a list a person cannot act on. The DECORATION is still the
+    /// surface's.
+    /// It is the CANONICAL SPELLING, matching what `list-keys` prints and what a user could type
+    /// back at `bind-key` — the discipline every other label in this product follows, so the word in
+    /// front of a person is the word they would write. `choose-tree` for the errand that had no
+    /// name because it was the only one.
+    #[must_use]
+    pub const fn asking(&self) -> &'static str {
+        match self {
+            Self::Goto => "choose-tree",
+            Self::MovePane {
+                dir: SplitDir::Horizontal,
+                before: false,
+                ..
+            } => "move-pane -h",
+            Self::MovePane {
+                dir: SplitDir::Horizontal,
+                before: true,
+                ..
+            } => "move-pane -h -b",
+            Self::MovePane {
+                dir: SplitDir::Vertical,
+                before: false,
+                ..
+            } => "move-pane -v",
+            Self::MovePane {
+                dir: SplitDir::Vertical,
+                before: true,
+                ..
+            } => "move-pane -v -b",
+        }
+    }
+}
 
 /// WHERE a picked row goes — a path of identities down the tree, exactly as far as the row is deep.
 ///
@@ -138,6 +241,8 @@ pub struct Pick {
     query: Line,
     /// The picked row, BY IDENTITY. See the module docs for why this is not a `usize`.
     cursor: Target,
+    /// What this chooser is FOR — what a pick DOES and which rows it may be made on.
+    errand: Errand,
 }
 
 impl Pick {
@@ -151,23 +256,49 @@ impl Pick {
     /// one would take the keyboard to show a person an empty box. That cannot happen against a live
     /// daemon (the client asking is attached, and an attached session lists), which is exactly why
     /// it is an [`Option`] rather than an assertion.
+    /// A chooser whose pick GOES to the row — the errand every chooser had before R328.
     #[must_use]
     pub fn new(tree: &[TreeSession], here: &str) -> Option<Self> {
+        Self::for_errand(tree, here, Errand::Goto)
+    }
+
+    /// Build a chooser over `tree` for `errand`, with the cursor on the first row that errand can be
+    /// done to.
+    ///
+    /// `here` is the client's own session NAME — the one fact the tree cannot carry, because a
+    /// session has no idea who is looking at it (the same split [`sprag_terminal::SessionInfo`]
+    /// states for its `attached` count). Everything else a row needs is in the tree.
+    ///
+    /// [`None`] for a tree with nothing this errand can be done TO, which is a strictly wider rule
+    /// than the empty tree it replaces and is the same judgement: a chooser with nothing to choose
+    /// is not a question, and opening one would take the keyboard to show a person a list they
+    /// cannot act on. A `move-pane` errand in a session holding one pane is exactly that.
+    #[must_use]
+    pub fn for_errand(tree: &[TreeSession], here: &str, errand: Errand) -> Option<Self> {
         let rows = rows_of(tree, here);
         let cursor = rows
             .iter()
+            .filter(|row| errand.accepts(row))
             // The session the client is on, so the list opens showing a person their own
             // surroundings. `find` over depth 0 rather than the first `here` row of any depth: a
             // chooser that opened on the ACTIVE PANE's row would put the cursor two levels in, and
-            // the first thing a person does with a chooser is look UP the list.
+            // the first thing a person does with a chooser is look UP the list. An errand that
+            // admits no session row falls through to its own first pickable row.
             .find(|row| row.depth == 0 && row.here)
-            .or_else(|| rows.first())?
+            .or_else(|| rows.iter().find(|row| errand.accepts(row)))?
             .target;
         Some(Self {
             rows,
             query: Line::new(""),
             cursor,
+            errand,
         })
+    }
+
+    /// What this chooser is FOR — read by a frontend to paint the question above the list.
+    #[must_use]
+    pub const fn errand(&self) -> Errand {
+        self.errand
     }
 
     /// Re-read the tree, keeping the cursor on the row the person is looking at.
@@ -180,14 +311,14 @@ impl Pick {
         // Where the cursor sits in the CURRENT visible order, before anything changes. It is the
         // fallback and only the fallback: if the picked row survives, this is not used at all.
         let was = self
-            .visible_rows()
+            .pickable_rows()
             .position(|row| row.target == self.cursor)
             .unwrap_or(0);
         self.rows = rows_of(tree, here);
-        if self.visible_rows().any(|row| row.target == self.cursor) {
+        if self.pickable_rows().any(|row| row.target == self.cursor) {
             return;
         }
-        let visible: Vec<Target> = self.visible_rows().map(|row| row.target).collect();
+        let visible: Vec<Target> = self.pickable_rows().map(|row| row.target).collect();
         // The row that took its PLACE, or the last one if the list got shorter. A person whose
         // pane exited under the cursor is left looking at what is now in that spot, which is what
         // a list does; what they are NOT left with is a cursor that moved while their row lived.
@@ -257,10 +388,10 @@ impl Pick {
             // first VISIBLE row is what makes type-then-Enter work: a person who types enough to
             // leave one row expects that row to be the one they get.
             let first = self
-                .visible_rows()
+                .pickable_rows()
                 .find(|row| row.target == self.cursor)
                 .map_or_else(
-                    || self.visible_rows().next().map(|row| row.target),
+                    || self.pickable_rows().next().map(|row| row.target),
                     |_| None,
                 );
             if let Some(first) = first {
@@ -290,8 +421,27 @@ impl Pick {
     /// is nowhere to paint a success: the chooser CLOSES on one, and a person who picked a row they
     /// were looking at has already been told where they went. The daemon's landed name is still
     /// answered by [`HostClient::goto`], which is where a status line would read it.
+    /// EXHAUSTIVE over the errand, which is the whole reason [`Errand`] is a closed set: an errand
+    /// added later cannot compile until somebody decides what committing it DOES.
+    ///
+    /// Both arms fail the same way and say the same thing, and that is not laziness — a pick is an
+    /// IDENTITY, so the one cause either can have is that the row named something no longer there.
+    /// A move can also be refused by the daemon for a reason of its own (the target is in another
+    /// session, the pane is the window's only one); that sentence is the DAEMON's, it reaches the
+    /// client through R325's funnel, and `sprag-gui`'s `message::preferred` gives it precedence over
+    /// this one — so the generic word here never covers a stated reason.
     pub fn commit(&self, host: &dyn HostClient) -> Result<(), String> {
-        host.goto(self.cursor).map(drop).ok_or_else(|| {
+        let done = match self.errand {
+            Errand::Goto => host.goto(self.cursor).map(drop),
+            Errand::MovePane { pane, dir, before } => match self.cursor {
+                Target::Pane(_, _, target) => host.move_pane(pane, target, dir, before).map(drop),
+                // Unreachable through the cursor, which `Errand::accepts` keeps on pane rows — and
+                // answered rather than asserted, because "the surface cannot produce this" is a
+                // claim about two modules and a refusal costs nothing.
+                Target::Session(_) | Target::Window(_, _) => None,
+            },
+        };
+        done.ok_or_else(|| {
             let row = self
                 .visible_rows()
                 .find(|row| row.target == self.cursor)
@@ -311,10 +461,10 @@ impl Pick {
         let typed = self.query.pasted(text);
         if typed == Typed::Edited {
             let first = self
-                .visible_rows()
+                .pickable_rows()
                 .find(|row| row.target == self.cursor)
                 .map_or_else(
-                    || self.visible_rows().next().map(|row| row.target),
+                    || self.pickable_rows().next().map(|row| row.target),
                     |_| None,
                 );
             if let Some(first) = first {
@@ -322,6 +472,18 @@ impl Pick {
             }
         }
         typed
+    }
+
+    /// The visible rows this chooser's ERRAND can be done to — what the arrows walk and what a
+    /// commit can land on.
+    ///
+    /// A subset of [`visible_rows`](Self::visible_rows) rather than a different list, because the
+    /// two answer different questions and both are right: a `move-pane` chooser SHOWS its sessions
+    /// and windows (a pane row means nothing without them) and lets the cursor stop only on panes.
+    /// One place decides it, so the cursor, the commit and the type-then-Enter landing cannot come
+    /// to admit different rows.
+    fn pickable_rows(&self) -> impl Iterator<Item = &Row> {
+        self.visible_rows().filter(|row| self.errand.accepts(row))
     }
 
     /// The visible rows, as an iterator — [`visible`](Self::visible)'s engine, shared with the
@@ -372,7 +534,7 @@ impl Pick {
     /// blind and must not dead-end, while a LIST is being looked at and its ends are on the screen.
     /// [`WindowPlace::Step`](sprag_terminal::WindowPlace) draws the same line one level down.
     fn step(&mut self, by: isize) -> Typed {
-        let visible: Vec<Target> = self.visible_rows().map(|row| row.target).collect();
+        let visible: Vec<Target> = self.pickable_rows().map(|row| row.target).collect();
         let Some(at) = visible.iter().position(|target| *target == self.cursor) else {
             return Typed::Ignored;
         };
@@ -497,6 +659,83 @@ mod tests {
     /// Every key that reaches a chooser, as the wire spells it.
     fn key(pick: &mut Pick, name: &str) -> Typed {
         pick.typed(name, Modifiers::default())
+    }
+
+    /// **AN ERRAND DECIDES WHAT A PICK MEANS *AND* WHAT IT MAY BE MADE ON** — R328's whole thesis,
+    /// and the reason `move-pane` stopped being a verb a keystroke could mean and sprag had not
+    /// built.
+    ///
+    /// The two errands are driven over the SAME tree so nothing can be attributed to the fixture:
+    /// what differs is the errand and only the errand.
+    ///
+    /// The `move-pane` half makes three claims a build could fail separately:
+    ///
+    /// 1. it OPENS ON A PANE ROW, not on the session row `Goto` opens on — a cursor two levels in
+    ///    is right here and wrong there, and the same constructor decides both;
+    /// 2. the arrows STEP OVER sessions and windows, so every position the cursor can reach is a
+    ///    row the commit can act on. `Goto` over the identical tree walks all of them, which is what
+    ///    makes this a claim about the errand rather than about the walk;
+    /// 3. the MOVING PANE IS NOT OFFERED as its own target — the one row whose only possible answer
+    ///    is a refusal.
+    ///
+    /// REVERT-PROOF: make `accepts` answer `true` for every row and claims 1-3 fail together; drop
+    /// the `target != pane` term and claim 3 alone fails; point `step` back at `visible_rows` and
+    /// claim 2 fails while 1 and 3 still pass.
+    #[test]
+    fn an_errand_confines_the_cursor_to_the_rows_it_can_act_on() {
+        let tree = vec![session(1, "alpha", 2), session(2, "beta", 1)];
+        let mover = PaneId(1000); // alpha's first pane — the one the key was pressed on.
+
+        let goto = Pick::new(&tree, "alpha").expect("a tree with two sessions");
+        assert!(
+            matches!(goto.cursor(), Target::Session(_)),
+            "a `choose-tree` opens where the person IS, which is their session's row",
+        );
+
+        let mut moving = Pick::for_errand(
+            &tree,
+            "alpha",
+            Errand::MovePane {
+                pane: mover,
+                dir: SplitDir::Horizontal,
+                before: false,
+            },
+        )
+        .expect("a tree holding a pane other than the mover");
+        assert!(
+            matches!(moving.cursor(), Target::Pane(..)),
+            "a `move-pane` opens on something it can be done TO: {:?}",
+            moving.cursor(),
+        );
+
+        // WALK THE WHOLE LIST with the arrows and collect every position the cursor rests on.
+        let mut landed = vec![moving.cursor()];
+        while key(&mut moving, "ArrowDown") == Typed::Edited {
+            landed.push(moving.cursor());
+        }
+        assert!(
+            landed
+                .iter()
+                .all(|target| matches!(target, Target::Pane(..))),
+            "every row the arrows can reach must be one a pick can act on: {landed:?}",
+        );
+        assert!(
+            !landed.contains(&Target::Pane(SessionId(1), WindowId(100), mover)),
+            "...and a pane cannot be moved beside itself, so it is not offered: {landed:?}",
+        );
+        // The CONTROL that makes the confinement mean something: the same walk under `Goto` reaches
+        // rows of every depth, so the list really does hold what the errand is stepping over.
+        let mut going = Pick::new(&tree, "alpha").expect("the same tree");
+        let mut all = vec![going.cursor()];
+        while key(&mut going, "ArrowDown") == Typed::Edited {
+            all.push(going.cursor());
+        }
+        assert!(
+            all.iter().any(|t| matches!(t, Target::Session(_)))
+                && all.iter().any(|t| matches!(t, Target::Window(..)))
+                && all.len() > landed.len(),
+            "the tree holds sessions and windows the move errand stepped over: {all:?}",
+        );
     }
 
     /// **THE CURSOR IS AN IDENTITY, AND A ROW THAT CLOSES ABOVE IT DOES NOT MOVE IT.**

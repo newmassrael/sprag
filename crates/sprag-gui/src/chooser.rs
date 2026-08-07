@@ -361,9 +361,14 @@ pub(crate) fn view_chooser(theme: &Theme, window: (u32, u32)) -> Option<Scene> {
 /// What the header says: what has been typed, and either how to leave or why the last pick failed.
 fn header(choosing: &Choosing) -> String {
     let query = choosing.pick.query().text();
+    // The ERRAND rather than a literal "go to": since R328 a chooser can be opened to MOVE the
+    // focused pane, and two errands painting the same rows under the same words is a person
+    // answering a question nobody asked them. `Errand::asking` is the one spelling, shared with the
+    // terminal front and with what `bind-key` would take.
+    let asking = choosing.pick.errand().asking();
     match &choosing.refusal {
-        Some(why) => format!("go to: {query}  {why}"),
-        None => format!("go to: {query}   type to narrow, Enter to go, Esc to close",),
+        Some(why) => format!("{asking}: {query}  {why}"),
+        None => format!("{asking}: {query}   type to narrow, Enter to commit, Esc to close"),
     }
 }
 

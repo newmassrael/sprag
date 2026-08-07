@@ -549,10 +549,14 @@ impl Verb {
                 shell(Group::Window, "PANE WINDOW [-t SESSION]"),
                 Keystroke::NotBuilt,
             ),
+            // BINDABLE SINCE R328. The CLI form names both panes; a binding names NEITHER — the
+            // mover is the focused pane and the target is a row the person PICKS, which is what
+            // `chooser::Errand` was built to let a pick mean. The flags are `split-window`'s, and
+            // for the same question: which half of the target the arrival takes.
             Self::MovePane => (
                 "move-pane",
                 shell(Group::Window, "PANE -h|-v [-b] TARGET [-t SESSION]"),
-                Keystroke::NotBuilt,
+                Keystroke::Means("move-pane -h|-v [-b]"),
             ),
             // ── panes ───────────────────────────────────────────────────────────────────────────
             Self::Panes => (
@@ -1012,7 +1016,7 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (22, 4, 28),
+            (23, 3, 28),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
@@ -1025,7 +1029,7 @@ mod tests {
             .collect();
         assert_eq!(
             pending,
-            ["run", "resize-window", "join-pane", "move-pane"],
+            ["run", "resize-window", "join-pane"],
             "the keyboard's remaining gap, by name",
         );
     }

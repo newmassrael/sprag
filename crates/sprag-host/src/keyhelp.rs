@@ -438,9 +438,19 @@ mod tests {
                 .collect()
         };
         let mut keymap = Keymap::default();
-        // THE TWO THAT SHIP UNBOUND, in the vocabulary's own order. Named rather than counted, so
-        // binding one is a change here and a third joining them cannot slip past as a number.
-        let ships_unbound = vec!["new".to_owned(), "kill-session".to_owned()];
+        // THE THREE THAT SHIP UNBOUND, in the vocabulary's own order. Named rather than counted, so
+        // binding one is a change here and a fourth joining them cannot slip past as a number.
+        //
+        // `move-pane` joined them at R328 and ships unbound DELIBERATELY: tmux binds no key to it
+        // either, and a chord spent by default on a verb that opens a chooser is a chord taken from
+        // a user who may never move a pane. It is bindable, it is listed here as bindable-and-not,
+        // and `sprag list-keys` teaches the form — which is the whole difference from the state it
+        // left, where a keystroke could not mean it at all.
+        let ships_unbound = vec![
+            "move-pane -h|-v [-b]".to_owned(),
+            "new".to_owned(),
+            "kill-session".to_owned(),
+        ];
         assert_eq!(unbound(&keymap), ships_unbound);
         keymap.unbind(KeyTable::Prefix, "?").expect("? is bound");
         // FIRST, not appended: the forms are listed by subject and the client's come first, which
@@ -459,6 +469,9 @@ mod tests {
             vec![
                 "list-keys".to_owned(),
                 "kill-window".to_owned(),
+                // Between the two window verbs and the session ones, which is where the vocabulary
+                // files it — the order here is the table's, not this test's.
+                "move-pane -h|-v [-b]".to_owned(),
                 "new".to_owned(),
                 "kill-session".to_owned(),
             ],
@@ -473,6 +486,7 @@ mod tests {
                 "confirm-before <action>".to_owned(),
                 "kill-pane".to_owned(),
                 "kill-window".to_owned(),
+                "move-pane -h|-v [-b]".to_owned(),
                 "new".to_owned(),
                 "kill-session".to_owned(),
             ],

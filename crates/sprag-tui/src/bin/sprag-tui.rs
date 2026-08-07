@@ -892,6 +892,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                         // ...and a `choose-tree` whose daemon answered an empty tree, which is the
                         // same shape one level up: a question with nothing to ask about.
                         | BoundAction::ChooseTree
+                        // ...and a `move-pane` with no pane under the key, or in a session
+                        // holding no OTHER pane to move beside — both are the same shape:
+                        // a question with nothing to ask about (R328).
+                        | BoundAction::MovePane { .. }
                         | BoundAction::ConfirmBefore { .. },
                     ) => Report::on_screen(),
                     Command::Act(BoundAction::SelectNextPane) => {

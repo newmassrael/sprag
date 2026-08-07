@@ -531,6 +531,27 @@ pub enum BoundAction {
         /// tmux's `-b`: put the new pane on the near side (left of, or above) instead of the far one.
         before: bool,
     },
+    /// `move-pane -h|-v [-b]` — put the FOCUSED pane beside a pane the person then PICKS.
+    ///
+    /// # The one binding that asks a question a name prompt could not
+    ///
+    /// Every other pane verb acts where the user is and needs nothing else. This one needs a
+    /// SECOND pane, and a keystroke cannot carry it — which is why `move-pane` sat in
+    /// [`Keystroke::NotBuilt`](crate::vocabulary::Keystroke::NotBuilt) for as long as a chooser's
+    /// pick could only ever mean *"go there"*. It is answered by
+    /// [`Errand::MovePane`](crate::chooser::Errand::MovePane): the same tree chooser, opened with
+    /// what it is FOR, its cursor confined to pane rows.
+    ///
+    /// The flags are [`SplitWindow`](Self::SplitWindow)'s, spelled and parsed identically, because
+    /// they mean the same thing — which half of the target pane the arrival takes. A bare
+    /// `move-pane` is refused for that verb's reason: the CLI's bare form is the direction-less
+    /// append, and one string must not mean two things.
+    MovePane {
+        /// The axis the TARGET pane is divided on — `-h` lays them side by side.
+        dir: SplitDir,
+        /// tmux's `-b`: the near side of the target rather than the far one.
+        before: bool,
+    },
     /// `select-pane -t :.+` — move focus to the next pane in paint order.
     SelectNextPane,
     /// `select-pane -L|-R|-U|-D` — move to the pane ADJACENT in that direction.
@@ -953,6 +974,10 @@ impl BoundAction {
             // what refuses `confirm-before choose-tree` — a yes/no in front of a chooser is a
             // prompt inside a prompt, which this vocabulary has no surface for.
             | Self::ChooseTree
+            // A LIST for the same reason, and this one asks WHICH PANE rather than which place —
+            // see `Errand::MovePane`. It is the second arm to open a chooser and the first to open
+            // one for an act other than going there.
+            | Self::MovePane { .. }
             | Self::ConfirmBefore { .. } => true,
             // The ONE arm whose answer depends on its argument, and that is what `-t` with the
             // name left off means. It also gives `confirm-before switch-client -t` its refusal for
@@ -999,7 +1024,11 @@ impl BoundAction {
     #[must_use]
     pub fn needs_pane(&self) -> bool {
         match self {
-            Self::RenamePane | Self::KillPane => true,
+            // `MovePane` is here and `SplitWindow` is not, though both divide a pane: a split's
+            // subject is resolved by the DAEMON (the session's active pane), while this one's
+            // travels in the chooser's errand and is read when the key is pressed. A press with no
+            // pane under it has nothing to move, so it asks nothing and does nothing.
+            Self::RenamePane | Self::KillPane | Self::MovePane { .. } => true,
             Self::ConfirmBefore { action } => action.needs_pane(),
             // A client verb, so it acts wherever the focus is — including nowhere. A user whose
             // pointer is on the session rail must still be able to press `prefix )`.
@@ -1065,6 +1094,10 @@ impl BoundAction {
             // (`vocabulary::Group::Window`): what the act PRODUCES is a window, which is the group
             // a user looks in for it — `split-window`'s grouping decision, read the other way.
             | Self::BreakPane
+            // Grouped with the WINDOW verbs and not with the split whose flags it borrows: this
+            // one moves a pane BETWEEN windows, which is where `break-pane` and `join-pane` are
+            // filed and is what `sprag_host::vocabulary` says. One verb, one group, both halves.
+            | Self::MovePane { .. }
             | Self::RenameWindow => ActionSubject::Window,
             Self::RenameSession | Self::KillSession | Self::NewSession => ActionSubject::Session,
             // The CLIENT, with `detach-client` — see the arm's own doc. It changes no session; it
@@ -1120,6 +1153,7 @@ impl BoundAction {
             | Self::SendPrefix
             | Self::ListKeys
             | Self::SplitWindow { .. }
+            | Self::MovePane { .. }
             | Self::SelectNextPane
             | Self::SelectPaneToward { .. }
             | Self::SwapPaneToward { .. }
@@ -1175,6 +1209,7 @@ impl BoundAction {
             | Self::SendPrefix
             | Self::ListKeys
             | Self::SplitWindow { .. }
+            | Self::MovePane { .. }
             | Self::SelectNextPane
             | Self::SelectPaneToward { .. }
             | Self::SwapPaneToward { .. }
@@ -1288,6 +1323,40 @@ impl BoundAction {
                     bad("needs -h (side by side) or -v (stacked); sprag's bare split-window is the direction-less append, which a client cannot do")
                 })?;
                 Ok(Self::SplitWindow { dir, before })
+            }
+            // The SAME flag grammar as `split-window`, deliberately: both answer "which half of the
+            // pane does the arrival take", and a second spelling of one idea is what this file's
+            // vocabulary exists to avoid. The pane arguments the CLI verb takes are the two a
+            // binding must not carry — the mover is where the user is, the target is PICKED.
+            "move-pane" => {
+                let mut dir = None;
+                let mut before = false;
+                for flag in flags {
+                    match flag {
+                        "-h" | "-v" => {
+                            if dir.is_some() {
+                                return Err(bad("-h and -v name one axis; give only one"));
+                            }
+                            dir = Some(if flag == "-h" {
+                                SplitDir::Horizontal
+                            } else {
+                                SplitDir::Vertical
+                            });
+                        }
+                        "-b" => before = true,
+                        other => {
+                            return Err(bad(&format!(
+                                "{other:?} is not a flag a binding takes (a binding moves the \
+                                 FOCUSED pane and asks which pane to put it beside, so it names \
+                                 neither)"
+                            )));
+                        }
+                    }
+                }
+                let dir = dir.ok_or_else(|| {
+                    bad("needs -h (side by side) or -v (stacked); sprag's bare move-pane is the direction-less append, which a client cannot do")
+                })?;
+                Ok(Self::MovePane { dir, before })
             }
             "zoom-pane" => {
                 let mut on = None;
@@ -1566,6 +1635,18 @@ impl fmt::Display for BoundAction {
                 f.write_str(match dir {
                     SplitDir::Horizontal => "split-window -h",
                     SplitDir::Vertical => "split-window -v",
+                })?;
+                if *before {
+                    f.write_str(" -b")?;
+                }
+                Ok(())
+            }
+            // The canonical spelling, and it round-trips through `parse` exactly as the split
+            // above does — `list-keys` prints what a `config.toml` line would say.
+            Self::MovePane { dir, before } => {
+                f.write_str(match dir {
+                    SplitDir::Horizontal => "move-pane -h",
+                    SplitDir::Vertical => "move-pane -v",
                 })?;
                 if *before {
                     f.write_str(" -b")?;
@@ -2805,7 +2886,7 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 24;
+    const ARMS: usize = 25;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
@@ -2840,6 +2921,7 @@ mod tests {
             BoundAction::BreakPane => 21,
             BoundAction::KillSession => 22,
             BoundAction::NewSession => 23,
+            BoundAction::MovePane { .. } => 24,
         }
     }
 
@@ -2848,6 +2930,10 @@ mod tests {
     /// Panics if it is not complete, so a caller never silently tests twenty of twenty-one arms.
     fn one_of_every_action() -> Vec<BoundAction> {
         let every = vec![
+            BoundAction::MovePane {
+                dir: SplitDir::Vertical,
+                before: true,
+            },
             BoundAction::DetachClient,
             BoundAction::SendPrefix,
             BoundAction::ListKeys,

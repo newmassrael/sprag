@@ -6986,9 +6986,12 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // `switch-client` and `confirm-before` are bindable verbs whose BARE form is incomplete — the
     // same shape as `split-window`. The numbers are here so a verb changing category has to change
     // one.
+    // R328 moved `move-pane` from the fourth column to the SECOND, which is the shape of closing
+    // one of these: a verb sprag had not built becomes a verb whose BARE form is incomplete, like
+    // `split-window` beside it. Bare `move-pane` needs `-h` or `-v`.
     assert_eq!(
         counts,
-        (14, 8, 28, 4),
+        (14, 9, 28, 3),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

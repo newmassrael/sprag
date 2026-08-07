@@ -373,9 +373,18 @@ pub fn chooser_changes(area: Rect, pick: &Pick, refusal: Option<&str>) -> Vec<Ch
         &match refusal {
             // Two spaces, so the refusal reads as a second clause — `prompt_changes`' rule, and the
             // same reason: this row has no colour of its own to separate them with.
-            Some(why) => format!("(choose-tree) {}  {why}", pick.query().text()),
+            // The ERRAND, not a literal: a chooser opened to MOVE a pane and one opened to go
+            // somewhere paint the same rows, and a person answering the wrong question is the
+            // failure that costs them a pane. Derived from `Errand::asking`, so the two frontends
+            // and the binding all say one thing (R328).
+            Some(why) => format!(
+                "({}) {}  {why}",
+                pick.errand().asking(),
+                pick.query().text()
+            ),
             None => format!(
-                "(choose-tree) {}   Esc to close, {} row{}",
+                "({}) {}   Esc to close, {} row{}",
+                pick.errand().asking(),
                 pick.query().text(),
                 rows.len(),
                 if rows.len() == 1 { "" } else { "s" },

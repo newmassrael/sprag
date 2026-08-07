@@ -313,6 +313,7 @@ fn action_label(action: &BoundAction) -> &'static str {
         BoundAction::SelectWindow { .. } => "select-window",
         BoundAction::SwitchClient { .. } => "switch-client",
         BoundAction::ChooseTree => "choose-tree",
+        BoundAction::MovePane { .. } => "move-pane",
         BoundAction::KillWindow => "kill-window",
         BoundAction::RenameWindow => "rename-window",
         // Both move forms label as the VERB: the place says WHERE, and where the window landed is
@@ -378,6 +379,10 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
         // question with nothing to ask about. The chooser's real path is the `Ask::Choose` arm in
         // `route_key`, exactly as the rename verbs' is.
         BoundAction::ChooseTree => Report::on_screen(),
+        // The same arm one verb over: reached only when `Ask::of` answered `None`, which for this
+        // one means no pane under the key or no OTHER pane to move beside. Its real path is the
+        // `Ask::Choose` arm, carrying `Errand::MovePane`.
+        BoundAction::MovePane { .. } => Report::on_screen(),
         BoundAction::SplitWindow { dir, before } => {
             use_terminal().slots.split(active, *dir, *before);
             Report::on_screen()

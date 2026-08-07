@@ -1012,6 +1012,35 @@ pub trait HostClient: crate::wake::WakeSource {
         None
     }
 
+    /// Put pane `id` BESIDE pane `target`, dividing the target on `dir` — tmux `move-pane`.
+    /// Answers whether the move emptied and closed the source window, or [`None`] for a refusal.
+    ///
+    /// # Why this did not exist until R328, and what it cost
+    ///
+    /// The wire action has taken TWO PANE IDS and no name since it was built, which is exactly the
+    /// shape a chooser's [`Target::Pane`](crate::chooser::Target) carries — and yet `move-pane` was
+    /// one of the four verbs a keystroke could mean and sprag did not bind. The register said the
+    /// chooser was the missing half; measuring said the chooser was ready and THIS was missing, so
+    /// no client could reach the action a keystroke needed.
+    ///
+    /// The neighbour it sits beside answers `Option<bool>` too, and both collapse the daemon's
+    /// stated reason into [`None`] — which costs nothing today, because a refused `scene/invoke`
+    /// stores that sentence through the funnel R325 built and a display client paints it in
+    /// preference to its own word. It would cost something the day an in-process host had to word
+    /// a refusal, and that is filed rather than pre-solved.
+    ///
+    /// Defaulted to [`None`] so an impl that cannot move panes need not say so twice.
+    fn move_pane(
+        &self,
+        id: PaneId,
+        target: PaneId,
+        dir: sprag_terminal::SplitDir,
+        before: bool,
+    ) -> Option<bool> {
+        let _ = (id, target, dir, before);
+        None
+    }
+
     /// Deliver a file DROPPED on this client (a drag-and-drop of the LOCAL absolute `path`) to pane
     /// `id`, returning the path the pane is handed — or `None` if the delivery was refused (no such
     /// pane, or `path` resolves to nothing).
@@ -3123,6 +3152,25 @@ impl HostClient for Host {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
         registry.join_pane(&session, id, dst).ok()
+    }
+
+    /// Put pane `id` beside `target` in the default session (tmux `move-pane`) — the in-process arm
+    /// of the trait method, resolving the session the way its neighbour above does.
+    fn move_pane(
+        &self,
+        id: PaneId,
+        target: PaneId,
+        dir: sprag_terminal::SplitDir,
+        before: bool,
+    ) -> Option<bool> {
+        let side = if before {
+            sprag_terminal::SplitSide::First
+        } else {
+            sprag_terminal::SplitSide::Second
+        };
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        registry.move_pane(&session, id, target, side, dir).ok()
     }
 
     /// Resolves the pane to its PTY handle + recorded remote endpoint, then hands both to the ONE

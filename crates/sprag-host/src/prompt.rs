@@ -349,6 +349,28 @@ impl Ask {
                     pick: Box::new(pick),
                 })
             }
+            // The SAME chooser, opened with what it is FOR (R328). The pane travels in the errand
+            // because it is the one the key was pressed on — `needs_pane` above has already refused
+            // a press with none, so this `map` cannot be reached without a subject to move.
+            //
+            // `None` here is not only the empty tree: a `move-pane` errand admits pane rows other
+            // than the mover, so a session holding exactly one pane opens NOTHING rather than a
+            // list whose every row is unpickable. That is `RenamePane`'s rule ("an action needing a
+            // subject when there is none asks nothing and does nothing") reached by a third route.
+            BoundAction::MovePane { dir, before } => pane.and_then(|id| {
+                Pick::for_errand(
+                    &host.tree(),
+                    &host.current_session(),
+                    crate::chooser::Errand::MovePane {
+                        pane: id,
+                        dir: *dir,
+                        before: *before,
+                    },
+                )
+                .map(|pick| Self::Choose {
+                    pick: Box::new(pick),
+                })
+            }),
             BoundAction::ConfirmBefore { action } => {
                 let (question, consequence, verb) = confirm_question(action, host, pane);
                 Some(Self::Confirm {
