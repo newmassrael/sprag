@@ -253,23 +253,16 @@ pub(crate) fn handle_window_intent(intent: &Intent, slots: &SlotView) -> bool {
         return true;
     }
     if let Some(idx) = tab_index(who) {
-        // Resolve the clicked tab's slot to the IDENTITY it was painted from, then find that window
-        // in the live list and select it by the name it carries NOW. A window that has gone selects
-        // nothing, and a window that moved position or was renamed is still the one on the tab.
+        // Resolve the clicked tab's slot to the IDENTITY it was painted from and send THAT. A
+        // window that has gone selects nothing; a window that moved position or was renamed is
+        // still the one on the tab.
         //
-        // The second hop is a name because `select-window` takes one, and the gap it leaves is a
-        // microsecond inside one reducer call rather than the unbounded paint-to-click gap this
-        // replaces. Closing it entirely needs the select ACTION to take an identity, which is a
-        // grammar decision (`SelectWindowAsk` is shared with `BoundAction`, whose spelling has to
-        // round-trip through a config file) and is registered rather than done here.
-        let painted = painted_tabs().get().get(idx).copied().flatten();
-        if let Some(row) = painted.and_then(|window| {
-            slots
-                .windows()
-                .into_iter()
-                .find(|row| row.id == Some(window))
-        }) {
-            slots.select_window(&row.name);
+        // There is no second hop and no name: the select ACTION takes a reference now, so the
+        // address a person pointed at is the address that crosses the wire. The first version of
+        // this fix resolved the identity back to a live NAME because the ask was shared with the
+        // keybinding vocabulary — a gap of one reducer call, which was still a gap.
+        if let Some(window) = painted_tabs().get().get(idx).copied().flatten() {
+            slots.select_window(&sprag_host::wire::WindowRef::Picked(window));
         }
         return true;
     }
@@ -374,7 +367,7 @@ mod tests {
             let _ = slots.kill_window(boot);
             assert_eq!(slots.windows().len(), 2, "the list really shifted");
             // ...and the current window is moved OFF the answer, or this test cannot fail.
-            slots.select_window(&second);
+            slots.select_window(&sprag_host::wire::WindowRef::Named(second.clone()));
             assert_eq!(
                 current_name(slots),
                 second,
@@ -419,7 +412,7 @@ mod tests {
             let _ = view_window_strip(slots, &Theme::default());
 
             let _ = slots.kill_window(doomed);
-            slots.select_window(&boot);
+            slots.select_window(&sprag_host::wire::WindowRef::Named(boot.clone()));
             assert_eq!(
                 current_name(slots),
                 boot,

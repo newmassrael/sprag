@@ -724,8 +724,8 @@ pub fn display_time(options: &crate::options::Options) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::SelectWindowBind;
     use crate::keymap::SwitchClientAsk;
-    use crate::wire::SelectWindowAsk;
     use sprag_terminal::OrderStep;
 
     /// A session destroyed under this client names BOTH ends: the one that went, and the one it
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn the_noun_of_a_refusal_is_read_off_the_action() {
         let window = BoundAction::SelectWindow {
-            ask: SelectWindowAsk::Named("logs".into()),
+            ask: SelectWindowBind::Named("logs".into()),
         };
         assert_eq!(
             Report::no_such(&window).says(),
@@ -837,7 +837,7 @@ mod tests {
     fn a_guarded_action_reports_on_what_it_guards() {
         let guarded = BoundAction::ConfirmBefore {
             action: Box::new(BoundAction::SelectWindow {
-                ask: SelectWindowAsk::Named("logs".into()),
+                ask: SelectWindowBind::Named("logs".into()),
             }),
         };
         assert_eq!(

@@ -75,9 +75,9 @@
 //! is the arm's job and not a gate at the top.
 
 use sprag_host::ProjectAction;
+use sprag_host::keymap::SelectWindowBind;
 use sprag_host::keymap::{BoundAction, SwitchClientAsk};
 use sprag_host::report::Report;
-use sprag_host::wire::SelectWindowAsk;
 use sprag_terminal::{OrderStep, WindowId, WindowInfo, WindowPlace};
 
 use crate::slotview::SlotView;
@@ -150,7 +150,12 @@ pub(crate) enum Command {
     /// Create a window in the current session and select it.
     NewWindow,
     /// Select the named window of the current session.
-    SelectWindow(String),
+    SelectWindow {
+        /// The window's identity — what the act is addressed to.
+        window: WindowId,
+        /// Its name AS PAINTED, for the row's own words. Never sent.
+        label: String,
+    },
     /// Move the CURRENT window to a place in the session's order (tmux `move-window`).
     ///
     /// The one window row that names no window, and that is the verb rather than an omission: a
@@ -222,7 +227,7 @@ impl Command {
             // reach. The title carries both rather than choosing.
             Self::NewPane => "Split into a new pane".to_owned(),
             Self::NewWindow => "New window".to_owned(),
-            Self::SelectWindow(name) => format!("Go to window {name}"),
+            Self::SelectWindow { label, .. } => format!("Go to window {label}"),
             // The verb LEADS for the kills' reason: a query of "move" collects the whole set. The
             // words say what a user sees happen to the strip, not what the grammar calls it —
             // `-p` is "earlier", not "previous", once it is a place rather than a step.
@@ -309,7 +314,7 @@ impl Command {
             | Self::ChooseTree
             | Self::ZoomPane
             | Self::NewWindow
-            | Self::SelectWindow(_)
+            | Self::SelectWindow { .. }
             | Self::MoveWindow(_) => None,
         }
     }
@@ -353,8 +358,13 @@ impl Command {
             Self::ChooseTree => Some(BoundAction::ChooseTree),
             Self::ZoomPane => Some(BoundAction::ZoomPane { on: None }),
             Self::NewWindow => Some(BoundAction::NewWindow),
-            Self::SelectWindow(name) => Some(BoundAction::SelectWindow {
-                ask: SelectWindowAsk::Named(name.clone()),
+            // PAIRED BY LABEL, not by address: the chord this row shows is the one a
+            // `select-window -t <that name>` binding would have, and a binding cannot carry an
+            // identity at all (`keymap::SelectWindowBind`). The row still ACTS by identity — the
+            // pairing is for the hint column, which is a claim about a keymap and not about what
+            // this row sends.
+            Self::SelectWindow { label, .. } => Some(BoundAction::SelectWindow {
+                ask: SelectWindowBind::Named(label.clone()),
             }),
             // PAIRED, unlike `Kill window <name>` beside it: this row names no window either, so
             // the two really do the same thing and a user pressing `prefix <` gets exactly what
@@ -487,7 +497,7 @@ impl Command {
             | Self::JoinInto { .. }
             | Self::NewPane
             | Self::NewWindow
-            | Self::SelectWindow(_)
+            | Self::SelectWindow { .. }
             | Self::MoveWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
@@ -535,7 +545,7 @@ impl Command {
             | Self::JoinInto { .. }
             | Self::NewPane
             | Self::NewWindow
-            | Self::SelectWindow(_)
+            | Self::SelectWindow { .. }
             | Self::MoveWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
@@ -587,7 +597,7 @@ impl Command {
             // or not anything in it holds focus — the same reason `NewWindow` beside it needs none.
             | Self::NewPane
             | Self::NewWindow
-            | Self::SelectWindow(_)
+            | Self::SelectWindow { .. }
             | Self::MoveWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
@@ -754,10 +764,12 @@ impl Command {
             // THE ROW NAMES A WINDOW OFF A MIRROR, so it can name one that has since closed —
             // which is why this reports rather than dropping the landing. The sentence comes from
             // the row's paired binding, so it is the same one `select-window -t <name>` says.
-            Self::SelectWindow(name) => match slots.select_window(name) {
-                Some(_) => Report::on_screen(),
-                None => self.reported(Report::no_such),
-            },
+            Self::SelectWindow { window, .. } => {
+                match slots.select_window(&sprag_host::wire::WindowRef::Picked(*window)) {
+                    Some(_) => Report::on_screen(),
+                    None => self.reported(Report::no_such),
+                }
+            }
             // The move's three not-moved words are a user's mistake as often as a no-op — already
             // at that end, or anchored to the window itself — and a person who picked the row is
             // owed the reason the order did not change.
@@ -974,11 +986,15 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         .filter(|window| !window.current)
         .take(MAX_WINDOW_ROWS)
         .collect();
-    out.extend(
-        elsewhere
-            .iter()
-            .map(|window| Command::SelectWindow(window.name.clone())),
-    );
+    // Identity-addressed, and a window with none gets NO row: a `Go to window …` that lands on a
+    // stranger is recoverable where a kill is not, but "recoverable" is not a reason to ship a row
+    // that does the wrong thing — and R330 measured the strip doing exactly that one surface over.
+    out.extend(elsewhere.iter().filter_map(|window| {
+        Some(Command::SelectWindow {
+            window: window.id?,
+            label: window.name.clone(),
+        })
+    }));
     // ...and, where a pane was captured, one row per window to MOVE it into. The SAME list serves
     // both: a join's destination is any window except the one the pane already lives in, which is
     // the current one (a slot addresses a pane of the current window), and the host refuses a join
@@ -1265,9 +1281,13 @@ mod tests {
             Some(sprag_host::keymap::BoundAction::NewWindow),
         );
         assert_eq!(
-            Command::SelectWindow("logs".to_owned()).bound(),
+            Command::SelectWindow {
+                window: WindowId(100),
+                label: "logs".to_owned()
+            }
+            .bound(),
             Some(sprag_host::keymap::BoundAction::SelectWindow {
-                ask: sprag_host::wire::SelectWindowAsk::Named("logs".to_owned()),
+                ask: SelectWindowBind::Named("logs".to_owned()),
             }),
             "the row names a window and so does the binding it is paired with",
         );
@@ -1315,7 +1335,10 @@ mod tests {
     /// What a run recorded, so a test reads the ACTION the command drove rather than a screen.
     #[derive(Default)]
     struct Log {
-        selected_windows: Vec<String>,
+        /// The window references a select ADDRESSED, in order — by reference and not by name,
+        /// because a log of names cannot tell a row that committed its identity from one that
+        /// committed its label (R330).
+        selected_windows: Vec<sprag_host::wire::WindowRef>,
         new_windows: usize,
         switched_sessions: Vec<String>,
         new_sessions: usize,
@@ -1390,12 +1413,22 @@ mod tests {
         fn windows(&self) -> Vec<WindowInfo> {
             self.windows.clone()
         }
-        fn select_window(&self, name: &str) -> Option<String> {
-            self.log.borrow_mut().selected_windows.push(name.to_owned());
-            self.windows
-                .iter()
-                .find(|window| window.name == name)
-                .map(|window| window.name.clone())
+        /// Records the REFERENCE, so a test can tell a select addressed by identity from one
+        /// addressed by the label beside it — the whole difference R330 put on this verb.
+        fn select_window(&self, window: &sprag_host::wire::WindowRef) -> Option<String> {
+            self.log.borrow_mut().selected_windows.push(window.clone());
+            match window {
+                sprag_host::wire::WindowRef::Named(name) => self
+                    .windows
+                    .iter()
+                    .find(|row| &row.name == name)
+                    .map(|row| row.name.clone()),
+                sprag_host::wire::WindowRef::Picked(id) => self
+                    .windows
+                    .iter()
+                    .find(|row| row.id == Some(*id))
+                    .map(|row| row.name.clone()),
+            }
         }
         /// Records the place and answers `Moved` for the CURRENT window — EXCEPT when the current
         /// window is already at the end the step names, which answers `AlreadyThere`.
@@ -2209,7 +2242,7 @@ mod tests {
         let built = catalog(Some(0), &slots).commands;
         let windows_offered = built
             .iter()
-            .filter(|c| matches!(c, Command::SelectWindow(_)))
+            .filter(|c| matches!(c, Command::SelectWindow { .. }))
             .count();
         let sessions_offered = built
             .iter()
@@ -2300,16 +2333,22 @@ mod tests {
         let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
 
         assert_eq!(
-            Command::SelectWindow("build".to_owned())
-                .run(Some(0), &slots)
-                .says(),
+            Command::SelectWindow {
+                window: WindowId(101),
+                label: "build".to_owned()
+            }
+            .run(Some(0), &slots)
+            .says(),
             None,
             "a row naming a window that IS there is carried out and says nothing",
         );
         assert_eq!(
-            Command::SelectWindow("gone".to_owned())
-                .run(Some(0), &slots)
-                .says(),
+            Command::SelectWindow {
+                window: WindowId(999),
+                label: "gone".to_owned()
+            }
+            .run(Some(0), &slots)
+            .says(),
             Some("no window called \"gone\""),
             "...and one naming a window that is not there says so, in the words              `select-window -t gone` uses",
         );
@@ -2358,7 +2397,11 @@ mod tests {
         // matching assertion below fails.
         let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
 
-        let _ = Command::SelectWindow("build".to_owned()).run(Some(0), &slots);
+        let _ = Command::SelectWindow {
+            window: WindowId(101),
+            label: "build".to_owned(),
+        }
+        .run(Some(0), &slots);
         let _ = Command::NewWindow.run(Some(0), &slots);
         let _ = Command::BreakOut.run(Some(0), &slots);
         let _ = Command::ZoomPane.run(Some(0), &slots);
@@ -2372,7 +2415,11 @@ mod tests {
         let _ = Command::LastSession.run(None, &slots);
 
         let log = log.borrow();
-        assert_eq!(log.selected_windows, vec!["build".to_owned()]);
+        assert_eq!(
+            log.selected_windows,
+            vec![sprag_host::wire::WindowRef::Picked(WindowId(101))],
+            "the row committed the IDENTITY it painted, not the label beside it",
+        );
         assert_eq!(log.new_windows, 1);
         assert_eq!(
             log.broken_panes,
@@ -2436,16 +2483,18 @@ mod tests {
         );
     }
 
-    /// **A WINDOW THIS DAEMON PUBLISHES NO IDENTITY FOR IS OFFERED AS A PLACE TO GO AND NOT AS A
-    /// PLACE TO JOIN — OR TO KILL** — the branch a client meets against a daemon older than
-    /// `WindowInfo::id`.
+    /// **A WINDOW THIS DAEMON PUBLISHES NO IDENTITY FOR GETS NO ROW THAT ACTS ON IT** — the branch
+    /// a client meets against a daemon older than `WindowInfo::id`.
     ///
-    /// The two rows are the whole point of the split, and they are asserted TOGETHER because either
-    /// alone is satisfied by a bug: `select-window` is addressed by NAME at the daemon, which
-    /// resolves it at the instant the row is clicked, so it is honest without an identity. A join
-    /// decided here and sent as a name is the defect this round removed. So the answer is a shorter
-    /// menu, not a fallback — and a client that dropped BOTH rows would be hiding a window that
-    /// works.
+    /// ⚠ R329 asserted the OPPOSITE for the select row, and said so in as many words: *"going
+    /// somewhere is addressed by NAME at the daemon, which resolves it NOW"*. R330 measured what
+    /// that reasoning costs one surface over — the tab strip landing clicks on a neighbour — and
+    /// the claim does not survive it. A row is a fact about the past whatever the verb does with
+    /// it; "recoverable" is a reason to keep OFFERING the verb, not a reason to let it land wrong.
+    /// The rule is now the same for every acting row, which is also why it fits in one test.
+    ///
+    /// The window that HAS an identity is asserted alongside, or a client that dropped every row
+    /// would pass.
     ///
     /// Found by the debt sweep for *"a branch reachable only from a state no test builds"*, and
     /// BUILT rather than registered: the standing rule.
@@ -2474,6 +2523,14 @@ mod tests {
                     current: false,
                     opened_by: None,
                 },
+                // The CONTROL row: not current, and it HAS an identity. Without it a client that
+                // dropped every window row would pass every assertion below.
+                WindowInfo {
+                    name: "build".to_owned(),
+                    id: Some(WindowId(102)),
+                    current: false,
+                    opened_by: None,
+                },
             ],
             &["0"],
             "0",
@@ -2490,21 +2547,30 @@ mod tests {
             "a destination with no address is not offered: {titles:?}",
         );
         assert!(
-            titles.contains(&"Go to window old".to_owned()),
-            "...and going there still is, because the daemon resolves that name NOW: {titles:?}",
+            !titles.contains(&"Go to window old".to_owned()),
+            "...and NEITHER is going there, since R330 made the select identity-addressed too — a \
+             recoverable wrong landing is still a wrong landing: {titles:?}",
         );
         assert!(
-            menu_rows(&slots)
-                .iter()
-                .all(|row| !matches!(row.command, Command::JoinInto { .. })),
-            "the context menu applies the same rule, which is why it reads the same field",
+            titles.contains(&"Go to window build".to_owned())
+                && titles.contains(&"Move pane to window build".to_owned()),
+            "...while the window that HAS an identity is reachable and joinable: {titles:?}",
+        );
+        let menu: Vec<String> = menu_rows(&slots)
+            .iter()
+            .map(|row| row.command.title())
+            .collect();
+        assert!(
+            !menu.contains(&"Move pane to window old".to_owned())
+                && menu.contains(&"Move pane to window build".to_owned()),
+            "the context menu applies the same rule, which is why it reads the same field: {menu:?}",
         );
         assert!(
             !titles.contains(&"Kill window old".to_owned()),
             "a DESTRUCTIVE row with no address is the one that must not be offered: {titles:?}",
         );
         assert!(
-            titles.contains(&"Kill window main".to_owned()),
+            titles.contains(&"Kill window build".to_owned()),
             "...while the window that HAS one is still killable: {titles:?}",
         );
     }
@@ -3080,7 +3146,11 @@ mod tests {
         // Each in the state where it SPEAKS — a window that is not there, a move with nowhere to
         // go, a client that has visited nothing still alive.
         let spoken = [
-            Command::SelectWindow("gone".to_owned()).run(Some(0), &slots),
+            Command::SelectWindow {
+                window: WindowId(999),
+                label: "gone".to_owned(),
+            }
+            .run(Some(0), &slots),
             Command::MoveWindow(sprag_terminal::WindowPlace::Step(
                 sprag_terminal::OrderStep::Previous,
             ))

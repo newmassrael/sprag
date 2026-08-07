@@ -267,11 +267,15 @@ impl SlotView {
         self.host.windows()
     }
 
-    /// Make the window named `name` current (tmux `select-window`) — a tab click, and the key
-    /// bound to `select-window -t <name>`. Answers the window it landed on, [`None`] when no window
-    /// carries that name.
-    pub(crate) fn select_window(&self, name: &str) -> Option<String> {
-        let landed = self.host.select_window(name);
+    /// Make the window `window` addresses current (tmux `select-window`) — a tab click, and the key
+    /// bound to `select-window -t <name>`. Answers the window it landed on, [`None`] when the
+    /// address resolves to nothing.
+    ///
+    /// The REFERENCE is the caller's, because this client has both kinds: a key carries a name out
+    /// of a config file, a tab carries the identity it was painted from. See
+    /// [`sprag_host::HostClient::select_window`].
+    pub(crate) fn select_window(&self, window: &sprag_host::wire::WindowRef) -> Option<String> {
+        let landed = self.host.select_window(window);
         self.reseed_pane_focus();
         landed
     }
@@ -1275,7 +1279,7 @@ mod tests {
         fn windows(&self) -> Vec<WindowInfo> {
             Vec::new()
         }
-        fn select_window(&self, _name: &str) -> Option<String> {
+        fn select_window(&self, _window: &sprag_host::wire::WindowRef) -> Option<String> {
             None
         }
         fn select_window_toward(&self, _step: sprag_terminal::OrderStep) -> Option<String> {

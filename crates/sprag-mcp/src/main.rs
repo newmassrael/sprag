@@ -1558,13 +1558,16 @@ fn tool_open_window(args: &Value) -> Result<String, String> {
 
 /// `select_window` — move the USER to another window. Ungated, like `select_pane`.
 fn tool_select_window(args: &Value) -> Result<String, String> {
-    let named = args.get(SelectWindowAsk::WINDOW_KEY);
+    let named = args.get(WindowRef::WINDOW_KEY);
     let stepped = args.get(SelectWindowAsk::RELATIVE_KEY);
     let ask = match (named, stepped) {
         (Some(Value::String(_)), None | Some(Value::Null)) => {
             // Resolved BEFORE the request so an unknown name is a sentence naming what exists,
             // where the daemon can only answer a payload-less `Rejected` (upstream PINION-PR82).
-            SelectWindowAsk::Named(resolve_window(args, SelectWindowAsk::WINDOW_KEY)?.name)
+            // An agent TYPED a name, so a name is what this sends — the reading that argument has.
+            SelectWindowAsk::At(WindowRef::Named(
+                resolve_window(args, WindowRef::WINDOW_KEY)?.name,
+            ))
         }
         (None | Some(Value::Null), Some(Value::String(word))) => {
             SelectWindowAsk::Step(OrderStep::from_wire(word).ok_or_else(|| {
@@ -1578,14 +1581,14 @@ fn tool_select_window(args: &Value) -> Result<String, String> {
         (Some(_), Some(_)) => {
             return Err(format!(
                 "'{}' and '{}' name the target two different ways; give one.",
-                SelectWindowAsk::WINDOW_KEY,
+                WindowRef::WINDOW_KEY,
                 SelectWindowAsk::RELATIVE_KEY,
             ));
         }
         _ => {
             return Err(format!(
                 "select_window needs '{}' (a window's NAME, from list_windows) or '{}' ({})",
-                SelectWindowAsk::WINDOW_KEY,
+                WindowRef::WINDOW_KEY,
                 SelectWindowAsk::RELATIVE_KEY,
                 OrderStep::ALL.map(OrderStep::wire_str).join(" / "),
             ));
@@ -1607,7 +1610,7 @@ fn tool_select_window(args: &Value) -> Result<String, String> {
 
 /// `close_window` — end a window the agent opened, refusing a person's and refusing the last one.
 fn tool_close_window(args: &Value) -> Result<String, String> {
-    let window = resolve_window(args, SelectWindowAsk::WINDOW_KEY)?;
+    let window = resolve_window(args, WindowRef::WINDOW_KEY)?;
     require_own_window(
         &window,
         "close_window",
@@ -1747,7 +1750,7 @@ fn tool_display_message(args: &Value) -> Result<String, String> {
 }
 
 fn tool_rename_window(args: &Value) -> Result<String, String> {
-    let window = resolve_window(args, SelectWindowAsk::WINDOW_KEY)?;
+    let window = resolve_window(args, WindowRef::WINDOW_KEY)?;
     let new = match args.get("name") {
         Some(Value::String(name)) => name.clone(),
         Some(other) => return Err(format!("'name' must be a string, not {other}")),
@@ -1762,7 +1765,10 @@ fn tool_rename_window(args: &Value) -> Result<String, String> {
         "scene/invoke",
         json!({
             "path": mux_action_path(RENAME_WINDOW_ACTION),
-            "args": { SelectWindowAsk::WINDOW_KEY: window.name, "name": new },
+            // `WindowRef`'s key, not another action's: `rename_window` addresses a window and this
+            // is the one place this product spells that. Borrowing `SelectWindowAsk`'s was a bet
+            // that two grammars never diverge (R330).
+            "args": { WindowRef::WINDOW_KEY: window.name, "name": new },
         }),
     )
     .map_err(|why| {

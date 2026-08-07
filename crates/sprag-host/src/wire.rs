@@ -1791,16 +1791,22 @@ pub const SELECT_WINDOW_ACTION: &str = "select_window";
 /// is the only thing "next" can mean for a ring the session itself walks.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SelectWindowAsk {
-    /// `{window}` — make the window with that NAME current. Refused if the session has none.
-    Named(String),
+    /// `{window}` XOR `{window_id}` — make THAT window current.
+    ///
+    /// A [`WindowRef`] rather than a bare name since R330: a client that read a row off a list it
+    /// painted holds an IDENTITY, and sending the label on that row lands the select on whatever
+    /// carries it now. The keyboard cannot reach the identity arm at all — see
+    /// [`crate::keymap::SelectWindowBind`], the vocabulary this one is deliberately not.
+    At(WindowRef),
     /// `{relative}` — one step along the ring from the current window, WRAPPING. Total: a session
     /// always has a window, so this always lands somewhere and answers its name.
     Step(OrderStep),
 }
 
 impl SelectWindowAsk {
-    /// The request key naming a window outright.
-    pub const WINDOW_KEY: &'static str = "window";
+    /// The request key naming a window outright — [`WindowRef`]'s, re-exported here because this
+    /// ask's own callers reach for it by this name. One constant, one spelling.
+    pub const WINDOW_KEY: &'static str = WindowRef::WINDOW_KEY;
     /// The request key naming which way to step along the ring.
     pub const RELATIVE_KEY: &'static str = "relative";
 
@@ -1813,9 +1819,7 @@ impl SelectWindowAsk {
     pub fn to_args(&self) -> Value {
         let mut map = Map::new();
         match self {
-            Self::Named(window) => {
-                map.insert(Self::WINDOW_KEY.to_owned(), Value::from(window.clone()));
-            }
+            Self::At(window) => window.write(&mut map),
             Self::Step(step) => {
                 map.insert(Self::RELATIVE_KEY.to_owned(), Value::from(step.wire_str()));
             }
@@ -1842,16 +1846,13 @@ impl SelectWindowAsk {
             map.and_then(|map| map.get(key))
                 .filter(|value| !value.is_null())
         };
-        let named = match field(Self::WINDOW_KEY) {
-            None => None,
-            Some(value) => Some(value.as_str()?.to_owned()),
-        };
+        let at = WindowRef::read(map?).ok()?;
         let step = match field(Self::RELATIVE_KEY) {
             None => None,
             Some(value) => Some(OrderStep::from_wire(value.as_str()?)?),
         };
-        match (named, step) {
-            (Some(window), None) => Some(Self::Named(window)),
+        match (at, step) {
+            (Some(window), None) => Some(Self::At(window)),
             (None, Some(step)) => Some(Self::Step(step)),
             _ => None,
         }
@@ -4238,9 +4239,20 @@ mod tests {
         // especially: it is the shape every client already sent, and a change there would move a
         // request nobody edited.
         assert_eq!(
-            serde_json::to_string(&SelectWindowAsk::Named("logs".to_owned()).to_args())
-                .expect("an ask renders"),
+            serde_json::to_string(
+                &SelectWindowAsk::At(WindowRef::Named("logs".to_owned())).to_args()
+            )
+            .expect("an ask renders"),
             r#"{"window":"logs"}"#,
+            "{}",
+            BUMP,
+        );
+        // The IDENTITY arm (R330). Pinned beside the name because the two are one ask now: a client
+        // that sent the wrong key would be addressing a window it does not hold.
+        assert_eq!(
+            serde_json::to_string(&SelectWindowAsk::At(WindowRef::Picked(WindowId(4))).to_args())
+                .expect("an ask renders"),
+            r#"{"window_id":4}"#,
             "{}",
             BUMP,
         );

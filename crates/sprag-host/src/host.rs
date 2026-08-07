@@ -679,9 +679,21 @@ pub trait HostClient: crate::wake::WakeSource {
     /// refused an unknown name; what was missing was the fact crossing back. The name comes back
     /// rather than being echoed for [`switch_session_named`](Self::switch_session_named)'s reason —
     /// the daemon's recorded spelling, never the caller's argument.
+    /// # It takes a REFERENCE, so the caller says which address it holds
+    ///
+    /// A keystroke bound to `select-window -t build` holds a name a person TYPED, and means whatever
+    /// carries it when the key is pressed. A pointer surface holds a row it PAINTED, and means the
+    /// window that was on it. Both are honest and they land on different windows across a rename —
+    /// which is why the two are one parameter with two arms rather than two methods: a client picks
+    /// its address by naming it, and no caller can reach for the wrong door by accident.
+    ///
+    /// Unlike [`kill_window`](Self::kill_window) the NAME arm survives here, because the two verbs
+    /// differ in what being wrong costs: a select that lands on a stranger is undone by one
+    /// keystroke, and refusing to offer a name-addressed select would take the verb away from every
+    /// keybinding in every config file.
     #[must_use = "a select that did not land is the only way a client learns the name is not there, \
                   and a client that drops it is the silent key R316 removed"]
-    fn select_window(&self, name: &str) -> Option<String>;
+    fn select_window(&self, window: &crate::wire::WindowRef) -> Option<String>;
 
     /// Walk the scoped session's windows one step, WRAPPING, and answer the window it landed on —
     /// tmux `next-window` / `previous-window` (`select-window -n` / `-p`).
@@ -2918,13 +2930,26 @@ impl HostClient for Host {
     /// The registry's own `Result` IS the answer now — it used to be discarded here, which is what
     /// left an unknown name looking like a success to every caller. The name comes back from the
     /// argument only after the registry has accepted it, so a [`Some`] means the select happened.
-    fn select_window(&self, name: &str) -> Option<String> {
+    fn select_window(&self, window: &crate::wire::WindowRef) -> Option<String> {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
-        registry
-            .select_window(&session, name)
-            .ok()
-            .map(|()| name.to_owned())
+        match window {
+            crate::wire::WindowRef::Named(name) => registry
+                .select_window(&session, name)
+                .ok()
+                .map(|()| name.clone()),
+            // The identity arm has to READ the name back: its caller holds a row whose label may
+            // already be stale, and the answer is what a status line paints. The wire arm resolves
+            // it the same way, one process over.
+            crate::wire::WindowRef::Picked(window) => registry
+                .select_window_id(&session, *window)
+                .ok()
+                .and_then(|()| {
+                    registry
+                        .session(&session)
+                        .map(|s| s.current_window().name().to_owned())
+                }),
+        }
     }
 
     /// The walk, straight on the registry this arm owns — the same ring the wire arm asks the daemon

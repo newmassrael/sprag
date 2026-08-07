@@ -1896,6 +1896,29 @@ impl Session {
         Ok(())
     }
 
+    /// Make the window `window` IDENTIFIES current — [`select_window`](Self::select_window)
+    /// addressed the way a PAINTED row is addressed.
+    ///
+    /// [`SessionRegistry::kill_window_id`]'s split, on the recoverable half of the same family: a
+    /// tab a person clicks was drawn at one instant and pressed at another, so its name is a fact
+    /// about the past. Going to the wrong window costs one keystroke where a kill costs the work in
+    /// it — which is why the kill refuses to OFFER a row without an identity and this one is happy
+    /// to fall back to a name a person typed.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::GoneWindow`] if no window of this session carries `window`. The current
+    /// window is unchanged.
+    pub fn select_window_id(&mut self, window: WindowId) -> Result<(), SessionError> {
+        let idx = self
+            .windows
+            .iter()
+            .position(|w| w.id == window)
+            .ok_or(SessionError::GoneWindow(window))?;
+        self.current_window = idx;
+        Ok(())
+    }
+
     /// Make the NEXT or PREVIOUS window current, WRAPPING — tmux `next-window` /
     /// `previous-window`, and `select-window -n` / `-p`. Answers the name it landed on.
     ///
@@ -3328,6 +3351,20 @@ impl SessionRegistry {
     /// [`SessionError::Unknown`] for an unknown session OR window.
     pub fn select_window(&mut self, session: &str, name: &str) -> Result<(), SessionError> {
         self.session_named_mut(session)?.select_window(name)
+    }
+
+    /// Make the window `window` IDENTIFIES current, in the session named `session` — the
+    /// registry-level entry a PAINTED row reaches. See [`Session::select_window_id`].
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] for an unknown session; otherwise [`Session::select_window_id`]'s.
+    pub fn select_window_id(
+        &mut self,
+        session: &str,
+        window: WindowId,
+    ) -> Result<(), SessionError> {
+        self.session_named_mut(session)?.select_window_id(window)
     }
 
     /// Walk `session`'s windows one step, wrapping, and answer the name it landed on — tmux
@@ -6212,6 +6249,55 @@ mod tests {
             names(&reg),
             vec!["0", "gamma"],
             "and a typed NAME killed whatever holds that name now",
+        );
+    }
+
+    /// **A select lands on the window that was PAINTED, and a name lands on whatever holds it
+    /// now** — the kill's gate one verb over, on the recoverable half of the same family.
+    ///
+    /// The two arms are both KEPT here, unlike the kill's: a `select-window -t build` binding out
+    /// of a config file means whatever carries that name when the key is pressed, and taking that
+    /// reading away would take the verb from every config in existence. What R330 removed was a
+    /// PAINTED row spelling itself as a name.
+    ///
+    /// REVERT-PROOF: point `select_window_id` at `position(|w| w.name == …)` through the label and
+    /// the two arms land on the same window.
+    #[test]
+    fn a_select_lands_on_the_window_painted_and_a_name_lands_on_whatever_holds_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        spawn_into(&reg, "0", 1);
+        for name in ["alpha", "beta"] {
+            reg.new_window(&default, Some(name), WindowBirth::default())
+                .unwrap();
+            spawn_into(&reg, name, 1);
+        }
+        let painted = reg
+            .session(&default)
+            .unwrap()
+            .windows()
+            .iter()
+            .find(|w| w.name() == "alpha")
+            .expect("alpha exists")
+            .id();
+
+        reg.rename_window(&default, "alpha", "archive").unwrap();
+        reg.rename_window(&default, "beta", "alpha").unwrap();
+        // OFF the answer first, or neither assertion below can fail.
+        reg.select_window(&default, "0").unwrap();
+
+        reg.select_window_id(&default, painted).unwrap();
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "archive",
+            "the PAINTED row landed on the window it named, whatever it is called now",
+        );
+
+        reg.select_window(&default, "alpha").unwrap();
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "alpha",
+            "and a typed NAME landed on whatever holds that name now",
         );
     }
 

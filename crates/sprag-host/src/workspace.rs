@@ -1619,9 +1619,21 @@ impl WorkspaceExternal {
         let ask = SelectWindowAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
         let session = self.scope.session();
         let landed = match &ask {
-            SelectWindowAsk::Named(window) => lock(&self.registry)
+            // The name arm answers the name it was GIVEN; the identity arm has to read the name
+            // back, because the whole point is that the caller does not know it — it holds a row
+            // whose label may already be stale, and the answer is what a status line paints.
+            SelectWindowAsk::At(WindowRef::Named(window)) => lock(&self.registry)
                 .select_window(session, window)
                 .map(|()| window.clone()),
+            SelectWindowAsk::At(WindowRef::Picked(window)) => {
+                let mut registry = lock(&self.registry);
+                registry.select_window_id(session, *window).and_then(|()| {
+                    registry
+                        .session(session)
+                        .map(|s| s.current_window().name().to_owned())
+                        .ok_or_else(|| sprag_terminal::SessionError::Unknown(session.to_owned()))
+                })
+            }
             // TOTAL once the session resolves — a session always has a window — so the only error
             // this arm can carry is an unknown SESSION, which the scope already refused at the door.
             SelectWindowAsk::Step(step) => {

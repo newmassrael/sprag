@@ -9,9 +9,9 @@ use crate::keys::use_client_keys;
 use crate::terminal::{pane_cache_key, pane_index_of, pane_tag, use_terminal};
 use pinion_core::reactive::{Owner, Signal};
 use pinion_core::{CompositionEvent, Modifiers, Scene};
+use sprag_host::keymap::SelectWindowBind;
 use sprag_host::keymap::{BoundAction, Routed, SwitchClientAsk};
 use sprag_host::report::Report;
-use sprag_host::wire::SelectWindowAsk;
 use sprag_terminal::PlaceHow;
 
 /// `Owner::cache` key for pane `pane`'s IME preedit overlay. Minted via the one
@@ -472,12 +472,16 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
             match ask {
                 // THE NAME IS THE HALF THAT CAN BE WRONG. A window called what the config says may
                 // simply not be there, and until R316 the daemon's refusal stopped at a `()`.
-                SelectWindowAsk::Named(window) => match slots.select_window(window) {
-                    Some(_) => Report::on_screen(),
-                    None => Report::no_such(&action),
-                },
+                // A NAME out of the user's config file — see the TUI's arm for why that reading is
+                // the right one here and the identity belongs to a painted row.
+                SelectWindowBind::Named(window) => {
+                    match slots.select_window(&sprag_host::wire::WindowRef::Named(window.clone())) {
+                        Some(_) => Report::on_screen(),
+                        None => Report::no_such(&action),
+                    }
+                }
                 // The step cannot miss: a session always holds a window, so the walk always lands.
-                SelectWindowAsk::Step(step) => {
+                SelectWindowBind::Step(step) => {
                     let _ = slots.select_window_toward(*step);
                     Report::on_screen()
                 }

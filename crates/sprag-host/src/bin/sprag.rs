@@ -4524,7 +4524,10 @@ fn select_window(args: Vec<String>) -> io::Result<()> {
     let ask = match word.as_str() {
         "-n" => SelectWindowAsk::Step(OrderStep::Next),
         "-p" => SelectWindowAsk::Step(OrderStep::Previous),
-        window => SelectWindowAsk::Named(window.to_owned()),
+        // A person TYPED this, so it means whatever holds it when they press Enter — the reading
+        // `WindowRef::Named` exists for. The CLI has no identity to spell and should not: a window
+        // id is minted at runtime and appears on no surface a person reads.
+        window => SelectWindowAsk::At(sprag_host::wire::WindowRef::Named(window.to_owned())),
     };
     let mut conn = connect(None)?;
     let session = require_target(&mut conn, session.as_deref(), "select-window")?;

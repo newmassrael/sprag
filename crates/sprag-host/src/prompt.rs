@@ -871,7 +871,7 @@ mod tests {
         // landing is asserted rather than dropped: a fixture that silently failed to come back
         // would be asserting the escalation of a DIFFERENT window.
         assert_eq!(
-            host.select_window("0"),
+            host.select_window(&crate::wire::WindowRef::Named("0".to_owned())),
             Some("0".to_owned()),
             "the fixture comes back to the window holding the pane",
         );

@@ -114,11 +114,11 @@ use sprag_client::WireHost;
 use sprag_host::HostClient;
 use sprag_host::chooser::Pick;
 use sprag_host::keyhelp::{KeyHelp, Pressed, Scroll};
+use sprag_host::keymap::SelectWindowBind;
 use sprag_host::keymap::{BoundAction, Keymap, PrefixMode, Routed, SwitchClientAsk};
 use sprag_host::prompt::{Ask, Line, Subject, Typed};
 use sprag_host::report::{Message, Report, display_time, now};
 use sprag_host::status::Status;
-use sprag_host::wire::SelectWindowAsk;
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
 use sprag_terminal::{Ended, PaneId, PlaceHow, SplitId};
 use sprag_tui::focus::{self, Person};
@@ -630,15 +630,20 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 // THE NAME IS THE HALF THAT CAN BE WRONG. A window called what the
                                 // config says may simply not be there, and until R316 the daemon's
                                 // refusal stopped at a `()` return.
-                                SelectWindowAsk::Named(window) => {
-                                    match host.select_window(window) {
+                                SelectWindowBind::Named(window) => {
+                                    // A NAME, deliberately: this one came out of the user's config
+                                    // file, so it means whatever carries it at the instant the key
+                                    // is pressed. The identity address belongs to a surface that
+                                    // PAINTED a row (R330).
+                                    let asked = sprag_host::wire::WindowRef::Named(window.clone());
+                                    match host.select_window(&asked) {
                                         Some(_) => Report::on_screen(),
                                         None => Report::no_such(&action),
                                     }
                                 }
                                 // The step cannot miss: a session always holds a window, so the
                                 // walk always lands. `None` is a host that could not be asked.
-                                SelectWindowAsk::Step(step) => {
+                                SelectWindowBind::Step(step) => {
                                     let _ = host.select_window_toward(*step);
                                     Report::on_screen()
                                 }

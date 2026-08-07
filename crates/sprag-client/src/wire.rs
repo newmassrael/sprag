@@ -2781,10 +2781,10 @@ impl HostClient for WireHost {
     /// live test GREEN, because an unknown name is REFUSED at the daemon and the refusal
     /// short-circuits here. Reading the answer is kept for the shape the step arm has — one verb,
     /// one reply — and for the day the daemon's recorded spelling stops being the argument.
-    fn select_window(&self, name: &str) -> Option<String> {
+    fn select_window(&self, window: &sprag_host::wire::WindowRef) -> Option<String> {
         let params = invoke(
             &mux_action_path(SELECT_WINDOW_ACTION),
-            SelectWindowAsk::Named(name.to_owned()).to_args(),
+            SelectWindowAsk::At(window.clone()).to_args(),
         );
         let landed = self.request("scene/invoke", params, "select_window")?;
         self.refresh_view();

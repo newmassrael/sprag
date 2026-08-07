@@ -73,8 +73,6 @@ use std::time::{Duration, Instant};
 use sprag_input::Modifiers;
 use sprag_terminal::{OrderStep, PaneDir, SplitDir, WindowPlace};
 
-use crate::wire::SelectWindowAsk;
-
 /// tmux's own `repeat-time` default, and the one sprag takes when the options table is silent.
 ///
 /// Read from `tmux 3.2a`'s `show-options -g repeat-time` on this machine rather than recalled. It
@@ -443,9 +441,47 @@ impl ActionSubject {
     }
 }
 
+/// WHICH window a [`BoundAction::SelectWindow`] makes current — what a KEYSTROKE can mean.
+///
+/// # Why this is not [`crate::wire::SelectWindowAsk`]
+///
+/// [`SwitchClientAsk`]'s split, applied where it had been missed. That type's own doc states the
+/// rule — *"Two grammars because two vocabularies, each complete at its own surface"* — and gives
+/// the reason in the same breath: the wire's `AttachAsk` has a `Scoped` arm no keystroke can mean.
+///
+/// The select had exactly that asymmetry and shared ONE type across it anyway, which is what stood
+/// in the way of the wire ask growing an IDENTITY arm (R330): a binding is TEXT in a config file, a
+/// window id is minted at runtime and typeable nowhere, and a shared type would have forced a
+/// spelling for something a person cannot write. Split, the identity is unrepresentable HERE by
+/// construction rather than refused by a parser — so `Display` stays total and round-trips, and no
+/// test has to assert that a config cannot produce one.
+///
+/// It converts INTO the wire ask ([`From`]), which is the direction that is always defined: every
+/// address a keystroke can mean is one a request can carry, and not the reverse.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SelectWindowBind {
+    /// `-t <window>` — the window with this NAME, fixed in the config file.
+    ///
+    /// A `String` and not a parsed name, on [`SwitchClientAsk::Named`]'s stated rule: a binding
+    /// that refused a name at CONFIG-LOAD time would reject a config for naming a window the user
+    /// is about to create.
+    Named(String),
+    /// `-n` / `-p` — one step along the session's window ring, wrapping.
+    Step(OrderStep),
+}
+
+impl From<SelectWindowBind> for crate::wire::SelectWindowAsk {
+    fn from(bind: SelectWindowBind) -> Self {
+        match bind {
+            SelectWindowBind::Named(window) => Self::At(crate::wire::WindowRef::Named(window)),
+            SelectWindowBind::Step(step) => Self::Step(step),
+        }
+    }
+}
+
 /// WHICH session a [`BoundAction::SwitchClient`] moves this client to.
 ///
-/// [`SelectWindowAsk`]'s twin one level up, and the extra arm is where the two differ: a window
+/// [`SelectWindowBind`]'s twin one level up, and the extra arm is where the two differ: a window
 /// ring has no "the one I was on before" to go back to, because a window's identity is only
 /// meaningful inside its session, while a CLIENT visits sessions and the daemon remembers.
 ///
@@ -453,7 +489,8 @@ impl ActionSubject {
 /// [`Ask`](Self::Ask) has no wire form at all (a prompt is a client-side act that produces a
 /// [`Named`](Self::Named) later), and `AttachAsk` has a `Scoped` arm no keystroke can mean. Two
 /// grammars because two vocabularies, each complete at its own surface — the shape
-/// [`SelectWindowAsk`] and [`sprag_terminal::WindowPlace`] already take.
+/// [`SelectWindowBind`] and [`sprag_terminal::WindowPlace`] take, the first of them only since
+/// R330 measured what sharing one type had cost.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SwitchClientAsk {
     /// `-n` / `-p` — one step along the daemon's session order, wrapping.
@@ -692,7 +729,7 @@ pub enum BoundAction {
     /// which is the whole content of the verb.
     SelectWindow {
         /// Which window — a step along the ring, or one by name.
-        ask: SelectWindowAsk,
+        ask: SelectWindowBind,
     },
     /// `move-window --first|--last|-n|-p|--before <w>|--after <w>` — move THIS session's current
     /// window to a place in the session's order (tmux `move-window`; the near-universal user
@@ -1164,7 +1201,7 @@ impl BoundAction {
                 ask: SwitchClientAsk::Named(session),
             } => Some((ActionSubject::Session, session)),
             Self::SelectWindow {
-                ask: SelectWindowAsk::Named(window),
+                ask: SelectWindowBind::Named(window),
             } => Some((ActionSubject::Window, window)),
             // The two ANCHORED places name a window; `--first` / `--last` / a step name none, and
             // the collapse is `WindowPlace::anchor`'s so this cannot handle one arm and forget the
@@ -1587,16 +1624,16 @@ impl BoundAction {
             // <window>` is TWO words that mean one thing.
             "select-window" => match flags.as_slice() {
                 ["-n"] => Ok(Self::SelectWindow {
-                    ask: SelectWindowAsk::Step(OrderStep::Next),
+                    ask: SelectWindowBind::Step(OrderStep::Next),
                 }),
                 ["-p"] => Ok(Self::SelectWindow {
-                    ask: SelectWindowAsk::Step(OrderStep::Previous),
+                    ask: SelectWindowBind::Step(OrderStep::Previous),
                 }),
                 ["-n", "-p"] | ["-p", "-n"] => {
                     Err(bad("-n and -p name one direction; give only one"))
                 }
                 ["-t", window] => Ok(Self::SelectWindow {
-                    ask: SelectWindowAsk::Named((*window).to_owned()),
+                    ask: SelectWindowBind::Named((*window).to_owned()),
                 }),
                 _ => Err(bad(
                     "a binding steps along the window ring (-n/-p) or names one window (-t                      <window>)",
@@ -1727,9 +1764,9 @@ impl fmt::Display for BoundAction {
             // could type back.
             Self::ConfirmBefore { action } => write!(f, "confirm-before {action}"),
             Self::SelectWindow { ask } => match ask {
-                SelectWindowAsk::Step(OrderStep::Next) => f.write_str("select-window -n"),
-                SelectWindowAsk::Step(OrderStep::Previous) => f.write_str("select-window -p"),
-                SelectWindowAsk::Named(window) => write!(f, "select-window -t {window}"),
+                SelectWindowBind::Step(OrderStep::Next) => f.write_str("select-window -n"),
+                SelectWindowBind::Step(OrderStep::Previous) => f.write_str("select-window -p"),
+                SelectWindowBind::Named(window) => write!(f, "select-window -t {window}"),
             },
             // The same four flags a shell takes, so a user reads a row out of `list-keys` and types
             // it back unchanged. The bare `-t` renders BARE, which is what makes the asking form
@@ -1966,13 +2003,13 @@ impl Default for Keymap {
                 bind(
                     "n",
                     BoundAction::SelectWindow {
-                        ask: SelectWindowAsk::Step(OrderStep::Next),
+                        ask: SelectWindowBind::Step(OrderStep::Next),
                     },
                 ),
                 bind(
                     "p",
                     BoundAction::SelectWindow {
-                        ask: SelectWindowAsk::Step(OrderStep::Previous),
+                        ask: SelectWindowBind::Step(OrderStep::Previous),
                     },
                 ),
                 // THE WINDOW ORDER, on the three keys the two parity targets between them settle
@@ -2687,19 +2724,19 @@ mod tests {
             (
                 "select-window -n",
                 BoundAction::SelectWindow {
-                    ask: SelectWindowAsk::Step(OrderStep::Next),
+                    ask: SelectWindowBind::Step(OrderStep::Next),
                 },
             ),
             (
                 "select-window -p",
                 BoundAction::SelectWindow {
-                    ask: SelectWindowAsk::Step(OrderStep::Previous),
+                    ask: SelectWindowBind::Step(OrderStep::Previous),
                 },
             ),
             (
                 "select-window -t logs",
                 BoundAction::SelectWindow {
-                    ask: SelectWindowAsk::Named("logs".to_owned()),
+                    ask: SelectWindowBind::Named("logs".to_owned()),
                 },
             ),
             // THE VERBS THAT ASK (R306). The three renames take no argument at all, so what a round
@@ -2994,7 +3031,7 @@ mod tests {
             BoundAction::KillPane,
             BoundAction::NewWindow,
             BoundAction::SelectWindow {
-                ask: SelectWindowAsk::Step(OrderStep::Next),
+                ask: SelectWindowBind::Step(OrderStep::Next),
             },
             BoundAction::MoveWindow {
                 place: WindowPlace::Step(OrderStep::Previous),
@@ -3223,6 +3260,73 @@ mod tests {
     ///
     /// REVERT-PROOF: point `parse`'s fallthrough back at `UnknownAction` and the second and third
     /// blocks fail on the variant; drop the vocabulary out of the first message and the loop over
+    /// **EVERY ADDRESS A KEYSTROKE CAN MEAN IS ONE A REQUEST CAN CARRY, AND NOT THE REVERSE** —
+    /// the two window-select vocabularies, driven across the seam between them (R330).
+    ///
+    /// # What this pins that a type alone does not
+    ///
+    /// That the conversion is TOTAL and LOSSLESS in the one direction that has to be: a binding
+    /// parsed out of a config file becomes a request without a decision anywhere. The other
+    /// direction is deliberately absent, and its absence is the whole design — an identity is minted
+    /// at runtime and typeable in no config, so `SelectWindowBind` cannot spell one and `Display`
+    /// stays total without a spelling for something a person cannot write.
+    ///
+    /// Before the split, one type served both surfaces and the wire ask therefore could not grow an
+    /// identity arm at all. That was filed as *"a grammar decision, 65 references"* and the filing
+    /// was wrong twice over: the count was a raw grep, and this file's own `SwitchClientAsk` had
+    /// already established the pattern in its doc — *"Two grammars because two vocabularies, each
+    /// complete at its own surface."*
+    ///
+    /// REVERT-PROOF: make `From` map `Named` onto a `Picked` and the first pair fails; give
+    /// `SelectWindowBind` an identity arm and the round-trip below stops compiling, which is the
+    /// point.
+    #[test]
+    fn every_address_a_key_can_mean_is_one_a_request_can_carry() {
+        for (spelled, bind) in [
+            (
+                "select-window -t logs",
+                SelectWindowBind::Named("logs".to_owned()),
+            ),
+            ("select-window -n", SelectWindowBind::Step(OrderStep::Next)),
+            (
+                "select-window -p",
+                SelectWindowBind::Step(OrderStep::Previous),
+            ),
+        ] {
+            let parsed = BoundAction::parse(spelled).expect("a real binding");
+            assert_eq!(
+                parsed,
+                BoundAction::SelectWindow { ask: bind.clone() },
+                "{spelled} parses to what it says",
+            );
+            assert_eq!(
+                parsed.to_string(),
+                spelled,
+                "...and prints back to the same words",
+            );
+            // The SEAM: what the key means becomes what the request carries, with no arm left over.
+            let asked: crate::wire::SelectWindowAsk = bind.into();
+            match (&asked, spelled) {
+                (crate::wire::SelectWindowAsk::At(window), "select-window -t logs") => {
+                    assert_eq!(window, &crate::wire::WindowRef::Named("logs".to_owned()));
+                }
+                (crate::wire::SelectWindowAsk::Step(_), _) => {}
+                other => panic!("a binding crossed the seam as {other:?}"),
+            }
+        }
+
+        // THE CONTROL: the wire ask has an address this vocabulary cannot reach, which is why the
+        // two are separate types at all. A `Picked` here parses back to no binding.
+        let picked = crate::wire::SelectWindowAsk::At(crate::wire::WindowRef::Picked(
+            sprag_terminal::WindowId(7),
+        ));
+        assert_eq!(
+            picked.to_args(),
+            serde_json::json!({"window_id": 7}),
+            "the request carries an address no key can spell",
+        );
+    }
+
     /// the known forms fails.
     #[test]
     fn a_word_that_is_not_a_binding_is_told_which_kind_of_word_it_is() {
