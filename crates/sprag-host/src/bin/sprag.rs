@@ -1387,12 +1387,12 @@ fn new(name: Option<String>) -> io::Result<()> {
             }
             None => Err(io::Error::other("new did not answer with a name")),
         },
-        // The host answers a refused create with a JSON-RPC error (`Other`), and an explicitly-named
-        // create now has TWO refusals rather than one: the name is taken, or it breaks the grammar
-        // an address has to satisfy (`sprag_terminal::SessionName`). The daemon knows which and
-        // cannot say — `InvokeError::Rejected` carries no payload (upstream PINION-PR82) — so this
-        // lists them. Before the grammar existed this sentence was exact; leaving it would have
-        // told a user with a blank name that somebody else had taken it.
+        // ⚠ THIS ARM IS UNREACHABLE AGAINST A DAEMON OF THIS BUILD and is kept as the pre-R325
+        // degradation only. The two refusals it lists — the name is taken, or it breaks the grammar
+        // an address has to satisfy (`sprag_terminal::SessionName`) — are ONE fact the daemon now
+        // states (`SessionError` / `SessionNameError`), and `invoke_action` prints it before
+        // anything here runs. It survives because a daemon older than PINION-PR82 answers a bare
+        // refusal under `Other`, which is exactly what this reads.
         Err(error) if error.kind() == io::ErrorKind::Other => {
             let named = name.as_deref().unwrap_or_default();
             Err(io::Error::new(

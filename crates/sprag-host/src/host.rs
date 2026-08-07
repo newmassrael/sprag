@@ -2335,12 +2335,14 @@ pub(crate) struct Resize {
 /// Move the boundary that bounds `pane` on `ask.dir`'s axis — the ONE place a split's share moves
 /// by a distance rather than by a whole tree being written back.
 ///
-/// Answers the [`Resize`]. `None` — refused — for a scope whose window the registry does not hold,
-/// an origin no window of the session holds, and a window with NO SIZE (no client has reported an
-/// area and nothing is pinned), because a cell has no length in a window nobody has measured.
-/// Those three share one refusal for the reason every action on this wire does: `InvokeError`
-/// carries no payload (upstream PINION-PR82), and the SURFACES say which, each knowing what it
-/// sent.
+/// Answers the [`Resize`], or a [`ResizeRefusal`] naming WHICH of four things stopped it: a scope
+/// whose window the registry does not hold, an origin no window of the session holds, a window with
+/// NO SIZE (nobody has reported an area and nothing is pinned, so a cell has no length), and an
+/// arrangement this daemon could not install.
+///
+/// **Those four shared ONE `None` until R325**, on the reasoning that `InvokeError` carried no
+/// payload so the SURFACES had to say which — which meant each surface guessed, and the CLI's guess
+/// named two of the four. PINION-PR82 landed; the fact is stated at the end that observes it.
 ///
 /// # The conversion, and why it is here
 ///
