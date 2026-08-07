@@ -6545,15 +6545,7 @@ fn a_window_kill_that_took_the_session_says_so() {
     // below was VACUOUS for exactly that — it sampled only after the row had settled, by which time
     // a message that should not have existed had already come and gone. The mutation that put the
     // second sentence back came out GREEN, which is what said so.
-    let mut rows: Vec<String> = Vec::new();
-    let watching = Instant::now();
-    while watching.elapsed() < Duration::from_secs(3) {
-        let row = tui.row(STATUS_ROW);
-        if rows.last() != Some(&row) {
-            rows.push(row);
-        }
-        std::thread::sleep(POLL);
-    }
+    let rows = rows_until_settled(&mut tui, "[beta] 0:0*");
 
     assert!(
         rows.iter()
@@ -6589,6 +6581,44 @@ fn a_window_kill_that_took_the_session_says_so() {
         "running",
         "the client switched rather than leaving, which is what makes the sentence worth painting",
     );
+}
+
+/// EVERY DISTINCT STATUS ROW from now until the row SETTLES on `landing` — the one observation
+/// window every claim about a timed message is made from.
+///
+/// ## Why the window ends on a CONDITION and not on a clock
+///
+/// This file records the rule three times over (R324, R325.1, R326): a claim about a message that
+/// EXPIRES cannot be made by a `wait_for` and a later assertion, because `wait_for` returns on its
+/// FIRST match and the row moves on. R326 fixed that by collecting every distinct row over a fixed
+/// **3-second** window — which closed the sampling hole and left a second one behind it.
+///
+/// **Measured after R327's debt question: 1 full-workspace run in 6.** Under the load the whole
+/// suite applies, the gesture, the daemon round trip and the message's own `display-time` do not
+/// fit in three seconds, so the window ended with the message still on screen and the *"the row
+/// settles on where it landed"* assertion read the message as the settled row. The pty suite alone
+/// passed 6 of 6, which is why nothing caught it until a full run did — [[a flake may need the
+/// load]], one layer over from where R326 met it.
+///
+/// So the window closes when the row IS the landing, and the generous cap is a failure rather than
+/// a sample point: a run that never settles returns everything it saw, and the caller's own
+/// assertion prints the whole list. One list, every claim, no clock to tune.
+fn rows_until_settled(tui: &mut Tui, landing: &str) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    let watching = Instant::now();
+    while watching.elapsed() < Duration::from_secs(30) {
+        let row = tui.row(STATUS_ROW);
+        if rows.last() != Some(&row) {
+            rows.push(row);
+        }
+        // The LAST row, not "any row": a message can carry the landing's name inside it, and the
+        // claim is about what the client comes to rest on.
+        if rows.last().map(String::as_str) == Some(landing) {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    rows
 }
 
 /// A live `sprag-tui` under `detach-on-destroy = policy`, with a spare session `beta` to land in
@@ -6665,23 +6695,29 @@ fn client_whose_session_is_destroyed(policy: &str) -> (Daemon, ConfigHome, HostC
 fn a_destroyed_session_moves_the_terminal_client_and_says_so() {
     let (_daemon, _config, mut conn, session, mut tui) = client_whose_session_is_destroyed("next");
 
+    // ONE OBSERVATION WINDOW for both claims about the row, for the reason
+    // [`rows_until_settled`] states — and this test is where that reason was MEASURED. Its three
+    // `wait_for`s failed 1 full-workspace run in 6: under load the sentence had come and gone
+    // before the first one sampled, and the diagnostic printed the settled row (`[beta] 0:0*`),
+    // which reads as *"it never said anything"* rather than as *"you looked too late"*.
+    let rows = rows_until_settled(&mut tui, "[beta] 0:0*");
     let says = format!("session {session:?} was destroyed; now on \"beta\"");
-    wait_for("the row to say the session was destroyed", || {
-        let row = tui.row(STATUS_ROW);
-        settled(row.contains(says.as_str()), &true)
-            .map_err(|got| format!("{got}: row reads {row:?}"))
-    });
+    assert!(
+        rows.iter().any(|row| row.contains(says.as_str())),
+        "the client must say what happened to it: {rows:?}",
+    );
+    // ...and once the sentence expires the row names WHERE THIS CLIENT IS, not the session that
+    // died. `Status` is derived from the host every frame, so this is a claim about the ATTACHMENT
+    // having moved and not about a repaint.
+    assert_eq!(
+        rows.last().map(String::as_str),
+        Some("[beta] 0:0*"),
+        "the row this client settles on must name where it landed: {rows:?}",
+    );
 
     // ...and it is TRUE, read from the daemon rather than from the client that said it.
     wait_for("the daemon to be holding only the spare session", || {
         settled(session_names(&mut conn), &vec!["beta".to_owned()])
-    });
-
-    // ...and once the sentence expires the row names WHERE THIS CLIENT IS, not the session that
-    // died. `Status` is derived from the host every frame, so this is a claim about the ATTACHMENT
-    // having moved and not about a repaint.
-    wait_for("the row to settle on the session it landed in", || {
-        settled(tui.row(STATUS_ROW), &"[beta] 0:0*".to_owned())
     });
     assert_eq!(
         tui.liveness(),

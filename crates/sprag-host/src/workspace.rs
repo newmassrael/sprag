@@ -2876,6 +2876,79 @@ mod tests {
         Arc::new(Mutex::new(SessionRegistry::new((80, 24))))
     }
 
+    /// **The dead-scope surface WRITES NOTHING, and the claim is made of the type rather than of
+    /// the caller that currently guards it.**
+    ///
+    /// `rpc::registry_only` admits `scene/query` alone, so nothing reaches these two arms today —
+    /// which is exactly why they are worth a test. The guard is a policy in another module, one
+    /// edit away from changing; this is the surface's own contract, and if it ever stopped holding,
+    /// a client whose session was destroyed could ACT on a daemon through a door built to let it
+    /// READ. A branch no test builds is the third shape the debt sweep looks for, and an
+    /// unreachable branch is still the one a later refactor reaches first.
+    ///
+    /// The schema is asserted whole for the reason its own doc gives: the addresses this DAEMON
+    /// serves do not shrink because one reader's session died, and a second shorter list would be a
+    /// copy of the declaration `wire::MUX_SCHEMA` exists to be the only one of.
+    #[test]
+    fn the_dead_scope_surface_reads_the_registry_and_writes_nothing() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+        let mut surface = RegistryExternal::new(Arc::clone(&reg), crate::DaemonShared::none());
+
+        // It READS every registry-subject slot, and answers each of them BYTE FOR BYTE what the
+        // SCOPED surface answers. That is the real claim and a stronger one than "the list is not
+        // empty": the two doors share `RegistryView`, so a build in which they could disagree is
+        // the drift this round removed rather than a value this fixture happens to hold.
+        let (scoped, _) = control(&reg);
+        for slot in [
+            SESSIONS_SLOT,
+            TREE_SLOT,
+            CLIENTS_SLOT,
+            GRID_WORK_SLOT,
+            GLOBAL_COMMANDS_SLOT,
+            AGENT_MANIFESTS_SLOT,
+        ] {
+            let here = surface
+                .query(slot)
+                .expect("the registry answers its own slot");
+            let there = scoped.query(slot).expect("and so does the scoped surface");
+            assert_eq!(
+                format!("{here:?}"),
+                format!("{there:?}"),
+                "{slot} must read the same through either door",
+            );
+        }
+        // ...and NOT what a session's would be, on the very slots the scoped surface serves.
+        for scoped in [PANES_SLOT, LAYOUT_SLOT, SESSION_SLOT, WINDOWS_SLOT] {
+            assert!(
+                surface.query(scoped).is_none(),
+                "{scoped} is about ONE session and this surface has none to be wrong about",
+            );
+        }
+
+        // EVERY action is refused — swept rather than sampled, because the failure this guards is
+        // one arm quietly gaining a body.
+        for action in crate::wire::MUX_SCHEMA.iter().filter(|f| f.ty == "action") {
+            assert!(
+                matches!(
+                    surface.invoke(action.path, IntrospectValue::Null),
+                    Err(InvokeError::UnknownPath)
+                ),
+                "{} must be refused: a reader with no session has none to act on",
+                action.path,
+            );
+        }
+        assert!(matches!(
+            surface.intervene(SESSIONS_SLOT, IntrospectValue::Null),
+            Err(InterveneError::UnknownPath),
+        ));
+        assert_eq!(
+            surface.schema().fields.len(),
+            crate::wire::MUX_SCHEMA.len(),
+            "the surface publishes the daemon's whole vocabulary, not a narrowed copy",
+        );
+    }
+
     /// The DEFAULT session's pane pool — where an unscoped surface's spawns land, so a test
     /// asserts against the same pool the surface resolves.
     fn pool(reg: &Arc<Mutex<SessionRegistry>>) -> Arc<Mutex<Workspace>> {
