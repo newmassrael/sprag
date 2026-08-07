@@ -962,6 +962,19 @@ fn check_a_destroyed_session_moves_the_windowed_client(smoke: &mut Smoke, report
         report.check("a destroy policy can be written", false);
         return;
     }
+    // From here the config is NOT the shipped one, so every exit runs through the restore below.
+    // The check that follows this one needs the DEFAULT policy — it asserts that a client LEAVES —
+    // and an early return that left `next` in force would make it switch instead and report a
+    // failure that is this function's, in that function's name.
+    run_the_destroyed_session_checks(smoke, report);
+    if smoke.write_user_config("[options]\n").is_err() {
+        report.check("the default destroy policy can be restored", false);
+    }
+}
+
+/// [`check_a_destroyed_session_moves_the_windowed_client`]'s body, split out so its early returns
+/// cannot skip that function's restore.
+fn run_the_destroyed_session_checks(smoke: &mut Smoke, report: &mut Report) {
     let Some(mine) = smoke.attached_session() else {
         report.check("the client says which session it is attached to", false);
         return;
@@ -1013,11 +1026,6 @@ fn check_a_destroyed_session_moves_the_windowed_client(smoke: &mut Smoke, report
         "...and the client is still running, which is what a SWITCH policy means",
         !smoke.gui_exited(),
     );
-
-    // Put the DEFAULT policy back for the check that follows, which needs a client that LEAVES.
-    if smoke.write_user_config("[options]\n").is_err() {
-        report.check("the default destroy policy can be restored", false);
-    }
 }
 
 /// The last unproven step of the destroy arc. The poll thread's classification of a dead session was
