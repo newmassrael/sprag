@@ -852,6 +852,59 @@ pub fn unknown_action(path: &str, fault: &RpcFault) -> Option<io::Error> {
     ))
 }
 
+/// The DAEMON'S OWN sentence for an action it had and declined — [`None`] for any other fault, so
+/// a caller's remaining handling still runs.
+///
+/// # It is [`unknown_action`]'s opposite, and the pair is the whole discrimination
+///
+/// One says *"this daemon cannot do that at all"* (a version skew: restart it) and this says *"this
+/// daemon would not do that"* (a fact about the workspace: fix the argument). They used to arrive
+/// as the same JSON-RPC code with the same empty payload, so every verb in this product wrote a
+/// client-side DISJUNCTION and named every cause it could think of. Measured at `87cde88`, four of
+/// them survived to the end: `rename-session` offered four causes, `break-pane` and `join-pane`
+/// three, `rename-window` two — and in each case the registry had returned a typed error naming
+/// exactly one.
+///
+/// # It re-labels and does not re-word
+///
+/// The sentence is the daemon's, verbatim. That is the point: a client that improved the wording
+/// would be authoring a claim about state it cannot see, which is what a disjunction IS. What a
+/// caller adds is its own subject (`sprag: join-pane: <this>`), because only the caller knows what
+/// the user typed.
+///
+/// [`io::ErrorKind::InvalidInput`] rather than [`io::ErrorKind::Other`]: the request was well
+/// formed and the WORKSPACE said no, which is a caller's input to change — distinct from
+/// `unknown_action`'s [`io::ErrorKind::Unsupported`], where changing the input cannot help.
+#[must_use]
+pub fn refusal(fault: &RpcFault) -> Option<io::Error> {
+    fault
+        .refusal()
+        .map(|reason| io::Error::new(io::ErrorKind::InvalidInput, reason.to_owned()))
+}
+
+/// What a caller says when a daemon refused `path` and STATED NOTHING — the one degradation left
+/// once [`refusal`] and [`unknown_action`] have had their turn.
+///
+/// # It is a skew, and saying so is the whole of it
+///
+/// On this build a refusal cannot be anonymous: the type requires the sentence
+/// (`InvokeError::rejected`). So a refusal that arrives bare is from a daemon older than the build
+/// that made it mandatory — which makes this the same news [`unknown_action`] carries, and it ends
+/// with the same remedy rather than a second story about the same situation.
+///
+/// **What it replaces is ten client-side DISJUNCTIONS.** Every acting verb used to answer a bare
+/// refusal by naming every cause it could imagine, because that was genuinely all anyone knew;
+/// `join-pane` cast doubt on three arguments when the daemon had rejected exactly one, and
+/// `rename-pane` listed six rules. Keeping them as a fallback would preserve the sentences this
+/// round exists to remove, at the one moment nobody is looking.
+#[must_use]
+pub fn unstated_refusal(path: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("this daemon refused {path} and did not say why — {SKEW_REMEDY}"),
+    )
+}
+
 /// The SAME fact as [`unknown_action`], as a message a display client can paint on its one row.
 ///
 /// # Why a client needs this at all

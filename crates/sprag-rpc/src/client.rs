@@ -1150,8 +1150,35 @@ pub const UNKNOWN_SLOT_FAULT: &str = "UnknownIntrospectPath";
 /// The `data` a daemon attaches when it does not have the ACTION a write named.
 ///
 /// [`UNKNOWN_SLOT_FAULT`]'s twin on the acting side, and the one that distinguishes an older
-/// daemon from a refusal: an action a daemon HAS and declines answers `InvokeRejected`.
+/// daemon from a refusal: an action a daemon HAS and declines answers under
+/// [`ACTION_REFUSED`].
 pub const UNKNOWN_ACTION_FAULT: &str = "UnknownInvokePath";
+
+/// The `data` a daemon OLDER than PINION-PR82 attaches to a refusal it cannot explain.
+///
+/// pinion's own word again, matched and never invented: before R1564 every refused action published
+/// this string under [`INVALID_PARAMS`], because `InvokeError::Rejected` was a payload-free variant.
+/// A consumer needs it for two reasons — to keep a Rust variant name off an operator's screen
+/// (register item 9's original leak), and so a TEST STAND-IN can produce the shape a real old daemon
+/// produces.
+pub const UNSTATED_REFUSAL_FAULT: &str = "InvokeRejected";
+
+/// The code a peer answers when an action it HAS declined to fire, with the producer's own
+/// sentence in `data` — pinion's `ACTION_REFUSED`, re-exported here so a sprag client reads one
+/// vocabulary.
+///
+/// # Why this is not `-32602`, and why that matters to sprag specifically
+///
+/// [`INVALID_PARAMS`] means the parameters were wrong. A refused action's parameters were RIGHT:
+/// the path resolved, the argument type matched, and the daemon then declined on a fact about its
+/// own state. The split is what makes the `data` on a refusal safely readable — every other `data`
+/// string on this wire is a word pinion authored (matched by [`UNKNOWN_SLOT_FAULT`] and its twin),
+/// and a refusal's is arbitrary application prose that a consumer must never branch on.
+///
+/// It also removes a collision this crate's caller was living with by accident: sprag reads
+/// `-32602` off a `scene/query` as *"no such session"*, which was safe only because a READ cannot
+/// carry an action refusal. Use [`RpcFault::refusal`] rather than comparing the number.
+pub const ACTION_REFUSED: i64 = pinion_rpc::ACTION_REFUSED as i64;
 
 /// A JSON-RPC `error` object as its own fact — the code the peer chose, its message, and whatever
 /// `data` it attached.
@@ -1180,6 +1207,29 @@ impl RpcFault {
             message: error["message"].as_str().unwrap_or_default().to_owned(),
             data: error.get("data").cloned(),
         }
+    }
+
+    /// The PRODUCER'S OWN sentence, when this fault is an action the daemon had and declined —
+    /// [`None`] for every other refusal on this wire.
+    ///
+    /// The CODE is the discriminator, never the text. Every other `data` on this wire is a word
+    /// pinion authored and a consumer may match; this one is arbitrary application prose, and a
+    /// caller that decided *"it does not look like `UnknownInvokePath`, so it must be a reason"*
+    /// would be one wording change away from printing a transport word at a person. That is the
+    /// whole argument PINION-PR82 spent a second error code on.
+    ///
+    /// [`None`] also covers a refusal that arrived with no `data` at all — a daemon older than the
+    /// build that made a reason mandatory. A caller renders its own words for that, which is
+    /// exactly what it did for every refusal before this existed.
+    #[must_use]
+    pub fn refusal(&self) -> Option<&str> {
+        if self.code != ACTION_REFUSED {
+            return None;
+        }
+        self.data
+            .as_ref()
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.is_empty())
     }
 }
 
