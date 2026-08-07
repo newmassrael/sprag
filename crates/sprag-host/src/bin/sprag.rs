@@ -2476,16 +2476,27 @@ fn query_raw(conn: &mut HostConn, params: Value) -> Result<Value, CallError> {
 /// transport failure keeps working unchanged and a NEW one written in that shape is right by
 /// default.
 fn invoke_action(conn: &mut HostConn, params: Value) -> io::Result<Value> {
-    invoke_action_with(conn, params, |fault| CallError::Fault(fault).into())
+    let path = params["path"].as_str().unwrap_or_default().to_owned();
+    invoke_action_with(conn, params, move |_| {
+        sprag_host::wire::unstated_refusal(&path)
+    })
 }
 
-/// [`invoke_action`] for the verbs whose refusal sentence needs the FAULT itself rather than only
-/// the fact of one — `resize-pane`'s two-cause disjunction and the agent verbs' pane reading.
+/// [`invoke_action`] for the verbs that still have something of their OWN to say about a fault the
+/// daemon did not explain.
 ///
-/// The skew is settled here, so what reaches `refused` is a fault this build's daemon produced on
-/// purpose. That is what makes those sentences safe to write as assertions about panes: before this
-/// existed, `report-agent` deduced *"the pane RESOLVED, so what is left is that this host runs no
-/// agent detector"* and appended the raw `UnknownInvokePath` it had just reasoned past.
+/// # Two things are settled before `refused` is reached, and both are the point
+///
+/// 1. **A SKEW** — the daemon does not perform that action at all
+///    ([`unknown_action`]), so a verb never reports a taken name to somebody whose daemon predates
+///    the verb (R297 measured exactly that).
+/// 2. **A STATED REFUSAL** — the daemon had the action, declined, and said why
+///    ([`sprag_host::wire::refusal`]). Its sentence is printed verbatim.
+///
+/// What is left for `refused` is a refusal carrying NO reason, which on this build's daemon is
+/// unreachable (the type requires one) and on an older one is exactly what it always was. So the
+/// remaining fallbacks are degradation paths, not the normal case — the inversion PINION-PR82
+/// bought, and the reason the disjunctions that used to live in six verbs are gone.
 fn invoke_action_with(
     conn: &mut HostConn,
     params: Value,
@@ -2495,9 +2506,9 @@ fn invoke_action_with(
     let path = params["path"].as_str().unwrap_or_default().to_owned();
     match conn.try_call("scene/invoke", params) {
         Ok(answer) => Ok(answer),
-        Err(CallError::Fault(fault)) => {
-            Err(unknown_action(&path, &fault).unwrap_or_else(|| refused(fault)))
-        }
+        Err(CallError::Fault(fault)) => Err(unknown_action(&path, &fault)
+            .or_else(|| sprag_host::wire::refusal(&fault))
+            .unwrap_or_else(|| refused(fault))),
         Err(CallError::Transport(error)) => Err(error),
     }
 }
@@ -2659,19 +2670,10 @@ fn display_message(args: Vec<String>) -> io::Result<()> {
             mux_action_path(DISPLAY_MESSAGE_ACTION),
             params,
         ),
-        |_| match &client {
-            Some(client) => io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "display-message refused: no client called {client:?} is attached \
-                     (see `sprag list-clients`)"
-                ),
-            ),
-            None => bad_input(
-                "display-message refused: this daemon cannot show messages, or the message \
-                 was not acceptable",
-            ),
-        },
+        // Both causes this used to guess between — a client id that is not attached, and a text
+        // the daemon will not paint — are STATED by the daemon now, and its version of the first
+        // is better than the guess: it names who IS attached instead of naming a verb to run.
+        |_| sprag_host::wire::unstated_refusal(&mux_action_path(DISPLAY_MESSAGE_ACTION)),
     )?;
     let reached: Vec<&str> = answer["clients"]
         .as_array()
@@ -3897,30 +3899,6 @@ fn split_window(args: Vec<String>) -> io::Result<()> {
                 "split-window did not answer with a pane id",
             )),
         },
-        // A well-formed request meets one refusal per action: a spawn's is the OS declining the
-        // fork/exec, and a split's is additionally an unreachable target — which is the likelier
-        // of the two to be the caller's own mistake, so it is named first.
-        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            match (&placement, &command) {
-                (Some((_, Some(_))), _) => format!(
-                    "split-window: pane {} is not in its window's tiling (it exited, or it is \
-                     floating), or the pane's command could not be run",
-                    target.map(|site| site.id).unwrap_or_default(),
-                ),
-                // The bare form named no pane, so the refusal is about the window rather than
-                // about a target the caller chose.
-                (Some((_, None)), _) => "split-window: this session's current window holds no \
-                     pane to divide, or the pane's command could not be run"
-                    .to_owned(),
-                (None, Some(command)) => {
-                    format!("split-window: the pane's command could not be run: {command:?}")
-                }
-                (None, None) => {
-                    "split-window: the pane's shell could not be run (check $SHELL)".to_owned()
-                }
-            },
-        )),
         Err(error) => Err(error),
     }
 }
@@ -4717,17 +4695,10 @@ fn move_window(args: Vec<String>) -> io::Result<()> {
             "path": mux_action_path(MOVE_WINDOW_ACTION),
             "args": ask.to_args(),
         }),
-        |_| {
-            let subject = match (&window, place.anchor()) {
-                (_, Some(anchor)) => format!("no window named {anchor:?} to anchor to"),
-                (Some(window), None) => format!("no window named {window:?}"),
-                (None, None) => "the session could not be read".to_owned(),
-            };
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("move-window refused: {subject} in session {session:?}"),
-            )
-        },
+        // The anchor-versus-subject distinction this used to make is the registry's own
+        // `SessionError::UnknownAnchor` now — made at the end that resolves the two separately,
+        // rather than reconstructed here from the arguments that were sent.
+        |_| sprag_host::wire::unstated_refusal(&mux_action_path(MOVE_WINDOW_ACTION)),
     )?;
     let Some((moved, how)) = MoveWindowAsk::read_answer(&answer) else {
         return Err(io::Error::other(
@@ -5039,15 +5010,9 @@ fn rename_session(args: Vec<String>) -> io::Result<()> {
             mux_action_path(RENAME_SESSION_ACTION),
             json!({ "name": new }),
         ),
-        |_| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "rename-session refused: {new:?} is already another session's name, or is \
-                     blank, over 80 bytes, or contains a control character"
-                ),
-            )
-        },
+        // The four rules this used to list are `SessionNameError`'s and `SessionError`'s, and the
+        // daemon answers with the ONE the name broke.
+        |_| sprag_host::wire::unstated_refusal(&mux_action_path(RENAME_SESSION_ACTION)),
     )?;
     // What the DAEMON recorded, never the argument that was sent: a name is trimmed on the way in,
     // so `rename-session "  work  "` lands as `work`, and echoing the argument would report an
@@ -5454,14 +5419,6 @@ fn break_pane(args: Vec<String>) -> io::Result<()> {
             }
             None => Err(io::Error::other("break-pane did not answer with a name")),
         },
-        // The refusals (the pane is its window's only one, an explicit name is taken, or no window
-        // holds the pane) surface as `Other`.
-        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "break-pane refused: pane {pane} is its window's only pane, no window holds it, or the name is taken"
-            ),
-        )),
         Err(error) => Err(error),
     }
 }
@@ -5496,14 +5453,6 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
             }
             Ok(())
         }
-        // The refusals (no such destination window, no window holds the pane, or the pane already
-        // lives in the destination) surface as `Other`.
-        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "join-pane refused: no window named {window:?} in session {session:?}, no pane {pane}, or it already lives there"
-            ),
-        )),
         Err(error) => Err(error),
     }
 }
@@ -5582,12 +5531,6 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
             }
             Ok(())
         }
-        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "move-pane refused: session {session:?} has no pane {pane}, or pane {target} is not tiled there, or they are the same pane"
-            ),
-        )),
         Err(error) => Err(error),
     }
 }
@@ -5830,13 +5773,6 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
             }
             Ok(())
         }
-        Err(error) if error.kind() == io::ErrorKind::Other => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "zoom-pane refused: session {session:?} has no pane {}, or it is floating",
-                pane.map_or_else(|| "to be active on".to_owned(), |p| p.to_string())
-            ),
-        )),
         Err(error) => Err(error),
     }
 }
