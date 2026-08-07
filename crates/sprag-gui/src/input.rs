@@ -490,7 +490,10 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
             match slots.windows().into_iter().find(|w| w.current) {
                 // ...and the CASCADE is reported (R325): this key can end the SESSION, which is a
                 // fact only the daemon holds and which no repaint of this window carries.
-                Some(window) => match slots.kill_window(&window.name) {
+                // ...addressed by IDENTITY: a daemon that publishes none is a daemon this client
+                // will not destroy a window on, which folds into the same `None` as no window at
+                // all. A destructive verb is the one place a shorter reach beats a guess.
+                Some(window) => match window.id.and_then(|id| slots.kill_window(id)) {
                     Some(ended) => Report::cascaded(ended, sprag_terminal::Ended::Window),
                     None => Report::nowhere(&action),
                 },
@@ -933,6 +936,22 @@ pub(crate) fn route_composition(focused: Option<&str>, event: &CompositionEvent)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `KillWindow` command a person clicking the row for the window NAMED `name` would get —
+    /// resolved through the live list, so a test carries the identity the surface carries (R330).
+    fn kill_of(slots: &crate::slotview::SlotView, name: &str) -> crate::command::Command {
+        let window = slots
+            .windows()
+            .into_iter()
+            .find(|row| row.name == name)
+            .expect("the window is in the live list");
+        crate::command::Command::KillWindow {
+            window: window
+                .id
+                .expect("the in-process host publishes an identity"),
+            label: window.name,
+        }
+    }
     use crate::TerminalViewer;
     use crate::terminal::seed_terminal;
     use pinion_core::Scene;
@@ -1734,7 +1753,7 @@ mod tests {
             let victim = terminal.slots.new_window();
             let before = terminal.slots.windows().len();
             crate::confirm::run_or_arm(
-                crate::command::Command::KillWindow(victim),
+                kill_of(&use_terminal().slots, &victim),
                 None,
                 &terminal.slots,
             );

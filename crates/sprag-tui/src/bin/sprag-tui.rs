@@ -711,8 +711,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                             // takes the session, which the confirm prompt only PREDICTS off this
                             // client's mirror. The prompt's own doc says it can over-state; this is
                             // what the daemon actually did.
-                            BoundAction::KillWindow => match current_window_name(&host) {
-                                Some(window) => match host.kill_window(&window) {
+                            BoundAction::KillWindow => match current_window_id(&host) {
+                                Some(window) => match host.kill_window(window) {
                                     Some(ended) => Report::cascaded(ended, Ended::Window),
                                     None => Report::nowhere(&action),
                                 },
@@ -1625,11 +1625,18 @@ fn drag_divider(
 /// The mirror rather than a fresh read: `current` is the fact the daemon publishes on the `windows`
 /// slot for exactly this question, and the poll thread refreshes it. `None` when the mirror holds no
 /// current window, which is a client that has not finished booting rather than a session without one.
-fn current_window_name(host: &WireHost) -> Option<String> {
+/// The IDENTITY of the window this client is projecting, or [`None`] when it has none to project —
+/// or when the daemon publishes no identity for it (`WindowInfo::id`).
+///
+/// Its neighbour above answers what a person READS; this answers what an act is ADDRESSED to, and
+/// the two are separate because a name is a fact about the instant it was read. A destructive verb
+/// takes this one: the confirmation prompt stands between the read and the act, and a window that
+/// became current in between is not the one the person agreed to kill.
+fn current_window_id(host: &WireHost) -> Option<sprag_terminal::WindowId> {
     host.windows()
         .into_iter()
         .find(|window| window.current)
-        .map(|window| window.name)
+        .and_then(|window| window.id)
 }
 
 /// nobody asked for (see [`reconcile`]).

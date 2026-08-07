@@ -122,7 +122,7 @@ use sprag_host::wire::{
     RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
     SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk,
     SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk,
-    find_slot_for, pane_processes_at, regex_slot_for,
+    WindowRef, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -1350,10 +1350,19 @@ fn current_window_name() -> Option<String> {
     })
 }
 
-/// A window this surface has resolved: its name, whether the session is ON it, and WHO ASKED for
-/// it — read in the ONE query that resolved it, for [`PaneRef`]'s reason.
+/// A window this surface has RESOLVED: its identity and name, whether the session is ON it, and WHO
+/// ASKED for it — read in the ONE query that resolved it, for [`PaneRef`]'s reason.
+///
+/// Renamed from `WindowRef` at R330, when [`sprag_host::wire::WindowRef`] became the product-wide
+/// name for a window ADDRESS. The two are different things and only one of them is a reference: this
+/// is a reading, taken at an instant, that a tool then decides about.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct WindowRef {
+struct ResolvedWindow {
+    /// What a close is ADDRESSED to, or [`None`] from a daemon that publishes none.
+    ///
+    /// It is here because this surface RESOLVES a window, applies a policy to what it found, and
+    /// only then acts — so the address has to survive that gap. See `close_window`.
+    id: Option<sprag_terminal::WindowId>,
     name: String,
     current: bool,
     opened_by: Option<u64>,
@@ -1364,11 +1373,16 @@ struct WindowRef {
 
 /// Resolve a tool's `window` argument against one reading of the session's window list.
 ///
-/// A window is addressed by NAME and only by name: a window has no number on this surface and its
-/// id never leaves the daemon, so there is one spelling and nothing to tell apart. That is why
-/// there is no `WindowAddress` beside [`PaneAddress`](sprag_host::pane_address::PaneAddress) —
-/// the grammar that type exists for is the two-spellings problem, and a window does not have it.
-fn resolve_window(args: &Value, key: &str) -> Result<WindowRef, String> {
+/// An AGENT addresses a window by NAME and only by name: a window has no number on this surface, so
+/// there is one spelling and nothing to tell apart. That is why there is no `WindowAddress` beside
+/// [`PaneAddress`](sprag_host::pane_address::PaneAddress) — the grammar that type exists for is the
+/// two-spellings problem, and an agent's window argument does not have it.
+///
+/// ⚠ This doc said *"its id never leaves the daemon"* until R330, and that had been false since
+/// R329 published `WindowInfo::id`. What stayed true is the half about the ARGUMENT; what changed is
+/// that the resolution now CARRIES the identity, so a tool that acts after a policy check acts on
+/// the window it checked.
+fn resolve_window(args: &Value, key: &str) -> Result<ResolvedWindow, String> {
     let wanted = match args.get(key) {
         Some(Value::String(name)) => name.trim().to_owned(),
         Some(Value::Null) | None => {
@@ -1383,7 +1397,8 @@ fn resolve_window(args: &Value, key: &str) -> Result<WindowRef, String> {
     windows
         .into_iter()
         .find(|window| window.name == wanted)
-        .map(|window| WindowRef {
+        .map(|window| ResolvedWindow {
+            id: window.id,
             name: window.name,
             current: window.current,
             opened_by: window.opened_by.map(|pane| pane.0),
@@ -1401,7 +1416,11 @@ fn resolve_window(args: &Value, key: &str) -> Result<WindowRef, String> {
 
 /// Refuse a window this agent did not open — [`require_own_pane`]'s rule one level up, and the
 /// reason [`sprag_terminal::Window::opened_by`] exists.
-fn require_own_window(window: &WindowRef, verb: &str, consequence: &str) -> Result<(), String> {
+fn require_own_window(
+    window: &ResolvedWindow,
+    verb: &str,
+    consequence: &str,
+) -> Result<(), String> {
     match window.opened_by {
         Some(opener) if Some(opener) == own_pane() => Ok(()),
         Some(opener) => Err(format!(
@@ -1606,11 +1625,24 @@ fn tool_close_window(args: &Value) -> Result<String, String> {
             window.name,
         ));
     }
+    // BY IDENTITY, and the key is `WindowRef`'s rather than `SelectWindowAsk`'s — borrowing another
+    // action's constant is a bet that two grammars will never diverge, which is what this project's
+    // one-spelling rule exists to stop.
+    //
+    // The identity is what makes the refusal above BINDING (R330): this tool looks the window up,
+    // decides whether an agent may close it, and then acts. A name committed across that gap can
+    // have moved to a window the guard never examined. A daemon that publishes no identity gets the
+    // name, which is the reading it can honour and the only one it has.
+    let mut args = serde_json::Map::new();
+    match window.id {
+        Some(id) => WindowRef::Picked(id).write(&mut args),
+        None => WindowRef::Named(window.name.clone()).write(&mut args),
+    }
     let answer = host_call(
         "scene/invoke",
         json!({
             "path": mux_action_path(KILL_WINDOW_ACTION),
-            "args": { SelectWindowAsk::WINDOW_KEY: window.name },
+            "args": Value::Object(args),
         }),
     )?;
     let beyond = Ended::from_wire(answer[ENDED_KEY].as_str().unwrap_or_default())

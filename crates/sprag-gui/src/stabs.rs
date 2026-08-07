@@ -998,7 +998,7 @@ mod tests {
         fn new_window(&self) -> String {
             String::new()
         }
-        fn kill_window(&self, _name: &str) -> Option<sprag_terminal::Ended> {
+        fn kill_window(&self, _window: sprag_terminal::WindowId) -> Option<sprag_terminal::Ended> {
             None
         }
         /// This fixture drives the session RAIL, which renames nothing — an honest refusal, which

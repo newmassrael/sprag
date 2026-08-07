@@ -32,6 +32,8 @@ use pinion_core::widget_core::ExtraExternal;
 use pinion_core::widgets::button::ButtonExternal;
 use pinion_core::{Color, Intent, Scene};
 
+use pinion_core::reactive::{Owner, Signal};
+
 use crate::command::Command;
 use crate::slotview::SlotView;
 
@@ -60,6 +62,39 @@ pub(crate) const STRIP_HEIGHT: u32 = 30;
 /// The tab-button tag for tab `i`.
 fn tab_tag(i: usize) -> String {
     format!("{TAB_TAG_PREFIX}{i}")
+}
+
+/// The reactive-cache key for [`painted_tabs`].
+const PAINTED_TABS_KEY: &str = "sprag_gui.wtabs.painted";
+
+/// **WHICH WINDOW each tab slot was PAINTED FROM**, by identity — the map a click resolves through.
+///
+/// # The defect this removes, which this file's own comment called benign
+///
+/// A tab's tag is its POSITION and has to be ([`create_window_externals`] registers a fixed set, so
+/// a per-window tag would be discarded by the tag-keyed reconcile). Until R330 the click resolved
+/// that position against the LIVE window list — `slots.windows().get(idx)` — and the comment beside
+/// it said a list that changed since paint *"selects a neighbour or no-ops … benign and
+/// self-healing"*.
+///
+/// **Selecting a neighbour is landing on a window the person did not click.** With tabs `a b c`
+/// painted and `a` closing before the click, tab 1 resolves to `c`. That is the same defect this
+/// project cites the rival for — herdr's `NavigatorState::selected` is a `usize` into rows rebuilt
+/// on every render (`9a4ce5e1`) — sitting in sprag's own strip, and the claim of benignity was
+/// never driven by a test.
+///
+/// [`crate::ctxmenu`] had already solved exactly this, one surface over: its rows are CAPTURED when
+/// the menu opens *"so a window list that changes under an open popup can never make a click run a
+/// different row than the one shown"*. N-1 of N doors kept the invariant; this is the odd one out.
+///
+/// [`None`] in a slot is a window the daemon publishes no identity for — the tab still paints and
+/// its click no-ops, which is the same direction `WindowInfo::id`'s other readers take.
+fn painted_tabs() -> Signal<Vec<Option<sprag_terminal::WindowId>>> {
+    Owner::current()
+        .expect("painted_tabs() requires an active Owner scope")
+        .cache(PAINTED_TABS_KEY, || Signal::new(Vec::new()))
+        .as_ref()
+        .clone()
 }
 
 /// The window-strip EXTRA externals: one [`ButtonExternal`] per possible tab plus the "+" and "×"
@@ -91,6 +126,15 @@ pub(crate) fn create_window_externals() -> Vec<ExtraExternal> {
 pub(crate) fn view_window_strip(slots: &SlotView, theme: &Theme) -> Scene {
     let windows = slots.windows();
     let mut children: Vec<Scene> = Vec::with_capacity(windows.len() + 2);
+    // CAPTURE what each slot is painted from, so a click resolves to the window on the tab rather
+    // than to whatever has moved into that position — see `painted_tabs`.
+    painted_tabs().set(
+        windows
+            .iter()
+            .take(MAX_WINDOW_TABS)
+            .map(|window| window.id)
+            .collect(),
+    );
     for (i, window) in windows.iter().enumerate().take(MAX_WINDOW_TABS) {
         children.push(tab_node(i, &window.name, window.current, theme));
     }
@@ -188,19 +232,44 @@ pub(crate) fn handle_window_intent(intent: &Intent, slots: &SlotView) -> bool {
         // Until this routing landed, this button killed a window on ONE unguarded click — and the
         // session's last window ends it, so the least guarded surface in the client was the one able
         // to destroy the most.
-        if let Some(current) = slots.windows().into_iter().find(|window| window.current) {
-            crate::confirm::run_or_arm(Command::KillWindow(current.name), None, slots);
+        // Addressed by IDENTITY (R330). The prompt this arms stands between the click and the act,
+        // and a window that took the label in between is not the one the person agreed to kill; a
+        // daemon that publishes no identity gets no kill from this button at all, which is the safe
+        // direction for the least guarded surface in the client.
+        if let Some(current) = slots
+            .windows()
+            .into_iter()
+            .find(|window| window.current && window.id.is_some())
+        {
+            crate::confirm::run_or_arm(
+                Command::KillWindow {
+                    window: current.id.expect("filtered to the rows that have one"),
+                    label: current.name,
+                },
+                None,
+                slots,
+            );
         }
         return true;
     }
     if let Some(idx) = tab_index(who) {
-        // Resolve the clicked tab's index into the CURRENT window list and select that window by
-        // NAME. The index is still positional (from paint time); re-reading the live list at click
-        // time just means a list that changed since paint selects a neighbour or no-ops
-        // (`.get(idx)` → `None`) rather than acting on a stale name — never a panic, never a dead
-        // name. Benign and self-healing.
-        if let Some(window) = slots.windows().get(idx) {
-            slots.select_window(&window.name);
+        // Resolve the clicked tab's slot to the IDENTITY it was painted from, then find that window
+        // in the live list and select it by the name it carries NOW. A window that has gone selects
+        // nothing, and a window that moved position or was renamed is still the one on the tab.
+        //
+        // The second hop is a name because `select-window` takes one, and the gap it leaves is a
+        // microsecond inside one reducer call rather than the unbounded paint-to-click gap this
+        // replaces. Closing it entirely needs the select ACTION to take an identity, which is a
+        // grammar decision (`SelectWindowAsk` is shared with `BoundAction`, whose spelling has to
+        // round-trip through a config file) and is registered rather than done here.
+        let painted = painted_tabs().get().get(idx).copied().flatten();
+        if let Some(row) = painted.and_then(|window| {
+            slots
+                .windows()
+                .into_iter()
+                .find(|row| row.id == Some(window))
+        }) {
+            slots.select_window(&row.name);
         }
         return true;
     }
@@ -215,6 +284,164 @@ fn tab_index(who: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::{seed_terminal, use_terminal};
+    use sprag_host::Host;
+    use sprag_terminal::CommandBuilder;
+
+    /// A long-lived `cat` pane, so a window keeps its pane for the length of a test — the shape
+    /// every reducer fixture in this client seeds.
+    fn cat() -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg("cat");
+        c.env("TERM", "dumb");
+        c
+    }
+
+    /// A live in-process host behind the strip, holding one pane — so a test drives the real
+    /// window list rather than a fake that cannot shift under it.
+    fn seed_live_host() {
+        let host = Host::new((40, 6));
+        host.spawn(
+            cat(),
+            "cat".to_owned(),
+            40,
+            6,
+            sprag_terminal::PaneBirthHooks::default(),
+        )
+        .unwrap();
+        seed_terminal(host);
+    }
+
+    /// The name of the window the session is CURRENTLY on.
+    fn current_name(slots: &SlotView) -> String {
+        slots
+            .windows()
+            .into_iter()
+            .find(|row| row.current)
+            .expect("a session always has a current window")
+            .name
+    }
+
+    /// The click intent a tab button delivers, as pinion scopes it.
+    fn tab_click(i: usize) -> Intent {
+        Intent {
+            tag: std::borrow::Cow::Owned(format!("{}.{CLICK_EVENT}", tab_tag(i))),
+            payload: pinion_core::external::IntrospectValue::Null,
+        }
+    }
+
+    /// **A TAB CLICK SELECTS THE WINDOW ON THE TAB, NOT WHATEVER HAS MOVED INTO ITS POSITION.**
+    ///
+    /// # The claim this replaces
+    ///
+    /// The code beside the resolve said a list that changed since paint *"selects a neighbour or
+    /// no-ops … Benign and self-healing"*, and nothing drove it. Selecting a neighbour is landing
+    /// on a window the person did not click — the defect this project cites the rival for, in its
+    /// own strip. Driven here over a LIVE host, so the window list changes the way it really does.
+    ///
+    /// # ⚠ The fixture is built so the two readings LAND ON DIFFERENT WINDOWS
+    ///
+    /// The first version of this test was VACUOUS and the mutation pass said so: killing the FIRST
+    /// window left the current window already ON the expected answer, so the assertion held whether
+    /// the click did anything at all. Both mutations came back GREEN.
+    ///
+    /// So the current window is moved AWAY from the answer before the click. With `0 b c` painted,
+    /// `0` closing and `b` selected, tab 2 resolves by IDENTITY to `c` and by POSITION to nothing
+    /// (the live list holds two) — one lands, the other leaves `b` current.
+    ///
+    /// REVERT-PROOF: resolve through `slots.windows().get(idx)` again, or drop the
+    /// `painted_tabs().set(...)` from the painter, and the click leaves `b` current.
+    #[test]
+    fn a_tab_click_selects_the_window_the_tab_was_painted_from() {
+        Owner::new().run(|| {
+            seed_live_host();
+            let slots = &use_terminal().slots;
+
+            // Three windows: the boot one plus two. Each `new_window` selects what it made.
+            let second = slots.new_window();
+            let third = slots.new_window();
+            let painted = slots.windows();
+            assert_eq!(painted.len(), 3, "three tabs to paint");
+            let boot = painted[0]
+                .id
+                .expect("the in-process host publishes an identity");
+
+            // PAINT the strip — this is what captures the slot-to-identity map.
+            let _ = view_window_strip(slots, &Theme::default());
+
+            // The FIRST window closes out of band, so every tab after it shifts left by one...
+            let _ = slots.kill_window(boot);
+            assert_eq!(slots.windows().len(), 2, "the list really shifted");
+            // ...and the current window is moved OFF the answer, or this test cannot fail.
+            slots.select_window(&second);
+            assert_eq!(
+                current_name(slots),
+                second,
+                "the control: not on the answer yet"
+            );
+
+            assert!(
+                handle_window_intent(&tab_click(2), slots),
+                "the click is handled"
+            );
+            assert_eq!(
+                current_name(slots),
+                third,
+                "the click landed on the window that was ON the tab; a positional resolve would \
+                 have found nothing at index 2 and left the selection where it was",
+            );
+        });
+    }
+
+    /// A tab whose window has GONE selects nothing — the other half of the same map.
+    ///
+    /// ⚠ Built so a POSITIONAL resolve would land somewhere: with `0 b c` painted and `b` killed,
+    /// index 1 of the live list is `c`. A fixture where the list merely shrank at the end would
+    /// no-op under both readings and could not fail.
+    ///
+    /// REVERT-PROOF: resolve through `slots.windows().get(idx)` and this selects `c`.
+    #[test]
+    fn a_tab_whose_window_is_gone_selects_nothing() {
+        Owner::new().run(|| {
+            seed_live_host();
+            let slots = &use_terminal().slots;
+
+            let second = slots.new_window();
+            let third = slots.new_window();
+            let painted = slots.windows();
+            let boot = painted[0].name.clone();
+            let doomed = painted
+                .iter()
+                .find(|row| row.name == second)
+                .and_then(|row| row.id)
+                .expect("the second window has an identity");
+            let _ = view_window_strip(slots, &Theme::default());
+
+            let _ = slots.kill_window(doomed);
+            slots.select_window(&boot);
+            assert_eq!(
+                current_name(slots),
+                boot,
+                "the control: not on the answer yet"
+            );
+            assert_eq!(
+                slots.windows()[1].name,
+                third,
+                "a positional resolve of tab 1 WOULD find a window, or this cannot fail",
+            );
+
+            assert!(
+                handle_window_intent(&tab_click(1), slots),
+                "the click is handled"
+            );
+            assert_eq!(
+                current_name(slots),
+                boot,
+                "a tab for a window that is gone moves nobody",
+            );
+        });
+    }
 
     #[test]
     fn tab_tags_round_trip_through_the_index_parser() {

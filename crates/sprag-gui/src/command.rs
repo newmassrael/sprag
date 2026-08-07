@@ -167,7 +167,12 @@ pub(crate) enum Command {
     LastSession,
     /// Kill the named window of the current session (tmux `kill-window`). DESTRUCTIVE — see
     /// [`Command::confirmation`].
-    KillWindow(String),
+    KillWindow {
+        /// The window's identity — what the act is addressed to.
+        window: WindowId,
+        /// Its name AS PAINTED, for the row's own words and its confirmation. Never sent.
+        label: String,
+    },
     /// Kill the named session (tmux `kill-session`). DESTRUCTIVE — see [`Command::confirmation`].
     KillSession(String),
     /// A command DECLARED in a config file — the target pane's project (`.sprag.toml`) or the user's
@@ -239,7 +244,7 @@ impl Command {
             // is also why the pane's row is `Kill pane` and not `Close pane`: it belongs in that
             // one search, and what it does to a running program is a kill by any honest name.
             Self::KillPane => "Kill pane".to_owned(),
-            Self::KillWindow(name) => format!("Kill window {name}"),
+            Self::KillWindow { label, .. } => format!("Kill window {label}"),
             Self::KillSession(name) => format!("Kill session {name}"),
             // The project's own words. NOT prefixed with "Run" — a project titles its commands, and
             // wrapping them would make a fuzzy query match sprag's phrasing instead of theirs.
@@ -292,7 +297,7 @@ impl Command {
             // change the outcome. Both guarded keys (`prefix x` for the pane, `prefix &` for the
             // window) are in the key table for anyone who goes looking.
             | Self::KillPane
-            | Self::KillWindow(_)
+            | Self::KillWindow { .. }
             | Self::KillSession(_) => None,
             // Answered above, off the live keymap — never from here. `BreakOut` and `NewSession`
             // joined them at R323, when the keyboard gained the verbs.
@@ -386,7 +391,7 @@ impl Command {
             // NOT PAIRED, though `kill-session` is a binding now — `Kill window <name>`'s rule one
             // level up: this row names a SESSION and the keystroke can only ever mean the one this
             // client is attached to, so the two are different acts that share a verb.
-            | Self::KillWindow(_)
+            | Self::KillWindow { .. }
             | Self::KillSession(_)
             | Self::Declared(_) => None,
         }
@@ -455,8 +460,8 @@ impl Command {
                 },
                 verb: KILL_VERB.to_owned(),
             }),
-            Self::KillWindow(name) => Some(Confirmation {
-                prompt: format!("Kill window '{name}'?"),
+            Self::KillWindow { label, .. } => Some(Confirmation {
+                prompt: format!("Kill window '{label}'?"),
                 // The escalation the name alone does not carry: `kill-window` on the last window is
                 // `kill-session` by another route (`SlotView::kill_window` documents it).
                 consequence: (slots.windows().len() <= 1).then(|| {
@@ -511,7 +516,12 @@ impl Command {
             // window or session name, a slot cannot be reused out from under the capture within a
             // frame — the reconcile that frees a slot is the same one this runs beside.
             Self::KillPane => target.is_some_and(|pane| slots.is_pane_occupied(pane)),
-            Self::KillWindow(name) => slots.windows().iter().any(|window| &window.name == name),
+            // BY IDENTITY, like the act it guards: a check by name would pass for the window that
+            // has TAKEN the label since the row was painted, which is the one case this guard is
+            // for. The two read the same field so they cannot come to disagree about the subject.
+            Self::KillWindow { window, .. } => {
+                slots.windows().iter().any(|row| row.id == Some(*window))
+            }
             Self::KillSession(name) => slots.sessions().iter().any(|session| &session.name == name),
             Self::ShowKeys
             | Self::ChooseTree
@@ -584,7 +594,7 @@ impl Command {
             | Self::LastSession
             // A kill is addressed by the NAME it carries, like the select / switch rows above it —
             // what it destroys has nothing to do with which pane the user was looking at.
-            | Self::KillWindow(_)
+            | Self::KillWindow { .. }
             | Self::KillSession(_) => false,
         }
     }
@@ -786,7 +796,7 @@ impl Command {
             // this client's own mirror, and its own doc says that reading can over-state; the
             // report states what the daemon DID. A person warned that a kill might end their
             // session is owed the answer to whether it did.
-            Self::KillWindow(name) => match slots.kill_window(name) {
+            Self::KillWindow { window, .. } => match slots.kill_window(*window) {
                 Some(ended) => Report::cascaded(ended, sprag_terminal::Ended::Window),
                 None => self.reported(Report::nowhere),
             },
@@ -1022,12 +1032,15 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
     if target.is_some() {
         out.push(Command::KillPane);
     }
-    out.extend(
-        windows
-            .iter()
-            .take(MAX_WINDOW_ROWS)
-            .map(|window| Command::KillWindow(window.name.clone())),
-    );
+    // A window this daemon publishes no identity for gets no KILL row — `JoinInto`'s rule at R329,
+    // and the destructive verb is where it matters most: the alternative to a shorter menu is a row
+    // that destroys whatever holds the label by the time the person confirms.
+    out.extend(windows.iter().take(MAX_WINDOW_ROWS).filter_map(|window| {
+        Some(Command::KillWindow {
+            window: window.id?,
+            label: window.name.clone(),
+        })
+    }));
     out.extend(
         sessions
             .iter()
@@ -1232,7 +1245,11 @@ mod tests {
                 "a directionless append must not advertise a directional split's key",
             );
             assert_eq!(
-                Command::KillWindow("w".to_owned()).hint(),
+                Command::KillWindow {
+                    window: WindowId(100),
+                    label: "w".to_owned()
+                }
+                .hint(),
                 None,
                 "a destructive row states its consequence on the prompt, not as a shortcut",
             );
@@ -1262,7 +1279,11 @@ mod tests {
             "neither the row nor the binding names a window, so the two really are the same act",
         );
         assert_eq!(
-            Command::KillWindow("logs".to_owned()).bound(),
+            Command::KillWindow {
+                window: WindowId(100),
+                label: "logs".to_owned()
+            }
+            .bound(),
             None,
             "a row that names a window is not the keystroke that can only mean the current one",
         );
@@ -1317,9 +1338,11 @@ mod tests {
         last_session: usize,
         /// `(pane, text)` per paste — how a project command reaches a pane.
         pasted: Vec<(PaneId, String)>,
-        /// The windows a kill named. Recorded rather than no-op'd because the destructive routing is
-        /// the one place a mis-addressed command cannot be walked back.
-        killed_windows: Vec<String>,
+        /// The windows a kill ADDRESSED, by identity. Recorded rather than no-op'd because the
+        /// destructive routing is the one place a mis-addressed command cannot be walked back — and
+        /// by identity because a log of names cannot tell a kill that landed where the row pointed
+        /// from one that landed on whatever had taken the label since (R330).
+        killed_windows: Vec<WindowId>,
         /// The sessions a kill named. The in-process `Host` deliberately no-ops `kill_session` (it
         /// renders only the default session), so a recording fake is the ONLY way to observe that this
         /// arm addresses the right one at all.
@@ -1417,8 +1440,8 @@ mod tests {
             self.log.borrow_mut().new_windows += 1;
             "w".to_owned()
         }
-        fn kill_window(&self, name: &str) -> Option<sprag_terminal::Ended> {
-            self.log.borrow_mut().killed_windows.push(name.to_owned());
+        fn kill_window(&self, window: sprag_terminal::WindowId) -> Option<sprag_terminal::Ended> {
+            self.log.borrow_mut().killed_windows.push(window);
             Some(sprag_terminal::Ended::Window)
         }
         /// RECORDED, and answering the TRIMMED name — a fake that echoed its argument would let a
@@ -2414,7 +2437,8 @@ mod tests {
     }
 
     /// **A WINDOW THIS DAEMON PUBLISHES NO IDENTITY FOR IS OFFERED AS A PLACE TO GO AND NOT AS A
-    /// PLACE TO JOIN** — the branch a client meets against a daemon older than `WindowInfo::id`.
+    /// PLACE TO JOIN — OR TO KILL** — the branch a client meets against a daemon older than
+    /// `WindowInfo::id`.
     ///
     /// The two rows are the whole point of the split, and they are asserted TOGETHER because either
     /// alone is satisfied by a bug: `select-window` is addressed by NAME at the daemon, which
@@ -2426,9 +2450,14 @@ mod tests {
     /// Found by the debt sweep for *"a branch reachable only from a state no test builds"*, and
     /// BUILT rather than registered: the standing rule.
     ///
+    /// R330 added the KILL row to the same rule, and it is the one that matters most: the
+    /// alternative to a shorter menu is a row that destroys whatever holds the label by the time
+    /// the person confirms.
+    ///
     /// REVERT-PROOF: change the `window.id?` in `catalog` to an `unwrap_or(WindowId(0))` and the
     /// first assertion fails with a row addressing window zero; drop the `select` row's
-    /// independence from the id and the second fails.
+    /// independence from the id and the second fails; drop the kill row's `filter_map` and the
+    /// third does.
     #[test]
     fn a_window_with_no_published_identity_offers_no_join_row() {
         let (slots, _log) = slots_over(
@@ -2469,6 +2498,14 @@ mod tests {
                 .iter()
                 .all(|row| !matches!(row.command, Command::JoinInto { .. })),
             "the context menu applies the same rule, which is why it reads the same field",
+        );
+        assert!(
+            !titles.contains(&"Kill window old".to_owned()),
+            "a DESTRUCTIVE row with no address is the one that must not be offered: {titles:?}",
+        );
+        assert!(
+            titles.contains(&"Kill window main".to_owned()),
+            "...while the window that HAS one is still killable: {titles:?}",
         );
     }
 
@@ -2623,14 +2660,18 @@ mod tests {
     fn a_kill_addresses_the_window_or_session_it_names() {
         let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
 
-        let _ = Command::KillWindow("build".to_owned()).run(Some(0), &slots);
+        let _ = Command::KillWindow {
+            window: WindowId(101),
+            label: "build".to_owned(),
+        }
+        .run(Some(0), &slots);
         let _ = Command::KillSession("work".to_owned()).run(Some(0), &slots);
 
         let log = log.borrow();
         assert_eq!(
             log.killed_windows,
-            vec!["build".to_owned()],
-            "the window kill names the window, and only it"
+            vec![WindowId(101)],
+            "the window kill ADDRESSES the window the row identified, and only it"
         );
         assert_eq!(
             log.killed_sessions,
@@ -2704,7 +2745,7 @@ mod tests {
         for command in catalog(Some(0), &slots).commands {
             let destructive = matches!(
                 command,
-                Command::KillPane | Command::KillWindow(_) | Command::KillSession(_)
+                Command::KillPane | Command::KillWindow { .. } | Command::KillSession(_)
             );
             let asks = command.confirmation(Some(0), &slots);
             assert_eq!(
@@ -2732,9 +2773,12 @@ mod tests {
     fn the_prompt_states_the_escalation_only_when_there_is_one() {
         // One window: killing it ends the session. Attached session "0": killing it detaches.
         let (single, _log) = slots_with(&[("main", true)], &["0", "work"], "0");
-        let last_window = Command::KillWindow("main".to_owned())
-            .confirmation(Some(0), &single)
-            .expect("a kill asks");
+        let last_window = Command::KillWindow {
+            window: WindowId(100),
+            label: "main".to_owned(),
+        }
+        .confirmation(Some(0), &single)
+        .expect("a kill asks");
         assert!(
             last_window
                 .consequence
@@ -2756,11 +2800,14 @@ mod tests {
         // Two windows, and a session this client is NOT on: nothing extra to say.
         let (several, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
         assert!(
-            Command::KillWindow("build".to_owned())
-                .confirmation(Some(0), &several)
-                .expect("a kill asks")
-                .consequence
-                .is_none(),
+            Command::KillWindow {
+                window: WindowId(101),
+                label: "build".to_owned()
+            }
+            .confirmation(Some(0), &several)
+            .expect("a kill asks")
+            .consequence
+            .is_none(),
             "a window that is not the last one carries no extra warning"
         );
         assert!(
@@ -2782,8 +2829,24 @@ mod tests {
     fn only_a_command_naming_a_destroyable_target_can_report_it_gone() {
         let (slots, _log) = slots_with(&[("main", true)], &["0"], "0");
 
-        assert!(Command::KillWindow("main".to_owned()).target_still_exists(None, &slots));
-        assert!(!Command::KillWindow("gone".to_owned()).target_still_exists(None, &slots));
+        // BY IDENTITY: the live row carries `WindowId(100)`, and `WindowId(999)` is the window a
+        // prompt outlived. A label that has moved to another window reads as GONE here, which is
+        // the whole point of the guard (R330).
+        assert!(
+            Command::KillWindow {
+                window: WindowId(100),
+                label: "main".to_owned()
+            }
+            .target_still_exists(None, &slots)
+        );
+        assert!(
+            !Command::KillWindow {
+                window: WindowId(999),
+                label: "main".to_owned()
+            }
+            .target_still_exists(None, &slots),
+            "the LABEL is still on screen and the window it named is gone",
+        );
         assert!(Command::KillSession("0".to_owned()).target_still_exists(None, &slots));
         assert!(!Command::KillSession("gone".to_owned()).target_still_exists(None, &slots));
         assert!(

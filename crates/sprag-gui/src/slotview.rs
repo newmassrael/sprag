@@ -310,15 +310,23 @@ impl SlotView {
         name
     }
 
-    /// Kill the window named `name` (tmux `kill-window`) — a tab's close affordance — answering
-    /// HOW FAR the kill cascaded.
+    /// Kill the window `window` IDENTIFIES (tmux `kill-window`) — a tab's close affordance —
+    /// answering HOW FAR the kill cascaded.
     ///
     /// The session's last window ends the session, and that is exactly what the answer is for: it
     /// is the one outcome of this gesture a re-read cannot report, because what would answer the
     /// question is the thing that went.
+    ///
+    /// Addressed by IDENTITY and there is no name-taking door beside it: this client decides WHICH
+    /// window at row-paint time and asks the person to confirm before it acts, so a name would be a
+    /// fact about the past used to destroy something. See
+    /// [`sprag_host::HostClient::kill_window`].
     #[must_use = "a window kill that took the SESSION is not something a repaint tells anybody"]
-    pub(crate) fn kill_window(&self, name: &str) -> Option<sprag_terminal::Ended> {
-        let ended = self.host.kill_window(name);
+    pub(crate) fn kill_window(
+        &self,
+        window: sprag_terminal::WindowId,
+    ) -> Option<sprag_terminal::Ended> {
+        let ended = self.host.kill_window(window);
         self.reseed_pane_focus();
         ended
     }
@@ -1284,7 +1292,7 @@ mod tests {
         fn new_window(&self) -> String {
             String::new()
         }
-        fn kill_window(&self, _name: &str) -> Option<sprag_terminal::Ended> {
+        fn kill_window(&self, _window: sprag_terminal::WindowId) -> Option<sprag_terminal::Ended> {
             None
         }
         /// These fixtures exercise slot ROUTING, not renaming — refused honestly rather than

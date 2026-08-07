@@ -858,6 +858,25 @@ mod tests {
     use crate::command::catalog;
     use crate::terminal::seed_terminal;
 
+    /// The `KillWindow` command a person would get by clicking the row for the window NAMED `name`
+    /// — resolved through the live list, so the test carries the identity the surface carries.
+    ///
+    /// A helper rather than a literal id because these fixtures make their windows through the
+    /// host: what a test wants to say is *"the window I just made"*, and R330 made that an identity.
+    fn kill_of(slots: &crate::slotview::SlotView, name: &str) -> Command {
+        let window = slots
+            .windows()
+            .into_iter()
+            .find(|row| row.name == name)
+            .expect("the window is in the live list");
+        Command::KillWindow {
+            window: window
+                .id
+                .expect("the in-process host publishes an identity"),
+            label: window.name,
+        }
+    }
+
     /// A long-lived `cat` pane (holds its PTY open across the drive), the deterministic pane the
     /// other reducer tests seed.
     fn cat() -> CommandBuilder {
@@ -1010,7 +1029,7 @@ mod tests {
             let before = terminal.slots.windows().len();
             assert!(before > 1, "two windows, so a kill is observable");
 
-            run_or_arm(Command::KillWindow(victim.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
 
             assert!(is_open(), "the prompt is up");
             assert_eq!(
@@ -1037,7 +1056,7 @@ mod tests {
             let victim = terminal.slots.new_window();
             let before = terminal.slots.windows().len();
 
-            run_or_arm(Command::KillWindow(victim.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
             // Move to the destructive button deliberately, as a user must.
             assert!(handle_key("ArrowRight"));
             assert_eq!(use_choice().get(), Choice::Accept);
@@ -1066,7 +1085,7 @@ mod tests {
             let victim = terminal.slots.new_window();
             let before = terminal.slots.windows().len();
 
-            run_or_arm(Command::KillWindow(victim), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
             assert!(handle_key("Enter"), "the prompt consumes the key");
 
             assert!(!is_open(), "the prompt is answered and gone");
@@ -1086,14 +1105,14 @@ mod tests {
             let victim = terminal.slots.new_window();
             let before = terminal.slots.windows().len();
 
-            run_or_arm(Command::KillWindow(victim.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
             assert!(handle_key("Escape"));
             assert!(!is_open());
             assert_eq!(use_terminal().slots.windows().len(), before);
 
             // ...and a click beside the panel, which reaches the same External through the scrim's
             // composite tag.
-            run_or_arm(Command::KillWindow(victim), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
             let mut external = external();
             external
                 .invoke(
@@ -1124,7 +1143,7 @@ mod tests {
             let victim = terminal.slots.new_window();
             let before = terminal.slots.windows().len();
 
-            run_or_arm(Command::KillWindow(victim), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
             let mut external = external();
             external
                 .invoke(
@@ -1156,7 +1175,7 @@ mod tests {
             seed_one_pane();
             let terminal = use_terminal();
             let victim = terminal.slots.new_window();
-            run_or_arm(Command::KillWindow(victim.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
 
             let mut external = external();
             let prompt = match external.query("prompt") {
@@ -1213,11 +1232,18 @@ mod tests {
             seed_one_pane();
             let terminal = use_terminal();
             let victim = terminal.slots.new_window();
-            run_or_arm(Command::KillWindow(victim.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
             assert!(is_open());
 
             // Killed out of band — another client, the CLI, or its own last pane exiting.
-            let _ = terminal.slots.kill_window(&victim);
+            let victim_id = terminal
+                .slots
+                .windows()
+                .into_iter()
+                .find(|row| row.name == victim)
+                .and_then(|row| row.id)
+                .expect("the window is in the live list");
+            let _ = terminal.slots.kill_window(victim_id);
             reconcile(&terminal.slots);
 
             assert!(
@@ -1238,7 +1264,7 @@ mod tests {
             seed_one_pane();
             let terminal = use_terminal();
             let victim = terminal.slots.new_window();
-            run_or_arm(Command::KillWindow(victim.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &victim), None, &terminal.slots);
 
             let panel = view_confirm(&Theme::dark(), (960, 600)).expect("a prompt paints");
             let text = walk_text(&panel);
@@ -1306,7 +1332,7 @@ mod tests {
             let windows = terminal.slots.windows();
             let only = windows[0].name.clone();
             // The one-window case, so there IS a consequence to fold in.
-            run_or_arm(Command::KillWindow(only.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &only), None, &terminal.slots);
             let nodes = confirm_access_nodes(Some(CONFIRM_PANEL_TAG));
             assert_eq!(nodes.len(), 3, "dialog + two answers");
 
@@ -1352,7 +1378,7 @@ mod tests {
             seed_one_pane();
             let terminal = use_terminal();
             let spare = terminal.slots.new_window();
-            run_or_arm(Command::KillWindow(spare.clone()), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &spare), None, &terminal.slots);
 
             let nodes = confirm_access_nodes(Some(CONFIRM_PANEL_TAG));
             assert_eq!(
@@ -1373,7 +1399,7 @@ mod tests {
             seed_one_pane();
             let terminal = use_terminal();
             let spare = terminal.slots.new_window();
-            run_or_arm(Command::KillWindow(spare), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &spare), None, &terminal.slots);
 
             let elsewhere = confirm_access_nodes(Some("sprag_gui.pane.0"));
             assert!(
@@ -1397,7 +1423,7 @@ mod tests {
             assert_eq!(windows.len(), 1, "the fixture has one window");
             let only = windows[0].name.clone();
 
-            run_or_arm(Command::KillWindow(only), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &only), None, &terminal.slots);
             let consequence = match external().query("consequence") {
                 Some(IntrospectValue::Text(text)) => text,
                 other => panic!("the consequence reads as text, got {other:?}"),
@@ -1410,7 +1436,7 @@ mod tests {
             // ...and with a second window there is no escalation to state.
             dismiss();
             let spare = terminal.slots.new_window();
-            run_or_arm(Command::KillWindow(spare), None, &terminal.slots);
+            run_or_arm(kill_of(&terminal.slots, &spare), None, &terminal.slots);
             assert_eq!(
                 external().query("consequence"),
                 Some(IntrospectValue::Null),

@@ -1185,6 +1185,22 @@ const NO_MATCH_LABEL: &str = "No matching command";
 #[cfg(test)]
 mod tests {
     use sprag_host::Host;
+
+    /// The `KillWindow` command a person clicking the row for the window NAMED `name` would get —
+    /// resolved through the live list, so a test carries the identity the surface carries (R330).
+    fn kill_of(slots: &crate::slotview::SlotView, name: &str) -> crate::command::Command {
+        let window = slots
+            .windows()
+            .into_iter()
+            .find(|row| row.name == name)
+            .expect("the window is in the live list");
+        crate::command::Command::KillWindow {
+            window: window
+                .id
+                .expect("the in-process host publishes an identity"),
+            label: window.name,
+        }
+    }
     use sprag_terminal::CommandBuilder;
 
     use super::*;
@@ -1526,7 +1542,11 @@ mod tests {
         Owner::new().run(|| {
             seed_one_pane();
             let victim = use_terminal().slots.new_window();
-            crate::confirm::run_or_arm(Command::KillWindow(victim), Some(0), &use_terminal().slots);
+            crate::confirm::run_or_arm(
+                kill_of(&use_terminal().slots, &victim),
+                Some(0),
+                &use_terminal().slots,
+            );
             assert!(crate::confirm::is_open(), "the prompt is up");
 
             let mut external = external();
@@ -1617,12 +1637,12 @@ mod tests {
             let frozen = use_frozen_catalog().get();
             let at = rows
                 .iter()
-                .position(|&i| frozen[i] == Command::KillWindow(victim.clone()))
+                .position(|&i| frozen[i] == kill_of(&use_terminal().slots, &victim))
                 .expect("the palette offers a kill for the new window");
             use_cursor().set(at);
 
             let activated = run_cursor_row().expect("the row activates");
-            assert_eq!(activated, Command::KillWindow(victim.clone()));
+            assert_eq!(activated, kill_of(&use_terminal().slots, &victim));
             assert!(!is_open(), "the palette closes behind the activation");
             assert!(
                 crate::confirm::is_open(),
