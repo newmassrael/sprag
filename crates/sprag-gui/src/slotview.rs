@@ -472,10 +472,21 @@ impl SlotView {
         self.host.break_pane(self.id(slot)?, name)
     }
 
-    /// Move slot `slot`'s pane into the window named `dst` (tmux `join-pane`), returning whether the
-    /// source window was closed — `None` for a hole or a refusal.
-    pub(crate) fn join_pane(&self, slot: usize, dst: &str) -> Option<bool> {
-        self.host.join_pane(self.id(slot)?, dst)
+    /// Move slot `slot`'s pane into the window `dst` IDENTIFIES (tmux `join-pane`), returning
+    /// whether the source window was closed — `None` for a hole or a refusal.
+    ///
+    /// The ONLY join a display client can perform, and there is no name-addressed twin to wrap
+    /// because R329 removed it from the trait: every join here is committed from a ROW painted at
+    /// one instant and clicked at another, so a name would be a fact about the past used as an
+    /// address. That door belongs to the `sprag join-pane` verb, where a person TYPES the name and
+    /// means whatever holds it when they press Enter.
+    /// See [`Command::JoinInto`](crate::command::Command::JoinInto).
+    pub(crate) fn join_pane_into(
+        &self,
+        slot: usize,
+        dst: sprag_terminal::WindowId,
+    ) -> Option<bool> {
+        self.host.join_pane_into(self.id(slot)?, dst)
     }
 
     /// The project governing slot `slot`'s pane — the commands its `.sprag.toml` declares. `None`

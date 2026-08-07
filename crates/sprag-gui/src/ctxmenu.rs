@@ -481,7 +481,10 @@ mod tests {
                 .get()
                 .iter()
                 .find_map(|row| match &row.command {
-                    Command::JoinInto(window) => Some(Command::JoinInto(window.clone())),
+                    Command::JoinInto { window, label } => Some(Command::JoinInto {
+                        window: *window,
+                        label: label.clone(),
+                    }),
                     _ => None,
                 })
                 .expect("the second window offers a join target");

@@ -53,7 +53,8 @@ use portable_pty::{
 use serde_json::{Value, json};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    RENAME_SESSION_ACTION, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, WINDOWS_SLOT,
+    RENAME_SESSION_ACTION, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, TREE_SLOT,
+    WINDOWS_SLOT,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -6661,6 +6662,120 @@ fn the_move_pane_key_opens_a_chooser_that_says_so_and_a_pick_moves_the_pane() {
         tui.liveness(),
         "running",
         "a move is not a departure; the client stays on the session it moved within",
+    );
+}
+
+/// Each window of `session` and how many panes it holds, off the `tree` slot — the read that can
+/// tell WHICH window a join landed in, where the windows list only says which still exist.
+fn windows_and_panes(conn: &mut HostConn, session: &str) -> Vec<(String, usize)> {
+    conn.call(
+        "scene/query",
+        json!({ "session": session, "path": mux_action_path(TREE_SLOT) }),
+    )
+    .ok()
+    .and_then(|value| value.as_array().cloned())
+    .unwrap_or_default()
+    .iter()
+    .find(|row| row["name"].as_str() == Some(session))
+    .and_then(|row| row["windows"].as_array().cloned())
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|window| {
+        Some((
+            window["name"].as_str()?.to_owned(),
+            window["panes"].as_array()?.len(),
+        ))
+    })
+    .collect()
+}
+
+/// **THE GATE for R329: a bound `join-pane` opens a chooser that says what it is FOR, and a pick
+/// puts the pane in THAT window** — driven at the shipped binary, on a real pseudoterminal.
+///
+/// # Why this exists
+///
+/// R328's own post-push debt question found that nothing pressed the key it had added: a front that
+/// never calls looks identical to one that does, which is R326's class. This round adds a binding,
+/// a wire grammar, two registry entries, a trait method and an errand, and every unit gate below
+/// proves a piece while none of them proves that pressing the key moves a pane.
+///
+/// # THREE windows, because two cannot tell a right landing from a wrong one
+///
+/// With only the source and one destination, every join — and every mis-addressed join — produces
+/// the same window list, so the gate would pass on a client that landed the pane anywhere. So the
+/// client makes TWO more windows: the focused pane is the only pane of window `2`, and `0` and `1`
+/// are both offerable. `ArrowDown` walks the cursor from the first offered room to the second, and
+/// the end state names which one took the pane.
+///
+/// That is also what pins `Errand::accepts` end to end: the cursor steps over the SESSION row, the
+/// pane rows and window `2` itself, so one press of `ArrowDown` moving it from `0` to `1` is only
+/// true if the rows between them are unpickable.
+///
+/// # What this gate does NOT prove, and where that is proved instead
+///
+/// It does not discriminate an identity-addressed commit from a name-addressed one: the chooser
+/// REFRESHES while it is open, so a stale label repairs itself before Enter and the two spellings
+/// agree in any fixture a pseudoterminal can hold steady. That claim is made where it is
+/// deterministic — at the registry, where the rename shuffle lands a name-addressed join in a
+/// window nobody chose, and at the GUI's menu row, which paints once and never refreshes.
+///
+/// REVERT-PROOF: drop the `ArrowDown` and the pane lands in window `0`; make `Errand::accepts`
+/// admit every row and it lands in window `0` too (the cursor stops on a pane row instead); open
+/// the errand as `Goto` and three windows survive with the header reading `(choose-tree)`.
+#[test]
+fn the_join_pane_key_opens_a_chooser_that_says_so_and_a_pick_puts_the_pane_in_that_window() {
+    let config = ConfigHome::new("[[bind]]\nkey = \"j\"\naction = \"join-pane\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    for expected in [
+        vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        vec![
+            ("0".to_owned(), false),
+            ("1".to_owned(), false),
+            ("2".to_owned(), true),
+        ],
+    ] {
+        tui.type_bytes(PREFIX);
+        tui.type_bytes(b"c");
+        wait_for("the key to make a window", || {
+            settled(windows_of(&mut conn, &session), &expected)
+        });
+    }
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"j");
+    // IT SAYS WHAT IT IS FOR — `chooser::Errand::asking()`, the canonical spelling `bind-key` takes
+    // and `list-keys` prints. Two errands paint the same rows, so opening the right list under the
+    // wrong question is a defect no end-state check can see.
+    wait_for(
+        "the chooser to open under the question it was opened for",
+        || {
+            let row = tui.row(0);
+            settled(row.contains("(join-pane)"), &true)
+                .map_err(|got| format!("{got}: row reads {row:?}"))
+        },
+    );
+
+    tui.type_bytes(&[0x1b, b'[', b'B']); // ArrowDown: from window `0`'s row to window `1`'s.
+    tui.type_bytes(b"\r");
+
+    // THE ACT, read from the DAEMON rather than from the client that asked for it: window `2` held
+    // only the mover, so the join empties and CLOSES it, and window `1` — not `0` — holds two.
+    wait_for("the pick to put the pane in the window it named", || {
+        settled(
+            windows_and_panes(&mut conn, &session),
+            &vec![("0".to_owned(), 1), ("1".to_owned(), 2)],
+        )
+    });
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "a join is not a departure; the client stays on the session it moved within",
     );
 }
 

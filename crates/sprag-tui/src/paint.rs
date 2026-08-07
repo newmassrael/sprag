@@ -1983,8 +1983,12 @@ mod status_tests {
             session: session.to_owned(),
             windows: windows
                 .iter()
-                .map(|(name, current)| WindowInfo {
+                .enumerate()
+                .map(|(i, (name, current))| WindowInfo {
                     name: (*name).to_owned(),
+                    // By POSITION: this surface paints a tab strip and addresses nothing, so the
+                    // id is here only because the type carries one.
+                    id: Some(sprag_terminal::WindowId(i as u64)),
                     current: *current,
                     opened_by: None,
                 })

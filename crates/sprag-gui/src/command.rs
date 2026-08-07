@@ -78,7 +78,7 @@ use sprag_host::ProjectAction;
 use sprag_host::keymap::{BoundAction, SwitchClientAsk};
 use sprag_host::report::Report;
 use sprag_host::wire::SelectWindowAsk;
-use sprag_terminal::{OrderStep, WindowPlace};
+use sprag_terminal::{OrderStep, WindowId, WindowInfo, WindowPlace};
 
 use crate::slotview::SlotView;
 
@@ -123,8 +123,26 @@ pub(crate) enum Command {
     ZoomPane,
     /// Move the target pane into a new window of its own (tmux `break-pane`).
     BreakOut,
-    /// Move the target pane into the named window (tmux `join-pane`) — `BreakOut`'s inverse.
-    JoinInto(String),
+    /// Move the target pane into the window this row IDENTIFIES (tmux `join-pane`) — `BreakOut`'s
+    /// inverse.
+    ///
+    /// # It carries an identity AND a label, and only one of them is the address
+    ///
+    /// The row is painted when the menu opens and run when a person clicks, and between those two
+    /// instants another client can rename anything. Until R329 this arm held only the NAME, and the
+    /// name was what it sent: measured at the registry, a rename of the destination away and of a
+    /// sibling onto the freed name lands the pane in a window nobody chose, with nothing in the
+    /// answer to say so.
+    ///
+    /// So the [`WindowId`] is what crosses ([`sprag_host::HostClient::join_pane_into`]) and the string is only
+    /// what the row SAYS — `Row::label`'s split in `sprag_host::chooser`, which states the rule this
+    /// arm now follows: a label is text to read, not something to type.
+    JoinInto {
+        /// The destination window's identity — what the act is addressed to.
+        window: WindowId,
+        /// Its name AS PAINTED, for the row's own words. Never sent.
+        label: String,
+    },
     /// Create a pane in the current window (tmux `split-window`).
     NewPane,
     /// Close the target pane (tmux `kill-pane`). DESTRUCTIVE — see [`Command::confirmation`].
@@ -193,7 +211,7 @@ impl Command {
             // would be unfindable by half the users, or a second vocabulary for one fact.
             Self::ZoomPane => "Zoom pane to fill the window".to_owned(),
             Self::BreakOut => "Break pane out to a new window".to_owned(),
-            Self::JoinInto(name) => format!("Move pane to window {name}"),
+            Self::JoinInto { label, .. } => format!("Move pane to window {label}"),
             // "Split" is the word every terminal multiplexer uses for this and the one a user will
             // type; "new pane" is what it actually produces and what a query of "new" should also
             // reach. The title carries both rather than choosing.
@@ -267,7 +285,7 @@ impl Command {
             // it needs none), where every split a key can name carries a direction — advertising
             // `prefix %` here would teach a chord that does something else.
             | Self::NewPane
-            | Self::JoinInto(_)
+            | Self::JoinInto { .. }
             // A kill deliberately advertises no chord even where one exists: this column is where
             // the eye looks for a shortcut, and what a destructive row WOULD say belongs on the
             // confirmation prompt instead — the only place a consequence can be read in time to
@@ -362,7 +380,7 @@ impl Command {
             | Self::Paste
             | Self::SelectAll
             | Self::ToggleFloat
-            | Self::JoinInto(_)
+            | Self::JoinInto { .. }
             | Self::NewPane
             | Self::KillPane
             // NOT PAIRED, though `kill-session` is a binding now — `Kill window <name>`'s rule one
@@ -461,7 +479,7 @@ impl Command {
             // which is exactly why the daemon models it as a projection rather than an edit.
             | Self::ZoomPane
             | Self::BreakOut
-            | Self::JoinInto(_)
+            | Self::JoinInto { .. }
             | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
@@ -504,7 +522,7 @@ impl Command {
             | Self::ToggleFloat
             | Self::ZoomPane
             | Self::BreakOut
-            | Self::JoinInto(_)
+            | Self::JoinInto { .. }
             | Self::NewPane
             | Self::NewWindow
             | Self::SelectWindow(_)
@@ -542,7 +560,7 @@ impl Command {
             | Self::ZoomPane
             | Self::BreakOut
             // A join needs the pane it MOVES, exactly as the break it inverts does.
-            | Self::JoinInto(_)
+            | Self::JoinInto { .. }
             // A project command is DELIVERED to a pane's prompt, so it needs one as much as a paste
             // does — and the pane it needs is the one whose project declared it.
             | Self::Declared(_)
@@ -697,10 +715,12 @@ impl Command {
             // A daemon that refused and SAID WHY outranks this at `message::preferred`, so the
             // generic word never covers a stated reason — this is the sentence for the case the
             // wire never saw, a slot whose pane has gone.
-            Self::JoinInto(name) => match target.and_then(|pane| slots.join_pane(pane, name)) {
-                Some(_) => Report::on_screen(),
-                None => Report::no_pane(),
-            },
+            Self::JoinInto { window, .. } => {
+                match target.and_then(|pane| slots.join_pane_into(pane, *window)) {
+                    Some(_) => Report::on_screen(),
+                    None => Report::no_pane(),
+                }
+            }
             Self::NewPane => {
                 // No target: the pane joins the CURRENT WINDOW, and the arrangement places it (the
                 // layout reconciles against the live pane set, so nothing here says where).
@@ -939,27 +959,32 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
 
     // One row per OTHER window: going to the window you are already in is not an action.
     let windows = slots.windows();
-    let elsewhere: Vec<&str> = windows
+    let elsewhere: Vec<&WindowInfo> = windows
         .iter()
         .filter(|window| !window.current)
         .take(MAX_WINDOW_ROWS)
-        .map(|window| window.name.as_str())
         .collect();
     out.extend(
         elsewhere
             .iter()
-            .map(|name| Command::SelectWindow((*name).to_owned())),
+            .map(|window| Command::SelectWindow(window.name.clone())),
     );
     // ...and, where a pane was captured, one row per window to MOVE it into. The SAME list serves
     // both: a join's destination is any window except the one the pane already lives in, which is
     // the current one (a slot addresses a pane of the current window), and the host refuses a join
     // into the window the pane is already in anyway.
+    //
+    // A window whose identity this daemon does not publish gets a `select` row and no `join` row:
+    // going somewhere is addressed by name at the daemon, which resolves it NOW, while a join
+    // decided here would be committing a fact about the past. `WindowInfo::id` states the rule; a
+    // shorter menu is the honest shape for it.
     if target.is_some() {
-        out.extend(
-            elsewhere
-                .iter()
-                .map(|name| Command::JoinInto((*name).to_owned())),
-        );
+        out.extend(elsewhere.iter().filter_map(|window| {
+            Some(Command::JoinInto {
+                window: window.id?,
+                label: window.name.clone(),
+            })
+        }));
     }
 
     // ...and one per OTHER session, on the same terms.
@@ -1094,8 +1119,16 @@ pub(crate) fn menu_rows(slots: &SlotView) -> Vec<MenuRow> {
         .filter(|window| !window.current)
         .take(MAX_WINDOW_ROWS)
     {
+        // Same rule as the palette's rows one function up: no identity, no join row.
+        let Some(id) = window.id else { continue };
         let label = format!("Move to {}", window.name);
-        rows.push(MenuRow::new(Command::JoinInto(window.name), &label));
+        rows.push(MenuRow::new(
+            Command::JoinInto {
+                window: id,
+                label: window.name,
+            },
+            &label,
+        ));
     }
     rows
 }
@@ -1270,8 +1303,12 @@ mod tests {
         /// `Some(true)` would fill the window and never give it back, which a pane-only log
         /// could not tell from the toggle.
         zoomed: Vec<(PaneId, Option<bool>)>,
-        /// `(pane, destination window)` per join — `broken_panes`' inverse.
-        joined: Vec<(PaneId, String)>,
+        /// `(pane, destination window IDENTITY)` per join — `broken_panes`' inverse.
+        ///
+        /// The identity and not the name, because that is the whole difference the row carries: a
+        /// log of names cannot tell a join that landed where the row pointed from one that landed
+        /// on whatever had taken the label since.
+        joined: Vec<(PaneId, WindowId)>,
         /// How many panes were created (tmux `split-window`).
         new_panes: usize,
         /// The panes a kill removed — recorded, not no-op'd, for the reason the killed WINDOWS are:
@@ -1409,8 +1446,8 @@ mod tests {
                 changed: true,
             })
         }
-        fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
-            self.log.borrow_mut().joined.push((id, dst.to_owned()));
+        fn join_pane_into(&self, id: PaneId, dst: WindowId) -> Option<bool> {
+            self.log.borrow_mut().joined.push((id, dst));
             Some(true)
         }
         /// No sample: these fixtures exercise the ROUTING over a session list, not the facts a row
@@ -1570,16 +1607,37 @@ mod tests {
         current: &str,
         panes: usize,
     ) -> (SlotView, Rc<RefCell<Log>>) {
-        let log: Rc<RefCell<Log>> = Rc::default();
-        let host = CatalogHost {
-            windows: windows
+        slots_over(
+            windows
                 .iter()
-                .map(|(name, current)| WindowInfo {
+                .enumerate()
+                .map(|(i, (name, current))| WindowInfo {
                     name: (*name).to_owned(),
+                    // By POSITION, so a test can name the window it expects without reading the
+                    // fixture back — and offset, so no id equals a slot or a pane id.
+                    id: Some(WindowId(100 + i as u64)),
                     current: *current,
                     opened_by: None,
                 })
                 .collect(),
+            sessions,
+            current,
+            panes,
+        )
+    }
+
+    /// The same over windows given WHOLE — the one thing the tuple form cannot express is a window
+    /// this daemon publishes no identity for, which is the state a client meets against a daemon
+    /// older than `WindowInfo::id`.
+    fn slots_over(
+        windows: Vec<WindowInfo>,
+        sessions: &[&str],
+        current: &str,
+        panes: usize,
+    ) -> (SlotView, Rc<RefCell<Log>>) {
+        let log: Rc<RefCell<Log>> = Rc::default();
+        let host = CatalogHost {
+            windows,
             sessions: sessions.iter().map(|s| (*s).to_owned()).collect(),
             current: current.to_owned(),
             log: Rc::clone(&log),
@@ -1605,6 +1663,7 @@ mod tests {
         let host = CatalogHost {
             windows: vec![WindowInfo {
                 name: "main".to_owned(),
+                id: Some(WindowId(100)),
                 current: true,
                 opened_by: None,
             }],
@@ -1630,6 +1689,7 @@ mod tests {
         let host = CatalogHost {
             windows: vec![WindowInfo {
                 name: "main".to_owned(),
+                id: Some(WindowId(100)),
                 current: true,
                 opened_by: None,
             }],
@@ -1658,6 +1718,7 @@ mod tests {
         let host = CatalogHost {
             windows: vec![WindowInfo {
                 name: "main".to_owned(),
+                id: Some(WindowId(100)),
                 current: true,
                 opened_by: None,
             }],
@@ -2162,16 +2223,24 @@ mod tests {
     /// the second. The LOG is asserted alongside, because a report is worth nothing if the arm
     /// stopped acting to produce it.
     ///
-    /// REVERT-PROOF: put `slots.join_pane(pane, name);` + `Report::on_screen()` back and the second
-    /// row goes silent; make the arm answer a sentence unconditionally and the first row fails.
+    /// REVERT-PROOF: drop the answer and report `Report::on_screen()` unconditionally and the
+    /// second row goes silent; make the arm answer a sentence unconditionally and the first fails.
+    ///
+    /// R329: the log is asserted by IDENTITY, so an arm that sent the row's LABEL — or any window
+    /// but the one the row names — reddens here. There is no longer a name-addressed door for it to
+    /// send it through: `HostClient::join_pane` is gone, which is why that mutation does not
+    /// compile rather than merely failing.
     #[test]
     fn a_join_with_no_pane_to_move_says_so_and_a_join_that_works_stays_quiet() {
         let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0"], "0");
 
         assert_eq!(
-            Command::JoinInto("build".to_owned())
-                .run(Some(0), &slots)
-                .says(),
+            Command::JoinInto {
+                window: WindowId(101),
+                label: "build".to_owned(),
+            }
+            .run(Some(0), &slots)
+            .says(),
             None,
             "a join that happened is on the screen already; it needs no sentence",
         );
@@ -2179,17 +2248,20 @@ mod tests {
             log.borrow()
                 .joined
                 .iter()
-                .map(|(_, window)| window.as_str())
+                .map(|(_, window)| *window)
                 .collect::<Vec<_>>(),
-            ["build"],
-            "...and it really acted, into the window the row named, or the silence above means \
-             nothing",
+            [WindowId(101)],
+            "...and it really acted, into the window the row IDENTIFIED, or the silence above \
+             means nothing",
         );
 
         assert_eq!(
-            Command::JoinInto("build".to_owned())
-                .run(None, &slots)
-                .says(),
+            Command::JoinInto {
+                window: WindowId(101),
+                label: "build".to_owned(),
+            }
+            .run(None, &slots)
+            .says(),
             Some("no pane here to act on"),
             "a row pressed where there is no pane to move must not answer silence",
         );
@@ -2267,7 +2339,11 @@ mod tests {
         let _ = Command::NewWindow.run(Some(0), &slots);
         let _ = Command::BreakOut.run(Some(0), &slots);
         let _ = Command::ZoomPane.run(Some(0), &slots);
-        let _ = Command::JoinInto("build".to_owned()).run(Some(0), &slots);
+        let _ = Command::JoinInto {
+            window: WindowId(101),
+            label: "build".to_owned(),
+        }
+        .run(Some(0), &slots);
         let _ = Command::SwitchSession("work".to_owned()).run(None, &slots);
         let _ = Command::NewSession.run(None, &slots);
         let _ = Command::LastSession.run(None, &slots);
@@ -2282,8 +2358,8 @@ mod tests {
         );
         assert_eq!(
             log.joined,
-            vec![(PaneId(7), "build".to_owned())],
-            "a join carries BOTH the captured pane and the window it names"
+            vec![(PaneId(7), WindowId(101))],
+            "a join carries BOTH the captured pane and the window it IDENTIFIES"
         );
         assert_eq!(
             log.zoomed,
@@ -2332,8 +2408,67 @@ mod tests {
             !catalog(None, &slots)
                 .commands
                 .iter()
-                .any(|command| matches!(command, Command::JoinInto(_))),
+                .any(|command| matches!(command, Command::JoinInto { .. })),
             "with no pane captured there is nothing to move"
+        );
+    }
+
+    /// **A WINDOW THIS DAEMON PUBLISHES NO IDENTITY FOR IS OFFERED AS A PLACE TO GO AND NOT AS A
+    /// PLACE TO JOIN** — the branch a client meets against a daemon older than `WindowInfo::id`.
+    ///
+    /// The two rows are the whole point of the split, and they are asserted TOGETHER because either
+    /// alone is satisfied by a bug: `select-window` is addressed by NAME at the daemon, which
+    /// resolves it at the instant the row is clicked, so it is honest without an identity. A join
+    /// decided here and sent as a name is the defect this round removed. So the answer is a shorter
+    /// menu, not a fallback — and a client that dropped BOTH rows would be hiding a window that
+    /// works.
+    ///
+    /// Found by the debt sweep for *"a branch reachable only from a state no test builds"*, and
+    /// BUILT rather than registered: the standing rule.
+    ///
+    /// REVERT-PROOF: change the `window.id?` in `catalog` to an `unwrap_or(WindowId(0))` and the
+    /// first assertion fails with a row addressing window zero; drop the `select` row's
+    /// independence from the id and the second fails.
+    #[test]
+    fn a_window_with_no_published_identity_offers_no_join_row() {
+        let (slots, _log) = slots_over(
+            vec![
+                WindowInfo {
+                    name: "main".to_owned(),
+                    id: Some(WindowId(100)),
+                    current: true,
+                    opened_by: None,
+                },
+                WindowInfo {
+                    name: "old".to_owned(),
+                    id: None,
+                    current: false,
+                    opened_by: None,
+                },
+            ],
+            &["0"],
+            "0",
+            1,
+        );
+
+        let titles: Vec<String> = catalog(Some(0), &slots)
+            .commands
+            .iter()
+            .map(Command::title)
+            .collect();
+        assert!(
+            !titles.contains(&"Move pane to window old".to_owned()),
+            "a destination with no address is not offered: {titles:?}",
+        );
+        assert!(
+            titles.contains(&"Go to window old".to_owned()),
+            "...and going there still is, because the daemon resolves that name NOW: {titles:?}",
+        );
+        assert!(
+            menu_rows(&slots)
+                .iter()
+                .all(|row| !matches!(row.command, Command::JoinInto { .. })),
+            "the context menu applies the same rule, which is why it reads the same field",
         );
     }
 
