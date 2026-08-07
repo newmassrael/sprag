@@ -128,6 +128,18 @@ pub(crate) fn show_announcement(announcement: &sprag_host::report::Announcement)
     paint(&Report::said(announcement));
 }
 
+/// Say that the session under this client was DESTROYED and where it went (R326).
+///
+/// [`paint`] and not [`show`]: that door takes the GESTURE refusal mailbox on its way past, and a
+/// session destroyed by somebody else is not this client's gesture — draining that mailbox here
+/// would spend a keystroke's answer on an event no keystroke caused.
+///
+/// The sentence is [`Report::lost_session`]'s, so the two frontends cannot come to word it
+/// differently — the rule `sprag_host::report`'s own docs state.
+pub(crate) fn show_lost_session(lost: &sprag_host::wake::Lost) {
+    paint(&Report::lost_session(lost));
+}
+
 /// Clear a message that waits to be ACKNOWLEDGED — what a keystroke does to an alert.
 ///
 /// A no-op for a message on a deadline and for an empty strip, so the key path calls it

@@ -1310,6 +1310,10 @@ mod tests {
         refuses: bool,
     }
 
+    /// A catalogue fixture has no daemon and no session to lose, so it plays the wake's role by
+    /// answering nothing — the defaults, stated rather than inherited silently.
+    impl sprag_host::wake::WakeSource for CatalogHost {}
+
     impl HostClient for CatalogHost {
         fn windows(&self) -> Vec<WindowInfo> {
             self.windows.clone()

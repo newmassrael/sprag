@@ -361,7 +361,7 @@ impl SlotView {
     ///
     /// **Its own reason to exist** is the pane-set change that happens on the PAINT path, where
     /// there is no dispatch for an op-site re-seed to live in: the poll thread flags a session lost
-    /// out of band, and [`reconcile_lost_session`](Self::reconcile_lost_session) resolves it by
+    /// out of band, and the wake's own door ([`woken`](Self::woken)) resolves it by
     /// switching the client to another session — a total pane swap, reached through the host client
     /// directly rather than through [`switch_session`](Self::switch_session). No shell change can
     /// give that path a dispatch, so this is the only seam it has.
@@ -591,12 +591,17 @@ impl SlotView {
         ended
     }
 
-    /// Resolve a session lost OUT OF BAND (killed by another client / the CLI) against the
-    /// `detach-on-destroy` policy — switch-to-next or detach. A pre-view reconcile passthrough,
-    /// like [`sessions`](Self::sessions), addressed by no slot: the wire client flags the loss on
-    /// its poll thread and this runs the UI-thread switch. A no-op for the in-process host.
-    pub(crate) fn reconcile_lost_session(&self) {
-        self.host.reconcile_lost_session();
+    /// Take every duty this client's host is holding for it on a wake
+    /// ([`sprag_host::wake::Woken`]) — what somebody asked it to say, and whether the session under
+    /// it was destroyed.
+    ///
+    /// ONE door for both, addressed by no slot, and that is deliberate: a duty kept only in each
+    /// front's own frame loop is a duty one front forgets, which is exactly what happened to the
+    /// lost-session resolve on `sprag-tui` (R326). The `Woken` this answers is destructured
+    /// exhaustively by the caller, so a duty added to that type stops this frontend compiling.
+    #[must_use = "a wake's duties are what the host is HOLDING for this client"]
+    pub(crate) fn woken(&self) -> sprag_host::wake::Woken {
+        sprag_host::wake::Woken::take(&*self.host)
     }
 
     /// Switch to the LAST session — the most-recent OTHER session this client visited that is still
@@ -777,17 +782,6 @@ impl SlotView {
     /// [`crate::attention`]).
     pub(crate) fn pane_notification(&self, slot: usize) -> Option<PaneNotification> {
         self.id(slot).and_then(|id| self.host.pane_notification(id))
-    }
-
-    /// TAKE what somebody asked this client to show a person (R317) — `sprag display-message`,
-    /// routed by the daemon and collected on this client's own wake.
-    ///
-    /// Not keyed by a slot, and that is the fact it carries: a message is addressed to the CLIENT,
-    /// not to a pane or a window or even a session, so it survives a session switch and belongs to
-    /// whoever is at this keyboard rather than to what they happen to be looking at.
-    #[must_use = "TAKING a message removes it — an answer dropped here is a sentence nobody sees"]
-    pub(crate) fn take_message(&self) -> Option<sprag_host::report::Announcement> {
-        self.host.take_message()
     }
 
     /// Take the SKEW this client's own act met — a daemon too old to perform what a gesture asked
@@ -1190,6 +1184,9 @@ mod tests {
         agents: std::collections::HashMap<PaneId, PaneAgent>,
         exits: std::collections::HashMap<PaneId, PaneExit>,
     }
+
+    /// No daemon, no second client: nothing can route this fixture a message or destroy its session.
+    impl sprag_host::wake::WakeSource for FakeHost {}
 
     impl HostClient for FakeHost {
         fn pane_ids(&self) -> Vec<PaneId> {

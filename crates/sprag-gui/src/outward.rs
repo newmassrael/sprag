@@ -217,7 +217,7 @@ fn person(policy: Forward, os_focused: Option<&str>) -> Option<Person> {
 ///
 /// A message this client builds for its OWN keyboard — [`crate::message::show`], which every bound
 /// action's [`Report`](sprag_host::report::Report) ends at. Only a message that ARRIVED
-/// ([`crate::slotview::SlotView::take_message`]: somebody else's `display-message`, a pane child's
+/// ([`sprag_host::wake::Woken::said`]: somebody else's `display-message`, a pane child's
 /// own notification) is copied out. The terminal client draws the same line for the same reason and
 /// this front makes it sharper: a keystroke reached this window, so the window manager had given it
 /// focus, so the person was here to read the answer. Forwarding it would be telling somebody about

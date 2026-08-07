@@ -1134,6 +1134,35 @@ fn run() -> Result<(), Box<dyn Error>> {
         // `swap` rather than `load` + `store`: a change landing DURING the paint must leave the
         // flag set, so the next iteration repaints instead of showing a frame one behind.
         if repaint.swap(false, Ordering::AcqRel) {
+            // EVERY DUTY THIS WAKE CARRIES, TAKEN THROUGH ONE DOOR (R326's `sprag_host::wake`).
+            // Destructured EXHAUSTIVELY and with no `..`, so a duty added to `Woken` stops this
+            // front compiling — which is the whole mechanism, because the defect that wrote that
+            // type is the one four lines below: a per-wake obligation the OTHER front honoured and
+            // this one had never called at all.
+            //
+            // Measured at `6884445` on a live pty: `detach-on-destroy = "next"`, `sprag
+            // kill-session 0` from another process, and this client sat there `running` with its
+            // status row reading `[0] 0:0*` — naming a session the daemon no longer held — for as
+            // long as it was left alone. Four of the five values of that option did nothing here.
+            let sprag_host::wake::Woken {
+                lost,
+                said: announcement,
+            } = sprag_host::wake::Woken::take(&host);
+            // A DESTROYED SESSION IS NOT A LANDING THIS PERSON ASKED FOR. The status row below now
+            // names wherever the policy moved them — that half repairs itself, because `Status` is
+            // DERIVED from the host every frame. What no repaint can carry is what happened to the
+            // session they WERE on: it is gone from every list the daemon serves the instant it
+            // becomes true, so the name travels in the value or nobody ever learns it.
+            if let Some(lost) = lost {
+                let told = Message::of(
+                    &Report::lost_session(&lost),
+                    now(),
+                    display_time(keymap.options()),
+                );
+                if let Some(told) = told {
+                    message = Some(told.over(message.take(), now()));
+                }
+            }
             // ⚠ AN OPEN CHOOSER IS RE-READ ON THE SAME WAKE, and it was NOT until the debt sweep
             // asked. `Pick::refresh` had exactly one caller — the GUI's per-frame reconcile — so
             // this front's list was a PHOTOGRAPH while the other's was live, and `Pick`'s own doc
@@ -1147,14 +1176,16 @@ fn run() -> Result<(), Box<dyn Error>> {
             if let Overlay::Asking(Asking::Choose { pick, .. }) = &mut overlay {
                 pick.refresh(&host.tree(), &host.current_session());
             }
-            // WHAT SOMEBODY ELSE ASKED THIS CLIENT TO SAY (R317), taken on the same wake. It becomes
-            // a `Report` — the very type this client's own keys produce — so there is no second path
-            // by which a message reaches the row, and `over` decides between it and whatever is
-            // already up by the one rule in `sprag_host::report`.
+            // WHAT SOMEBODY ELSE ASKED THIS CLIENT TO SAY (R317), taken on the same wake — above,
+            // through the door, and AFTER the loss, so the session this copy names is the one the
+            // person is on rather than the one that just died. It becomes a `Report` — the very type
+            // this client's own keys produce — so there is no second path by which a message reaches
+            // the row, and `over` decides between it and whatever is already up by the one rule in
+            // `sprag_host::report`.
             //
             // The row is not painted here: the frame below paints it, and it reads `message` through
             // the same `showing` the whole loop does.
-            if let Some(announcement) = host.take_message() {
+            if let Some(announcement) = announcement {
                 // ⚠ THE COPY GOES OUT FIRST, and independently of whether a row is built below
                 // (R319). A person who set `display-time 0` has asked for no ROW — a decision about
                 // this screen — and a message that cannot be shown to somebody who is not here

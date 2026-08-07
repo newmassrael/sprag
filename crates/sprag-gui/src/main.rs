@@ -729,14 +729,23 @@ impl WidgetCore for TerminalViewer {
     /// the R118 rail, so the primary repaints too).
     fn reconcile_frame() {
         let terminal = use_terminal();
-        // (0) (R176) FIRST: resolve a session lost OUT OF BAND under the `detach-on-destroy` policy.
-        // When another client / the `sprag` CLI kills THIS client's attached session, the wire poll
-        // thread (which cannot switch — a UI-thread op) flags it + repaints; here, on the UI thread,
-        // we switch-to-next or detach per the policy. Runs BEFORE the slot reconcile below so a switch
-        // (which swaps the pane cache to the new session) is mapped onto slots THIS frame, not one
-        // frame late over the dead session's now-absent panes. A no-op for the in-process host and
-        // whenever no session was lost.
-        terminal.slots.reconcile_lost_session();
+        // (0) FIRST: take every duty the host is HOLDING for this client on this wake (R326's
+        // `sprag_host::wake::Woken`) — a session destroyed under it, and what somebody else asked it
+        // to say. ONE call, destructured EXHAUSTIVELY and with no `..`: a duty added to that type
+        // must stop this frontend compiling, because the defect it was written for is a front that
+        // honours one duty and silently forgets another.
+        //
+        // The LOSS is resolved before the slot reconcile below, so a switch (which swaps the pane
+        // cache to the new session) is mapped onto slots THIS frame rather than one frame late over
+        // the dead session's now-absent panes. Both are `None` for the in-process host.
+        let sprag_host::wake::Woken { lost, said } = terminal.slots.woken();
+        if let Some(lost) = lost {
+            // A DESTROY IS NOT A LANDING THE PERSON ASKED FOR (R326). Every other switch this
+            // client makes is a key somebody pressed and the session rail already answers; this one
+            // moved them while they did nothing, and what no repaint can carry is what happened to
+            // the session they WERE on — it is gone from the rail the instant it becomes true.
+            message::show_lost_session(&lost);
+        }
         // (1) Mirror the host's live pane set onto slots, then fold the delta. A slot that
         // FREED drops its floating window and resets its per-slot reactive state; the dock
         // LEAF is not touched here, because the host's arrangement is the one authority on
@@ -766,13 +775,13 @@ impl WidgetCore for TerminalViewer {
         // frame ahead of the one it was asked for.
         chooser::refresh();
         // (2d) WHAT SOMEBODY ELSE ASKED THIS CLIENT TO SAY (R317) — `sprag display-message`, taken
-        // from the mirror the wire's poll thread filled on the wake the delivery caused. It sits
-        // beside the chooser refresh for the same reason: it can change what the frame shows, so it
-        // must run before the paint rather than inside it.
+        // at (0) above through the wake's one door and SHOWN here, after the chooser refresh, for
+        // the reason it always sat here: it can change what the frame shows, so it must run before
+        // the paint rather than inside it.
         //
         // TAKEN, not read: a message is shown once, and the take is what makes reconciling twice
         // between two messages paint the first one once.
-        if let Some(announcement) = terminal.slots.take_message() {
+        if let Some(announcement) = said {
             // ...AND IT FOLLOWS THE PERSON OUT OF THE WINDOW (R319's windowed half). The strip is
             // the primary delivery and the desktop notification is a COPY, sent only when the
             // window manager says nobody is looking at any window this client owns. Both halves

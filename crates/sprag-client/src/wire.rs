@@ -679,7 +679,7 @@ fn store_session(session: &SessionMirror, name: String) {
 
 /// The one message the daemon has handed this client and its surface has not yet shown, mirrored —
 /// filled by the poll thread's collection and EMPTIED by the paint path's
-/// [`take_message`](HostClient::take_message).
+/// [`take_message`](sprag_host::wake::WakeSource::take_message).
 ///
 /// The same shape every other mirror here has, and it holds ONE value for the reason the daemon's
 /// own mailbox does: two undelivered messages are resolved by [`Announcement::over`], not queued, so
@@ -1132,7 +1132,7 @@ pub struct WireHost {
     /// Beside the session name and refreshed by the same thread, but the OPPOSITE kind of fact: a
     /// name is a level this client re-reads and can read twice harmlessly, and this is an EDGE that
     /// must be consumed exactly once. That is why the reader takes it
-    /// ([`take_message`](HostClient::take_message)) rather than reading it, and why it survives a
+    /// ([`take_message`](sprag_host::wake::WakeSource::take_message)) rather than reading it, and why it survives a
     /// session SWITCH untouched: the message was addressed to this client, not to the session it
     /// happened to be watching when somebody sent it.
     message: MessageMirror,
@@ -1158,7 +1158,8 @@ pub struct WireHost {
     /// Set by the poll thread when this client's attached session is destroyed OUT OF BAND under a
     /// SWITCH policy (another client / the `sprag` CLI killed it): the poll cannot switch (a UI-thread
     /// op), so it flags this + repaints, and the UI-thread
-    /// [`reconcile_lost_session`](HostClient::reconcile_lost_session) does the switch. Shared
+    /// [`resolve_lost_session`](sprag_host::wake::WakeSource::resolve_lost_session) does the switch,
+    /// on the one wake this client takes its duties on. Shared
     /// `Arc<AtomicBool>` (the poll thread is off-thread); swap-cleared by the reconcile and by any
     /// successful [`attach_in_place`](WireHost::attach_in_place), so a manual switch that pre-empts
     /// the reconcile can't leave
@@ -2045,31 +2046,50 @@ impl WireHost {
     /// the session that just died cannot be its answer (a dead id resolves to nothing) and neither
     /// can an impostor of that name. `Ok(None)` — nowhere to go back to — takes the fallback the
     /// policy named, which is what makes `off` "don't leave if there is somewhere to go".
-    fn follow(&self, successor: Successor) {
+    /// Answers the session it LANDED on, as the daemon named it, or [`None`] when this client is
+    /// leaving instead. R326: a plan is not a landing — every arm here has a fallback, and two of
+    /// them can end in a detach the policy did not ask for — so the only honest answer to *"where
+    /// did this client go"* is the one read back after the move, never the plan that aimed at it.
+    ///
+    /// `#[must_use]` because [`Option`] is not, which is R316's whole finding: both kill verbs below
+    /// DISCARD this, each for a reason it states, and without the attribute those discards would
+    /// look exactly like the eight that motivated [`sprag_host::report`].
+    #[must_use = "where a destroy left this client is the one fact no re-read can recover"]
+    fn follow(&self, successor: Successor) -> Option<String> {
         match successor {
-            Successor::Detach => self.quit.request_quit(),
-            Successor::Named(next) => self.switch_session(&next),
+            Successor::Detach => {
+                self.quit.request_quit();
+                None
+            }
+            Successor::Named(next) => self.switch_session_named(&next),
             Successor::LastViewed {
                 unattached,
                 fallback,
             } => match self.attach_in_place(Attaching::LastViewed { unattached }) {
-                Ok(Some(_)) => {}
-                Ok(None) => match fallback {
-                    Some(next) => self.switch_session(&next),
-                    None => self.quit.request_quit(),
-                },
+                Ok(landed @ Some(_)) => landed,
+                Ok(None) => self.follow_fallback(fallback),
                 Err(error) => {
                     tracing::warn!(
                         target: "sprag_gui::wire",
                         %error,
                         "could not go back to the last session; taking the fallback",
                     );
-                    match fallback {
-                        Some(next) => self.switch_session(&next),
-                        None => self.quit.request_quit(),
-                    }
+                    self.follow_fallback(fallback)
                 }
             },
+        }
+    }
+
+    /// A [`Successor::LastViewed`]'s fallback: the named session, or a DETACH when the policy named
+    /// none. Both of [`follow`](Self::follow)'s error arms end here, so the two cannot come to treat
+    /// "nowhere to go back to" differently.
+    fn follow_fallback(&self, fallback: Option<String>) -> Option<String> {
+        match fallback {
+            Some(next) => self.switch_session_named(&next),
+            None => {
+                self.quit.request_quit();
+                None
+            }
         }
     }
 
@@ -2303,6 +2323,42 @@ impl WireHost {
     /// it does NOT detach on a scope refusal the way the scoped window/pane reads do — a transient
     /// failure just keeps the last-known list, which the poll thread's revision-bump re-read heals.
     /// Not used for the own-session kill: that detaches, so the sidebar it would refresh is going.
+    /// Plan where this client goes when `killed` is destroyed.
+    ///
+    /// # One door, because three sites spelled the same two steps
+    ///
+    /// `kill_session`'s own-kill branch, `kill_window`'s cascade and the out-of-band resolve each
+    /// read the policy and the session list and called [`destroy_successor`]. That is the drift
+    /// shape this tree keeps paying to remove.
+    ///
+    /// # ⚠ THE LIST IS THE POLL'S MIRROR, AND ON THIS PATH IT CANNOT BE REFRESHED
+    ///
+    /// Measured at R326, and it is a defect this seam cannot close. `no-detached` is tmux's
+    /// *"switch, but never onto a session somebody else is already in"*, so its fallback
+    /// ([`first_free_other`]) turns on each session's ATTACHED count — and two facts together make
+    /// that count unreliable exactly here:
+    ///
+    /// 1. An attach bumps only the channel of the session ATTACHED TO (`window_moved`,
+    ///    `sprag_host::rpc`), so a client parked on its own session is never woken to re-read the
+    ///    count, and nothing bounds how stale it is.
+    /// 2. **It cannot be re-read at the moment of the decision.** By then `killed` is gone, this
+    ///    connection is scoped to it, and `SessionScope::resolve` refuses every `scene/query` on a
+    ///    scope it cannot resolve — including registry-WIDE slots like the session list, which need
+    ///    no live session to answer. A [`refresh_sessions`](Self::refresh_sessions) here was
+    ///    measured to fail on every run: making a failed re-read DETACH turned the occupancy case
+    ///    green and turned both switch-policy gates red, which is what said so.
+    ///
+    /// So under load a `no-detached` client can join a session another client is sitting in —
+    /// reproduced twice in five full-workspace runs against two `sprag-tui`s on two
+    /// pseudoterminals, the loser's row reading `[beta] 0:0*` with `beta` holding two clients. The
+    /// fix is that a registry-wide read must not require the reader's own session to be alive,
+    /// which is a change to how `scene/query` resolves scope and not something this client can do
+    /// from here. Recorded rather than worked around: a client that guesses a fresh list off a
+    /// stale one would be the same defect wearing a hat.
+    fn plan_successor(&self, killed: &str) -> Successor {
+        destroy_successor(detach_on_destroy(), &self.sessions(), killed)
+    }
+
     fn refresh_sessions(&self) {
         let mut conn = self.conn.borrow_mut();
         match query_sessions(&mut conn) {
@@ -2341,6 +2397,59 @@ fn ended_of(answer: &Value, ctx: &str) -> Option<Ended> {
         );
     }
     ended
+}
+
+/// The wire client is the ONLY host that plays this role for real: it is the only one with a daemon
+/// that can route a person's message to it, and the only one whose session another process can
+/// destroy while somebody is sitting in it.
+impl sprag_host::wake::WakeSource for WireHost {
+    /// Resolve a session lost OUT OF BAND (another client / the `sprag` CLI killed THIS client's
+    /// attached session) under the `detach_on_destroy` policy — the second
+    /// destroy trigger, sharing the same switch-vs-detach decision as
+    /// [`kill_session`](HostClient::kill_session)'s own-kill handling. The poll thread cannot switch
+    /// (a UI-thread op), so it sets `lost_session` + repaints; this runs on the
+    /// UI thread each frame and, when the flag is set, switches-to-next or detaches.
+    ///
+    /// Swap-claim the flag so it fires ONCE. The session mirror still lists the just-lost session —
+    /// the poll broke on the scoped-read refusal BEFORE its next registry-wide sessions re-read — so
+    /// `destroy_successor` finds it and returns a live neighbour; `None` (it was the last session,
+    /// or already gone from the mirror) detaches. `switch_session_named` joins the now-broken poll
+    /// and attaches to the neighbour (whose own commit re-clears the flag).
+    ///
+    /// COVERAGE: the end-to-end switch here and in [`kill_session`](HostClient::kill_session)'s own
+    /// branch is driven at the SHIPPED BINARIES rather than here — `sprag-tui`'s pty gate
+    /// (`a_destroyed_session_moves_the_terminal_client_and_says_so`) and `sprag-gui`'s pixel smoke
+    /// both kill this client's session out of band under `detach-on-destroy = next` and read what
+    /// the client does. It was an accepted unit-test gap until R326, and what the gap was hiding
+    /// was not a wrong switch: it was that ONE OF THE TWO FRONTS NEVER CALLED THIS AT ALL.
+    fn resolve_lost_session(&self) -> Option<sprag_host::wake::Lost> {
+        if !self.lost_session.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        // Read BEFORE the follow: the switch re-points `self.session`, so the name of the session
+        // that died is only readable up to this line. It is the half no re-read can recover — the
+        // session is gone from every list the daemon serves.
+        let was = lock_session(&self.session).clone();
+        let plan = self.plan_successor(&was);
+        // The LANDING, not the plan: `follow`'s fallbacks can end in a detach the policy did not
+        // ask for, and the daemon names where a switch actually arrived.
+        match self.follow(plan) {
+            Some(now) => Some(sprag_host::wake::Lost::Moved { was, now }),
+            None => Some(sprag_host::wake::Lost::Detached { was }),
+        }
+    }
+
+    /// TAKE the message the poll thread collected — the client-side half of the hand-off the daemon
+    /// started, and the reason both halves REMOVE rather than read.
+    ///
+    /// Served from the mirror the poll thread fills, so a surface asks for it on the reconcile it
+    /// already does and never touches the wire from the paint path.
+    // No `#[must_use]` here and none is missing: the TRAIT declares it, and an impl inherits it —
+    // the compiler rejects the attribute in this position, which is the check that the rule lives
+    // in one place.
+    fn take_message(&self) -> Option<Announcement> {
+        lock_message(&self.message).take()
+    }
 }
 
 impl HostClient for WireHost {
@@ -2664,13 +2773,41 @@ impl HostClient for WireHost {
     /// verb: killing a session's last window ends the session, and a client that asked afterwards
     /// would be asking a daemon that may have exited.
     fn kill_window(&self, name: &str) -> Option<Ended> {
+        // Plan the successor BEFORE the kill, for the reason [`kill_session`](Self::kill_session)
+        // states: `next` / `previous` and the MRU fallbacks must resolve against the session list
+        // the PERSON can see, and a cascade takes our own session out of it. Pure over the mirror,
+        // so a kill that stops at the window pays a clone and throws the plan away.
+        let me = lock_session(&self.session).clone();
+        let plan = self.plan_successor(&me);
         let params = invoke(
             &mux_action_path(KILL_WINDOW_ACTION),
             json!({ "window": name }),
         );
         let answer = self.request("scene/invoke", params, "kill_window")?;
+        let ended = ended_of(&answer, "kill_window");
+        // OUR SESSION WENT WITH THE WINDOW — take the deterministic own-kill path here rather than
+        // leaving the move to the poll thread's out-of-band flag (R326).
+        //
+        // It read as an ordinary cascade until this round put a SENTENCE on the out-of-band path,
+        // and then said the wrong thing out loud: `prefix &` answered *"the session went with it"*
+        // and, 150 ms later, *"session \"0\" was destroyed"* — a passive sentence about a destroy
+        // this very keyboard had just asked for, replacing the gesture's own answer a fifth of the
+        // way into its `display-time`. Two answers to one gesture, and the second blamed nobody
+        // while implying somebody.
+        //
+        // Following HERE fixes both halves at once: the switch happens inside the dispatch that
+        // caused it, so the status row this client paints on the very next frame already names
+        // where it landed — which is why the gesture needs no second sentence and gets none
+        // (`sprag_host::report`'s own rule that a LANDING is not a message). The poll may have
+        // flagged the loss in the gap; `follow` joins that thread on its way through and the
+        // attach clears the flag, so nothing fires twice.
+        if matches!(ended, Some(Ended::Session | Ended::Server)) {
+            // Discarded for [`kill_session`](HostClient::kill_session)'s reason, stated there.
+            let _ = self.follow(plan);
+            return ended;
+        }
         self.refresh_view();
-        ended_of(&answer, "kill_window")
+        ended
     }
 
     /// The CURRENT window's rename, sent with NO target so the daemon resolves it under its own
@@ -3076,8 +3213,7 @@ impl HostClient for WireHost {
         // For an OWN kill under a switch policy, plan the successor NOW — BEFORE the kill removes
         // `name` from the list, so `next`/`previous` and the fallbacks resolve against the list the
         // user can see. A kill of ANOTHER session never switches this client, so it plans nothing.
-        let successor =
-            is_own.then(|| destroy_successor(detach_on_destroy(), &self.sessions(), name));
+        let successor = is_own.then(|| self.plan_successor(name));
         if let Some(plan) = successor.filter(|plan| *plan != Successor::Detach) {
             // switch-to-next. STOP the poll thread BEFORE the kill so the own-kill switch is
             // DETERMINISTIC and self-contained. Killing `name` bumps the scene revision, waking the
@@ -3097,7 +3233,11 @@ impl HostClient for WireHost {
             let ended = self
                 .request("scene/invoke", params, "kill_session")
                 .and_then(|answer| ended_of(&answer, "kill_session"));
-            self.follow(plan);
+            // The landing is DISCARDED, and that is `sprag_host::report`'s rule rather than an
+            // oversight: a person who asked to kill their own session gets `ended` for how far it
+            // reached, and the status row they are looking at already names where they now are. The
+            // sentence exists for the destroy NOBODY at this keyboard asked for.
+            let _ = self.follow(plan);
             return ended;
         }
         let ended = self
@@ -3113,36 +3253,6 @@ impl HostClient for WireHost {
             self.refresh_sessions();
         }
         ended
-    }
-
-    /// Resolve a session lost OUT OF BAND (another client / the `sprag` CLI killed THIS client's
-    /// attached session) under the `detach_on_destroy` policy — the second
-    /// destroy trigger, sharing the same switch-vs-detach decision as
-    /// [`kill_session`](HostClient::kill_session)'s own-kill handling. The poll thread cannot switch
-    /// (a UI-thread op), so it sets `lost_session` + repaints; this runs on the
-    /// UI thread each frame and, when the flag is set, switches-to-next or detaches.
-    ///
-    /// Swap-claim the flag so it fires ONCE. The session mirror still lists the just-lost session —
-    /// the poll broke on the scoped-read refusal BEFORE its next registry-wide sessions re-read — so
-    /// `destroy_successor` finds it and returns a live neighbour; `None` (it was the last session,
-    /// or already gone from the mirror) detaches. `switch_session` joins the now-broken poll and
-    /// attaches to the neighbour (whose own commit re-clears the flag).
-    ///
-    /// COVERAGE: the end-to-end switch here and in [`kill_session`](HostClient::kill_session)'s own
-    /// branch is NOT unit-tested — both drive [`switch_session`](HostClient::switch_session) /
-    /// `request`, which need a live daemon. The testable pieces ARE covered (the pure
-    /// `destroy_successor` pick and the poll thread's flag+repaint), and
-    /// [`switch_session`](HostClient::switch_session) itself is live-smoke-proven (R170); this is the
-    /// same accepted live-smoke gap the session-sidebar rounds carry.
-    fn reconcile_lost_session(&self) {
-        if self.lost_session.swap(false, Ordering::AcqRel) {
-            let me = lock_session(&self.session).clone();
-            self.follow(destroy_successor(
-                detach_on_destroy(),
-                &self.sessions(),
-                &me,
-            ));
-        }
     }
 
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
@@ -3374,18 +3484,6 @@ impl HostClient for WireHost {
         self.lock_cache()
             .get(id)
             .and_then(|pane| pane.notification.clone())
-    }
-
-    /// TAKE the message the poll thread collected — the client-side half of the hand-off the daemon
-    /// started, and the reason both halves REMOVE rather than read.
-    ///
-    /// Served from the mirror the poll thread fills, so a surface asks for it on the reconcile it
-    /// already does and never touches the wire from the paint path.
-    // No `#[must_use]` here and none is missing: the TRAIT declares it, and an impl inherits it —
-    // the compiler rejects the attribute in this position, which is the check that the rule lives
-    // in one place.
-    fn take_message(&self) -> Option<Announcement> {
-        lock_message(&self.message).take()
     }
 
     /// Take the skew this client's own act met.
@@ -4605,7 +4703,8 @@ fn detach_reason(error: &io::Error) -> Option<PollEnd> {
 ///   default path stays the poll thread's own immediate quit — nothing depends on the UI reconcile.
 /// * `SessionClosed` under a SWITCH policy → the daemon lives and we have somewhere to go, but a
 ///   switch is a UI-thread op: FLAG [`lost_session`](WireHost::lost_session) and repaint, so the
-///   UI-thread [`reconcile_lost_session`](WireHost::reconcile_lost_session) performs it. Skipped
+///   UI-thread [`resolve_lost_session`](sprag_host::wake::WakeSource::resolve_lost_session)
+///   performs it, through [`Woken::take`](sprag_host::wake::Woken::take). Skipped
 ///   while WE are tearing down (`stop`) — that is our own graceful teardown, not a lost session, and
 ///   falls through to the `request_detach` that then no-ops on `stopped`.
 ///

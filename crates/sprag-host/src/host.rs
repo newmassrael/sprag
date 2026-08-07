@@ -294,7 +294,7 @@ pub struct PaneClipboardQuery {
 /// [`Host::pane_handle`] is deliberately NOT on this trait: a live [`PanePtyHandle`]
 /// cannot cross a wire, so it stays an inherent `Host` method used only to build
 /// in-process input surfaces (retired as input clients attach to the host).
-pub trait HostClient {
+pub trait HostClient: crate::wake::WakeSource {
     /// The host's live pane identities, in host order — the ONE membership source a
     /// display client reads (it maps these to its own display slots). Replaces the
     /// former `pane_count` / `occupied_slots` (slot concepts that moved to the GUI's
@@ -1185,16 +1185,6 @@ pub trait HostClient {
     #[must_use = "[`Ended::Server`] means the daemon went too, which no re-read can report"]
     fn kill_session(&self, name: &str) -> Option<Ended>;
 
-    /// Reconcile a session this client lost OUT OF BAND — killed by ANOTHER client or the `sprag`
-    /// CLI while we were attached — against the `detach-on-destroy` policy: switch to a neighbouring
-    /// session or detach. Called every frame from the pre-view reconcile, because the out-of-band
-    /// destroy is detected on the wire client's background poll thread, which cannot itself perform a
-    /// switch (a UI-thread operation) — it flags the condition and this resolves it on the UI thread.
-    ///
-    /// The in-process arm renders one default session it can never lose out of band (it has no daemon
-    /// and no second client), so the default is a NO-OP; only the wire client overrides it.
-    fn reconcile_lost_session(&self) {}
-
     /// Pane `id`'s child-reported window TITLE (`OSC 0` / `OSC 2`), or `None` if the
     /// child never set one (or `id` is absent).
     ///
@@ -1232,24 +1222,6 @@ pub trait HostClient {
         None
     }
 
-    /// TAKE whatever somebody asked this client to show a person — `sprag display-message`, routed
-    /// by the daemon and collected on the wake this client already has (R317).
-    ///
-    /// **It TAKES**, which is why it is `&self` returning an owned value rather than a read: a
-    /// message is shown once, so the second caller in one frame must get `None`. The removal has
-    /// already happened at the daemon (`client/messages` collects); this empties the client's own
-    /// side of the same hand-off, so a client that reconciles twice between two messages does not
-    /// paint the first one twice.
-    ///
-    /// Defaulted to `None` so an in-process host — a GUI hosting its own panes, a unit test — needs
-    /// no implementation: nothing attaches to those over a wire, so there is no client to address
-    /// and no daemon to route from.
-    #[must_use = "TAKING a message empties the client's own side of the hand-off — dropping the \
-                  answer loses a person's message silently, and `Option` will not say so"]
-    fn take_message(&self) -> Option<crate::report::Announcement> {
-        None
-    }
-
     /// WHY this client's own act did not happen, taken — the answer a person's gesture earned.
     ///
     /// # Two kinds, one mailbox, and the name says which
@@ -1265,7 +1237,7 @@ pub trait HostClient {
     /// no reason (a pre-PINION-PR82 daemon), a reason too long for a row, and an outcome that is not
     /// a refusal at all (`select-pane` at an edge) all land there.
     ///
-    /// # Why it is not [`take_message`](Self::take_message)
+    /// # Why it is not [`take_message`](crate::wake::WakeSource::take_message)
     ///
     /// That mailbox holds what the DAEMON routed to this client, and two things follow from that
     /// which are wrong here: the terminal front copies its contents OUT to the desktop notifier
@@ -2581,6 +2553,12 @@ pub(crate) fn set_floating(
     }
     reconciled_layout(registry, scope)
 }
+
+/// The in-process host plays the wake's role by answering NOTHING, and both defaults are right for
+/// it rather than merely convenient: it has no daemon to route a person's message from, and one
+/// default session it can never lose out of band — there is no second client and no `sprag` CLI
+/// reaching it.
+impl crate::wake::WakeSource for Host {}
 
 impl HostClient for Host {
     fn pane_ids(&self) -> Vec<PaneId> {

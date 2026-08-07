@@ -88,6 +88,11 @@ pub mod vocabulary;
 // way in and no second policy site. A plain comment, not a doc comment: an outer doc here would be
 // merged with the module's own `//!` docs and resolve THEIR intra-doc links in this scope instead.
 mod upload;
+// What the host hands a client on a WAKE, as ONE closed set taken through one door — written
+// because a per-wake duty kept only in each front's own loop is a duty one front forgets, which is
+// what `detach-on-destroy`'s four switch policies did on `sprag-tui` for as long as they existed
+// (R326).
+pub mod wake;
 pub mod window;
 pub mod wire;
 pub mod workspace;

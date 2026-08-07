@@ -881,6 +881,9 @@ mod tests {
         killed: Rc<RefCell<Vec<String>>>,
     }
 
+    /// No daemon, no second client: nothing can route this fixture a message or destroy its session.
+    impl sprag_host::wake::WakeSource for RecordingHost {}
+
     impl HostClient for RecordingHost {
         /// No sample: these fixtures exercise the ROUTING over a session list, not the facts a row
         /// paints. An empty reading of age zero is the honest "nothing sampled here" (see

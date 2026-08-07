@@ -445,6 +445,40 @@ impl Report {
         Self::at(announcement.severity, announcement.text.to_string())
     }
 
+    /// The session under this client was DESTROYED and the client was moved — *"session "0" was
+    /// destroyed; now on "beta""*.
+    ///
+    /// # Why this is the exception to *"a landing is not a message"*
+    ///
+    /// This module's own docs cut landings out of what a client says out loud, on the grounds that
+    /// both frontends paint WHERE THEY ARE permanently, so a sentence repeating it would be noise
+    /// over a fact already on screen. That argument holds for a landing the person ASKED FOR. It
+    /// does not hold here, for the reason [`crate::wake::Lost`] is a value at all: nobody pressed
+    /// anything. The screen changes under a person who did nothing, and the half that no repaint
+    /// can carry is not where they are — it is **what happened to where they were**, which is gone
+    /// from every list the moment it becomes true.
+    ///
+    /// [`Severity::Warn`], the same weight [`cascaded`](Self::cascaded) gives a kill that took more
+    /// than it was asked for, and for the same reason: a person whose session was destroyed under
+    /// them needs telling, while it is not the kind that waits to be acknowledged.
+    ///
+    /// # A client that is LEAVING says nothing
+    ///
+    /// [`Lost::Detached`](crate::wake::Lost::Detached) is [`on_screen`](Self::on_screen), and that
+    /// is a claim rather than an omission: the client has no screen left to say it on. A row
+    /// painted onto a surface that is being torn down in the same frame is a flash, not a message,
+    /// and the honest place for that sentence is the shell the client is handing the terminal back
+    /// to — a different surface, and not this one's to write.
+    pub fn lost_session(lost: &crate::wake::Lost) -> Self {
+        match lost {
+            crate::wake::Lost::Moved { was, now } => Self::at(
+                Severity::Warn,
+                format!("session {was:?} was destroyed; now on {now:?}"),
+            ),
+            crate::wake::Lost::Detached { .. } => Self::on_screen(),
+        }
+    }
+
     /// A kill that reached PAST what the person named — *"the session went with it"*.
     ///
     /// [`Report::on_screen`] when it stopped exactly where they asked, which is the common case and
@@ -663,6 +697,59 @@ mod tests {
     use crate::keymap::SwitchClientAsk;
     use crate::wire::SelectWindowAsk;
     use sprag_terminal::OrderStep;
+
+    /// A session destroyed under this client names BOTH ends: the one that went, and the one it
+    /// was moved to. The first half is the one no re-read can recover — a destroyed session is
+    /// gone from every list the daemon serves — so a sentence that named only the landing would be
+    /// telling a person something their status row already says.
+    #[test]
+    fn a_destroyed_session_is_named_along_with_where_the_client_went() {
+        let moved = crate::wake::Lost::Moved {
+            was: "work".to_owned(),
+            now: "beta".to_owned(),
+        };
+        assert_eq!(
+            Report::lost_session(&moved).says(),
+            Some("session \"work\" was destroyed; now on \"beta\""),
+        );
+        assert_eq!(
+            Report::lost_session(&moved).severity(),
+            Some(Severity::Warn)
+        );
+    }
+
+    /// A client that is LEAVING says nothing, and that is a claim rather than an omission: there is
+    /// no screen left to say it on, so a row painted here would be a flash on a surface being torn
+    /// down in the same frame.
+    #[test]
+    fn a_client_that_is_leaving_says_nothing_about_it() {
+        let detached = crate::wake::Lost::Detached {
+            was: "work".to_owned(),
+        };
+        assert_eq!(Report::lost_session(&detached).says(), None);
+    }
+
+    /// The two sentences a destroy can produce are DIFFERENT sentences, and the difference is who
+    /// did it. A gesture that cascaded says what the person's own key reached; a destroy from
+    /// elsewhere says what happened to them. Held together here so neither can drift into the
+    /// other's wording — a passive *"was destroyed"* answering a key somebody just pressed is the
+    /// 150 ms flash R326 measured and removed.
+    #[test]
+    fn a_gesture_that_cascaded_and_a_destroy_from_elsewhere_are_not_one_sentence() {
+        let cascaded = Report::cascaded(Ended::Session, Ended::Window);
+        let elsewhere = Report::lost_session(&crate::wake::Lost::Moved {
+            was: "work".to_owned(),
+            now: "beta".to_owned(),
+        });
+        assert_eq!(cascaded.says(), Some("the session went with it"));
+        assert!(
+            !cascaded
+                .says()
+                .is_some_and(|line| line.contains("destroyed")),
+            "a person's own kill is not reported to them in the passive",
+        );
+        assert_ne!(cascaded.says(), elsewhere.says());
+    }
 
     /// The measured defect, in one line: the action a live `sprag-tui` carried out silently now
     /// carries a sentence naming the session that is not there.
