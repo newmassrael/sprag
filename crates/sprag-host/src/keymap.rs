@@ -552,6 +552,28 @@ pub enum BoundAction {
         /// tmux's `-b`: the near side of the target rather than the far one.
         before: bool,
     },
+    /// `join-pane` — put the FOCUSED pane into a window the person then PICKS.
+    ///
+    /// [`MovePane`](Self::MovePane)'s sibling one level up: that one asks *beside which pane, on
+    /// which axis*, this one asks *which window*, and the arrangement appends. Together they are
+    /// the whole of what a person can mean by moving a pane, which is why they are two bindings and
+    /// not one with a mode flag.
+    ///
+    /// # It takes no flags, and that is the verb rather than an omission
+    ///
+    /// `move-pane` needs `-h|-v` because a PLACE has an axis. A room does not: `join-pane` appends
+    /// where the destination's own arrangement puts it, exactly as the CLI verb and tmux's do. So
+    /// the canonical spelling is the bare word, and a flag on it is refused rather than ignored.
+    ///
+    /// # What had to be built first, and it was not the chooser
+    ///
+    /// The window chooser has existed since R315 and its pick has carried a
+    /// [`WindowId`](sprag_terminal::WindowId) all along. What made this verb unbindable was the
+    /// ADDRESS on the other end: `join_pane` took the destination window's NAME, so committing a
+    /// pick meant sending the row's label — text a person reads, standing in for an address, after
+    /// the list has already gone stale. Measured at the registry, that lands the join in a window
+    /// nobody chose.
+    JoinPane,
     /// `select-pane -t :.+` — move focus to the next pane in paint order.
     SelectNextPane,
     /// `select-pane -L|-R|-U|-D` — move to the pane ADJACENT in that direction.
@@ -978,6 +1000,9 @@ impl BoundAction {
             // see `Errand::MovePane`. It is the second arm to open a chooser and the first to open
             // one for an act other than going there.
             | Self::MovePane { .. }
+            // A LIST too, and the one that asks WHICH WINDOW — `Errand::JoinPane`. Third arm to
+            // open a chooser, second to open one for an act other than going there.
+            | Self::JoinPane
             | Self::ConfirmBefore { .. } => true,
             // The ONE arm whose answer depends on its argument, and that is what `-t` with the
             // name left off means. It also gives `confirm-before switch-client -t` its refusal for
@@ -1028,7 +1053,7 @@ impl BoundAction {
             // subject is resolved by the DAEMON (the session's active pane), while this one's
             // travels in the chooser's errand and is read when the key is pressed. A press with no
             // pane under it has nothing to move, so it asks nothing and does nothing.
-            Self::RenamePane | Self::KillPane | Self::MovePane { .. } => true,
+            Self::RenamePane | Self::KillPane | Self::MovePane { .. } | Self::JoinPane => true,
             Self::ConfirmBefore { action } => action.needs_pane(),
             // A client verb, so it acts wherever the focus is — including nowhere. A user whose
             // pointer is on the session rail must still be able to press `prefix )`.
@@ -1098,6 +1123,9 @@ impl BoundAction {
             // one moves a pane BETWEEN windows, which is where `break-pane` and `join-pane` are
             // filed and is what `sprag_host::vocabulary` says. One verb, one group, both halves.
             | Self::MovePane { .. }
+            // Its neighbour's group, and `sprag_host::vocabulary` files it there too: a join moves
+            // a pane BETWEEN windows, so what the act is about is the windows.
+            | Self::JoinPane
             | Self::RenameWindow => ActionSubject::Window,
             Self::RenameSession | Self::KillSession | Self::NewSession => ActionSubject::Session,
             // The CLIENT, with `detach-client` — see the arm's own doc. It changes no session; it
@@ -1154,6 +1182,7 @@ impl BoundAction {
             | Self::ListKeys
             | Self::SplitWindow { .. }
             | Self::MovePane { .. }
+            | Self::JoinPane
             | Self::SelectNextPane
             | Self::SelectPaneToward { .. }
             | Self::SwapPaneToward { .. }
@@ -1210,6 +1239,7 @@ impl BoundAction {
             | Self::ListKeys
             | Self::SplitWindow { .. }
             | Self::MovePane { .. }
+            | Self::JoinPane
             | Self::SelectNextPane
             | Self::SelectPaneToward { .. }
             | Self::SwapPaneToward { .. }
@@ -1505,7 +1535,14 @@ impl BoundAction {
             // `kill-session` needs a NAME (the one this client is attached to), and `new` takes an
             // optional one the daemon generates. That is the vocabulary's own rule — a keystroke
             // acts where the user is — reading as a REASON TO BIND rather than a reason to refuse.
-            "new-window" | "kill-window" | "kill-pane" | "break-pane" | "kill-session" | "new" => {
+            //
+            // R329 brought `join-pane` over on the same rule, with the second half a chooser
+            // supplies: it takes a PANE (the focused one) and a WINDOW (the row the person picks),
+            // so a binding names neither. It is the one verb here that takes no flags because the
+            // ACT has none to take — its neighbour `move-pane` needs `-h|-v` for the axis of a
+            // place, and a room has no axis.
+            "new-window" | "kill-window" | "kill-pane" | "break-pane" | "kill-session" | "new"
+            | "join-pane" => {
                 if !flags.is_empty() {
                     return Err(bad(
                         "takes no arguments (a binding acts on the session, window and pane the \
@@ -1518,6 +1555,7 @@ impl BoundAction {
                     "break-pane" => Self::BreakPane,
                     "kill-session" => Self::KillSession,
                     "new" => Self::NewSession,
+                    "join-pane" => Self::JoinPane,
                     _ => Self::KillPane,
                 })
             }
@@ -1631,6 +1669,8 @@ impl fmt::Display for BoundAction {
             Self::DetachClient => f.write_str("detach-client"),
             Self::SendPrefix => f.write_str("send-prefix"),
             Self::ListKeys => f.write_str("list-keys"),
+            // Bare, because a join has no axis to name — see the arm's own doc.
+            Self::JoinPane => f.write_str("join-pane"),
             Self::SplitWindow { dir, before } => {
                 f.write_str(match dir {
                     SplitDir::Horizontal => "split-window -h",
@@ -2886,7 +2926,7 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 25;
+    const ARMS: usize = 26;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
@@ -2922,6 +2962,7 @@ mod tests {
             BoundAction::KillSession => 22,
             BoundAction::NewSession => 23,
             BoundAction::MovePane { .. } => 24,
+            BoundAction::JoinPane => 25,
         }
     }
 
@@ -2934,6 +2975,7 @@ mod tests {
                 dir: SplitDir::Vertical,
                 before: true,
             },
+            BoundAction::JoinPane,
             BoundAction::DetachClient,
             BoundAction::SendPrefix,
             BoundAction::ListKeys,
@@ -3227,9 +3269,14 @@ mod tests {
         );
 
         // 3. A VERB A KEYSTROKE COULD MEAN, that nobody has built a binding for. Not a refusal:
-        //    telling a user their key cannot mean `join-pane` would not be true.
-        let pending = BoundAction::parse("join-pane").expect_err("no binding yet");
-        assert_eq!(pending, KeyError::NoBindingYet("join-pane".to_owned()));
+        //    telling a user their key cannot mean `run` would not be true.
+        //
+        //    The example moved here when `join-pane` was BUILT (R329), which is the shape this
+        //    class of test has: the third kind of word is a shrinking set, and the day it is empty
+        //    this arm has nothing to stand on — see `the_keyboard_gap_is_what_the_table_says_it_is`
+        //    for the count it is a sample of.
+        let pending = BoundAction::parse("run").expect_err("no binding yet");
+        assert_eq!(pending, KeyError::NoBindingYet("run".to_owned()));
         assert!(
             pending.to_string().contains("does not bind it yet"),
             "{pending:?} must say the gap is sprag's, not the user's",

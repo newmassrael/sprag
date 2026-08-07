@@ -438,15 +438,16 @@ mod tests {
                 .collect()
         };
         let mut keymap = Keymap::default();
-        // THE THREE THAT SHIP UNBOUND, in the vocabulary's own order. Named rather than counted, so
-        // binding one is a change here and a fourth joining them cannot slip past as a number.
+        // THE FOUR THAT SHIP UNBOUND, in the vocabulary's own order. Named rather than counted, so
+        // binding one is a change here and a fifth joining them cannot slip past as a number.
         //
-        // `move-pane` joined them at R328 and ships unbound DELIBERATELY: tmux binds no key to it
-        // either, and a chord spent by default on a verb that opens a chooser is a chord taken from
-        // a user who may never move a pane. It is bindable, it is listed here as bindable-and-not,
-        // and `sprag list-keys` teaches the form — which is the whole difference from the state it
-        // left, where a keystroke could not mean it at all.
+        // `move-pane` joined them at R328 and `join-pane` at R329, both unbound DELIBERATELY: tmux
+        // binds a key to neither, and a chord spent by default on a verb that opens a chooser is a
+        // chord taken from a user who may never move a pane. They are bindable, they are listed
+        // here as bindable-and-not, and `sprag list-keys` teaches the forms — which is the whole
+        // difference from the state they left, where a keystroke could not mean them at all.
         let ships_unbound = vec![
+            "join-pane".to_owned(),
             "move-pane -h|-v [-b]".to_owned(),
             "new".to_owned(),
             "kill-session".to_owned(),
@@ -471,6 +472,7 @@ mod tests {
                 "kill-window".to_owned(),
                 // Between the two window verbs and the session ones, which is where the vocabulary
                 // files it — the order here is the table's, not this test's.
+                "join-pane".to_owned(),
                 "move-pane -h|-v [-b]".to_owned(),
                 "new".to_owned(),
                 "kill-session".to_owned(),
@@ -486,6 +488,7 @@ mod tests {
                 "confirm-before <action>".to_owned(),
                 "kill-pane".to_owned(),
                 "kill-window".to_owned(),
+                "join-pane".to_owned(),
                 "move-pane -h|-v [-b]".to_owned(),
                 "new".to_owned(),
                 "kill-session".to_owned(),

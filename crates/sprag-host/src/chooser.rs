@@ -89,9 +89,54 @@ pub enum Errand {
         /// tmux's `-b`: the near side of the target rather than the far one.
         before: bool,
     },
+    /// Put the pane the key was pressed on into the WINDOW picked — tmux `join-pane`.
+    ///
+    /// [`MovePane`](Self::MovePane)'s sibling one level up the tree, and the pair is the whole
+    /// vocabulary a person has for moving a pane: `move-pane` names a PLACE (beside that pane, on
+    /// that axis) and `join-pane` names a ROOM and lets the arrangement append. So this errand's
+    /// pickable rows are exactly the ones the other's are not.
+    ///
+    /// # Why this could not exist until the wire grew an identity
+    ///
+    /// Because a picked row carries a [`Target::Window`] and the `join_pane` action took the
+    /// destination window's NAME — so the only way to commit a pick was to send its LABEL, which
+    /// [`Row::label`]'s own doc forbids in as many words (*"a row is text to read, not something to
+    /// type"*). It was not a scruple: a name committed after the list was painted lands wherever
+    /// that name has got to, MEASURED at the registry as a join into a window nobody chose.
+    JoinPane {
+        /// The pane that MOVES: the focused one, resolved when the key was pressed.
+        pane: PaneId,
+        /// The window it is moving OUT of, so the surface can decline to offer the one row whose
+        /// only possible answer is a refusal (the daemon's `SameWindow`).
+        ///
+        /// DERIVED from the tree by [`Errand::join`], never spelled by a caller, and a stale one
+        /// costs only that: the offer of a row the daemon then refuses, with the daemon's own
+        /// sentence — the bound [`accepts`](Self::accepts) states for a cross-session pick.
+        from: WindowId,
+    },
 }
 
 impl Errand {
+    /// A `join-pane` errand for `pane`, with the window it lives in read off `tree`.
+    ///
+    /// [`None`] when the tree holds no such pane — a key pressed on a pane that has just exited,
+    /// which asks nothing rather than opening a chooser whose commit cannot land.
+    ///
+    /// The derivation is HERE rather than at the two frontends for the reason every other shared
+    /// decision in this module is: a source window computed by a surface is a second authority on
+    /// which rows are offerable, and it would be a different one per surface the day one of them
+    /// forgot.
+    #[must_use]
+    pub fn join(tree: &[TreeSession], pane: PaneId) -> Option<Self> {
+        tree.iter()
+            .flat_map(|session| &session.windows)
+            .find(|window| window.panes.iter().any(|row| row.id == pane))
+            .map(|window| Self::JoinPane {
+                pane,
+                from: window.id,
+            })
+    }
+
     /// Whether `row` may be PICKED for this errand — the cursor lands only on rows this admits, and
     /// [`Pick::commit`] can only ever be reached from one.
     ///
@@ -111,6 +156,10 @@ impl Errand {
             (Self::Goto, _) => true,
             (Self::MovePane { pane, .. }, Target::Pane(_, _, target)) => target.0 != pane.0,
             (Self::MovePane { .. }, _) => false,
+            // A join names a ROOM, so only window rows are acts — and not the room the pane is
+            // already in, which the daemon refuses as `SameWindow`.
+            (Self::JoinPane { from, .. }, Target::Window(_, window)) => window.0 != from.0,
+            (Self::JoinPane { .. }, _) => false,
         }
     }
 
@@ -148,6 +197,7 @@ impl Errand {
                 before: true,
                 ..
             } => "move-pane -v -b",
+            Self::JoinPane { .. } => "join-pane",
         }
     }
 }
@@ -439,6 +489,12 @@ impl Pick {
                 // answered rather than asserted, because "the surface cannot produce this" is a
                 // claim about two modules and a refusal costs nothing.
                 Target::Session(_) | Target::Window(_, _) => None,
+            },
+            // The IDENTITY is what crosses, never the label beside it — the whole reason this
+            // errand exists. Same unreachable-but-answered rule for the other two depths.
+            Errand::JoinPane { pane, .. } => match self.cursor {
+                Target::Window(_, window) => host.join_pane_into(pane, window).map(drop),
+                Target::Session(_) | Target::Pane(_, _, _) => None,
             },
         };
         done.ok_or_else(|| {
@@ -735,6 +791,77 @@ mod tests {
                 && all.iter().any(|t| matches!(t, Target::Window(..)))
                 && all.len() > landed.len(),
             "the tree holds sessions and windows the move errand stepped over: {all:?}",
+        );
+    }
+
+    /// **A JOIN OFFERS ROOMS, AND NOT THE ROOM THE PANE IS ALREADY IN** — the same thesis one level
+    /// up the tree, driven over the SAME fixture as the move above so nothing can be attributed to
+    /// the tree.
+    ///
+    /// Four claims a build could fail separately:
+    ///
+    /// 1. the source window is DERIVED from the tree by [`Errand::join`], not spelled by a caller —
+    ///    the mover sits in `alpha`'s `w0` and nothing in this test says so;
+    /// 2. every row the arrows reach is a WINDOW, where the move errand's were all panes;
+    /// 3. the pane's OWN window is not among them, the one row whose only answer is `SameWindow`;
+    /// 4. the two errands ASK different questions in words, because two identical lists with two
+    ///    meanings is not a surface a person can use.
+    ///
+    /// REVERT-PROOF: make `accepts` admit every row and 2+3 fail together; drop the `window != from`
+    /// term and 3 alone fails; have `Errand::join` return a fixed `WindowId(0)` and 3 fails while 2
+    /// passes; give both errands one `asking()` string and 4 fails alone.
+    #[test]
+    fn a_join_errand_offers_rooms_and_not_the_one_the_pane_is_in() {
+        let tree = vec![session(1, "alpha", 2), session(2, "beta", 1)];
+        let mover = PaneId(1000); // alpha's w0 pane — the one the key was pressed on.
+
+        let errand = Errand::join(&tree, mover).expect("the tree holds the pane");
+        assert_eq!(
+            errand,
+            Errand::JoinPane {
+                pane: mover,
+                from: WindowId(100),
+            },
+            "the source window is read off the tree, not handed in",
+        );
+        assert_eq!(
+            Errand::join(&tree, PaneId(9999)),
+            None,
+            "no pane, no errand"
+        );
+
+        let mut joining =
+            Pick::for_errand(&tree, "alpha", errand).expect("a window other than the pane's own");
+        let mut landed = vec![joining.cursor()];
+        while key(&mut joining, "ArrowDown") == Typed::Edited {
+            landed.push(joining.cursor());
+        }
+        assert!(
+            landed
+                .iter()
+                .all(|target| matches!(target, Target::Window(..))),
+            "a join names a ROOM, so every reachable row must be a window: {landed:?}",
+        );
+        assert!(
+            !landed.contains(&Target::Window(SessionId(1), WindowId(100))),
+            "...and never the window the pane is already in: {landed:?}",
+        );
+        assert!(
+            landed.contains(&Target::Window(SessionId(1), WindowId(101)))
+                && landed.contains(&Target::Window(SessionId(2), WindowId(200))),
+            "...while every OTHER window is offered, in this session and the next: {landed:?}",
+        );
+
+        assert_eq!(errand.asking(), "join-pane");
+        assert_ne!(
+            errand.asking(),
+            Errand::MovePane {
+                pane: mover,
+                dir: SplitDir::Horizontal,
+                before: false,
+            }
+            .asking(),
+            "two errands over one list must not ask the same question",
         );
     }
 

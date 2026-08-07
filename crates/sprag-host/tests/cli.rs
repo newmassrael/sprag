@@ -6989,9 +6989,13 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // R328 moved `move-pane` from the fourth column to the SECOND, which is the shape of closing
     // one of these: a verb sprag had not built becomes a verb whose BARE form is incomplete, like
     // `split-window` beside it. Bare `move-pane` needs `-h` or `-v`.
+    // R329 moved `join-pane` from the fourth to the FIRST, which is the other shape: a join names
+    // no axis, so its BARE form is the whole verb and `sprag bind-key F9 join-pane` is accepted
+    // outright. The two together are what the four columns are for — closing a gap can land in
+    // either of the bindable ones and only the count says which.
     assert_eq!(
         counts,
-        (14, 9, 28, 3),
+        (15, 9, 28, 2),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

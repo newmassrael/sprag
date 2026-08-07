@@ -371,6 +371,23 @@ impl Ask {
                     pick: Box::new(pick),
                 })
             }),
+            // The same shape one level up the tree (R329), and the source window is DERIVED from
+            // the tree by `Errand::join` rather than resolved here: which rows a join may be made
+            // on is the chooser's decision, and a surface computing it would be a second one.
+            //
+            // Read the tree ONCE and hand it to both, so the errand's source window and the rows it
+            // gates cannot come from two different instants.
+            //
+            // `None` is the empty tree, a pane the tree no longer holds, or — through
+            // `Errand::accepts` — a session whose only window is the pane's own: a chooser with no
+            // pickable row is not a question, `RenamePane`'s rule by a fourth route.
+            BoundAction::JoinPane => pane.and_then(|id| {
+                let tree = host.tree();
+                let errand = crate::chooser::Errand::join(&tree, id)?;
+                Pick::for_errand(&tree, &host.current_session(), errand).map(|pick| Self::Choose {
+                    pick: Box::new(pick),
+                })
+            }),
             BoundAction::ConfirmBefore { action } => {
                 let (question, consequence, verb) = confirm_question(action, host, pane);
                 Some(Self::Confirm {

@@ -40,7 +40,7 @@
 //! # The gap is countable now
 //!
 //! [`Keystroke::NotBuilt`] is the honest third answer, and it is what stops this table from lying
-//! in the other direction: `join-pane` is a verb a keystroke COULD mean, and sprag does not bind it
+//! in the other direction: `run` is a verb a keystroke COULD mean, and sprag does not bind it
 //! yet. Filing it under [`NotAKeystroke`] would be a refusal that is not true; leaving it out would
 //! put it back in the "typo" sentence. Counting them is one test
 //! ([`the_keyboard_gap_is_what_the_table_says_it_is`](self)), so the register's number is derived
@@ -541,13 +541,15 @@ impl Verb {
                 shell(Group::Window, "PANE [name] [-t SESSION]"),
                 Keystroke::Means("break-pane"),
             ),
-            // The pane is the focused one; the WINDOW is a row a person would PICK. The chooser
-            // that shows windows exists and its pick commits to one thing (`goto`), so the surface
-            // is a generalisation rather than a new view — see [`Run`](Self::Run).
+            // BINDABLE SINCE R329. The pane is the focused one; the WINDOW is a row the person
+            // PICKS, and a binding therefore names neither — `move-pane`'s shape one level up the
+            // tree. What had to be built first was not the surface but the ADDRESS: a picked row
+            // carries a window IDENTITY and this verb's action took a NAME, so committing a pick
+            // meant sending its label, which lands the join wherever that name has got to.
             Self::JoinPane => (
                 "join-pane",
                 shell(Group::Window, "PANE WINDOW [-t SESSION]"),
-                Keystroke::NotBuilt,
+                Keystroke::Means("join-pane"),
             ),
             // BINDABLE SINCE R328. The CLI form names both panes; a binding names NEITHER — the
             // mover is the focused pane and the target is a row the person PICKS, which is what
@@ -1016,7 +1018,7 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (23, 3, 28),
+            (24, 2, 28),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
@@ -1029,7 +1031,7 @@ mod tests {
             .collect();
         assert_eq!(
             pending,
-            ["run", "resize-window", "join-pane"],
+            ["run", "resize-window"],
             "the keyboard's remaining gap, by name",
         );
     }

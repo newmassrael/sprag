@@ -896,6 +896,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                         // holding no OTHER pane to move beside — both are the same shape:
                         // a question with nothing to ask about (R328).
                         | BoundAction::MovePane { .. }
+                        // ...and a `join-pane` with no pane under the key, or in a session whose
+                        // only window is the pane's own — the same shape again, one level up the
+                        // tree (R329).
+                        | BoundAction::JoinPane
                         | BoundAction::ConfirmBefore { .. },
                     ) => Report::on_screen(),
                     Command::Act(BoundAction::SelectNextPane) => {
