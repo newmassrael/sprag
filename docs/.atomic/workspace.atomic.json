@@ -12107,6 +12107,66 @@
         "`sprag list-keys` names the bindable forms and does not mention the four a keystroke could mean and sprag has not built."
       ]
     },
+    "R324": {
+      "decision_summary": "A person's gesture gets an answer and a poll does not shout: a client whose daemon cannot act says so, in the words every other front uses",
+      "changes_bullets": [
+        "DEBT PAID, MEASURED FIRST: item 48's last open bullet said a RUNNING display client \"still SWALLOWS a skew\" and filed the remedy as a surface decision. Driven against a daemon that serves every read and knows no verb, `prefix c` on a live `sprag-tui` created no window and left the status row unchanged -- a person's gesture, answered with nothing.",
+        "The policy taken is: a person's GESTURE gets an answer, and a poll does not shout. `WireHost::request` -- the one place a wire failure is handled -- turns an unknown-ACTION fault into the sentence the shell already shows, and a client's own act is where it is taken.",
+        "⚠ The discriminator is the FAULT and not the method, which is a CORRECTION the revert-proof made rather than the design's claim: mutating the method test alone left every assertion green, because `UnknownInvokePath` can only come from an invoke.",
+        "It is NOT the message mailbox: that holds what the DAEMON routed, is copied out to the desktop notifier, and is drained on a wake -- and a daemon too old to act bumps no channel, so the wake never comes. A mirror of its own, taken by the path that caused it.",
+        "The second debt in the same item -- \"THE REFUSING PEER IS SPELLED FOUR TIMES\" -- is paid too, and paying it is what made the measurement possible: `sprag-peer` is a DEV-ONLY crate holding the policy as DATA (missing slots / missing actions / missing these addresses), where four hand-written stand-ins had drifted into three different ideas of what \"older\" means.",
+        "The two skew fault strings now live in `sprag-rpc` beside the code they are matched against, and the skew sentence is one `SKEW_REMEDY` const, tightened so the same words fit a shell AND a status row -- the old one came to 215 bytes for a 200-byte cap, which would have meant two sentences for one situation."
+      ],
+      "verification_bullets": [
+        "Suite exit 0 / 49 targets / 2306 passed (from 2298 / 46); clippy 0 with no suppression; doc gate 0; headless pixel smoke 260 passed / 0 failed, twice consecutively.",
+        "Seven mutations RED: the seam no longer storing (two fronts red together), the policy widened to reads, the terminal front's take dropped, the strip's ranking inverted, the shared peer refusing nothing (its own gate and the CLI sweep red together), and the row sentence's fallback removed.",
+        "⚠ TWO OF THE CONTROLS COULD NOT FAIL AS FIRST CUT and were re-cut: the read-half control survived a mutation of the method test (the fault is the real discriminator), and the fallback mutation did not apply at all until its anchor was re-read after `cargo fmt`.",
+        "⚠ THE PROBE THAT OPENED THE ROUND WAS WRONG BEFORE IT WAS RIGHT: it watched for \"does not serve\", which is the READING half's sentence, while the acting half says \"does not perform\" -- so it timed out against a working fix. The transport-level gate is what said the fix worked.",
+        "Both halves of the policy are gated at the transport (`sprag-client/tests/skew.rs`), with non-vacuous controls: the acting gate asserts nothing was created and that the report is taken exactly once, and the read gate asserts the same read SUCCEEDS against the daemon itself.",
+        "The positive half is gated LIVE on a pseudoterminal: a real `sprag-tui`, a real daemon behind a proxy, `prefix c`, and the sentence on the status row with no variant name in it.",
+        "The fixture's own discovery, recorded: a client BOOTS by creating a session and by reading its windows, panes and layout, so a peer missing any of those never lets one start. The gate attaches instead, and refuses one LATE address."
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "The GUI's drain has NO LIVE DRIVER. Its seam is one call in `message::show` and the ranking rule beneath it is unit-tested, but no live GUI meets an old daemon: the pixel smoke boots its own client against its own daemon, and putting the peer in front would make a DEV-ONLY crate a dependency of a shipped binary. Closing it means the smoke spawning a peer PROCESS, which needs a peer binary that is not dev-only -- a workspace decision, not a fix.",
+        "A KEY WHOSE ACT IS A READ still gets no sentence. `choose-tree` against a daemon missing the tree address opens an empty chooser, which is the policy's honest edge: the discriminator is the fault, and a read's fault is the poll's business. What a person sees is an empty list rather than a refusal.",
+        "`HostClient::kill_session` and `kill_window` still return `()`, so a kill that the daemon REFUSES for its own reasons (not a skew) is still unreportable. R316's shape, in two more methods.",
+        "The four `Missing` shapes are what four hand-written peers between them expressed; a fifth kind of \"older\" (a daemon that answers a slot with the WRONG SHAPE) is expressible by nothing here, and is the skew a protocol bump exists for.",
+        "`sprag-peer`'s proxy holds one upstream connection per client connection and pumps both ways; a test that opened many would spawn many threads. Fine for the four gates that use it, unbounded by nothing."
+      ],
+      "publishable_decision_summary": "A person's gesture gets an answer and a poll does not shout: a client whose daemon cannot act says so, in the words every other front uses",
+      "publishable_changes_bullets": [
+        "DEBT PAID, MEASURED FIRST: item 48's last open bullet said a RUNNING display client \"still SWALLOWS a skew\" and filed the remedy as a surface decision. Driven against a daemon that serves every read and knows no verb, `prefix c` on a live `sprag-tui` created no window and left the status row unchanged -- a person's gesture, answered with nothing.",
+        "The policy taken is: a person's GESTURE gets an answer, and a poll does not shout. `WireHost::request` -- the one place a wire failure is handled -- turns an unknown-ACTION fault into the sentence the shell already shows, and a client's own act is where it is taken.",
+        "⚠ The discriminator is the FAULT and not the method, which is a CORRECTION the revert-proof made rather than the design's claim: mutating the method test alone left every assertion green, because `UnknownInvokePath` can only come from an invoke.",
+        "It is NOT the message mailbox: that holds what the DAEMON routed, is copied out to the desktop notifier, and is drained on a wake -- and a daemon too old to act bumps no channel, so the wake never comes. A mirror of its own, taken by the path that caused it.",
+        "The second debt in the same item -- \"THE REFUSING PEER IS SPELLED FOUR TIMES\" -- is paid too, and paying it is what made the measurement possible: `sprag-peer` is a DEV-ONLY crate holding the policy as DATA (missing slots / missing actions / missing these addresses), where four hand-written stand-ins had drifted into three different ideas of what \"older\" means.",
+        "The two skew fault strings now live in `sprag-rpc` beside the code they are matched against, and the skew sentence is one `SKEW_REMEDY` const, tightened so the same words fit a shell AND a status row -- the old one came to 215 bytes for a 200-byte cap, which would have meant two sentences for one situation."
+      ],
+      "publishable_verification_bullets": [
+        "Suite exit 0 / 49 targets / 2306 passed (from 2298 / 46); clippy 0 with no suppression; doc gate 0; headless pixel smoke 260 passed / 0 failed, twice consecutively.",
+        "Seven mutations RED: the seam no longer storing (two fronts red together), the policy widened to reads, the terminal front's take dropped, the strip's ranking inverted, the shared peer refusing nothing (its own gate and the CLI sweep red together), and the row sentence's fallback removed.",
+        "⚠ TWO OF THE CONTROLS COULD NOT FAIL AS FIRST CUT and were re-cut: the read-half control survived a mutation of the method test (the fault is the real discriminator), and the fallback mutation did not apply at all until its anchor was re-read after `cargo fmt`.",
+        "⚠ THE PROBE THAT OPENED THE ROUND WAS WRONG BEFORE IT WAS RIGHT: it watched for \"does not serve\", which is the READING half's sentence, while the acting half says \"does not perform\" -- so it timed out against a working fix. The transport-level gate is what said the fix worked.",
+        "Both halves of the policy are gated at the transport (`sprag-client/tests/skew.rs`), with non-vacuous controls: the acting gate asserts nothing was created and that the report is taken exactly once, and the read gate asserts the same read SUCCEEDS against the daemon itself.",
+        "The positive half is gated LIVE on a pseudoterminal: a real `sprag-tui`, a real daemon behind a proxy, `prefix c`, and the sentence on the status row with no variant name in it.",
+        "The fixture's own discovery, recorded: a client BOOTS by creating a session and by reading its windows, panes and layout, so a peer missing any of those never lets one start. The gate attaches instead, and refuses one LATE address."
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "The GUI's drain has NO LIVE DRIVER. Its seam is one call in `message::show` and the ranking rule beneath it is unit-tested, but no live GUI meets an old daemon: the pixel smoke boots its own client against its own daemon, and putting the peer in front would make a DEV-ONLY crate a dependency of a shipped binary. Closing it means the smoke spawning a peer PROCESS, which needs a peer binary that is not dev-only -- a workspace decision, not a fix.",
+        "A KEY WHOSE ACT IS A READ still gets no sentence. `choose-tree` against a daemon missing the tree address opens an empty chooser, which is the policy's honest edge: the discriminator is the fault, and a read's fault is the poll's business. What a person sees is an empty list rather than a refusal.",
+        "`HostClient::kill_session` and `kill_window` still return `()`, so a kill that the daemon REFUSES for its own reasons (not a skew) is still unreportable. R316's shape, in two more methods.",
+        "The four `Missing` shapes are what four hand-written peers between them expressed; a fifth kind of \"older\" (a daemon that answers a slot with the WRONG SHAPE) is expressible by nothing here, and is the skew a protocol bump exists for.",
+        "`sprag-peer`'s proxy holds one upstream connection per client connection and pumps both ways; a test that opened many would spawn many threads. Fine for the four gates that use it, unbounded by nothing."
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
