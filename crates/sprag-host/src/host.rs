@@ -1002,12 +1002,33 @@ pub trait HostClient: crate::wake::WakeSource {
         None
     }
 
-    /// Move the pane `id` into the window named `dst` of the scoped session (tmux `join-pane`),
-    /// returning whether the source window was CLOSED (a join that emptied it) — or `None` if the
-    /// move was refused (`id` already lives in `dst`, no window holds `id`, or `dst` names no
-    /// window). Defaulted to `None`, like [`break_pane`](Self::break_pane).
+    /// Move the pane `id` into the window `dst` IDENTIFIES (tmux `join-pane`), returning whether
+    /// the source window was CLOSED (a join that emptied it) — or `None` if the move was refused
+    /// (`id` already lives there, no window holds `id`, or `dst` names a window that is gone).
+    ///
+    /// # The ONLY join a display client can perform, and that is the design
+    ///
+    /// There was a name-addressed twin here until R329 and it is deliberately gone. A name is the
+    /// right address for a caller who TYPED one and means whatever holds it at the instant they
+    /// press Enter — which is the `sprag join-pane` verb, and the wire action still has the arm for
+    /// it ([`crate::wire::JoinAsk::Named`]). It is the wrong address for every caller this trait
+    /// has: a display client commits a join from a ROW, painted at one instant and clicked at
+    /// another, so the name it holds is a fact about the past.
+    ///
+    /// That was MEASURED, not reasoned about — at the registry, a rename of the destination away
+    /// and of a sibling onto the freed name lands the join in a window nobody chose
+    /// (`a_join_lands_on_the_window_picked_and_a_name_lands_on_whatever_holds_it`) — and every
+    /// surface in this product was committing a name: the GUI's `Move pane to window …` row painted
+    /// one, and `join-pane` could not be bound to a key at all, because a chooser pick carries a
+    /// [`sprag_terminal::WindowId`] and there was nothing to hand it to. Removing the door is what
+    /// keeps the second half of that fix from being re-opened by the next client.
+    ///
+    /// Defaulted to [`None`] so an impl that cannot move panes need not say so twice; it collapses
+    /// the daemon's stated reason exactly as its neighbours do, which is filed rather than
+    /// pre-solved (a refused `scene/invoke` stores that sentence through R325's funnel and a display
+    /// client paints it in preference to its own word).
     #[must_use = "[`None`] is a refusal and `Some(false)` is a move that changed nothing"]
-    fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
+    fn join_pane_into(&self, id: PaneId, dst: sprag_terminal::WindowId) -> Option<bool> {
         let _ = (id, dst);
         None
     }
@@ -3146,12 +3167,12 @@ impl HostClient for Host {
         Some(crate::project::load(&cwd)?.map_err(|error| error.to_string()))
     }
 
-    /// Move the pane `id` into the window named `dst` of the default session (tmux `join-pane`),
-    /// returning whether the emptied source window was closed. `None` if refused.
-    fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
+    /// Move the pane `id` into the window `dst` identifies, in the default session — the in-process
+    /// arm of the trait method, resolving the session the way `break_pane` above does.
+    fn join_pane_into(&self, id: PaneId, dst: sprag_terminal::WindowId) -> Option<bool> {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
-        registry.join_pane(&session, id, dst).ok()
+        registry.join_pane_into(&session, id, dst).ok()
     }
 
     /// Put pane `id` beside `target` in the default session (tmux `move-pane`) — the in-process arm

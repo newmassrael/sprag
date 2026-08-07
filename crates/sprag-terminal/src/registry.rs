@@ -1201,6 +1201,15 @@ pub enum PaneMoveError {
     MalformedWindow(WindowNameError),
     /// `join-pane` with the source and destination window being the SAME one — a no-op move.
     SameWindow(String),
+    /// `join-pane` addressed by IDENTITY ([`SessionRegistry::join_pane_into`]) whose destination
+    /// window no longer exists.
+    ///
+    /// Its own arm rather than [`UnknownWindow`](Self::UnknownWindow), on that variant's own rule
+    /// one level over: `UnknownWindow` carries a NAME a caller can re-read and re-type, and an
+    /// identity cannot be mistyped. So the two sentences differ in what they ask of the person —
+    /// *check the name* against *that window is gone* — and the second is the only honest reading
+    /// of an id, which is minted once and never reused.
+    GoneWindow(WindowId),
     /// `move-pane` with the pane and the target being the SAME pane. Refused rather than answered
     /// "nothing moved", because unlike a swap this request has no reading at all: a pane cannot be
     /// placed beside itself, and the division it asks for does not exist.
@@ -1217,6 +1226,7 @@ impl std::fmt::Display for PaneMoveError {
             Self::DuplicateWindow(name) => write!(f, "a window named {name:?} already exists"),
             Self::MalformedWindow(error) => error.fmt(f),
             Self::SameWindow(name) => write!(f, "source and destination window are both {name:?}"),
+            Self::GoneWindow(id) => write!(f, "the window picked is gone (id {})", id.0),
             Self::SamePane(id) => write!(f, "cannot place pane {} beside itself", id.0),
         }
     }
@@ -1440,7 +1450,8 @@ impl WindowKillOutcome {
 }
 
 /// A window's public identity for a display client — the mux `windows` slot and the tabbed
-/// client that draws from it: the window's NAME and whether it is its session's CURRENT window.
+/// client that draws from it: the window's NAME, its IDENTITY, and whether it is its session's
+/// CURRENT window.
 ///
 /// A view over the tree, not part of it: built on demand by [`Session::window_infos`], serialised
 /// over the wire, and returned by the `HostClient` window read — one shape the wire slot, a
@@ -1449,6 +1460,23 @@ impl WindowKillOutcome {
 pub struct WindowInfo {
     /// The window's display name (a tab label).
     pub name: String,
+    /// The window's IDENTITY, for a client that has to ADDRESS it rather than print it — or
+    /// [`None`] from a daemon older than the key.
+    ///
+    /// # Why a list of tabs carries an id at all
+    ///
+    /// Because a client builds ACTS out of this list, and a name is the wrong address for an act
+    /// decided in the past. The GUI's `Move pane to window …` row was the measured case: painted
+    /// with a name, clicked a moment later, and landing wherever that name had got to. The row is
+    /// a fact about the instant the menu opened — R304's sentence, which [`crate::TreeWindow::id`]
+    /// already answers one surface over, and this list had no answer to at all.
+    ///
+    /// [`Option`] rather than a defaulted [`WindowId`], because `WindowId(0)` is a REAL window of
+    /// a live registry: a client that read an absent id as zero would address a stranger, which is
+    /// the exact class this field exists to remove. Absent means *this daemon does not publish
+    /// one*, and a client that needs an identity offers no act rather than a wrong one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<WindowId>,
     /// Whether this is the session's current window (the active tab).
     pub current: bool,
     /// The pane whose occupant ASKED for this window ([`Window::opened_by`]), or `None` for one
@@ -1745,6 +1773,7 @@ impl Session {
             .iter()
             .map(|window| WindowInfo {
                 name: window.name.clone(),
+                id: Some(window.id),
                 current: window.name == current,
                 opened_by: window.opened_by,
             })
@@ -2134,6 +2163,47 @@ impl Session {
             .iter()
             .position(|w| w.name == dst)
             .ok_or_else(|| PaneMoveError::UnknownWindow(dst.to_owned()))?;
+        self.join_pane_at(pane, dst_idx)
+    }
+
+    /// Move `pane` into the window `dst` IDENTIFIES of this session — [`join_pane`](Self::join_pane)
+    /// addressed the way a picked row is addressed.
+    ///
+    /// # Why the same move takes two addresses
+    ///
+    /// Because a caller can know two different things, and only one of them is a name. A person who
+    /// TYPES `sprag join-pane -t build` knows a name and means whatever holds it at the instant they
+    /// press Enter; a person who PICKS a row out of a list knows an identity, and the list they read
+    /// it from is a fact about the PAST (R304's sentence, which [`crate::registry`]'s chooser types
+    /// quote in full).
+    ///
+    /// Committing that pick as a NAME is what this exists to stop, and it was MEASURED rather than
+    /// reasoned about: with windows `alpha` and `beta` painted, a rename of `alpha` away and of
+    /// `beta` onto the freed name lands the join in `beta` — a window the person never chose, with
+    /// nothing anywhere in the answer to say so. A [`WindowId`] is minted once and never reused, so
+    /// the same pick lands on that window or on NOTHING, and nothing is an answer
+    /// ([`PaneMoveError::GoneWindow`]).
+    ///
+    /// Everything else is [`join_pane`](Self::join_pane)'s, including the source derivation and the
+    /// closing of a source the move emptied: the two share one implementation, so they cannot come
+    /// to disagree about what a join DOES while disagreeing about how it is addressed.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::GoneWindow`] if no window of the session carries `dst`; otherwise
+    /// [`join_pane`](Self::join_pane)'s refusals.
+    pub fn join_pane_into(&mut self, pane: PaneId, dst: WindowId) -> Result<bool, PaneMoveError> {
+        let dst_idx = self
+            .windows
+            .iter()
+            .position(|w| w.id == dst)
+            .ok_or(PaneMoveError::GoneWindow(dst))?;
+        self.join_pane_at(pane, dst_idx)
+    }
+
+    /// The join itself, once the destination has been RESOLVED — the one implementation both
+    /// addresses reach, so the move cannot differ by how the caller spelled its destination.
+    fn join_pane_at(&mut self, pane: PaneId, dst_idx: usize) -> Result<bool, PaneMoveError> {
         let src_idx = self
             .window_index_of_pane(pane)
             .ok_or(PaneMoveError::UnknownPane(pane))?;
@@ -3356,6 +3426,27 @@ impl SessionRegistry {
             .find(|s| s.name == session)
             .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
             .join_pane(pane, dst)
+    }
+
+    /// Move `pane` into the window `dst` IDENTIFIES, within the session named `session` — the
+    /// registry-level entry a PICKED destination reaches. See [`Session::join_pane_into`] for why a
+    /// join takes two addresses and which caller may use which.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneMoveError::UnknownSession`] if no session carries `session`; otherwise the refusals
+    /// [`Session::join_pane_into`] gives.
+    pub fn join_pane_into(
+        &mut self,
+        session: &str,
+        pane: PaneId,
+        dst: WindowId,
+    ) -> Result<bool, PaneMoveError> {
+        self.sessions
+            .iter_mut()
+            .find(|s| s.name == session)
+            .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
+            .join_pane_into(pane, dst)
     }
 
     /// Put `pane` beside `target` in the session named `session`, returning whether the source
@@ -5982,6 +6073,115 @@ mod tests {
             session.current_window().name(),
             "2",
             "current still names \"2\" after the list shifted down",
+        );
+    }
+
+    /// **A join lands on the window that was PICKED, and a name lands on whatever holds it now** —
+    /// the two addresses driven side by side against the one shuffle that tells them apart.
+    ///
+    /// This is R304's sentence at the third level it has bitten. The defect was MEASURED before it
+    /// was fixed, on this exact fixture: with `alpha` renamed away and `beta` renamed onto the freed
+    /// name, [`SessionRegistry::join_pane`] moved the pane into `beta` — a window the person never
+    /// chose — and every surface that commits a join was carrying a name (`Command::JoinInto`
+    /// painted one into a menu row; the wire action took nothing else).
+    ///
+    /// The name arm is asserted BESIDE it rather than dropped, because it is not the defect: a
+    /// caller who TYPES a name means whatever holds it at the instant they press Enter, and that
+    /// reading is the right one for the CLI. What was wrong was a PICK spelled as a name.
+    ///
+    /// REVERT-PROOF: point `join_pane_into` at `windows.iter().position(|w| w.name == …)` through
+    /// the label and the identity arm lands on the stranger with the name arm; make
+    /// [`Session::join_pane_into`] resolve to the FIRST window instead of the id's and both
+    /// assertions about `old` fail.
+    #[test]
+    fn a_join_lands_on_the_window_picked_and_a_name_lands_on_whatever_holds_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let src = spawn_into(&reg, "0", 3);
+        let (picked_mover, named_mover) = (src[1], src[2]);
+        reg.new_window(&default, Some("alpha"), WindowBirth::default())
+            .unwrap();
+        let in_alpha = spawn_into(&reg, "alpha", 1)[0];
+        reg.new_window(&default, Some("beta"), WindowBirth::default())
+            .unwrap();
+        let in_beta = spawn_into(&reg, "beta", 1)[0];
+
+        // The identity a person reading the row "alpha" is looking at.
+        let picked = reg
+            .session(&default)
+            .unwrap()
+            .windows()
+            .iter()
+            .find(|w| w.name() == "alpha")
+            .expect("the window was just made")
+            .id();
+
+        // Another client renames, between the paint and the pick — R304's window.
+        reg.rename_window(&default, "alpha", "old").unwrap();
+        reg.rename_window(&default, "beta", "alpha").unwrap();
+
+        assert!(!reg.join_pane_into(&default, picked_mover, picked).unwrap());
+        assert!(!reg.join_pane(&default, named_mover, "alpha").unwrap());
+
+        assert_eq!(
+            pool_ids(&reg, "old"),
+            vec![in_alpha, picked_mover],
+            "the PICK landed on the window it named, whatever it is called now",
+        );
+        assert_eq!(
+            pool_ids(&reg, "alpha"),
+            vec![in_beta, named_mover],
+            "and a typed NAME landed on whatever holds that name now",
+        );
+    }
+
+    /// A picked window that is GONE refuses, and says so as a window rather than as a name — the
+    /// answer an identity has that a name does not.
+    ///
+    /// The control is the arm above it: the same id resolves before the window is killed, so a
+    /// refusal here cannot be a fixture that never had a destination.
+    ///
+    /// REVERT-PROOF: fold `GoneWindow` into `UnknownWindow(String)` and the id is quoted as a name.
+    #[test]
+    fn a_picked_window_that_is_gone_refuses_as_a_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let a = spawn_into(&reg, "0", 2)[1];
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
+        spawn_into(&reg, "1", 1);
+        let dst = reg
+            .session(&default)
+            .unwrap()
+            .windows()
+            .iter()
+            .find(|w| w.name() == "1")
+            .expect("the window was just made")
+            .id();
+
+        // CONTROL: the id resolves while the window is there.
+        assert!(
+            reg.session(&default)
+                .unwrap()
+                .windows()
+                .iter()
+                .any(|w| w.id() == dst)
+        );
+
+        reg.kill_window(&default, "1").expect("a window closes");
+
+        assert_eq!(
+            reg.join_pane_into(&default, a, dst).unwrap_err(),
+            PaneMoveError::GoneWindow(dst),
+        );
+        assert_eq!(
+            PaneMoveError::GoneWindow(dst).to_string(),
+            format!("the window picked is gone (id {})", dst.0),
+        );
+        assert_eq!(
+            pool_ids(&reg, "0").len(),
+            2,
+            "a refusal moves nothing, this class's whole invariant",
         );
     }
 

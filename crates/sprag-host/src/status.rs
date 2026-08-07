@@ -98,6 +98,9 @@ mod tests {
     fn window(name: &str, current: bool) -> WindowInfo {
         WindowInfo {
             name: name.to_owned(),
+            // This surface prints a status line and addresses nothing; the id is here only because
+            // the type carries one.
+            id: None,
             current,
             opened_by: None,
         }

@@ -78,14 +78,14 @@ use crate::window::{SizeRequest, WindowSize};
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
     DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT,
-    GRID_WORK_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PaneProcessesWire, RELEASE_AGENT_ACTION,
-    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
-    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
+    LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PaneProcessesWire,
+    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
+    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -1948,24 +1948,36 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::String(created)))
     }
 
-    /// `join_pane {pane, window}` action: move a pane into another window of THIS request's session,
-    /// appending it as a tiled leaf — tmux `join-pane`. Answers `{closed_source}` (whether the join
-    /// emptied and closed the pane's old window).
+    /// `join_pane {pane, window}` XOR `{pane, window_id}` action: move a pane into another window of
+    /// THIS request's session, appending it as a tiled leaf — tmux `join-pane`. Answers
+    /// `{closed_source}` (whether the join emptied and closed the pane's old window).
     ///
     /// The pane's SOURCE window is derived from its id; the wire carries the pane and the
-    /// DESTINATION window's name. Whole move, under the registry lock; the revision bump wakes every
-    /// client (a closed source window drops out of their windows list on the next read).
+    /// DESTINATION — as a NAME a caller typed or as the IDENTITY a caller picked, which is
+    /// [`JoinAsk`]'s whole reason and [`crate::wire::JOIN_PANE_ACTION`]'s. Whole move, under the
+    /// registry lock; the revision bump wakes every client (a closed source window drops out of
+    /// their windows list on the next read).
+    ///
+    /// The grammar is parsed by a type rather than key by key, [`swap_pane`](Self::swap_pane)'s rule
+    /// and for its reason: no combination this parse admits needs checking again below, and the
+    /// two spellings cannot both arrive.
     fn join_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
-        let map = as_object(args)?;
-        let pane = require_pane_id(map, "pane")?;
-        let dst = map
-            .get("window")
-            .and_then(Value::as_str)
-            .ok_or(InvokeError::TypeMismatch)?
-            .to_owned();
-        let closed = lock(&self.registry)
-            .join_pane(self.scope.session(), pane, &dst)
-            .map_err(refused)?;
+        let value = match args {
+            IntrospectValue::Json(value) => value,
+            _ => return Err(InvokeError::TypeMismatch),
+        };
+        let ask = JoinAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
+        let mut registry = lock(&self.registry);
+        let closed = match &ask {
+            JoinAsk::Named { pane, window } => {
+                registry.join_pane(self.scope.session(), *pane, window)
+            }
+            JoinAsk::Picked { pane, window } => {
+                registry.join_pane_into(self.scope.session(), *pane, *window)
+            }
+        }
+        .map_err(refused)?;
+        drop(registry);
         self.announce();
         Ok(IntrospectValue::Json(
             serde_json::json!({ "closed_source": closed }),
@@ -3262,7 +3274,7 @@ mod tests {
             None,
             "the request's `name` named the WINDOW; the pane inside it is unnamed",
         );
-        let windows = answer_doc(ext.query(WINDOWS_SLOT));
+        let windows = without_ids(answer_doc(ext.query(WINDOWS_SLOT)));
         assert!(
             windows
                 .as_array()
@@ -4288,6 +4300,29 @@ mod tests {
             IntrospectValue::Raw(raw) => raw.to_value().expect("an encoded answer is valid JSON"),
             other => panic!("the slot answered a non-structural value: {other:?}"),
         }
+    }
+
+    /// The `windows` slot's rows WITHOUT their identities — for the tests whose subject is which
+    /// windows a session sees and which one is current.
+    ///
+    /// The identity is asserted by exactly one test
+    /// ([`the_windows_slot_publishes_each_windows_identity`](self)), and against the registry's own
+    /// minted value rather than a literal. Spreading it across every window test would pin an id
+    /// ALLOCATION order in six places — a number nothing promises — and none of them would then be
+    /// about what they are named for.
+    fn without_ids(value: Value) -> Value {
+        Value::Array(
+            value
+                .as_array()
+                .expect("the windows slot answers a list")
+                .iter()
+                .map(|row| {
+                    let mut row = row.as_object().expect("a window row is an object").clone();
+                    row.remove("id");
+                    Value::Object(row)
+                })
+                .collect(),
+        )
     }
 
     /// [`answer_doc`]'s sibling for the WRITE channel: the layout writes answer with the
@@ -5761,7 +5796,7 @@ mod tests {
 
         // The windows slot (read fresh) shows two, the new one current.
         assert_eq!(
-            answer_doc(ext.query(WINDOWS_SLOT)),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
             json!([
                 {"name": "0", "current": false},
                 {"name": "1", "current": true},
@@ -5804,7 +5839,7 @@ mod tests {
         );
         assert!(rev.current() > before, "a select wakes waiters to re-read");
         assert_eq!(
-            answer_doc(ext.query(WINDOWS_SLOT)),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
             json!([
                 {"name": "0", "current": true},
                 {"name": "logs", "current": false},
@@ -5868,7 +5903,7 @@ mod tests {
             "a newline would forge a row of every listing that prints a window name",
         );
         assert_eq!(
-            answer_doc(ext.query(WINDOWS_SLOT)),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
             json!([{"name": "0", "current": true}]),
             "and neither refusal touched the window, which is what makes them about the NAME",
         );
@@ -5904,7 +5939,7 @@ mod tests {
         // The rename took and "logs" kept its name; the slot reads the session fresh, so "current"
         // reflects reality ("logs", which new_window selected).
         assert_eq!(
-            answer_doc(ext.query(WINDOWS_SLOT)),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
             json!([
                 {"name": "main", "current": false},
                 {"name": "logs", "current": true},
@@ -5989,7 +6024,7 @@ mod tests {
         );
         assert!(rev.current() > before, "a window kill wakes waiters");
         assert_eq!(
-            answer_doc(ext.query(WINDOWS_SLOT)),
+            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
             json!([{"name": "0", "current": true}]),
             "logs is gone and the current fell back to the surviving window",
         );
@@ -6079,6 +6114,68 @@ mod tests {
         );
     }
 
+    /// **The `windows` slot publishes each window's IDENTITY, and a RENAME does not move it** — the
+    /// fact a client needs to address a window it painted a moment ago (R329).
+    ///
+    /// Read against the registry's own minted ids rather than literals, so this asserts the slot
+    /// SERVES the identity and not that a fixture allocates 1 and 2.
+    ///
+    /// The rename is what makes it a test of an identity rather than of a field: the row that comes
+    /// back carries a different NAME and the same id, which is precisely the pair a client needs to
+    /// tell "the window I picked" from "whatever is called that now". Every other window test here
+    /// reads through `without_ids`, so this is the only place that would notice the key going away.
+    ///
+    /// REVERT-PROOF: drop `id` from `Session::window_infos` and the first assertion sees `None`;
+    /// key it off the window's POSITION and the rename assertion still passes while a reorder
+    /// breaks it — which is why the pin is the rename and not the read alone.
+    #[test]
+    fn the_windows_slot_publishes_each_windows_identity() {
+        let reg = registry();
+        lock(&reg)
+            .new_window("0", Some("logs"), WindowBirth::default())
+            .unwrap();
+        let (mut ext, _rev) = control(&reg);
+
+        let minted: Vec<Value> = lock(&reg)
+            .session("0")
+            .expect("the default session")
+            .windows()
+            .iter()
+            .map(|window| Value::from(window.id().0))
+            .collect();
+        assert_eq!(minted.len(), 2, "two windows, two identities");
+        let served = |ext: &mut WorkspaceExternal| {
+            answer_doc(ext.query(WINDOWS_SLOT))
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|row| {
+                    (
+                        row["name"].as_str().expect("a name").to_owned(),
+                        row.get("id").cloned(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            served(&mut ext),
+            vec![
+                ("0".to_owned(), Some(minted[0].clone())),
+                ("logs".to_owned(), Some(minted[1].clone())),
+            ],
+        );
+
+        lock(&reg).rename_window("0", "logs", "archive").unwrap();
+        assert_eq!(
+            served(&mut ext),
+            vec![
+                ("0".to_owned(), Some(minted[0].clone())),
+                ("archive".to_owned(), Some(minted[1].clone())),
+            ],
+            "a rename moves the NAME and leaves the identity where it was",
+        );
+    }
+
     /// The `windows` slot is SCOPED: a session sees only its OWN windows, with the current one
     /// marked — the read a tabbed client draws from.
     #[test]
@@ -6091,14 +6188,14 @@ mod tests {
 
         let (default_ext, _d) = control(&reg);
         assert_eq!(
-            answer_doc(default_ext.query(WINDOWS_SLOT)),
+            without_ids(answer_doc(default_ext.query(WINDOWS_SLOT))),
             json!([{"name": "0", "current": true}]),
             "the default session sees only its own one window",
         );
 
         let (work, _w) = scoped_control(&reg, scope_of(&reg, "work"));
         assert_eq!(
-            answer_doc(work.query(WINDOWS_SLOT)),
+            without_ids(answer_doc(work.query(WINDOWS_SLOT))),
             json!([
                 {"name": "0", "current": false},
                 {"name": "logs", "current": true},

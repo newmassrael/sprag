@@ -2404,13 +2404,114 @@ pub const RESIZE_WINDOW_ACTION: &str = "resize_window";
 pub const BREAK_PANE_ACTION: &str = "break_pane";
 
 /// The mux control external invoke action that JOINS a pane into another window of the SCOPED
-/// session (`{pane, window}`) — tmux `join-pane`. Answers `{closed_source: bool}`.
+/// session (`{pane, window}` XOR `{pane, window_id}`) — tmux `join-pane`. Answers
+/// `{closed_source: bool}`.
 ///
-/// `pane` is the id of the pane to move (its source window is DERIVED); `window` is the DESTINATION
-/// window's name. The pane appends as a new tiled leaf; a join that empties the source window
-/// closes it (`closed_source: true`). Refused (`Rejected`) if `pane` already lives in `window`, if
-/// no window holds `pane`, or if `window` names no window.
+/// `pane` is the id of the pane to move (its source window is DERIVED); the destination is named by
+/// the grammar [`JoinAsk`]. The pane appends as a new tiled leaf; a join that empties the source
+/// window closes it (`closed_source: true`). Refused (`Rejected`) if `pane` already lives in the
+/// destination, if no window holds `pane`, or if the destination resolves to nothing.
+///
+/// # Why the destination has two spellings
+///
+/// Because a caller can know two different things and only one of them is a name — the split
+/// [`sprag_terminal::Session::join_pane_into`] states, and R304's sentence at the level a join
+/// commits. A person who TYPES a name means whatever holds it when they press Enter; a person who
+/// PICKS a row read an identity out of a list that was already a fact about the past. Spelling the
+/// second as a name was MEASURED landing a join in a window nobody chose, and it was the only
+/// spelling this action had.
+///
+/// `window_id` is ADDED, so an older daemon that never knew it refuses the request rather than
+/// dropping the key and joining somewhere — the loud half of the rule [`DETACHED_KEY`] states,
+/// which is why [`WIRE_PROTOCOL`] does not move for it.
 pub const JOIN_PANE_ACTION: &str = "join_pane";
+
+/// The REQUEST grammar of [`JOIN_PANE_ACTION`] — the destination as a type that cannot spell a name
+/// and an identity at once, nor neither.
+///
+/// [`SwapAsk`]'s shape one verb over and for its reason: the daemon [`parse`](Self::parse)s one of
+/// these and every client [`to_args`](Self::to_args) builds one, so the keys are spelled ONCE for
+/// the daemon, the CLI verb, the GUI menu and the keybinding. What is different here is what the
+/// XOR is FOR — the two arms are not two conveniences over one address but two ADDRESSES, and the
+/// type is what stops a client that holds an identity from sending the label beside it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum JoinAsk {
+    /// `{pane, window}` — append `pane` into whatever window carries that NAME right now.
+    ///
+    /// The right reading for a caller who TYPED one, and the only one available to a caller who
+    /// read a name off somewhere this daemon does not own.
+    Named {
+        /// The pane to move; its source window is derived from the id.
+        pane: PaneId,
+        /// The destination window's name, resolved at the instant the request arrives.
+        window: String,
+    },
+    /// `{pane, window_id}` — append `pane` into the window that IDENTITY names, or refuse.
+    ///
+    /// What a picked row commits ([`crate::chooser::Target::Window`]), so the pick lands on the
+    /// window the person was looking at or on nothing.
+    Picked {
+        /// The pane to move; its source window is derived from the id.
+        pane: PaneId,
+        /// The destination window's identity — minted once, never reused.
+        window: WindowId,
+    },
+}
+
+impl JoinAsk {
+    /// The request key naming the pane to move.
+    pub const PANE_KEY: &'static str = "pane";
+    /// The request key naming the destination window by NAME.
+    pub const WINDOW_KEY: &'static str = "window";
+    /// The request key naming the destination window by IDENTITY.
+    pub const WINDOW_ID_KEY: &'static str = "window_id";
+
+    /// The `args` object a client sends for this ask.
+    #[must_use]
+    pub fn to_args(&self) -> Value {
+        let mut map = Map::new();
+        let (pane, key, value) = match self {
+            Self::Named { pane, window } => (pane, Self::WINDOW_KEY, Value::from(window.clone())),
+            Self::Picked { pane, window } => (pane, Self::WINDOW_ID_KEY, Value::from(window.0)),
+        };
+        map.insert(Self::PANE_KEY.to_owned(), Value::from(pane.0));
+        map.insert(key.to_owned(), value);
+        Value::Object(map)
+    }
+
+    /// The ask an `args` value names, or [`None`] for anything this grammar does not admit —
+    /// [`SwapAsk::parse`]'s rule, including that an explicit `null` reads as ABSENT.
+    #[must_use]
+    pub fn parse(args: &Value) -> Option<Self> {
+        let map = match args {
+            Value::Object(map) => map,
+            _ => return None,
+        };
+        let field = |key: &str| map.get(key).filter(|value| !value.is_null());
+        let pane = PaneId(field(Self::PANE_KEY)?.as_u64()?);
+        let named = match field(Self::WINDOW_KEY) {
+            None => None,
+            Some(value) => Some(value.as_str()?.to_owned()),
+        };
+        let picked = match field(Self::WINDOW_ID_KEY) {
+            None => None,
+            Some(value) => Some(WindowId(value.as_u64()?)),
+        };
+        match (named, picked) {
+            (Some(window), None) => Some(Self::Named { pane, window }),
+            (None, Some(window)) => Some(Self::Picked { pane, window }),
+            _ => None,
+        }
+    }
+
+    /// The pane being moved, whichever way the destination was spelled.
+    #[must_use]
+    pub const fn pane(&self) -> PaneId {
+        match self {
+            Self::Named { pane, .. } | Self::Picked { pane, .. } => *pane,
+        }
+    }
+}
 
 /// The mux control external invoke action that PLACES an existing pane beside another
 /// (`{pane, target, dir, before?}`) — tmux `move-pane`. Answers `{closed_source: bool}`.
@@ -3376,6 +3477,59 @@ mod tests {
         assert_eq!(shapes[2].origin(), None);
     }
 
+    /// The JOIN's grammar round trips through the bytes, both addresses — the swap's rule one verb
+    /// over, and the reason one type serves the daemon that parses and the clients that build.
+    ///
+    /// The BYTES are what matters here more than the round trip: `window` and `window_id` are two
+    /// keys for one destination, and a client that spelled either its own way would be committing a
+    /// different address from the one it holds.
+    ///
+    /// REVERT-PROOF: make `Picked::to_args` emit `WINDOW_KEY` and the byte assertions fail with the
+    /// two spellings side by side; make `parse` take the first key it finds instead of refusing
+    /// both-at-once and the pair below goes green with a request that names two destinations.
+    #[test]
+    fn the_join_grammar_round_trips_through_the_bytes_it_sends() {
+        let shapes = [
+            JoinAsk::Named {
+                pane: PaneId(3),
+                window: "build".to_owned(),
+            },
+            JoinAsk::Picked {
+                pane: PaneId(3),
+                window: WindowId(7),
+            },
+        ];
+        for ask in &shapes {
+            assert_eq!(JoinAsk::parse(&ask.to_args()), Some(ask.clone()), "{ask:?}");
+            assert_eq!(ask.pane(), PaneId(3));
+        }
+        assert_eq!(shapes[0].to_args(), json!({"pane": 3, "window": "build"}));
+        assert_eq!(shapes[1].to_args(), json!({"pane": 3, "window_id": 7}));
+
+        // A NAME and an IDENTITY are two addresses, so a request carrying both names no destination
+        // this daemon can honour — and one carrying neither names none at all.
+        for refused in [
+            json!({}),
+            json!(null),
+            json!([]),
+            json!({"pane": 3}),
+            json!({"window": "build"}),
+            json!({"window_id": 7}),
+            json!({"pane": 3, "window": "build", "window_id": 7}),
+            json!({"pane": "3", "window_id": 7}),
+            json!({"pane": 3, "window_id": "7"}),
+            json!({"pane": 3, "window": 7}),
+            json!({"pane": 3, "window_id": -1}),
+        ] {
+            assert_eq!(JoinAsk::parse(&refused), None, "admitted {refused}");
+        }
+        assert_eq!(
+            JoinAsk::parse(&json!({"pane": 3, "window": "build", "window_id": null})),
+            Some(shapes[0].clone()),
+            "an explicit null is an absent key",
+        );
+    }
+
     /// Every reading the SWAP grammar does not admit — one `TypeMismatch` at the daemon, so this is
     /// the only surface that says what the set is.
     ///
@@ -3647,6 +3801,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&WindowInfo {
                 name: "0".to_owned(),
+                id: None,
                 current: true,
                 opened_by: None,
             })
@@ -3655,17 +3810,35 @@ mod tests {
             "{}",
             BUMP,
         );
-        // The CLAIMED form too. An additive `Option` that is `None` in the pinned value is
-        // INVISIBLE to this pin — so pinning only the unclaimed window would have let the new key's
-        // spelling move without a word. Found by auditing this round's own addition.
+        // The CLAIMED form too, and the IDENTIFIED one. An additive `Option` that is `None` in the
+        // pinned value is INVISIBLE to this pin — so pinning only the unclaimed window would have
+        // let the new key's spelling move without a word. Found by auditing R319's own addition,
+        // and it is why R329's `id` is pinned in both states rather than only in the absent one
+        // this daemon never serves.
         assert_eq!(
             serde_json::to_string(&WindowInfo {
                 name: "agentwork".to_owned(),
+                id: None,
                 current: false,
                 opened_by: Some(PaneId(7)),
             })
             .expect("a claimed window serialises"),
             r#"{"name":"agentwork","current":false,"opened_by":7}"#,
+            "{}",
+            BUMP,
+        );
+        // What the DAEMON actually serves: `Session::window_infos` fills the id on every row, so a
+        // client of this build never meets the two values above. They are pinned because an OLDER
+        // daemon serves them and this build's clients must keep reading them.
+        assert_eq!(
+            serde_json::to_string(&WindowInfo {
+                name: "0".to_owned(),
+                id: Some(sprag_terminal::WindowId(4)),
+                current: true,
+                opened_by: None,
+            })
+            .expect("an identified window serialises"),
+            r#"{"name":"0","id":4,"current":true}"#,
             "{}",
             BUMP,
         );

@@ -5371,9 +5371,17 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
     // Registry-wide at the daemon for [`break_pane`]'s reason: both windows are derived from the
     // pane's id, so this needs the NAME to resolve and no window narrowing.
     let pane = resolve_pane(&mut conn, Some(&session), &asked, "join-pane")?.id;
+    // The keys are the GRAMMAR's, never spelled here: `JoinAsk` is the one place this product
+    // writes `window` vs `window_id`, and a hand-built object at a fifth call site is how a client
+    // comes to send an address it does not hold. This verb is the NAME caller by design — a person
+    // typed the name and means whatever holds it when they press Enter.
+    let ask = sprag_host::wire::JoinAsk::Named {
+        pane: sprag_terminal::PaneId(pane),
+        window: window.clone(),
+    };
     let answer = invoke_action(
         &mut conn,
-        json!({ "session": session, "path": mux_action_path(JOIN_PANE_ACTION), "args": { "pane": pane, "window": window } }),
+        json!({ "session": session, "path": mux_action_path(JOIN_PANE_ACTION), "args": ask.to_args() }),
     );
     match answer {
         Ok(answer) => {

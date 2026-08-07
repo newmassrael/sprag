@@ -93,15 +93,16 @@ use sprag_host::wire::ActivityWire;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, AttachAsk, BREAK_PANE_ACTION, CLIPBOARD_ANSWER_ACTION,
     CLIPBOARD_WRITE_SLOT, CLOSE_ACTION, DROP_FILE_ACTION, ENDED_KEY, FOCUS_ACTION, FULL_TEXT_SLOT,
-    GLOBAL_COMMANDS_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
-    LAYOUT_SLOT, MOUSE_ACTION, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, PROMPT_MARKS_SLOT,
-    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, RESIZE_ACTION,
-    RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk,
-    SwapAsk, SwapHow, TEXT_ACTION, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
-    cells_slot_at, find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
+    GLOBAL_COMMANDS_SLOT, JOIN_PANE_ACTION, JoinAsk, KEY_ACTION, KILL_SESSION_ACTION,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
+    MoveWindowAsk, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
+    PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT,
+    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
+    SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, TREE_SLOT, WINDOW_SIZE_SLOT,
+    WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
+    session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -2311,6 +2312,25 @@ impl WireHost {
             .unwrap_or_else(|| GridBuffer::new(1, 1))
     }
 
+    /// Perform a join — the ONE place this client spells the `join_pane` action.
+    ///
+    /// The keys are [`JoinAsk`]'s, built by the grammar rather than by a `json!` here: a hand-built
+    /// object is the fifth-spelling shape this project has removed from `select_pane` and
+    /// `swap_pane` already, and a client that spelled `window_id` its own way would be a second
+    /// authority on which address it is sending. It takes the whole ask rather than the id so the
+    /// day a display client has an honest reason to send a NAME, the arm is added HERE and not as a
+    /// second `json!` beside this one.
+    fn join(&self, ask: &JoinAsk) -> Option<bool> {
+        let params = invoke(&mux_action_path(JOIN_PANE_ACTION), ask.to_args());
+        let answer = self
+            .request("scene/invoke", params, "join_pane")
+            .and_then(|value| value.get("closed_source").and_then(Value::as_bool));
+        if answer.is_some() {
+            self.refresh_view();
+        }
+        answer
+    }
+
     /// Re-read this client's WHOLE view — windows, panes, layout — on the UI-thread connection and
     /// adopt it, the immediate-feedback follow-up to this client's OWN window op (select / new /
     /// kill window), which changes WHICH window is current.
@@ -3068,15 +3088,14 @@ impl HostClient for WireHost {
         created
     }
 
-    /// Move the pane `id` into the window named `dst` (tmux `join-pane`) over the wire, returning
-    /// whether the source window was closed — or `None` if the daemon refused.
     /// Put pane `id` beside `target` over the wire — tmux `move-pane`, the action a chooser's pick
     /// commits to since R328.
     ///
     /// **Two pane IDENTITIES and no name**, which is why this verb was the one of the keyboard's
     /// four that needed no wire change: the action has always resolved both panes itself, so what a
-    /// person picked is what is sent. `refresh_view` on success for [`join_pane`](sprag_host::HostClient::join_pane)'s reason — the
-    /// pane SET of this client's window changed, and waiting a poll wake would paint the old one.
+    /// person picked is what is sent. `refresh_view` on success for the join arm below its reason —
+    /// the pane SET of this client's window changed, and waiting a poll wake would paint the old
+    /// one.
     fn move_pane(
         &self,
         id: PaneId,
@@ -3105,18 +3124,11 @@ impl HostClient for WireHost {
         answer
     }
 
-    fn join_pane(&self, id: PaneId, dst: &str) -> Option<bool> {
-        let params = invoke(
-            &mux_action_path(JOIN_PANE_ACTION),
-            json!({ "pane": id.0, "window": dst }),
-        );
-        let answer = self
-            .request("scene/invoke", params, "join_pane")
-            .and_then(|value| value.get("closed_source").and_then(Value::as_bool));
-        if answer.is_some() {
-            self.refresh_view();
-        }
-        answer
+    fn join_pane_into(&self, id: PaneId, dst: sprag_terminal::WindowId) -> Option<bool> {
+        self.join(&JoinAsk::Picked {
+            pane: id,
+            window: dst,
+        })
     }
 
     /// Hand a file dropped on this window to pane `id` over the wire, returning the path the pane
