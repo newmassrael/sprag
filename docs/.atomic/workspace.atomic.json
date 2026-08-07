@@ -12217,6 +12217,52 @@
         "an attempt to route a stated refusal through R324's mailbox broke two live pty gates; reverted, undiagnosed"
       ]
     },
+    "R325.1": {
+      "decision_summary": "A refused or cascading gesture is answered in the daemon's own words at both display fronts",
+      "changes_bullets": [
+        "a STATED refusal reaches both display fronts, not only a version skew",
+        "kill_window / kill_session answer Option<Ended>, the last two acting methods on ()",
+        "Report::cascaded carries Ended::beyond's clause, so no front authors one",
+        "ended_of is one reader for all three destructive verbs"
+      ],
+      "verification_bullets": [
+        "measured: prefix & killed the session, moved the person, row unchanged",
+        "after: the row reads \"the session went with it\" and the client survives",
+        "suite exit 0 / 49 targets / 2309, clippy 0, doc gate 0, smoke 260/0 twice",
+        "5 more mutations RED across the mailbox, the wire read and the arms"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "the status row still names the dead session once the sentence expires",
+        "sprag-peer's Missing has a field that is not an absence",
+        "nothing stops a future reader matching a refusal's free-text data"
+      ],
+      "publishable_decision_summary": "A refused or cascading gesture is answered in the daemon's own words at both display fronts",
+      "publishable_changes_bullets": [
+        "a STATED refusal reaches both display fronts, not only a version skew",
+        "kill_window / kill_session answer Option<Ended>, the last two acting methods on ()",
+        "Report::cascaded carries Ended::beyond's clause, so no front authors one",
+        "ended_of is one reader for all three destructive verbs"
+      ],
+      "publishable_verification_bullets": [
+        "measured: prefix & killed the session, moved the person, row unchanged",
+        "after: the row reads \"the session went with it\" and the client survives",
+        "suite exit 0 / 49 targets / 2309, clippy 0, doc gate 0, smoke 260/0 twice",
+        "5 more mutations RED across the mailbox, the wire read and the arms"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the status row still names the dead session once the sentence expires",
+        "sprag-peer's Missing has a field that is not an absence",
+        "nothing stops a future reader matching a refusal's free-text data"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
