@@ -4824,17 +4824,22 @@ fn a_key_bound_to_a_window_that_does_not_exist_says_so() {
         "selecting the window this client is already on says nothing",
     );
 
-    // ...and the name nothing carries is NAMED.
+    // ...and the name nothing carries is NAMED — by the DAEMON since R325. This used to read the
+    // client's own `no window called "nowindow"`, built from the binding's own words because a
+    // payload-free refusal carried nothing; the registry says `no window NAMED`, and one of the two
+    // is a guess about the other end's vocabulary.
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"w");
+    let mut said = String::new();
     wait_for("the refusal to name the window that is not there", || {
-        settled(
-            tui.row(STATUS_ROW)
-                .contains("no window called \"nowindow\""),
-            &true,
-        )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        said = tui.row(STATUS_ROW);
+        settled(said.contains("nowindow"), &true)
+            .map_err(|got| format!("{got}: row reads {said:?}"))
     });
+    assert!(
+        said.contains("no window named \"nowindow\""),
+        "the sentence is the registry's own, not this client's paraphrase: {said:?}",
+    );
 
     let text = pane_text_of(&mut conn, &session, 0);
     assert!(
@@ -4921,11 +4926,27 @@ fn the_swap_the_resize_and_the_move_all_say_when_they_go_nowhere() {
 
     // Each press is separated by a wait for the row to come BACK, so a sentence left over from the
     // press before cannot be read as this one's — the vacuous shape this file has been caught by.
+    //
+    // ⚠ **THREE OF THE FOUR ARE NOT REFUSALS AND ONE IS, AND THE ROW NOW SAYS WHICH** (R325).
+    // Measured on exactly THIS fixture, which is the half that had to be measured rather than
+    // reasoned: the first three answer OK carrying an outcome word — nothing above, this is the
+    // only window, the boundary is at an edge — so the CLIENT's own report is the whole of what
+    // anyone knows. Only `break-pane` is REFUSED, and the daemon states why, so its sentence takes
+    // the row instead of a generic that read the same four words for four different situations.
+    //
+    // ⚠ A first draft of this table expected the daemon's sentence for `resize-pane` too, from a
+    // CLI probe where NOBODY WAS ATTACHED — there the verb refuses (*"nothing is watching that
+    // window"*). A pty fixture has a client, so its window is measured and the same key is an edge.
+    // **The state a probe builds is part of what it measures**; running it here is what said so.
+    //
+    // Pairing all four in ONE table is what makes this discriminating: a build that showed the
+    // daemon's sentence everywhere fails the first three rows, and a build that showed the client's
+    // everywhere — which is what shipped until R325 — fails the fourth.
     for (keys, want) in [
         (&b"\x1b[1;2A"[..], "swap-pane -U: nowhere to go"),
         (&b"\x1b[1;5A"[..], "resize-pane -U 1: nowhere to go"),
         (&b"<"[..], "move-window -p: nowhere to go"),
-        (&b"!"[..], "break-pane: nowhere to go"),
+        (&b"!"[..], "cannot break the only pane in a window"),
     ] {
         // PAST THE REPEAT WINDOW: the arrows are `-r`, so inside it the prefix table is still live
         // and the next chord's first character would be a self-send (R308's hazard, R315's bite).

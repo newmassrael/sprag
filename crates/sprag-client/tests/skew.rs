@@ -168,13 +168,13 @@ fn an_act_a_daemon_cannot_perform_reaches_this_client_as_a_sentence() {
     // THE CONTROL, first: a client that has done nothing has nothing to report. Without it, a
     // mirror seeded at boot would satisfy every assertion below.
     assert!(
-        host.take_skew().is_none(),
+        host.take_gesture_refusal().is_none(),
         "a client that has not acted has met no skew",
     );
 
     let name = host.new_window();
     let said = host
-        .take_skew()
+        .take_gesture_refusal()
         .expect("an action this daemon does not have is reported");
     let text = said.text.as_str().to_owned();
     assert!(
@@ -199,7 +199,10 @@ fn an_act_a_daemon_cannot_perform_reaches_this_client_as_a_sentence() {
 
     // TAKEN EXACTLY ONCE — it is an edge, and a second keystroke must not be answered with the
     // first one's refusal.
-    assert!(host.take_skew().is_none(), "the report is taken, not read");
+    assert!(
+        host.take_gesture_refusal().is_none(),
+        "the report is taken, not read"
+    );
 }
 
 /// **THE CONTROL FOR THE POLICY: a READ this daemon cannot serve does NOT reach the row.**
@@ -243,7 +246,7 @@ fn a_read_a_daemon_cannot_serve_says_nothing_to_the_person() {
         "the peer is missing this address, so the read cannot land",
     );
     assert!(
-        through_peer.take_skew().is_none(),
+        through_peer.take_gesture_refusal().is_none(),
         "a failing read is the poll's business and must not take a person's row",
     );
 
@@ -257,7 +260,7 @@ fn a_read_a_daemon_cannot_serve_says_nothing_to_the_person() {
     let acting = boot(peer_that_cannot_act.sock(), &session);
     let _ = acting.new_window();
     assert!(
-        acting.take_skew().is_some(),
+        acting.take_gesture_refusal().is_some(),
         "the same seam, on the acting side, is what makes the silence above a POLICY",
     );
 }
