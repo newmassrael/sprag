@@ -592,8 +592,79 @@ pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
     // caller that has none is exactly the silent-wrong-target this whole module refuses.
     match SessionScope::resolve(state.registry(), &request, || None) {
         Ok(scope) => handle_scoped(state, &scope, request),
-        Err(error) => scope_refused(&request, &error),
+        Err(error) => scope_unresolved(state, &request, &error),
     }
+}
+
+/// The reply for a request whose session scope did NOT resolve — the ONE door both dispatch entries
+/// go through, so the two cannot come to answer a dead scope differently.
+///
+/// A read whose subject is the REGISTRY is served ([`registry_only`]) when — and only when — the
+/// scope failed because THE SESSION IS NOT THERE
+/// ([`ScopeError::is_session_gone`](crate::scope::ScopeError::is_session_gone)); everything else is
+/// refused ([`scope_refused`]). Within that, the registry surface is offered the request and only
+/// what it actually answers is served, so nothing here decides, per address, whether serving is
+/// safe.
+///
+/// # Two conditions, and each excludes a different mistake
+///
+/// A MALFORMED scope is refused whole even for a read this door could answer. The door exists for a
+/// client whose session was destroyed under it, which must still be able to read the session list to
+/// decide where to go; a client that sent `{"session": 42}` does not know the ABI, and serving it
+/// part of what it asked for is the silent partial acceptance [`crate::scope`] refuses everywhere
+/// else. It also keeps the malformed path free of a scene build it would never use.
+///
+/// # Why the refusal is not simply widened away
+///
+/// It is the DETACH signal. A display client's poll thread reads a refused scope as *"the session I
+/// was viewing is gone"* and leaves (or switches, under a `detach-on-destroy` policy) — so a build
+/// that answered everything would trade R326's defect for a client that never notices its session
+/// died. Only the reads that never needed a session move; a read or a write ABOUT one is refused
+/// exactly as before, in the same words.
+fn scope_unresolved(state: &HostState, request: &Request, error: &ScopeError) -> Option<String> {
+    error
+        .is_session_gone()
+        .then(|| registry_only(state, request))
+        .flatten()
+        .or_else(|| scope_refused(request, error))
+}
+
+/// Serve `request` from the scope-free [registry scene](crate::registry_scene), or [`None`] if that
+/// scene does not answer it — which is every address whose answer would have to name a session, and
+/// every method that is not a read.
+///
+/// ## `None` on an error reply, and why that is the honest fallback
+///
+/// The registry surface refuses an address it does not serve the way any external does, and pinion
+/// renders that as `UnknownIntrospectPath` — under the SAME `-32602` a refused scope arrives under,
+/// and in words about a SLOT. A client whose session has just been destroyed is owed *"no session
+/// named `work`"*, not *"unknown path"*: the first is the truth and the one its poll thread
+/// classifies. So an error from here is discarded and the caller falls back to the scope refusal.
+///
+/// That discard is also what removes the need for a classification table. Nothing here lists which
+/// slots are registry-subject; the [registry view](crate::workspace::RegistryExternal) answers the
+/// ones it can and the rest fall through, so a slot added to either surface cannot leave a second
+/// list stale — there is no second list.
+///
+/// **Reads only.** `scene/invoke` acts, and an act needs a session to act on; `scene/revision` and
+/// the waits park on a per-session token; `scene/snapshot` reads panes. Each of those is refused for
+/// its own reason, and gating on the method here says so once rather than relying on the registry
+/// surface's emptiness to say it by accident.
+fn registry_only(state: &HostState, request: &Request) -> Option<String> {
+    if request.method != "scene/query" {
+        return None;
+    }
+    let mut scene = crate::registry_scene(state.registry(), state.shared());
+    // The DEFAULT session's token, and it is never advanced through this door: pinion bumps the
+    // revision it is handed only after a MUTATING handler returns `Ok`, and the guard above admits
+    // reads alone. A token is required to build a context, so this hands over the one that always
+    // exists rather than inventing a second kind of context for a path that cannot use it.
+    let revision = state.revision(lock(state.registry()).default_session().name());
+    let mut ctx = DispatchContext::new(&mut scene, &state.previews, &revision);
+    let response = dispatch_parsed(&mut ctx, request.clone())?;
+    let answered = serde_json::from_str::<Value>(&response)
+        .is_ok_and(|value| value.get("error").is_none() && value.get("result").is_some());
+    answered.then_some(response)
 }
 
 /// Answer `request` against the session `scope` already names — the dispatch body, split from
@@ -1739,7 +1810,12 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
             let scope = match SessionScope::resolve(state.registry(), &parsed, attached) {
                 Ok(scope) => scope,
                 Err(error) => {
-                    if let Some(response) = scope_refused(&parsed, &error) {
+                    // The SAME door the string entry uses: a read about the registry is served
+                    // even though this connection's own session has gone, and everything else is
+                    // refused in the words it was always refused in. Sharing the door is the
+                    // point — this is the path a live client actually travels, and a second
+                    // spelling of the rule here is how the two would come to disagree.
+                    if let Some(response) = scope_unresolved(state, &parsed, &error) {
                         reply.send(response);
                     }
                     return;
@@ -4280,6 +4356,180 @@ mod tests {
         let value = serve_one(&state, &spawn(r#""0""#));
         assert!(value.get("error").is_none(), "{value}");
         assert_eq!(lock(&state.host.workspace()).panes().len(), before + 1);
+    }
+
+    /// A read whose subject is the REGISTRY is answered even when the reader's own session has
+    /// gone — and a read whose subject is ONE session is still refused, which is the detach
+    /// signal a display client's poll thread runs on.
+    ///
+    /// R327's head, measured at R326 through two `sprag-tui`s and a killed session: a
+    /// `detach-on-destroy` switch policy decides where to land by reading the SESSION LIST, and
+    /// at the moment it decides, the connection is scoped to the session that just died. Every
+    /// `scene/query` was refused on that scope — including the list, which needs no live session
+    /// to answer — so the policy could only turn on a mirror nothing bounds the staleness of, and
+    /// `no-detached` walked into a session another client was sitting in.
+    ///
+    /// Both ways a dead scope arrives are driven, because a client meets one or the other and
+    /// never both: a NAME that no session carries (a `-t` client, the CLI) and an ATTACHED ask
+    /// from a client whose attachment the kill released (every display client since R303).
+    ///
+    /// REVERT-PROOF: serve every slot on a dead scope and the CONTROL rows go green-when-refused;
+    /// refuse the registry-wide ones again and the first rows fail.
+    #[test]
+    fn a_registry_wide_read_does_not_need_the_readers_own_session() {
+        let state = host_with("cat", 20, 4);
+        let query = |scope: &str, slot: &str| {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{{{scope}"path":"/sprag_mux/external/{slot}"}}}}"#
+            );
+            serve_one(&state, &request)
+        };
+        // A live scope answers both, or nothing below discriminates.
+        for slot in ["sessions", "panes"] {
+            assert!(
+                query(r#""session":"0","#, slot).get("error").is_none(),
+                "the control: {slot} answers on a scope that resolves",
+            );
+        }
+
+        for (scope, why) in [
+            (r#""session":"ghost","#, "a name no session carries"),
+            (r#""attached":true,"#, "an attachment the kill released"),
+        ] {
+            let listed = query(scope, "sessions");
+            assert!(
+                listed.get("error").is_none(),
+                "the session list is about the REGISTRY, so {why} cannot refuse it: {listed}",
+            );
+            assert!(
+                listed["result"]
+                    .as_array()
+                    .expect("the sessions slot answers with an array")
+                    .iter()
+                    .any(|row| row["name"] == "0"),
+                "and it is the real list, not an empty stand-in: {listed}",
+            );
+            // THE CONTROL, and it is the load-bearing half: a read about ONE session must still
+            // be refused on a dead scope. That refusal is what a poll thread reads as "detach",
+            // so widening it would trade this defect for a client that never leaves.
+            let scoped = query(scope, "panes");
+            assert_eq!(
+                scoped["error"]["code"], -32602,
+                "{why} must still refuse a read about one session: {scoped}",
+            );
+        }
+
+        // ...and a MALFORMED scope is refused WHOLE, on the very read the door above answers.
+        //
+        // The door exists for a client whose session was destroyed under it. A client that cannot
+        // spell its own params is not in that position, and serving it the half of its request that
+        // happens to need no session would be the silent partial acceptance `crate::scope` refuses
+        // everywhere else — the shape pinion's own scar records. Every arm of the grammar, because
+        // "malformed" is three different mistakes and a door that admitted one would admit it
+        // silently.
+        for (bad, why) in [
+            (r#""session":42,"#, "a scope that is not a string"),
+            (
+                r#""attached":"yes","#,
+                "an attached flag that is not a boolean",
+            ),
+            (
+                r#""session":"0","attached":true,"#,
+                "two scopes in one request",
+            ),
+        ] {
+            let listed = query(bad, "sessions");
+            assert_eq!(
+                listed["error"]["code"], -32602,
+                "{why} must be refused whole, not served the half that needs no session: {listed}",
+            );
+        }
+    }
+
+    /// EVERY read the mux surface declares, measured on a dead scope — the partition itself,
+    /// pinned, so a slot added later cannot join either half by accident.
+    ///
+    /// This is a ratchet over the PRODUCT, not over a declaration: each address is driven through
+    /// the real dispatch and sorted by what it actually did, and the CONTROL is that all of them
+    /// answer on a live scope — without it, "refused" would be indistinguishable from "this slot is
+    /// broken", and a broken registry-subject slot would silently look correctly classified.
+    ///
+    /// The lists are spelled out rather than counted because the two failures differ: a new slot
+    /// that needs the reader's session is a name appearing in the second list (fine, decide it), and
+    /// a new slot that does NOT is a name appearing in the first (also fine, decide it) — what must
+    /// never happen silently is either. Nothing in the product holds this partition; it emerges from
+    /// [`crate::workspace::RegistryExternal`] answering what it can, which is why the only honest
+    /// place to state it is a measurement.
+    #[test]
+    fn every_declared_read_is_measured_for_whether_it_needs_the_readers_session() {
+        let state = host_with("cat", 20, 4);
+        let query = |scope: &str, address: &str| {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{{{scope}"path":"/sprag_mux/external/{address}"}}}}"#
+            );
+            serve_one(&state, &request)
+        };
+
+        let (mut registry_subject, mut session_subject) = (Vec::new(), Vec::new());
+        for field in crate::wire::MUX_SCHEMA {
+            if field.ty == "action" {
+                continue;
+            }
+            // A parametric family is addressed at a member that exists in this fixture (pane 0,
+            // cursor 0, max-age 0); a scalar spells itself.
+            let address = if field.args.is_empty() {
+                field.path.to_owned()
+            } else {
+                format!("{}0", field.literal_prefix())
+            };
+            // THE CONTROL, and it runs first: a slot that answers nothing on a LIVE scope would
+            // sort as "needs a session" for the wrong reason entirely.
+            let live = query(r#""session":"0","#, &address);
+            assert!(
+                live.get("error").is_none(),
+                "{address} must answer on a scope that resolves, or its row below means nothing: \
+                 {live}",
+            );
+            if query(r#""session":"ghost","#, &address)
+                .get("error")
+                .is_none()
+            {
+                registry_subject.push(field.path);
+            } else {
+                session_subject.push(field.path);
+            }
+        }
+
+        assert_eq!(
+            registry_subject,
+            [
+                "sessions",
+                "tree",
+                "clients",
+                "grid_work",
+                "commands",
+                "agent_manifests",
+                "session_activity.<max_age_ms>",
+                "pane_processes.<max_age_ms>",
+            ],
+            "these answer about the SET of sessions, or about the daemon itself, so a reader whose \
+             own session has gone is still owed them",
+        );
+        assert_eq!(
+            session_subject,
+            [
+                "panes",
+                "layout",
+                "session",
+                "windows",
+                "window_size",
+                "project.<pane>",
+                "neighbors.<pane>",
+                "events.<since>",
+            ],
+            "these answer about ONE session, so a dead scope is refused — which is the DETACH \
+             signal a display client's poll thread runs on",
+        );
     }
 
     /// An unscoped request keeps working, unchanged — every client that predates the param

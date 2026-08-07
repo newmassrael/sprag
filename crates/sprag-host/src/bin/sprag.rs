@@ -1717,8 +1717,22 @@ fn own_session(cmd: &mut Command) -> &mut Command {
 /// does want ports is a separate, still-open item; this one simply stops asking.)
 ///
 /// `windows` is the request because a scope is resolved BEFORE any handler runs (`crate::rpc`'s
-/// `handle_parsed`), so any scoped path answers the question; this is the cheapest one, and its
-/// own answer is discarded.
+/// `handle_parsed`), and its own answer is discarded — this asks only whether the scope resolved.
+///
+/// ## ⚠ THE SLOT MUST BE ONE WHOSE SUBJECT IS A SESSION, and since R327 that is a real choice
+///
+/// "Any scoped path answers the question" stopped being true when the daemon learned to serve a
+/// read whose subject is the REGISTRY on a scope it cannot resolve (`sprag_host::registry_scene`) —
+/// which it does because a `detach-on-destroy` policy must be able to re-read the session list at
+/// the instant its own session dies. `sessions`, `tree`, `clients` and the rest of that half now
+/// answer for a name no session carries, so a pre-flight probing one of them would report that
+/// EVERY session exists and every scoped verb would sail past its own guard. Measured, not
+/// supposed: moving this one line to `sessions` reddens four tests in `tests/cli.rs`, among them
+/// *"attach to a missing session fails"*.
+///
+/// `windows` is on the right side of that split by its nature — a session's window list is a fact
+/// about ONE session — and `rpc`'s `every_declared_read_is_measured_for_whether_it_needs_the_
+/// readers_session` pins which half each address is in, by driving them.
 /// # A scoped query carries TWO things that can be invalid, and this used to read them as one
 ///
 /// The comment here said *"a scoped query carries nothing else that can be invalid"*, and the

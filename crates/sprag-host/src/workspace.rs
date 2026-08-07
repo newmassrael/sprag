@@ -112,6 +112,222 @@ const NO_CLIENTS: &str = "this daemon serves no attached clients";
 /// caller CAN act on.
 const UNRENDERABLE_LAYOUT: &str = "this daemon could not render the resulting arrangement";
 
+/// Everything a read whose SUBJECT is the registry needs — and, decisively, nothing a read about
+/// ONE session needs.
+///
+/// # The distinction this type exists to make unrepresentable
+///
+/// Half the mux surface's slots answer about the session the request is scoped to (`panes`,
+/// `layout`, `windows`, …) and half answer about the set of sessions, or about the daemon itself
+/// (`sessions`, `tree`, `clients`, …). Until R327 that split lived only in the prose beside each
+/// arm, and one consequence was measured: a client whose own session had just been destroyed could
+/// not re-read the SESSION LIST, because scope resolution gates every method and its scope no
+/// longer resolved. A `detach-on-destroy` policy decides where to land by reading exactly that
+/// list, so `no-detached` — tmux's *"switch, but never onto a session somebody else is in"* — was
+/// deciding on a mirror nothing bounds the staleness of, and walked into an occupied session.
+///
+/// So the split is a TYPE. This view holds no [`SessionScope`], which is what makes the guarantee
+/// structural rather than careful: an arm here **cannot** read the scope, so a read served through
+/// it cannot be about a session — least of all about the wrong one. That is why the dead-scope
+/// door ([`RegistryExternal`]) can serve a request whose scope was refused without re-deciding, per
+/// slot, whether doing so is safe.
+///
+/// Borrowed rather than owned, and built per query: both surfaces hand it the handles they already
+/// hold, so there is exactly ONE spelling of each registry-subject answer and no second copy to
+/// drift ([`RegistryView::query`] is the only place any of them is produced).
+pub(crate) struct RegistryView<'a> {
+    registry: &'a Arc<Mutex<SessionRegistry>>,
+    attachments: Option<&'a Mutex<crate::AttachmentRegistry>>,
+    agents: Option<&'a crate::AgentClock>,
+    samplers: &'a crate::Samplers,
+}
+
+impl RegistryView<'_> {
+    /// The answer to a query whose subject is the REGISTRY, or [`None`] for every other address —
+    /// including the addresses this daemon does serve about ONE session, which have no answer that
+    /// does not name a scope.
+    ///
+    /// `None` is what makes this total without lying: [`WorkspaceExternal::query`] falls through to
+    /// its own scoped arms, and the dead-scope door turns it back into the scope refusal the reader
+    /// had coming. Neither caller has to know which addresses are in here.
+    fn query(&self, path: &str) -> Option<IntrospectValue> {
+        // The parametric families go FIRST, before the exact-path arms: their argument rides the
+        // path, so they are matched by prefix rather than by equality (`cells.<offset>`'s shape, and
+        // the reason a malformed member answers `Null` rather than `None` — `session_activity.zzz`
+        // IS in this surface's schema, so denying the address exists would be the wrong refusal).
+        if let Some(arg) = path.strip_prefix(SESSION_ACTIVITY_FIELD.literal_prefix()) {
+            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
+                let reading = self
+                    .samplers
+                    .activity
+                    .read(self.registry, Duration::from_millis(max_age));
+                encoded_answer(&ActivityWire::from(reading), "session activity")
+                    .unwrap_or(IntrospectValue::Null)
+            }));
+        }
+        if let Some(arg) = path.strip_prefix(PANE_PROCESSES_FIELD.literal_prefix()) {
+            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
+                let reading = self
+                    .samplers
+                    .processes
+                    .read(self.registry, Duration::from_millis(max_age));
+                encoded_answer(&PaneProcessesWire::from(reading), "pane processes")
+                    .unwrap_or(IntrospectValue::Null)
+            }));
+        }
+        match path {
+            // Every session, plus which one an unscoped request lands in — how a client
+            // discovers what it may name in `session`. Registry-WIDE by design: this is the
+            // one slot whose subject is the set of scopes, so scoping it to the caller's own
+            // session would answer a question nobody asked.
+            //
+            // ONE builder ([`crate::host::listable_sessions`]) shared with the in-process arm and
+            // with `switch-client`'s ring walk, serialised here the way `windows` serialises its
+            // `WindowInfo`s — so neither the shape, nor what `windows`/`default` mean, nor WHICH
+            // SESSIONS APPEAR can drift between the three. It fills the per-session attached count
+            // (dispatch-layer state the registry cannot know) and drops the resting empty anchor.
+            // `default` says where an UNSCOPED request lands — not "is it current", nothing is
+            // current here.
+            SESSIONS_SLOT => {
+                let infos: Vec<SessionInfo> =
+                    crate::host::listable_sessions(self.registry, self.attachments);
+                encoded_answer(&infos, "sessions")
+            }
+            // The same sessions, DESCENDING: every window and every pane, each carrying the identity
+            // a chooser commits by (R315). Registry-WIDE for `sessions`' reason, and a SECOND slot
+            // rather than a wider first one because that one is polled and this one is pressed —
+            // see `TREE_SLOT`. It shares that slot's listability rule through one predicate, so a
+            // chooser cannot offer a session `sprag ls` denies exists.
+            TREE_SLOT => {
+                let tree: Vec<sprag_terminal::TreeSession> =
+                    crate::host::listable_tree(self.registry, self.attachments);
+                encoded_answer(&tree, "tree")
+            }
+            // Every currently-attached client and the session it views — tmux `list-clients`.
+            // Registry-WIDE like `sessions` (its subject is the set of clients), and filled from
+            // the SAME dispatch-layer attachment map that fills each session's `attached` count.
+            // `None` off a daemon (no wire clients) serialises to an empty list — an honest "no
+            // clients", the same additive story as an unattached session's absent `attached`.
+            CLIENTS_SLOT => {
+                let clients = match self.attachments {
+                    Some(attachments) => lock(attachments).clients(),
+                    None => Vec::new(),
+                };
+                encoded_answer(&clients, "clients")
+            }
+            // What this host has paid to project its cells. Read straight off the meter rather
+            // than recomputed, and UNSCOPED on purpose: the counters are process-wide, so scoping
+            // them to the request's session would name a session for work every session shares.
+            // Serialised by hand rather than through the type, so the wire keys are spelled once
+            // in the place the schema declares them.
+            GRID_WORK_SLOT => {
+                let work = sprag_grid::work();
+                Some(IntrospectValue::Json(serde_json::json!({
+                    "projections_total": work.projections_total,
+                    "cells_total": work.cells_total,
+                })))
+            }
+            // The USER's own declared commands — no pane, no session, no scope: this answer is the
+            // same for every request the host serves, which is exactly why it is a fixed slot beside
+            // the parametric project one rather than a variant of it.
+            GLOBAL_COMMANDS_SLOT => Some(global_commands_value()),
+            // Why the agent manifests in force are not the user's. Unscoped like the one above and
+            // for a stronger reason: the ruleset is the DAEMON's, one list for every session it
+            // serves, so scoping this answer would name a session for a fact no session owns.
+            AGENT_MANIFESTS_SLOT => Some(agent_manifests_value(self.agents)),
+            _ => None,
+        }
+    }
+}
+
+/// The mux control surface a reader whose OWN SESSION HAS GONE meets: the reads whose subject is
+/// the REGISTRY, and nothing else.
+///
+/// A client scoped to a destroyed session is refused every method, and that refusal is load-bearing
+/// — it is the DETACH signal a display client's poll thread runs on. What R326 measured is that it
+/// was also refusing the reads that need no session at all, and the `detach-on-destroy` policies
+/// decide by making exactly one of those reads. So the refusal keeps its whole meaning for anything
+/// ABOUT a session, and the reads whose subject is the registry are served from here instead.
+///
+/// **It holds no [`SessionScope`], and that is the design.** A door that carried one "just for the
+/// scene" would be one misclassified slot away from serving a client the DEFAULT session's panes
+/// under a scope it never named — pinion's "wrong target for writes, wrong data for reads", which
+/// [`crate::scope`] exists to prevent. Here there is no session to be wrong about: the type cannot
+/// express one.
+///
+/// Writes are absent for the same reason and a second one: an act needs a session, and a client
+/// whose session died has none to act on. [`ExternalIntrospect::invoke`] refuses every address.
+pub struct RegistryExternal {
+    registry: Arc<Mutex<SessionRegistry>>,
+    attachments: Option<Arc<Mutex<crate::AttachmentRegistry>>>,
+    agents: Option<Arc<crate::AgentClock>>,
+    samplers: crate::Samplers,
+}
+
+impl RegistryExternal {
+    /// Build the dead-scope control surface from the daemon's shared state — the same handles
+    /// [`WorkspaceExternal`] is given, minus everything that names a session.
+    #[must_use]
+    pub fn new(registry: Arc<Mutex<SessionRegistry>>, daemon: crate::DaemonShared) -> Self {
+        let crate::DaemonShared {
+            attachments,
+            agents,
+            samplers,
+            ..
+        } = daemon;
+        Self {
+            registry,
+            attachments,
+            agents,
+            samplers,
+        }
+    }
+}
+
+impl fmt::Debug for RegistryExternal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegistryExternal").finish_non_exhaustive()
+    }
+}
+
+rpc_external_impl!(RegistryExternal);
+
+impl ExternalIntrospect for RegistryExternal {
+    /// The MUX surface's schema, whole — not a narrowed copy listing only what this door answers.
+    ///
+    /// The schema describes the addresses this DAEMON serves, and that set does not shrink because
+    /// one reader's session died. A second, shorter list would be a claim that the product's
+    /// vocabulary depends on who is asking, and it would be a second copy of the declaration
+    /// [`crate::wire::MUX_SCHEMA`] exists to be the only one of.
+    fn schema(&self) -> IntrospectSchema {
+        IntrospectSchema::new(crate::wire::MUX_SCHEMA)
+    }
+
+    fn query(&self, path: &str) -> Option<IntrospectValue> {
+        RegistryView {
+            registry: &self.registry,
+            attachments: self.attachments.as_deref(),
+            agents: self.agents.as_deref(),
+            samplers: &self.samplers,
+        }
+        .query(path)
+    }
+
+    fn intervene(&mut self, _path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
+        Err(InterveneError::UnknownPath)
+    }
+
+    /// Every action, refused. A client reaching here has no session to act on, and the scope
+    /// refusal it gets instead says exactly that — see the type docs.
+    fn invoke(
+        &mut self,
+        _path: &str,
+        _args: IntrospectValue,
+    ) -> Result<IntrospectValue, InvokeError> {
+        Err(InvokeError::UnknownPath)
+    }
+}
+
 /// The mux-management engine `External`: a control surface over the shared
 /// [`SessionRegistry`]. Holds `Arc<Mutex<SessionRegistry>>` so its `scene/invoke`
 /// handlers mutate the live pane pool of the CURRENT window (which the serve loop also
@@ -232,6 +448,22 @@ impl WorkspaceExternal {
             attention,
             agents,
             samplers,
+        }
+    }
+
+    /// This surface's registry-subject half, borrowed — the reads that would still be answerable if
+    /// the session this surface is scoped to were destroyed mid-request.
+    ///
+    /// Borrowed and built per query rather than stored: a [`RegistryView`] is four references, and
+    /// keeping one as a field beside the handles it points at would be two owners of one fact. The
+    /// point of routing through it at all is that [`RegistryExternal`] serves the identical answers
+    /// from the identical code.
+    fn registry_view(&self) -> RegistryView<'_> {
+        RegistryView {
+            registry: &self.registry,
+            attachments: self.attachments.as_deref(),
+            agents: self.agents.as_deref(),
+            samplers: &self.samplers,
         }
     }
 
@@ -1969,29 +2201,14 @@ impl ExternalIntrospect for WorkspaceExternal {
     }
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
-        // The parametric family goes FIRST, before the exact-path arms: its argument rides the path,
-        // so it is matched by prefix rather than by equality (`cells.<offset>`'s shape, and the
-        // reason a malformed member answers `Null` rather than `None` — `session_activity.zzz` IS in
-        // this surface's schema, so denying the address exists would be the wrong refusal).
-        if let Some(arg) = path.strip_prefix(SESSION_ACTIVITY_FIELD.literal_prefix()) {
-            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
-                let reading = self
-                    .samplers
-                    .activity
-                    .read(&self.registry, Duration::from_millis(max_age));
-                encoded_answer(&ActivityWire::from(reading), "session activity")
-                    .unwrap_or(IntrospectValue::Null)
-            }));
-        }
-        if let Some(arg) = path.strip_prefix(PANE_PROCESSES_FIELD.literal_prefix()) {
-            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
-                let reading = self
-                    .samplers
-                    .processes
-                    .read(&self.registry, Duration::from_millis(max_age));
-                encoded_answer(&PaneProcessesWire::from(reading), "pane processes")
-                    .unwrap_or(IntrospectValue::Null)
-            }));
+        // The reads whose subject is the REGISTRY, answered FIRST and through the ONE place any of
+        // them is produced ([`RegistryView`]) — which is also the surface a reader whose own session
+        // has gone is served from, so the two doors cannot come to answer `sessions` differently.
+        // The parametric families (`session_activity.<max_age>`, `pane_processes.<max_age>`) live in
+        // there too and are matched by prefix ahead of everything, which is why this delegation is
+        // the first statement rather than an arm of the match below.
+        if let Some(answer) = self.registry_view().query(path) {
+            return Some(answer);
         }
         match path {
             PANES_SLOT => {
@@ -2259,32 +2476,6 @@ impl ExternalIntrospect for WorkspaceExternal {
             LAYOUT_SLOT => {
                 layout_value(crate::host::reconciled_layout(&self.registry, &self.scope)?)
             }
-            // Every session, plus which one an unscoped request lands in — how a client
-            // discovers what it may name in `session`. Registry-WIDE by design: this is the
-            // one slot whose subject is the set of scopes, so scoping it to the caller's own
-            // session would answer a question nobody asked.
-            SESSIONS_SLOT => {
-                // ONE builder ([`crate::host::listable_sessions`]) shared with the in-process arm
-                // and with `switch-client`'s ring walk, serialised here the way `windows`
-                // serialises its `WindowInfo`s — so neither the shape, nor what
-                // `windows`/`default` mean, nor WHICH SESSIONS APPEAR can drift between the three.
-                // It fills the per-session attached count (dispatch-layer state the registry cannot
-                // know) and drops the resting empty anchor. `default` says where an UNSCOPED
-                // request lands — not "is it current", nothing is current here.
-                let infos: Vec<SessionInfo> =
-                    crate::host::listable_sessions(&self.registry, self.attachments.as_deref());
-                encoded_answer(&infos, "sessions")
-            }
-            // The same sessions, DESCENDING: every window and every pane, each carrying the identity
-            // a chooser commits by (R315). Registry-WIDE for `sessions`' reason, and a SECOND slot
-            // rather than a wider first one because that one is polled and this one is pressed —
-            // see `TREE_SLOT`. It shares that slot's listability rule through one predicate, so a
-            // chooser cannot offer a session `sprag ls` denies exists.
-            TREE_SLOT => {
-                let tree: Vec<sprag_terminal::TreeSession> =
-                    crate::host::listable_tree(&self.registry, self.attachments.as_deref());
-                encoded_answer(&tree, "tree")
-            }
             // The NAME of the session this request is scoped to. Read straight off the scope rather
             // than re-derived: the scope resolved it once, at the door, under the registry lock, and
             // the whole value of the slot is that it cannot disagree with what the same request's
@@ -2292,18 +2483,6 @@ impl ExternalIntrospect for WorkspaceExternal {
             SESSION_SLOT => Some(IntrospectValue::Json(Value::String(
                 self.scope.session().to_owned(),
             ))),
-            // Every currently-attached client and the session it views — tmux `list-clients`.
-            // Registry-WIDE like `sessions` (its subject is the set of clients), and filled from
-            // the SAME dispatch-layer attachment map that fills each session's `attached` count.
-            // `None` off a daemon (no wire clients) serialises to an empty list — an honest "no
-            // clients", the same additive story as an unattached session's absent `attached`.
-            CLIENTS_SLOT => {
-                let clients = match &self.attachments {
-                    Some(attachments) => lock(attachments).clients(),
-                    None => Vec::new(),
-                };
-                encoded_answer(&clients, "clients")
-            }
             // The SCOPED session's arbitrated window — the rectangle every client tiles over, so
             // that two clients of different sizes give one pane one size. The POLICY is read from
             // the user's file here (no option crosses the wire); the clients' areas come from the
@@ -2326,18 +2505,6 @@ impl ExternalIntrospect for WorkspaceExternal {
                 });
                 encoded_answer(&window, "window_size")
             }
-            // What this host has paid to project its cells. Read straight off the meter rather
-            // than recomputed, and UNSCOPED on purpose: the counters are process-wide, so scoping
-            // them to the request's session would name a session for work every session shares.
-            // Serialised by hand rather than through the type, so the wire keys are spelled once
-            // in the place the schema declares them.
-            GRID_WORK_SLOT => {
-                let work = sprag_grid::work();
-                Some(IntrospectValue::Json(serde_json::json!({
-                    "projections_total": work.projections_total,
-                    "cells_total": work.cells_total,
-                })))
-            }
             // The SCOPED session's windows — each window's name and whether it is the CURRENT
             // one — how a tabbed client learns which tabs to draw and which is active. Scoped
             // (unlike `sessions`): windows are a property of a session, so this answers about the
@@ -2350,14 +2517,6 @@ impl ExternalIntrospect for WorkspaceExternal {
                 // serialised here the way the `layout` slot serialises its snapshot.
                 encoded_answer(&infos, "windows")
             }
-            // The USER's own declared commands — no pane, no session, no scope: this answer is the
-            // same for every request the host serves, which is exactly why it is a fixed slot beside
-            // the parametric project one rather than a variant of it.
-            GLOBAL_COMMANDS_SLOT => Some(global_commands_value()),
-            // Why the agent manifests in force are not the user's. Unscoped like the two above and
-            // for a stronger reason: the ruleset is the DAEMON's, one list for every session it
-            // serves, so scoping this answer would name a session for a fact no session owns.
-            AGENT_MANIFESTS_SLOT => Some(agent_manifests_value(self.agents.as_deref())),
             // The project governing ONE pane: the commands its `.sprag.toml` declares. Parametric,
             // so it is matched after the fixed slots above (`project.<pane>`, see `PROJECT_FIELD`
             // for why this lives on the mux external rather than the pane's own).

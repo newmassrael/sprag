@@ -589,6 +589,46 @@ pub fn workspace_scene(
     Scene::Container(ContainerNode::new(children).with_tag(WORKSPACE_TAG))
 }
 
+/// The scene a request whose SESSION SCOPE COULD NOT BE RESOLVED is offered before it is refused:
+/// the mux control surface with no scope, no panes and no plugin host.
+///
+/// ## Why a reader with no session gets a scene at all
+///
+/// [`SessionScope`] gates every method, and a client scoped to a session that was then destroyed is
+/// refused whatever it asks — which is the DETACH signal a display client's poll thread runs on,
+/// and stays it. What R326 measured is that the refusal also covered the reads that need no session
+/// to answer, and that this is not academic: `detach-on-destroy`'s switch policies pick where to
+/// land by reading the SESSION LIST, and they read it at the one moment their own scope has just
+/// died. `no-detached` — tmux's *"switch, but never onto a session somebody else is in"* — was
+/// therefore deciding on a mirror nothing bounds the staleness of, and was measured joining a
+/// session another client was sitting in.
+///
+/// ## The safety is structural, not a per-slot judgement
+///
+/// This scene's only child is a [`RegistryExternal`](workspace::RegistryExternal), which holds no
+/// [`SessionScope`] — so no read served here can be about a session, and none can be about the
+/// WRONG one. There is nothing to classify and nothing to keep in sync: an address whose answer
+/// would need a scope is simply not answerable from this scene, and `rpc`'s door turns that into
+/// the scope refusal the reader had coming. A scene built from the DEFAULT session instead would
+/// have been one bug away from serving a client panes it never named, which is precisely the
+/// failure [`scope`] exists to prevent.
+///
+/// No panes and no plugin host, for the same reason stated positively: both are built from a
+/// resolved pool, and there is no pool here to build them from.
+#[must_use]
+pub fn registry_scene(registry: &Arc<Mutex<SessionRegistry>>, daemon: DaemonShared) -> Scene {
+    Scene::Container(
+        ContainerNode::new(vec![Scene::External(
+            ExternalNode::new(Box::new(workspace::RegistryExternal::new(
+                Arc::clone(registry),
+                daemon,
+            )))
+            .with_tag(MUX_TAG),
+        )])
+        .with_tag(WORKSPACE_TAG),
+    )
+}
+
 /// Snapshot a [`Screen`] as scene-as-data: the [`TextGridSnapshot`] an AI
 /// consumer reads over `scene/snapshot`, produced headlessly (no GPU, no
 /// shell event loop).

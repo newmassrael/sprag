@@ -125,6 +125,38 @@ impl From<ScopeFault> for ScopeError {
     }
 }
 
+impl ScopeError {
+    /// Whether this refusal means *"the session this reader is scoped to is not there"* — as
+    /// opposed to *"this request is malformed"*.
+    ///
+    /// The two are answered identically today (the request is refused whole either way, and no
+    /// caller of this type may treat them otherwise), and they diverge in exactly one place: the
+    /// dispatch door that serves a read whose subject is the REGISTRY on a scope that did not
+    /// resolve (`crate::registry_scene`). That door exists for a client whose session was DESTROYED
+    /// under it, which must still be able to read the session list to decide where to go. A client
+    /// that sent `{"session": 42}` is not in that position: it does not know the ABI, and answering
+    /// part of what it asked for would be the silent partial acceptance this module refuses
+    /// everywhere else.
+    ///
+    /// [`UnknownWindow`](Self::UnknownWindow) is deliberately on the malformed side even though its
+    /// SESSION resolved: the reader is not lost, it named a window that is not there, and nothing
+    /// about that is helped by being handed the registry.
+    ///
+    /// Exhaustive on purpose — a refusal added later must decide which of these it is rather than
+    /// inherit an answer.
+    #[must_use]
+    pub const fn is_session_gone(&self) -> bool {
+        match self {
+            Self::Unknown(_) | Self::NotAttached => true,
+            Self::NotAString
+            | Self::AttachedNotABool
+            | Self::TwoScopes
+            | Self::WindowNotAString
+            | Self::UnknownWindow { .. } => false,
+        }
+    }
+}
+
 impl fmt::Display for ScopeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

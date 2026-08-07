@@ -1038,10 +1038,19 @@ fn list_neighbour(list: &[SessionInfo], killed: &str, step: isize) -> Option<Str
 /// nothing else that survives, and `None` when every other session is occupied (which is a DETACH:
 /// `no-detached` leaves rather than pile a second client onto a colleague's session).
 ///
-/// The counts are as fresh as this client's last sessions poll, so a client that joined an
-/// otherwise-free candidate in the beat between that poll and this destroy is not yet reflected —
-/// a bounded staleness the daemon's next poll corrects. The MRU-preferred half of this policy does
-/// NOT have that limit: it is answered inside the daemon, off the attachment map itself.
+/// ## The counts must come from a list read AT THE DECISION, and until R327 they could not
+///
+/// R326 measured this walking into an occupied session. The reason is not in this function: an
+/// attach bumps only the channel of the session ATTACHED TO, so a client parked on its own session
+/// is never woken to re-read the counts its policy depends on, and nothing bounds how stale the
+/// mirror's are. The re-read that would fix it was itself refused — scope resolution gated every
+/// method, including a read whose subject is the whole registry, so at the one moment this decision
+/// is made the list could not be fetched at all.
+///
+/// R327 opened that door daemon-side ([`sprag_host::registry_scene`]), and
+/// [`destroy_successor`] now hands this the list as of NOW rather than the mirror. The MRU-preferred
+/// half of the policy never had the problem: it is answered inside the daemon, off the attachment
+/// map itself.
 fn first_free_other(list: &[SessionInfo], killed: &str) -> Option<String> {
     list.iter()
         .find(|session| session.name != killed && session.attached == 0)
@@ -1049,29 +1058,49 @@ fn first_free_other(list: &[SessionInfo], killed: &str) -> Option<String> {
 }
 
 /// What this client should do when its own attached session `killed` is destroyed under `policy` —
-/// the tmux `detach-on-destroy` decision, resolved against the session list the user can see.
+/// the tmux `detach-on-destroy` decision, resolved against TWO readings of the session list.
+///
+/// # Why two lists, and why neither one can answer both questions
+///
+/// * **`seen`** is the mirror the user's sidebar was drawn from, and it still holds `killed`. That
+///   row is the ANCHOR `next` and `previous` count from — "the session after the one that died" is
+///   not a question a list without it can answer, so a re-read is not merely unnecessary here, it
+///   is unusable.
+/// * **`now`** is the list re-read at the instant of the decision, where `killed` is already gone.
+///   `no-detached` asks *"is anybody sitting in it"*, and that is a fact about OTHER CLIENTS which
+///   the mirror has no way to have learnt — see [`first_free_other`] for the measurement.
+///
+/// So the split is by question, not by preference: the ORDER comes from what the person could see,
+/// the OCCUPANCY from what is true now. The two are the same list for the callers that plan BEFORE
+/// a kill they are performing themselves ([`HostClient::kill_session`], [`HostClient::kill_window`]),
+/// and differ only on the out-of-band path — which is exactly the path the defect was on.
 ///
 /// `off` and `no-detached` prefer the session this client was viewing before, which the DAEMON
 /// resolves (see [`Successor::LastViewed`]); this names what to do when there is no such session.
 /// `off` falls back to the `next` list neighbour rather than detaching — "off" means "don't leave
 /// if there is somewhere to go", so it detaches only when `killed` is truly the last session —
 /// while `no-detached` falls back only to an UNOCCUPIED session, and leaves rather than share one.
-fn destroy_successor(policy: DetachOnDestroy, list: &[SessionInfo], killed: &str) -> Successor {
+fn destroy_successor(
+    policy: DetachOnDestroy,
+    seen: &[SessionInfo],
+    now: &[SessionInfo],
+    killed: &str,
+) -> Successor {
     match policy {
         DetachOnDestroy::Detach => Successor::Detach,
         DetachOnDestroy::Off => Successor::LastViewed {
             unattached: false,
-            fallback: list_neighbour(list, killed, 1),
+            fallback: list_neighbour(seen, killed, 1),
         },
         DetachOnDestroy::NoDetached => Successor::LastViewed {
             unattached: true,
-            fallback: first_free_other(list, killed),
+            fallback: first_free_other(now, killed),
         },
         DetachOnDestroy::Next => {
-            list_neighbour(list, killed, 1).map_or(Successor::Detach, Successor::Named)
+            list_neighbour(seen, killed, 1).map_or(Successor::Detach, Successor::Named)
         }
         DetachOnDestroy::Previous => {
-            list_neighbour(list, killed, -1).map_or(Successor::Detach, Successor::Named)
+            list_neighbour(seen, killed, -1).map_or(Successor::Detach, Successor::Named)
         }
     }
 }
@@ -2331,32 +2360,56 @@ impl WireHost {
     /// read the policy and the session list and called [`destroy_successor`]. That is the drift
     /// shape this tree keeps paying to remove.
     ///
-    /// # ⚠ THE LIST IS THE POLL'S MIRROR, AND ON THIS PATH IT CANNOT BE REFRESHED
+    /// # THE MIRROR ANSWERS THE ORDER; A FRESH READ ANSWERS THE OCCUPANCY
     ///
-    /// Measured at R326, and it is a defect this seam cannot close. `no-detached` is tmux's
-    /// *"switch, but never onto a session somebody else is already in"*, so its fallback
-    /// ([`first_free_other`]) turns on each session's ATTACHED count — and two facts together make
-    /// that count unreliable exactly here:
+    /// R326 measured `no-detached` walking into a session another client was sitting in — the
+    /// loser's row reading `[beta] 0:0*` with `beta` holding two clients, twice in five
+    /// full-workspace runs. Its fallback ([`first_free_other`]) turns on each session's ATTACHED
+    /// count, an attach bumps only the channel of the session ATTACHED TO, and a client parked on
+    /// its own session is therefore never woken to re-read the count its policy depends on.
     ///
-    /// 1. An attach bumps only the channel of the session ATTACHED TO (`window_moved`,
-    ///    `sprag_host::rpc`), so a client parked on its own session is never woken to re-read the
-    ///    count, and nothing bounds how stale it is.
-    /// 2. **It cannot be re-read at the moment of the decision.** By then `killed` is gone, this
-    ///    connection is scoped to it, and `SessionScope::resolve` refuses every `scene/query` on a
-    ///    scope it cannot resolve — including registry-WIDE slots like the session list, which need
-    ///    no live session to answer. A [`refresh_sessions`](Self::refresh_sessions) here was
-    ///    measured to fail on every run: making a failed re-read DETACH turned the occupancy case
-    ///    green and turned both switch-policy gates red, which is what said so.
+    /// The re-read that answers it was itself refused: by the time this runs `killed` is gone, this
+    /// connection is scoped to it, and scope resolution gated every method — including a read whose
+    /// subject is the whole REGISTRY and which needs no live session at all. R327 opened that door
+    /// where it belonged, in the daemon ([`sprag_host::registry_scene`]), so the list can now be
+    /// fetched at the exact moment the decision is made.
     ///
-    /// So under load a `no-detached` client can join a session another client is sitting in —
-    /// reproduced twice in five full-workspace runs against two `sprag-tui`s on two
-    /// pseudoterminals, the loser's row reading `[beta] 0:0*` with `beta` holding two clients. The
-    /// fix is that a registry-wide read must not require the reader's own session to be alive,
-    /// which is a change to how `scene/query` resolves scope and not something this client can do
-    /// from here. Recorded rather than worked around: a client that guesses a fresh list off a
-    /// stale one would be the same defect wearing a hat.
+    /// Both readings are passed on, because [`destroy_successor`] needs both and for opposite
+    /// reasons: the mirror still holds `killed`, which is the anchor `next` / `previous` count from
+    /// and which no post-destroy list can supply, while only the fresh one knows who is sitting
+    /// where. A read that FAILS falls back to the mirror — the behaviour every build before this
+    /// one had, so a transient failure is no worse than the old floor and never turns a switch
+    /// policy into a detach.
     fn plan_successor(&self, killed: &str) -> Successor {
-        destroy_successor(detach_on_destroy(), &self.sessions(), killed)
+        let seen = self.sessions();
+        let now = self.live_sessions().unwrap_or_else(|| seen.clone());
+        destroy_successor(detach_on_destroy(), &seen, &now, killed)
+    }
+
+    /// Every session as of NOW, read on this client's own connection — or [`None`] when the daemon
+    /// will not answer.
+    ///
+    /// Distinct from [`refresh_sessions`](Self::refresh_sessions), which STORES what it reads: this
+    /// is a decision input and must not overwrite the mirror the sidebar is drawn from, because at
+    /// the moment it runs that mirror is holding the one row this client still needs — the session
+    /// that just died.
+    // `#[must_use]` because an `Option` is not: R316's whole finding was a client left BYTE-FOR-BYTE
+    // UNCHANGED by an outcome nothing read, and a read made for a decision and then dropped is that
+    // shape exactly — it would look like the fix while the decision still ran on the mirror.
+    #[must_use]
+    fn live_sessions(&self) -> Option<Vec<SessionInfo>> {
+        let mut conn = self.conn.borrow_mut();
+        match query_sessions(&mut conn) {
+            Ok(list) => Some(list),
+            Err(error) => {
+                tracing::debug!(
+                    target: "sprag_gui::wire",
+                    %error,
+                    "live_sessions: the destroy decision falls back to the mirror's counts",
+                );
+                None
+            }
+        }
     }
 
     fn refresh_sessions(&self) {
@@ -4810,6 +4863,16 @@ mod tests {
         assert_eq!(mouse_kind_wire(MouseEventKind::Motion), "motion");
     }
 
+    /// [`destroy_successor`] over ONE world: the mirror and the fresh read AGREEING.
+    ///
+    /// That is what a client planning before a kill it is performing itself sees, and it is the
+    /// right fixture for every claim about the POLICY — which session each value picks — because a
+    /// disagreement would only obscure it. The claim about WHICH list answers which question needs
+    /// the two to differ, so it calls the two-list form directly.
+    fn plan(policy: DetachOnDestroy, list: &[SessionInfo], killed: &str) -> Successor {
+        destroy_successor(policy, list, list, killed)
+    }
+
     /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
     /// name matters to the neighbour pick, so the live fields are empty.
     fn session_list(names: &[&str]) -> Vec<SessionInfo> {
@@ -4889,35 +4952,20 @@ mod tests {
         let list = session_list(&["a", "b", "c"]);
         let named = |name: &str| Successor::Named(name.to_owned());
         // Detach policy never switches.
-        assert_eq!(
-            destroy_successor(DetachOnDestroy::Detach, &list, "b"),
-            Successor::Detach,
-        );
+        assert_eq!(plan(DetachOnDestroy::Detach, &list, "b"), Successor::Detach,);
         // Next: the row below, wrapping the last back to the first.
-        assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "a"),
-            named("b"),
-        );
-        assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "c"),
-            named("a"),
-        );
+        assert_eq!(plan(DetachOnDestroy::Next, &list, "a"), named("b"),);
+        assert_eq!(plan(DetachOnDestroy::Next, &list, "c"), named("a"),);
         // Previous: the row above, wrapping the first back to the last.
-        assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &list, "a"),
-            named("c"),
-        );
-        assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &list, "b"),
-            named("a"),
-        );
+        assert_eq!(plan(DetachOnDestroy::Previous, &list, "a"), named("c"),);
+        assert_eq!(plan(DetachOnDestroy::Previous, &list, "b"), named("a"),);
         // Nothing to switch to → detach: the last session, or a name already off the list.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &session_list(&["only"]), "only"),
+            plan(DetachOnDestroy::Next, &session_list(&["only"]), "only"),
             Successor::Detach,
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &list, "gone"),
+            plan(DetachOnDestroy::Next, &list, "gone"),
             Successor::Detach,
         );
     }
@@ -4939,7 +4987,7 @@ mod tests {
     fn destroy_successor_off_asks_for_the_last_viewed_session_with_the_neighbour_as_fallback() {
         let list = session_list(&["a", "b", "c"]);
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Off, &list, "a"),
+            plan(DetachOnDestroy::Off, &list, "a"),
             Successor::LastViewed {
                 unattached: false,
                 fallback: Some("b".to_owned()),
@@ -4947,7 +4995,7 @@ mod tests {
             "off goes back where it was, and falls back to the list neighbour",
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Off, &session_list(&["only"]), "only"),
+            plan(DetachOnDestroy::Off, &session_list(&["only"]), "only"),
             Successor::LastViewed {
                 unattached: false,
                 fallback: None,
@@ -4985,7 +5033,7 @@ mod tests {
         // killed "a"; "b" held by another client, "c" free.
         let one_free = attached_list(&[("a", 1), ("b", 1), ("c", 0)]);
         assert_eq!(
-            destroy_successor(DetachOnDestroy::NoDetached, &one_free, "a"),
+            plan(DetachOnDestroy::NoDetached, &one_free, "a"),
             Successor::LastViewed {
                 unattached: true,
                 fallback: Some("c".to_owned()),
@@ -4996,7 +5044,7 @@ mod tests {
         // DETACHES rather than share.
         let all_watched = attached_list(&[("a", 1), ("b", 2), ("c", 1)]);
         assert_eq!(
-            destroy_successor(DetachOnDestroy::NoDetached, &all_watched, "a"),
+            plan(DetachOnDestroy::NoDetached, &all_watched, "a"),
             Successor::LastViewed {
                 unattached: true,
                 fallback: None,
@@ -5006,7 +5054,7 @@ mod tests {
         // The CONTRAST, in the SAME world: `off` ignores the counts and falls back onto occupied
         // "b" — so a filter that leaked into both policies fails here.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Off, &all_watched, "a"),
+            plan(DetachOnDestroy::Off, &all_watched, "a"),
             Successor::LastViewed {
                 unattached: false,
                 fallback: Some("b".to_owned()),
@@ -5015,10 +5063,10 @@ mod tests {
         );
         // The last session → nothing to fall back to.
         assert_eq!(
-            destroy_successor(
+            plan(
                 DetachOnDestroy::NoDetached,
                 &attached_list(&[("only", 0)]),
-                "only"
+                "only",
             ),
             Successor::LastViewed {
                 unattached: true,
@@ -5026,6 +5074,72 @@ mod tests {
             },
         );
     }
+
+    /// R327's head, in the one fixture where the two readings DISAGREE: the OCCUPANCY comes from
+    /// the list as of now, and the ORDER from the mirror the person could see.
+    ///
+    /// This is the defect R326 measured, reduced to the decision that made it. Two clients, and the
+    /// one whose session is destroyed must not walk into the session the other is sitting in. Its
+    /// mirror says `beta` is free — truthfully, as of the last time anything woke this client to
+    /// re-read, which an attach to ANOTHER session never does — and the daemon says `beta` now holds
+    /// a client. A build that decided on the mirror joins `beta`; the answer is to LEAVE.
+    ///
+    /// The mirror is deliberately not merely stale but WRONG IN BOTH DIRECTIONS (it also calls
+    /// `gamma` occupied where the fresh list has it free), so a reading that took the union, or that
+    /// preferred whichever list said "free", is caught rather than passed.
+    ///
+    /// And the second half is the one an over-eager fix breaks: `next` must still name `beta`,
+    /// which only the mirror can say, because the fresh list no longer holds the row `next` counts
+    /// FROM. R326 measured exactly that failure — making the decision turn on a re-read alone
+    /// turned the occupancy case green and BOTH switch-policy gates red.
+    ///
+    /// REVERT-PROOF: point `no-detached`'s fallback at `seen` and the first row joins the occupied
+    /// session; point `next` at `now` and the last row detaches instead of naming the neighbour.
+    #[test]
+    fn the_occupancy_comes_from_now_and_the_order_comes_from_what_the_person_saw() {
+        // The mirror: `alpha` is about to die, `beta` looks free, `gamma` looks taken.
+        let seen = attached_list(&[("alpha", 1), ("beta", 0), ("gamma", 1)]);
+        // The daemon, asked at the instant of the decision: `alpha` is gone, and the two survivors
+        // are the other way round from what this client last heard.
+        let now = attached_list(&[("beta", 1), ("gamma", 0)]);
+
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::NoDetached, &seen, &now, "alpha"),
+            Successor::LastViewed {
+                unattached: true,
+                fallback: Some("gamma".to_owned()),
+            },
+            "no-detached must not offer `beta`: somebody is sitting in it NOW, whatever the \
+             sidebar was last told",
+        );
+        // The CONTROL that makes that mean something: on the mirror alone the answer is `beta` —
+        // the join R326 measured. So the row above is about which list was read, not about the
+        // filter existing.
+        assert_eq!(
+            plan(DetachOnDestroy::NoDetached, &seen, "alpha"),
+            Successor::LastViewed {
+                unattached: true,
+                fallback: Some("beta".to_owned()),
+            },
+            "deciding on the mirror is what walked into an occupied session",
+        );
+
+        // ...and the ORDER still comes from the mirror, which is the only list that holds the
+        // anchor. `next` from `alpha` is the row below it — a question the fresh list cannot answer
+        // at all, since `alpha` is not in it.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            Successor::Named("beta".to_owned()),
+            "next counts from the row that died, which only the mirror still has",
+        );
+        assert_eq!(
+            plan(DetachOnDestroy::Next, &now, "alpha"),
+            Successor::Detach,
+            "the control: asked of the fresh list alone, `next` has no anchor and detaches — \
+             which is the switch-policy breakage a re-read-everything fix causes",
+        );
+    }
+
     /// A [`QuitSink`] that counts requests, so a test can assert the poll thread asked
     /// the shell to end (and did so across the thread boundary).
     #[derive(Default)]
