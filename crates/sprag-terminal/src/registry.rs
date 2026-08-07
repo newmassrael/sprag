@@ -1136,6 +1136,16 @@ pub enum SessionError {
     /// [`Unknown`](Self::Unknown) one level down, and there for
     /// [`DuplicateWindow`](Self::DuplicateWindow)'s reason.
     UnknownWindow(String),
+    /// No window of the session addressed carries the IDENTITY — the refusal a caller that PICKED
+    /// its subject gets, where [`UnknownWindow`](Self::UnknownWindow) is what a caller that typed a
+    /// name gets.
+    ///
+    /// Its own arm for that variant's own stated reason, one address over: `UnknownWindow` carries
+    /// a name a person can re-read and re-type, and an identity cannot be mistyped. The two
+    /// sentences therefore ask different things of them — *check the name* against *that window is
+    /// gone* — and only the second is a true reading of an id, which is minted once and never
+    /// reused. [`PaneMoveError::GoneWindow`] is the same variant one class over.
+    GoneWindow(WindowId),
     /// No window carries the name a [`WindowPlace`] used as its ANCHOR
     /// ([`SessionRegistry::move_window`]).
     ///
@@ -1165,6 +1175,7 @@ impl std::fmt::Display for SessionError {
             Self::MalformedWindow(error) => error.fmt(f),
             Self::DuplicateWindow(name) => write!(f, "a window named {name:?} already exists"),
             Self::UnknownWindow(name) => write!(f, "no window named {name:?}"),
+            Self::GoneWindow(id) => write!(f, "the window picked is gone (id {})", id.0),
             Self::UnknownAnchor(name) => write!(f, "no window named {name:?} to anchor to"),
             Self::UnknownPane(id) => write!(f, "that window tiles no pane with id {}", id.0),
         }
@@ -3621,16 +3632,77 @@ impl SessionRegistry {
         session: &str,
         window: &str,
     ) -> Result<WindowKillOutcome, SessionError> {
-        let sidx = self
-            .sessions
-            .iter()
-            .position(|s| s.name == session)
-            .ok_or_else(|| SessionError::Unknown(session.to_owned()))?;
+        let sidx = self.session_index(session)?;
         let widx = self.sessions[sidx]
             .windows
             .iter()
             .position(|w| w.name == window)
             .ok_or_else(|| SessionError::UnknownWindow(window.to_owned()))?;
+        self.kill_window_at(sidx, widx)
+    }
+
+    /// Kill the window `window` IDENTIFIES, in the session named `session` — the address a client
+    /// that PAINTED a row commits, where the name form above is the address a person who TYPED one
+    /// means.
+    ///
+    /// # Why the destructive verb needed this first
+    ///
+    /// Because the row and the act are separated by a CONFIRMATION. The GUI paints
+    /// `Kill window 'build'`, a person reads it, a dialog asks them to agree, and the name is sent
+    /// when they do — and every one of those steps is time in which another client can rename. That
+    /// window is not hypothetical and it is not short: it is exactly as long as a person takes to
+    /// read a sentence and decide.
+    ///
+    /// MEASURED before it was fixed, on the fixture
+    /// `a_kill_lands_on_the_window_pointed_at_and_a_name_lands_on_whatever_holds_it`: with the
+    /// destination renamed away and a sibling renamed onto the freed name, the kill **destroyed a
+    /// window nobody pointed at** while the one on the row survived. A join that lands wrong can be
+    /// undone; this cannot, which is why it is the verb this pattern reached second and should have
+    /// reached first.
+    ///
+    /// Everything else is [`kill_window`](Self::kill_window)'s, including the last-window escalation
+    /// into [`kill_session`](Self::kill_session): the two share one implementation, so they cannot
+    /// come to disagree about what a kill DOES while disagreeing about how it is addressed.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] for an unknown session; [`SessionError::GoneWindow`] if no window
+    /// of it carries `window` — the sentence an identity has and a name does not.
+    pub fn kill_window_id(
+        &mut self,
+        session: &str,
+        window: WindowId,
+    ) -> Result<WindowKillOutcome, SessionError> {
+        let sidx = self.session_index(session)?;
+        let widx = self.sessions[sidx]
+            .windows
+            .iter()
+            .position(|w| w.id == window)
+            .ok_or(SessionError::GoneWindow(window))?;
+        self.kill_window_at(sidx, widx)
+    }
+
+    /// The index of the session named `session`.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] when no session carries the name.
+    fn session_index(&self, session: &str) -> Result<usize, SessionError> {
+        self.sessions
+            .iter()
+            .position(|s| s.name == session)
+            .ok_or_else(|| SessionError::Unknown(session.to_owned()))
+    }
+
+    /// The kill itself, once the window has been RESOLVED — the one implementation both addresses
+    /// reach, so a kill cannot differ by how its subject was spelled.
+    fn kill_window_at(
+        &mut self,
+        sidx: usize,
+        widx: usize,
+    ) -> Result<WindowKillOutcome, SessionError> {
+        let session = self.sessions[sidx].name.clone();
+        let session = session.as_str();
         if self.sessions[sidx].windows.len() == 1 {
             // The session's last window: tmux ends the session with it. Escalating also handles
             // the last-SESSION case (drain + end the daemon) in one place — this never removes a
@@ -6073,6 +6145,126 @@ mod tests {
             session.current_window().name(),
             "2",
             "current still names \"2\" after the list shifted down",
+        );
+    }
+
+    /// **A kill lands on the window that was POINTED AT, and a name lands on whatever holds it
+    /// now** — the two addresses driven side by side against the one shuffle that tells them apart.
+    ///
+    /// R329 proved this shape for a JOIN. This is the same defect on the verb where it cannot be
+    /// undone, and the gap between the row and the act is not milliseconds: the GUI paints
+    /// `Kill window 'alpha'`, a CONFIRMATION asks the person to agree, and the name is sent when
+    /// they do. MEASURED before the fix, on this fixture: the kill destroyed a window nobody
+    /// pointed at while the one on the row survived.
+    ///
+    /// The name arm is asserted BESIDE it rather than dropped: `sprag kill-window -t s alpha` means
+    /// whatever holds that name when Enter is pressed, and that reading is right for a person who
+    /// TYPED it. What was wrong was a POINT spelled as a name.
+    ///
+    /// REVERT-PROOF: point `kill_window_id` at `position(|w| w.name == …)` through the label and the
+    /// identity arm destroys the stranger with the name arm; make `kill_window_at` re-resolve by
+    /// name and both survivors swap.
+    #[test]
+    fn a_kill_lands_on_the_window_pointed_at_and_a_name_lands_on_whatever_holds_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        spawn_into(&reg, "0", 1);
+        for name in ["alpha", "beta", "gamma"] {
+            reg.new_window(&default, Some(name), WindowBirth::default())
+                .unwrap();
+            spawn_into(&reg, name, 1);
+        }
+        let id_of = |reg: &SessionRegistry, name: &str| {
+            reg.session(&default)
+                .unwrap()
+                .windows()
+                .iter()
+                .find(|w| w.name() == name)
+                .map(|w| w.id())
+        };
+        let names = |reg: &SessionRegistry| {
+            reg.session(&default)
+                .unwrap()
+                .windows()
+                .iter()
+                .map(|w| w.name().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // What a person reading the row `Kill window 'alpha'` is pointing at.
+        let pointed = id_of(&reg, "alpha").expect("alpha exists");
+
+        // Another client renames, while the confirmation dialog is up — R304's window, and here it
+        // is as long as a person takes to read a sentence and decide.
+        reg.rename_window(&default, "alpha", "archive").unwrap();
+        reg.rename_window(&default, "beta", "alpha").unwrap();
+
+        reg.kill_window_id(&default, pointed)
+            .expect("the pointed-at window dies");
+        assert_eq!(
+            names(&reg),
+            vec!["0", "alpha", "gamma"],
+            "the POINT killed the window it named, whatever it is called now",
+        );
+
+        reg.kill_window(&default, "alpha")
+            .expect("the named window dies");
+        assert_eq!(
+            names(&reg),
+            vec!["0", "gamma"],
+            "and a typed NAME killed whatever holds that name now",
+        );
+    }
+
+    /// A pointed-at window that is GONE refuses, and says so as a window rather than as a name.
+    ///
+    /// The control is the arm above it: the same id resolves before the window is killed, so a
+    /// refusal here cannot be a fixture that never had a subject.
+    ///
+    /// REVERT-PROOF: fold `GoneWindow` into `UnknownWindow(String)` and the id is quoted as a name.
+    #[test]
+    fn a_pointed_at_window_that_is_gone_refuses_as_a_window() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        spawn_into(&reg, "0", 1);
+        reg.new_window(&default, Some("1"), WindowBirth::default())
+            .unwrap();
+        spawn_into(&reg, "1", 1);
+        let doomed = reg
+            .session(&default)
+            .unwrap()
+            .windows()
+            .iter()
+            .find(|w| w.name() == "1")
+            .expect("the window was just made")
+            .id();
+
+        // CONTROL: the id resolves while the window is there — a kill of it would succeed, which
+        // is exactly what the arm below shows stops being true.
+        assert!(
+            reg.session(&default)
+                .unwrap()
+                .windows()
+                .iter()
+                .any(|w| w.id() == doomed)
+        );
+
+        reg.kill_window_id(&default, doomed).expect("it dies once");
+
+        assert!(
+            matches!(
+                reg.kill_window_id(&default, doomed),
+                Err(SessionError::GoneWindow(id)) if id == doomed
+            ),
+            "a second kill of the same identity is refused as a gone WINDOW",
+        );
+        assert_eq!(
+            SessionError::GoneWindow(doomed).to_string(),
+            format!("the window picked is gone (id {})", doomed.0),
+        );
+        assert_eq!(
+            reg.session(&default).unwrap().windows().len(),
+            1,
+            "a refusal kills nothing, this class's whole invariant",
         );
     }
 

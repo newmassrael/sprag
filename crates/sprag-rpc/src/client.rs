@@ -411,7 +411,7 @@ impl ScopeAsk {
 ///   so a message sent to it reaches nobody — and there is no key whose absence could say so, since
 ///   the whole answer is a delivery list that does not exist. Measured: the old CLI against the new
 ///   daemon is refused by number, while the new CLI on the same daemon delivers.
-pub const WIRE_PROTOCOL: u32 = 15;
+pub const WIRE_PROTOCOL: u32 = 16;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

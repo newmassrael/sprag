@@ -85,7 +85,8 @@ use crate::wire::{
     REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
     SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
+    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef,
+    ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -1814,9 +1815,20 @@ impl WorkspaceExternal {
     /// [`handle_session_kill`](Self::handle_session_kill) path a `kill_session` uses.
     fn kill_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
-        let window = self.window_target(map)?.to_owned();
+        // The one destructive verb in this family, so it is the one that gained an IDENTITY first:
+        // a client that PAINTED the row it is killing from cannot honestly send the label on it.
+        // Absent ⇒ the request's scoped window, `window_target`'s rule kept.
+        let subject = WindowRef::read(map)
+            .map_err(|_| InvokeError::TypeMismatch)?
+            .unwrap_or_else(|| WindowRef::Named(self.scope.window().to_owned()));
         // Bind off-lock so the reaped panes' blocking Drop runs outside the registry lock.
-        let outcome = lock(&self.registry).kill_window(self.scope.session(), &window);
+        let outcome = {
+            let mut registry = lock(&self.registry);
+            match &subject {
+                WindowRef::Named(name) => registry.kill_window(self.scope.session(), name),
+                WindowRef::Picked(window) => registry.kill_window_id(self.scope.session(), *window),
+            }
+        };
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => return Err(refused(error)),
@@ -1966,14 +1978,12 @@ impl WorkspaceExternal {
             IntrospectValue::Json(value) => value,
             _ => return Err(InvokeError::TypeMismatch),
         };
-        let ask = JoinAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
+        let JoinAsk { pane, window } = JoinAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
         let mut registry = lock(&self.registry);
-        let closed = match &ask {
-            JoinAsk::Named { pane, window } => {
-                registry.join_pane(self.scope.session(), *pane, window)
-            }
-            JoinAsk::Picked { pane, window } => {
-                registry.join_pane_into(self.scope.session(), *pane, *window)
+        let closed = match &window {
+            WindowRef::Named(name) => registry.join_pane(self.scope.session(), pane, name),
+            WindowRef::Picked(window) => {
+                registry.join_pane_into(self.scope.session(), pane, *window)
             }
         }
         .map_err(refused)?;
@@ -6002,6 +6012,107 @@ mod tests {
                 "{args} must be refused",
             );
         }
+    }
+
+    /// **A kill addressed by IDENTITY destroys the window that was pointed at, over the wire** —
+    /// the daemon's half of R330, driven through the action a client really sends.
+    ///
+    /// The registry gate proves the resolution; this proves the ACTION carries the address there,
+    /// which is a different claim: `window_target`'s absent-key default used to be the only reading
+    /// of a kill request, so a `window_id` reaching an unchanged handler would have killed the
+    /// SCOPED window and looked like a success.
+    ///
+    /// The rename shuffle is what makes the two readings disagree. Both are asserted, because the
+    /// NAME arm is not the defect — `sprag kill-window -t s alpha` means whatever holds it now.
+    ///
+    /// REVERT-PROOF: drop the `WindowRef::read` and default the subject to the scope, and the
+    /// identity arm kills the current window instead; make the handler prefer `window` when both
+    /// keys arrive and the refusal below goes green with a kill nobody asked for.
+    #[test]
+    fn a_kill_addressed_by_identity_destroys_the_window_pointed_at() {
+        let reg = registry();
+        for name in ["alpha", "beta"] {
+            lock(&reg)
+                .new_window("0", Some(name), WindowBirth::default())
+                .unwrap();
+        }
+        let (mut ext, _rev) = control(&reg);
+        let id_of = |name: &str| {
+            lock(&reg)
+                .session("0")
+                .expect("the default session")
+                .windows()
+                .iter()
+                .find(|w| w.name() == name)
+                .map(|w| w.id().0)
+        };
+        fn names(ext: &mut WorkspaceExternal) -> Vec<String> {
+            answer_doc(ext.query(WINDOWS_SLOT))
+                .as_array()
+                .expect("a list")
+                .iter()
+                .map(|row| row["name"].as_str().expect("a name").to_owned())
+                .collect()
+        }
+        let pointed = id_of("alpha").expect("alpha exists");
+
+        // Another client renames while the confirmation dialog is up.
+        lock(&reg).rename_window("0", "alpha", "archive").unwrap();
+        lock(&reg).rename_window("0", "beta", "alpha").unwrap();
+
+        assert!(
+            ext.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window_id": pointed })),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            names(&mut ext),
+            vec!["0", "alpha"],
+            "the POINT killed the window it named, whatever it is called now",
+        );
+
+        // ...and a NAME still means whatever holds it, which is the reading a typed argument has.
+        assert!(
+            ext.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window": "alpha" })),
+            )
+            .is_ok()
+        );
+        assert_eq!(names(&mut ext), vec!["0"]);
+
+        // A name AND an identity names two windows, so it names none: refused, nothing killed.
+        assert!(matches!(
+            ext.invoke(
+                KILL_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window": "0", "window_id": 0 })),
+            ),
+            Err(InvokeError::TypeMismatch)
+        ));
+        assert_eq!(names(&mut ext), vec!["0"], "a refusal kills nothing");
+
+        // ...and NEITHER key is the request's SCOPED window — the reading `sprag kill-window -t s`
+        // with no argument sends, and the branch `WindowRef::read`'s `Ok(None)` exists for.
+        //
+        // A FRESH control, because a scope freezes the window it resolved on and this one's died
+        // above — which is the scope's own documented behaviour and not this branch's business.
+        lock(&reg)
+            .new_window("0", Some("spare"), WindowBirth::default())
+            .unwrap();
+        let (mut fresh, _rev) = control(&reg);
+        assert_eq!(names(&mut fresh), vec!["0", "spare"]);
+        assert!(
+            fresh
+                .invoke(KILL_WINDOW_ACTION, IntrospectValue::Json(json!({})))
+                .is_ok()
+        );
+        assert_eq!(
+            names(&mut fresh),
+            vec!["0"],
+            "an absent reference is the SCOPED window, which `new_window` had just made current",
+        );
     }
 
     /// Killing a NON-last window over the wire removes it, keeps the current window valid, and

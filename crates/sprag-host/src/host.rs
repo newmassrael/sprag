@@ -722,9 +722,23 @@ pub trait HostClient: crate::wake::WakeSource {
     /// `new-window`), returning its name.
     fn new_window(&self) -> String;
 
-    /// Kill the window named `name` of the scoped session (tmux `kill-window`), answering HOW FAR
-    /// the kill cascaded — or [`None`] if nothing was killed (an unknown name, a refusal, a failed
-    /// request).
+    /// Kill the window `window` IDENTIFIES, in the scoped session (tmux `kill-window`), answering
+    /// HOW FAR the kill cascaded — or [`None`] if nothing was killed (a window already gone, a
+    /// refusal, a failed request).
+    ///
+    /// # Why the one destructive window verb takes an identity and no name
+    ///
+    /// Because every client that kills a window decided WHICH window at some earlier instant — a
+    /// GUI row painted into a menu, a TUI prompt armed on the current window — and a confirmation
+    /// dialog sits between that instant and the act. A name committed across that gap lands on
+    /// whatever holds it by the time the person says yes, which was MEASURED at the registry
+    /// destroying a window nobody pointed at while the one on the row survived
+    /// (`a_kill_lands_on_the_window_pointed_at_and_a_name_lands_on_whatever_holds_it`).
+    ///
+    /// The name-addressed door that used to be here is DELETED rather than kept beside this one —
+    /// `HostClient::join_pane`'s treatment at R329, on the verb where being wrong cannot be undone.
+    /// The wire action keeps its `window` arm for `sprag kill-window -t s build`, where a person
+    /// TYPED the name and means whatever holds it when they press Enter.
     ///
     /// [`Ended`] rather than `()`, which is what this answered until R325 and the last acting method
     /// in this trait to be widened (R316's shape, met a final time). The word is not decoration: a
@@ -739,7 +753,7 @@ pub trait HostClient: crate::wake::WakeSource {
     /// answer from a snapshot taken before the kill.
     #[must_use = "the [`Ended`] word says HOW FAR the cascade went — a window kill that took the \
                   SESSION is not something a re-read tells the person who pressed the key"]
-    fn kill_window(&self, name: &str) -> Option<Ended>;
+    fn kill_window(&self, window: sprag_terminal::WindowId) -> Option<Ended>;
 
     /// Rename the scoped session's CURRENT window, answering the name the daemon RECORDED — or
     /// [`None`] if it refused (tmux `rename-window`).
@@ -1011,7 +1025,7 @@ pub trait HostClient: crate::wake::WakeSource {
     /// There was a name-addressed twin here until R329 and it is deliberately gone. A name is the
     /// right address for a caller who TYPED one and means whatever holds it at the instant they
     /// press Enter — which is the `sprag join-pane` verb, and the wire action still has the arm for
-    /// it ([`crate::wire::JoinAsk::Named`]). It is the wrong address for every caller this trait
+    /// it ([`crate::wire::WindowRef::Named`]). It is the wrong address for every caller this trait
     /// has: a display client commits a join from a ROW, painted at one instant and clicked at
     /// another, so the name it holds is a fact about the past.
     ///
@@ -2961,14 +2975,14 @@ impl HostClient for Host {
         name
     }
 
-    /// Kill a window of the default session; the last window ends the session. An unknown name is a
-    /// no-op. The in-process arm has no daemon to exit, so the reaped panes just drop here —
-    /// OFF the registry lock (the outcome is bound after the lock guard falls at the `;`).
-    fn kill_window(&self, name: &str) -> Option<Ended> {
+    /// Kill a window of the default session; the last window ends the session. A window already
+    /// gone is a no-op. The in-process arm has no daemon to exit, so the reaped panes just drop
+    /// here — OFF the registry lock (the outcome is bound after the lock guard falls at the `;`).
+    fn kill_window(&self, window: sprag_terminal::WindowId) -> Option<Ended> {
         let session = lock(&self.registry).default_session().name().to_owned();
         // Bound off the lock so the reaped panes' blocking `Drop` runs outside it — the discipline
         // every kill in this tree keeps — and its word is the answer.
-        let outcome = lock(&self.registry).kill_window(&session, name);
+        let outcome = lock(&self.registry).kill_window_id(&session, window);
         outcome.ok().map(|outcome| outcome.ended())
     }
 

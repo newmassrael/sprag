@@ -2426,82 +2426,141 @@ pub const BREAK_PANE_ACTION: &str = "break_pane";
 /// which is why [`WIRE_PROTOCOL`] does not move for it.
 pub const JOIN_PANE_ACTION: &str = "join_pane";
 
-/// The REQUEST grammar of [`JOIN_PANE_ACTION`] — the destination as a type that cannot spell a name
-/// and an identity at once, nor neither.
+/// **WHICH window a request is about** — a NAME the daemon resolves NOW, or the IDENTITY a client
+/// PICKED off a list it painted earlier. The one grammar every window-addressing request shares.
+///
+/// # Why two addresses is the answer and not a wart
+///
+/// Because a caller can honestly know two different things, and only one of them is a name. A
+/// person who TYPES `sprag kill-window -t s build` means whatever holds that name at the instant
+/// they press Enter — resolving it any later would be second-guessing them. A person who CLICKS
+/// `Kill window 'build'` means the window on the row they read, and the row is a fact about the
+/// PAST: R304's sentence, and between the paint and the click sits a confirmation dialog.
+///
+/// Both readings were MEASURED at the registry
+/// (`a_kill_lands_on_the_window_pointed_at_and_a_name_lands_on_whatever_holds_it`) and they land on
+/// DIFFERENT windows across a rename. So the request has to say which it meant, and the type is
+/// what stops a client holding an identity from sending the label beside it.
+///
+/// # Why one type and not one per verb
+///
+/// R329 built this XOR inside `JoinAsk` and R330 needed it again for the kill — the point at which
+/// a second copy becomes the thing this project's grammars exist to prevent. Hoisted, so `window`
+/// and `window_id` are spelled ONCE for every verb that addresses a window, and a third verb costs
+/// a [`read`](Self::read) call rather than a decision.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum WindowRef {
+    /// `{window: "build"}` — whatever window carries that name when the request arrives.
+    Named(String),
+    /// `{window_id: 7}` — that window, or none.
+    Picked(WindowId),
+}
+
+impl WindowRef {
+    /// The request key addressing a window by NAME.
+    pub const WINDOW_KEY: &'static str = "window";
+    /// The request key addressing a window by IDENTITY.
+    pub const WINDOW_ID_KEY: &'static str = "window_id";
+
+    /// Write this reference into a request's `args` map.
+    pub fn write(&self, map: &mut Map<String, Value>) {
+        let (key, value) = match self {
+            Self::Named(name) => (Self::WINDOW_KEY, Value::from(name.clone())),
+            Self::Picked(window) => (Self::WINDOW_ID_KEY, Value::from(window.0)),
+        };
+        map.insert(key.to_owned(), value);
+    }
+
+    /// The reference `map` carries: [`None`] for neither key (the caller means whatever the request
+    /// is SCOPED to), [`Err`] for both at once or for a key of the wrong type.
+    ///
+    /// The error is a NAMED type rather than `()` so a caller reading this signature learns what
+    /// went wrong is a malformed reference and not an absent one — the same distinction the three
+    /// outcomes exist to draw.
+    ///
+    /// An explicit `null` reads as ABSENT — [`SwapAsk::parse`]'s rule, so a client filling in a
+    /// whole argument struct asks what one omitting the optional halves asks.
+    ///
+    /// # Errors
+    ///
+    /// [`MalformedWindowRef`] for a malformed or doubly-spelled reference; the caller turns that
+    /// into the one `TypeMismatch` its action answers.
+    pub fn read(map: &Map<String, Value>) -> Result<Option<Self>, MalformedWindowRef> {
+        let field = |key: &str| map.get(key).filter(|value| !value.is_null());
+        let named = match field(Self::WINDOW_KEY) {
+            None => None,
+            Some(value) => Some(value.as_str().ok_or(MalformedWindowRef)?.to_owned()),
+        };
+        let picked = match field(Self::WINDOW_ID_KEY) {
+            None => None,
+            Some(value) => Some(WindowId(value.as_u64().ok_or(MalformedWindowRef)?)),
+        };
+        match (named, picked) {
+            (None, None) => Ok(None),
+            (Some(name), None) => Ok(Some(Self::Named(name))),
+            (None, Some(window)) => Ok(Some(Self::Picked(window))),
+            // A name AND an identity is two destinations, which is not a request this daemon can
+            // honour — and guessing one would hide a client bug at the end that can least afford it.
+            (Some(_), Some(_)) => Err(MalformedWindowRef),
+        }
+    }
+}
+
+/// A [`WindowRef`] a request could not name: a key of the wrong type, or a NAME and an IDENTITY at
+/// once.
+///
+/// One value for both, [`SwapAsk::parse`]'s rule and for its reason: the action answers a single
+/// `TypeMismatch` for every malformed request, because `InvokeError` carries no payload to tell
+/// them apart, and the SURFACES say which one because each knows what it sent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MalformedWindowRef;
+
+/// The REQUEST grammar of [`JOIN_PANE_ACTION`] — the pane to move and where it goes.
 ///
 /// [`SwapAsk`]'s shape one verb over and for its reason: the daemon [`parse`](Self::parse)s one of
 /// these and every client [`to_args`](Self::to_args) builds one, so the keys are spelled ONCE for
-/// the daemon, the CLI verb, the GUI menu and the keybinding. What is different here is what the
-/// XOR is FOR — the two arms are not two conveniences over one address but two ADDRESSES, and the
-/// type is what stops a client that holds an identity from sending the label beside it.
+/// the daemon, the CLI verb, the GUI menu and the keybinding. The destination is a [`WindowRef`],
+/// which is where the XOR lives.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum JoinAsk {
-    /// `{pane, window}` — append `pane` into whatever window carries that NAME right now.
-    ///
-    /// The right reading for a caller who TYPED one, and the only one available to a caller who
-    /// read a name off somewhere this daemon does not own.
-    Named {
-        /// The pane to move; its source window is derived from the id.
-        pane: PaneId,
-        /// The destination window's name, resolved at the instant the request arrives.
-        window: String,
-    },
-    /// `{pane, window_id}` — append `pane` into the window that IDENTITY names, or refuse.
-    ///
-    /// What a picked row commits ([`crate::chooser::Target::Window`]), so the pick lands on the
-    /// window the person was looking at or on nothing.
-    Picked {
-        /// The pane to move; its source window is derived from the id.
-        pane: PaneId,
-        /// The destination window's identity — minted once, never reused.
-        window: WindowId,
-    },
+pub struct JoinAsk {
+    /// The pane to move; its source window is derived from the id.
+    pub pane: PaneId,
+    /// Where it goes.
+    pub window: WindowRef,
 }
 
 impl JoinAsk {
     /// The request key naming the pane to move.
     pub const PANE_KEY: &'static str = "pane";
-    /// The request key naming the destination window by NAME.
-    pub const WINDOW_KEY: &'static str = "window";
-    /// The request key naming the destination window by IDENTITY.
-    pub const WINDOW_ID_KEY: &'static str = "window_id";
 
     /// The `args` object a client sends for this ask.
     #[must_use]
     pub fn to_args(&self) -> Value {
         let mut map = Map::new();
-        let (pane, key, value) = match self {
-            Self::Named { pane, window } => (pane, Self::WINDOW_KEY, Value::from(window.clone())),
-            Self::Picked { pane, window } => (pane, Self::WINDOW_ID_KEY, Value::from(window.0)),
-        };
-        map.insert(Self::PANE_KEY.to_owned(), Value::from(pane.0));
-        map.insert(key.to_owned(), value);
+        map.insert(Self::PANE_KEY.to_owned(), Value::from(self.pane.0));
+        self.window.write(&mut map);
         Value::Object(map)
     }
 
     /// The ask an `args` value names, or [`None`] for anything this grammar does not admit —
     /// [`SwapAsk::parse`]'s rule, including that an explicit `null` reads as ABSENT.
+    ///
+    /// A join with NO destination is refused here rather than defaulted to the scoped window: that
+    /// would be a request to move a pane into the window it is probably already in, whose only
+    /// answer is `SameWindow`.
     #[must_use]
     pub fn parse(args: &Value) -> Option<Self> {
         let map = match args {
             Value::Object(map) => map,
             _ => return None,
         };
-        let field = |key: &str| map.get(key).filter(|value| !value.is_null());
-        let pane = PaneId(field(Self::PANE_KEY)?.as_u64()?);
-        let named = match field(Self::WINDOW_KEY) {
-            None => None,
-            Some(value) => Some(value.as_str()?.to_owned()),
-        };
-        let picked = match field(Self::WINDOW_ID_KEY) {
-            None => None,
-            Some(value) => Some(WindowId(value.as_u64()?)),
-        };
-        match (named, picked) {
-            (Some(window), None) => Some(Self::Named { pane, window }),
-            (None, Some(window)) => Some(Self::Picked { pane, window }),
-            _ => None,
-        }
+        let pane = PaneId(
+            map.get(Self::PANE_KEY)
+                .filter(|value| !value.is_null())?
+                .as_u64()?,
+        );
+        let window = WindowRef::read(map).ok()??;
+        Some(Self { pane, window })
     }
 }
 
@@ -3482,13 +3541,13 @@ mod tests {
     #[test]
     fn the_join_grammar_round_trips_through_the_bytes_it_sends() {
         let shapes = [
-            JoinAsk::Named {
+            JoinAsk {
                 pane: PaneId(3),
-                window: "build".to_owned(),
+                window: WindowRef::Named("build".to_owned()),
             },
-            JoinAsk::Picked {
+            JoinAsk {
                 pane: PaneId(3),
-                window: WindowId(7),
+                window: WindowRef::Picked(WindowId(7)),
             },
         ];
         for ask in &shapes {
@@ -3496,6 +3555,39 @@ mod tests {
         }
         assert_eq!(shapes[0].to_args(), json!({"pane": 3, "window": "build"}));
         assert_eq!(shapes[1].to_args(), json!({"pane": 3, "window_id": 7}));
+
+        // THE SHARED GRAMMAR, on its own (R330). A join is one of several verbs that address a
+        // window, and the keys are pinned HERE because a second verb spelling `window_id` its own
+        // way is the drift `WindowRef` was hoisted to prevent.
+        let mut map = Map::new();
+        WindowRef::Named("build".to_owned()).write(&mut map);
+        assert_eq!(Value::Object(map.clone()), json!({"window": "build"}));
+        map.clear();
+        WindowRef::Picked(WindowId(7)).write(&mut map);
+        assert_eq!(Value::Object(map), json!({"window_id": 7}));
+
+        let read = |value: Value| match value {
+            Value::Object(map) => WindowRef::read(&map),
+            _ => panic!("the fixture builds objects"),
+        };
+        assert_eq!(
+            read(json!({})),
+            Ok(None),
+            "neither key is the SCOPED window"
+        );
+        assert_eq!(
+            read(json!({"window": null, "window_id": null})),
+            Ok(None),
+            "an explicit null is an absent key",
+        );
+        assert_eq!(
+            read(json!({"window": "build", "window_id": 7})),
+            Err(MalformedWindowRef),
+            "a name AND an identity is two destinations, which is no request at all",
+        );
+        assert_eq!(read(json!({"window": 7})), Err(MalformedWindowRef));
+        assert_eq!(read(json!({"window_id": "7"})), Err(MalformedWindowRef));
+        assert_eq!(read(json!({"window_id": -1})), Err(MalformedWindowRef));
 
         // A NAME and an IDENTITY are two addresses, so a request carrying both names no destination
         // this daemon can honour — and one carrying neither names none at all.
@@ -4359,8 +4451,16 @@ mod tests {
     /// address (`cells.<offset>`, `events.<since>`), and two slots were spelled here by their const's
     /// name rather than by the string it holds. So renaming an ARG moves this surface too, which is
     /// right: an agent reading the schema learns the argument's name from it.
+    /// ⚠ **R330 moved the number with this list UNCHANGED, and that is the legitimate case this
+    /// assertion names**: `window_id` is a request KEY, not an address, so nothing here moves — but
+    /// the MEANING of a `kill_window` request changed under a name that did not. A daemon older
+    /// than the key does not refuse `{window_id: 7}`; its `window_target` reads `window` as ABSENT
+    /// and kills the SCOPED window instead. That is `DETACHED_KEY`'s case exactly — an added
+    /// argument is invisible to `client/hello` and only the version is not — and it is the reason
+    /// R329's own two additions did NOT move it: both of those were refused by an older daemon
+    /// rather than silently honoured as something else.
     const PINNED_SURFACE: (u32, &[&str]) = (
-        15,
+        16,
         &[
             "agent_manifests",
             "application_cursor_keys",

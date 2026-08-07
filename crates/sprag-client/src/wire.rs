@@ -101,8 +101,8 @@ use sprag_host::wire::{
     SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT,
     SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
     SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, TREE_SLOT, WINDOW_SIZE_SLOT,
-    WINDOWS_SLOT, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for, regex_slot_for,
-    session_activity_at,
+    WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for,
+    regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -2845,17 +2845,19 @@ impl HostClient for WireHost {
     /// that the answer arrives on the SAME reply as the act, which matters more than usual for this
     /// verb: killing a session's last window ends the session, and a client that asked afterwards
     /// would be asking a daemon that may have exited.
-    fn kill_window(&self, name: &str) -> Option<Ended> {
+    fn kill_window(&self, window: sprag_terminal::WindowId) -> Option<Ended> {
         // Plan the successor BEFORE the kill, for the reason [`kill_session`](Self::kill_session)
         // states: `next` / `previous` and the MRU fallbacks must resolve against the session list
         // the PERSON can see, and a cascade takes our own session out of it. Pure over the mirror,
         // so a kill that stops at the window pays a clone and throws the plan away.
         let me = lock_session(&self.session).clone();
         let plan = self.plan_successor(&me);
-        let params = invoke(
-            &mux_action_path(KILL_WINDOW_ACTION),
-            json!({ "window": name }),
-        );
+        // The IDENTITY is what crosses, never a name this client read off a mirror at some earlier
+        // instant — `WindowRef`'s whole reason, and the keys are the grammar's rather than a
+        // `json!` here for `join`'s stated reason one method over.
+        let mut args = serde_json::Map::new();
+        WindowRef::Picked(window).write(&mut args);
+        let params = invoke(&mux_action_path(KILL_WINDOW_ACTION), Value::Object(args));
         let answer = self.request("scene/invoke", params, "kill_window")?;
         let ended = ended_of(&answer, "kill_window");
         // OUR SESSION WENT WITH THE WINDOW — take the deterministic own-kill path here rather than
@@ -3125,9 +3127,9 @@ impl HostClient for WireHost {
     }
 
     fn join_pane_into(&self, id: PaneId, dst: sprag_terminal::WindowId) -> Option<bool> {
-        self.join(&JoinAsk::Picked {
+        self.join(&JoinAsk {
             pane: id,
-            window: dst,
+            window: WindowRef::Picked(dst),
         })
     }
 

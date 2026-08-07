@@ -4967,8 +4967,16 @@ fn kill_window(args: Vec<String>) -> io::Result<()> {
     let window = rest.into_iter().next();
     let mut conn = connect(None)?;
     let session = require_target(&mut conn, session.as_deref(), "kill-window")?;
+    // The key is the GRAMMAR's, never spelled here: `WindowRef` is the one place this product
+    // writes `window` vs `window_id`. This verb is the NAME caller by design — a person typed the
+    // name and means whatever holds it when they press Enter — and an ABSENT window is the scoped
+    // one, which is the request with no reference at all.
     let action_args = match &window {
-        Some(window) => json!({ "window": window }),
+        Some(window) => {
+            let mut map = serde_json::Map::new();
+            sprag_host::wire::WindowRef::Named(window.clone()).write(&mut map);
+            Value::Object(map)
+        }
         None => json!({}),
     };
     let answer = invoke_action(
@@ -5375,9 +5383,9 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
     // writes `window` vs `window_id`, and a hand-built object at a fifth call site is how a client
     // comes to send an address it does not hold. This verb is the NAME caller by design — a person
     // typed the name and means whatever holds it when they press Enter.
-    let ask = sprag_host::wire::JoinAsk::Named {
+    let ask = sprag_host::wire::JoinAsk {
         pane: sprag_terminal::PaneId(pane),
-        window: window.clone(),
+        window: sprag_host::wire::WindowRef::Named(window.clone()),
     };
     let answer = invoke_action(
         &mut conn,
