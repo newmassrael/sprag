@@ -77,6 +77,9 @@ serde = { workspace = true }
 unicode-segmentation = { workspace = true }
 
 [dev-dependencies]
+# A daemon OLDER than this build: the two skew sweeps drive one that serves no address and one
+# that knows no action. Four test files had each written their own until R324; this is DEV-ONLY.
+sprag-peer = { workspace = true }
 # The real-socket wire tests build/decode base64 image payloads (R1404 Stage 5 on-demand).
 base64 = { workspace = true }
 # The durability e2e SIGKILLs the forked daemon (the reboot analogue). An integration test links

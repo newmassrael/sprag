@@ -51,3 +51,6 @@ pinion-core = { workspace = true }
 # The wire vocabulary the probe addresses its own reads with — the same builders the client uses,
 # never a hand-spelled path.
 serde_json = { workspace = true }
+# A daemon OLDER than this build: the skew gate boots a real client through a proxy that relays
+# every read and refuses every action, which is the only way to reach the acting path (R324).
+sprag-peer = { workspace = true }

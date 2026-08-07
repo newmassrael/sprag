@@ -3,13 +3,8 @@
 //! Both binaries are the built artifacts (`CARGO_BIN_EXE_*`), so a break in the wire vocabulary
 //! the CLI shares with the daemon — or in the CLI's own output — fails in CI, not by hand.
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -22,10 +17,7 @@ use sprag_host::wire::{
     RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SPAWN_ACTION, SWAP_PANE_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, pane_input_path,
 };
-use sprag_rpc::{
-    CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn, INVALID_PARAMS,
-    PROTOCOL_FIELD, WIRE_PROTOCOL,
-};
+use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
 
 /// Reaps the spawned host process and its socket file on drop — including on a panicked
 /// assertion, so a failed run leaks neither.
@@ -109,258 +101,28 @@ fn sprag_env(sock: &Path, args: &[&str], envs: &[(&str, &str)]) -> CliRun {
     }
 }
 
-/// A stand-in daemon that PASSES the wire handshake and serves NO ADDRESS: every `scene/query`
-/// comes back `UnknownIntrospectPath`.
+/// A daemon OLDER than this build, serving NO address — [`sprag_peer`]'s, since R324.
 ///
-/// # Why this exists at all
-///
-/// The debt register recorded, for two rounds, that the version-skew half of the slot readers
-/// "cannot become a standing test — the CLI suite spawns the CURRENT daemon, which serves every
-/// slot this binary knows", and so only the pure fault-to-sentence mapping was pinned. That is a
-/// claim about the HARNESS, not about the product: the state is unreachable with a real
-/// `sprag-term` and perfectly reachable with a peer that answers the way an older one does. The
-/// socket is an env var ([`spawn_host_with`] already sets it), the handshake is two constants, and
-/// the fault was captured from a live daemon (see `unknown_slot` in `bin/sprag.rs`).
-///
-/// It speaks the same [`WIRE_PROTOCOL`] this build does ON PURPOSE. The protocol number guards a
-/// shape the two ends must agree on, and R320 ratcheted it against the surface the daemon serves —
-/// but a mounted external's addresses appear only when the thing behind it is there, so "the
-/// numbers match and the address is unknown" stays reachable and is exactly what the sentence
-/// under test is for. A stand-in that failed the handshake would test the door instead.
-struct StaleHost {
-    sock: PathBuf,
-    stop: Arc<AtomicBool>,
-    accepting: Option<JoinHandle<()>>,
+/// It was written out in this file until then, and so was the proxy below, and so were two more in
+/// `sprag-mcp` and `sprag-tui`: four stand-ins with three different ideas of what *"older"* means.
+/// The crate holds the policy as data and every front picks the shape it needs; what the peer
+/// answers is the WIRE's own fault string rather than one this file spelled.
+fn stale_host() -> sprag_peer::OldDaemon {
+    sprag_peer::OldDaemon::serving_nothing(&socket_path())
 }
 
-impl Drop for StaleHost {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(accepting) = self.accepting.take() {
-            let _ = accepting.join();
-        }
-        let _ = std::fs::remove_file(&self.sock);
-    }
-}
-
-/// Bind a [`StaleHost`] and answer on it until it is dropped.
-fn stale_host() -> StaleHost {
-    let sock = socket_path();
-    let _ = std::fs::remove_file(&sock);
-    let listener = UnixListener::bind(&sock).expect("bind the stand-in host socket");
-    listener
-        .set_nonblocking(true)
-        .expect("a stoppable accept loop");
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&stop);
-    let accepting = std::thread::spawn(move || {
-        while !flag.load(Ordering::Relaxed) {
-            match listener.accept() {
-                // One thread per connection: a CLI invocation holds its connection open for its
-                // whole life and several verbs open a SECOND one (`connect_scoped`), so serving
-                // them in turn would deadlock the run rather than answer it.
-                Ok((stream, _)) => {
-                    std::thread::spawn(move || serve_stale(&stream));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-    StaleHost {
-        sock,
-        stop,
-        accepting: Some(accepting),
-    }
-}
-
-/// One [`StaleHost`] connection: hello is answered, every read is refused, everything else is a
-/// null result.
+/// A daemon that serves every READ a live one serves and knows NO ACTION — a real `sprag-term`
+/// behind a proxy that refuses `scene/invoke`.
 ///
-/// The refusal is confined to `scene/query` deliberately. An older daemon still HAS the method —
-/// what it lacks is the address — so answering every method would test a peer that does not exist
-/// and would hide which call site the sentence came from.
-fn serve_stale(stream: &UnixStream) {
-    let reader = BufReader::new(stream.try_clone().expect("split the stand-in connection"));
-    let mut writer = stream;
-    for line in reader.lines() {
-        let Ok(line) = line else { return };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(request) = serde_json::from_str::<Value>(line.trim()) else {
-            return;
-        };
-        let id = request["id"].clone();
-        let reply = match request["method"].as_str() {
-            Some(CLIENT_HELLO_METHOD) => {
-                json!({ "jsonrpc": "2.0", "id": id, "result": { PROTOCOL_FIELD: WIRE_PROTOCOL } })
-            }
-            Some("scene/query") => json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {
-                    "code": INVALID_PARAMS,
-                    "message": "Invalid params",
-                    "data": "UnknownIntrospectPath",
-                },
-            }),
-            _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
-        };
-        let mut frame = reply.to_string();
-        frame.push('\n');
-        if writer.write_all(frame.as_bytes()).is_err() {
-            return;
-        }
-    }
-}
-
-/// A peer that serves every READ a live daemon serves and knows NO ACTION — an older daemon that
-/// has this build's addresses but not this build's VERBS.
-///
-/// # Why a second stand-in, and why this one is a PROXY
-///
-/// [`StaleHost`] refuses every `scene/query`, which is the skew a slot READER meets. It cannot
-/// express the other one: a verb reaches its `scene/invoke` only AFTER its pre-flight reads have
-/// succeeded (`session_exists`, `resolve_pane`), so against a peer that serves nothing every write
-/// verb stops at a read and the invoke path is never exercised. A stand-in that ANSWERED those reads
-/// out of a table would be a second implementation of the daemon, free to drift from it.
-///
-/// So this one puts a real `sprag-term` behind it and intercepts one method. Every read is the
-/// daemon's own answer — the pane ids, the window names, the session list are all real — and every
-/// action comes back the way a daemon that never heard of it does. That is exactly an older build:
-/// **a slot is additive and so is an action**, so `WIRE_PROTOCOL` deliberately does not rise for
-/// either (R320's ratchet asserts that), and a `sprag` that gained a verb therefore meets
-/// same-numbered daemons that lack it.
-///
-/// It has a second property the sweep depends on: **nothing this peer is asked to do happens**. The
-/// invoke never reaches the daemon behind it, so a sweep may drive `kill-window`, `kill-session` and
-/// `kill-server` against one fixture without tearing down the state the next verb needs.
-struct AgedHost {
-    sock: PathBuf,
-    /// The daemon behind the proxy, reachable directly — how a test PREPARES state (a second pane,
-    /// a second window) that the swept verbs then address through the aged front.
-    upstream: PathBuf,
-    stop: Arc<AtomicBool>,
-    accepting: Option<JoinHandle<()>>,
-    daemon: Option<HostChild>,
-}
-
-impl Drop for AgedHost {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(accepting) = self.accepting.take() {
-            let _ = accepting.join();
-        }
-        let _ = std::fs::remove_file(&self.sock);
-        drop(self.daemon.take());
-    }
-}
-
-/// Bind an [`AgedHost`] in front of a freshly spawned daemon and answer on it until it is dropped.
-fn aged_host() -> AgedHost {
+/// Answers the peer, the daemon behind it, and that daemon's own socket: a test PREPARES state (a
+/// second pane, a second window) through the daemon directly and then drives the swept verbs
+/// through the aged front. The daemon is handed back so its lifetime is the test's — dropping it
+/// ends the process.
+fn aged_host() -> (sprag_peer::OldDaemon, HostChild, PathBuf) {
     let (daemon, upstream) = spawn_host();
-    let sock = socket_path();
-    let _ = std::fs::remove_file(&sock);
-    let listener = UnixListener::bind(&sock).expect("bind the aged host socket");
-    listener
-        .set_nonblocking(true)
-        .expect("a stoppable accept loop");
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&stop);
-    let behind = upstream.clone();
-    let accepting = std::thread::spawn(move || {
-        while !flag.load(Ordering::Relaxed) {
-            match listener.accept() {
-                // One thread per connection, for [`stale_host`]'s reason: several verbs open a
-                // second connection and serving them in turn would deadlock the run.
-                Ok((stream, _)) => {
-                    let behind = behind.clone();
-                    std::thread::spawn(move || serve_aged(&stream, &behind));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-    AgedHost {
-        sock,
-        upstream,
-        stop,
-        accepting: Some(accepting),
-        daemon: Some(daemon),
-    }
-}
-
-/// One [`AgedHost`] connection: every frame is relayed to the daemon behind it, except
-/// `scene/invoke`, which is refused here the way a daemon that lacks the action refuses it.
-///
-/// The refusal's wording is the daemon's own, captured from a live one rather than invented (see
-/// `unknown_action` in `bin/sprag.rs`): an action a daemon does not serve answers
-/// `{"code":-32602,"message":"Invalid params","data":"UnknownInvokePath"}`, where a genuine refusal
-/// of an action it DOES serve answers `"InvokeRejected"`.
-fn serve_aged(client: &UnixStream, upstream: &Path) {
-    // The daemon binds its socket a moment after it is spawned, and this connects on the FIRST
-    // client rather than at bind time — a bounded wait, not a sleep.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let up = loop {
-        match UnixStream::connect(upstream) {
-            Ok(up) => break up,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => return,
-        }
-    };
-    let to_client = Arc::new(std::sync::Mutex::new(
-        client.try_clone().expect("split the aged connection"),
-    ));
-
-    // The daemon also writes UNPROMPTED (`events/subscribe` notifications), so the return path is
-    // its own pump rather than a reply read after each request.
-    let pumping = Arc::clone(&to_client);
-    let from_daemon = up.try_clone().expect("split the upstream connection");
-    let pump = std::thread::spawn(move || {
-        for line in BufReader::new(from_daemon).lines() {
-            let Ok(line) = line else { return };
-            let mut out = pumping.lock().expect("the aged host's writer");
-            if writeln!(out, "{line}").is_err() {
-                return;
-            }
-        }
-    });
-
-    let mut to_daemon = up;
-    for line in BufReader::new(client.try_clone().expect("split the aged connection")).lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(request) = serde_json::from_str::<Value>(line.trim()) else {
-            break;
-        };
-        if request["method"].as_str() == Some("scene/invoke") {
-            let reply = json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "error": {
-                    "code": INVALID_PARAMS,
-                    "message": "Invalid params",
-                    "data": "UnknownInvokePath",
-                },
-            });
-            let mut out = to_client.lock().expect("the aged host's writer");
-            if writeln!(out, "{reply}").is_err() {
-                break;
-            }
-        } else if writeln!(to_daemon, "{line}").is_err() {
-            break;
-        }
-    }
-    drop(to_daemon);
-    let _ = pump.join();
+    let peer =
+        sprag_peer::OldDaemon::proxying(&socket_path(), &upstream, sprag_peer::Missing::actions());
+    (peer, daemon, upstream)
 }
 
 #[test]
@@ -6395,7 +6157,7 @@ fn an_operator_works_on_a_named_pane_in_another_window() {
 #[test]
 fn every_slot_reader_explains_a_daemon_that_does_not_serve_it() {
     let host = stale_host();
-    let sock = host.sock.clone();
+    let sock = host.sock().to_path_buf();
 
     // (argv, the address the verb's FIRST read asks for). The address is asserted too: a sentence
     // that named the wrong slot would still pass a "no variant name" check while sending the
@@ -6792,12 +6554,12 @@ fn pane_ids_of(sock: &Path, session: &str) -> Vec<String> {
 /// same-numbered daemons that lack it.
 #[test]
 fn every_acting_verb_explains_a_daemon_that_does_not_know_its_verb() {
-    let host = aged_host();
-    let sock = host.sock.clone();
+    let (host, _daemon, real) = aged_host();
+    let sock = host.sock().to_path_buf();
 
     // PREPARE through the daemon itself: a second pane and a second window, so the verbs that
     // address one are refused by the PEER rather than by their own client-side reads.
-    let real = host.upstream.clone();
+
     assert!(
         sprag(&real, &["split-window", "-t", "0"]).ok,
         "the fixture's second pane",

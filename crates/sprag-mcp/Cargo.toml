@@ -31,3 +31,8 @@ serde_json = { workspace = true }
 # Production logging facade — events to STDERR only (stdout is the MCP wire).
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# A daemon OLDER than this build — the agent surface's skew gate drives one that serves no address
+# and knows no action. DEV-ONLY; four test files had each written their own until R324.
+sprag-peer = { workspace = true }

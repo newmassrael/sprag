@@ -69,3 +69,7 @@ portable-pty = { workspace = true }
 sprag-rpc = { workspace = true }
 # ...and the JSON those queries are spelled in.
 serde_json = { workspace = true }
+# A daemon OLDER than this build, for the two skew gates. Was a hand-written peer in the
+# gate file until R324, one of four copies with three different ideas of what "older"
+# means; the crate is DEV-ONLY, so nothing this client ships depends on it.
+sprag-peer = { workspace = true }

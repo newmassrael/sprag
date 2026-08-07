@@ -6346,7 +6346,7 @@ fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
 #[test]
 fn a_client_meeting_an_older_daemon_says_so_instead_of_naming_a_variant() {
     let peer = stale_peer();
-    let tui = Tui::attach_with_env(&peer.sock, "0", &[]);
+    let tui = Tui::attach_with_env(peer.sock(), "0", &[]);
 
     // It EXITS, and what it left on the terminal is the sentence.
     // Read WITHOUT whitespace, on both sides: a sentence this long wraps, and a terminal wraps
@@ -6380,92 +6380,84 @@ fn a_client_meeting_an_older_daemon_says_so_instead_of_naming_a_variant() {
     }
 }
 
-/// A peer that passes the wire handshake and serves NO address — a daemon older than this client.
+/// **THE PROBE R324 OPENED WITH: what a RUNNING client does when its daemon cannot act.**
 ///
-/// It answers at THIS build's protocol on purpose: a slot is additive, so the number does not rise
-/// when one is added, and "the numbers agree and the address is missing" is exactly the state the
-/// sentence under test is for. A peer that failed the handshake would test the door instead.
-struct StalePeer {
-    sock: PathBuf,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-    accepting: Option<std::thread::JoinHandle<()>>,
-}
+/// Register item 48 left this as the last unhandled half of the version-skew class, and as a
+/// SURFACE DECISION rather than a defect: *"`WireHost::request` logs at debug and returns `None` —
+/// a deliberate policy for a repaint loop (swallow is honest, not silent) ... whether a repaint
+/// loop should say so is a question about how noisy a degraded client is allowed to be."*
+///
+/// The question is answerable now, and the answer this round takes is: **a person's GESTURE gets an
+/// answer, and a poll does not shout.** The method is the discriminator — a `scene/invoke` happens
+/// only because somebody acted, where a `scene/query` happens on every wake — so nothing has to be
+/// passed down to the transport for it to know which it is looking at.
+///
+/// Measured at `d651f50` with exactly this fixture: `prefix c` against a daemon that serves every
+/// read and knows no verb left the status row saying where the client was, unchanged, forever. The
+/// window was not created and nothing on the screen said so.
+///
+/// The CONTROL is the row itself, asserted BEFORE the press: without it, a row that had been
+/// showing the sentence all along would pass.
+///
+/// **The policy's OTHER half — that a failing READ says nothing — is gated in `sprag-client`'s
+/// `tests/skew.rs` and not here, and the reason is a fixture this front cannot build**: a client
+/// boots by reading its windows, its panes and its layout, so a peer missing those never lets one
+/// start (measured, twice, while writing this). The transport-level gate can point a booted client
+/// at an address it then loses, which is the state the policy is about.
+#[test]
+fn a_key_that_reaches_a_daemon_too_old_to_act_says_so() {
+    let (_daemon, upstream) = spawn_daemon_running(&["cat"]);
+    let sock = socket_path();
+    let peer = sprag_peer::OldDaemon::proxying(&sock, &upstream, sprag_peer::Missing::actions());
+    let mut conn = observe(&upstream);
+    let session = boot_session(&mut conn);
+    let mut tui = Tui::attach_with_env(peer.sock(), &session, &[]);
 
-impl Drop for StalePeer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(accepting) = self.accepting.take() {
-            let _ = accepting.join();
-        }
-        let _ = std::fs::remove_file(&self.sock);
-    }
-}
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the client to be painting the session it is on", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("0".to_owned(), true)],
+        "one window, so a `prefix c` that LANDED would be visible behind the peer",
+    );
 
-/// Bind a [`StalePeer`] and answer on it until it is dropped.
-fn stale_peer() -> StalePeer {
-    let sock = std::env::temp_dir().join(format!("sprag-tui-stale-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
-    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind the stale peer");
-    listener
-        .set_nonblocking(true)
-        .expect("a stoppable accept loop");
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = Arc::clone(&stop);
-    let accepting = std::thread::spawn(move || {
-        while !flag.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    std::thread::spawn(move || serve_stale(&stream));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(_) => break,
-            }
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"c");
+    wait_for("the row to say the daemon could not do it", || {
+        let row = tui.row(STATUS_ROW);
+        let flat: String = row.chars().filter(|c| !c.is_whitespace()).collect();
+        // "does not PERFORM", which is the acting half — the reading half says "does not serve",
+        // and the first draft of this probe watched for that one. It timed out against a working
+        // fix, which is what a test looking for the wrong words looks like from the outside.
+        if flat.contains("doesnotperform") {
+            Ok(())
+        } else {
+            Err(format!("{row:?} (client: {})", tui.liveness()))
         }
     });
-    StalePeer {
-        sock,
-        stop,
-        accepting: Some(accepting),
-    }
+    let said = tui.row(STATUS_ROW);
+    assert!(
+        !said.contains("UnknownInvokePath"),
+        "a Rust variant name must not reach a person: {said}",
+    );
+
+    // ...and NOTHING HAPPENED, which is the half that makes the sentence worth painting.
+    assert_eq!(
+        windows_of(&mut conn, &session),
+        vec![("0".to_owned(), true)],
+        "the peer performs nothing, so the client is reporting a real failure",
+    );
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "a client that cannot act is still a client: it says so and stays",
+    );
 }
 
-/// One [`StalePeer`] connection: the handshake is answered, every read is refused with the fault a
-/// live daemon actually sends, and everything else is a null result.
-fn serve_stale(stream: &std::os::unix::net::UnixStream) {
-    let reader = std::io::BufReader::new(stream.try_clone().expect("split the stale connection"));
-    let mut writer = stream;
-    for line in std::io::BufRead::lines(reader) {
-        let Ok(line) = line else { return };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(request) = serde_json::from_str::<Value>(line.trim()) else {
-            return;
-        };
-        let id = request["id"].clone();
-        let reply = match request["method"].as_str() {
-            Some(sprag_rpc::CLIENT_HELLO_METHOD) => json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": { sprag_rpc::PROTOCOL_FIELD: sprag_rpc::WIRE_PROTOCOL },
-            }),
-            Some("scene/query") => json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {
-                    "code": sprag_rpc::INVALID_PARAMS,
-                    "message": "Invalid params",
-                    "data": "UnknownIntrospectPath",
-                },
-            }),
-            _ => json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
-        };
-        let mut frame = reply.to_string();
-        frame.push('\n');
-        if writer.write_all(frame.as_bytes()).is_err() {
-            return;
-        }
-    }
+/// A daemon OLDER than this client, serving NO address — [`sprag_peer`]'s, since R324. This file
+/// had written one out for itself, one of four copies with three different refusal policies.
+fn stale_peer() -> sprag_peer::OldDaemon {
+    sprag_peer::OldDaemon::serving_nothing(&socket_path())
 }
