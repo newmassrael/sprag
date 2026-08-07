@@ -358,9 +358,13 @@ impl WorkspaceExternal {
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
         let name = sprag_terminal::PaneName::parse(proposed).map_err(refused)?;
-        if self.pane_named(&name).is_some() {
+        // NAMES THE HOLDER, which is the fact a caller can act on — `rename_pane`'s wording one
+        // door over, so the two births of a name refusal read alike. `pane_named` already has the
+        // id in hand; answering "another pane" would throw it away at the one place that knows it.
+        if let Some(holder) = self.pane_named(&name) {
             return Err(refused(format!(
-                "another pane is already called {:?}",
+                "pane {} is already called {:?}",
+                holder.0,
                 name.as_str()
             )));
         }

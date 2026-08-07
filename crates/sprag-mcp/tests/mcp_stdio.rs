@@ -2450,16 +2450,21 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
         "the listing carries the name beside the number it stands in for: {build}",
     );
 
-    // A name already taken is refused, and the sentence says what to do about it.
+    // A name already taken is refused with the ONE fact the daemon observed, and it names the pane
+    // that holds the name — which the guess this replaces could not, because it was not there.
+    //
+    // Until R325 consumed PINION-PR82 an agent read *"the name may already be taken by another
+    // pane, or be blank, over 80 bytes, all digits, or contain a control character. Call
+    // list_panes to see which names are in use."*: five causes and a command to run, because a
+    // bare `InvokeRejected` left this surface nothing else to offer.
     let taken = server.call_tool_error("open_pane", json!({ "name": "build" }));
     assert_eq!(
-        taken,
-        "Error: could not open a pane called \"build\": the name may already be taken by another \
-         pane, or be blank, over 80 bytes, all digits, or contain a control character. Call \
-         list_panes to see which names are in use.",
-        "the WHOLE sentence: the daemon's refusal is a bare `InvokeRejected` with no payload, so \
-         what an agent reads must be written here — and must REPLACE that variant name, not \
-         trail it",
+        taken, "Error: pane 2 is already called \"build\"",
+        "the WHOLE sentence, and it is the DAEMON's — an agent reasons about facts, not lists",
+    );
+    assert!(
+        !taken.contains(" or ") && !taken.contains("may already"),
+        "and it is not a disjunction, and does not hedge: {taken}",
     );
 
     // THE MOVE. Closing pane 2 renumbers pane 3 to pane 2 — the exact failure this feature exists

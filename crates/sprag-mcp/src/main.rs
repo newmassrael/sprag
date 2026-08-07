@@ -4565,26 +4565,23 @@ fn notification_line(note: &Value) -> String {
 /// human-readable tool error (including "not inside a sprag terminal").
 /// Replace a daemon REFUSAL with a sentence this tool can write, and pass anything else through.
 ///
-/// A refused action arrives as `host rpc error: InvokeRejected` — a Rust variant name, because
-/// `InvokeError::Rejected` carries no payload and pinion's fault has no `data` to prefer (upstream
-/// PINION-PR82, the class R283 measured across fifteen CLI paths). Appending an explanation to that
-/// leaves the variant name in front of it, which is the leak R283 removed from the CLI; this
-/// replaces it.
+/// **Decided by the fault's KIND, never by its rendering** — the discipline R292 established after
+/// matching on wording had already cost a round. Three kinds, three answers:
 ///
-/// **Decided by the fault's KIND, never by its rendering.** `HostConn::call` maps any fault to
-/// [`io::ErrorKind::Other`] and a transport failure to its own kind, so this reads the code — the
-/// discipline R292 established after matching on wording had already cost a round. Grepping the
-/// message for `InvokeRejected` would work today and would silently stop working the moment
-/// upstream reworded it, putting the leak back with nothing failing.
-///
-/// A transport failure is NOT replaced. "The socket went away" and "the daemon said no" are
-/// different things to be told, and a caller that could not reach the daemon at all must not be
-/// handed a sentence about pane names.
+/// * [`io::ErrorKind::InvalidInput`] — the daemon refused and STATED WHY (R325 /
+///   `sprag_host::wire::refusal`). Its sentence is the answer, ALONE: appending this surface's
+///   `instead` beside it would put a guess back next to a fact, which is the one thing this round
+///   removed. `instead` is unreachable against any daemon of this build.
+/// * [`io::ErrorKind::Other`] — a bare refusal, which on this wire means a daemon older than
+///   PINION-PR82. Only there does this surface's own sentence get written, and only because that
+///   daemon genuinely could not say which cause it was.
+/// * anything else — a transport failure or a skew, kept and annotated. "The socket went away" and
+///   "the daemon said no" are different things to be told.
 fn refusal_sentence((raw, kind): &(String, io::ErrorKind), instead: &str) -> String {
-    if *kind == io::ErrorKind::Other {
-        instead.to_owned()
-    } else {
-        format!("{raw} — {instead}")
+    match *kind {
+        io::ErrorKind::InvalidInput => raw.clone(),
+        io::ErrorKind::Other => instead.to_owned(),
+        _ => format!("{raw} — {instead}"),
     }
 }
 
@@ -4626,12 +4623,18 @@ fn host_call_unscoped(method: &str, params: Value) -> Result<Value, (String, io:
     let path = params["path"].as_str().unwrap_or_default().to_owned();
     match conn.try_call(method, params) {
         Ok(answer) => Ok(answer),
-        Err(CallError::Fault(fault)) => Err(older_daemon(method, &path, &fault).map_or_else(
-            // Rendered exactly as `HostConn::call` would have, through the same function it uses,
-            // so every sentence this surface has ever printed for a refusal is byte-identical.
-            || (format!("{label}: {fault}"), io::ErrorKind::Other),
-            |old| (old.to_string(), old.kind()),
-        )),
+        // TWO library sentences before this surface writes anything: the daemon does not have that
+        // address at all (a skew), or it HAS it, refused, and said why (R325). An agent gets the
+        // producer's own fact for the second, which is the whole of PINION-PR82's value here —
+        // eight of these tools used to hand an agent a client-side list of guesses.
+        Err(CallError::Fault(fault)) => Err(older_daemon(method, &path, &fault)
+            .or_else(|| sprag_host::wire::refusal(&fault))
+            .map_or_else(
+                // Rendered exactly as `HostConn::call` would have, through the same function it
+                // uses, so a fault no library sentence covers reads as it always did.
+                || (format!("{label}: {fault}"), io::ErrorKind::Other),
+                |stated| (stated.to_string(), stated.kind()),
+            )),
         Err(CallError::Transport(error)) => {
             let kind = error.kind();
             Err((error.to_string(), kind))
