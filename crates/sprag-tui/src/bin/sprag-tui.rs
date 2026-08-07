@@ -909,10 +909,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 };
                 // ⚠ A SKEW OUTRANKS WHAT THE KEY THOUGHT IT DID (R324). Every arm above reports
                 // what it ASKED for, and against a daemon too old to perform it the honest answer
-                // is the one the transport saw: `HostClient::take_skew` holds it, taken here by the
+                // is the one the transport saw: `HostClient::take_gesture_refusal` holds it, taken here by the
                 // path that caused it, because a skewed daemon performs nothing and therefore wakes
                 // nobody — the mailbox's own drain is on a wake that never comes.
-                let report = host.take_skew().map_or(report, |said| Report::said(&said));
+                let report = host
+                    .take_gesture_refusal()
+                    .map_or(report, |said| Report::said(&said));
                 // WHAT THE KEY DID, put where a person can read it. A report with nothing to say
                 // leaves the message that is already up alone rather than clearing it: a user who
                 // pressed a key that spoke and then typed into a pane is still owed the sentence

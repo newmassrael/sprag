@@ -65,7 +65,7 @@ fn use_message() -> Signal<Option<Message>> {
 ///
 /// Every dispatcher reports what it ASKED for, and against a daemon too old to perform it the
 /// honest answer is the one the transport saw
-/// ([`HostClient::take_skew`](sprag_host::HostClient::take_skew)). Taken HERE, in the one place a
+/// ([`HostClient::take_gesture_refusal`](sprag_host::HostClient::take_gesture_refusal)). Taken HERE, in the one place a
 /// gesture's report reaches this client's strip, rather than at the four sites that call it — a
 /// drain per call site is how two of them come to disagree about whether a refusal is worth
 /// painting.
@@ -75,7 +75,7 @@ fn use_message() -> Signal<Option<Message>> {
 /// message somebody sent.
 pub(crate) fn show(report: &Report) {
     paint(&preferred(
-        crate::terminal::use_terminal().slots.take_skew(),
+        crate::terminal::use_terminal().slots.take_gesture_refusal(),
         report,
     ));
 }

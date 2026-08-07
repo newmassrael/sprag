@@ -943,6 +943,40 @@ pub fn skew_announcement(path: &str) -> Option<crate::report::Announcement> {
     })
 }
 
+/// The DAEMON'S OWN refusal, as a message a display client can paint on its one row —
+/// [`skew_announcement`]'s peer for the act that was understood and DECLINED.
+///
+/// # Why the pair is two functions and not one
+///
+/// Two pieces of news with two remedies, which is the distinction PINION-PR82 spent an error code
+/// on: a skew says *restart the daemon* and this says *that cannot be done to this workspace*. A
+/// surface that painted one sentence for both would undo the split at the last inch.
+///
+/// # It forwards the daemon's words and adds none
+///
+/// Every other sentence in this module is one it authored; this one is the producer's. A client
+/// improving on it would be authoring a claim about state it cannot see, which is what the ten
+/// disjunctions R325 deleted were. What it replaces at the two display fronts is a client-side
+/// GENERIC: `prefix !` on a lone pane painted *"break-pane: nowhere to go"* while the daemon was
+/// saying *"cannot break the only pane in a window"*.
+///
+/// A reason too long for a row answers [`None`] rather than being truncated —
+/// [`skew_announcement`]'s rule, and here it is reachable rather than theoretical, since the text
+/// is a producer's and not an address. The caller keeps its own report for that case, which is the
+/// behaviour every one of these had before this existed.
+///
+/// [`Severity::Warn`](crate::report::Severity::Warn), [`skew_announcement`]'s reason exactly: the
+/// person's act did not happen and they must be told, and it is not the kind that waits for an
+/// acknowledgement.
+#[must_use]
+pub fn refusal_announcement(reason: &str) -> Option<crate::report::Announcement> {
+    use crate::report::{Announcement, MessageText, Severity};
+    MessageText::parse(reason).ok().map(|text| Announcement {
+        text,
+        severity: Severity::Warn,
+    })
+}
+
 /// Which session holds `pane`, read off a [`TREE_SLOT`] answer — how a process that knows only
 /// which PANE it is in finds out which session it is in.
 ///

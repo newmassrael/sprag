@@ -1144,7 +1144,7 @@ pub struct WireHost {
     /// performs nothing bumps no channel, so the wake never comes. Written by
     /// [`request`](WireHost::request), which is where the fault is seen, and taken by the key path
     /// that caused it.
-    skew: MessageMirror,
+    gesture_refused: MessageMirror,
     /// The host endpoint this client connect-or-spawned on — kept so a session switch can open a
     /// FRESH poll connection to the same daemon (the request conn is re-scoped in place; the poll
     /// thread is torn down and a new one spawned on a new connection).
@@ -1775,7 +1775,7 @@ impl WireHost {
             // Empty at boot for a sharper reason than the mailbox's: nothing this client has done
             // can have met a skew yet, and the boot READS that could have are the poll's, which
             // this deliberately does not carry.
-            skew: Arc::new(Mutex::new(None)),
+            gesture_refused: Arc::new(Mutex::new(None)),
             endpoint: endpoint.clone(),
             boot_dims: (cols, rows),
             lost_session: Arc::new(AtomicBool::new(false)),
@@ -2220,10 +2220,22 @@ impl WireHost {
             Err(error) => {
                 if let sprag_rpc::CallError::Fault(fault) = &error
                     && method == "scene/invoke"
-                    && sprag_host::wire::unknown_action(&path, fault).is_some()
+                    // TWO kinds of "your gesture did not happen", asked in the order of how much
+                    // they tell a person: the daemon cannot perform this AT ALL (restart it), or it
+                    // performed nothing and SAID WHY (fix the workspace). R325 added the second.
+                    // Before it, a live client answered `prefix !` on a lone pane with its own
+                    // generic *"break-pane: nowhere to go"* while the daemon was saying *"cannot
+                    // break the only pane in a window"* — the client's word for four different
+                    // situations, one of which it was in.
                     && let Some(said) = sprag_host::wire::skew_announcement(&path)
+                        .filter(|_| sprag_host::wire::unknown_action(&path, fault).is_some())
+                        .or_else(|| {
+                            fault
+                                .refusal()
+                                .and_then(sprag_host::wire::refusal_announcement)
+                        })
                 {
-                    store_message(&self.skew, said);
+                    store_message(&self.gesture_refused, said);
                 }
                 // Rendered as `call` renders it, through the conversion that exists for exactly
                 // this: a caller that opted into the typed error must not spell a second wording.
@@ -3350,8 +3362,8 @@ impl HostClient for WireHost {
     /// Served from a mirror of its OWN, not from the message mailbox above: that one holds what the
     /// daemon routed, is copied out to the desktop notifier, and is drained on a wake — and a
     /// daemon too old to act bumps no channel, so no wake ever comes.
-    fn take_skew(&self) -> Option<Announcement> {
-        lock_message(&self.skew).take()
+    fn take_gesture_refusal(&self) -> Option<Announcement> {
+        lock_message(&self.gesture_refused).take()
     }
 
     /// The pane's agent verdict (H3), served from the same poll-refreshed mirror as

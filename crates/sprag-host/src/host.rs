@@ -1229,8 +1229,20 @@ pub trait HostClient {
         None
     }
 
-    /// The SKEW this client's own act just met, taken — a daemon that could not perform the action
-    /// a person's gesture asked for.
+    /// WHY this client's own act did not happen, taken — the answer a person's gesture earned.
+    ///
+    /// # Two kinds, one mailbox, and the name says which
+    ///
+    /// R324 built this for a SKEW alone (a daemon that cannot perform the action at all) and called
+    /// it `take_skew`. R325 put the daemon's own STATED refusal in it too — *"cannot break the only
+    /// pane in a window"* rather than the client's generic *"break-pane: nowhere to go"* — so the
+    /// name moved with the contents. From a surface's point of view they are one fact (the gesture
+    /// did not happen and there is a sentence for it); they differ in the REMEDY, which the sentence
+    /// carries and the client does not have to know.
+    ///
+    /// The client keeps its own report as the fallback, and that is not redundancy: a refusal with
+    /// no reason (a pre-PINION-PR82 daemon), a reason too long for a row, and an outcome that is not
+    /// a refusal at all (`select-pane` at an edge) all land there.
     ///
     /// # Why it is not [`take_message`](Self::take_message)
     ///
@@ -1246,7 +1258,7 @@ pub trait HostClient {
     /// Defaulted to [`None`] for the in-process arm, which cannot be a version behind itself.
     #[must_use = "a person's gesture that the daemon could not perform is the one thing this \
                   answers, and dropping it is the swallow it was written to end"]
-    fn take_skew(&self) -> Option<crate::report::Announcement> {
+    fn take_gesture_refusal(&self) -> Option<crate::report::Announcement> {
         None
     }
 
