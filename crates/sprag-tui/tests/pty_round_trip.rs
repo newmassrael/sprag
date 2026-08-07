@@ -6485,3 +6485,71 @@ fn a_key_that_reaches_a_daemon_too_old_to_act_says_so() {
 fn stale_peer() -> sprag_peer::OldDaemon {
     sprag_peer::OldDaemon::serving_nothing(&socket_path())
 }
+
+/// **THE GATE for R325's HEAD: a kill that took MORE than it was asked for says so.**
+///
+/// # The measurement this opened on, at `d1833df`
+///
+/// A live `sprag-tui`, `detach-on-destroy = next`, a session with one window and a spare session to
+/// land in. `prefix &` — kill this window — destroyed the person's SESSION, moved them silently to
+/// the neighbouring one, and left the status row **byte-for-byte unchanged**, still naming the
+/// session that had just died. The daemon had answered `{"ended":"session"}` on the very same
+/// reply; `HostClient::kill_window` returned `()`, the last two acting methods in that trait to do
+/// so, so both display clients dropped it (R316's shape, met a final time).
+///
+/// # Three claims, and the CONTROL is what makes the first discriminating
+///
+/// 1. **The row is idle first** — without this, a row that had been showing the sentence all along
+///    would pass.
+/// 2. **The daemon really did take the session**, read from the daemon's own session list and not
+///    from the client under test.
+/// 3. **The client SAID SO**, in `Ended::beyond`'s wording — the same clause `sprag kill-window`
+///    has printed since R309, so the two mouths cannot drift.
+///
+/// The `detach-on-destroy = next` policy is load-bearing rather than incidental: under the default
+/// the client LEAVES, and a client that is gone has no row to be judged on. The case worth a
+/// sentence is exactly the one where the person is still sitting there.
+#[test]
+fn a_window_kill_that_took_the_session_says_so() {
+    let config = ConfigHome::new("[options]\ndetach-on-destroy = \"next\"\n");
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    // A spare session, so the cascade stops at the SESSION and this client has somewhere to land.
+    // Made through the CLI rather than a key, so the fixture does not depend on the client under
+    // test having created it.
+    let made = Command::new(sprag_cli_bin())
+        .args(["new", "beta"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .output()
+        .expect("run sprag new");
+    assert!(made.status.success(), "the spare session must exist");
+
+    // THE CONTROL: the row is idle before the key, so the sentence below is this key's.
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"&");
+    tui.type_bytes(b"y");
+    wait_for("the row to say the session went with the window", || {
+        let row = tui.row(STATUS_ROW);
+        settled(row.contains("the session went with it"), &true)
+            .map_err(|got| format!("{got}: row reads {row:?}"))
+    });
+
+    // ...and it is TRUE, read from the daemon rather than from the client that said it.
+    wait_for("the daemon to be holding only the spare session", || {
+        settled(session_names(&mut conn), &vec!["beta".to_owned()])
+    });
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "the client switched rather than leaving, which is what makes the sentence worth painting",
+    );
+}
