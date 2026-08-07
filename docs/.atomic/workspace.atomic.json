@@ -12167,6 +12167,56 @@
         "`sprag-peer`'s proxy holds one upstream connection per client connection and pumps both ways; a test that opened many would spawn many threads. Fine for the four gates that use it, unbounded by nothing."
       ]
     },
+    "R325": {
+      "decision_summary": "A daemon that refuses states why: PINION-PR82 consumed, and every client-side guess deleted",
+      "changes_bullets": [
+        "pinion pin f6be0842 (R1562) -> ff509ca4 (R1583), consuming PINION-PR82",
+        "93 daemon refusal sites state the fact they saw; refused() is the one funnel",
+        "SessionError gains DuplicateWindow / UnknownWindow / UnknownAnchor",
+        "ten client-side disjunctions deleted from the CLI, six replaced in sprag-mcp",
+        "KeyUnsent and ResizeRefusal split two fused bools into typed refusals"
+      ],
+      "verification_bullets": [
+        "measured first by RUNNING: four CLI verbs offered 2-4 causes each, one true",
+        "after: rename-window/rename-session/break-pane/join-pane each say ONE fact",
+        "suite exit 0 / 49 targets / 2308, clippy 0 no suppression, doc gate 0",
+        "pixel smoke 260/0 twice consecutively",
+        "5 revert-proof mutations RED, incl. re-guessing join-pane"
+      ],
+      "impact_refs": [
+        "1",
+        "5"
+      ],
+      "carry_forward_bullets": [
+        "the two display clients still swallow a STATED refusal (only a skew reaches the row)",
+        "HostClient::kill_session and kill_window still answer ()",
+        "an attempt to route a stated refusal through R324's mailbox broke two live pty gates; reverted, undiagnosed"
+      ],
+      "publishable_decision_summary": "A daemon that refuses states why: PINION-PR82 consumed, and every client-side guess deleted",
+      "publishable_changes_bullets": [
+        "pinion pin f6be0842 (R1562) -> ff509ca4 (R1583), consuming PINION-PR82",
+        "93 daemon refusal sites state the fact they saw; refused() is the one funnel",
+        "SessionError gains DuplicateWindow / UnknownWindow / UnknownAnchor",
+        "ten client-side disjunctions deleted from the CLI, six replaced in sprag-mcp",
+        "KeyUnsent and ResizeRefusal split two fused bools into typed refusals"
+      ],
+      "publishable_verification_bullets": [
+        "measured first by RUNNING: four CLI verbs offered 2-4 causes each, one true",
+        "after: rename-window/rename-session/break-pane/join-pane each say ONE fact",
+        "suite exit 0 / 49 targets / 2308, clippy 0 no suppression, doc gate 0",
+        "pixel smoke 260/0 twice consecutively",
+        "5 revert-proof mutations RED, incl. re-guessing join-pane"
+      ],
+      "publishable_impact_refs": [
+        "1",
+        "5"
+      ],
+      "publishable_carry_forward_bullets": [
+        "the two display clients still swallow a STATED refusal (only a skew reaches the row)",
+        "HostClient::kill_session and kill_window still answer ()",
+        "an attempt to route a stated refusal through R324's mailbox broke two live pty gates; reverted, undiagnosed"
+      ]
+    },
     "Round 1": {
       "decision_summary": "Author sprag design SSOT in Mnemosyne: vision, architecture, pinion contract, VT strategy, and status.",
       "changes_bullets": [
