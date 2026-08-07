@@ -683,12 +683,24 @@ impl Command {
                 Some(_) => Report::on_screen(),
                 None => self.reported(Report::nowhere),
             },
-            Self::JoinInto(name) => {
-                if let Some(pane) = target {
-                    slots.join_pane(pane, name);
-                }
-                Report::on_screen()
-            }
+            // READS ITS ANSWER, like the `BreakOut` it inverts — which it did not until R327's debt
+            // question swept for "an answer no caller reads" and found these two arms side by side,
+            // one right and one wrong. It discarded `join_pane`'s answer and reported `on_screen()`
+            // (which is SILENCE) whether the move happened or not.
+            //
+            // The sentence is `Report::no_pane` and not `Report::nowhere`, for two reasons that
+            // both matter. It cannot BE `nowhere`: that constructor spells itself from a
+            // `BoundAction` and this row has none (`join-pane` is not bindable — the keyboard gap),
+            // so `reported` would trip its own `debug_assert` and fall back to silence. And it
+            // should not be: the missing thing here is the pane to MOVE, not somewhere to move it.
+            //
+            // A daemon that refused and SAID WHY outranks this at `message::preferred`, so the
+            // generic word never covers a stated reason — this is the sentence for the case the
+            // wire never saw, a slot whose pane has gone.
+            Self::JoinInto(name) => match target.and_then(|pane| slots.join_pane(pane, name)) {
+                Some(_) => Report::on_screen(),
+                None => Report::no_pane(),
+            },
             Self::NewPane => {
                 // No target: the pane joins the CURRENT WINDOW, and the arrangement places it (the
                 // layout reconciles against the live pane set, so nothing here says where).
@@ -2135,6 +2147,59 @@ mod tests {
     ///
     /// REVERT-PROOF: drop the `select_window` answer in `run` and the second assertion fails while
     /// the first still passes — which is the whole shape of the defect.
+    /// **A join with no pane to move SAYS SO** — the arm read its answer, and the answer is a
+    /// sentence rather than silence.
+    ///
+    /// R327's post-push debt question found this by sweeping for *"an answer no caller reads"*:
+    /// `JoinInto` called `join_pane` and threw the answer away, then reported `on_screen()` — which
+    /// is SILENCE — whether the move happened or not. **The arm directly above it (`BreakOut`) read
+    /// its answer and reported.** Two siblings, one right and one wrong, is exactly the shape that
+    /// sweep exists to find.
+    ///
+    /// The pair is what makes it a test rather than a restatement: the SUCCESS must stay silent
+    /// (the pane moved and the person can see it) and only the failure speaks, so a build that
+    /// answered a sentence either way fails the first row and a build that answers neither fails
+    /// the second. The LOG is asserted alongside, because a report is worth nothing if the arm
+    /// stopped acting to produce it.
+    ///
+    /// REVERT-PROOF: put `slots.join_pane(pane, name);` + `Report::on_screen()` back and the second
+    /// row goes silent; make the arm answer a sentence unconditionally and the first row fails.
+    #[test]
+    fn a_join_with_no_pane_to_move_says_so_and_a_join_that_works_stays_quiet() {
+        let (slots, log) = slots_with(&[("main", true), ("build", false)], &["0"], "0");
+
+        assert_eq!(
+            Command::JoinInto("build".to_owned())
+                .run(Some(0), &slots)
+                .says(),
+            None,
+            "a join that happened is on the screen already; it needs no sentence",
+        );
+        assert_eq!(
+            log.borrow()
+                .joined
+                .iter()
+                .map(|(_, window)| window.as_str())
+                .collect::<Vec<_>>(),
+            ["build"],
+            "...and it really acted, into the window the row named, or the silence above means \
+             nothing",
+        );
+
+        assert_eq!(
+            Command::JoinInto("build".to_owned())
+                .run(None, &slots)
+                .says(),
+            Some("no pane here to act on"),
+            "a row pressed where there is no pane to move must not answer silence",
+        );
+        assert_eq!(
+            log.borrow().joined.len(),
+            1,
+            "...and it acted on nothing: the sentence is instead of the act, not beside it",
+        );
+    }
+
     #[test]
     fn a_palette_row_that_finds_nothing_says_so() {
         let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");

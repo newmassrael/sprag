@@ -426,6 +426,36 @@ impl Report {
         Self::at(Severity::Warn, format!("{action}: nowhere to go"))
     }
 
+    /// A pane act reached a place that holds no pane.
+    ///
+    /// # The SUBJECT is missing, which is not [`nowhere`](Self::nowhere)'s missing TARGET
+    ///
+    /// `nowhere` is *"this act ran and found nowhere to go"* — the act had a subject and no
+    /// destination. This is the other end: there is nothing here to act ON, so the act never ran at
+    /// all. A row that reported `nowhere` for it would tell a person their pane had nowhere to go
+    /// when the truth is that they were not standing on one.
+    ///
+    /// # It takes no argument, and that is what makes it safe for a surface with no binding
+    ///
+    /// Every other refusal here spells itself from a [`BoundAction`] so no call site can pass the
+    /// wrong noun ([`no_such`](Self::no_such) states the rule). A GUI palette or context-menu row
+    /// the KEYBOARD cannot reach has no such action to spell from — `join-pane` is
+    /// [`Keystroke::NotBuilt`](crate::vocabulary::Keystroke::NotBuilt), so
+    /// `Command::JoinInto::bound()` is [`None`] — and before this those rows could only stay
+    /// SILENT. There is exactly one noun in this sentence and it is in the constructor's name, so
+    /// the wrong-noun failure the argument-taking constructors guard against cannot occur.
+    ///
+    /// **It is a fallback and it is outranked**: a daemon that refused the act and SAID WHY (R325,
+    /// stored by every `scene/invoke` through one funnel) wins over it at
+    /// `sprag-gui`'s `message::preferred`. So this is the sentence for the case the wire never saw
+    /// — a slot whose pane has gone — and never a generic word over a stated reason.
+    // No `#[must_use]` here and none is missing: `Report` is `#[must_use]` as a TYPE, so every
+    // constructor inherits it and clippy rejects the redundant attribute — which is the check that
+    // the rule lives in one place.
+    pub fn no_pane() -> Self {
+        Self::at(Severity::Warn, "no pane here to act on".to_owned())
+    }
+
     /// What somebody ELSE asked this client to show — `sprag display-message`, arriving from the
     /// daemon rather than from this keyboard.
     ///
