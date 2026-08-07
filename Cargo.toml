@@ -39,6 +39,10 @@ members = [
     # The agent-facing MCP surface: a stdio server that lets an AI running INSIDE
     # a pane read/drive its sibling panes over the host wire (discoverable north star).
     "crates/sprag-mcp",
+    # DEV-ONLY: the older daemon four test files had each spelled out for themselves, in
+    # three different refusal policies (R324). No binary depends on it; every front's
+    # skew test does.
+    "crates/sprag-peer",
 ]
 
 [workspace.package]
@@ -211,3 +215,7 @@ sprag-client = { path = "crates/sprag-client", version = "0.0.1" }
 # sequences, and the binary that owns a terminal to write them to. sprag-gui's
 # peer, one unit down.
 sprag-tui = { path = "crates/sprag-tui", version = "0.0.1" }
+# The stand-in daemon every front's skew test drives. A DEV-dependency everywhere it
+# appears — a cycle through dev-dependencies is one Cargo allows, and it is what keeps
+# this out of every shipped binary.
+sprag-peer = { path = "crates/sprag-peer", version = "0.0.1" }

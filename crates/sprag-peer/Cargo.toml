@@ -1,0 +1,17 @@
+[package]
+name = "sprag-peer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "A daemon OLDER than this build, for the tests that need one: it passes the wire handshake and is missing the addresses or the actions a test names. DEV-ONLY — no sprag binary depends on it."
+publish = false
+
+[dependencies]
+# The wire's own vocabulary: the handshake method, the protocol field and number, the
+# `Invalid params` code, and the two fault strings a daemon attaches when it lacks an
+# address or an action. Every one of those is MATCHED by the code under test, so a
+# stand-in that spelled its own would be testing a grammar nobody speaks.
+sprag-rpc = { workspace = true }
+serde_json = { workspace = true }

@@ -3633,6 +3633,7 @@ dependencies = [
  "sprag-grid",
  "sprag-host",
  "sprag-input",
+ "sprag-peer",
  "sprag-rpc",
  "sprag-terminal",
  "sprag-vt",
@@ -3699,6 +3700,7 @@ dependencies = [
  "sprag-detect",
  "sprag-grid",
  "sprag-input",
+ "sprag-peer",
  "sprag-plugin",
  "sprag-rpc",
  "sprag-terminal",
@@ -3723,10 +3725,19 @@ version = "0.0.1"
 dependencies = [
  "serde_json",
  "sprag-host",
+ "sprag-peer",
  "sprag-rpc",
  "sprag-terminal",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "sprag-peer"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "sprag-rpc",
 ]
 
 [[package]]
@@ -3775,6 +3786,7 @@ dependencies = [
  "sprag-grid",
  "sprag-host",
  "sprag-input",
+ "sprag-peer",
  "sprag-rpc",
  "sprag-terminal",
  "sprag-vt",

@@ -1136,6 +1136,23 @@ impl HostConn {
 /// has one home.
 pub const INVALID_PARAMS: i64 = -32602;
 
+/// The `data` a daemon attaches when it does not have the ADDRESS a read named.
+///
+/// **pinion's own word, matched and never invented.** It is the whole discriminator between *"this
+/// daemon is older than this build"* and *"your argument is wrong"*, and both of those sentences
+/// are rendered from it — see `sprag_host::wire::unknown_slot`.
+///
+/// It lives here, in the transport both ends share, for [`INVALID_PARAMS`]'s reason and one more:
+/// a TEST STAND-IN has to answer exactly what a daemon answers, and four of them had spelled it out
+/// by hand (R324). A string a reader matches on and a stand-in produces has one home.
+pub const UNKNOWN_SLOT_FAULT: &str = "UnknownIntrospectPath";
+
+/// The `data` a daemon attaches when it does not have the ACTION a write named.
+///
+/// [`UNKNOWN_SLOT_FAULT`]'s twin on the acting side, and the one that distinguishes an older
+/// daemon from a refusal: an action a daemon HAS and declines answers `InvokeRejected`.
+pub const UNKNOWN_ACTION_FAULT: &str = "UnknownInvokePath";
+
 /// A JSON-RPC `error` object as its own fact — the code the peer chose, its message, and whatever
 /// `data` it attached.
 ///
