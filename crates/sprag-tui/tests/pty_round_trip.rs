@@ -6583,6 +6583,87 @@ fn a_window_kill_that_took_the_session_says_so() {
     );
 }
 
+/// **THE GATE for R328: a bound `move-pane` opens a chooser that says what it is FOR, and a pick
+/// MOVES THE PANE** — driven at the shipped binary, on a real pseudoterminal.
+///
+/// # Why this exists and why a unit test could not stand in for it
+///
+/// R326 measured four documented values of `detach-on-destroy` doing NOTHING on this front, and the
+/// reason was not a wrong answer anywhere — it was that no test drove the shipped client, so a
+/// front that never called the resolve looked exactly like one that did. R328 adds a binding, a
+/// trait method, an errand and a header across two crates; the unit gates prove each piece and
+/// none of them proves that pressing the key moves a pane.
+///
+/// # The fixture is built so a MOVE is the only thing that could produce the end state
+///
+/// The client makes a second window with `prefix c`, so the focused pane is the ONLY pane of
+/// window `1` and the only other pane in the session is window `0`'s. That makes the pick
+/// unambiguous — `Errand::accepts` admits pane rows other than the mover, and there is exactly one
+/// — so `Enter` needs no navigation and the test asserts the ACT rather than the arrow keys.
+///
+/// It also makes the outcome unmistakable: the move empties window `1`, which CLOSES it. A session
+/// that ends with one window holding two panes cannot be produced by a chooser that merely went
+/// somewhere, by a no-op, or by a client that painted a list and dropped the key.
+///
+/// The HEADER is asserted before the commit, and it is the half a mover-and-target check would
+/// miss: two errands paint the same rows, so a front that opened the RIGHT list under the WRONG
+/// question would move the pane and still have failed the person reading it.
+#[test]
+fn the_move_pane_key_opens_a_chooser_that_says_so_and_a_pick_moves_the_pane() {
+    let config = ConfigHome::new("[[bind]]\nkey = \"m\"\naction = \"move-pane -v\"\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    // A SECOND WINDOW, so the focused pane is the only one in its window and the only candidate is
+    // elsewhere. Its emptying is what makes the move visible.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"c");
+    wait_for("the key to make a second window", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), false), ("1".to_owned(), true)],
+        )
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"m");
+    // IT SAYS WHAT IT IS FOR. `(move-pane -v)` is `chooser::Errand::asking()`, the canonical
+    // spelling — the same words `bind-key` takes and `list-keys` prints. Before R328 this surface
+    // said `(choose-tree)` whatever it had been opened to do.
+    wait_for(
+        "the chooser to open under the question it was opened for",
+        || {
+            let row = tui.row(0);
+            settled(row.contains("(move-pane -v)"), &true)
+                .map_err(|got| format!("{got}: row reads {row:?}"))
+        },
+    );
+
+    tui.type_bytes(b"\r");
+    // THE ACT: window `1` held only the mover, so the move empties and closes it, and the survivor
+    // holds both panes. Read from the DAEMON, not from the client that asked for it.
+    wait_for("the pick to move the pane out of its window", || {
+        settled(
+            windows_of(&mut conn, &session),
+            &vec![("0".to_owned(), true)],
+        )
+    });
+    assert_eq!(
+        pane_ids(&mut conn, &session).len(),
+        2,
+        "the surviving window holds both panes: the move carried one in rather than closing it",
+    );
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "a move is not a departure; the client stays on the session it moved within",
+    );
+}
+
 /// EVERY DISTINCT STATUS ROW from now until the row SETTLES on `landing` — the one observation
 /// window every claim about a timed message is made from.
 ///
