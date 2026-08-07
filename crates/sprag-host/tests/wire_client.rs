@@ -907,6 +907,137 @@ fn killing_a_session_over_the_real_socket_refuses_its_reads_and_keeps_the_others
     let _ = std::fs::remove_file(&sock);
 }
 
+/// **R327 over the REAL socket: a reader whose own session was destroyed can still read the SESSION
+/// LIST — and still cannot read anything about a session.**
+///
+/// The live path, which is the point of putting it here. `sprag_host::rpc`'s unit gate drives the
+/// string entry (`handle_request`); every socket client's every request goes through `dispatch_one`
+/// instead, which resolves the scope EARLY and for its own reasons. A fix that landed in one and not
+/// the other would leave the product exactly as broken while looking tested — R322's *"a fix is a
+/// claim until the probe is re-run"*, one layer down.
+///
+/// # What the two halves are worth separately
+///
+/// R326 measured `detach-on-destroy = no-detached` walking into a session another client was sitting
+/// in. Its policy turns on each session's ATTACHED count, and at the instant it decides, the reader's
+/// own session is gone: scope resolution refused every method on that connection, so the list could
+/// not be re-read and the decision fell to a mirror nothing bounds the staleness of.
+///
+/// So the first half must ANSWER — and answer TRUTHFULLY, which is why the count is driven by a real
+/// second connection that really attached, and asserted to be 1 rather than merely present. A door
+/// that answered a hollow list would pass a mere `is_ok`, and `no-detached` reading `attached: 0` off
+/// a hollow row is the original defect with a new cause.
+///
+/// The second half must still REFUSE, and it carries the same weight. That refusal is the DETACH
+/// signal: a display client's poll thread reads it as *"the session I was viewing is gone"*. A build
+/// that opened the door wider would trade R326's defect for a client that never notices its session
+/// died, so both readings are made of the SAME connection in the same breath.
+///
+/// Both ways a dead scope arrives are driven, because a client meets one or the other and never
+/// both: a NAME the registry no longer carries, and an ATTACHED ask from a client whose attachment
+/// the kill released.
+#[test]
+fn a_dead_scope_still_reads_the_registry_and_still_refuses_a_session_over_the_real_socket() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "work" } }),
+    )
+    .expect("new_session answers");
+
+    // SOMEBODY IS IN THE SURVIVOR. A real second connection that really attaches, so the count the
+    // dying client is about to read is one the daemon derived rather than one this test wrote.
+    let mut neighbour =
+        HostConn::connect(&sock, Duration::from_secs(5)).expect("the neighbour connects");
+    neighbour
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "neighbour" }))
+        .expect("client/hello is accepted");
+    neighbour
+        .call(CLIENT_ATTACH_METHOD, json!({}))
+        .expect("client/attach is accepted");
+    assert!(
+        wait_until(Duration::from_secs(5), || attached_of(&mut conn, "0") == 1),
+        "the neighbour must be counted before the reading below means anything",
+    );
+
+    // THE DYING CLIENT: it says hello and attaches to `work`, so BOTH ways of naming a dead scope
+    // are available to it once `work` goes.
+    let mut dying = HostConn::connect(&sock, Duration::from_secs(5)).expect("the dying client");
+    dying
+        .call(CLIENT_HELLO_METHOD, json!({ CLIENT_PARAM: "dying" }))
+        .expect("client/hello is accepted");
+    dying
+        .call(CLIENT_ATTACH_METHOD, json!({ "session": "work" }))
+        .expect("client/attach is accepted");
+    // THE CONTROL, and it runs first: while `work` lives, this connection reads both.
+    for scope in [json!({ "session": "work" }), json!({ "attached": true })] {
+        for slot in [SESSIONS_SLOT, PANES_SLOT] {
+            let mut params = scope.clone();
+            params["path"] = json!(mux_action_path(slot));
+            assert!(
+                dying.call("scene/query", params).is_ok(),
+                "{scope} must read {slot} while its session lives, or nothing below discriminates",
+            );
+        }
+    }
+
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(KILL_SESSION_ACTION), "args": { "name": "work" } }),
+    )
+    .expect("kill_session of a non-last session answers Ok");
+
+    for scope in [json!({ "session": "work" }), json!({ "attached": true })] {
+        // THE REGISTRY still answers — and answers the truth about who is sitting where.
+        let mut params = scope.clone();
+        params["path"] = json!(mux_action_path(SESSIONS_SLOT));
+        let listed = dying
+            .call("scene/query", params)
+            .unwrap_or_else(|error| panic!("{scope} must still read the session list: {error}"));
+        let rows = listed.as_array().expect("the sessions slot answers a list");
+        let survivor = rows
+            .iter()
+            .find(|row| row["name"] == "0")
+            .unwrap_or_else(|| panic!("the survivor must be listed: {listed}"));
+        assert_eq!(
+            survivor["attached"], 1,
+            "and the count must be the daemon's own, or a `no-detached` client reading 0 off a \
+             hollow row joins an occupied session exactly as before: {listed}",
+        );
+        assert_eq!(
+            rows.len(),
+            1,
+            "the killed session is gone from it: {listed}"
+        );
+
+        // ...and a read about ONE session is still refused, on the very same connection, IN THE
+        // WORDS IT WAS ALWAYS REFUSED IN. This is the detach signal, and widening it away would be
+        // the opposite defect — but so would answering it in the registry surface's vocabulary: a
+        // client owed *"no session named work"* and told *"unknown path"* has been given a sentence
+        // about a slot in place of the fact about its session, and its poll thread classifies the
+        // first. The wording is the assertion for R325's reason: a refusal a caller reads is a claim.
+        let mut params = scope.clone();
+        params["path"] = json!(mux_action_path(PANES_SLOT));
+        let why = dying
+            .call("scene/query", params)
+            .expect_err("a read about a session it no longer has must be refused")
+            .to_string();
+        let expected = if scope["attached"] == json!(true) {
+            "params.attached asks for this client's session and it is attached to none"
+        } else {
+            r#"no session named "work""#
+        };
+        assert!(
+            why.contains(expected),
+            "{scope} must be refused with {expected:?}, and said: {why}",
+        );
+    }
+
+    let _ = std::fs::remove_file(&sock);
+}
+
 /// The names of every session on the host, in list order — off the registry-wide `sessions` slot.
 fn session_names(conn: &mut HostConn) -> Vec<String> {
     conn.call(

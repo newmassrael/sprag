@@ -6738,3 +6738,99 @@ fn the_client_leaves_when_its_session_is_destroyed() {
         "the spare session outlives the client that could not reach it",
     );
 }
+
+/// **THE GATE FOR R327: `no-detached` LEAVES rather than join a session somebody else is in.**
+///
+/// R326 measured the opposite, on exactly this fixture: the client whose session was destroyed
+/// walked into the session the other one was sitting in, its row reading `[beta] 0:0*` with `beta`
+/// holding two clients. It reproduced 2 of 5 full-workspace runs and never once alone — it needed
+/// the LOAD — so the gate was REMOVED rather than shipped flaky, and the cause was written down.
+///
+/// # ⚠ THIS IS COMPOSITION COVERAGE, NOT THE DISCRIMINATOR — measured, not assumed
+///
+/// R327 restored it because it now PASSES, and it passes stably: **10 of 10 runs green**, and green
+/// again under the full-workspace load that used to break it. What it is NOT is the gate that would
+/// catch the defect coming back. Measured, by mutation:
+///
+/// * remove the fresh re-read entirely (`plan_successor` decides on the mirror alone, which is the
+///   pre-R327 product) and this reddens **1 run in 3** — the failure reading exactly R326's:
+///   `running`, row `[beta] 0:0*`;
+/// * keep the read and decide the OCCUPANCY on the mirror anyway and it stays green **10 of 10**.
+///
+/// So the staleness this exists to punish is still only visible when the wake ordering cooperates,
+/// which is what R326 found and why the gate was removed rather than shipped. **The deterministic
+/// discriminators are elsewhere and both exist**: the daemon half is
+/// `a_dead_scope_still_reads_the_registry_and_still_refuses_a_session_over_the_real_socket`
+/// (`sprag-host`, over the real socket, red under either dispatch path regressing), and the client
+/// half is `the_occupancy_comes_from_now_and_the_order_comes_from_what_the_person_saw`
+/// (`sprag-client`, red under either list being read for the other's question). A future reader
+/// must not treat a green here as coverage of the decision.
+///
+/// What it does buy, and why it is worth its second pseudoterminal: it is the only place the whole
+/// composition runs — two shipped clients, a real attachment count, a real out-of-band kill — and
+/// the only fixture that reaches [`sprag_host::wake::Lost::Detached`], a switch policy that ran out
+/// of places to go, which had no production coverage at all while it was gone.
+///
+/// # What it takes for the reading to mean anything
+///
+/// The survivor must be genuinely OCCUPIED — by a second real client on its own pseudoterminal, not
+/// by a number written into a fixture — because the whole claim is that this client can see what
+/// another client did. And the neighbour is asserted to still hold exactly ONE client afterwards:
+/// a build that joined it would be caught by the row, but a build that joined it and then left
+/// would not, and that is a different bug with the same screen.
+#[test]
+fn no_detached_leaves_rather_than_join_an_occupied_session() {
+    let config = ConfigHome::new("[options]\ndetach-on-destroy = \"no-detached\"\n");
+    let (_daemon, sock, mut conn, session, mut mine) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+    let made = Command::new(sprag_cli_bin())
+        .args(["new", "beta"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .output()
+        .expect("run sprag new");
+    assert!(made.status.success(), "the only survivor must exist");
+
+    // SOMEBODY ELSE IS ALREADY IN IT — a second client on its own pseudoterminal, so the count this
+    // policy turns on is one a real attach produced.
+    let _neighbour = Tui::attach_with_env(&sock, "beta", &[("XDG_CONFIG_HOME", config.as_str())]);
+    wait_for(
+        "the daemon to count the neighbour as attached to beta",
+        || settled(attached(&mut conn, "beta"), &1),
+    );
+    // THE CONTROL, before the kill: this client is where it booted, so every reading below is the
+    // kill's doing.
+    let where_it_was = format!("[{session}] 0:0*");
+    wait_for("the row to say where this client is", || {
+        settled(mine.row(STATUS_ROW), &where_it_was)
+    });
+
+    // OUT OF BAND, by a third process — the path where nobody at either keyboard did anything.
+    let killed = Command::new(sprag_cli_bin())
+        .args(["kill-session", &session])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .output()
+        .expect("run sprag kill-session");
+    assert!(
+        killed.status.success(),
+        "the killer must have worked: {:?}",
+        String::from_utf8_lossy(&killed.stderr),
+    );
+
+    wait_for(
+        "the client to LEAVE rather than sit down beside somebody",
+        || match mine.liveness() {
+            gone if gone.starts_with("EXITED") => Ok(()),
+            still => Err(format!("{still}; row reads {:?}", mine.row(STATUS_ROW))),
+        },
+    );
+    assert_eq!(
+        attached(&mut conn, "beta"),
+        1,
+        "beta held one client before the kill and must hold exactly one after it — a build that \
+         joined and then left would pass the reading above and is a different defect",
+    );
+}
