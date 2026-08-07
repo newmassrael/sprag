@@ -722,9 +722,24 @@ pub trait HostClient {
     /// `new-window`), returning its name.
     fn new_window(&self) -> String;
 
-    /// Kill the window named `name` of the scoped session (tmux `kill-window`); the session's
-    /// LAST window ends the session. A no-op for an unknown name.
-    fn kill_window(&self, name: &str);
+    /// Kill the window named `name` of the scoped session (tmux `kill-window`), answering HOW FAR
+    /// the kill cascaded — or [`None`] if nothing was killed (an unknown name, a refusal, a failed
+    /// request).
+    ///
+    /// [`Ended`] rather than `()`, which is what this answered until R325 and the last acting method
+    /// in this trait to be widened (R316's shape, met a final time). The word is not decoration: a
+    /// session's LAST window takes the SESSION with it, and measured on a live client with
+    /// `detach-on-destroy next`, `prefix &` destroyed the person's session, moved them silently to a
+    /// neighbouring one, and **left the status row naming the session that had just died**. Nothing
+    /// in the product could say what had happened because nothing was told.
+    ///
+    /// The word is the DAEMON's ([`crate::wire::ENDED_KEY`]) for
+    /// [`kill_pane`](Self::kill_pane)'s reason: whether a session survived its last window is a fact
+    /// only the process that performed the kill holds, and a client counting its own rows would
+    /// answer from a snapshot taken before the kill.
+    #[must_use = "the [`Ended`] word says HOW FAR the cascade went — a window kill that took the \
+                  SESSION is not something a re-read tells the person who pressed the key"]
+    fn kill_window(&self, name: &str) -> Option<Ended>;
 
     /// Rename the scoped session's CURRENT window, answering the name the daemon RECORDED — or
     /// [`None`] if it refused (tmux `rename-window`).
@@ -1162,7 +1177,13 @@ pub trait HostClient {
     /// A CLIENT-adjacent SESSION op, like [`switch_session`](Self::switch_session): the in-process
     /// arm renders only the default session and owns no client to detach, so it implements this as a
     /// documented no-op; the wire client carries the real kill + detach/switch.
-    fn kill_session(&self, name: &str);
+    ///
+    /// Answers HOW FAR the kill cascaded, or [`None`] for a name the host does not hold and for the
+    /// in-process no-op — [`kill_window`](Self::kill_window)'s widening one level up, and the same
+    /// reason: [`Ended::Server`] means the DAEMON went with the session, which is the one outcome a
+    /// client cannot discover by re-reading (there is nothing left to read).
+    #[must_use = "[`Ended::Server`] means the daemon went too, which no re-read can report"]
+    fn kill_session(&self, name: &str) -> Option<Ended>;
 
     /// Reconcile a session this client lost OUT OF BAND — killed by ANOTHER client or the `sprag`
     /// CLI while we were attached — against the `detach-on-destroy` policy: switch to a neighbouring
@@ -2913,9 +2934,12 @@ impl HostClient for Host {
     /// Kill a window of the default session; the last window ends the session. An unknown name is a
     /// no-op. The in-process arm has no daemon to exit, so the reaped panes just drop here —
     /// OFF the registry lock (the outcome is bound after the lock guard falls at the `;`).
-    fn kill_window(&self, name: &str) {
+    fn kill_window(&self, name: &str) -> Option<Ended> {
         let session = lock(&self.registry).default_session().name().to_owned();
-        let _outcome = lock(&self.registry).kill_window(&session, name);
+        // Bound off the lock so the reaped panes' blocking `Drop` runs outside it — the discipline
+        // every kill in this tree keeps — and its word is the answer.
+        let outcome = lock(&self.registry).kill_window(&session, name);
+        outcome.ok().map(|outcome| outcome.ended())
     }
 
     /// The default session's current window, renamed under the registry lock. The three renames
@@ -3213,7 +3237,9 @@ impl HostClient for Host {
     /// `DEFAULT_ALWAYS_RESOLVES` invariant — but it would CLOSE that one session's live panes, an
     /// observable change wrong for an arm meant only to render the default. The kill action is a
     /// wire-client capability, exercised through the daemon.
-    fn kill_session(&self, _name: &str) {}
+    fn kill_session(&self, _name: &str) -> Option<Ended> {
+        None
+    }
 }
 
 /// Why the in-process arm may unwrap a scoped layout read that a wire caller must handle.

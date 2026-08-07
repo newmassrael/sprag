@@ -46,6 +46,8 @@ use std::fmt;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use sprag_terminal::Ended;
+
 use crate::keymap::BoundAction;
 
 sprag_terminal::closed_set! {
@@ -441,6 +443,37 @@ impl Report {
     /// who drops it needs to read. A second attribute would be a second wording of the same rule.
     pub fn said(announcement: &Announcement) -> Self {
         Self::at(announcement.severity, announcement.text.to_string())
+    }
+
+    /// A kill that reached PAST what the person named — *"the session went with it"*.
+    ///
+    /// [`Report::on_screen`] when it stopped exactly where they asked, which is the common case and
+    /// needs no words: the window they killed is gone from a strip they are looking at.
+    ///
+    /// # Why a kill needs this and the other verbs do not
+    ///
+    /// A mux is nested, so `kill-window` can end a SESSION and `kill-session` can end the SERVER —
+    /// and neither is discoverable by re-reading, because what would answer the question is the
+    /// thing that went. Measured on a live client at `d1833df` with `detach-on-destroy next`:
+    /// `prefix &` on a session's last window destroyed that session, moved the person to a
+    /// neighbouring one, and **left the status row naming the session that had just died**. The
+    /// daemon had said `{"ended":"session"}` on the same reply and both display clients dropped it,
+    /// because `kill_window` answered `()` — the last two acting methods in [`crate::HostClient`]
+    /// that did.
+    ///
+    /// # The clause is [`Ended::beyond`]'s and not this function's
+    ///
+    /// One wording for every surface (`sprag kill-window` already prints it), which is the rule
+    /// that type's own doc states. What is decided HERE is only that a kill which cascaded is worth
+    /// a row at all — and at [`Severity::Warn`], because a person who asked to end a window and
+    /// ended a session needs telling, while it is not the kind that waits to be acknowledged.
+    ///
+    /// No `#[must_use]` here and none is missing, [`said`](Self::said)'s note: [`Report`] carries
+    /// one already, with the sentence a caller who drops it needs to read.
+    pub fn cascaded(reached: Ended, named: Ended) -> Self {
+        reached
+            .beyond(named)
+            .map_or_else(Self::on_screen, |beyond| Self::at(Severity::Warn, beyond))
     }
 
     /// A spoken report at `severity` — the one private constructor the three public ones share, so

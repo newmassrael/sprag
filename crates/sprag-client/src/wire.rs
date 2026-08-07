@@ -2316,6 +2316,33 @@ impl WireHost {
     }
 }
 
+/// How far a kill CASCADED, read off the daemon's answer — the ONE reader the three destructive
+/// verbs share.
+///
+/// It was `kill_pane`'s alone until R325 widened `kill_window` and `kill_session` off `()`; three
+/// copies of a four-line extraction is exactly the drift this tree keeps paying to remove, and the
+/// `None` case has a subtlety worth stating once rather than three times.
+///
+/// **[`None`] is not [`Ended::Pane`]**, and never guessed at as one. An answer with no
+/// [`ENDED_KEY`] can only come from a daemon older than the cascade, which
+/// [`client/hello`](sprag_rpc::CLIENT_HELLO_METHOD) refuses by number — so it is reported as a kill
+/// this client cannot describe. Guessing the lowest level would tell a user their session survived
+/// when it did not, which is the one answer worse than silence.
+fn ended_of(answer: &Value, ctx: &str) -> Option<Ended> {
+    let ended = answer
+        .get(ENDED_KEY)
+        .and_then(Value::as_str)
+        .and_then(Ended::from_wire);
+    if ended.is_none() {
+        tracing::debug!(
+            target: "sprag_gui::wire",
+            ctx,
+            "the daemon performed a kill without saying what it ended",
+        );
+    }
+    ended
+}
+
 impl HostClient for WireHost {
     /// The mirrored cache's ids, in host order. Honors the trait's "renderable now"
     /// contract by construction: `merge_panes` only admits a pane once its first frame is
@@ -2628,17 +2655,22 @@ impl HostClient for WireHost {
         name
     }
 
-    fn kill_window(&self, name: &str) {
+    /// Kill a window over the wire, answering how far the kill CASCADED —
+    /// [`HostClient::kill_pane`]'s shape one level up, and read through the same reader: the
+    /// word is the DAEMON's and is never re-derived from a mirror this client holds.
+    ///
+    /// [`HostClient::kill_window`] carries why this answers a value at all; what belongs here is
+    /// that the answer arrives on the SAME reply as the act, which matters more than usual for this
+    /// verb: killing a session's last window ends the session, and a client that asked afterwards
+    /// would be asking a daemon that may have exited.
+    fn kill_window(&self, name: &str) -> Option<Ended> {
         let params = invoke(
             &mux_action_path(KILL_WINDOW_ACTION),
             json!({ "window": name }),
         );
-        if self
-            .request("scene/invoke", params, "kill_window")
-            .is_some()
-        {
-            self.refresh_view();
-        }
+        let answer = self.request("scene/invoke", params, "kill_window")?;
+        self.refresh_view();
+        ended_of(&answer, "kill_window")
     }
 
     /// The CURRENT window's rename, sent with NO target so the daemon resolves it under its own
@@ -2825,18 +2857,7 @@ impl HostClient for WireHost {
         let params = invoke(&mux_action_path(CLOSE_ACTION), json!({ "id": id.0 }));
         let answer = self.request("scene/invoke", params, "kill_pane")?;
         self.refresh_view();
-        let ended = answer
-            .get(ENDED_KEY)
-            .and_then(Value::as_str)
-            .and_then(Ended::from_wire);
-        if ended.is_none() {
-            tracing::debug!(
-                target: "sprag_gui::wire",
-                pane = id.0,
-                "the daemon killed a pane without saying what it ended",
-            );
-        }
-        ended
+        ended_of(&answer, "kill_pane")
     }
 
     /// Break the pane `id` out into a new window (tmux `break-pane`) over the wire, returning the
@@ -3040,10 +3061,13 @@ impl HostClient for WireHost {
     ///   `refresh_sessions` (the poll thread's revision-bump re-read is
     ///   the backstop for the same change arriving out of band).
     ///
-    /// The invoke's answer is intentionally ignored (see the detach note); a genuine refusal — only
-    /// an unknown name for this action — leaves every session as it was, and the sidebar the next
-    /// re-read paints is unchanged.
-    fn kill_session(&self, name: &str) {
+    /// The answer carries how far the kill CASCADED, and R325 stopped throwing it away. The note
+    /// this replaces said it was *"intentionally ignored (see the detach note)"* — true of the
+    /// SEVERED case and of nothing else: the two branches that get a reply get [`Ended`] out of it,
+    /// and only the branch that is leaving anyway cannot. [`Ended::Server`] is the one this buys
+    /// outright: killing the LAST session ends the daemon, which no re-read can report because
+    /// there is nothing left to read.
+    fn kill_session(&self, name: &str) -> Option<Ended> {
         let params = invoke(
             &mux_action_path(KILL_SESSION_ACTION),
             json!({ "name": name }),
@@ -3070,18 +3094,25 @@ impl HostClient for WireHost {
             if let Some(mut poll) = running {
                 poll.stop();
             }
-            let _ = self.request("scene/invoke", params, "kill_session");
+            let ended = self
+                .request("scene/invoke", params, "kill_session")
+                .and_then(|answer| ended_of(&answer, "kill_session"));
             self.follow(plan);
-            return;
+            return ended;
         }
-        let _ = self.request("scene/invoke", params, "kill_session");
+        let ended = self
+            .request("scene/invoke", params, "kill_session")
+            .and_then(|answer| ended_of(&answer, "kill_session"));
         if is_own {
-            // Own kill with nothing to switch to → DETACH.
+            // Own kill with nothing to switch to → DETACH. The reply may have been SEVERED by the
+            // daemon's own exit, which is success and is why `ended` is `None` here as often as not
+            // — the client is leaving either way, so there is nobody left to tell.
             self.quit.request_quit();
         } else {
             // Another session killed → keep serving ours; drop the killed row now.
             self.refresh_sessions();
         }
+        ended
     }
 
     /// Resolve a session lost OUT OF BAND (another client / the `sprag` CLI killed THIS client's
