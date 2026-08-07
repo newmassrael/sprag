@@ -2503,14 +2503,6 @@ impl JoinAsk {
             _ => None,
         }
     }
-
-    /// The pane being moved, whichever way the destination was spelled.
-    #[must_use]
-    pub const fn pane(&self) -> PaneId {
-        match self {
-            Self::Named { pane, .. } | Self::Picked { pane, .. } => *pane,
-        }
-    }
 }
 
 /// The mux control external invoke action that PLACES an existing pane beside another
@@ -3501,7 +3493,6 @@ mod tests {
         ];
         for ask in &shapes {
             assert_eq!(JoinAsk::parse(&ask.to_args()), Some(ask.clone()), "{ask:?}");
-            assert_eq!(ask.pane(), PaneId(3));
         }
         assert_eq!(shapes[0].to_args(), json!({"pane": 3, "window": "build"}));
         assert_eq!(shapes[1].to_args(), json!({"pane": 3, "window_id": 7}));

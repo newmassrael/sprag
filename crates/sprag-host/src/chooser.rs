@@ -852,6 +852,24 @@ mod tests {
             "...while every OTHER window is offered, in this session and the next: {landed:?}",
         );
 
+        // A session whose only window is the pane's own has no room to offer, so the chooser is not
+        // opened at all — `RenamePane`'s rule ("an action needing a subject when there is none asks
+        // nothing and does nothing"), which is what the frontends' `Report::on_screen()` arm is for.
+        // Found by the debt sweep for a branch no test builds, and built rather than registered.
+        let alone = vec![session(1, "alpha", 1)];
+        assert_eq!(
+            Pick::for_errand(
+                &alone,
+                "alpha",
+                Errand::join(&alone, PaneId(1000)).expect("the tree holds the pane"),
+            ),
+            None,
+            "a chooser with no pickable room is not a question",
+        );
+        // The CONTROL that keeps that from being a claim about the fixture rather than the errand:
+        // the SAME one-window tree opens a `choose-tree`, whose every row is a place.
+        assert!(Pick::new(&alone, "alpha").is_some());
+
         assert_eq!(errand.asking(), "join-pane");
         assert_ne!(
             errand.asking(),
