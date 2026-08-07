@@ -1122,6 +1122,30 @@ pub enum SessionError {
     /// name different things: a caller that collapsed them would tell a user their SESSION name was
     /// blank while they were renaming a window.
     MalformedWindow(WindowNameError),
+    /// The name is already another WINDOW's, in the session addressed —
+    /// [`Duplicate`](Self::Duplicate) one level down.
+    ///
+    /// **This variant exists because its absence was a measured wrong sentence** (R325). Every
+    /// window-level op reported a clash as `Duplicate`, so `sprag rename-window 1 0` answered *a
+    /// session named "0" already exists* about a WINDOW — the exact collapse
+    /// [`MalformedWindow`](Self::MalformedWindow)'s own doc forbids, two variants over. Nobody saw
+    /// it because the CLI overwrote every refusal with a client-side guess; PINION-PR82 let the
+    /// daemon's own sentence reach a person, and it was wrong on arrival.
+    DuplicateWindow(String),
+    /// No WINDOW of the session addressed carries the name —
+    /// [`Unknown`](Self::Unknown) one level down, and there for
+    /// [`DuplicateWindow`](Self::DuplicateWindow)'s reason.
+    UnknownWindow(String),
+    /// No window carries the name a [`WindowPlace`] used as its ANCHOR
+    /// ([`SessionRegistry::move_window`]).
+    ///
+    /// Its own arm rather than [`UnknownWindow`](Self::UnknownWindow), because a move names TWO
+    /// windows and only one of them is the thing being moved: an operator told *"no window named
+    /// x"* about `move-window a --after nosuch` cannot tell which end of their command was wrong.
+    /// The CLI used to make this distinction in a sentence it wrote OVER the daemon's, because the
+    /// daemon's could not cross the wire; this is that distinction moved to the end that observes
+    /// it.
+    UnknownAnchor(String),
     /// The window addressed tiles no pane with that id
     /// ([`SessionRegistry::close_pane`](SessionRegistry::close_pane)).
     ///
@@ -1139,6 +1163,9 @@ impl std::fmt::Display for SessionError {
             Self::Unknown(name) => write!(f, "no session named {name:?}"),
             Self::Malformed(error) => error.fmt(f),
             Self::MalformedWindow(error) => error.fmt(f),
+            Self::DuplicateWindow(name) => write!(f, "a window named {name:?} already exists"),
+            Self::UnknownWindow(name) => write!(f, "no window named {name:?}"),
+            Self::UnknownAnchor(name) => write!(f, "no window named {name:?} to anchor to"),
             Self::UnknownPane(id) => write!(f, "that window tiles no pane with id {}", id.0),
         }
     }
@@ -1787,7 +1814,7 @@ impl Session {
             Some(name) => {
                 let name = WindowName::parse(name).map_err(SessionError::MalformedWindow)?;
                 if self.windows.iter().any(|w| w.name == name.as_str()) {
-                    return Err(SessionError::Duplicate(name.into()));
+                    return Err(SessionError::DuplicateWindow(name.into()));
                 }
                 name.into()
             }
@@ -1824,7 +1851,7 @@ impl Session {
             .windows
             .iter()
             .position(|w| w.name == name)
-            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+            .ok_or_else(|| SessionError::UnknownWindow(name.to_owned()))?;
         self.current_window = idx;
         Ok(())
     }
@@ -1892,14 +1919,14 @@ impl Session {
             .windows
             .iter()
             .position(|window| window.name == name)
-            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+            .ok_or_else(|| SessionError::UnknownWindow(name.to_owned()))?;
         let anchor = match place.anchor() {
             None => None,
             Some(anchor) => Some(
                 self.windows
                     .iter()
                     .position(|window| window.name == anchor)
-                    .ok_or_else(|| SessionError::Unknown(anchor.to_owned()))?,
+                    .ok_or_else(|| SessionError::UnknownAnchor(anchor.to_owned()))?,
             ),
         };
         if anchor == Some(from) {
@@ -1961,10 +1988,10 @@ impl Session {
             .windows
             .iter()
             .position(|w| w.name == name)
-            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+            .ok_or_else(|| SessionError::UnknownWindow(name.to_owned()))?;
         let new = WindowName::parse(new).map_err(SessionError::MalformedWindow)?;
         if new.as_str() != name && self.windows.iter().any(|w| w.name == new.as_str()) {
-            return Err(SessionError::Duplicate(new.into()));
+            return Err(SessionError::DuplicateWindow(new.into()));
         }
         self.windows[idx].name = new.as_str().to_owned();
         Ok(new.into())
@@ -1985,7 +2012,7 @@ impl Session {
             .windows
             .iter_mut()
             .find(|w| w.name == name)
-            .ok_or_else(|| SessionError::Unknown(name.to_owned()))?;
+            .ok_or_else(|| SessionError::UnknownWindow(name.to_owned()))?;
         window.set_manual_size(size);
         Ok(())
     }
@@ -3452,7 +3479,7 @@ impl SessionRegistry {
             .windows
             .iter()
             .position(|w| w.name == window)
-            .ok_or_else(|| SessionError::Unknown(window.to_owned()))?;
+            .ok_or_else(|| SessionError::UnknownWindow(window.to_owned()))?;
         // Membership and the last-pane question are ONE answer read under ONE pool lock: asking
         // "is it the last?" and then closing would be two reads with a gap in which a concurrent
         // spawn could make the escalation wrong in the direction that destroys a window somebody
@@ -3512,7 +3539,7 @@ impl SessionRegistry {
             .windows
             .iter()
             .position(|w| w.name == window)
-            .ok_or_else(|| SessionError::Unknown(window.to_owned()))?;
+            .ok_or_else(|| SessionError::UnknownWindow(window.to_owned()))?;
         if self.sessions[sidx].windows.len() == 1 {
             // The session's last window: tmux ends the session with it. Escalating also handles
             // the last-SESSION case (drain + end the daemon) in one place — this never removes a
@@ -4439,11 +4466,11 @@ mod tests {
         let (mut reg, session) = four_windows();
         assert_eq!(
             reg.move_window(&session, "nosuch", &WindowPlace::First),
-            Err(SessionError::Unknown("nosuch".to_owned())),
+            Err(SessionError::UnknownWindow("nosuch".to_owned())),
         );
         assert_eq!(
             reg.move_window(&session, "a", &WindowPlace::Before("nosuch".to_owned())),
-            Err(SessionError::Unknown("nosuch".to_owned())),
+            Err(SessionError::UnknownAnchor("nosuch".to_owned())),
             "the ANCHOR is named in the refusal, not the window that was to move",
         );
         assert!(
@@ -4456,7 +4483,7 @@ mod tests {
         let only = lone.default_session().name().to_owned();
         assert_eq!(
             lone.move_window(&only, "0", &WindowPlace::After("nosuch".to_owned())),
-            Err(SessionError::Unknown("nosuch".to_owned())),
+            Err(SessionError::UnknownAnchor("nosuch".to_owned())),
             "an absent anchor is refused even where the session has nothing to rearrange",
         );
     }
@@ -5112,7 +5139,7 @@ mod tests {
         assert_eq!(
             reg.new_window(&default, Some("3"), WindowBirth::default())
                 .unwrap_err(),
-            SessionError::Duplicate("3".to_owned()),
+            SessionError::DuplicateWindow("3".to_owned()),
             "a taken window name is refused",
         );
         assert_eq!(
@@ -5278,7 +5305,7 @@ mod tests {
 
         assert!(matches!(
             reg.select_window(&default, "ghost"),
-            Err(SessionError::Unknown(name)) if name == "ghost",
+            Err(SessionError::UnknownWindow(name)) if name == "ghost",
         ));
         assert_eq!(
             reg.session(&default).unwrap().current_window().name(),
@@ -5310,7 +5337,7 @@ mod tests {
         // Renaming onto a name another window holds is refused.
         assert_eq!(
             reg.rename_window(&default, "1", "editor").unwrap_err(),
-            SessionError::Duplicate("editor".to_owned()),
+            SessionError::DuplicateWindow("editor".to_owned()),
         );
         assert_eq!(
             names(&reg),
@@ -5325,7 +5352,7 @@ mod tests {
         // Unknown window / session refuse.
         assert!(matches!(
             reg.rename_window(&default, "ghost", "x"),
-            Err(SessionError::Unknown(name)) if name == "ghost",
+            Err(SessionError::UnknownWindow(name)) if name == "ghost",
         ));
     }
 
@@ -5537,7 +5564,7 @@ mod tests {
         ));
         assert!(matches!(
             reg.kill_window(&default, "ghost"),
-            Err(SessionError::Unknown(name)) if name == "ghost",
+            Err(SessionError::UnknownWindow(name)) if name == "ghost",
         ));
         assert_eq!(
             reg.session(&default).unwrap().windows().len(),
@@ -5659,7 +5686,7 @@ mod tests {
         ));
         assert!(matches!(
             reg.close_pane(&default, "ghost", ids[0]),
-            Err(SessionError::Unknown(name)) if name == "ghost",
+            Err(SessionError::UnknownWindow(name)) if name == "ghost",
         ));
         assert!(matches!(
             reg.close_pane(&default, "0", PaneId(9999)),
