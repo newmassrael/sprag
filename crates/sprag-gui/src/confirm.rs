@@ -1217,7 +1217,7 @@ mod tests {
             assert!(is_open());
 
             // Killed out of band — another client, the CLI, or its own last pane exiting.
-            terminal.slots.kill_window(&victim);
+            let _ = terminal.slots.kill_window(&victim);
             reconcile(&terminal.slots);
 
             assert!(

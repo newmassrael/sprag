@@ -478,10 +478,15 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
         // mirror the tab bar draws from, where `current` is the fact the daemon publishes for it.
         BoundAction::KillWindow => {
             let slots = &use_terminal().slots;
-            if let Some(window) = slots.windows().into_iter().find(|w| w.current) {
-                slots.kill_window(&window.name);
+            match slots.windows().into_iter().find(|w| w.current) {
+                // ...and the CASCADE is reported (R325): this key can end the SESSION, which is a
+                // fact only the daemon holds and which no repaint of this window carries.
+                Some(window) => match slots.kill_window(&window.name) {
+                    Some(ended) => Report::cascaded(ended, sprag_terminal::Ended::Window),
+                    None => Report::nowhere(&action),
+                },
+                None => Report::nowhere(&action),
             }
-            Report::on_screen()
         }
         // NO window named, unlike the kill above it: the daemon resolves "the one I am on" under
         // the lock that performs the move. The kill reads the mirror because a kill's QUESTION
@@ -548,8 +553,12 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
         // nothing to draw over it.
         BoundAction::KillSession => {
             let slots = &use_terminal().slots;
-            slots.kill_session(&slots.current_session());
-            Report::on_screen()
+            match slots.kill_session(&slots.current_session()) {
+                // `Ended::Server` is the answer nothing else can give: the daemon this window was
+                // talking to is gone, so there is nothing left to re-read.
+                Some(ended) => Report::cascaded(ended, sprag_terminal::Ended::Session),
+                None => Report::on_screen(),
+            }
         }
         // CREATE AND FOLLOW, which is two acts and is stated as a decision on the arm itself: a
         // person who makes a session and stays where they were has pressed a key that appears to do

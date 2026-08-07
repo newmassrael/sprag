@@ -789,7 +789,11 @@ pub(crate) fn handle_session_intent(intent: &Intent, slots: &SlotView) -> bool {
         // `kill_session` treats as a benign host-side no-op.
         let pending = use_pending_kill();
         if let Some(name) = pending.get() {
-            slots.kill_session(&name);
+            // The CASCADE is deliberately dropped HERE and nowhere else: this is the confirmation
+            // strip's own commit, whose caller returns a `bool` for "the click was consumed" and
+            // has no row to paint on. The keyboard and the palette arms both report it; a fourth
+            // door that needed the word would have to say so rather than inherit this decision.
+            let _ = slots.kill_session(&name);
         }
         pending.set(None);
         return true;
@@ -921,8 +925,9 @@ mod tests {
             *self.created.borrow_mut() += 1;
             "new".to_owned()
         }
-        fn kill_session(&self, name: &str) {
+        fn kill_session(&self, name: &str) -> Option<sprag_terminal::Ended> {
             self.killed.borrow_mut().push(name.to_owned());
+            Some(sprag_terminal::Ended::Session)
         }
         fn current_session(&self) -> String {
             String::new()
@@ -990,7 +995,9 @@ mod tests {
         fn new_window(&self) -> String {
             String::new()
         }
-        fn kill_window(&self, _name: &str) {}
+        fn kill_window(&self, _name: &str) -> Option<sprag_terminal::Ended> {
+            None
+        }
         /// This fixture drives the session RAIL, which renames nothing — an honest refusal, which
         /// is also what a host that cannot rename should answer.
         fn rename_window(&self, _name: &str) -> Option<String> {

@@ -120,7 +120,7 @@ use sprag_host::report::{Message, Report, display_time, now};
 use sprag_host::status::Status;
 use sprag_host::wire::SelectWindowAsk;
 use sprag_input::{Modifiers, MouseEventKind, MouseInput};
-use sprag_terminal::{PaneId, PlaceHow, SplitId};
+use sprag_terminal::{Ended, PaneId, PlaceHow, SplitId};
 use sprag_tui::focus::{self, Person};
 use sprag_tui::outward::Outward;
 use sprag_tui::{
@@ -707,12 +707,17 @@ fn run() -> Result<(), Box<dyn Error>> {
                             // The CURRENT window, which is the only one a keystroke can mean. Its
                             // name comes off the client's own window mirror, where `current` is the
                             // fact the daemon publishes for exactly this.
-                            BoundAction::KillWindow => {
-                                if let Some(window) = current_window_name(&host) {
-                                    host.kill_window(&window);
-                                }
-                                Report::on_screen()
-                            }
+                            // ...and it REPORTS THE CASCADE (R325): the session's last window
+                            // takes the session, which the confirm prompt only PREDICTS off this
+                            // client's mirror. The prompt's own doc says it can over-state; this is
+                            // what the daemon actually did.
+                            BoundAction::KillWindow => match current_window_name(&host) {
+                                Some(window) => match host.kill_window(&window) {
+                                    Some(ended) => Report::cascaded(ended, Ended::Window),
+                                    None => Report::nowhere(&action),
+                                },
+                                None => Report::nowhere(&action),
+                            },
                             // R323's THREE, and they belong in THIS group for the group's own
                             // reason: each can change which window — or which SESSION — this
                             // client projects, so the pane set is replaced wholesale and the
@@ -730,8 +735,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             // This client's OWN session. What becomes of the client afterwards is
                             // the daemon's `detach-on-destroy` policy, applied by the wire client.
                             BoundAction::KillSession => {
-                                host.kill_session(&host.current_session());
-                                Report::on_screen()
+                                match host.kill_session(&host.current_session()) {
+                                    // `Ended::Server` is the one a person cannot find out any other
+                                    // way: the daemon they were talking to is gone, so there is
+                                    // nothing left to re-read. A severed reply answers `None` and
+                                    // this client is leaving anyway.
+                                    Some(ended) => Report::cascaded(ended, Ended::Session),
+                                    None => Report::on_screen(),
+                                }
                             }
                             // CREATE AND FOLLOW — see the arm's own doc for why it is two acts.
                             // The name read BEFORE is the only way to tell a birth from a refusal:

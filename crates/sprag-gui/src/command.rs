@@ -749,14 +749,21 @@ impl Command {
             // re-resolved against a list that moved in the meantime. Killing the last window ends
             // the session and killing the attached session detaches this client; both are stated on
             // the prompt (see [`Command::confirmation`]) rather than refused here.
-            Self::KillWindow(name) => {
-                slots.kill_window(name);
-                Report::on_screen()
-            }
-            Self::KillSession(name) => {
-                slots.kill_session(name);
-                Report::on_screen()
-            }
+            //
+            // ...and REPORTED afterwards (R325). The prompt states what the cascade WILL be, off
+            // this client's own mirror, and its own doc says that reading can over-state; the
+            // report states what the daemon DID. A person warned that a kill might end their
+            // session is owed the answer to whether it did.
+            Self::KillWindow(name) => match slots.kill_window(name) {
+                Some(ended) => Report::cascaded(ended, sprag_terminal::Ended::Window),
+                None => self.reported(Report::nowhere),
+            },
+            Self::KillSession(name) => match slots.kill_session(name) {
+                Some(ended) => Report::cascaded(ended, sprag_terminal::Ended::Session),
+                // A severed reply is the daemon exiting under us, which is success; this client is
+                // leaving either way, so there is nobody left to tell.
+                None => Report::on_screen(),
+            },
             // PASTED at the pane's prompt, without a trailing newline: the user presses Enter. The
             // whole rationale (their shell runs it, so output/history/Ctrl-C behave; and a command
             // named by a file in a repository must not execute on a repository's say-so) lives on
@@ -1357,8 +1364,9 @@ mod tests {
             self.log.borrow_mut().new_windows += 1;
             "w".to_owned()
         }
-        fn kill_window(&self, name: &str) {
+        fn kill_window(&self, name: &str) -> Option<sprag_terminal::Ended> {
             self.log.borrow_mut().killed_windows.push(name.to_owned());
+            Some(sprag_terminal::Ended::Window)
         }
         /// RECORDED, and answering the TRIMMED name — a fake that echoed its argument would let a
         /// caller that paints its own input pass a test the daemon would fail it on.
@@ -1453,8 +1461,9 @@ mod tests {
                 "s".to_owned()
             }
         }
-        fn kill_session(&self, name: &str) {
+        fn kill_session(&self, name: &str) -> Option<sprag_terminal::Ended> {
             self.log.borrow_mut().killed_sessions.push(name.to_owned());
+            Some(sprag_terminal::Ended::Session)
         }
 
         fn project(&self, _id: PaneId) -> Option<Result<sprag_host::Project, String>> {

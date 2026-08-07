@@ -310,11 +310,17 @@ impl SlotView {
         name
     }
 
-    /// Kill the window named `name` (tmux `kill-window`) — a tab's close affordance. The
-    /// session's last window ends the session.
-    pub(crate) fn kill_window(&self, name: &str) {
-        self.host.kill_window(name);
+    /// Kill the window named `name` (tmux `kill-window`) — a tab's close affordance — answering
+    /// HOW FAR the kill cascaded.
+    ///
+    /// The session's last window ends the session, and that is exactly what the answer is for: it
+    /// is the one outcome of this gesture a re-read cannot report, because what would answer the
+    /// question is the thing that went.
+    #[must_use = "a window kill that took the SESSION is not something a repaint tells anybody"]
+    pub(crate) fn kill_window(&self, name: &str) -> Option<sprag_terminal::Ended> {
+        let ended = self.host.kill_window(name);
         self.reseed_pane_focus();
+        ended
     }
 
     /// The host this view reads, for a caller that needs the PROTOCOL rather than a projection.
@@ -574,9 +580,15 @@ impl SlotView {
     /// Kill the session named `name` (tmux `kill-session`) — a sidebar row's "×" close affordance.
     /// Killing this client's OWN attached session detaches the client; killing another leaves this
     /// one serving. NOT slot-mapped: sessions are addressed by NAME, like the other session ops.
-    pub(crate) fn kill_session(&self, name: &str) {
-        self.host.kill_session(name);
+    ///
+    /// Answers HOW FAR the kill cascaded — [`sprag_terminal::Ended::Server`] means
+    /// the DAEMON went with the last session, which is the one outcome this window can neither
+    /// re-read nor infer.
+    #[must_use = "[`Ended::Server`] means the daemon went too, which no repaint can report"]
+    pub(crate) fn kill_session(&self, name: &str) -> Option<sprag_terminal::Ended> {
+        let ended = self.host.kill_session(name);
         self.reseed_pane_focus();
+        ended
     }
 
     /// Resolve a session lost OUT OF BAND (killed by another client / the CLI) against the
@@ -1264,7 +1276,9 @@ mod tests {
         fn new_window(&self) -> String {
             String::new()
         }
-        fn kill_window(&self, _name: &str) {}
+        fn kill_window(&self, _name: &str) -> Option<sprag_terminal::Ended> {
+            None
+        }
         /// These fixtures exercise slot ROUTING, not renaming — refused honestly rather than
         /// answered with a name nothing recorded.
         fn rename_window(&self, _name: &str) -> Option<String> {
@@ -1304,7 +1318,9 @@ mod tests {
         fn new_session(&self) -> String {
             String::new()
         }
-        fn kill_session(&self, _name: &str) {}
+        fn kill_session(&self, _name: &str) -> Option<sprag_terminal::Ended> {
+            None
+        }
     }
 
     fn view_over(ids: &std::rc::Rc<RefCell<Vec<PaneId>>>) -> SlotView {
