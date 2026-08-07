@@ -1509,10 +1509,21 @@ impl WorkspaceExternal {
     /// — the same aliasing corner the session scope param refuses, rather than silently falling
     /// back to the current window and acting on the wrong one.
     fn window_target<'a>(&'a self, map: &'a Map<String, Value>) -> Result<&'a str, InvokeError> {
-        match map.get("window") {
+        // Read through [`WindowRef`], which owns the spelling of *which window* — the literal that
+        // used to be here was the third copy of a key R330 hoisted a type for.
+        //
+        // A NAME or the scope, and an IDENTITY is REFUSED rather than ignored: the verbs on this
+        // door (`rename_window`, `resize_window`) have no identity-addressed registry entry, and
+        // nothing in this product paints a row that commits one for them (register item 55a). A
+        // well-formed reference dropped on the floor would act on the SCOPED window instead, which
+        // is exactly the silent wrong act the protocol number moved for.
+        match crate::wire::WindowRef::read(map).map_err(|_| InvokeError::TypeMismatch)? {
             None => Ok(self.scope.window()),
-            Some(Value::String(name)) => Ok(name),
-            Some(_) => Err(InvokeError::TypeMismatch),
+            Some(crate::wire::WindowRef::Named(_)) => match map.get(WindowRef::WINDOW_KEY) {
+                Some(Value::String(name)) => Ok(name),
+                _ => Err(InvokeError::TypeMismatch),
+            },
+            Some(crate::wire::WindowRef::Picked(_)) => Err(InvokeError::TypeMismatch),
         }
     }
 
@@ -5838,6 +5849,82 @@ mod tests {
         );
     }
 
+    /// **A select addressed by IDENTITY lands on the window that was PAINTED, and ANSWERS THE NAME
+    /// IT LANDED ON** — the arm a tab click sends, driven through the action (R330).
+    ///
+    /// The answer is the load-bearing half and the reason this arm is not a one-liner: a caller that
+    /// sent an identity does not KNOW the name, so echoing its argument is not available and a
+    /// status line has nothing else to paint. The rename shuffle is what makes it a claim — the
+    /// landed name is the NEW one, not the label the row was painted with.
+    ///
+    /// Found by the debt sweep for *"a branch reachable only from a state no test builds"*: the
+    /// kill's identity arm was driven and its twin one verb over was not.
+    ///
+    /// REVERT-PROOF: answer `window.to_string()` or the caller's own key and the name assertion
+    /// fails; point the arm at `select_window` through the label and it lands on the stranger.
+    #[test]
+    fn a_select_addressed_by_identity_lands_and_answers_the_name_it_landed_on() {
+        let reg = registry();
+        for name in ["alpha", "beta"] {
+            lock(&reg)
+                .new_window("0", Some(name), WindowBirth::default())
+                .unwrap();
+        }
+        let (mut ext, rev) = control(&reg);
+        let painted = lock(&reg)
+            .session("0")
+            .expect("the default session")
+            .windows()
+            .iter()
+            .find(|w| w.name() == "alpha")
+            .expect("alpha exists")
+            .id()
+            .0;
+
+        // Another client renames between the paint and the click, and the session is moved OFF the
+        // answer — or a select that did nothing would pass.
+        lock(&reg).rename_window("0", "alpha", "archive").unwrap();
+        lock(&reg).rename_window("0", "beta", "alpha").unwrap();
+        lock(&reg).select_window("0", "0").unwrap();
+        let before = rev.current();
+
+        assert_eq!(
+            ext.invoke(
+                SELECT_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window_id": painted })),
+            ),
+            Ok(IntrospectValue::Json(json!("archive"))),
+            "it landed on the window the row named, and said what that window is called NOW",
+        );
+        assert!(rev.current() > before, "a select wakes waiters to re-read");
+        assert_eq!(
+            lock(&reg)
+                .session("0")
+                .expect("the default session")
+                .current_window()
+                .name(),
+            "archive",
+        );
+
+        // A window that is GONE refuses, and the current window stays put.
+        lock(&reg).select_window("0", "0").unwrap();
+        assert!(matches!(
+            ext.invoke(
+                SELECT_WINDOW_ACTION,
+                IntrospectValue::Json(json!({ "window_id": 9_999 })),
+            ),
+            Err(InvokeError::Rejected(_))
+        ));
+        assert_eq!(
+            lock(&reg)
+                .session("0")
+                .expect("the default session")
+                .current_window()
+                .name(),
+            "0",
+        );
+    }
+
     /// `select_window` moves the session's current window (a set-ish change that wakes waiters),
     /// and a missing / unknown target is refused with the current window left put.
     #[test]
@@ -6124,6 +6211,28 @@ mod tests {
             names(&mut fresh),
             vec!["0"],
             "an absent reference is the SCOPED window, which `new_window` had just made current",
+        );
+
+        // ...and the verbs that share `window_target` REFUSE an identity rather than dropping it.
+        // Ignoring a well-formed reference would rename or resize the SCOPED window instead — the
+        // silent wrong act this round moved the protocol number for, one door over. Found by the
+        // debt sweep for a hand-spelled key, and built rather than registered.
+        for action in [RENAME_WINDOW_ACTION, RESIZE_WINDOW_ACTION] {
+            assert!(
+                matches!(
+                    fresh.invoke(
+                        action,
+                        IntrospectValue::Json(json!({ "window_id": 0, "name": "x" })),
+                    ),
+                    Err(InvokeError::TypeMismatch)
+                ),
+                "{action} must refuse an address it cannot honour, not act on another window",
+            );
+        }
+        assert_eq!(
+            names(&mut fresh),
+            vec!["0"],
+            "and neither refusal touched anything"
         );
     }
 

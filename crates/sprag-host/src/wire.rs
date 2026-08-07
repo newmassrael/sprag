@@ -1804,9 +1804,6 @@ pub enum SelectWindowAsk {
 }
 
 impl SelectWindowAsk {
-    /// The request key naming a window outright — [`WindowRef`]'s, re-exported here because this
-    /// ask's own callers reach for it by this name. One constant, one spelling.
-    pub const WINDOW_KEY: &'static str = WindowRef::WINDOW_KEY;
     /// The request key naming which way to step along the ring.
     pub const RELATIVE_KEY: &'static str = "relative";
 
@@ -1921,8 +1918,11 @@ pub struct MoveWindowAsk {
 }
 
 impl MoveWindowAsk {
-    /// The request key naming the window being placed.
-    pub const WINDOW_KEY: &'static str = "window";
+    /// The request key naming the window being placed — [`WindowRef`]'s, because there is one
+    /// spelling of *which window* in this product and a second copy is what R330 hoisted that type
+    /// to prevent. The ADDRESS here is still a name only: nothing paints a per-window move row, so
+    /// no caller holds an identity to send (register item 55a).
+    pub const WINDOW_KEY: &'static str = WindowRef::WINDOW_KEY;
     /// The request key carrying a placing that needs no anchor.
     pub const PLACE_KEY: &'static str = "place";
     /// The request key naming the anchor a window goes BEFORE.
