@@ -68,7 +68,7 @@ use sprag_terminal::{
 
 use crate::attach::ClientSize;
 use crate::bump_on_dirty;
-use crate::external::{as_object, lock, opt_dim, require_pane_id, rpc_external_impl};
+use crate::external::{as_object, lock, opt_dim, refused, require_pane_id, rpc_external_impl};
 use crate::notify::ChannelRegistry;
 use crate::scope::SessionScope;
 use crate::window::{SizeRequest, WindowSize};
@@ -87,6 +87,30 @@ use crate::wire::{
     SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
     TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, ZOOM_PANE_ACTION,
 };
+
+/// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
+/// memory to report into and none to release from.
+///
+/// A `const` because TWO actions state it and the rule this crate keeps is that a sentence written
+/// twice is a sentence that drifts. It is a fact about the HOST rather than about the request, which
+/// is why it needs no interpolation.
+const NO_DETECTOR: &str = "this daemon installs no agent detector";
+
+/// The refusal every client-addressed verb shares: this host holds no attachment map, so there is
+/// nobody to address.
+///
+/// [`NO_DETECTOR`]'s twin one surface over — an in-process host (a GUI's own, a unit test) has no
+/// wire clients, and answering "delivered" there would report a sentence shown to somebody who does
+/// not exist.
+const NO_CLIENTS: &str = "this daemon serves no attached clients";
+
+/// The refusal both arrangement writes share when the tree they produced will not serialise.
+///
+/// A daemon-side fault rather than a caller's mistake, and it says so: nothing the caller can send
+/// differently would help. Stated instead of hidden because the alternative — the payload-free
+/// `Rejected` these two used to answer — put it in the same bucket as a stale revision, which the
+/// caller CAN act on.
+const UNRENDERABLE_LAYOUT: &str = "this daemon could not render the resulting arrangement";
 
 /// The mux-management engine `External`: a control surface over the shared
 /// [`SessionRegistry`]. Holds `Arc<Mutex<SessionRegistry>>` so its `scene/invoke`
@@ -273,7 +297,10 @@ impl WorkspaceExternal {
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
         if !dir.is_dir() {
-            return Err(InvokeError::Rejected);
+            return Err(InvokeError::rejected(format!(
+                "{} is not a directory",
+                dir.display()
+            )));
         }
         Ok(Some(dir))
     }
@@ -293,7 +320,10 @@ impl WorkspaceExternal {
             Some(value) => PaneId(value.as_u64().ok_or(InvokeError::TypeMismatch)?),
         };
         if !self.holds_pane(opener) {
-            return Err(InvokeError::Rejected);
+            return Err(InvokeError::rejected(format!(
+                "no pane {} on this host, so nothing can be opened by it",
+                opener.0
+            )));
         }
         Ok(Some(opener))
     }
@@ -327,13 +357,12 @@ impl WorkspaceExternal {
             Some(Value::String(name)) => name,
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
-        let name = sprag_terminal::PaneName::parse(proposed).map_err(|error| {
-            tracing::debug!(target: "sprag_host", %error, "refused a pane name");
-            InvokeError::Rejected
-        })?;
+        let name = sprag_terminal::PaneName::parse(proposed).map_err(refused)?;
         if self.pane_named(&name).is_some() {
-            tracing::debug!(target: "sprag_host", %name, "refused a pane name already in use");
-            return Err(InvokeError::Rejected);
+            return Err(refused(format!(
+                "another pane is already called {:?}",
+                name.as_str()
+            )));
         }
         Ok(Some(name))
     }
@@ -419,7 +448,7 @@ impl WorkspaceExternal {
                 rows.unwrap_or(default_rows),
                 hooks,
             )
-            .map_err(|_| InvokeError::Rejected)?;
+            .map_err(|error| refused(format!("the pane's command could not be run: {error}")))?;
         // Stamp the remote endpoint onto the just-born pane (metadata the process does not need),
         // so a restore reconnects it and a dropped-file upload knows its `scp` target.
         if let Some(remote) = remote {
@@ -494,7 +523,7 @@ impl WorkspaceExternal {
         let opener = self.parse_opener(map)?;
         let name = self.parse_pane_name(map)?;
         if !crate::host::tiled_panes(&self.registry, &self.scope).contains(&target) {
-            return Err(InvokeError::Rejected);
+            return Err(self.not_tiled(target));
         }
         let id = self.spawn_parsed(self.workspace(), spec, opener, name)?;
         if !crate::host::split_pane(&self.registry, &self.scope, id, target, side, dir) {
@@ -541,10 +570,7 @@ impl WorkspaceExternal {
             lock(&self.registry).close_pane(self.scope.session(), self.scope.window(), id);
         let outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::debug!(target: "sprag_host", %error, "refused to close a pane");
-                return Err(InvokeError::Rejected);
-            }
+            Err(error) => return Err(refused(error)),
         };
         let ended = outcome.ended();
         match outcome {
@@ -586,18 +612,18 @@ impl WorkspaceExternal {
         let proposed = match map.get("name") {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) => {
-                Some(sprag_terminal::PaneName::parse(name).map_err(|error| {
-                    tracing::debug!(target: "sprag_host", %error, "refused a pane name");
-                    InvokeError::Rejected
-                })?)
+                Some(sprag_terminal::PaneName::parse(name).map_err(refused)?)
             }
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
         if let Some(name) = &proposed
-            && self.pane_named(name).is_some_and(|holder| holder != id)
+            && let Some(holder) = self.pane_named(name).filter(|holder| *holder != id)
         {
-            tracing::debug!(target: "sprag_host", %name, "refused a pane name already in use");
-            return Err(InvokeError::Rejected);
+            return Err(refused(format!(
+                "pane {} is already called {:?}",
+                holder.0,
+                name.as_str()
+            )));
         }
         // ONE walk, which both finds the pane's own pool and writes into it. Resolving the target
         // and then writing would be two traversals with a gap between them, and the pane could
@@ -605,7 +631,7 @@ impl WorkspaceExternal {
         // (`set_pane_name` says whether the pool held it), not a separate question asked earlier.
         let recorded = Value::from(proposed.as_ref().map(sprag_terminal::PaneName::as_str));
         if self.with_pool_of(id, |pool| pool.set_pane_name(id, proposed)) != Some(true) {
-            return Err(InvokeError::Rejected);
+            return Err(refused(format!("no pane {} on this host", id.0)));
         }
         // A pane's published name moved: wake the session's parked clients, which is what turns
         // this into `Event::PaneRenamed` at the dispatch funnel.
@@ -686,11 +712,11 @@ impl WorkspaceExternal {
         let Some(agents) = self.agents.as_ref() else {
             // No detector on this host (a GUI's in-process host, a unit test): there is no memory to
             // report INTO, and inventing one here would publish a verdict the pane list cannot read.
-            return Err(InvokeError::Rejected);
+            return Err(refused(NO_DETECTOR));
         };
         let Some(owner) = self.with_pane(id, |pane| bind.then(|| pane.pty().foreground_pgid()))
         else {
-            return Err(InvokeError::Rejected);
+            return Err(refused(format!("no pane {} on this host", id.0)));
         };
         let (outcome, seq_published) = agents.report(
             id,
@@ -727,10 +753,10 @@ impl WorkspaceExternal {
     fn release_agent(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let id = require_pane_id(as_object(args)?, "id")?;
         let Some(agents) = self.agents.as_ref() else {
-            return Err(InvokeError::Rejected);
+            return Err(refused(NO_DETECTOR));
         };
         if !self.holds_pane(id) {
-            return Err(InvokeError::Rejected);
+            return Err(refused(format!("no pane {} on this host", id.0)));
         }
         Ok(IntrospectValue::Json(
             serde_json::json!({ "released": agents.release(id) }),
@@ -782,7 +808,7 @@ impl WorkspaceExternal {
             // No attachment map on this host (a GUI's in-process host, a unit test): there are no
             // wire clients to address, and inventing a delivery here would report a sentence shown to
             // somebody who does not exist.
-            return Err(InvokeError::Rejected);
+            return Err(refused(NO_CLIENTS));
         };
         let delivery = {
             let mut attachments = lock(attachments);
@@ -792,7 +818,23 @@ impl WorkspaceExternal {
             if let crate::Audience::Client(client) = &audience
                 && !attachments.is_attached(client)
             {
-                return Err(InvokeError::Rejected);
+                // NAMES WHO IS THERE, rather than pointing at another command to run. The CLI used
+                // to append *"run `sprag list-clients`"* because a payload-free refusal left it
+                // nothing else to offer; this end already holds the answer that verb would print,
+                // and a client id is minted per process — nobody types one from memory.
+                let attached: Vec<String> = attachments
+                    .clients()
+                    .into_iter()
+                    .map(|info| info.client)
+                    .collect();
+                return Err(refused(if attached.is_empty() {
+                    format!("no client called {client:?} is attached; none are")
+                } else {
+                    format!(
+                        "no client called {client:?} is attached; these are: {}",
+                        attached.join(", ")
+                    )
+                }));
             }
             attachments.deliver(&audience, &crate::report::Announcement { text, severity })
         };
@@ -813,6 +855,81 @@ impl WorkspaceExternal {
     /// — which is most of them.
     fn holds_pane(&self, id: PaneId) -> bool {
         self.with_pane(id, |_| ()).is_some()
+    }
+
+    /// The refusal a verb states when the scope resolves to no window at all — a session killed
+    /// under a connection that was already scoped to it.
+    fn no_current_window(&self) -> String {
+        format!(
+            "session {:?} has no window {:?}",
+            self.scope.session(),
+            self.scope.window()
+        )
+    }
+
+    /// WHY a `swap_pane` traded nothing — [`no_such_selection`](Self::no_such_selection)'s peer one
+    /// verb over, and the same discrimination.
+    ///
+    /// An edge and a floating origin are OUTCOMES this verb answers with
+    /// ([`SwapHow`](crate::wire::SwapHow)); the only refusals left are a pane no window of the
+    /// session holds and a window with no active pane to default to.
+    fn no_such_swap(&self, ask: &SwapAsk) -> InvokeError {
+        let session = self.scope.session();
+        refused(match ask.origin() {
+            Some(pane) => format!("session {session:?} holds no pane {}", pane.0),
+            None => format!("session {session:?}'s current window has no active pane"),
+        })
+    }
+
+    /// WHY a `select_pane` landed nowhere — read off the ASK, which is what names the pane the
+    /// window turned out not to hold.
+    ///
+    /// A direction that runs off an edge is NOT here: that is an outcome
+    /// ([`SelectHow::AtEdge`](crate::wire::SelectHow)) the verb answers with, not a refusal. The
+    /// only ways this call answers nothing are a pane the window does not hold and a window with no
+    /// active pane at all, and the two send a caller somewhere different.
+    fn no_such_selection(&self, ask: &crate::wire::SelectAsk) -> InvokeError {
+        let here = format!("session {:?}'s current window", self.scope.session());
+        refused(match ask {
+            crate::wire::SelectAsk::Pane(pane) => format!("{here} holds no pane {}", pane.0),
+            crate::wire::SelectAsk::Toward {
+                from: Some(from), ..
+            } => {
+                format!("{here} holds no pane {} to step from", from.0)
+            }
+            crate::wire::SelectAsk::Toward { from: None, .. } => {
+                format!("{here} has no active pane to step from")
+            }
+        })
+    }
+
+    /// WHY `id` is not in the scoped window's tiling — the refusal the placement verbs share.
+    ///
+    /// Three distinct facts, and separating them is the whole point of this function. The CLI used
+    /// to print all three joined by `or` (*"it exited, it is floating, or it belongs to another
+    /// window"*) because the daemon answered a payload-less `Rejected` and the client had to guess;
+    /// each one sends the user somewhere different, and only this end can tell them apart.
+    ///
+    /// Called only on the failing branch, so the extra walks cost nothing on the path that works.
+    fn not_tiled(&self, id: PaneId) -> InvokeError {
+        if !self.holds_pane(id) {
+            return refused(format!("no pane {} on this host", id.0));
+        }
+        let floating = lock(&self.registry)
+            .window(self.scope.session(), self.scope.window())
+            .is_some_and(|window| window.floating().contains(&id));
+        if floating {
+            return refused(format!(
+                "pane {} is floating, so the tiling does not hold it",
+                id.0
+            ));
+        }
+        refused(format!(
+            "pane {} is not in session {:?}'s window {:?}",
+            id.0,
+            self.scope.session(),
+            self.scope.window(),
+        ))
     }
 
     /// Run `read` against the pane with `id`, or answer `None` when this daemon does not hold it.
@@ -902,8 +1019,15 @@ impl WorkspaceExternal {
         );
         match lock(self.workspace()).resize(id, cols, rows, cell_px) {
             Ok(true) => Ok(IntrospectValue::Null),
-            Ok(false) => Err(InvokeError::Rejected), // no such pane
-            Err(_) => Err(InvokeError::Rejected),    // winsize ioctl failed
+            Ok(false) => Err(refused(format!(
+                "session {:?}'s current window holds no pane {}",
+                self.scope.session(),
+                id.0
+            ))),
+            Err(error) => Err(refused(format!(
+                "pane {}'s terminal would not take the new size: {error}",
+                id.0
+            ))),
         }
     }
 
@@ -944,11 +1068,11 @@ impl WorkspaceExternal {
         };
         let snapshot =
             crate::host::set_layout(&self.registry, &self.scope, tree, expected, expected_window)
-                .ok_or(InvokeError::Rejected)?;
+                .ok_or_else(|| refused(self.no_current_window()))?;
         // The arrangement changed: wake parked waiters so another attached client
         // re-projects promptly, exactly as a pane-set change does.
         self.announce();
-        layout_value(snapshot).ok_or(InvokeError::Rejected)
+        layout_value(snapshot).ok_or_else(|| refused(UNRENDERABLE_LAYOUT))
     }
 
     /// `set_floating {id, floating}` action: take a pane out of the tiling or put it back,
@@ -961,9 +1085,9 @@ impl WorkspaceExternal {
             .and_then(Value::as_bool)
             .ok_or(InvokeError::TypeMismatch)?;
         let snapshot = crate::host::set_floating(&self.registry, &self.scope, id, floating)
-            .ok_or(InvokeError::Rejected)?;
+            .ok_or_else(|| self.not_tiled(id))?;
         self.announce();
-        layout_value(snapshot).ok_or(InvokeError::Rejected)
+        layout_value(snapshot).ok_or_else(|| refused(UNRENDERABLE_LAYOUT))
     }
 
     /// `new_session {name?, cmd?, cols?, rows?, remote?}` action: create a session BORN WITH A
@@ -1019,12 +1143,10 @@ impl WorkspaceExternal {
         // its release nudges the reaper so a birth that FAILED still lets an idle daemon go.
         let (allocated, pool, pin) = {
             let mut registry = lock(&self.registry);
-            let allocated = registry.new_session(name).map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to create a session");
-                // A taken name is the client's mistake, not a malformed request: it is
-                // well-formed and simply cannot be honored.
-                InvokeError::Rejected
-            })?;
+            // A taken name is the client's mistake, not a malformed request: it is well-formed
+            // and simply cannot be honored — and `SessionError`'s own Display says WHICH mistake,
+            // which is the sentence a caller prints.
+            let allocated = registry.new_session(name).map_err(refused)?;
             let pool = registry
                 .workspace_of(&allocated)
                 .expect("the session just created resolves");
@@ -1094,10 +1216,7 @@ impl WorkspaceExternal {
                 self.handle_session_kill(outcome);
                 ended
             }
-            Err(error) => {
-                tracing::debug!(target: "sprag_host", %error, "refused to kill a session");
-                return Err(InvokeError::Rejected);
-            }
+            Err(error) => return Err(refused(error)),
         };
         Ok(IntrospectValue::Json(
             serde_json::json!({ crate::wire::ENDED_KEY: ended.as_wire() }),
@@ -1187,13 +1306,11 @@ impl WorkspaceExternal {
         let spec = Self::parse_spawn(map)?;
         let (created, pool) = {
             let mut registry = lock(&self.registry);
+            // A taken window name is well-formed and simply cannot be honored; `SessionError`
+            // says which of its rules the name broke.
             let created = registry
                 .new_window(self.scope.session(), name, born)
-                .map_err(|error| {
-                    tracing::debug!(target: "sprag_host", %error, "refused to create a window");
-                    // A taken window name is well-formed and simply cannot be honored.
-                    InvokeError::Rejected
-                })?;
+                .map_err(refused)?;
             let pool = registry
                 .window_workspace(self.scope.session(), &created)
                 .expect("the scoped session resolves; new_window just created that window");
@@ -1274,10 +1391,7 @@ impl WorkspaceExternal {
                 lock(&self.registry).select_window_relative(session, *step)
             }
         }
-        .map_err(|error| {
-            tracing::debug!(target: "sprag_host", %error, "refused to select a window");
-            InvokeError::Rejected
-        })?;
+        .map_err(refused)?;
         self.announce();
         // The window it LANDED on, for both arms: a caller that stepped cannot know it, and giving
         // the named arm the same answer is what keeps one shape for one verb.
@@ -1310,17 +1424,14 @@ impl WorkspaceExternal {
                 Some(window) => window.clone(),
                 None => registry
                     .session(session)
-                    .ok_or(InvokeError::Rejected)?
+                    .ok_or_else(|| refused(format!("no session named {session:?}")))?
                     .current_window()
                     .name()
                     .to_owned(),
             };
             let how = registry
                 .move_window(session, &window, &ask.place)
-                .map_err(|error| {
-                    tracing::debug!(target: "sprag_host", %error, "refused to move a window");
-                    InvokeError::Rejected
-                })?;
+                .map_err(refused)?;
             (window, how)
         };
         // Announced whatever the outcome: an announcement is a WAKE, and the change funnel behind
@@ -1352,7 +1463,7 @@ impl WorkspaceExternal {
         };
         let ask = crate::wire::SelectAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
         let selection = crate::host::select_pane(&self.registry, &self.scope, ask)
-            .ok_or(InvokeError::Rejected)?;
+            .ok_or_else(|| self.no_such_selection(&ask))?;
         if selection.how.changed() {
             // Only on a real move: the announce is what wakes every parked client to re-read, and
             // a select that changed nothing has nothing for them to read.
@@ -1381,9 +1492,13 @@ impl WorkspaceExternal {
     /// a process's must name what it speaks for.
     fn pane_target(&self, map: &Map<String, Value>, key: &str) -> Result<PaneId, InvokeError> {
         match map.get(key) {
-            None | Some(Value::Null) => {
-                crate::host::active_pane(&self.registry, &self.scope).ok_or(InvokeError::Rejected)
-            }
+            None | Some(Value::Null) => crate::host::active_pane(&self.registry, &self.scope)
+                .ok_or_else(|| {
+                    refused(format!(
+                        "no pane was named and session {:?}'s current window has no active one",
+                        self.scope.session()
+                    ))
+                }),
             Some(value) => value.as_u64().map(PaneId).ok_or(InvokeError::TypeMismatch),
         }
     }
@@ -1399,10 +1514,7 @@ impl WorkspaceExternal {
             .ok_or(InvokeError::TypeMismatch)?;
         let recorded = lock(&self.registry)
             .rename_window(self.scope.session(), &window, new)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to rename a window");
-                InvokeError::Rejected
-            })?;
+            .map_err(refused)?;
         self.announce();
         // The name that was RECORDED, not the one that was sent — `rename_pane`'s rule (R295) and
         // `rename_session`'s (R302) met a third time, and the last of the three to get it. A window
@@ -1451,10 +1563,7 @@ impl WorkspaceExternal {
         // `rename_pane`, met again here.
         let to = lock(&self.registry)
             .rename_session(&from, new)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to rename a session");
-                InvokeError::Rejected
-            })?;
+            .map_err(refused)?;
         self.channels.rename(&from, &to);
         if let Some(attachments) = &self.attachments {
             lock(attachments).rename_session(&from, &to);
@@ -1474,10 +1583,7 @@ impl WorkspaceExternal {
         let outcome = lock(&self.registry).kill_window(self.scope.session(), &window);
         let outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::debug!(target: "sprag_host", %error, "refused to kill a window");
-                return Err(InvokeError::Rejected);
-            }
+            Err(error) => return Err(refused(error)),
         };
         let ended = outcome.ended();
         match outcome {
@@ -1554,17 +1660,11 @@ impl WorkspaceExternal {
             crate::window::arbitrate(crate::config::window_size(), &reports, pinned).or(pinned);
         let size = request
             .resolve(current, &reports)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to resize a window");
-                InvokeError::Rejected
-            })?
+            .map_err(refused)?
             .map(|size| (size.cols, size.rows));
         lock(&self.registry)
             .resize_window(self.scope.session(), &window, size)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to resize a window");
-                InvokeError::Rejected
-            })?;
+            .map_err(refused)?;
         self.announce();
         // ANSWER with the rectangle that was pinned, `null` for an un-pin. Three of the four
         // spellings are descriptions the caller cannot resolve — that is why they are resolved here —
@@ -1603,12 +1703,11 @@ impl WorkspaceExternal {
         };
         let created = lock(&self.registry)
             .break_pane(self.scope.session(), pane, name)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to break a pane out");
-                // A rejection is well-formed but cannot be honored (last pane, taken name, no such
-                // pane) — the same shape a refused window op reports.
-                InvokeError::Rejected
-            })?;
+            // A rejection is well-formed but cannot be honored, and `PaneMoveError` has an arm per
+            // way: its `Display` is what the caller prints, so the CLI's old three-cause guess
+            // (*"is its window's only pane, no window holds it, or the name is taken"*) is now the
+            // one the registry actually decided.
+            .map_err(refused)?;
         self.announce();
         Ok(IntrospectValue::Json(Value::String(created)))
     }
@@ -1630,10 +1729,7 @@ impl WorkspaceExternal {
             .to_owned();
         let closed = lock(&self.registry)
             .join_pane(self.scope.session(), pane, &dst)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to join a pane");
-                InvokeError::Rejected
-            })?;
+            .map_err(refused)?;
         self.announce();
         Ok(IntrospectValue::Json(
             serde_json::json!({ "closed_source": closed }),
@@ -1654,10 +1750,7 @@ impl WorkspaceExternal {
         let (side, dir) = Self::parse_placement(map)?;
         let closed = lock(&self.registry)
             .move_pane(self.scope.session(), pane, target, side, dir)
-            .map_err(|error| {
-                tracing::debug!(target: "sprag_host", %error, "refused to move a pane");
-                InvokeError::Rejected
-            })?;
+            .map_err(refused)?;
         self.announce();
         Ok(IntrospectValue::Json(
             serde_json::json!({ "closed_source": closed }),
@@ -1688,10 +1781,8 @@ impl WorkspaceExternal {
         // things" are a caller's bug, and guessing a reading for them would hide it. The type is
         // what refuses them, so no combination this parse admits needs checking again below.
         let ask = SwapAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
-        let swap = crate::host::swap_pane(&self.registry, &self.scope, ask).ok_or_else(|| {
-            tracing::debug!(target: "sprag_host", ?ask, "refused to swap two panes");
-            InvokeError::Rejected
-        })?;
+        let swap = crate::host::swap_pane(&self.registry, &self.scope, ask)
+            .ok_or_else(|| self.no_such_swap(&ask))?;
         if swap.how.changed() {
             // Only on a real move, `select_pane`'s rule: the announce wakes every parked client to
             // re-read, and a swap that traded nothing has nothing for them to read.
@@ -1728,12 +1819,12 @@ impl WorkspaceExternal {
             _ => return Err(InvokeError::TypeMismatch),
         };
         let ask = ResizeAsk::parse(value).ok_or(InvokeError::TypeMismatch)?;
-        let attachments = self.attachments.as_ref().ok_or(InvokeError::Rejected)?;
+        let attachments = self
+            .attachments
+            .as_ref()
+            .ok_or_else(|| refused(NO_CLIENTS))?;
         let resize = crate::host::resize_pane(&self.registry, attachments, &self.scope, ask)
-            .ok_or_else(|| {
-                tracing::debug!(target: "sprag_host", ?ask, "refused to move a pane boundary");
-                InvokeError::Rejected
-            })?;
+            .map_err(refused)?;
         if resize.how.changed() {
             // Only on a real move, `select_pane`'s rule: the announce wakes every parked client to
             // re-read, and a boundary that did not move has nothing for them to read.
@@ -1774,7 +1865,13 @@ impl WorkspaceExternal {
         };
         let outcome = lock(&self.registry)
             .zoom_pane(self.scope.session(), pane, on)
-            .ok_or(InvokeError::Rejected)?;
+            .ok_or_else(|| {
+                refused(format!(
+                    "session {:?} holds no pane {}",
+                    self.scope.session(),
+                    pane.0
+                ))
+            })?;
         if outcome.changed {
             // Only on a real change, `select_pane`'s rule: the announce wakes every parked client
             // to re-read, and a zoom that moved nothing has nothing for them to read.
@@ -1828,12 +1925,22 @@ impl WorkspaceExternal {
             .ok_or(InvokeError::TypeMismatch)?;
         let target = {
             let workspace = lock(self.workspace());
-            let pane = workspace.pane(pane).ok_or(InvokeError::Rejected)?;
-            (pane.handle(), pane.remote().cloned())
+            let held = workspace.pane(pane).ok_or_else(|| {
+                refused(format!(
+                    "session {:?}'s current window holds no pane {}",
+                    self.scope.session(),
+                    pane.0
+                ))
+            })?;
+            (held.handle(), held.remote().cloned())
         };
         let (handle, remote) = target;
         let delivered =
-            crate::upload::deliver(handle, remote, Path::new(path)).ok_or(InvokeError::Rejected)?;
+            crate::upload::deliver(handle, remote, Path::new(path)).ok_or_else(|| {
+                refused(format!(
+                    "{path:?} could not be resolved to a deliverable file"
+                ))
+            })?;
         Ok(IntrospectValue::Json(
             serde_json::json!({ "path": delivered }),
         ))
@@ -2796,7 +2903,7 @@ mod tests {
                 SPAWN_ACTION,
                 IntrospectValue::Json(json!({"cmd": ["cat"], "opened_by": 99})),
             ),
-            Err(InvokeError::Rejected),
+            Err(InvokeError::Rejected(_)),
         ));
         assert!(
             matches!(
@@ -2865,7 +2972,7 @@ mod tests {
                     SPAWN_ACTION,
                     IntrospectValue::Json(json!({"cmd": ["cat"], "name": "build"})),
                 ),
-                Err(InvokeError::Rejected),
+                Err(InvokeError::Rejected(_)),
             ),
             "a name is unique registry-wide, so the second claimant is refused",
         );
@@ -2875,7 +2982,7 @@ mod tests {
                     SPAWN_ACTION,
                     IntrospectValue::Json(json!({"cmd": ["cat"], "name": "7"})),
                 ),
-                Err(InvokeError::Rejected),
+                Err(InvokeError::Rejected(_)),
             ),
             "and a name the type refuses is refused here too, rather than parsed by this surface",
         );
@@ -3008,7 +3115,7 @@ mod tests {
             assert!(
                 matches!(
                     ext.invoke(RENAME_PANE_ACTION, IntrospectValue::Json(args.clone())),
-                    Err(InvokeError::Rejected),
+                    Err(InvokeError::Rejected(_)),
                 ),
                 "{why} is refused: {args}",
             );
@@ -3074,7 +3181,7 @@ mod tests {
                     RENAME_PANE_ACTION,
                     IntrospectValue::Json(json!({"pane": here.0, "name": "build"})),
                 ),
-                Err(InvokeError::Rejected),
+                Err(InvokeError::Rejected(_)),
             ),
             "a name taken in another session is taken",
         );
@@ -3100,7 +3207,7 @@ mod tests {
                         json!({"cmd": ["cat"], "cwd": "/no/such/directory/here"})
                     ),
                 ),
-                Err(InvokeError::Rejected),
+                Err(InvokeError::Rejected(_)),
             ),
             "a directory that is not there is a well-formed request the host cannot honour"
         );
@@ -3388,12 +3495,14 @@ mod tests {
             ext.invoke(REPORT_AGENT_ACTION, IntrospectValue::Json(args))
         };
 
-        assert_eq!(
-            report(
-                &mut ext,
-                json!({"id": 7, "source": "hook", "state": "idle"})
+        assert!(
+            matches!(
+                report(
+                    &mut ext,
+                    json!({"id": 7, "source": "hook", "state": "idle"})
+                ),
+                Err(InvokeError::Rejected(_))
             ),
-            Err(InvokeError::Rejected),
             "a pane the daemon does not hold — a reporter that outlived its pane",
         );
         assert_eq!(
@@ -3470,9 +3579,8 @@ mod tests {
             Ok(IntrospectValue::Json(json!({"released": false}))),
             "and the second release has nothing left to drop",
         );
-        assert_eq!(
-            release(&mut ext, 7),
-            Err(InvokeError::Rejected),
+        assert!(
+            matches!(release(&mut ext, 7), Err(InvokeError::Rejected(_))),
             "a pane the daemon does not hold is refused, as it is for a report",
         );
     }
@@ -3644,9 +3752,13 @@ mod tests {
             "this fixture holds ONE session of ONE window, so its only pane takes all three with \
              it — the answer says so instead of the `null` it said before R309",
         );
-        assert_eq!(
+        assert!(
+            matches!(
+                ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0}))),
+                Err(InvokeError::Rejected(_))
+            ),
+            "a refusal, not {:?}",
             ext.invoke(CLOSE_ACTION, IntrospectValue::Json(json!({"id": 0}))),
-            Err(InvokeError::Rejected)
         );
     }
 
@@ -4750,13 +4862,16 @@ mod tests {
         assert!(lock(&reg).session("work").is_some());
 
         let after = revision.current();
-        assert_eq!(
-            ext.invoke(
+        let refused = ext
+            .invoke(
                 NEW_SESSION_ACTION,
                 IntrospectValue::Json(json!({"name": "work"})),
-            ),
-            Err(InvokeError::Rejected),
-            "a taken name is a refusal, not a TypeMismatch — the request was well-formed",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(refused, InvokeError::Rejected(_)),
+            "a taken name is a refusal, not a TypeMismatch — the request was well-formed, \
+             got {refused:?}",
         );
         assert_eq!(
             lock(&reg).sessions().len(),
@@ -5040,20 +5155,24 @@ mod tests {
             Err(InvokeError::TypeMismatch),
             "a drop with no path is malformed",
         );
-        assert_eq!(
-            ext.invoke(
-                DROP_FILE_ACTION,
-                IntrospectValue::Json(json!({"pane": 9999, "path": "/etc/hostname"})),
+        assert!(
+            matches!(
+                ext.invoke(
+                    DROP_FILE_ACTION,
+                    IntrospectValue::Json(json!({"pane": 9999, "path": "/etc/hostname"})),
+                ),
+                Err(InvokeError::Rejected(_))
             ),
-            Err(InvokeError::Rejected),
             "a well-formed drop on a pane that does not exist is refused, not a type error",
         );
-        assert_eq!(
-            ext.invoke(
-                DROP_FILE_ACTION,
-                IntrospectValue::Json(json!({"pane": id, "path": "/no/such/file/at/all"})),
+        assert!(
+            matches!(
+                ext.invoke(
+                    DROP_FILE_ACTION,
+                    IntrospectValue::Json(json!({"pane": id, "path": "/no/such/file/at/all"})),
+                ),
+                Err(InvokeError::Rejected(_))
             ),
-            Err(InvokeError::Rejected),
             "a drop naming a file that cannot be resolved is refused",
         );
     }
@@ -5215,12 +5334,19 @@ mod tests {
 
         // An unknown name is a REJECTION, not a type error; a missing / non-string name IS a
         // type error (you must name the session to kill).
-        assert_eq!(
+        assert!(
+            matches!(
+                ext.invoke(
+                    KILL_SESSION_ACTION,
+                    IntrospectValue::Json(json!({"name": "ghost"})),
+                ),
+                Err(InvokeError::Rejected(_))
+            ),
+            "a refusal, not {:?}",
             ext.invoke(
                 KILL_SESSION_ACTION,
                 IntrospectValue::Json(json!({"name": "ghost"})),
             ),
-            Err(InvokeError::Rejected),
         );
         assert_eq!(
             ext.invoke(KILL_SESSION_ACTION, IntrospectValue::Json(json!({}))),
@@ -5454,12 +5580,19 @@ mod tests {
             ext.invoke(SELECT_WINDOW_ACTION, IntrospectValue::Json(json!({}))),
             Err(InvokeError::TypeMismatch),
         );
-        assert_eq!(
+        assert!(
+            matches!(
+                ext.invoke(
+                    SELECT_WINDOW_ACTION,
+                    IntrospectValue::Json(json!({"window": "ghost"}))
+                ),
+                Err(InvokeError::Rejected(_))
+            ),
+            "a refusal, not {:?}",
             ext.invoke(
                 SELECT_WINDOW_ACTION,
                 IntrospectValue::Json(json!({"window": "ghost"}))
             ),
-            Err(InvokeError::Rejected),
         );
     }
 
@@ -5478,20 +5611,24 @@ mod tests {
         // rename and passed with the daemon's grammar deleted, which is the vacuous-fixture hazard
         // this project has now recorded four times: choose a fixture where the two things being
         // told apart actually disagree.
-        assert_eq!(
-            ext.invoke(
-                RENAME_WINDOW_ACTION,
-                IntrospectValue::Json(json!({"name": "   "}))
+        assert!(
+            matches!(
+                ext.invoke(
+                    RENAME_WINDOW_ACTION,
+                    IntrospectValue::Json(json!({"name": "   "}))
+                ),
+                Err(InvokeError::Rejected(_))
             ),
-            Err(InvokeError::Rejected),
             "a blank name is refused where it used to be STORED — the loud half of the bump",
         );
-        assert_eq!(
-            ext.invoke(
-                RENAME_WINDOW_ACTION,
-                IntrospectValue::Json(json!({"name": "a\nb"}))
+        assert!(
+            matches!(
+                ext.invoke(
+                    RENAME_WINDOW_ACTION,
+                    IntrospectValue::Json(json!({"name": "a\nb"}))
+                ),
+                Err(InvokeError::Rejected(_))
             ),
-            Err(InvokeError::Rejected),
             "a newline would forge a row of every listing that prints a window name",
         );
         assert_eq!(
@@ -5514,12 +5651,19 @@ mod tests {
             .new_window("0", Some("logs"), WindowBirth::default())
             .unwrap();
         // Renaming "logs" onto the taken name "main" is refused.
-        assert_eq!(
+        assert!(
+            matches!(
+                ext.invoke(
+                    RENAME_WINDOW_ACTION,
+                    IntrospectValue::Json(json!({"window": "logs", "name": "main"})),
+                ),
+                Err(InvokeError::Rejected(_))
+            ),
+            "a refusal, not {:?}",
             ext.invoke(
                 RENAME_WINDOW_ACTION,
                 IntrospectValue::Json(json!({"window": "logs", "name": "main"})),
             ),
-            Err(InvokeError::Rejected),
         );
         // The rename took and "logs" kept its name; the slot reads the session fresh, so "current"
         // reflects reality ("logs", which new_window selected).
@@ -5613,12 +5757,19 @@ mod tests {
             json!([{"name": "0", "current": true}]),
             "logs is gone and the current fell back to the surviving window",
         );
-        assert_eq!(
+        assert!(
+            matches!(
+                ext.invoke(
+                    KILL_WINDOW_ACTION,
+                    IntrospectValue::Json(json!({"window": "ghost"}))
+                ),
+                Err(InvokeError::Rejected(_))
+            ),
+            "a refusal, not {:?}",
             ext.invoke(
                 KILL_WINDOW_ACTION,
                 IntrospectValue::Json(json!({"window": "ghost"}))
             ),
-            Err(InvokeError::Rejected),
         );
     }
 
@@ -5892,7 +6043,7 @@ mod tests {
                     json!({"pane": 0, "dir": "horizontal", "cmd": ["cat"], "opened_by": 99}),
                 ),
             ),
-            Err(InvokeError::Rejected),
+            Err(InvokeError::Rejected(_)),
         ));
         assert_eq!(
             tiled_order(&mut ext),
@@ -5995,34 +6146,28 @@ mod tests {
         three_pane_window(&mut ext);
         let before = tiled_order(&mut ext);
 
-        for (args, expected) in [
-            (
-                json!({"pane": 1, "target": 1, "dir": "horizontal"}),
-                InvokeError::Rejected,
-            ),
-            (
-                json!({"pane": 9, "target": 1, "dir": "horizontal"}),
-                InvokeError::Rejected,
-            ),
-            (
-                json!({"pane": 1, "target": 9, "dir": "horizontal"}),
-                InvokeError::Rejected,
-            ),
-            (json!({"pane": 1, "target": 0}), InvokeError::TypeMismatch),
-            (
-                json!({"pane": 1, "target": 0, "dir": "sideways"}),
-                InvokeError::TypeMismatch,
-            ),
+        // `true` is a REFUSAL — a well-formed request the workspace declined, carrying the
+        // registry's own sentence; `false` is a MALFORMED one. The table pairs the two rather than
+        // naming a value because a refusal is no longer a unit: it holds the reason the daemon
+        // stated, which is not what this test is about (the CLI gate pins those).
+        for (args, refusal) in [
+            (json!({"pane": 1, "target": 1, "dir": "horizontal"}), true),
+            (json!({"pane": 9, "target": 1, "dir": "horizontal"}), true),
+            (json!({"pane": 1, "target": 9, "dir": "horizontal"}), true),
+            (json!({"pane": 1, "target": 0}), false),
+            (json!({"pane": 1, "target": 0, "dir": "sideways"}), false),
             (
                 json!({"pane": 1, "target": 0, "dir": "horizontal", "before": "yes"}),
-                InvokeError::TypeMismatch,
+                false,
             ),
         ] {
+            let error = ext
+                .invoke(MOVE_PANE_ACTION, IntrospectValue::Json(args.clone()))
+                .unwrap_err();
             assert_eq!(
-                ext.invoke(MOVE_PANE_ACTION, IntrospectValue::Json(args.clone()))
-                    .unwrap_err(),
-                expected,
-                "{args}",
+                matches!(error, InvokeError::Rejected(_)),
+                refusal,
+                "{args} -> {error:?}",
             );
         }
         assert_eq!(
@@ -6305,12 +6450,19 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(
+        assert!(
+            matches!(
+                ext.invoke(
+                    RESIZE_PANE_ACTION,
+                    IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 5})),
+                ),
+                Err(InvokeError::Rejected(_))
+            ),
+            "a refusal, not {:?}",
             ext.invoke(
                 RESIZE_PANE_ACTION,
                 IntrospectValue::Json(json!({"pane": 0, "dir": "right", "cells": 5})),
             ),
-            Err(InvokeError::Rejected),
         );
     }
 
@@ -6496,13 +6648,15 @@ mod tests {
             "no arguments at all zooms where the session is",
         );
 
-        assert_eq!(
-            ext.invoke(
+        let refused = ext
+            .invoke(
                 ZOOM_PANE_ACTION,
                 IntrospectValue::Json(json!({"pane": 99, "on": true})),
             )
-            .unwrap_err(),
-            InvokeError::Rejected,
+            .unwrap_err();
+        assert!(
+            matches!(refused, InvokeError::Rejected(_)),
+            "a pane the session does not hold is a refusal, not {refused:?}",
         );
         assert_eq!(
             ext.invoke(
@@ -6550,24 +6704,26 @@ mod tests {
             )),
             json!({"a": 1, "b": 1, "changed": false, "outcome": "same_pane"}),
         );
-        assert_eq!(
-            ext.invoke(
+        let refused = ext
+            .invoke(
                 SWAP_PANE_ACTION,
-                IntrospectValue::Json(json!({"pane": 1, "with": 9}))
+                IntrospectValue::Json(json!({"pane": 1, "with": 9})),
             )
-            .unwrap_err(),
-            InvokeError::Rejected,
-            "a pane id naming nothing is a caller's mistake, not an edge",
+            .unwrap_err();
+        assert!(
+            matches!(refused, InvokeError::Rejected(_)),
+            "a pane id naming nothing is a caller's mistake, not an edge: {refused:?}",
         );
-        assert_eq!(
-            ext.invoke(
+        let refused = ext
+            .invoke(
                 SWAP_PANE_ACTION,
-                IntrospectValue::Json(json!({"pane": 9, "dir": "left"}))
+                IntrospectValue::Json(json!({"pane": 9, "dir": "left"})),
             )
-            .unwrap_err(),
-            InvokeError::Rejected,
+            .unwrap_err();
+        assert!(
+            matches!(refused, InvokeError::Rejected(_)),
             "and so is one in the DIRECTION arm — which answered a null partner and changed: false \
-             until R301, a success sentence about a pane that does not exist",
+             until R301, a success sentence about a pane that does not exist: {refused:?}",
         );
     }
 
@@ -6905,12 +7061,14 @@ mod tests {
         let (mut ext, _rev) = control(&reg);
         three_pane_window(&mut ext);
 
-        assert_eq!(
-            ext.invoke(
-                SELECT_PANE_ACTION,
-                IntrospectValue::Json(json!({"dir": "left", "from": 99}))
+        assert!(
+            matches!(
+                ext.invoke(
+                    SELECT_PANE_ACTION,
+                    IntrospectValue::Json(json!({"dir": "left", "from": 99}))
+                ),
+                Err(InvokeError::Rejected(_))
             ),
-            Err(InvokeError::Rejected),
             "the same answer the same pane id gets as a TARGET, one argument over",
         );
         assert_eq!(
@@ -6947,12 +7105,19 @@ mod tests {
                 "malformed: {args}",
             );
         }
-        assert_eq!(
+        assert!(
+            matches!(
+                ext.invoke(
+                    SELECT_PANE_ACTION,
+                    IntrospectValue::Json(json!({"pane": 99}))
+                ),
+                Err(InvokeError::Rejected(_))
+            ),
+            "a refusal, not {:?}",
             ext.invoke(
                 SELECT_PANE_ACTION,
                 IntrospectValue::Json(json!({"pane": 99}))
             ),
-            Err(InvokeError::Rejected),
         );
         assert_eq!(
             active_row(&mut ext),

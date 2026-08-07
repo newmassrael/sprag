@@ -544,7 +544,9 @@ impl ExternalIntrospect for ConfirmExternal {
                         self.choice.set(Choice::Dismiss);
                         Ok(())
                     }
-                    _ => Err(InterveneError::OutOfRange),
+                    other => Err(InterveneError::out_of_range(format!(
+                        "{other:?} is not a choice: write {ACCEPT_KEY:?} or {DISMISS_KEY:?}"
+                    ))),
                 },
                 _ => Err(InterveneError::TypeMismatch),
             },

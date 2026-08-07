@@ -34,7 +34,7 @@ use sprag_plugin::{
 use sprag_terminal::{PaneId, Workspace};
 
 use crate::external::{
-    as_object, lock, opt_dim, opt_str, require_pane_id, require_str, rpc_external_impl,
+    as_object, lock, opt_dim, opt_str, refused, require_pane_id, require_str, rpc_external_impl,
 };
 use crate::runs::{RunId, RunRegistry, RunState};
 
@@ -123,7 +123,7 @@ impl PluginsExternal {
         if lock(&self.runs).cancel(RunId(id)) {
             Ok(IntrospectValue::Null)
         } else {
-            Err(InvokeError::Rejected)
+            Err(refused(format!("no run {id} is in flight")))
         }
     }
 
@@ -204,7 +204,9 @@ impl PluginsExternal {
                 );
                 Ok((PluginKind::Dialogue(Box::new(Dialogue::new(spec))), label))
             }
-            _ => Err(InvokeError::Rejected), // unknown plugin
+            other => Err(refused(format!(
+                "this daemon has no plugin called {other:?}"
+            ))),
         }
     }
 
@@ -212,7 +214,7 @@ impl PluginsExternal {
         if lock(&self.workspace).pane(pane).is_some() {
             Ok(())
         } else {
-            Err(InvokeError::Rejected)
+            Err(refused(format!("no pane {} in this workspace", pane.0)))
         }
     }
 
@@ -345,7 +347,9 @@ fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<Strin
                 .collect::<Option<Vec<String>>>()
                 .ok_or(InvokeError::TypeMismatch)?;
             if argv.is_empty() {
-                Err(InvokeError::Rejected)
+                Err(refused(format!(
+                    "{key:?} is empty: an endpoint needs at least its program"
+                )))
             } else {
                 Ok(argv)
             }
@@ -365,7 +369,9 @@ fn parse_reply_format(
         None => Ok(None),
         Some("text") => Ok(Some(ReplyFormat::Text)),
         Some("claude_json") => Ok(Some(ReplyFormat::ClaudeJson)),
-        Some(_) => Err(InvokeError::Rejected),
+        Some(other) => Err(refused(format!(
+            "{key:?} is {other:?}: it must be \"text\" or \"claude_json\""
+        ))),
     }
 }
 
@@ -409,13 +415,21 @@ fn parse_guardrails(
 /// silently looser-by-a-factor bound).
 fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<Cost>, InvokeError> {
     let bound = match (g.get("max_bytes"), g.get("max_tokens")) {
-        (Some(_), Some(_)) => return Err(InvokeError::Rejected),
+        (Some(_), Some(_)) => {
+            return Err(refused(
+                "max_bytes and max_tokens were both given: a run has one cost unit",
+            ));
+        }
         (Some(v), None) => Cost::Bytes(v.as_u64().ok_or(InvokeError::TypeMismatch)?),
         (None, Some(v)) => Cost::Tokens(v.as_u64().ok_or(InvokeError::TypeMismatch)?),
         (None, None) => return Ok(Some(default_cost)),
     };
     if bound.unit() != default_cost.unit() {
-        return Err(InvokeError::Rejected); // wrong cost unit for this plugin
+        return Err(refused(format!(
+            "this plugin spends {}, so a {} bound cannot guard it",
+            default_cost.unit(),
+            bound.unit()
+        )));
     }
     Ok(Some(bound))
 }

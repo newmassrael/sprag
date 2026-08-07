@@ -2325,12 +2325,50 @@ pub(crate) struct Resize {
 ///
 /// The pool and the attachment reports are read FIRST, each lock taken and released in turn, and
 /// then the registry — the order the daemon-side reflow already takes, so this cannot invert it.
+/// Why a boundary move could not be EVALUATED — [`resize_pane`]'s refusal, distinct from the four
+/// [`ResizeHow`] words that say a boundary was evaluated and did not move.
+///
+/// It exists because the four causes were one `None` until R325, and the CLI wrote a sentence
+/// naming two of them and no others. `Unmeasured` in particular is nothing like the rest: a cell
+/// has no length in a window nobody is looking at, so the request cannot be judged at all — and a
+/// user told *"no such pane"* about it would go hunting for a pane that is right there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ResizeRefusal {
+    /// The scope names no window — a session killed under a connection already scoped to it.
+    NoWindow,
+    /// No pane was named and the window has no active one to default to.
+    NoActivePane,
+    /// NOBODY IS WATCHING that window, so it has no measured area and a cell has no size.
+    Unmeasured,
+    /// The moved arrangement could not be rendered or installed — a daemon-side fault, and the one
+    /// arm nothing the caller sends differently would avoid.
+    Unrenderable,
+}
+
+impl std::fmt::Display for ResizeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoWindow => f.write_str("that session has no current window"),
+            Self::NoActivePane => {
+                f.write_str("no pane was named and that window has no active one")
+            }
+            Self::Unmeasured => f.write_str(
+                "nothing is watching that window, so a cell has no size to move a boundary by \
+                 — attach a client, or pin a size with resize-window",
+            ),
+            Self::Unrenderable => {
+                f.write_str("this daemon could not install the moved arrangement")
+            }
+        }
+    }
+}
+
 pub(crate) fn resize_pane(
     registry: &Arc<Mutex<SessionRegistry>>,
     attachments: &Arc<Mutex<AttachmentRegistry>>,
     scope: &SessionScope,
     ask: ResizeAsk,
-) -> Option<Resize> {
+) -> Result<Resize, ResizeRefusal> {
     let panes: Vec<PaneId> = lock(scope.workspace())
         .panes()
         .iter()
@@ -2338,11 +2376,13 @@ pub(crate) fn resize_pane(
         .collect();
     let sizes = lock(attachments).sizes(scope.session());
     let mut registry = lock(registry);
-    let window = registry.window_mut(scope.session(), scope.window())?;
+    let window = registry
+        .window_mut(scope.session(), scope.window())
+        .ok_or(ResizeRefusal::NoWindow)?;
     window.reconcile_layout(&panes);
     let pane = match ask.pane {
         Some(pane) => pane,
-        None => window.active_pane()?,
+        None => window.active_pane().ok_or(ResizeRefusal::NoActivePane)?,
     };
     // THE VERB'S PRECONDITION, and it comes FIRST for a reason a test found: a cell has no length
     // in a window nobody has measured, so the request cannot be evaluated at all. Checking it after
@@ -2354,11 +2394,12 @@ pub(crate) fn resize_pane(
         window
             .manual_size()
             .map(|(cols, rows)| ClientSize { cols, rows }),
-    )?;
+    )
+    .ok_or(ResizeRefusal::Unmeasured)?;
     // Then the zoom: a zoomed window's arrangement is not what is on screen, and R285 made the
     // zoom a PROJECTION exactly so that the arrangement is untouched by it.
     if window.zoomed().is_some() {
-        return Some(Resize {
+        return Ok(Resize {
             pane,
             cells: 0,
             how: ResizeHow::Zoomed,
@@ -2368,14 +2409,14 @@ pub(crate) fn resize_pane(
     let split = match step {
         DividerStep::At(split) => split,
         DividerStep::Edge => {
-            return Some(Resize {
+            return Ok(Resize {
                 pane,
                 cells: 0,
                 how: ResizeHow::AtEdge,
             });
         }
         DividerStep::Untiled => {
-            return Some(Resize {
+            return Ok(Resize {
                 pane,
                 cells: 0,
                 how: ResizeHow::Untiled,
@@ -2397,14 +2438,14 @@ pub(crate) fn resize_pane(
         .find(|divider| divider.id == Some(split))
         .and_then(|divider| divider.stepped(ask.dir, ask.cells))
     else {
-        return Some(Resize {
+        return Ok(Resize {
             pane,
             cells: 0,
             how: ResizeHow::AtMinimum,
         });
     };
     if moved == 0 {
-        return Some(Resize {
+        return Ok(Resize {
             pane,
             cells: 0,
             how: ResizeHow::AtMinimum,
@@ -2413,9 +2454,11 @@ pub(crate) fn resize_pane(
     // `None` for the expected revision: this write is the daemon's own, derived from the tree it is
     // holding the lock over, so there is no earlier read of somebody else's for it to be stale
     // against — which is precisely the case that method's `expected` documents.
-    let moved_tree = with_ratio(&tree, split, ratio)?;
-    window.set_layout(moved_tree, None).ok()?;
-    Some(Resize {
+    let moved_tree = with_ratio(&tree, split, ratio).ok_or(ResizeRefusal::Unrenderable)?;
+    window
+        .set_layout(moved_tree, None)
+        .map_err(|_| ResizeRefusal::Unrenderable)?;
+    Ok(Resize {
         pane,
         cells: moved,
         how: ResizeHow::Resized,
@@ -2579,7 +2622,7 @@ impl HostClient for Host {
     /// same encoder the RPC `scene/invoke` path uses); `false` for an absent id.
     fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool {
         self.with_pane_id(id, Pane::handle)
-            .is_some_and(|handle| crate::send_key(&handle, key, mods))
+            .is_some_and(|handle| crate::send_key(&handle, key, mods).is_ok())
     }
 
     /// Gates + encodes the mouse report at the PTY boundary via the shared [`crate::mouse`] SSOT

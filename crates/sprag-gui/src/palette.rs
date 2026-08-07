@@ -678,11 +678,14 @@ impl ExternalIntrospect for PaletteExternal {
         match path {
             "cursor" => match value {
                 IntrospectValue::Int(n) => {
-                    let i = usize::try_from(n).map_err(|_| InterveneError::OutOfRange)?;
+                    let rows = self.rows().len();
+                    let out_of_range =
+                        || InterveneError::out_of_range(format!("row {n} is outside 0..{rows}"));
+                    let i = usize::try_from(n).map_err(|_| out_of_range())?;
                     if self.select(i) {
                         Ok(())
                     } else {
-                        Err(InterveneError::OutOfRange)
+                        Err(out_of_range())
                     }
                 }
                 _ => Err(InterveneError::TypeMismatch),
@@ -716,7 +719,10 @@ impl ExternalIntrospect for PaletteExternal {
                     if self.select(i) {
                         Ok(IntrospectValue::Int(n))
                     } else {
-                        Err(InvokeError::Rejected)
+                        Err(InvokeError::rejected(format!(
+                            "row {n} is outside 0..{}",
+                            self.rows().len()
+                        )))
                     }
                 }
                 _ => Err(InvokeError::TypeMismatch),

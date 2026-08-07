@@ -48,8 +48,16 @@ use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_terminal::PanePtyHandle;
 use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
-use crate::external::rpc_external_impl;
+use crate::external::{refused, rpc_external_impl};
 use crate::host::PaneScrollFacts;
+
+/// The refusal every write to a pane's terminal shares: the bytes were formed and the child would
+/// not take them.
+///
+/// A `const` because six actions state it and one situation deserves one sentence — the rule
+/// [`crate::external::refused`] exists to keep. It is deliberately about the CHILD rather than
+/// about the request: nothing the caller sends differently reaches a pane whose program has gone.
+const NOT_WRITTEN: &str = "the pane's terminal would not take the write";
 
 // The action names + query slots this external answers are the shared wire ABI
 // vocabulary ([`crate::wire`]) — the SAME consts the wire client addresses, so the
@@ -89,21 +97,55 @@ pub(crate) fn search_pattern(screen: &Screen, pattern: &str) -> crate::PaneFind 
     }
 }
 
+/// Why a key never reached a pane's child — [`send_key`]'s refusal.
+///
+/// Two facts, and this type exists because they were ONE `bool` until R325. The two send a caller
+/// somewhere completely different: an unencodable key is a request this build cannot express and a
+/// failed write is a child that is gone, and a surface handed `false` had to name both or neither.
+/// It is the same fusion the whole round removes one layer up, met inside sprag's own code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyUnsent {
+    /// [`sprag_input::encode`] has no bytes for that key + modifier combination under the pane's
+    /// live input modes — a name this build's encoder does not know.
+    Unencodable,
+    /// The bytes were encoded and the pane's terminal would not take them; its child has gone.
+    NotWritten,
+}
+
+impl std::fmt::Display for KeyUnsent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // NAMES THE VOCABULARY, because the encoder is the only thing that knows it. The
+            // `sprag` CLI used to write this sentence itself — it had to, since a payload-free
+            // refusal could not carry one — and a client authoring a claim about another process's
+            // encoder is what this round removes everywhere else too.
+            Self::Unencodable => f.write_str(
+                "not a key this build encodes — a key is a W3C key name (Enter, Escape, Tab, \
+                 ArrowUp, F5) or a single character, optionally prefixed C- / M- / S-",
+            ),
+            Self::NotWritten => f.write_str("the pane's terminal would not take the keystroke"),
+        }
+    }
+}
+
+impl std::error::Error for KeyUnsent {}
+
 /// Encode a W3C `key` + `mods` to PTY bytes (the sprag-owned R2.6 encoder,
-/// [`sprag_input::encode`]) and write them to `pty`. `true` on success;
-/// `false` if the key is unencodable or the write failed.
+/// [`sprag_input::encode`]) and write them to `pty`, answering WHICH way it failed.
 ///
 /// This is the key->PTY SSOT shared by the RPC input surface
 /// ([`SpragPaneExternal`]'s `key` action, which parses the JSON/scene wire) and the
 /// in-process display client ([`HostClient::send_key`](crate::HostClient::send_key), which calls
 /// this directly with typed args) — so the human keyboard path and the AI
 /// `scene/invoke` path encode IDENTICALLY.
-#[must_use]
-pub fn send_key(pty: &PanePtyHandle, key: &str, mods: Modifiers) -> bool {
-    match sprag_input::encode(key, mods, pty.input_modes()) {
-        Some(bytes) => pty.write(&bytes).is_ok(),
-        None => false,
-    }
+///
+/// A [`KeyUnsent`] rather than `false`: see that type for why the two causes had to come apart. A
+/// caller that only needs "did it go" writes `.is_ok()`, which is what the display clients do.
+pub fn send_key(pty: &PanePtyHandle, key: &str, mods: Modifiers) -> Result<(), KeyUnsent> {
+    let bytes = sprag_input::encode(key, mods, pty.input_modes()).ok_or(KeyUnsent::Unencodable)?;
+    pty.write(&bytes)
+        .map(|_| ())
+        .map_err(|_| KeyUnsent::NotWritten)
 }
 
 /// Write literal UTF-8 `text` to `pty` (no key-encoding) — the IME-commit /
@@ -222,11 +264,9 @@ impl SpragPaneExternal {
         let Some((key, mods)) = parse_key_args(args)? else {
             return Ok(IntrospectValue::Null); // suppressed key-up edge
         };
-        if send_key(&self.pty, &key, mods) {
-            Ok(IntrospectValue::Null)
-        } else {
-            Err(InvokeError::Rejected)
-        }
+        send_key(&self.pty, &key, mods)
+            .map(|()| IntrospectValue::Null)
+            .map_err(refused)
     }
 
     /// Write a `text` action's literal UTF-8 to the PTY — **not** key-encoded.
@@ -240,7 +280,7 @@ impl SpragPaneExternal {
         if send_text(&self.pty, &text) {
             Ok(IntrospectValue::Null)
         } else {
-            Err(InvokeError::Rejected)
+            Err(refused(NOT_WRITTEN))
         }
     }
 
@@ -253,7 +293,7 @@ impl SpragPaneExternal {
         if paste(&self.pty, &text) {
             Ok(IntrospectValue::Null)
         } else {
-            Err(InvokeError::Rejected)
+            Err(refused(NOT_WRITTEN))
         }
     }
 
@@ -265,7 +305,7 @@ impl SpragPaneExternal {
         if mouse(&self.pty, event) {
             Ok(IntrospectValue::Null)
         } else {
-            Err(InvokeError::Rejected)
+            Err(refused(NOT_WRITTEN))
         }
     }
 
@@ -277,7 +317,7 @@ impl SpragPaneExternal {
         if focus(&self.pty, focused) {
             Ok(IntrospectValue::Null)
         } else {
-            Err(InvokeError::Rejected)
+            Err(refused(NOT_WRITTEN))
         }
     }
 
@@ -291,7 +331,7 @@ impl SpragPaneExternal {
         let reply = osc52_reply(target, &text);
         match self.pty.answer_clipboard_query(seq, &reply) {
             Ok(wrote) => Ok(IntrospectValue::Json(json!({ "wrote": wrote }))),
-            Err(_) => Err(InvokeError::Rejected),
+            Err(_) => Err(refused(NOT_WRITTEN)),
         }
     }
 
