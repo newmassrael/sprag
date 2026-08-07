@@ -778,6 +778,13 @@ impl SlotView {
         self.host.take_message()
     }
 
+    /// Take the SKEW this client's own act met — a daemon too old to perform what a gesture asked
+    /// for. See [`HostClient::take_skew`] for why it is not the
+    /// message mailbox above.
+    pub(crate) fn take_skew(&self) -> Option<sprag_host::report::Announcement> {
+        self.host.take_skew()
+    }
+
     /// What the AGENT in slot `slot` is doing (H3), `None` for a hole or a pane no manifest claims.
     ///
     /// A DISPLAY fact like [`pane_title`](Self::pane_title), and read by the title SSOT

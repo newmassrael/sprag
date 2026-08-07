@@ -1136,6 +1136,15 @@ pub struct WireHost {
     /// session SWITCH untouched: the message was addressed to this client, not to the session it
     /// happened to be watching when somebody sent it.
     message: MessageMirror,
+    /// The SKEW this client's own act met and its surface has not shown yet — a daemon too old to
+    /// perform the action a keystroke asked for (R324).
+    ///
+    /// Beside the message mirror and deliberately NOT it: that one holds what the DAEMON routed,
+    /// which the terminal front copies out to the desktop and drains on a WAKE — and a daemon that
+    /// performs nothing bumps no channel, so the wake never comes. Written by
+    /// [`request`](WireHost::request), which is where the fault is seen, and taken by the key path
+    /// that caused it.
+    skew: MessageMirror,
     /// The host endpoint this client connect-or-spawned on — kept so a session switch can open a
     /// FRESH poll connection to the same daemon (the request conn is re-scoped in place; the poll
     /// thread is torn down and a new one spawned on a new connection).
@@ -1763,6 +1772,10 @@ impl WireHost {
             // reaches. Anything sent between now and the first wake is collected by that wake, which
             // the delivery's own bump causes.
             message: Arc::new(Mutex::new(None)),
+            // Empty at boot for a sharper reason than the mailbox's: nothing this client has done
+            // can have met a skew yet, and the boot READS that could have are the poll's, which
+            // this deliberately does not carry.
+            skew: Arc::new(Mutex::new(None)),
             endpoint: endpoint.clone(),
             boot_dims: (cols, rows),
             lost_session: Arc::new(AtomicBool::new(false)),
@@ -2171,10 +2184,50 @@ impl WireHost {
     /// handled, so every method's error policy is consistent (the "swallow is honest,
     /// not silent" bar the in-process [`Host`](sprag_host::Host) holds). Returns `None`
     /// on failure.
+    ///
+    /// # An ACT that the daemon cannot perform reaches the person (R324)
+    ///
+    /// The trace was the whole of the policy until this round, and the register carried the
+    /// consequence as an open surface decision: *"a RUNNING display client still SWALLOWS a
+    /// skew ... whether a repaint loop should say so is a question about how noisy a degraded
+    /// client is allowed to be."* Measured against a daemon serving every read and knowing no
+    /// verb, `prefix c` on a live client left the status row unchanged and created no window.
+    ///
+    /// **The answer taken is: a person's GESTURE gets an answer, and a poll does not shout.** A
+    /// `scene/invoke` happens only because somebody acted; a `scene/query` happens on every wake,
+    /// and a client that reported each would have nothing else on its row.
+    ///
+    /// ⚠ **The DISCRIMINATOR is the FAULT, not the method** — a correction the revert-proof made,
+    /// not the design's own claim: `UnknownInvokePath` is what a daemon answers an ACTION it does
+    /// not have, so `unknown_action` already implies an invoke, and mutating the method check alone
+    /// left every assertion green. The method test stays as a second, explicit guard — it says what
+    /// this branch is FOR, and it costs a string compare — but the control that can fail is the one
+    /// that swaps the fault matcher.
+    ///
+    /// The [`sprag_host::wire::skew_announcement`] sentence is the daemon-facing one both fronts
+    /// already show for the shell, so no client writes words of its own.
+    ///
+    /// Only a SKEW takes the row. A transport error is the poll thread's business (it owns the
+    /// detach edge) and a refusal the daemon MEANT already reaches the caller as a value.
     fn request(&self, method: &str, params: Value, ctx: &str) -> Option<Value> {
-        match self.conn.borrow_mut().call(method, params) {
+        let path = params
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        match self.conn.borrow_mut().try_call(method, params) {
             Ok(value) => Some(value),
             Err(error) => {
+                if let sprag_rpc::CallError::Fault(fault) = &error
+                    && method == "scene/invoke"
+                    && sprag_host::wire::unknown_action(&path, fault).is_some()
+                    && let Some(said) = sprag_host::wire::skew_announcement(&path)
+                {
+                    store_message(&self.skew, said);
+                }
+                // Rendered as `call` renders it, through the conversion that exists for exactly
+                // this: a caller that opted into the typed error must not spell a second wording.
+                let error = io::Error::from(error);
                 tracing::debug!(target: "sprag_gui::wire", ctx, %error, "wire request failed");
                 None
             }
@@ -3290,6 +3343,15 @@ impl HostClient for WireHost {
     // in one place.
     fn take_message(&self) -> Option<Announcement> {
         lock_message(&self.message).take()
+    }
+
+    /// Take the skew this client's own act met.
+    ///
+    /// Served from a mirror of its OWN, not from the message mailbox above: that one holds what the
+    /// daemon routed, is copied out to the desktop notifier, and is drained on a wake — and a
+    /// daemon too old to act bumps no channel, so no wake ever comes.
+    fn take_skew(&self) -> Option<Announcement> {
+        lock_message(&self.skew).take()
     }
 
     /// The pane's agent verdict (H3), served from the same poll-refreshed mirror as

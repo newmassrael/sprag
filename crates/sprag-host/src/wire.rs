@@ -790,18 +790,31 @@ pub const TREE_SLOT: &str = "tree";
 /// arrive under one JSON-RPC code, and only the `data` tells them apart.
 #[must_use]
 pub fn unknown_slot(path: &str, fault: &RpcFault) -> Option<io::Error> {
-    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownIntrospectPath" {
+    if fault.data.as_ref().and_then(Value::as_str)? != sprag_rpc::UNKNOWN_SLOT_FAULT {
         return None;
     }
     Some(io::Error::new(
         io::ErrorKind::Unsupported,
-        format!(
-            "this daemon does not serve {path} — it is older than this build of sprag. \
-             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
-             from the durability snapshot)",
-        ),
+        format!("this daemon does not serve {path} — {SKEW_REMEDY}"),
     ))
 }
+
+/// What every skew sentence ends with, and the reason it is a `const`.
+///
+/// **It is written to fit a STATUS ROW** ([`crate::report::MessageText::MAX_BYTES`]), which is the
+/// change R324 made to it: the longer form it replaces came to 215 bytes for a 200-byte cap with the
+/// shortest address this daemon serves, so the same fact could not be said at both surfaces. Two
+/// sentences for one situation is the drift this module spent three rounds removing, so the sentence
+/// got shorter rather than the surfaces getting one each.
+///
+/// `sprag kill-server` and *"older than this build"* are load-bearing words, not phrasing: the CLI
+/// gate, the agent gate and both display gates match on them.
+///
+/// It is NOT shared with the protocol-mismatch refusal in [`crate::rpc`], which reads *"rebuild the
+/// client, or restart this daemon to the client's build"* — that one is a TWO-SIDED disagreement
+/// where either end may be the old one, and this is a daemon that is simply behind.
+pub const SKEW_REMEDY: &str =
+    "it is older than this build of sprag. Restart it: `sprag kill-server` (sessions are restored)";
 
 /// An invoke refused because this daemon has never HEARD of the action — the invoke-side twin of
 /// [`unknown_slot`], and `None` for any other fault so a caller's own disjunction still runs.
@@ -830,17 +843,51 @@ pub fn unknown_slot(path: &str, fault: &RpcFault) -> Option<io::Error> {
 /// round, as the one `sprag`'s `query_slot` records for the reading side.
 #[must_use]
 pub fn unknown_action(path: &str, fault: &RpcFault) -> Option<io::Error> {
-    if fault.data.as_ref().and_then(Value::as_str)? != "UnknownInvokePath" {
+    if fault.data.as_ref().and_then(Value::as_str)? != sprag_rpc::UNKNOWN_ACTION_FAULT {
         return None;
     }
     Some(io::Error::new(
         io::ErrorKind::Unsupported,
-        format!(
-            "this daemon does not perform {path} — it is older than this build of sprag. \
-             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
-             from the durability snapshot)",
-        ),
+        format!("this daemon does not perform {path} — {SKEW_REMEDY}"),
     ))
+}
+
+/// The SAME fact as [`unknown_action`], as a message a display client can paint on its one row.
+///
+/// # Why a client needs this at all
+///
+/// A `scene/invoke` happens only because somebody ACTED — a key, a palette row, a drag — so a
+/// client that swallows its refusal has taken a person's gesture and answered nothing. Measured at
+/// `d651f50` against a daemon serving every read and knowing no verb: `prefix c` on a live
+/// `sprag-tui` left the status row unchanged and created no window. A `scene/query` is the opposite
+/// case and is deliberately NOT given one of these: reads happen on every poll wake, and a client
+/// that reported each would have nothing else on its row.
+///
+/// # Why it is here and not in the client
+///
+/// Both display clients paint it, so neither writes it — the rule this module already holds for the
+/// shell's sentence, applied to the surface R316/R317 built. The words are
+/// [`unknown_action`]'s, minus the leading article a row does not need.
+///
+/// [`Severity::Warn`](crate::report::Severity::Warn): the person's act did not happen, which they
+/// must be told, and it is not the alert kind that waits for an acknowledgement — a degraded daemon
+/// is a standing condition, and every further gesture will say so again.
+#[must_use]
+pub fn skew_announcement(path: &str) -> Option<crate::report::Announcement> {
+    use crate::report::{Announcement, MessageText, Severity};
+    // A path long enough to overflow a row's budget is not reachable through any address this
+    // daemon serves — and R318 recorded what an `expect` resting on exactly that reasoning cost, so
+    // there is a fallback rather than a panic. It drops the ADDRESS, which is the only part that
+    // can be long, and keeps the fact and the remedy: both are things a person can act on without
+    // it. `the_row_sentence_survives_an_address_no_row_could_hold` drives it.
+    let text = MessageText::parse(&format!(
+        "this daemon does not perform {path} — {SKEW_REMEDY}"
+    ))
+    .or_else(|_| MessageText::parse(&format!("this daemon cannot act — {SKEW_REMEDY}")));
+    text.ok().map(|text| Announcement {
+        text,
+        severity: Severity::Warn,
+    })
 }
 
 /// Which session holds `pane`, read off a [`TREE_SLOT`] answer — how a process that knows only
@@ -2936,6 +2983,40 @@ pub fn regex_slot_for(pattern: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
+    /// **THE ROW SENTENCE SURVIVES AN ADDRESS NO ROW COULD HOLD** — the fallback, driven.
+    ///
+    /// [`skew_announcement`] builds a [`crate::report::MessageText`], which refuses anything past
+    /// 200 bytes, and the address is the only part of the sentence that can be long. R318 recorded
+    /// what an `expect` resting on *"that cannot happen"* cost, so there is a fallback — and a
+    /// fallback nothing drives is a branch that is wrong the first time it runs.
+    ///
+    /// The CONTROL is the ordinary address: it keeps the path, which is what says WHICH act the
+    /// daemon lacks.
+    #[test]
+    fn the_row_sentence_survives_an_address_no_row_could_hold() {
+        let ordinary = skew_announcement(&mux_action_path(NEW_WINDOW_ACTION))
+            .expect("an ordinary address fits a row");
+        assert!(
+            ordinary.text.as_str().contains("new_window")
+                && ordinary.text.as_str().contains("does not perform"),
+            "the ordinary sentence names the act: {}",
+            ordinary.text.as_str(),
+        );
+
+        let absurd = format!("/{}", "x".repeat(300));
+        let said = skew_announcement(&absurd).expect("the fallback fits a row");
+        let text = said.text.as_str();
+        assert!(
+            !text.contains(&absurd) && text.contains("cannot act") && text.contains("kill-server"),
+            "an address no row can hold is dropped, and the fact and the remedy stay: {text}",
+        );
+        assert!(
+            text.len() <= crate::report::MessageText::MAX_BYTES,
+            "the fallback is itself within the cap it exists for: {} bytes",
+            text.len(),
+        );
+    }
+
     use pinion_core::external::ArgDomain;
     use serde_json::json;
 

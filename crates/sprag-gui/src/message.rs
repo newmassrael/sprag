@@ -59,12 +59,43 @@ fn use_message() -> Signal<Option<Message>> {
         .clone()
 }
 
-/// Show what a key just did, if it had anything to say.
+/// Show what a GESTURE just did — a key, a palette row, an answered confirmation.
+///
+/// # A skew this gesture met OUTRANKS what it thought it did (R324)
+///
+/// Every dispatcher reports what it ASKED for, and against a daemon too old to perform it the
+/// honest answer is the one the transport saw
+/// ([`HostClient::take_skew`](sprag_host::HostClient::take_skew)). Taken HERE, in the one place a
+/// gesture's report reaches this client's strip, rather than at the four sites that call it — a
+/// drain per call site is how two of them come to disagree about whether a refusal is worth
+/// painting.
+///
+/// It is NOT taken by [`show_announcement`], which is the daemon's own message arriving: that is
+/// not a gesture, and letting it flush a pending skew would paint the refusal instead of the
+/// message somebody sent.
+pub(crate) fn show(report: &Report) {
+    paint(&preferred(
+        crate::terminal::use_terminal().slots.take_skew(),
+        report,
+    ));
+}
+
+/// WHICH of the two a gesture's strip shows: the skew it met, or what the dispatcher thought it
+/// did.
+///
+/// A function rather than two lines inside [`show`] so the RULE can be tested without a host: the
+/// wiring above it is one call, and this is the decision. It is the same split
+/// [`Announcement::over`](sprag_host::report::Announcement::over) already makes for two messages.
+fn preferred(skew: Option<sprag_host::report::Announcement>, report: &Report) -> Report {
+    skew.map_or_else(|| report.clone(), |said| Report::said(&said))
+}
+
+/// Put a report on the strip — the body [`show`] and [`show_announcement`] share.
 ///
 /// A [`Report`] with nothing to say leaves whatever is up ALONE rather than clearing it: a user who
 /// pressed a key that spoke and then typed into a pane is still owed the sentence for its remaining
 /// lifetime, and the deadline is what takes it away.
-pub(crate) fn show(report: &Report) {
+fn paint(report: &Report) {
     let Some(said) = Message::of(
         report,
         now(),
@@ -94,7 +125,7 @@ pub(crate) fn show(report: &Report) {
 /// person sent and a refusal this client built for itself are one value by the time either reaches a
 /// surface, so this front has no way to paint them differently.
 pub(crate) fn show_announcement(announcement: &sprag_host::report::Announcement) {
-    show(&Report::said(announcement));
+    paint(&Report::said(announcement));
 }
 
 /// Clear a message that waits to be ACKNOWLEDGED — what a keystroke does to an alert.
@@ -217,6 +248,39 @@ pub(crate) fn message_access_nodes() -> Vec<AccessNode> {
 
 #[cfg(test)]
 mod tests {
+    use sprag_host::report::{Announcement, MessageText, Severity};
+
+    /// **A SKEW OUTRANKS WHAT THE GESTURE THOUGHT IT DID, and nothing else changes.**
+    ///
+    /// The rule R324 put in front of this client's strip, without the host wiring that carries it:
+    /// a dispatcher reports what it ASKED for, so against a daemon that could not perform it the
+    /// answer a person needs is the transport's. The CONTROL is the second half — with no skew the
+    /// report stands, unchanged — because a helper that always preferred one side would satisfy
+    /// the first assertion alone.
+    #[test]
+    fn a_skew_outranks_the_report_and_nothing_else_does() {
+        let said = Announcement {
+            text: MessageText::parse("this daemon does not perform /x").expect("a line"),
+            severity: Severity::Warn,
+        };
+        let key = Report::nowhere(&sprag_host::keymap::BoundAction::KillPane);
+        assert_eq!(
+            preferred(Some(said.clone()), &key).says(),
+            Some("this daemon does not perform /x"),
+            "the transport saw why the act did not happen; the dispatcher only saw what it asked",
+        );
+        assert_eq!(
+            preferred(None, &key).says(),
+            key.says(),
+            "with no skew the gesture's own report stands, byte for byte",
+        );
+        assert_eq!(
+            preferred(Some(said), &Report::on_screen()).says(),
+            Some("this daemon does not perform /x"),
+            "including over an arm that had nothing to say — which is most of them",
+        );
+    }
+
     use super::*;
     use sprag_host::keymap::{BoundAction, SwitchClientAsk};
 

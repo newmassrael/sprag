@@ -6276,9 +6276,10 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(
             error.to_string(),
-            "this daemon does not perform /sprag_mux/external/rename_session — it is older than \
-             this build of sprag. Restart it to bring it to this build — `sprag kill-server` \
-             (sessions are restored from the durability snapshot)",
+            format!(
+                "this daemon does not perform /sprag_mux/external/rename_session — {}",
+                sprag_host::wire::SKEW_REMEDY,
+            ),
         );
 
         // THE CONTROL — the fault a daemon that HAS the verb sends when it refuses one, which
@@ -6313,9 +6314,10 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert_eq!(
             error.to_string(),
-            "this daemon does not serve /x/y.0 — it is older than this build of sprag. \
-             Restart it to bring it to this build — `sprag kill-server` (sessions are restored \
-             from the durability snapshot)",
+            format!(
+                "this daemon does not serve /x/y.0 — {}",
+                sprag_host::wire::SKEW_REMEDY
+            ),
         );
 
         // THE CONTROL, and the reason this is a `data` match rather than a substring one: a

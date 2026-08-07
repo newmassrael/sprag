@@ -1229,6 +1229,27 @@ pub trait HostClient {
         None
     }
 
+    /// The SKEW this client's own act just met, taken — a daemon that could not perform the action
+    /// a person's gesture asked for.
+    ///
+    /// # Why it is not [`take_message`](Self::take_message)
+    ///
+    /// That mailbox holds what the DAEMON routed to this client, and two things follow from that
+    /// which are wrong here: the terminal front copies its contents OUT to the desktop notifier
+    /// (R319 — *"only what the daemon routed is copied out"*), and it is drained on a WAKE. A
+    /// skewed daemon performs nothing, so it bumps no channel and no wake ever comes — measured,
+    /// which is how this method came to exist rather than the mailbox being reused.
+    ///
+    /// It is an EDGE, like a message: taken exactly once, by the path that made it. A client that
+    /// read it twice would report one refusal to two keystrokes.
+    ///
+    /// Defaulted to [`None`] for the in-process arm, which cannot be a version behind itself.
+    #[must_use = "a person's gesture that the daemon could not perform is the one thing this \
+                  answers, and dropping it is the swallow it was written to end"]
+    fn take_skew(&self) -> Option<crate::report::Announcement> {
+        None
+    }
+
     /// The pane's monotonic BELL count (`\a`) — the tmux `monitor-bell` signal, `0` if it has
     /// rung none (or the pane is absent). LIVE, child-controlled, kept SEPARATE from
     /// [`pane_notification`](Self::pane_notification) (a bell carries no text) so the two
