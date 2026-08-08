@@ -383,8 +383,8 @@ fn pane_text_of(conn: &mut HostConn, session: &str, pane: u64) -> String {
     .unwrap_or_else(|| "<unreadable>".to_owned())
 }
 
-/// [`pane_text_of`] with every whitespace character removed — the only sound reading for a needle
-/// that may be WRAPPED.
+/// Every whitespace character removed — the only sound reading of RENDERED text for a needle that
+/// may be WRAPPED.
 ///
 /// ⚠⚠ **A WORD ON A 40-COLUMN PANE IS NOT A WORD IN ITS TEXT.** Measured at 4x oversubscription:
 /// a pane split off an 80-column terminal holds `"coin@host:~$ elsewhe\nre"`, so
@@ -392,14 +392,25 @@ fn pane_text_of(conn: &mut HostConn, session: &str, pane: u64) -> String {
 /// for a positive check and a **VACUITY for a negative one** — `!contains("elsewhere")` passes for
 /// a pane that is showing exactly the thing the assertion exists to forbid, and passes silently.
 ///
-/// R334 recorded the same shape one surface over (a status-row site that folded whitespace before
-/// matching, which is why a grep for the quoted sentence could not find it). Here it is the
-/// difference between a claim and a decoration, so both directions read through this.
-fn pane_words(conn: &mut HostConn, session: &str, pane: u64) -> String {
-    pane_text_of(conn, session, pane)
-        .chars()
+/// **APPLY IT TO THE NEEDLE TOO**, or a multi-word needle stops matching the moment the text is
+/// folded. That direction is safe for a negative claim in a way the raw read is not: folding can
+/// only make `!contains` STRICTER — it can join two words the screen showed apart and fail — and it
+/// can never let a wrapped occurrence through.
+///
+/// ⚠ **THIS EXISTED AS A LOCAL CLOSURE AT ONE SITE IN THIS FILE**, needle-folding and all, while
+/// seven other negative assertions over pane text read raw. R334's shape (a status-row site that
+/// folded whitespace, which is why a grep for the quoted sentence could never find it) and R331's
+/// (*a sweep fixes the sites that match the pattern, not the ones that matter*). Promoted here so
+/// there is one of it.
+fn fold(text: &str) -> String {
+    text.chars()
         .filter(|glyph| !glyph.is_whitespace())
         .collect()
+}
+
+/// [`pane_text_of`] read through [`fold`] — what a NEGATIVE claim about a pane's screen must use.
+fn pane_words(conn: &mut HostConn, session: &str, pane: u64) -> String {
+    fold(&pane_text_of(conn, session, pane))
 }
 
 /// Wait until THIS CLIENT routes what is typed into `pane`, by sending one `.` at a time until one
@@ -2117,8 +2128,9 @@ fn keys_follow_the_focus_the_prefix_moves() {
 
     // The negative half, checked only once the positive one has landed: `back` arriving is proof
     // that everything typed before it has been delivered too, so an absent `elsewhere` is a
-    // decision rather than a race.
-    let held = pane_text(&mut conn, &session);
+    // decision rather than a race. Read through [`fold`]: a leak would land at the cursor, which
+    // after the echo above can be near the right edge, and a wrapped leak reads as no leak.
+    let held = pane_words(&mut conn, &session, 0);
     assert!(
         !held.contains("elsewhere"),
         "what was typed while the new pane had focus must not reach pane 0: {held:?}",
@@ -2256,7 +2268,7 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
             Err(format!("pane 0 holds {held:?}"))
         }
     });
-    let held = pane_text(&mut conn, &session);
+    let held = pane_words(&mut conn, &session, 0);
     assert!(
         !held.contains("elsewhere"),
         "what was typed after moving right must not reach pane 0: {held:?}",
@@ -5452,7 +5464,7 @@ fn a_key_bound_to_a_session_that_does_not_exist_says_so() {
     );
     // The name never reached the shell — `cat` echoes what it is given, so a keystroke that leaked
     // past the keymap would be visible in the pane's own text.
-    let text = pane_text_of(&mut conn, &session, 0);
+    let text = pane_words(&mut conn, &session, 0);
     assert!(
         !text.contains("ghost"),
         "the bound key is the CLIENT's and must not also reach the child: {text:?}",
@@ -5645,7 +5657,7 @@ fn a_key_bound_to_a_window_that_does_not_exist_says_so() {
         tui.status_rows(),
     );
 
-    let text = pane_text_of(&mut conn, &session, 0);
+    let text = pane_words(&mut conn, &session, 0);
     assert!(
         !text.contains("nowindow"),
         "the bound key is the CLIENT's and must not also reach the child: {text:?}",
@@ -5830,7 +5842,7 @@ fn a_message_sent_by_another_process_reaches_the_person_at_this_client() {
 
     // ...and it was a MESSAGE, not typing: `cat` echoes what it is given, so a word that had gone
     // into the pane would be in the pane's own text.
-    let text = pane_text_of(&mut conn, &session, 0);
+    let text = pane_words(&mut conn, &session, 0);
     assert!(
         !text.contains("deploy"),
         "the sentence is the CLIENT's to paint and must never reach the child: {text:?}",
@@ -6365,9 +6377,9 @@ fn a_notification_a_pane_child_raised_reaches_the_person_at_this_client() {
 
     // ...and it was a MESSAGE the client painted, not text in the pane: this child echoes nothing
     // and prints only the escape, which carries no cells.
-    let text = pane_text_of(&mut conn, &session, 0);
+    let text = pane_words(&mut conn, &session, 0);
     assert!(
-        !text.contains("build finished"),
+        !text.contains(&fold("build finished")),
         "a notification stamps no cells; the sentence is the CLIENT's to paint: {text:?}",
     );
 }
@@ -6644,9 +6656,9 @@ fn a_message_follows_the_person_out_of_the_room() {
         announced(&tui, "pane 0: the second one")
     });
 
-    let text = pane_text_of(&mut conn, &session, 0);
+    let text = pane_words(&mut conn, &session, 0);
     assert!(
-        !text.contains("the second one"),
+        !text.contains(&fold("the second one")),
         "a notification stamps no cells, and a report routed to the child would put its tail \
          here: {text:?}",
     );
@@ -7177,17 +7189,16 @@ fn a_client_meeting_an_older_daemon_says_so_instead_of_naming_a_variant() {
     // mid-word — so a row-joined screen contains `build o` + `f sprag` and matches no phrase
     // anybody wrote. The claim is about the words that reached the person, not about where the
     // 80th column fell.
-    let flat = |text: &str| -> String { text.chars().filter(|c| !c.is_whitespace()).collect() };
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut said = String::new();
     while Instant::now() < deadline {
         said = tui.rows().join("");
-        if flat(&said).contains(&flat("does not serve")) || said.contains("UnknownIntrospectPath") {
+        if fold(&said).contains(&fold("does not serve")) || said.contains("UnknownIntrospectPath") {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let screen = flat(&said);
+    let screen = fold(&said);
     assert!(
         !screen.contains("UnknownIntrospectPath"),
         "a Rust variant name must not reach an operator: {said}",
@@ -7198,7 +7209,7 @@ fn a_client_meeting_an_older_daemon_says_so_instead_of_naming_a_variant() {
         "sprag kill-server",
     ] {
         assert!(
-            screen.contains(&flat(phrase)),
+            screen.contains(&fold(phrase)),
             "the sentence names {phrase:?}: {said}",
         );
     }

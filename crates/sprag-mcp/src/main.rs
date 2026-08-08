@@ -3891,8 +3891,9 @@ fn tool_zoom_pane(args: &Value) -> Result<String, String> {
 }
 
 /// What `zoom_pane` tells the agent, as a pure function of the daemon's answer —
-/// [`render_resize`]'s rule, so all four sentences are pinned by a unit test and not only the ones
-/// a live daemon can be driven into.
+/// [`render_swap`]'s rule, so all four sentences are pinned by a unit test
+/// (`the_four_zoom_sentences_each_say_which_state_they_left`) and not only by what a live daemon
+/// can be driven into.
 ///
 /// Each says what to do NEXT, because that is the half an agent cannot infer: a pane that now fills
 /// its window is a pane whose width just changed, and the reason to zoom on this surface is to read
@@ -4585,9 +4586,19 @@ fn tool_wait_for_change(args: &Value) -> Result<String, String> {
     let mut cursor = CURSOR.lock().unwrap_or_else(PoisonError::into_inner);
     let since = match *cursor {
         Some(since) => since,
+        // ⚠ THE ANSWER WITHOUT THE KEY, and the sentence has to say what that MEANS. Measured at
+        // R335 against `sprag_peer::OldDaemon`: the read SUCCEEDS and carries no `revision`, so the
+        // `?` above never fires and this arm is the only thing an agent hears. It used to say *"the
+        // host did not report a scene revision"* — a fact with no cause and no remedy, which is
+        // debt item 9's class arriving through the one path the skew ratchet did not walk.
         None => host_call("scene/revision", json!({}))?["revision"]
             .as_u64()
-            .ok_or("the host did not report a scene revision")?,
+            .ok_or(
+                "this terminal answered a scene-revision read without a revision, so there is no \
+                 point in its history to wait FROM. A daemon older than this tool answers exactly \
+                 that, because it keeps no event journal at all — ask the user to restart the \
+                 terminal, and poll with read_pane until they do.",
+            )?,
     };
 
     let sock = host_sock().ok_or_else(|| {
@@ -5938,6 +5949,62 @@ mod tests {
             render_swap(SwapHow::Swapped, Some(PaneDir::Right), "pane 3", None)
                 .contains("the other pane"),
         );
+    }
+
+    /// **THE FOUR ZOOM SENTENCES, PINNED — and this test exists because its function's doc SAID it
+    /// did before it was written.**
+    ///
+    /// R334's rule, broken in the round that recorded it: *a doc comment nothing can contradict is
+    /// a claim, not a guarantee.* `render_zoom`'s doc read *"all four sentences are pinned by a unit
+    /// test"* while `render_swap` was the only one of the three renderers that had one. The live
+    /// gate does drive all four states against a real daemon, so the claim was nearly true and
+    /// attributed to an instrument that did not exist — which is the shape, not a degree of it.
+    ///
+    /// What a unit test adds over that live gate is the WORDING: a rename of a phrase an agent is
+    /// told to act on ("call zoom_pane with `on: false` when you are done") would leave the live
+    /// gate green if it still matched its looser needle.
+    #[test]
+    fn the_four_zoom_sentences_each_say_which_state_they_left() {
+        let said = |zoomed, changed| render_zoom("pane 2", zoomed, changed);
+        assert!(
+            said(true, true).contains("now fills its window")
+                && said(true, true).contains("zoom_pane with `on: false`"),
+            "a zoom that happened says so and says how to undo it: {}",
+            said(true, true),
+        );
+        assert!(
+            said(true, false).contains("was already filling its window; nothing moved"),
+            "asking for the state it is in is not the same sentence: {}",
+            said(true, false),
+        );
+        assert!(
+            said(false, true).contains("no longer fills its window")
+                && said(false, true).contains("visible again"),
+            "an unzoom names what came back: {}",
+            said(false, true),
+        );
+        assert!(
+            said(false, false).contains("was not filling its window"),
+            "and the fourth is its own sentence: {}",
+            said(false, false),
+        );
+        // THE CONTROL: four DISTINCT sentences. Three arms collapsing onto one string would satisfy
+        // every assertion above that happened to share a phrase.
+        let mut all = [
+            said(true, true),
+            said(true, false),
+            said(false, true),
+            said(false, false),
+        ];
+        all.sort();
+        let before = all.len();
+        let mut unique = all.to_vec();
+        unique.dedup();
+        assert_eq!(before, unique.len(), "two zoom outcomes read identically");
+        // Every one names its subject, because an agent may have several panes in flight.
+        for sentence in &unique {
+            assert!(sentence.starts_with("pane 2"), "{sentence:?}");
+        }
     }
 
     /// The handle an answer hands back is one a caller can pass to the next tool — a NUMBER, plus the

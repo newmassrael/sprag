@@ -683,6 +683,25 @@ impl McpServer {
 }
 
 /// The text of a `tools/call` result's first content block.
+/// Every whitespace character removed — the only sound reading of a pane's RENDERED text for a
+/// needle that may be WRAPPED.
+///
+/// ⚠⚠ **A WORD ON A NARROW PANE IS NOT A WORD IN ITS TEXT.** Measured in the TUI's pty suite at 4x
+/// oversubscription: a pane split off an 80-column terminal held `"coin@host:~$ elsewhe\nre"`, so
+/// `contains("elsewhere")` was FALSE about a screen a person reads the word on. For a positive check
+/// that is a nuisance; for a **NEGATIVE** one it is a VACUITY — `!contains(w)` passes for a pane
+/// showing exactly the `w` the assertion forbids, and passes silently. A leak lands wherever the
+/// cursor happens to be, which is the one thing these assertions cannot assume.
+///
+/// Folding can only make a negative claim STRICTER (it may join two words the screen showed apart),
+/// never weaker — so it is the safe direction. Apply it to the NEEDLE too when the needle has a
+/// space in it.
+fn fold(text: &str) -> String {
+    text.chars()
+        .filter(|glyph| !glyph.is_whitespace())
+        .collect()
+}
+
 fn tool_text(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()
@@ -895,12 +914,12 @@ fn a_pane_number_reaches_that_pane_and_no_other() {
     // completed line. That is what the Enter buys, and one occurrence is what dropping it leaves.
     let first_text = server.wait_for_tool_count("read_pane", json!({ "pane": 1 }), "ALPHA-ONE", 2);
     assert!(
-        !first_text.contains("BRAVO-TWO"),
+        !fold(&first_text).contains("BRAVO-TWO"),
         "pane 1 did not receive pane 2's text: {first_text}"
     );
     let second_text = server.wait_for_tool_count("read_pane", json!({ "pane": 2 }), "BRAVO-TWO", 2);
     assert!(
-        !second_text.contains("ALPHA-ONE"),
+        !fold(&second_text).contains("ALPHA-ONE"),
         "pane 2 did not receive pane 1's text: {second_text}"
     );
 
@@ -1465,7 +1484,7 @@ fn an_agent_waits_for_the_output_it_named_and_a_timeout_is_not_a_failure() {
         2,
     );
     assert!(
-        !tail.contains("the-build-is-done"),
+        !fold(&tail).contains("the-build-is-done"),
         "the control: the marker is outside the recent window a polling reader would look at: \
          {tail}",
     );
@@ -3637,6 +3656,23 @@ fn old_host() -> sprag_peer::OldDaemon {
 
 /// An agent asking a daemon that predates its tools is told the daemon is OLD, not that its
 /// arguments are wrong.
+///
+/// ⚠ **IT ENUMERATES THE ROSTER, since R335's debt sweep.** It was a hand-written list of
+/// `(tool, args)` pairs — so the two roster ratchets in this file found R335's four new tools by
+/// construction and this one silently did not cover them, which is the failure mode a ratchet
+/// exists to prevent, in a ratchet. It now walks `tools/list` and **fails closed** on a tool it has
+/// no entry for, exactly as `the_whole_roster_reaches_a_pane_one_window_over` does.
+///
+/// A tool is either DRIVEN (it reaches the wire, so it can leak a Rust variant name) or listed as
+/// `SKEW_EXEMPT` with the reason it cannot — every exemption is a sentence somebody wrote, not an
+/// absence. **`SKEW_EXEMPT` is currently empty**: all 33 tools reach the wire and all 33 name the
+/// skew, where the hand-written list checked 12.
+///
+/// ⚠⚠ **THE ENUMERATION FOUND A LIVE DEFECT ON ITS FIRST RUN.** `wait_for_change` answered *"the
+/// host did not report a scene revision"* — a fact with no cause and no remedy, which is debt item
+/// 9's class, reached through the one path 21 unchecked tools had been hiding. Its `scene/revision`
+/// read SUCCEEDS against an old daemon and carries no `revision` key, so the `?` never fires and
+/// that sentence was the whole answer an agent got. Fixed at the source rather than exempted.
 #[test]
 fn a_tool_against_an_older_daemon_says_so() {
     let host = old_host();
@@ -3644,29 +3680,64 @@ fn a_tool_against_an_older_daemon_says_so() {
     // their own pre-flight. The peer serves nothing, so working out which session that pane is in
     // fails too — silently, which is what leaves each sentence below attributable to its own tool.
     let mut server = McpServer::spawn_in_pane(host.sock(), 1);
+
+    // What each tool is DRIVEN with. A tool absent from both this and `SKEW_EXEMPT` fails the run.
+    let driven = |tool: &str| -> Option<Value> {
+        Some(match tool {
+            "list_panes" | "list_windows" | "list_sessions" | "pane_layout" => json!({}),
+            "read_pane" | "read_last_command" | "read_pane_links" | "read_pane_images"
+            | "pane_processes" | "agent_state" | "agent_explain" | "select_pane" | "break_pane"
+            | "zoom_pane" | "close_pane" | "rename_pane" => json!({ "pane": 1 }),
+            "send_keys" => json!({ "pane": 1, "keys": ["Enter"] }),
+            "write_pane" => json!({ "pane": 1, "text": "x" }),
+            "open_pane" => json!({ "dir": "right" }),
+            "display_message" => json!({ "message": "hi" }),
+            "find_in_pane" => json!({ "pane": 1, "needle": "x" }),
+            "regex_in_pane" => json!({ "pane": 1, "pattern": "x" }),
+            "swap_pane" => json!({ "pane": 1, "with": 1 }),
+            "resize_pane" => json!({ "pane": 1, "dir": "left" }),
+            "join_pane" => json!({ "pane": 1, "window": "0" }),
+            "move_pane" => json!({ "pane": 1, "target": 1, "dir": "left" }),
+            "wait_for_output" => json!({ "pane": 1, "needle": "x", "timeout_seconds": 1 }),
+            "wait_for_change" => json!({ "timeout_seconds": 1 }),
+            "open_window" => json!({}),
+            "select_window" => json!({ "window": "0" }),
+            "close_window" => json!({ "window": "0" }),
+            "rename_window" => json!({ "window": "0", "name": "x" }),
+            "resize_window" => json!({ "window": "0" }),
+            _ => return None,
+        })
+    };
+    // The tools whose refusal would come from somewhere OTHER than the wire, each with the reason.
+    // An exemption is a sentence somebody wrote; an absence is what this ratchet refuses to allow.
+    //
+    // ⚠⚠ **IT IS EMPTY, AND IT IS EMPTY BECAUSE EVERY GUESS AT IT WAS WRONG.** R335 first wrote
+    // seven exemptions from reading the code — the five window tools *"resolve a name before the
+    // wire"*, the two waiting tools *"park"* — and driving them refuted six outright: they all say
+    // the daemon is old. The seventh, `wait_for_change`, did not — and that was a live defect, not
+    // an exemption (see below). **An exemption written from reading is a guess; drive it.**
+    const SKEW_EXEMPT: &[(&str, &str)] = &[];
+
+    let roster = server.request("tools/list", json!({}));
+    let tools: Vec<String> = roster["result"]["tools"]
+        .as_array()
+        .expect("the roster is a list")
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("named").to_owned())
+        .collect();
     let mut wrong = Vec::new();
-    for (tool, args) in [
-        ("list_panes", json!({})),
-        ("read_pane", json!({ "pane": 1 })),
-        ("pane_layout", json!({})),
-        ("select_pane", json!({ "pane": 1 })),
-        ("send_keys", json!({ "pane": 1, "keys": ["Enter"] })),
-        ("write_pane", json!({ "pane": 1, "text": "x" })),
-        ("open_pane", json!({ "dir": "right" })),
-        ("display_message", json!({ "message": "hi" })),
-        // R335's arrangement family. Added here in the round that built them, because this is the
-        // ratchet a NEW tool is easiest to leave out of — the roster ratchets walk `tools/list` and
-        // find every tool by construction, and this one is a hand-written list of pairs. Each of
-        // the four reaches the wire (their pre-flights pass: the server IS in a pane), so each can
-        // leak a Rust variant name and none did before it was checked.
-        ("break_pane", json!({ "pane": 1 })),
-        ("join_pane", json!({ "pane": 1, "window": "0" })),
-        (
-            "move_pane",
-            json!({ "pane": 1, "target": 1, "dir": "left" }),
-        ),
-        ("zoom_pane", json!({ "pane": 1 })),
-    ] {
+    let mut checked = 0_usize;
+    for tool in &tools {
+        if let Some((_, why)) = SKEW_EXEMPT.iter().find(|(name, _)| name == tool) {
+            assert!(!why.is_empty());
+            continue;
+        }
+        let args = driven(tool).unwrap_or_else(|| {
+            panic!(
+                "{tool} is advertised and this skew ratchet neither drives it nor exempts it. Add                  it to `driven`, or to SKEW_EXEMPT with the reason its refusal does not come from                  the wire — a skipped tool is a tool this test believes it covered."
+            )
+        });
+        checked += 1;
         let said = server.call_tool_error(tool, args);
         if said.contains("UnknownIntrospectPath") || said.contains("UnknownInvokePath") {
             wrong.push(format!("{tool} printed a Rust variant name: {said}"));
@@ -3674,6 +3745,11 @@ fn a_tool_against_an_older_daemon_says_so() {
             wrong.push(format!("{tool} did not say the daemon is old: {said}"));
         }
     }
+    assert!(
+        checked >= tools.len() - SKEW_EXEMPT.len(),
+        "the ratchet walked {checked} of {} tools",
+        tools.len(),
+    );
     assert!(
         wrong.is_empty(),
         "an agent must be told its daemon predates the tool:\n  {}",
