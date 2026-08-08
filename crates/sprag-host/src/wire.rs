@@ -2396,12 +2396,32 @@ pub const KILL_WINDOW_ACTION: &str = "kill_window";
 pub const RESIZE_WINDOW_ACTION: &str = "resize_window";
 
 /// The mux control external invoke action that BREAKS a pane out of its window into a new window
-/// of the SCOPED session, born current, and returns its name (`{pane, name?}`) — tmux `break-pane`.
+/// of the SCOPED session, and returns its name (`{pane, name?, detached?, opened_by?}`) — tmux
+/// `break-pane`.
 ///
 /// `pane` is the id of the pane to move; its source window is DERIVED (a [`PaneId`]
 /// is registry-unique, so the window that holds it is unambiguous — the caller never names the
 /// source). `name` absent ⇒ the lowest free integer window name. Refused (`Rejected`) if the pane's
 /// window tiles only that one pane, if an explicit `name` is taken, or if no window holds `pane`.
+///
+/// # HOW THE NEW WINDOW IS BORN — [`WindowBirthAsk`]'s two keys, since R335
+///
+/// [`DETACHED_KEY`] and [`WINDOW_OPENED_BY_KEY`] mean here exactly what they mean on
+/// [`NEW_WINDOW_ACTION`], are parsed by the same function, and default to what this action did
+/// before they existed: take the screen, claim nobody. A break MAKES A WINDOW, so the type that
+/// says how a window is born is the one that belongs here — that it was spelled on only one of the
+/// two actions that create windows was an omission, and the agent surface is where it bit.
+///
+/// **Measured**: an AI agent tidying a pane it had opened out of somebody's window took the
+/// person's whole screen doing it, and could not afterwards `close_window` what it had made,
+/// because that gate reads a [`sprag_terminal::Window::opened_by`] a break never wrote. Both are
+/// the exact intrusions [`DETACHED_KEY`] and R294's authorship rule exist to prevent, arriving
+/// through the one window-creating door neither had been spelled on.
+///
+/// **This is why [`WIRE_PROTOCOL`] moved to 17.** [`DETACHED_KEY`]'s own hazard, verbatim: a daemon
+/// older than a client that sends it ACCEPTS the request and DROPS the key, so a caller that
+/// believed it had tidied up quietly has moved every attached client, with nothing in the answer to
+/// say so. An added ARGUMENT is invisible to `client/hello`; only the version is not.
 pub const BREAK_PANE_ACTION: &str = "break_pane";
 
 /// The mux control external invoke action that JOINS a pane into another window of the SCOPED
@@ -5090,7 +5110,7 @@ mod tests {
     /// R329's own two additions did NOT move it: both of those were refused by an older daemon
     /// rather than silently honoured as something else.
     const PINNED_SURFACE: (u32, &[&str]) = (
-        16,
+        17,
         &[
             "agent_manifests",
             "application_cursor_keys",

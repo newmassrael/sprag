@@ -2125,6 +2125,7 @@ impl Session {
         &mut self,
         pane: PaneId,
         new_name: Option<&str>,
+        born: WindowBirth,
     ) -> Result<String, PaneMoveError> {
         let widx = self
             .window_index_of_pane(pane)
@@ -2156,13 +2157,22 @@ impl Session {
             let new_pool = pool.sibling();
             (taken, new_pool)
         };
-        // The new window is born ALREADY holding the moved pane; heal its tree to the single leaf
-        // and select it (tmux's break-pane makes the new window current).
+        // The new window is born ALREADY holding the moved pane; heal its tree to the single leaf.
+        //
+        // **HOW IT IS BORN IS [`WindowBirth`]'s to say, since R335.** It used to take the screen
+        // and claim nobody — tmux's `break-pane`, and right for the person who typed it. It was
+        // wrong for the caller `new_window` had already grown the type for: an AGENT tidying its own
+        // pane out of somebody's window took their whole screen doing it, and could not afterwards
+        // close what it had made, because `close_window` reads an `opened_by` a break never wrote.
+        // Two facts, one type, one parse — the same three the window's own birth uses.
         new_pool.adopt(taken);
         let mut win = Window::new(&name, new_pool, self.mint_window());
+        win.opened_by = born.opened_by;
         win.reconcile_own();
         self.windows.push(win);
-        self.current_window = self.windows.len() - 1;
+        if !born.detached {
+            self.current_window = self.windows.len() - 1;
+        }
         // The source window lost a leaf: heal its tree (prunes the gone pane, bumps its revision).
         self.windows[widx].reconcile_own();
         Ok(name)
@@ -3447,12 +3457,13 @@ impl SessionRegistry {
         session: &str,
         pane: PaneId,
         new_name: Option<&str>,
+        born: WindowBirth,
     ) -> Result<String, PaneMoveError> {
         self.sessions
             .iter_mut()
             .find(|s| s.name == session)
             .ok_or_else(|| PaneMoveError::UnknownSession(session.to_owned()))?
-            .break_pane(pane, new_name)
+            .break_pane(pane, new_name, born)
     }
 
     /// Move `pane` into the window named `dst` of the session named `session`, returning whether the
@@ -5476,12 +5487,14 @@ mod tests {
         let a = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         let _b = lock(&ws).spawn(cmd(), "sh".to_owned(), 80, 24).unwrap();
         assert_eq!(
-            reg.break_pane(&default, a, Some("x\ny")).unwrap_err(),
+            reg.break_pane(&default, a, Some("x\ny"), WindowBirth::default())
+                .unwrap_err(),
             PaneMoveError::MalformedWindow(WindowNameError::Control),
             "break-pane names a NEW window, so it is the same door under another verb",
         );
         assert_eq!(
-            reg.break_pane(&default, a, Some("  logs  ")).unwrap(),
+            reg.break_pane(&default, a, Some("  logs  "), WindowBirth::default())
+                .unwrap(),
             "logs",
             "and it answers the recorded name too",
         );
@@ -6001,7 +6014,8 @@ mod tests {
         let (a, b) = (ids[0], ids[1]);
 
         assert_eq!(
-            reg.break_pane(&default, b, None).unwrap(),
+            reg.break_pane(&default, b, None, WindowBirth::default())
+                .unwrap(),
             "1",
             "the new window gets the lowest free name",
         );
@@ -6035,6 +6049,73 @@ mod tests {
         assert_eq!(next.0, 2, "shared, monotonic id counter across the move");
     }
 
+    /// **A BREAK IS A WINDOW BEING BORN, so it takes [`WindowBirth`]** — R335.
+    ///
+    /// The two facts are asserted TOGETHER against the same break, because they fail differently
+    /// and a caller that is not a person needs both: `detached` decides whether somebody's screen
+    /// moves, `opened_by` decides whether the caller can clean up after itself. Before this, a
+    /// break wrote neither, so an agent tidying its own pane out of a person's window took their
+    /// screen and then could not close what it had made.
+    ///
+    /// The control is the DEFAULT birth, asserted in the same test: a caller that says nothing
+    /// still gets tmux's behaviour, which is what every person-facing caller relies on.
+    #[test]
+    fn a_broken_out_window_is_born_the_way_the_caller_asked() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        let ids = spawn_into(&reg, "0", 3);
+        let opener = ids[0];
+
+        // DETACHED and CLAIMED: the session stays where it was, and the window records its opener.
+        let quiet = reg
+            .break_pane(
+                &default,
+                ids[1],
+                Some("quiet"),
+                WindowBirth {
+                    detached: true,
+                    opened_by: Some(opener),
+                },
+            )
+            .expect("a window with three panes can spare one");
+        let session = reg.session(&default).unwrap();
+        assert_eq!(
+            session.current_window().name(),
+            "0",
+            "a detached break leaves the session on the window it was on",
+        );
+        assert_eq!(
+            session
+                .windows()
+                .iter()
+                .find(|window| window.name() == quiet)
+                .and_then(Window::opened_by),
+            Some(opener),
+            "the broken-out window records who asked for it, so its opener can close it",
+        );
+
+        // THE CONTROL, on the same registry: the default birth still does what tmux does, so this
+        // is a decision the caller makes and not a change of behaviour.
+        let loud = reg
+            .break_pane(&default, ids[2], Some("loud"), WindowBirth::default())
+            .expect("two panes remain in the source window");
+        let session = reg.session(&default).unwrap();
+        assert_eq!(
+            session.current_window().name(),
+            loud,
+            "a break that asks for nothing selects the new window, as it always did",
+        );
+        assert_eq!(
+            session
+                .windows()
+                .iter()
+                .find(|window| window.name() == loud)
+                .and_then(Window::opened_by),
+            None,
+            "and claims nobody",
+        );
+    }
+
     /// `break-pane` refuses without moving anything: the only pane of a window (a rename dressed as
     /// a move), a taken new-window name, an unknown window, and a pane the window does not hold.
     #[test]
@@ -6045,7 +6126,8 @@ mod tests {
         // The only pane cannot be broken out.
         let solo = spawn_into(&reg, "0", 1)[0];
         assert_eq!(
-            reg.break_pane(&default, solo, None).unwrap_err(),
+            reg.break_pane(&default, solo, None, WindowBirth::default())
+                .unwrap_err(),
             PaneMoveError::LastPane,
         );
         assert_eq!(
@@ -6060,7 +6142,8 @@ mod tests {
         reg.new_window(&default, Some("keep"), WindowBirth::default())
             .unwrap();
         assert_eq!(
-            reg.break_pane(&default, more, Some("keep")).unwrap_err(),
+            reg.break_pane(&default, more, Some("keep"), WindowBirth::default())
+                .unwrap_err(),
             PaneMoveError::DuplicateWindow("keep".to_owned()),
         );
         assert_eq!(
@@ -6071,12 +6154,14 @@ mod tests {
 
         // A pane no window holds refuses (the source window is derived from the id).
         assert_eq!(
-            reg.break_pane(&default, PaneId(999), None).unwrap_err(),
+            reg.break_pane(&default, PaneId(999), None, WindowBirth::default())
+                .unwrap_err(),
             PaneMoveError::UnknownPane(PaneId(999)),
         );
         // An unknown SESSION refuses at the registry wrapper.
         assert_eq!(
-            reg.break_pane("nope", more, None).unwrap_err(),
+            reg.break_pane("nope", more, None, WindowBirth::default())
+                .unwrap_err(),
             PaneMoveError::UnknownSession("nope".to_owned()),
         );
     }

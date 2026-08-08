@@ -6925,6 +6925,9 @@ fn every_acting_verb_explains_a_daemon_that_does_not_know_its_verb() {
 /// * a verb the table says is only ever a KEYSTROKE must be refused by NAME, with the line that
 ///   would bind it — where until R323 `sprag switch-client -n` answered `unknown command
 ///   "switch-client"` about a verb this product has had since R314;
+/// * a verb the table says the shell has NO FORM FOR YET must be refused by NAME too, and must name
+///   the mouth that does have it — R335's three, which reach an AI agent and no shell. This is the
+///   answer `Option<Shell>` could not spell: they are not keystrokes and they are not typos;
 /// * a word that is in no vocabulary is `unknown command`, which is the CONTROL: without it, a
 ///   binary that answered every word the same way would satisfy the first rule completely.
 ///
@@ -6933,35 +6936,56 @@ fn every_acting_verb_explains_a_daemon_that_does_not_know_its_verb() {
 /// that a real verb was a typo.
 #[test]
 fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
-    use sprag_host::vocabulary::Verb;
+    use sprag_host::vocabulary::{Shell, Verb};
     let absent = socket_path();
     let mut ran = 0_usize;
     let mut refused = 0_usize;
+    let mut unbuilt = 0_usize;
     for verb in Verb::ALL {
         let name = verb.name();
         let run = sprag(&absent, &[name]);
-        if verb.runs_in_shell() {
-            ran += 1;
-            assert!(
-                !run.stderr.contains("unknown command"),
-                "{name:?} is a verb this binary dispatches and it answered: {}",
-                run.stderr,
-            );
-        } else {
-            refused += 1;
-            assert!(
-                run.stderr.contains(name)
-                    && run.stderr.contains("is a key binding, not a command")
-                    && run.stderr.contains("bind-key"),
-                "{name:?} must be refused as the keystroke it is: {}",
-                run.stderr,
-            );
+        match verb.entry().shell {
+            Shell::Runs(_) => {
+                ran += 1;
+                assert!(
+                    !run.stderr.contains("unknown command"),
+                    "{name:?} is a verb this binary dispatches and it answered: {}",
+                    run.stderr,
+                );
+            }
+            Shell::Cannot(_) => {
+                refused += 1;
+                assert!(
+                    run.stderr.contains(name)
+                        && run.stderr.contains("is a key binding, not a command")
+                        && run.stderr.contains("bind-key"),
+                    "{name:?} must be refused as the keystroke it is: {}",
+                    run.stderr,
+                );
+            }
+            Shell::NotBuilt => {
+                unbuilt += 1;
+                // It says the act EXISTS and where to reach it — the difference between this and
+                // `unknown command`, and the whole reason the third answer was added.
+                assert!(
+                    run.stderr.contains(name)
+                        && run.stderr.contains("has no shell command yet")
+                        && verb.tools().iter().all(|tool| run.stderr.contains(tool)),
+                    "{name:?} must name itself and the tool that has it: {}",
+                    run.stderr,
+                );
+                assert!(
+                    !run.stderr.contains("unknown command"),
+                    "{name:?} is a verb this product HAS: {}",
+                    run.stderr,
+                );
+            }
         }
     }
     assert_eq!(
-        (ran, refused),
-        (49, 5),
-        "the shell half and the keyboard-only half of the vocabulary",
+        (ran, refused, unbuilt),
+        (49, 5, 3),
+        "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
     // THE CONTROL — a word in no vocabulary, and the exit code that says so. Without it every
@@ -7118,9 +7142,13 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // R331 moved `resize-window` from the fourth to the SECOND, `move-pane`'s shape: a bare resize
     // has named no rectangle, and reading it as the un-pin would throw a decision away on an empty
     // config line — so the verb is bindable and its BARE form is refused with the sizes it takes.
+    // R335 added THREE to the third column at once, and none of them moved: `read-last-command`,
+    // `pane-links` and `pane-images` are acts the product performs for an AI agent, and they enter
+    // this sweep as refusals with a rule (`it answers with text`) the moment the vocabulary names
+    // them — which is the whole reason a new verb is added to the TABLE rather than to a surface.
     assert_eq!(
         counts,
-        (15, 10, 28, 1),
+        (15, 10, 31, 1),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

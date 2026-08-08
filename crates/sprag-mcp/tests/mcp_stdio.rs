@@ -2308,6 +2308,11 @@ fn the_whole_roster_reaches_a_pane_one_window_over() {
             "name" => json!("faraway"),
             "dir" => json!("left"),
             "with" => json!("faraway"),
+            // The arrangement verbs R335 added. Both name a real thing of this fixture, because
+            // the claim under test is that the request REACHED the far pane — a sample the
+            // resolver rejects would fail for the wrong reason and prove nothing.
+            "window" => json!("0"),
+            "target" => json!("faraway"),
             "timeout_seconds" => json!(1),
             _ => return None,
         })
@@ -3341,6 +3346,11 @@ fn every_window_tool_is_safe_to_point_at_a_persons_window() {
             "window" => json!(theirs),
             "name" => json!("renamed-by-an-agent"),
             "relative" => json!("next"),
+            // `join_pane` takes a window AND a pane, so it enters this sweep too — and the pane it
+            // is handed is the BOOT pane, which a person opened. Both halves of the gate are
+            // therefore under test at once: a person's window as the destination, a person's pane
+            // as the subject.
+            "pane" => json!(1),
             _ => return None,
         })
     };
@@ -3656,5 +3666,292 @@ fn a_tool_against_an_older_daemon_says_so() {
         wrong.is_empty(),
         "an agent must be told its daemon predates the tool:\n  {}",
         wrong.join("\n  "),
+    );
+}
+
+/// **AN AGENT CAN TAKE THE PANE IT OPENED OUT OF SOMEBODY'S WINDOW** — item 56a's first half, and
+/// the one that needed the daemon to change.
+///
+/// Measured at `9727042`: the agent surface served `open_pane` / `close_pane` / `swap_pane` /
+/// `resize_pane` and no `break_pane` at all, so an agent whose work had outgrown a pane beside a
+/// person could only close it. The register priced that as a missing tool. It was more than one:
+/// wrapping the wire action would have taken the person's whole screen (the break SELECTED what it
+/// made) and left the agent unable to close the window afterwards (the break recorded no opener),
+/// which is why `BREAK_PANE_ACTION` now takes a `WindowBirth` and `WIRE_PROTOCOL` moved.
+///
+/// Three claims, in the order they fail differently:
+///
+/// * the pane MOVED and kept what was in it (a break is not a re-spawn);
+/// * the PERSON did not move — the sentence and the daemon's own current window agree;
+/// * the window is the agent's, PROVED by closing it rather than by reading a listing.
+///
+/// The CONTROL is first: a pane the person opened is refused, so a gate that refused nothing could
+/// not reach the happy path with everything already broken out.
+#[test]
+fn an_agent_breaks_its_own_pane_out_without_moving_the_person() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let home = mux_current_window(&sock);
+
+    // THE CONTROL. The boot pane is the person's, and the refusal must name the rule.
+    let refused = server.call_tool_error("break_pane", json!({ "pane": 1 }));
+    assert!(
+        refused.contains("was opened by a person, not by you")
+            && refused.contains("Where their panes sit is their arrangement"),
+        "a person's pane is refused, in a sentence that says why: {refused}",
+    );
+    assert_eq!(
+        mux_current_window(&sock),
+        home,
+        "and the refusal really refused — the person is where they were",
+    );
+
+    server.call_tool("open_pane", json!({ "name": "buildout" }));
+    // Something IN the pane, so "it kept its contents" is a claim about bytes rather than about a
+    // pane id. `write_pane` types it at the shell; the echo is what read_pane will find.
+    server.call_tool(
+        "write_pane",
+        json!({ "pane": "buildout", "text": "echo brokenoutproof" }),
+    );
+    let before = server.call_tool("read_pane", json!({ "pane": "buildout" }));
+    assert!(
+        before.contains("brokenoutproof"),
+        "the fixture must put something in the pane or the claim below is vacuous: {before}",
+    );
+
+    let broken = server.call_tool(
+        "break_pane",
+        json!({ "pane": "buildout", "name": "mywork" }),
+    );
+    assert!(
+        broken.contains("into a window of its own, called mywork")
+            && broken.contains("The user did NOT move and cannot see it"),
+        "the answer names the window and says the person stayed: {broken}",
+    );
+    assert!(
+        broken.contains("It is yours to close_window and rename_window."),
+        "and says the window is the agent's — which is the half the daemon had to learn: {broken}",
+    );
+    // THE SENTENCE IS A CLAIM ABOUT THE DAEMON, so the daemon is asked. A tool that printed this
+    // and selected the window anyway would pass on the text alone.
+    assert_eq!(
+        mux_current_window(&sock),
+        home,
+        "the break was detached: the session is still on the window it was on",
+    );
+    assert!(
+        server
+            .call_tool("list_panes", json!({}))
+            .contains("1 pane(s)"),
+        "and the pane really left the person's window",
+    );
+
+    let after = server.call_tool("read_pane", json!({ "pane": "buildout" }));
+    assert!(
+        after.contains("brokenoutproof"),
+        "the pane was MOVED, not re-spawned — its scrollback rode along: {after}",
+    );
+
+    // THE PROVENANCE, proved by ACTING on it rather than by reading a line about it.
+    let closed = server.call_tool("close_window", json!({ "window": "mywork" }));
+    assert!(
+        closed.contains("mywork"),
+        "the agent closes the window its own break created: {closed}",
+    );
+    assert!(
+        !server
+            .call_tool("list_windows", json!({}))
+            .contains("mywork"),
+        "and it is gone",
+    );
+}
+
+/// **AN AGENT CAN PUT A PANE BACK, AND SAY WHERE IT LANDS** — item 56a's other half.
+///
+/// `join_pane` appends into a window; `move_pane` names a SIDE of a particular pane. Both are
+/// driven here against a real daemon, and both are checked against `pane_layout` — the arrangement
+/// as the daemon draws it — rather than against their own sentences, because a tool that answered
+/// correctly and sent nothing would pass on prose.
+///
+/// The `dir` claim is the one worth the fixture: this surface takes the same four compass words at
+/// every tool, and the wire takes tmux's axis-plus-`before` pair. `left` and `right` are therefore
+/// the discriminating pair — an implementation that dropped the `before` half would put the pane on
+/// the wrong side and answer identically.
+#[test]
+fn an_agent_joins_and_places_only_the_panes_it_opened() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let home = mux_current_window(&sock);
+    server.call_tool("open_window", json!({ "name": "bench" }));
+    server.call_tool("open_pane", json!({ "name": "worker" }));
+
+    // THE CONTROLS, both gates, before anything moves.
+    let refused = server.call_tool_error("join_pane", json!({ "pane": 1, "window": "bench" }));
+    assert!(
+        refused.contains("was opened by a person, not by you"),
+        "a person's pane cannot be joined away: {refused}",
+    );
+    let refused = server.call_tool_error(
+        "move_pane",
+        json!({ "pane": 1, "target": "worker", "dir": "left" }),
+    );
+    assert!(
+        refused.contains("was opened by a person, not by you"),
+        "nor placed: {refused}",
+    );
+
+    let joined = server.call_tool("join_pane", json!({ "pane": "worker", "window": "bench" }));
+    assert!(
+        joined.contains("into window bench"),
+        "the join names where it went: {joined}",
+    );
+    assert_eq!(
+        mux_current_window(&sock),
+        home,
+        "a join moves a pane, never the person",
+    );
+    assert!(
+        server
+            .call_tool("list_panes", json!({}))
+            .contains("1 pane(s)"),
+        "and the agent's pane left the person's window",
+    );
+
+    // A SECOND pane of the agent's, joined into the same window, so a placement has something to
+    // land beside that the gate will not refuse.
+    server.call_tool("open_pane", json!({ "name": "helper" }));
+    server.call_tool("join_pane", json!({ "pane": "helper", "window": "bench" }));
+
+    // LEFT and RIGHT of the SAME target, read back off the daemon's own drawing. This is the pair
+    // that discriminates: an implementation that carried the axis and dropped the side would answer
+    // both of these identically and put the pane on one side twice.
+    let left = server.call_tool(
+        "move_pane",
+        json!({ "pane": "helper", "target": "worker", "dir": "left" }),
+    );
+    assert!(
+        left.contains("to the left of"),
+        "the answer says which side it landed on: {left}",
+    );
+    let drawn_left = server.call_tool("pane_layout", json!({ "pane": "worker" }));
+
+    let right = server.call_tool(
+        "move_pane",
+        json!({ "pane": "helper", "target": "worker", "dir": "right" }),
+    );
+    assert!(
+        right.contains("to the right of"),
+        "and the other side is a different sentence: {right}",
+    );
+    let drawn_right = server.call_tool("pane_layout", json!({ "pane": "worker" }));
+
+    // The daemon draws its neighbour table by ID, so the claim is spelled in ids: after landing
+    // LEFT of `worker`, the pane on worker's left is `helper` — and after landing right, the pane
+    // on its RIGHT is. Naming the neighbour (rather than asserting a `left=` appears at all) is
+    // what makes this fail for a placement that landed on the wrong side of the right target.
+    let helper = pane_id_in(&drawn_left, "helper");
+    assert_eq!(
+        neighbours_of(&drawn_left, "worker"),
+        format!("left=pane id {helper}"),
+        "after landing LEFT of worker, helper is what is on worker's left:\n{drawn_left}",
+    );
+    let helper = pane_id_in(&drawn_right, "helper");
+    assert!(
+        neighbours_of(&drawn_right, "worker").ends_with(&format!("right=pane id {helper}")),
+        "and after landing RIGHT of it, helper is what is on its right:\n{drawn_right}",
+    );
+
+    // A move BETWEEN windows is the same request, and the source emptying is the answer's own
+    // sentence — the fact a caller cannot see from a listing it read a moment earlier.
+    server.call_tool("break_pane", json!({ "pane": "helper", "name": "briefly" }));
+    let back = server.call_tool(
+        "move_pane",
+        json!({ "pane": "helper", "target": "worker", "dir": "down" }),
+    );
+    assert!(
+        back.contains("below") && back.contains("that window closed"),
+        "one request crosses a window, and says the emptied source went with it: {back}",
+    );
+    assert!(
+        !server
+            .call_tool("list_windows", json!({}))
+            .contains("briefly"),
+        "and it really did",
+    );
+}
+
+/// The pane id `pane_layout` gives the pane it draws with `name`.
+///
+/// A window that is not the caller's carries NO NUMBERS — the drawing says so itself — so a named
+/// pane one window over is addressed by id in the neighbour table and by name in the tree. This is
+/// the join between the two halves of one drawing.
+fn pane_id_in(drawing: &str, name: &str) -> String {
+    let line = drawing
+        .lines()
+        .find(|line| line.contains(&format!("name={name:?}")))
+        .unwrap_or_else(|| panic!("no pane is drawn as {name:?}:\n{drawing}"));
+    line.rsplit_once("pane id ")
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("the tree line for {name:?} carries an id: {line}"))
+        .to_owned()
+}
+
+/// What `pane_layout`'s neighbour table says is next to the pane drawn with `name`.
+///
+/// A helper rather than an inline `find`, because the assertion it serves is a comparison of two
+/// drawings and the interesting line is one of several — quoting the whole drawing twice would hide
+/// which part moved.
+fn neighbours_of(drawing: &str, name: &str) -> String {
+    let head = format!("  pane id {}:", pane_id_in(drawing, name));
+    drawing
+        .lines()
+        .skip_while(|line| !line.starts_with("Which pane is next to which"))
+        .find_map(|line| line.strip_prefix(&head))
+        .unwrap_or_else(|| panic!("no neighbour line for {name:?}:\n{drawing}"))
+        .trim()
+        .to_owned()
+}
+
+/// **THE FOUR SENTENCES A ZOOM CAN ANSWER**, pinned as a pure function.
+///
+/// [`render_resize`]'s rule one verb over: a live daemon can be driven into the two TOGGLE cases
+/// easily and into the two already-there cases only by racing itself, so the wording is fixed here
+/// and the live gate drives what a live gate can. Each says what to do NEXT, which is the half an
+/// agent cannot infer from a boolean pair.
+#[test]
+fn the_zoom_answers_say_which_of_the_four_states_it_left() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    let refused = server.call_tool_error("zoom_pane", json!({ "pane": 1 }));
+    assert!(
+        refused.contains("was opened by a person, not by you")
+            && refused.contains("Which pane fills their window decides what they can see"),
+        "a person's pane is not the agent's to zoom: {refused}",
+    );
+
+    server.call_tool("open_pane", json!({ "name": "wide" }));
+    let filled = server.call_tool("zoom_pane", json!({ "pane": "wide" }));
+    assert!(
+        filled.contains("now fills its window")
+            && filled.contains("read_pane sees it at the window's full width"),
+        "the zoom says what changed and why an agent wanted it: {filled}",
+    );
+    // ALREADY THERE — the same call again, which is the case a boolean pair alone would not
+    // distinguish from the one above.
+    let again = server.call_tool("zoom_pane", json!({ "pane": "wide", "on": true }));
+    assert!(
+        again.contains("was already filling its window; nothing moved"),
+        "asking for a state it is in says so rather than repeating the first sentence: {again}",
+    );
+    let back = server.call_tool("zoom_pane", json!({ "pane": "wide", "on": false }));
+    assert!(
+        back.contains("no longer fills its window") && back.contains("visible again"),
+        "and the arrangement comes back: {back}",
+    );
+    let already = server.call_tool("zoom_pane", json!({ "pane": "wide", "on": false }));
+    assert!(
+        already.contains("was not filling its window"),
+        "the fourth state has its own sentence too: {already}",
     );
 }

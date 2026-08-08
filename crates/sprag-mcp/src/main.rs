@@ -9,15 +9,22 @@
 //!
 //! It is a [Model Context Protocol](https://modelcontextprotocol.io) **stdio
 //! server**: Claude Code (or any MCP client) spawns it and it speaks newline-delimited
-//! JSON-RPC 2.0 on stdin/stdout. It advertises self-describing tools —
-//! `list_panes`, `pane_layout`, `pane_processes`, `read_pane`, `read_last_command`,
-//! `read_pane_links`, `read_pane_images`, `find_in_pane`, `regex_in_pane`, `wait_for_output`,
-//! `agent_state`,
-//! `agent_explain`, `wait_for_change`, `write_pane`, `send_keys`, `open_pane`, `close_pane`,
-//! `select_pane` — so an agent *immediately*
-//! understands "read/write a sibling pane" without reading any sprag source. (Named rather than
-//! counted, for the reason [`tools_list`] gives: a count kept in prose goes stale silently, and this
-//! one had.) The two `agent_*` tools are the surface for the one fact an agent cannot read off a
+//! JSON-RPC 2.0 on stdin/stdout. It advertises self-describing tools, so an agent *immediately*
+//! understands "read/write a sibling pane" without reading any sprag source.
+//!
+//! **WHICH tools is not written here, and that is R335's correction of R138's.** This paragraph
+//! used to NAME them, on the argument [`tools_list`] still makes about counts — *a number kept in
+//! prose goes stale silently, and this one had*. Naming them was the same defect a paragraph
+//! longer: measured at `9727042` the list held eighteen of twenty-nine, so the eleven it omitted
+//! were invisible to a reader who trusted it, and nothing could have said so.
+//!
+//! The roster is [`tools_list`], and what a tool MEANS is
+//! [`sprag_host::vocabulary`] — one verb, up to three mouths (a shell, a keystroke, an agent), with
+//! `the_roster_is_exactly_what_the_vocabulary_declares` holding this file's roster against that
+//! table in both directions. A tool added here without a verb fails; a verb whose tool is missing
+//! here fails. That is the whole reason this crate depends on `sprag-host`.
+//!
+//! The two `agent_*` tools are the surface for the one fact an agent cannot read off a
 //! sibling's screen without interpreting it: whether the AI in that pane is waiting for a human
 //! (H3). They report the daemon's own verdict, so two agents watching one pane agree.
 //!
@@ -117,21 +124,23 @@ use sprag_host::report::Severity;
 use sprag_host::shellword::shell_quote;
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD,
-    FULL_TEXT_SLOT, KEY_ACTION, KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT,
-    NEW_WINDOW_ACTION, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
-    RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow,
-    ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM,
-    SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow,
-    TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, WindowPin, WindowRef, find_slot_for,
-    pane_processes_at, regex_slot_for,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, ENDED_KEY,
+    EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, JOIN_PANE_ACTION, JoinAsk, KEY_ACTION, KILL_WINDOW_ACTION,
+    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, MOVE_PANE_ACTION, NEW_WINDOW_ACTION, OUTCOME_KEY,
+    PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION,
+    RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk,
+    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk,
+    WindowPin, WindowRef, ZOOM_PANE_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
 };
 use sprag_host::{ClientSize, PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, HostConn, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PATTERN_PARAM,
 };
-use sprag_terminal::{Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, WindowInfo, arrangement};
+use sprag_terminal::{
+    Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, SplitDir, SplitSide, WindowInfo, arrangement,
+};
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
 /// descendants) — [`sprag_host`]'s socket policy path key.
@@ -295,9 +304,13 @@ fn handle_initialize(message: &Value) -> Value {
             over one a person is reading — name it there, and address it by that name afterwards \
             — `rename_pane` changes that name later, `swap_pane` moves it to a different place in \
             the arrangement, `resize_pane` makes it wider or taller when what you are reading \
-            wraps, and `close_pane` closes it (all four act ONLY on a pane you opened; a person's \
-            pane is refused, because their names, their arrangement and how big their panes are \
-            are theirs). \
+            wraps, and `close_pane` closes it. \
+            You can also move a pane you opened OUT of the window it is in and BETWEEN windows: \
+            `break_pane` gives it a window of its own without moving the user, `join_pane` puts it \
+            into a window you name, `move_pane` puts it beside a particular pane on an axis you \
+            choose, and `zoom_pane` makes it fill its window when what you are reading needs every \
+            column there is. Every one of these acts ONLY on a pane you opened; a person's pane is \
+            refused, because their names, their arrangement and how big their panes are are theirs. \
             `select_pane` moves where the USER is typing, so use it only when you have \
             something for them to look at. \
             To SAY something to the person rather than show them something, `display_message` puts \
@@ -975,6 +988,124 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "zoom_pane",
+                "description": "Make a pane YOU OPENED fill its whole window, or put the \
+                    arrangement back. Use it when what you are READING needs the room — a wide \
+                    diff, a table, a log that wraps — because a zoomed pane is given the window's \
+                    full width and height, and read_pane sees exactly those columns. `pane` is \
+                    REQUIRED and names the pane that fills: only a pane you opened yourself with \
+                    open_pane is yours to zoom, because which pane fills a person's window decides \
+                    what they can see. With no `on` it TOGGLES, so calling it twice puts things \
+                    back; pass `on: false` to un-zoom explicitly. THE PERSON SEES THIS if they are \
+                    looking at that window — the other panes are hidden while it lasts, so unzoom \
+                    when you are done reading. Zooming also SELECTS the pane it fills. Nothing in \
+                    the arrangement is edited: pane_layout still reports where every pane is, and \
+                    the panes come back exactly as they were.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg.clone(),
+                        "on": {
+                            "type": "boolean",
+                            "description": "`true` fills the window, `false` puts the arrangement \
+                                back. Omit to toggle whichever state the pane is in."
+                        }
+                    },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "break_pane",
+                "description": "Take a pane YOU OPENED out of the window it is in and give it a \
+                    WINDOW OF ITS OWN, without moving the user. Use it when a pane you opened has \
+                    grown into real work — a long build, a server you want to keep — and is \
+                    crowding the window a person is reading: this gets it out of their way while \
+                    keeping everything in it, because the pane is MOVED whole and its scrollback, \
+                    its running command and its NAME all ride along. `pane` is REQUIRED and only a \
+                    pane you opened is yours to move. The new window is created DETACHED, exactly \
+                    like open_window: the user stays where they are and does not see it, and \
+                    select_window is how you show them. It is recorded as opened by you, so you \
+                    can close_window and rename_window it afterwards. REFUSED if the pane is the \
+                    only one its window tiles — that would be a rename dressed as a move; use \
+                    rename_window instead.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg.clone(),
+                        "name": {
+                            "type": "string",
+                            "description": "What to call the new window — how you address it \
+                                afterwards, and what a person sees in the window list. Omit for \
+                                the lowest free number, but a name says whose work it is."
+                        }
+                    },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "join_pane",
+                "description": "Move a pane YOU OPENED into another WINDOW of this session, where \
+                    it is added beside what is already there. The reverse of break_pane, and the \
+                    way to gather panes you opened in different places into one window of your \
+                    own. `pane` is REQUIRED and only a pane you opened is yours to move; \
+                    `window` is any window of the session, named as list_windows names it. Moving \
+                    a pane INTO A PERSON'S WINDOW puts it on their screen beside their own panes \
+                    — do that when you want them to see it, not to tidy up. The pane is moved \
+                    whole: same contents, same scrollback, same name. If the move empties the \
+                    window the pane came from, that window CLOSES and the answer says so. Use \
+                    move_pane instead when WHERE in the destination it lands matters.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg.clone(),
+                        "window": {
+                            "type": "string",
+                            "description": "The destination window's NAME, from list_windows."
+                        }
+                    },
+                    "required": ["pane", "window"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "move_pane",
+                "description": "Put a pane YOU OPENED on a particular SIDE of a particular pane — \
+                    join_pane with a PLACE. Use it when the pane has to land somewhere specific: \
+                    below the pane whose output it belongs with, to the right of the editor. It \
+                    works whether the target is in the same window or another one, so it is also \
+                    how you move a pane between windows and say where it arrives; join_pane \
+                    appends instead, which says where only by convention. `pane` is REQUIRED and \
+                    only a pane you opened is yours to move; `target` may be any pane, including a \
+                    person's — it is divided to make room, not moved by a decision of yours. `dir` \
+                    is the SAME four words every other tool here takes: it says which side of the \
+                    target the moved pane lands on, so \"left\" puts it left of the target and \
+                    \"down\" puts it below. If the move empties the window the pane came from, \
+                    that window CLOSES and the answer says so. Call pane_layout first if you need \
+                    to know what is where.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg.clone(),
+                        "target": {
+                            "description": "The pane to land beside — a NUMBER (1-based, see \
+                                list_panes) or a pane's NAME. A NAME reaches any window of this \
+                                session; a number means the Nth pane of YOUR window.",
+                            "type": ["integer", "string"]
+                        },
+                        "dir": {
+                            "type": "string",
+                            "enum": PaneDir::ALL.map(PaneDir::wire_str),
+                            "description": "Which SIDE of the target the moved pane lands on. \
+                                The target is divided to make room; nothing else moves."
+                        }
+                    },
+                    "required": ["pane", "target", "dir"],
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "open_window",
                 "description": "Open a NEW WINDOW of this session to do your own work in, WITHOUT \
                     moving the user. `open_pane` gives you a pane beside somebody — this gives you \
@@ -1149,6 +1280,10 @@ fn handle_tools_call(message: &Value) -> Value {
         "select_pane" => tool_select_pane(&args),
         "swap_pane" => tool_swap_pane(&args),
         "resize_pane" => tool_resize_pane(&args),
+        "zoom_pane" => tool_zoom_pane(&args),
+        "break_pane" => tool_break_pane(&args),
+        "join_pane" => tool_join_pane(&args),
+        "move_pane" => tool_move_pane(&args),
         "resize_window" => tool_resize_window(&args),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -3638,6 +3773,370 @@ fn render_resize(how: ResizeHow, ask: ResizeAsk, subject: &str, moved: u16) -> S
     }
 }
 
+/// `zoom_pane` — fill a window with a pane THIS SERVER OPENED, or put the arrangement back.
+///
+/// # Why this verb exists here at all, when R285 said no
+///
+/// R285 declined an MCP zoom because *"an agent reads and types; a zoom is a thing you do FOR a
+/// human to look at"*, and R294 re-derived the same NO for `move`/`swap`/`zoom`. Two of those three
+/// have since been built on an argument that inverts the premise rather than the conclusion —
+/// [`tool_swap_pane`]'s authorship gate, and [`tool_resize_pane`]'s *"a pane's WIDTH is what decides
+/// whether the output this server reads is wrapped"*. The zoom is the SAME argument as the resize's,
+/// at its limit: a zoomed pane is given the whole window, so it is the widest this server can make
+/// anything it reads. That the person also sees it is true of `select_pane` and `display_message`
+/// too; what makes it acceptable is the gate, not the invisibility.
+///
+/// # `pane` is REQUIRED, where the wire action's is optional
+///
+/// [`tool_swap_pane`]'s rule for its reason: the wire's default is the ACTIVE pane, which is the
+/// pane a person is typing in, which the gate below refuses by construction. An argument whose
+/// default can only fail is not a default.
+fn tool_zoom_pane(args: &Value) -> Result<String, String> {
+    let on = match args.get("on") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(on)) => Some(*on),
+        Some(other) => {
+            return Err(format!(
+                "'on' must be true (fill the window) or false (put the arrangement back), not \
+                 {other} — omit it to toggle"
+            ));
+        }
+    };
+    let pane = resolve_pane_ref(args)?;
+    let subject = render_pane_handle(&pane);
+    require_own_pane(
+        &pane,
+        "zoom_pane",
+        "Which pane fills their window decides what they can see.",
+    )?;
+    let mut ask = json!({ "pane": pane.id() });
+    if let Some(on) = on {
+        ask["on"] = json!(on);
+    }
+    let answer = host_call_kinded(
+        "scene/invoke",
+        with_args(pane_params(&pane, mux_action_path(ZOOM_PANE_ACTION)), ask),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "{subject} could not be zoomed: it is floating, so its window does not tile it and \
+                 there is no arrangement for it to fill."
+            ),
+        )
+    })?;
+    // FOUR distinct outcomes, and no arm consults what this process ASKED for — the CLI verb's
+    // rule, for its reason: the daemon REFUSES a target it cannot zoom rather than answering one of
+    // these about it, so each pair means exactly one thing.
+    Ok(render_zoom(
+        &subject,
+        answer["zoomed"].as_bool().unwrap_or(false),
+        answer["changed"].as_bool().unwrap_or(false),
+    ))
+}
+
+/// What `zoom_pane` tells the agent, as a pure function of the daemon's answer —
+/// [`render_resize`]'s rule, so all four sentences are pinned by a unit test and not only the ones
+/// a live daemon can be driven into.
+///
+/// Each says what to do NEXT, because that is the half an agent cannot infer: a pane that now fills
+/// its window is a pane whose width just changed, and the reason to zoom on this surface is to read
+/// it at that width.
+fn render_zoom(subject: &str, zoomed: bool, changed: bool) -> String {
+    match (zoomed, changed) {
+        (true, true) => format!(
+            "{subject} now fills its window and is the pane its window is on. read_pane sees it at \
+             the window's full width — call zoom_pane with `on: false` when you are done, because \
+             anybody looking at that window sees only this pane until then."
+        ),
+        (true, false) => format!(
+            "{subject} was already filling its window; nothing moved. read_pane already sees it at \
+             the window's full width."
+        ),
+        (false, true) => format!(
+            "{subject} no longer fills its window — the arrangement is back, and every pane in that \
+             window is visible again. read_pane sees {subject} at its tiled width now."
+        ),
+        (false, false) => format!(
+            "{subject} was not filling its window, so the arrangement was already showing; nothing \
+             moved."
+        ),
+    }
+}
+
+/// `break_pane` — take a pane THIS SERVER OPENED out into a window of its own.
+///
+/// # The window it makes is [`tool_open_window`]'s window
+///
+/// Born DETACHED and recorded as opened by this pane — the same two facts, sent through the same
+/// [`WindowBirthAsk`] grammar. That is the whole reason this tool could not simply wrap the wire
+/// action: before R335 a break took the screen and claimed nobody, so an agent tidying its own pane
+/// out of somebody's window moved every attached client and then could not close what it had made.
+/// A tool is not the place to paper over either — the daemon says how a window is born.
+///
+/// # Why the gate is on the PANE and there is none on the window
+///
+/// Because the window does not exist yet. [`require_own_pane`] is the whole authorisation: an agent
+/// may move what it opened, and what it opens is answerable to it.
+///
+/// # The rivals, measured — and the honest trade first
+///
+/// **herdr is AHEAD on breadth and on one join sprag did not have.** Its programmatic surface is 91
+/// methods (`src/api/schema.rs:45`, `Method`) against this roster's 33, and its CLI is BUILT on that
+/// API — `src/cli/pane.rs`, `tab.rs`, `worktree.rs` and seven more all `use crate::api::schema` — so
+/// its shell and its API cannot drift the way sprag's shell and agent surface had. `pane.move`,
+/// `pane.swap` and `pane.zoom` have been on that surface while sprag's agent had none of the three.
+///
+/// What neither rival has, re-measured at herdr `9a4ce5e1` and ghostty `2602886`:
+///
+/// * **A pane can LEAVE its window and come back.** No method among herdr's 91 is a break or a join
+///   (nothing named `break`/`join`/`detach`/`extract` in `Method`). ghostty's nearest is
+///   `move_tab_to_new_window` (`src/input/Binding.zig:594`) — a TAB, not a split — and no action of
+///   its 200-odd moves a SPLIT out of its window or into another at all.
+/// * **One request places a pane whether or not it crosses a window.** herdr needs two methods and
+///   leaves a hole between them: `pane.swap` refuses across a tab (`PaneSwapReason::CrossTab`,
+///   `src/app/api/panes.rs:533`) and `pane.move` refuses to stay inside one
+///   (`PaneMoveReason::SameTab`, `:699`), so moving a pane WITHIN its own tab is expressible in
+///   neither.
+/// * **A zoom does not block the arrangement.** herdr refuses a move into or out of a zoomed tab
+///   (`PaneMoveReason::ZoomedTab`, `:665` and `:732`); sprag's zoom is a filter on the projection,
+///   so [`tool_move_pane`], `swap` and `set_layout` all still serve.
+/// * **Authorship.** Every agent write here is gated on who opened the pane. herdr records nothing
+///   about what created one — no `opened_by` anywhere in its tree — so the gate has nothing to read.
+/// * **The keyboard is in the join too.** herdr's bindings are a config struct
+///   (`src/config/keybinds.rs`), not a projection of `Method`, and nothing holds the two together.
+fn tool_break_pane(args: &Value) -> Result<String, String> {
+    let opener = own_pane().ok_or(
+        "break_pane needs to know which pane you are running in, and this server is not inside one \
+         (no SPRAG_PANE published beside the socket it is talking to). Without it the daemon \
+         cannot record the new window as yours, and close_window would then refuse it.",
+    )?;
+    let name = match args.get("name") {
+        Some(Value::String(name)) => Some(name.clone()),
+        Some(Value::Null) | None => None,
+        Some(other) => return Err(format!("'name' must be a string, not {other}")),
+    };
+    let pane = resolve_pane_ref(args)?;
+    let subject = render_pane_handle(&pane);
+    require_own_pane(
+        &pane,
+        "break_pane",
+        "Where their panes sit is their arrangement.",
+    )?;
+    let mut ask = Value::Object(
+        WindowBirthAsk(sprag_terminal::WindowBirth {
+            detached: true,
+            opened_by: Some(PaneId(opener)),
+        })
+        .to_args(),
+    );
+    ask["pane"] = json!(pane.id());
+    if let Some(name) = &name {
+        ask["name"] = json!(name);
+    }
+    let created = host_call_kinded(
+        "scene/invoke",
+        with_args(pane_params(&pane, mux_action_path(BREAK_PANE_ACTION)), ask),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "{subject} could not be broken out: it may be the only pane its window tiles — \
+                 which would be a rename dressed as a move, so use rename_window instead{}",
+                match &name {
+                    Some(name) => format!(" — or the name {name:?} may already be taken."),
+                    None => ".".to_owned(),
+                },
+            ),
+        )
+    })?;
+    let created = created
+        .as_str()
+        .ok_or("the host did not answer with the new window's name")?;
+    // WHETHER THE PROVENANCE LANDED, read back off the window — [`tool_open_window`]'s rule and for
+    // its reason: a daemon that predates the key accepts the request and records nothing, and
+    // promising a close this surface would then refuse is the one report that makes a caller act
+    // wrongly. NOT `?`: the pane has already moved, and a failed re-read is not a failed break.
+    let ours = query_windows()
+        .ok()
+        .and_then(|windows| {
+            windows
+                .into_iter()
+                .find(|window| window.name == created)
+                .map(|window| window.opened_by == Some(PaneId(opener)))
+        })
+        .unwrap_or(false);
+    Ok(format!(
+        "Moved {subject} into a window of its own, called {created}. It kept everything — its \
+         contents, its scrollback and whatever is running in it. The user did NOT move and cannot \
+         see it: call select_window {{\"window\": {created:?}}} when you have something for them. \
+         {}\n\n{}",
+        if ours {
+            "It is yours to close_window and rename_window."
+        } else {
+            "WARNING: this terminal did not record the window as opened by you, so close_window \
+             will refuse it — the daemon predates the break's window provenance."
+        },
+        relisted_windows(),
+    ))
+}
+
+/// `join_pane` — move a pane THIS SERVER OPENED into another window of the session.
+///
+/// # Why the DESTINATION is ungated where the pane is not
+///
+/// [`tool_swap_pane`]'s split, one level up: the gate is on the pane being MOVED, because that is
+/// the thing this agent is deciding about. A destination window is displaced by the arrival, not
+/// moved by a decision — the same reading `swap_pane`'s partner has, and the same reading
+/// `open_pane` already relies on, since an agent's first pane is opened into a window a person
+/// made. Refusing a person's window here would leave an agent able to put a pane beside somebody
+/// (`open_pane`) and unable to move one there, which is a rule nobody could state.
+fn tool_join_pane(args: &Value) -> Result<String, String> {
+    // Resolved BEFORE the request so an unknown name is a sentence naming what exists, where the
+    // daemon can only answer a payload-less `Rejected` (upstream PINION-PR82).
+    let window = resolve_window(args, WindowRef::WINDOW_KEY)?;
+    let pane = resolve_pane_ref(args)?;
+    let subject = render_pane_handle(&pane);
+    require_own_pane(
+        &pane,
+        "join_pane",
+        "Where their panes sit is their arrangement.",
+    )?;
+    // BY IDENTITY, not by the name this tool just resolved. R330's rule at the surface that reads a
+    // list and then acts on it: an agent that called list_windows and then joined means the window
+    // it read about, and a name re-resolved at the daemon lands wherever that name has got to. A
+    // daemon that publishes no identity gets the NAME — the reading it can honour, and the only one
+    // it has — which is `tool_close_window`'s fallback verbatim.
+    let ask = JoinAsk {
+        pane: PaneId(pane.id()),
+        window: match window.id {
+            Some(id) => WindowRef::Picked(id),
+            None => WindowRef::Named(window.name.clone()),
+        },
+    };
+    let answer = host_call_kinded(
+        "scene/invoke",
+        with_args(
+            pane_params(&pane, mux_action_path(JOIN_PANE_ACTION)),
+            ask.to_args(),
+        ),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "{subject} could not be joined into window {}: it may already live there, which is \
+                 a move with nowhere to go.",
+                window.name,
+            ),
+        )
+    })?;
+    Ok(format!(
+        "Moved {subject} into window {}, beside what was already there. It kept its contents, its \
+         scrollback and whatever is running in it.{} Call list_windows to see where things are \
+         now; a pane NUMBER means the Nth pane of YOUR window, so address this one by name.",
+        window.name,
+        if answer["closed_source"].as_bool().unwrap_or(false) {
+            " The window it came FROM held nothing else, so that window closed."
+        } else {
+            ""
+        },
+    ))
+}
+
+/// `move_pane` — place a pane THIS SERVER OPENED on a chosen SIDE of a particular pane.
+///
+/// [`tool_join_pane`] with a PLACE, and the same gate for the same reason: the moved pane is the
+/// agent's, the TARGET may be anybody's because it is divided rather than moved. One request covers
+/// a re-placement inside one window and a move into another, because a
+/// [`PaneId`] implies its window at both ends — see
+/// [`MOVE_PANE_ACTION`], where the rival needs two methods and
+/// still leaves a hole between them.
+///
+/// # ONE DIRECTION VOCABULARY ON THIS SURFACE, where the wire has two
+///
+/// The action takes tmux's split grammar — an AXIS (`horizontal` / `vertical`) plus a `before`
+/// boolean — because [`SPLIT_ACTION`](sprag_host::wire::SPLIT_ACTION) does and one vocabulary spans
+/// placing a new pane and placing an existing one. That is right for the wire and wrong for this
+/// surface, where `dir` already means a compass direction at `select_pane`, `swap_pane` and
+/// `resize_pane`: an argument spelled the same and read differently is the drift this project's
+/// one-spelling rule exists to stop, and a caller cannot discover which sense it got — both words
+/// parse, and `horizontal` alone does not say WHICH side.
+///
+/// So this tool takes [`PaneDir`]'s four words and DERIVES the pair, through the type's own
+/// [`axis`](PaneDir::axis) and [`side`](PaneDir::side). Nothing is hand-mapped, the `before`
+/// argument disappears (a side is one fact, not two), and the surface has one direction vocabulary
+/// end to end.
+fn tool_move_pane(args: &Value) -> Result<String, String> {
+    let dir = match args.get("dir") {
+        Some(Value::String(word)) => PaneDir::from_wire(word).ok_or_else(|| {
+            format!(
+                "'dir' must be one of {}, not {word:?} — it is the SIDE of the target the pane \
+                 lands on",
+                PaneDir::ALL.map(PaneDir::wire_str).join(", "),
+            )
+        })?,
+        Some(other) => {
+            return Err(format!("'dir' must be a direction word, not {other}"));
+        }
+        None => {
+            return Err(format!(
+                "move_pane needs 'dir' — one of {}, the SIDE of the target the pane lands on. Use \
+                 join_pane to append into a window without saying where.",
+                PaneDir::ALL.map(PaneDir::wire_str).join(" / "),
+            ));
+        }
+    };
+    let target = resolve_pane_ref_at(args, "target")?;
+    let pane = resolve_pane_ref(args)?;
+    let subject = render_pane_handle(&pane);
+    let beside = render_pane_handle(&target);
+    require_own_pane(
+        &pane,
+        "move_pane",
+        "Where their panes sit is their arrangement.",
+    )?;
+    let answer = host_call_kinded(
+        "scene/invoke",
+        with_args(
+            pane_params(&pane, mux_action_path(MOVE_PANE_ACTION)),
+            json!({
+                "pane": pane.id(),
+                "target": target.id(),
+                // DERIVED from the one direction the caller gave, by the type that owns both facts
+                // — so a fifth direction, or a change to what a side means, cannot be half-applied
+                // here.
+                "dir": match dir.axis() {
+                    SplitDir::Horizontal => "horizontal",
+                    SplitDir::Vertical => "vertical",
+                },
+                "before": dir.side() == SplitSide::First,
+            }),
+        ),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "{subject} could not be placed beside {beside}: they may be the SAME pane, which \
+                 has no reading at all, or {beside} may be floating rather than tiled where it \
+                 lives, so there is no leaf to divide."
+            ),
+        )
+    })?;
+    Ok(format!(
+        "Placed {subject} {} {beside}.{} Call pane_layout to see the arrangement it landed in.",
+        dir.beyond(),
+        if answer["closed_source"].as_bool().unwrap_or(false) {
+            " The window it came FROM held nothing else, so that window closed."
+        } else {
+            ""
+        },
+    ))
+}
+
 fn render_swap(
     how: SwapHow,
     asked: Option<PaneDir>,
@@ -4957,6 +5456,7 @@ fn last_n_lines(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sprag_host::vocabulary::Verb;
 
     /// **THE COMPLETENESS RATCHET: every subject an agent is TOLD about, it can READ.**
     ///
@@ -5076,49 +5576,75 @@ mod tests {
         );
     }
 
+    /// The roster's own names, in the order `tools/list` advertises them.
+    fn advertised_tools() -> Vec<String> {
+        tools_list()["tools"]
+            .as_array()
+            .expect("the roster is an array")
+            .iter()
+            .map(|tool| {
+                tool["name"]
+                    .as_str()
+                    .expect("every tool has a name")
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// **THIS ROSTER IS A PROJECTION OF [`sprag_host::vocabulary`], NOT A FOURTH CATALOGUE.**
+    ///
+    /// R323 joined the CLI, the keyboard and `--help` into one table and left this surface out of
+    /// the join; the register's item 56 measured what that cost. This is the join, and it is held in
+    /// BOTH directions on purpose:
+    ///
+    /// * every tool this file advertises is declared by some verb — so a tool added here without a
+    ///   verb re-opens the fourth catalogue and fails;
+    /// * every tool a verb declares is advertised here — so a verb cannot claim a tool that does not
+    ///   exist, which is what makes [`Verb::tools`] safe for `sprag`'s own error sentences to print.
+    ///
+    /// It replaced a hard-written array of 29 names. That array was a ratchet — it would have caught
+    /// a deletion — but it was also, exactly, a fifth list: it could agree with this file forever
+    /// while the vocabulary said something else entirely, which is the state R335 found.
+    #[test]
+    fn the_roster_is_exactly_what_the_vocabulary_declares() {
+        let advertised = advertised_tools();
+        let declared: Vec<&str> = Verb::ALL
+            .iter()
+            .flat_map(|verb| verb.tools().iter().copied())
+            .collect();
+        for tool in &advertised {
+            assert!(
+                declared.contains(&tool.as_str()),
+                "the roster advertises {tool:?} and no verb of sprag_host::vocabulary declares it \
+                 — a tool nothing else in the product knows about is the fourth catalogue this \
+                 ratchet exists to close",
+            );
+        }
+        for tool in &declared {
+            let verb = Verb::ALL
+                .iter()
+                .find(|verb| verb.tools().contains(tool))
+                .expect("the name came from a verb");
+            assert!(
+                advertised.contains(&(*tool).to_owned()),
+                "{} declares the tool {tool:?} and this roster does not advertise it, so an agent \
+                 reading `sprag --help`'s vocabulary would ask for something that is not there",
+                verb.name(),
+            );
+        }
+        assert_eq!(
+            advertised.len(),
+            declared.len(),
+            "the roster advertises a name twice",
+        );
+        // THE CONTROL: this is not vacuously true over two empty lists. The count is asserted where
+        // the register's estimate was, so a later round reads a measured number.
+        assert_eq!(advertised.len(), 33, "the agent surface's roster");
+    }
+
     #[test]
     fn tools_list_advertises_every_tool_with_object_schemas() {
         let tools = tools_list();
-        let names: Vec<&str> = tools["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "list_panes",
-                "list_windows",
-                "list_sessions",
-                "pane_layout",
-                "pane_processes",
-                "read_pane",
-                "read_last_command",
-                "read_pane_links",
-                "read_pane_images",
-                "find_in_pane",
-                "regex_in_pane",
-                "wait_for_output",
-                "agent_state",
-                "wait_for_change",
-                "agent_explain",
-                "write_pane",
-                "send_keys",
-                "open_pane",
-                "close_pane",
-                "rename_pane",
-                "display_message",
-                "select_pane",
-                "swap_pane",
-                "resize_pane",
-                "open_window",
-                "select_window",
-                "close_window",
-                "rename_window",
-                "resize_window"
-            ]
-        );
         for tool in tools["tools"].as_array().unwrap() {
             assert_eq!(tool["inputSchema"]["type"], "object");
             assert!(tool["description"].as_str().unwrap().len() > 10);

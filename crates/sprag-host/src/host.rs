@@ -3232,12 +3232,22 @@ impl HostClient for Host {
     }
 
     /// Break the pane `id` out into a new window of the default session (tmux `break-pane`). The
-    /// pane is MOVED (already spawned — no birth here, unlike [`new_window`](Self::new_window)) and
-    /// the new window selected. `None` if the move was refused.
+    /// pane is MOVED (already spawned — no pane birth here, unlike
+    /// [`new_window`](Self::new_window)) and the new window selected. `None` if the move was
+    /// refused.
+    ///
+    /// **The WINDOW's birth is [`sprag_terminal::WindowBirth::default`]**, which R335 made a decision rather than
+    /// the only possibility: this trait's callers are a PERSON's key, menu row and CLI verb, and a
+    /// person who breaks a pane out is asking to look at it. The agent surface is the caller that
+    /// wants the other answer, and it sends the keys itself
+    /// ([`BREAK_PANE_ACTION`](crate::wire::BREAK_PANE_ACTION)) rather than widening a trait every
+    /// person-facing caller would then have to answer.
     fn break_pane(&self, id: PaneId, name: Option<&str>) -> Option<String> {
         let mut registry = lock(&self.registry);
         let session = registry.default_session().name().to_owned();
-        registry.break_pane(&session, id, name).ok()
+        registry
+            .break_pane(&session, id, name, sprag_terminal::WindowBirth::default())
+            .ok()
     }
 
     /// The project governing pane `id`, read from that pane's LIVE working directory.

@@ -319,6 +319,19 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
                 // error message, and a panic inside one is a worse outcome than a plainer sentence.
                 .unwrap_or_else(|| format!("{:?} is not a command", verb.name())),
         )),
+        // THE THREE ACTS THIS SHELL DOES NOT SPELL YET, which R335's join added to the vocabulary:
+        // sprag reads a pane's last command, its hyperlinks and its inline images, and serves all
+        // three to an AI agent and to no shell. They are answered by NAME for the five above's
+        // reason — a person who typed one asked for something the product does — and the sentence
+        // names the mouth that has it, so it is a place to go rather than a refusal.
+        Verb::ReadLastCommand | Verb::PaneLinks | Verb::PaneImages => Err(bad_input(
+            &verb
+                .no_shell_form_yet()
+                // Unreachable: these three ARE the verbs whose shell answer is `NotBuilt`, which is
+                // the question that method answers. A fallback rather than an `expect` for the
+                // reason above.
+                .unwrap_or_else(|| format!("{:?} is not a command", verb.name())),
+        )),
     }
 }
 

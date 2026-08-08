@@ -411,7 +411,30 @@ impl ScopeAsk {
 ///   so a message sent to it reaches nobody — and there is no key whose absence could say so, since
 ///   the whole answer is a delivery list that does not exist. Measured: the old CLI against the new
 ///   daemon is refused by number, while the new CLI on the same daemon delivers.
-pub const WIRE_PROTOCOL: u32 = 16;
+/// * **16** — a request can address a window by the IDENTITY a client PICKED off a list it painted,
+///   rather than by the name it was carrying then (`window_id`, `sprag_host::wire::WindowRef`,
+///   R330). The NINTH bump caused by an added ARGUMENT. **Written at R335, five rounds late**: the
+///   bump shipped in `7e2c5b2` with the reason in its commit message and no bullet here, which is
+///   the one drift a list of reasons can carry and the reason this list exists.
+///   The drop is the class's worst shape: a pre-R330 daemon reads no `window_id`, so a kill or a
+///   join that carried only an identity is refused — the LOUD half — while the client that also
+///   sends a name falls back to whatever holds that name NOW, which after a rename is a bystander
+///   window. Measured at the registry: the two readings land on DIFFERENT windows across a rename.
+///   The other direction is refused by number for the usual reason: an old client never sends the
+///   key, so a new daemon changes nothing for it.
+/// * **17** — a pane BROKEN OUT into a new window can say how that window is born: without taking
+///   the screen, and recording who asked for it (`detached` / `opened_by` on
+///   `sprag_host::wire::BREAK_PANE_ACTION`, R335). The TENTH bump caused by an added ARGUMENT, and
+///   it is version 12's failure exactly — the same key, the same drop, the other window-creating
+///   door. A pre-R335 daemon accepts the request, breaks the pane out, and SELECTS the new window
+///   anyway, so a caller that asked to tidy up quietly has moved every attached client; the answer
+///   (the new window's name) is byte-identical either way. `opened_by` fails more quietly still:
+///   the window is created unclaimed, and the caller learns that only later, when the surface that
+///   reads authorship refuses to close what this caller made.
+///   The other direction is refused by number for version 12's reason: an old client never sends
+///   either key and a new daemon treats their absence as the behaviour it already had, but a new
+///   client that sent them and was ignored would report a quiet window that is not quiet.
+pub const WIRE_PROTOCOL: u32 = 17;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

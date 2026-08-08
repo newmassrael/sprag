@@ -1984,8 +1984,13 @@ impl WorkspaceExternal {
             Some(Value::String(name)) => Some(name.as_str()),
             Some(_) => return Err(InvokeError::TypeMismatch),
         };
+        // HOW THE NEW WINDOW IS BORN, through the SAME parse `new_window` uses. A break creates a
+        // window, so the two facts a window's birth carries belong here too — and going through one
+        // function rather than two that agree today is what keeps a stale `opened_by` refused the
+        // same way at both doors.
+        let born = self.parse_window_birth(map)?;
         let created = lock(&self.registry)
-            .break_pane(self.scope.session(), pane, name)
+            .break_pane(self.scope.session(), pane, name, born)
             // A rejection is well-formed but cannot be honored, and `PaneMoveError` has an arm per
             // way: its `Display` is what the caller prints, so the CLI's old three-cause guess
             // (*"is its window's only pane, no window holds it, or the name is taken"*) is now the

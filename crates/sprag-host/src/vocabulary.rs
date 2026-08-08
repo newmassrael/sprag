@@ -37,7 +37,25 @@
 //! * The keyboard's own list of forms is DERIVED here ([`bindable_forms`]), so the 19-entry array
 //!   that had been stale for eight rounds cannot exist twice.
 //!
-//! # The gap is countable now
+//! * [`Agent::Tools`] names the MCP tools an AI in a pane calls, and `sprag-mcp`'s roster is held
+//!   against this table in BOTH directions — so a tool it advertises and this table does not
+//!   declare fails, and a verb whose declared tool the roster does not carry fails too.
+//!
+//! # THE THIRD MOUTH, and why it was a fourth catalogue until R335
+//!
+//! R323's finding was *"three hand-written lists said what sprag can do and nothing held any two of
+//! them together"*, and it joined the CLI, the keyboard and `--help`. **The agent surface was not in
+//! that join.** Measured at `9727042`: `sprag-mcp` advertised 29 tools, this table forced every verb
+//! to decide what a KEYSTROKE may mean and forced nothing at all about an AGENT, and the whole
+//! ARRANGEMENT family was half-served — an agent could `open_pane`, `close_pane`, `swap_pane` and
+//! `resize_pane`, and could not take a pane out of a window (`break-pane`), put one back
+//! (`join-pane`), place one beside another (`move-pane`) or fill a window with one (`zoom-pane`).
+//! Nothing anywhere stated why, and an undocumented absence is not a decision.
+//!
+//! So [`Entry`] carries a third answer, in the same three shapes the keyboard's has, and a verb
+//! added today cannot compile without deciding all three.
+//!
+//! # The gaps are countable now, on every axis
 //!
 //! [`Keystroke::NotBuilt`] is the honest third answer, and it is what stops this table from lying
 //! in the other direction: `run` is a verb a keystroke COULD mean, and sprag does not bind it
@@ -45,6 +63,12 @@
 //! put it back in the "typo" sentence. Counting them is one test
 //! ([`the_keyboard_gap_is_what_the_table_says_it_is`](self)), so the register's number is derived
 //! from the code rather than re-measured by hand each round.
+//!
+//! [`Shell::NotBuilt`] and [`Agent::NotBuilt`] are the same answer on the other two mouths, and the
+//! shell one had to exist the moment this table stopped being a list of the CLI's verbs: three acts
+//! the product performs — a pane's last command, its hyperlinks, its inline images — reach an agent
+//! and no shell, and `Option<Shell>`'s [`None`] could only say *"a shell cannot"*, which for those
+//! three is false.
 
 use crate::keymap::ActionSubject;
 
@@ -126,6 +150,16 @@ pub enum Verb {
     SendKeys,
     /// `capture-pane` — a pane's text, as text.
     CapturePane,
+    /// `read-last-command` — the last command a pane's shell ran, its output and its status.
+    ///
+    /// A different act from [`CapturePane`](Self::CapturePane), which answers with a pane's WHOLE
+    /// text: this reads the shell-integration marks (OSC 133) the pane's child wrote, so it can say
+    /// where one command's output starts and ends where reading the screen cannot.
+    ReadLastCommand,
+    /// `pane-links` — the hyperlinks a pane is showing (OSC 8), with the text each sits under.
+    PaneLinks,
+    /// `pane-images` — the inline images a pane is showing (Kitty graphics, Sixel), and where.
+    PaneImages,
     /// `agent` — what the AI in a pane is doing.
     Agent,
     /// `report-agent` — an agent says what it is doing.
@@ -173,17 +207,131 @@ pub enum Verb {
     ConfirmBefore,
 }
 
-/// How the SHELL spells a verb, and where `sprag --help` prints it.
+/// What a SHELL can say by a verb — the same three answers the other two mouths give.
 ///
-/// [`None`] on an [`Entry`] means no CLI dispatches this verb at all — which is a fact about the
-/// verb ([`Verb::DetachClient`] acts on the client that pressed the key), not a gap.
+/// It was `Option<Shell>` until R335, where [`None`] meant *"a shell cannot say this"* and carried
+/// [`Verb::DetachClient`]'s reason in prose. That conflation became false the moment this table
+/// started holding the whole product rather than the CLI's own list: [`Verb::PaneLinks`] is an act
+/// sprag performs, a shell could perfectly well ask for it, and nobody has built the verb. Saying
+/// *cannot* about it would be a refusal that is not true — [`Keystroke::NotBuilt`]'s argument, one
+/// mouth over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Shell {
-    /// Which block of the usage this verb belongs to.
-    pub group: Group,
-    /// The arguments, spelled as the usage spells them — WITHOUT the verb's own name, which
-    /// [`usage`] writes from [`Entry::name`] so a synopsis cannot disagree with the name above it.
-    pub form: &'static str,
+pub enum Shell {
+    /// `sprag <name>` dispatches it, with these arguments.
+    ///
+    /// Spelled as the usage spells them and WITHOUT the verb's own name, which [`usage`] writes
+    /// from [`Entry::name`] so a synopsis cannot disagree with the name above it.
+    Runs(&'static str),
+    /// A shell COULD say it and sprag dispatches nothing for it yet.
+    NotBuilt,
+    /// A shell cannot say it, for this reason.
+    Cannot(NotAShellVerb),
+}
+
+/// Why a shell cannot say a verb.
+///
+/// A closed set, [`NotAKeystroke`]'s rule: one rule per reason rather than a sentence per verb, so
+/// a verb that fits none of them is a rule this project has not thought about yet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotAShellVerb {
+    /// It acts on THE CLIENT that pressed the key, and a shell has no client.
+    ///
+    /// The five verbs this covers would each have to name a client and then mean something
+    /// different from what the key means — `sprag detach-client` is not a smaller version of
+    /// pressing the binding, it is a different act with a different subject.
+    NoClientOfIts,
+}
+
+impl NotAShellVerb {
+    /// The clause a refusal ends with, in the user's terms — [`NotAKeystroke::why`]'s shape.
+    #[must_use]
+    pub const fn why(self) -> &'static str {
+        match self {
+            Self::NoClientOfIts => {
+                "it acts on the client that pressed the key, and a shell has no client"
+            }
+        }
+    }
+}
+
+/// What an AGENT can ask for by a verb — the third mouth, and the one nothing forced until R335.
+///
+/// The reader here is an AI running inside a pane, talking to `sprag-mcp` over MCP. The three
+/// answers are [`Keystroke`]'s three, for its reasons: a caller reading a gap has to know whether
+/// the act is refused, missing, or spelled differently from what they guessed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Agent {
+    /// The MCP tools that mean this verb, by the names `tools/list` advertises.
+    ///
+    /// A SLICE and not one name, because the agent surface deliberately splits some verbs by what
+    /// an agent is doing rather than by what the act is: `find` is `find_in_pane` and
+    /// `regex_in_pane`, `send-keys` is `send_keys` and `write_pane`, `agent` is `agent_state` and
+    /// `agent_explain`. That is the honest half of the join — the two vocabularies differ in
+    /// PURPOSE and not only in coverage — and a slice says so without pretending either surface is
+    /// a renaming of the other.
+    Tools(&'static [&'static str]),
+    /// An agent COULD ask for it and sprag serves no tool for it yet.
+    NotBuilt,
+    /// An agent cannot ask for it, for this reason.
+    Cannot(NotAnAgents),
+}
+
+/// Why an agent cannot ask for a verb.
+///
+/// Four rules for twenty verbs, [`NotAKeystroke`]'s discipline: the sentence a reader gets has to
+/// say which RULE they hit, because that is what tells them whether to look for another tool or to
+/// stop looking. They are NOT [`NotAKeystroke`]'s five reasons re-used — *"a keystroke has nowhere
+/// to put an answer"* is the opposite of true for an agent, which is a reader of answers and little
+/// else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotAnAgents {
+    /// It reaches OUTSIDE the session the agent works in — another session, the daemon itself, or a
+    /// display process.
+    ///
+    /// The bound `sprag-mcp` states to its caller in its own instructions: these tools act on YOUR
+    /// session. An agent that could end the daemon could end the conversation it is having.
+    OutsideItsSession,
+    /// It is the PERSON's own — their workspace's name, their configuration file, their keys.
+    ///
+    /// The authorship rule the pane and window verbs apply, at a level where there is nothing to
+    /// own: a session has no `opened_by` because an agent never opens one, and a config file is the
+    /// person's on every session at once.
+    ThePersonsOwn,
+    /// It acts on a CLIENT that is typing, and an agent has no client.
+    ///
+    /// [`NotAShellVerb::NoClientOfIts`]'s rule, which is what makes these five verbs the only ones
+    /// refused on two mouths for the same fact: they are a person-at-a-keyboard's verbs, and
+    /// neither of the other two mouths is one.
+    NoClientOfIts,
+    /// The agent already says it another way, and a tool would be a SECOND authority for one fact.
+    ///
+    /// `report-agent` and `hook` are how an agent's own state reaches the daemon, through its hook
+    /// process; `help` is `tools/list`, which every MCP client reads before it calls anything. A
+    /// tool for either would let one agent say two different things about itself.
+    SaidAnotherWay,
+}
+
+impl NotAnAgents {
+    /// The clause a refusal ends with, in the reader's terms — [`NotAKeystroke::why`]'s shape.
+    #[must_use]
+    pub const fn why(self) -> &'static str {
+        match self {
+            Self::OutsideItsSession => {
+                "it reaches outside the session the agent works in, and these tools act on that \
+                 session"
+            }
+            Self::ThePersonsOwn => {
+                "it is the person's own — their session's name, their config file, or their keys"
+            }
+            Self::NoClientOfIts => {
+                "it acts on a client somebody is typing at, and an agent has no client"
+            }
+            Self::SaidAnotherWay => {
+                "the agent already says it another way, and a tool would be a second authority for \
+                 one fact"
+            }
+        }
+    }
 }
 
 /// What a KEYSTROKE can mean by a verb.
@@ -272,15 +420,22 @@ impl NotAKeystroke {
     }
 }
 
-/// Which block of `sprag --help` a verb prints in, and in what order.
+/// WHAT a verb is about — and, for the verbs a shell runs, which block of `sprag --help` prints it.
 ///
 /// The ORDER is the declaration order and it is the reading order of the help: outward through the
 /// containment the product itself uses (session, window, pane), then the surfaces that are about
-/// somebody else (an agent), then the ones about sprag itself.
+/// somebody else (an agent), then the ones about sprag itself, then the client's own.
 ///
-/// It exists because a usage text is a DOCUMENT rather than a list — the grouping is what makes 49
+/// It exists because a usage text is a DOCUMENT rather than a list — the grouping is what makes the
 /// verbs readable — and a group is the one piece of that document a verb has to carry for the
-/// document to be derivable from the verbs.
+/// document to be derivable from the verbs — 49 of them print, and the three mouths together hold
+/// 57.
+///
+/// **It moved out of [`Shell`] at R335**, where it had been a property of the CLI's spelling. That
+/// was wrong twice: a verb no shell runs still has a subject ([`Verb::SwitchClient`] is about a
+/// client), and [`subject_of`] was reading the group through the shell form and answering
+/// `Client` for every verb without one — which was right for the five it then had and would have
+/// been wrong for the first pane verb the shell did not run.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Group {
     /// The daemon and its sessions.
@@ -297,6 +452,12 @@ pub enum Group {
     Options,
     /// sprag itself.
     Tool,
+    /// The CLIENT a person is typing at — the display process, and where it is pointed.
+    ///
+    /// No verb of this group runs in a shell (that is what the group MEANS), so [`usage`] never
+    /// prints its heading. It is still a real group rather than a `None`: these verbs have a
+    /// subject, and [`subject_of`] answers from it instead of from an absence.
+    Client,
 }
 
 impl Group {
@@ -311,6 +472,7 @@ impl Group {
             Self::Keys => "keys",
             Self::Options => "options",
             Self::Tool => "sprag",
+            Self::Client => "client",
         }
     }
 }
@@ -320,14 +482,22 @@ impl Group {
 /// Answered by ONE exhaustive match ([`Verb::entry`]) rather than by a method per property, and
 /// that is the load-bearing choice: five matches are five chances to forget an arm, where one match
 /// makes the compiler ask for every property of a new verb at the moment it is added.
+///
+/// **THE THREE MOUTHS ARE THE THREE FIELDS**, and each answers the same three-shaped question — it
+/// says it like this / it could and nobody built it / it cannot, for this reason. A verb is added by
+/// deciding all three at once or it does not compile.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
     /// The verb as a user spells it — the FIRST WORD of a command line or of a binding.
     pub name: &'static str,
-    /// How a shell says it, or [`None`] for a verb that is only ever a keystroke.
-    pub shell: Option<Shell>,
+    /// What the verb is about, and which block of the help prints it.
+    pub group: Group,
+    /// What a shell can say by it.
+    pub shell: Shell,
     /// What a keystroke can mean by it.
     pub key: Keystroke,
+    /// What an agent can ask for by it.
+    pub agent: Agent,
 }
 
 impl Verb {
@@ -336,7 +506,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 54] = [
+    pub const ALL: [Self; 57] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -370,6 +540,9 @@ impl Verb {
         Self::RenamePane,
         Self::SendKeys,
         Self::CapturePane,
+        Self::ReadLastCommand,
+        Self::PaneLinks,
+        Self::PaneImages,
         Self::Agent,
         Self::ReportAgent,
         Self::ReleaseAgent,
@@ -403,23 +576,27 @@ impl Verb {
     /// from becoming forty opinions.
     #[must_use]
     pub const fn entry(self) -> Entry {
-        // A local so the 54 arms below read as a table rather than as 54 struct literals. `shell`
-        // wraps the two fields a CLI verb has; a verb with no shell form says so by name.
-        const fn shell(group: Group, form: &'static str) -> Option<Shell> {
-            Some(Shell { group, form })
-        }
-        const NO_SHELL: Option<Shell> = None;
-        let (name, shell, key) = match self {
+        // A tuple so the 57 arms below read as a TABLE rather than as 57 struct literals — five
+        // columns, in the order a reader asks them: what it is called, what it is about, and then
+        // the three mouths.
+        let (name, group, shell, key, agent) = match self {
             // ── sessions ────────────────────────────────────────────────────────────────────────
             Self::Ls => (
                 "ls",
-                shell(Group::Session, ""),
+                Group::Session,
+                Shell::Runs(""),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["list_sessions"]),
             ),
+            // An agent COULD be told who is watching, and that is not idle: `display_message`
+            // already has to say "no window is attached, so treat this as undelivered", which is
+            // the same fact answered only as a side effect of sending something.
             Self::ListClients => (
                 "list-clients",
-                shell(Group::Session, "[-t SESSION]"),
+                Group::Session,
+                Shell::Runs("[-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
             ),
             // BINDABLE SINCE R323, and the arm that made the keyboard reach the session level at
             // all: a person could create a window with `prefix c` and had no key that creates a
@@ -427,35 +604,42 @@ impl Verb {
             // does not give one, which is what makes this bindable where `ssh` is not.
             Self::New => (
                 "new",
-                shell(Group::Session, "[name]"),
+                Group::Session,
+                Shell::Runs("[name]"),
                 Keystroke::Means("new"),
+                Agent::Cannot(NotAnAgents::OutsideItsSession),
             ),
             // A display PROCESS is launched, and the client pressing the key is one already.
             Self::Attach => (
                 "attach",
-                shell(Group::Session, "NAME [--no-wait | --tui | --remote HOST]"),
+                Group::Session,
+                Shell::Runs("NAME [--no-wait | --tui | --remote HOST]"),
                 Keystroke::Cannot(NotAKeystroke::OutsideTheClient),
+                Agent::Cannot(NotAnAgents::OutsideItsSession),
             ),
             Self::Ssh => (
                 "ssh",
-                shell(
-                    Group::Session,
-                    "[user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]",
-                ),
+                Group::Session,
+                Shell::Runs("[user@]host [-p PORT] [-L FWD]… [--tmux[=NAME]] [-- command…]"),
                 Keystroke::Cannot(NotAKeystroke::NeedsWords),
+                Agent::Cannot(NotAnAgents::OutsideItsSession),
             ),
+            // TWO tools for one verb, and the reason is [`Agent::Tools`]'s: an agent asking for a
+            // literal needle and one asking for a pattern are two different calls to write, where
+            // a shell flag is one more word to type.
             Self::Find => (
                 "find",
-                shell(
-                    Group::Session,
-                    "NEEDLE [-t SESSION] [--pane PANE] [--regex]",
-                ),
+                Group::Session,
+                Shell::Runs("NEEDLE [-t SESSION] [--pane PANE] [--regex]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["find_in_pane", "regex_in_pane"]),
             ),
             Self::WaitForOutput => (
                 "wait-for-output",
-                shell(Group::Session, "--pane PANE NEEDLE [-t SESSION] [--regex]"),
+                Group::Session,
+                Shell::Runs("--pane PANE NEEDLE [-t SESSION] [--regex]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["wait_for_output"]),
             ),
             // A keystroke could mean "show me this pane's project commands and type the one I
             // pick" — which is the GUI palette's own gesture, and `sprag-tui` has no palette. The
@@ -463,64 +647,90 @@ impl Verb {
             // this is a surface this round did not build rather than an act a key cannot mean.
             Self::Run => (
                 "run",
-                shell(Group::Session, "[NAME] [-t SESSION] [--pane PANE]"),
+                Group::Session,
+                Shell::Runs("[NAME] [-t SESSION] [--pane PANE]"),
                 Keystroke::NotBuilt,
+                Agent::NotBuilt,
             ),
+            // The name of the workspace a PERSON is keeping, which no agent opened and which every
+            // other client of the session addresses it by.
             Self::RenameSession => (
                 "rename-session",
-                shell(Group::Session, "[-t SESSION] NEW"),
+                Group::Session,
+                Shell::Runs("[-t SESSION] NEW"),
                 Keystroke::Means("rename-session"),
+                Agent::Cannot(NotAnAgents::ThePersonsOwn),
             ),
             // BINDABLE SINCE R323. A keystroke means THIS client's session, which is the one thing
             // a client always knows and the CLI never does — so the verb needs its NAME in a shell
             // and needs nothing at all from a key.
+            // An agent that ended the session would end the pane it is running in, and every pane
+            // it was reading. The bound is the same one `sprag-mcp` states in its instructions.
             Self::KillSession => (
                 "kill-session",
-                shell(Group::Session, "NAME"),
+                Group::Session,
+                Shell::Runs("NAME"),
                 Keystroke::Means("kill-session"),
+                Agent::Cannot(NotAnAgents::OutsideItsSession),
             ),
             // The daemon every attached client is looking at, this one included. A key for it would
             // end the screen it was pressed on, and the sentence says which rule that is.
             Self::KillServer => (
                 "kill-server",
-                shell(Group::Session, "[--purge]"),
+                Group::Session,
+                Shell::Runs("[--purge]"),
                 Keystroke::Cannot(NotAKeystroke::OutsideTheClient),
+                Agent::Cannot(NotAnAgents::OutsideItsSession),
             ),
             // ── windows ─────────────────────────────────────────────────────────────────────────
             Self::Windows => (
                 "windows",
-                shell(Group::Window, "[-t SESSION]"),
+                Group::Window,
+                Shell::Runs("[-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["list_windows"]),
             ),
             Self::NewWindow => (
                 "new-window",
-                shell(Group::Window, "[-d] [name] [-t SESSION]"),
+                Group::Window,
+                Shell::Runs("[-d] [name] [-t SESSION]"),
                 Keystroke::Means("new-window"),
+                Agent::Tools(&["open_window"]),
             ),
             Self::SelectWindow => (
                 "select-window",
-                shell(Group::Window, "<NAME|-n|-p> [-t SESSION]"),
+                Group::Window,
+                Shell::Runs("<NAME|-n|-p> [-t SESSION]"),
                 Keystroke::Means("select-window -n|-p|-t <window>"),
+                Agent::Tools(&["select_window"]),
             ),
             Self::RenameWindow => (
                 "rename-window",
-                shell(Group::Window, "[window] NAME [-t SESSION]"),
+                Group::Window,
+                Shell::Runs("[window] NAME [-t SESSION]"),
                 Keystroke::Means("rename-window"),
+                Agent::Tools(&["rename_window"]),
             ),
             Self::KillWindow => (
                 "kill-window",
-                shell(Group::Window, "[window] [-t SESSION]"),
+                Group::Window,
+                Shell::Runs("[window] [-t SESSION]"),
                 Keystroke::Means("kill-window"),
+                Agent::Tools(&["close_window"]),
             ),
+            // WHERE a window sits in the person's own window list — an order they read left to
+            // right and reach with `select-window -n`. An agent owns windows it opened and does not
+            // own the ORDER, which is one list shared by every window in the session.
             Self::MoveWindow => (
                 "move-window",
-                shell(
-                    Group::Window,
+                Group::Window,
+                Shell::Runs(
                     "[window] <--first | --last | -n | -p | --before W | --after W> [-t SESSION]",
                 ),
                 Keystroke::Means(
                     "move-window --first|--last|-n|-p|--before [<window>]|--after <window>",
                 ),
+                Agent::NotBuilt,
             ),
             // BINDABLE SINCE R331, and the SIZE travels where a window name may not: a rectangle is
             // a decision a config file can fix, which is exactly what `rename-window`'s rule asks of
@@ -530,19 +740,27 @@ impl Verb {
             // nothing (`wire::WindowPin`).
             Self::ResizeWindow => (
                 "resize-window",
-                shell(
-                    Group::Window,
+                Group::Window,
+                Shell::Runs(
                     "[window] <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u> [-t SESSION]",
                 ),
                 Keystroke::Means("resize-window -x COLS -y ROWS|-a|-A|-L/-R/-U/-D N|-u"),
+                Agent::Tools(&["resize_window"]),
             ),
             // BINDABLE SINCE R323, on tmux's own `prefix !`. The pane is the focused one and the
             // name is optional, so a keystroke carries everything this verb needs — which is why it
             // was the loudest of the fifteen refusals R322 measured.
+            // ⚠ THE AGENT ARM IS R335's, and it is the half of item 56 that was a DEFECT rather
+            // than a decision: an agent could open a pane, close it, trade its place and resize it,
+            // and could not move one BETWEEN WINDOWS at all. The gate is the authorship rule
+            // `swap_pane` already states — a pane the agent opened is one it has a basis to move,
+            // and a person's is not.
             Self::BreakPane => (
                 "break-pane",
-                shell(Group::Window, "PANE [name] [-t SESSION]"),
+                Group::Window,
+                Shell::Runs("PANE [name] [-t SESSION]"),
                 Keystroke::Means("break-pane"),
+                Agent::Tools(&["break_pane"]),
             ),
             // BINDABLE SINCE R329. The pane is the focused one; the WINDOW is a row the person
             // PICKS, and a binding therefore names neither — `move-pane`'s shape one level up the
@@ -551,8 +769,10 @@ impl Verb {
             // meant sending its label, which lands the join wherever that name has got to.
             Self::JoinPane => (
                 "join-pane",
-                shell(Group::Window, "PANE WINDOW [-t SESSION]"),
+                Group::Window,
+                Shell::Runs("PANE WINDOW [-t SESSION]"),
                 Keystroke::Means("join-pane"),
+                Agent::Tools(&["join_pane"]),
             ),
             // BINDABLE SINCE R328. The CLI form names both panes; a binding names NEITHER — the
             // mover is the focused pane and the target is a row the person PICKS, which is what
@@ -560,123 +780,181 @@ impl Verb {
             // for the same question: which half of the target the arrival takes.
             Self::MovePane => (
                 "move-pane",
-                shell(Group::Window, "PANE -h|-v [-b] TARGET [-t SESSION]"),
+                Group::Window,
+                Shell::Runs("PANE -h|-v [-b] TARGET [-t SESSION]"),
                 Keystroke::Means("move-pane -h|-v [-b]"),
+                Agent::Tools(&["move_pane"]),
             ),
             // ── panes ───────────────────────────────────────────────────────────────────────────
             Self::Panes => (
                 "panes",
-                shell(Group::Pane, "[-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("[-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["list_panes"]),
             ),
             Self::Layout => (
                 "layout",
-                shell(Group::Pane, "[-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("[-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["pane_layout"]),
             ),
             Self::Processes => (
                 "processes",
-                shell(Group::Pane, "[PANE] [-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["pane_processes"]),
             ),
             Self::SelectPane => (
                 "select-pane",
-                shell(
-                    Group::Pane,
-                    "<PANE | -L|-R|-U|-D [--from PANE]> [-t SESSION]",
-                ),
+                Group::Pane,
+                Shell::Runs("<PANE | -L|-R|-U|-D [--from PANE]> [-t SESSION]"),
                 Keystroke::Means("select-pane -L|-R|-U|-D|-t :.+"),
+                Agent::Tools(&["select_pane"]),
             ),
             Self::SwapPane => (
                 "swap-pane",
-                shell(Group::Pane, "[PANE] <WITH | -L|-R|-U|-D> [-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("[PANE] <WITH | -L|-R|-U|-D> [-t SESSION]"),
                 Keystroke::Means("swap-pane -L|-R|-U|-D"),
+                Agent::Tools(&["swap_pane"]),
             ),
             Self::SplitWindow => (
                 "split-window",
-                shell(
-                    Group::Pane,
-                    "[-h|-v [-b] [PANE]] [-- command…] [-t SESSION]",
-                ),
+                Group::Pane,
+                Shell::Runs("[-h|-v [-b] [PANE]] [-- command…] [-t SESSION]"),
                 Keystroke::Means("split-window -h|-v [-b]"),
+                Agent::Tools(&["open_pane"]),
             ),
             Self::KillPane => (
                 "kill-pane",
-                shell(Group::Pane, "[PANE] [-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Means("kill-pane"),
+                Agent::Tools(&["close_pane"]),
             ),
             Self::ResizePane => (
                 "resize-pane",
-                shell(
-                    Group::Pane,
-                    "[PANE] <-x COLS -y ROWS | -L|-R|-U|-D [N]> [-t SESSION]",
-                ),
+                Group::Pane,
+                Shell::Runs("[PANE] <-x COLS -y ROWS | -L|-R|-U|-D [N]> [-t SESSION]"),
                 Keystroke::Means("resize-pane -L|-R|-U|-D [N]"),
+                Agent::Tools(&["resize_pane"]),
             ),
             Self::ZoomPane => (
                 "zoom-pane",
-                shell(Group::Pane, "[PANE] [-u] [-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("[PANE] [-u] [-t SESSION]"),
                 Keystroke::Means("zoom-pane [-Z|-u]"),
+                Agent::Tools(&["zoom_pane"]),
             ),
             Self::RenamePane => (
                 "rename-pane",
-                shell(Group::Pane, "PANE <NAME | --clear> [-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("PANE <NAME | --clear> [-t SESSION]"),
                 Keystroke::Means("rename-pane"),
+                Agent::Tools(&["rename_pane"]),
             ),
             // The pane the person is on already receives their keys; what this verb adds is the
             // WORDS, and a binding cannot carry those.
+            // TWO tools again: `write_pane` is the words and `send_keys` is the key names, which
+            // the shell spells as one verb and a `-l` flag.
             Self::SendKeys => (
                 "send-keys",
-                shell(Group::Pane, "PANE [-l] KEY… [-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("PANE [-l] KEY… [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::NeedsWords),
+                Agent::Tools(&["write_pane", "send_keys"]),
             ),
             Self::CapturePane => (
                 "capture-pane",
-                shell(Group::Pane, "PANE [-p] [-t SESSION]"),
+                Group::Pane,
+                Shell::Runs("PANE [-p] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["read_pane"]),
+            ),
+            // ── THE THREE ACTS WITH NO SHELL FORM YET ───────────────────────────────────────────
+            // Added to this table at R335 by the join it built, and they are the finding rather
+            // than the fix: the agent surface served three things the product does that no verb
+            // named, so they were invisible to `sprag --help`, to `list-keys`, and to every sweep
+            // that starts from this array. `Shell::NotBuilt` is the honest answer for all three —
+            // a shell could ask any of them, and nobody has written the dispatch.
+            Self::ReadLastCommand => (
+                "read-last-command",
+                Group::Pane,
+                Shell::NotBuilt,
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["read_last_command"]),
+            ),
+            Self::PaneLinks => (
+                "pane-links",
+                Group::Pane,
+                Shell::NotBuilt,
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["read_pane_links"]),
+            ),
+            Self::PaneImages => (
+                "pane-images",
+                Group::Pane,
+                Shell::NotBuilt,
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["read_pane_images"]),
             ),
             // ── agents ──────────────────────────────────────────────────────────────────────────
+            // The verdict and the REASON for it are one verb with two tools, because an agent asks
+            // the second only when the first surprised it.
             Self::Agent => (
                 "agent",
-                shell(Group::Agent, "[PANE] [-t SESSION]"),
+                Group::Agent,
+                Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["agent_state", "agent_explain"]),
             ),
             Self::ReportAgent => (
                 "report-agent",
-                shell(
-                    Group::Agent,
+                Group::Agent,
+                Shell::Runs(
                     "<working|blocked|idle> [-t SESSION] [--pane PANE] [--source S] [--name AGENT] \
                      [--seq N]",
                 ),
                 Keystroke::Cannot(NotAKeystroke::TheAgentsOwn),
+                Agent::Cannot(NotAnAgents::SaidAnotherWay),
             ),
             Self::ReleaseAgent => (
                 "release-agent",
-                shell(Group::Agent, "[-t SESSION] [--pane PANE]"),
+                Group::Agent,
+                Shell::Runs("[-t SESSION] [--pane PANE]"),
                 Keystroke::Cannot(NotAKeystroke::TheAgentsOwn),
+                Agent::Cannot(NotAnAgents::SaidAnotherWay),
             ),
             Self::DisplayMessage => (
                 "display-message",
-                shell(
-                    Group::Agent,
-                    "[-t SESSION] [-c CLIENT] [-s note|warn|alert] MESSAGE",
-                ),
+                Group::Agent,
+                Shell::Runs("[-t SESSION] [-c CLIENT] [-s note|warn|alert] MESSAGE"),
                 Keystroke::Cannot(NotAKeystroke::NeedsWords),
+                Agent::Tools(&["display_message"]),
             ),
             Self::InstallHooks => (
                 "install-hooks",
-                shell(Group::Agent, "[AGENT…] [--yes] [--dry-run]"),
+                Group::Agent,
+                Shell::Runs("[AGENT…] [--yes] [--dry-run]"),
                 Keystroke::Cannot(NotAKeystroke::EditsAFile),
+                Agent::Cannot(NotAnAgents::ThePersonsOwn),
             ),
             Self::UninstallHooks => (
                 "uninstall-hooks",
-                shell(Group::Agent, "[AGENT…] [--yes] [--dry-run]"),
+                Group::Agent,
+                Shell::Runs("[AGENT…] [--yes] [--dry-run]"),
                 Keystroke::Cannot(NotAKeystroke::EditsAFile),
+                Agent::Cannot(NotAnAgents::ThePersonsOwn),
             ),
             Self::ListHooks => (
                 "list-hooks",
-                shell(Group::Agent, ""),
+                Group::Agent,
+                Shell::Runs(""),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
             ),
             // **NAMED IN THE HELP SINCE R323, and it was dispatched and undocumented before.** It
             // is an agent's hook process reporting on the agent's behalf, so a person will only
@@ -684,78 +962,132 @@ impl Verb {
             // verb missing from the usage costs an hour.
             Self::Hook => (
                 "hook",
-                shell(Group::Agent, "EVENT   (an agent's hook; payload on stdin)"),
+                Group::Agent,
+                Shell::Runs("EVENT   (an agent's hook; payload on stdin)"),
                 Keystroke::Cannot(NotAKeystroke::TheAgentsOwn),
+                Agent::Cannot(NotAnAgents::SaidAnotherWay),
             ),
+            // `wait_for_change` is the FOLLOW half (`events -f`), which is the only half an agent
+            // has a use for: it parks until something moves and answers what did.
             Self::Events => (
                 "events",
-                shell(
-                    Group::Agent,
-                    "[-t SESSION] [--since N] [-f [--pane PANE] [--kind KIND]…]",
-                ),
+                Group::Agent,
+                Shell::Runs("[-t SESSION] [--since N] [-f [--pane PANE] [--kind KIND]…]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["wait_for_change"]),
             ),
             // ── keys ────────────────────────────────────────────────────────────────────────────
             // THE ONE ANSWERING VERB THAT IS BOUND, and the reason is the whole content of
             // [`NotAKeystroke::Answers`]: this client has a VIEW for the answer
             // ([`crate::keyhelp`]). A verb refused for answering becomes bindable the day sprag
             // grows a surface for what it says.
+            // An agent that could READ the bindings could tell a person which key to press — the
+            // one thing on this surface it would use the keyboard for. Nobody has built it.
             Self::ListKeys => (
                 "list-keys",
-                shell(Group::Keys, "[-N]"),
+                Group::Keys,
+                Shell::Runs("[-N]"),
                 Keystroke::Means("list-keys"),
+                Agent::NotBuilt,
             ),
             Self::BindKey => (
                 "bind-key",
-                shell(Group::Keys, "[-nr] [-T prefix|root] KEY ACTION…"),
+                Group::Keys,
+                Shell::Runs("[-nr] [-T prefix|root] KEY ACTION…"),
                 Keystroke::Cannot(NotAKeystroke::EditsAFile),
+                Agent::Cannot(NotAnAgents::ThePersonsOwn),
             ),
             Self::UnbindKey => (
                 "unbind-key",
-                shell(Group::Keys, "[-n] [-T prefix|root] KEY"),
+                Group::Keys,
+                Shell::Runs("[-n] [-T prefix|root] KEY"),
                 Keystroke::Cannot(NotAKeystroke::EditsAFile),
+                Agent::Cannot(NotAnAgents::ThePersonsOwn),
             ),
             // ── options ─────────────────────────────────────────────────────────────────────────
             Self::ShowOptions => (
                 "show-options",
-                shell(Group::Options, "[-v] [NAME] [-g]"),
+                Group::Options,
+                Shell::Runs("[-v] [NAME] [-g]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
             ),
             Self::SetOption => (
                 "set-option",
-                shell(Group::Options, "[-u] NAME [VALUE] [-g]"),
+                Group::Options,
+                Shell::Runs("[-u] NAME [VALUE] [-g]"),
                 Keystroke::Cannot(NotAKeystroke::EditsAFile),
+                Agent::Cannot(NotAnAgents::ThePersonsOwn),
             ),
             // ── sprag itself ────────────────────────────────────────────────────────────────────
+            // NOT built, and it is the gap with the sharpest edge: half a dozen tool answers warn
+            // "the daemon is older than this tool", which is a version comparison an agent has no
+            // way to make itself.
             Self::Version => (
                 "version",
-                shell(Group::Tool, "  (also --version, -V)"),
+                Group::Tool,
+                Shell::Runs("  (also --version, -V)"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::NotBuilt,
             ),
+            // `tools/list` IS this verb on that mouth, and every MCP client reads it before it
+            // calls anything — so a `help` tool would be a second usage for one surface.
             Self::Help => (
                 "help",
-                shell(Group::Tool, "     (also --help, -h)"),
+                Group::Tool,
+                Shell::Runs("     (also --help, -h)"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Cannot(NotAnAgents::SaidAnotherWay),
             ),
-            // ── the five with no shell form ─────────────────────────────────────────────────────
-            // Each acts on THE CLIENT THAT PRESSED THE KEY, which a shell does not have. That is a
-            // property of the verb and not a gap: `sprag detach-client` would need to name a client
-            // and then mean something different from what the key means.
-            Self::DetachClient => ("detach-client", NO_SHELL, Keystroke::Means("detach-client")),
-            Self::SendPrefix => ("send-prefix", NO_SHELL, Keystroke::Means("send-prefix")),
+            // ── the five a KEYSTROKE alone can say ──────────────────────────────────────────────
+            // Each acts on THE CLIENT THAT PRESSED THE KEY, which neither of the other two mouths
+            // has. That is a property of the verb and not a gap: `sprag detach-client` would need
+            // to name a client and then mean something different from what the key means. They are
+            // the only five refused on two mouths for ONE fact, which is why both reasons are
+            // spelled `NoClientOfIts`.
+            Self::DetachClient => (
+                "detach-client",
+                Group::Client,
+                Shell::Cannot(NotAShellVerb::NoClientOfIts),
+                Keystroke::Means("detach-client"),
+                Agent::Cannot(NotAnAgents::NoClientOfIts),
+            ),
+            Self::SendPrefix => (
+                "send-prefix",
+                Group::Client,
+                Shell::Cannot(NotAShellVerb::NoClientOfIts),
+                Keystroke::Means("send-prefix"),
+                Agent::Cannot(NotAnAgents::NoClientOfIts),
+            ),
             Self::SwitchClient => (
                 "switch-client",
-                NO_SHELL,
+                Group::Client,
+                Shell::Cannot(NotAShellVerb::NoClientOfIts),
                 Keystroke::Means("switch-client -n|-p|-l|-t [<session>]"),
+                Agent::Cannot(NotAnAgents::NoClientOfIts),
             ),
-            Self::ChooseTree => ("choose-tree", NO_SHELL, Keystroke::Means("choose-tree")),
+            Self::ChooseTree => (
+                "choose-tree",
+                Group::Client,
+                Shell::Cannot(NotAShellVerb::NoClientOfIts),
+                Keystroke::Means("choose-tree"),
+                Agent::Cannot(NotAnAgents::NoClientOfIts),
+            ),
             Self::ConfirmBefore => (
                 "confirm-before",
-                NO_SHELL,
+                Group::Client,
+                Shell::Cannot(NotAShellVerb::NoClientOfIts),
                 Keystroke::Means("confirm-before <action>"),
+                Agent::Cannot(NotAnAgents::NoClientOfIts),
             ),
         };
-        Entry { name, shell, key }
+        Entry {
+            name,
+            group,
+            shell,
+            key,
+            agent,
+        }
     }
 
     /// The verb as a user spells it.
@@ -770,16 +1102,35 @@ impl Verb {
         self.entry().key
     }
 
+    /// What an agent can ask for by it.
+    #[must_use]
+    pub const fn agent(self) -> Agent {
+        self.entry().agent
+    }
+
     /// Whether `sprag <name>` dispatches it.
     #[must_use]
     pub const fn runs_in_shell(self) -> bool {
-        self.entry().shell.is_some()
+        matches!(self.entry().shell, Shell::Runs(_))
     }
 
     /// Whether a binding can name it.
     #[must_use]
     pub const fn bindable(self) -> bool {
         matches!(self.keystroke(), Keystroke::Means(_))
+    }
+
+    /// The MCP tools an agent reaches this verb through — EMPTY for a verb no tool serves.
+    ///
+    /// Empty covers both remaining answers on purpose: a caller asking *"can an agent do this"*
+    /// wants one question answered, and a caller asking *"why not"* reads [`Agent`] itself. The
+    /// same split [`bindable`](Self::bindable) makes one mouth over.
+    #[must_use]
+    pub const fn tools(self) -> &'static [&'static str] {
+        match self.agent() {
+            Agent::Tools(tools) => tools,
+            Agent::NotBuilt | Agent::Cannot(_) => &[],
+        }
     }
 
     /// The verb this word names, if any — the ONE place a command line's or a binding's first word
@@ -806,7 +1157,7 @@ impl Verb {
     /// [`None`] for a verb the shell does run, so a caller cannot print this about `sprag ls`.
     #[must_use]
     pub fn only_a_keystroke(self) -> Option<String> {
-        if self.runs_in_shell() {
+        if !matches!(self.entry().shell, Shell::Cannot(_)) {
             return None;
         }
         let form = match self.keystroke() {
@@ -818,6 +1169,43 @@ impl Verb {
         };
         Some(format!(
             "{:?} is a key binding, not a command: bind it with `sprag bind-key <key> {form:?}`",
+            self.name(),
+        ))
+    }
+
+    /// The sentence a SHELL answers with for a verb the product performs and no CLI dispatches.
+    ///
+    /// [`only_a_keystroke`](Self::only_a_keystroke)'s third case, and it exists for that method's
+    /// reason: a user who typed `sprag pane-links` asked for something sprag DOES, and telling them
+    /// `unknown command` would be the sentence a typo gets. It names the mouth that has the act, so
+    /// the answer is a place to go rather than a refusal.
+    ///
+    /// [`None`] unless the verb's shell answer is [`Shell::NotBuilt`], so a caller cannot print
+    /// this about `sprag ls` or about `switch-client`.
+    #[must_use]
+    pub fn no_shell_form_yet(self) -> Option<String> {
+        if !matches!(self.entry().shell, Shell::NotBuilt) {
+            return None;
+        }
+        let tools = self.tools();
+        let reached = if tools.is_empty() {
+            // Unreachable through the table today — a verb no mouth can say is what
+            // `every_verb_has_a_mouth` refuses — and a plainer sentence rather than a panic,
+            // because this renders an error message.
+            String::new()
+        } else {
+            format!(
+                " An AI agent in a pane reaches it as the {} MCP tool{}.",
+                tools
+                    .iter()
+                    .map(|tool| format!("`{tool}`"))
+                    .collect::<Vec<_>>()
+                    .join(" / "),
+                if tools.len() == 1 { "" } else { "s" },
+            )
+        };
+        Some(format!(
+            "{:?} is something sprag does and has no shell command yet.{reached}",
             self.name(),
         ))
     }
@@ -871,18 +1259,22 @@ pub fn usage() -> String {
     let mut out = String::from("usage: sprag <command> [arguments]\n");
     let mut group = None;
     for verb in Verb::ALL {
-        let Some(shell) = verb.entry().shell else {
+        let entry = verb.entry();
+        // A group whose verbs are all refused or unbuilt prints NO heading, because the heading is
+        // written lazily by the first verb that has a form — which is what keeps `client` out of
+        // the help without a rule saying so.
+        let Shell::Runs(form) = entry.shell else {
             continue;
         };
-        if group != Some(shell.group) {
-            out.push_str(&format!("\n  {}\n", shell.group.heading()));
-            group = Some(shell.group);
+        if group != Some(entry.group) {
+            out.push_str(&format!("\n  {}\n", entry.group.heading()));
+            group = Some(entry.group);
         }
         let name = verb.name();
-        if shell.form.is_empty() {
+        if form.is_empty() {
             out.push_str(&format!("    {name}\n"));
         } else {
-            out.push_str(&format!("    {name} {}\n", shell.form));
+            out.push_str(&format!("    {name} {form}\n"));
         }
     }
     // Indented as deeply as the verbs, so a HEADING is the only thing at two spaces — which is
@@ -900,18 +1292,18 @@ pub fn usage() -> String {
 ///
 /// **Deliberately NOT a field of [`Entry`].** `BoundAction::subject` already answers this for every
 /// bound action and the help view reads it there; a second answer in this table is exactly the
-/// drift this module exists to remove. It is a function of the [`Group`] the shell prints the verb
-/// in, so the two axes cannot disagree — and the five verbs with no shell form are the CLIENT's own,
-/// which is the group they were already in.
+/// drift this module exists to remove. It is a function of [`Entry::group`], so the two axes cannot
+/// disagree — and the five verbs a shell cannot say are [`Group::Client`]'s own, which is what they
+/// had always been answered as through the absence of a shell form.
 #[must_use]
 pub fn subject_of(verb: Verb) -> ActionSubject {
-    match verb.entry().shell.map(|shell| shell.group) {
-        Some(Group::Window) => ActionSubject::Window,
-        Some(Group::Pane) => ActionSubject::Pane,
-        Some(Group::Session) => ActionSubject::Session,
+    match verb.entry().group {
+        Group::Window => ActionSubject::Window,
+        Group::Pane => ActionSubject::Pane,
+        Group::Session => ActionSubject::Session,
         // The keyboard, the settings, an agent's reports, and sprag itself are all things a CLIENT
         // asks about rather than parts of the containment.
-        Some(Group::Agent | Group::Keys | Group::Options | Group::Tool) | None => {
+        Group::Agent | Group::Keys | Group::Options | Group::Tool | Group::Client => {
             ActionSubject::Client
         }
     }
@@ -967,19 +1359,250 @@ mod tests {
         assert!(declared > 50, "the parse found {declared} variants");
     }
 
-    /// Every verb can be SAID by somebody: a shell, a keystroke, or both.
+    /// Every verb can be SAID by somebody: a shell, a keystroke, an agent, or several.
     ///
-    /// The one combination [`Entry`] can spell that means nothing — no shell form and a keystroke
-    /// that cannot mean it — is a verb the product has and nobody can reach.
+    /// The one combination [`Entry`] can spell that means nothing — no shell form, a keystroke that
+    /// cannot mean it and no tool — is a verb the product has and nobody can reach. R335 widened it
+    /// to three mouths, which is what let the three tool-only acts into the table at all:
+    /// [`Verb::PaneLinks`] would have failed this test before the agent axis existed.
     #[test]
     fn every_verb_has_a_mouth() {
         for verb in Verb::ALL {
             assert!(
-                verb.runs_in_shell() || verb.bindable(),
+                verb.runs_in_shell() || verb.bindable() || !verb.tools().is_empty(),
                 "{} can be said by nobody",
                 verb.name(),
             );
         }
+        // THE CONTROL: the three mouths are not all the same mouth. Each has at least one verb the
+        // other two cannot say, so a test that passed by one column alone would be reading a table
+        // this project does not have.
+        for (mouth, only) in [
+            ("a shell", Verb::InstallHooks),
+            ("a keystroke", Verb::SwitchClient),
+            ("an agent", Verb::PaneLinks),
+        ] {
+            let mouths = usize::from(only.runs_in_shell())
+                + usize::from(only.bindable())
+                + usize::from(!only.tools().is_empty());
+            assert_eq!(
+                mouths,
+                1,
+                "{} is meant to be reachable by {mouth} ALONE, and {mouths} mouths have it",
+                only.name(),
+            );
+        }
+    }
+
+    /// **WHAT AN AGENT CAN ASK FOR IS WHAT THE TABLE SAYS IT IS** — item 56's number, derived.
+    ///
+    /// [`the_keyboard_gap_is_what_the_table_says_it_is`]'s instrument on the third mouth, and for
+    /// its reason: the register held *"a by-hand mapping suggested ~20 verbs have a tool and ~34 do
+    /// not, and that is an estimate, not a measurement"*. It is a measurement now, and it moves in
+    /// three directions that cannot all drift the same way.
+    #[test]
+    fn the_agent_gap_is_what_the_table_says_it_is() {
+        let served = Verb::ALL
+            .iter()
+            .filter(|verb| !verb.tools().is_empty())
+            .count();
+        let not_built = Verb::ALL
+            .iter()
+            .filter(|verb| verb.agent() == Agent::NotBuilt)
+            .count();
+        let refused = Verb::ALL
+            .iter()
+            .filter(|verb| matches!(verb.agent(), Agent::Cannot(_)))
+            .count();
+        assert_eq!(
+            (served, not_built, refused),
+            (30, 7, 20),
+            "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
+             and {refused} are refused with a reason",
+        );
+        assert_eq!(served + not_built + refused, Verb::ALL.len());
+        // NAMED, so closing one is a change here and not a number that drifts — and so a reader can
+        // see at a glance that none of the seven is an ARRANGEMENT verb, which is what item 56a
+        // was about.
+        let pending: Vec<&str> = Verb::ALL
+            .iter()
+            .filter(|verb| verb.agent() == Agent::NotBuilt)
+            .map(|verb| verb.name())
+            .collect();
+        assert_eq!(
+            pending,
+            [
+                "list-clients",
+                "run",
+                "move-window",
+                "list-hooks",
+                "list-keys",
+                "show-options",
+                "version",
+            ],
+            "the agent surface's remaining gap, by name",
+        );
+    }
+
+    /// **THE ARRANGEMENT FAMILY IS WHOLE ON EVERY MOUTH** — item 56a, as a claim rather than a table
+    /// in a register.
+    ///
+    /// The measured defect was a SHAPE: six verbs that move a pane around, four of which no agent
+    /// could say, so an agent could create, destroy and shuffle panes inside one window and could
+    /// not move one BETWEEN windows at all. This asserts the shape rather than the count, so it
+    /// stays true as the family grows and fails the moment one member loses a mouth.
+    #[test]
+    fn every_arrangement_verb_is_reachable_from_every_mouth() {
+        for verb in [
+            Verb::BreakPane,
+            Verb::JoinPane,
+            Verb::MovePane,
+            Verb::SwapPane,
+            Verb::ZoomPane,
+            Verb::ResizePane,
+        ] {
+            assert!(verb.runs_in_shell(), "{} has no shell form", verb.name());
+            assert!(verb.bindable(), "{} cannot be bound", verb.name());
+            assert!(
+                !verb.tools().is_empty(),
+                "{} is an arrangement verb no agent can ask for — the exact half-served family \
+                 item 56a measured",
+                verb.name(),
+            );
+        }
+    }
+
+    /// A tool name names ONE verb, and every declared name is a plausible MCP tool name.
+    ///
+    /// The uniqueness half is what makes [`Verb::tools`] a partition rather than a tagging: two
+    /// verbs claiming `read_pane` would make the roster ratchet in `sprag-mcp` pass while the table
+    /// said two contradictory things about one tool.
+    #[test]
+    fn a_tool_name_names_one_verb() {
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        for verb in Verb::ALL {
+            for tool in verb.tools() {
+                if let Some((_, other)) = seen.iter().find(|(name, _)| name == tool) {
+                    panic!("{tool:?} is claimed by both {other} and {}", verb.name());
+                }
+                seen.push((tool, verb.name()));
+                assert!(
+                    tool.chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit()),
+                    "{tool:?} is not spelled the way this surface spells a tool",
+                );
+            }
+        }
+        assert!(seen.len() > 30, "the table declares {} tools", seen.len());
+    }
+
+    /// Every agent refusal reads as a clause, no two say the same thing, and every rule is USED.
+    ///
+    /// [`each_refusal_reason_is_its_own_sentence`]'s test on the third mouth. The USED half is the
+    /// one that matters most here: these four rules were written in one sitting, and a rule nobody
+    /// applies is policy nobody decided.
+    #[test]
+    fn each_agent_refusal_reason_is_its_own_sentence() {
+        let reasons = [
+            NotAnAgents::OutsideItsSession,
+            NotAnAgents::ThePersonsOwn,
+            NotAnAgents::NoClientOfIts,
+            NotAnAgents::SaidAnotherWay,
+        ];
+        let mut whys: Vec<&str> = reasons.iter().map(|reason| reason.why()).collect();
+        let before = whys.len();
+        whys.sort_unstable();
+        whys.dedup();
+        assert_eq!(before, whys.len(), "two reasons read identically");
+        for why in whys {
+            assert!(
+                !why.ends_with('.'),
+                "{why:?} is a clause a refusal ends with, so it stops without punctuation",
+            );
+        }
+        for reason in reasons {
+            assert!(
+                Verb::ALL
+                    .iter()
+                    .any(|verb| verb.agent() == Agent::Cannot(reason)),
+                "{reason:?} is a reason no verb gives",
+            );
+        }
+        // The one reason spelled on TWO mouths is spelled so for one fact, and the verbs that give
+        // it are the same five — which is the claim the two names make and nothing else checks.
+        let no_client: Vec<&str> = Verb::ALL
+            .iter()
+            .filter(|verb| verb.agent() == Agent::Cannot(NotAnAgents::NoClientOfIts))
+            .map(|verb| verb.name())
+            .collect();
+        let no_shell: Vec<&str> = Verb::ALL
+            .iter()
+            .filter(|verb| verb.entry().shell == Shell::Cannot(NotAShellVerb::NoClientOfIts))
+            .map(|verb| verb.name())
+            .collect();
+        assert_eq!(no_client, no_shell, "one fact, two mouths, two lists");
+        assert_eq!(no_client.len(), 5);
+    }
+
+    /// **THE SHELL'S GAP IS WHAT THE TABLE SAYS IT IS**, and it stopped being zero at R335.
+    ///
+    /// `Option<Shell>` could only say *runs* or *cannot*, and this table now holds three acts the
+    /// product performs that no CLI dispatches. The count is asserted for
+    /// [`the_keyboard_gap_is_what_the_table_says_it_is`]'s reason — so closing one is an edit here
+    /// rather than a number nobody re-measures.
+    #[test]
+    fn the_shell_gap_is_what_the_table_says_it_is() {
+        let runs = Verb::ALL.iter().filter(|verb| verb.runs_in_shell()).count();
+        let not_built = Verb::ALL
+            .iter()
+            .filter(|verb| verb.entry().shell == Shell::NotBuilt)
+            .count();
+        let refused = Verb::ALL
+            .iter()
+            .filter(|verb| matches!(verb.entry().shell, Shell::Cannot(_)))
+            .count();
+        assert_eq!(
+            (runs, not_built, refused),
+            (49, 3, 5),
+            "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
+             built, and {refused} are refused with a reason",
+        );
+        assert_eq!(runs + not_built + refused, Verb::ALL.len());
+        let pending: Vec<&str> = Verb::ALL
+            .iter()
+            .filter(|verb| verb.entry().shell == Shell::NotBuilt)
+            .map(|verb| verb.name())
+            .collect();
+        assert_eq!(
+            pending,
+            ["read-last-command", "pane-links", "pane-images"],
+            "the shell's remaining gap, by name",
+        );
+        // Each of the three says where it CAN be reached, so a person who typed one gets a place to
+        // go rather than a refusal — and the sentence names a tool the roster really carries,
+        // because it is built from the same column the roster ratchet reads.
+        for verb in Verb::ALL {
+            let sentence = verb.no_shell_form_yet();
+            assert_eq!(
+                sentence.is_some(),
+                verb.entry().shell == Shell::NotBuilt,
+                "{} answered the wrong question",
+                verb.name(),
+            );
+            if let Some(sentence) = sentence {
+                assert!(
+                    sentence.contains(verb.name())
+                        && verb.tools().iter().all(|tool| sentence.contains(tool)),
+                    "{sentence:?} must name the verb and every tool that has it",
+                );
+            }
+        }
+        assert_eq!(Verb::Ls.no_shell_form_yet(), None, "the shell runs `ls`");
+        assert_eq!(
+            Verb::SwitchClient.no_shell_form_yet(),
+            None,
+            "a shell CANNOT say switch-client, which is a different answer",
+        );
     }
 
     /// Names are unique and every one round-trips through [`Verb::parse`].
@@ -1021,7 +1644,7 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (25, 1, 28),
+            (25, 1, 31),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
