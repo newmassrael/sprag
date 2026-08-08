@@ -284,7 +284,7 @@ const ENABLE_CONTROLLERS: &str = "+cpu +pids";
 /// weight per LEVEL, mirroring the identities is what makes two sessions split the machine evenly
 /// regardless of how many panes each holds — the policy is the shape, and there is nothing to tune.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PaneAddress {
+pub struct PaneLineage {
     /// The session the pane's window belongs to.
     pub session: SessionId,
     /// The window the pane belongs to.
@@ -293,7 +293,7 @@ pub struct PaneAddress {
     pub pane: PaneId,
 }
 
-impl PaneAddress {
+impl PaneLineage {
     /// This pane's cgroup, relative to the tree root — `session-<n>/window-<n>/pane-<n>`.
     #[must_use]
     pub fn relative(self) -> PathBuf {
@@ -374,7 +374,7 @@ impl Tree {
     ///
     /// Returns [`TreeError`] if a level cannot be created, cannot take its controllers, or if the
     /// leaf will not take its weight.
-    pub fn place(&self, at: PaneAddress, share: Share) -> Result<Placement, TreeError> {
+    pub fn place(&self, at: PaneLineage, share: Share) -> Result<Placement, TreeError> {
         let mut path = self.root.clone();
         for level in at.interiors() {
             path.push(level);
@@ -396,7 +396,7 @@ impl Tree {
     ///
     /// Returns [`TreeError`] if the pane's own cgroup will not go away — which means something is
     /// still running in it, and the caller has a child it thinks it killed.
-    pub fn release(&self, at: PaneAddress) -> Result<(), TreeError> {
+    pub fn release(&self, at: PaneLineage) -> Result<(), TreeError> {
         let leaf = self.root.join(at.relative());
         remove_cgroup(&leaf)?;
         // Upward, best effort: `ENOTEMPTY` here is a sibling, not a fault.
@@ -613,6 +613,24 @@ fn write_control(path: &Path, value: &str) -> Result<(), TreeError> {
         })
 }
 
+/// The cgroup a process is in, as a directory under the unified hierarchy.
+///
+/// The ONE reader of `/proc/<pid>/cgroup` in this workspace, for the reason this crate keeps one
+/// reader of `/proc/<pid>/stat`: the parse has a trap in it — a hybrid host lists v1 controllers
+/// beside the v2 line, so taking the first line yields a path that exists under the v2 mount often
+/// enough to look like it worked — and a second copy is a second chance to fall in. A caller
+/// outside this crate, the daemon watching for its own move into a freshly delegated scope, asks
+/// here rather than splitting the line again.
+///
+/// `None` where there is no v2 hierarchy to read, or no such process.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn cgroup_of(pid: u32) -> Option<PathBuf> {
+    let contents = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    let path = unified_path(&contents)?;
+    Some(Path::new(UNIFIED_ROOT).join(path.trim_start_matches('/')))
+}
+
 /// The unified-hierarchy path out of a `/proc/<pid>/cgroup` file, if it has one.
 ///
 /// The v2 line is `0::<path>` and it is the ONLY line on a pure-v2 host, but a hybrid host lists v1
@@ -717,8 +735,8 @@ mod tests {
         }
     }
 
-    fn address(session: u64, window: u64, pane: u64) -> PaneAddress {
-        PaneAddress {
+    fn address(session: u64, window: u64, pane: u64) -> PaneLineage {
+        PaneLineage {
             session: SessionId(session),
             window: WindowId(window),
             pane: PaneId(pane),

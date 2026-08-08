@@ -113,6 +113,18 @@ signal-hook = "0.3"
 # already-resolved transitive (via signal-hook).
 libc = "0.2"
 
+# D-Bus, for ONE call: the daemon asks its systemd user manager for a
+# delegated cgroup subtree at startup (R336), so a pane's share of the machine
+# can be enforced. `StartTransientUnit` with a `PIDs` property is the only way
+# to move an ALREADY-RUNNING process into a new scope — `systemd-run` starts a
+# command instead, so the CLI cannot express it at all.
+#
+# Confined to sprag-host, which already declares itself the home for heavy
+# transitive deps (pinion-rpc), and Linux-gated there: cgroups are the only
+# thing this is for. Already resolved in the tree via the GUI's clipboard
+# stack, so it costs the workspace no new download.
+zbus = "5"
+
 # JSON parsing for tests that assert on the scene/snapshot RPC wire.
 #
 # `preserve_order` is on for `sprag_host::hooks`, which edits an AGENT's own `settings.json`: the

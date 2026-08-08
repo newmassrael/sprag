@@ -52,6 +52,10 @@ pub mod attach;
 pub mod attention;
 pub mod chooser;
 pub mod config;
+/// Asking systemd for the cgroup subtree a pane's share is enforced in (R336). Linux-only: it is
+/// the platform that has cgroups, and the crate that has the bus client.
+#[cfg(target_os = "linux")]
+pub mod delegation;
 pub mod durability;
 pub mod events;
 mod external;

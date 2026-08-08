@@ -120,6 +120,19 @@ fn main() -> io::Result<()> {
     // `SPRAG_LOG` (RUST_LOG syntax). Stderr, never stdout — stdout carries the stdin/stdout wire.
     init_tracing();
 
+    // Take the cgroup subtree a pane's share is enforced in, BEFORE any pane is born (R336).
+    //
+    // Two things change on the machine and neither is undone by dropping the handle: this process
+    // moves into a scope of its own, and that scope's controllers are turned on for its children.
+    // So the daemon does not hold the tree open — the pane-birth path re-derives it by adopting the
+    // same root, which is idempotent by construction.
+    //
+    // It also fixes a lifetime that was wrong by accident: a daemon that inherits the launching
+    // terminal's transient scope DIES WITH THAT TERMINAL, which is the opposite of what a
+    // multiplexer promises. Its own scope outlives the window that started it.
+    #[cfg(target_os = "linux")]
+    take_share_subtree();
+
     // The one Workspace owner (shared with the GUI as a code component): boot the
     // initial pane through it, then wrap it in HostState to serve the RPC surface.
     //
@@ -308,6 +321,48 @@ fn init_tracing() {
         .with_writer(std::io::stderr)
         .with_timer(fmt::time::uptime())
         .try_init();
+}
+
+/// Ask systemd for a delegated cgroup subtree and turn on what a pane's share needs, reporting
+/// either way (R336).
+///
+/// Never fatal, by design. A person opening a terminal is not asking for resource control, and a
+/// machine that cannot give one — no systemd, no session bus, a container, cgroup v1 — must still
+/// get their terminal. What it must NOT do is stay quiet about it: a share that is set and silently
+/// not enforced is worse than one the daemon said it could not enforce, so both outcomes are logged
+/// and the unenforceable one carries its reason.
+///
+/// The handle is dropped on purpose. `adopt` acts on the MACHINE — the process is moved, the
+/// controllers are on — and the pane-birth path re-derives the same tree from the same root.
+#[cfg(target_os = "linux")]
+fn take_share_subtree() {
+    use sprag_terminal::share::{Enforcement, Tree, Unenforceable};
+
+    let delegated = match sprag_host::delegation::acquire(std::process::id()) {
+        Ok(delegated) => delegated,
+        Err(error) => {
+            tracing::warn!(%error, "pane shares will not be enforced");
+            return;
+        }
+    };
+    // Asked AFTER the move, about the cgroup this process is in NOW: the answer before it would
+    // have described the terminal's scope, which is the one that cannot weight anything.
+    match Enforcement::probe() {
+        Enforcement::Available { home } => match Tree::adopt(home.clone()) {
+            Ok(_tree) => tracing::info!(
+                unit = delegated.unit(),
+                root = %home.display(),
+                "pane shares enforced"
+            ),
+            Err(error) => tracing::warn!(%error, "pane shares will not be enforced"),
+        },
+        Enforcement::Unenforceable { reason } => {
+            // A scope that was delegated and still cannot weight is worth its own sentence: it
+            // means the user manager handed over a subtree without the CPU controller in it.
+            let reason: Unenforceable = reason;
+            tracing::warn!(%reason, unit = delegated.unit(), "pane shares will not be enforced");
+        }
+    }
 }
 
 /// How often the daemon re-snapshots its live shape to disk — the loss window a hard reboot can

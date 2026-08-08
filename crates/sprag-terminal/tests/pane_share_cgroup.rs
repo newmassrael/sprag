@@ -29,7 +29,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use sprag_terminal::registry::{SessionId, WindowId};
-use sprag_terminal::share::{PaneAddress, Placement, Share, Tree};
+use sprag_terminal::share::{PaneLineage, Placement, Share, Tree};
 use sprag_terminal::workspace::PaneId;
 
 /// How long the two cgroups are left to accumulate CPU time.
@@ -102,8 +102,8 @@ fn two_panes_weighted_alike_split_a_cpu_evenly_however_many_threads_each_runs() 
     );
 }
 
-fn address(session: u64, window: u64, pane: u64) -> PaneAddress {
-    PaneAddress {
+fn address(session: u64, window: u64, pane: u64) -> PaneLineage {
+    PaneLineage {
         session: SessionId(session),
         window: WindowId(window),
         pane: PaneId(pane),

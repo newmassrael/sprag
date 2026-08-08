@@ -76,6 +76,16 @@ serde = { workspace = true }
 # reports a byte offset and each frontend measures with its own painter's width function.
 unicode-segmentation = { workspace = true }
 
+# The daemon's ONE D-Bus call, at startup: ask the systemd user manager for a delegated cgroup
+# subtree so `sprag_terminal::share::Tree` has somewhere to build (crate::delegation, R336).
+#
+# Linux-gated rather than optional behind a feature: cgroups are the whole reason it is here, so
+# every other platform wants it absent rather than switchable. A host with no systemd still builds
+# and still runs — it gets an `Unenforceable` answer with its reason, which is the designed outcome
+# rather than a degraded one.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { workspace = true }
+
 [dev-dependencies]
 # A daemon OLDER than this build: the two skew sweeps drive one that serves no address and one
 # that knows no action. Four test files had each written their own until R324; this is DEV-ONLY.
