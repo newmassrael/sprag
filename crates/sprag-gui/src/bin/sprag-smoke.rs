@@ -2797,6 +2797,12 @@ fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &m
     //
     // The FIT is the one to drive: the window is still pinned to `elsewhere` from the press above,
     // so a row that lands puts it back on this client's own area — a fact only a fold produces.
+    //
+    // ONE of the three rows, stated rather than left as an omission: all three are one `run` arm
+    // differing by a `SizeRequest` value, and which value each row carries is pinned by
+    // `the_palette_offers_the_fits_a_row_can_carry_and_sends_each_one`. What only a live run can
+    // say is that the palette OFFERS the rows and that a click reaches the host, and one row says
+    // that for all three.
     if let Err(error) = smoke.cli(&[
         "resize-window",
         "-t",
