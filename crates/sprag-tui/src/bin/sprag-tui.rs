@@ -179,6 +179,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     // is sound here for a reason rather than by luck — this client is single-threaded, so the two
     // never write at once, and each sequence goes out as one `write_all`.
     let mut outward_tty = tty.try_clone()?;
+    // And a THIRD, for the frame brackets — see [`Screen`]. Same argument as the second: a distinct
+    // conversation with the same terminal, on a client that is single-threaded, each sequence one
+    // `write_all`. Cloned BEFORE the mirror takes ownership of the original.
+    let frame_tty = tty.try_clone()?;
     let mut mouse = MouseMirror::new(tty);
     // The terminal, cut into the rectangle every pane's is carved out of and the row this client
     // speaks in. Mutable because a window change replaces it, and kept as ONE value rather than a
@@ -236,7 +240,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // report answering a mode asked for before that would be discarded, and the first thing this
     // client would learn about the person is a change from a state it never saw.
     outward.follow(keymap.options(), &mut person, &mut outward_tty);
-    let mut screen = BufferedTerminal::new(terminal)?;
+    let mut screen = Screen::over(terminal, frame_tty)?;
     // `BufferedTerminal::new` sizes its surface from the terminal's raw answer, so the fallback
     // has to be applied here too or a terminal that reports nothing paints into a 0x0 surface.
     //
@@ -1356,7 +1360,7 @@ enum Input {
 /// bracket is INSPECTED — `focus::edge` is never consulted — so no binding can be swallowed for a
 /// person who switched the feature off. The pushback is the same either way.
 fn read_input(
-    screen: &mut BufferedTerminal<SystemTerminal>,
+    screen: &mut Screen,
     waiting: Option<Duration>,
     pending: &mut Option<(InputEvent, Instant)>,
     person: Option<&mut Person>,
@@ -1400,6 +1404,106 @@ fn read_input(
             *pending = ahead;
             Ok(Input::Event(event, arrived))
         }
+    }
+}
+
+/// The person's terminal, which this client writes only in WHOLE FRAMES.
+///
+/// # What the type is for
+///
+/// A repaint is a DIFFERENCE — rows the arrangement moved, a status row that changed, a cleared
+/// screen and everything drawn back over it — and a terminal that presents each of those writes as
+/// it arrives shows the person the halfway states between two arrangements. That is what tearing IS
+/// on a full-screen redraw: not a graphics artefact, but a reader seeing a frame this client never
+/// meant to be a frame. DEC private mode 2026 is the protocol that says so — everything between the
+/// set and the reset is ONE update — and it is what `neovim`, `notcurses` and `fzf` wrap a redraw
+/// in. sprag's own emulator has honoured it for a pane's CHILD since long before this type existed;
+/// this is the same courtesy paid outward, to the terminal this client is itself a child of.
+///
+/// # Why it is a TYPE and not a rule
+///
+/// [`BufferedTerminal::flush`] is the one call that puts bytes on the person's terminal, and there
+/// are five paints in this file — a frame, a status row, a prompt, a help view, and the boot
+/// frame — with a sixth one binding away. A rule saying "bracket the flush" is a rule a sixth
+/// caller can forget, and forgetting it is invisible: the frame still paints, correctly, and only
+/// somebody watching a loaded machine ever sees the difference. Holding the surface PRIVATE and
+/// exposing [`present`](Screen::present) instead makes the unbracketed frame unrepresentable, which
+/// is the same move this file makes for the prefix mode and `Routed::next`.
+///
+/// The pair is closed even when the flush FAILS. A terminal left holding an update open shows the
+/// person nothing at all until something else closes it, so the one path where the client is in
+/// trouble is exactly the path that must not strand the screen.
+struct Screen {
+    /// The diffing surface — private, and see the type's own doc for why that is the whole point.
+    buffered: BufferedTerminal<SystemTerminal>,
+    /// A THIRD handle on the controlling terminal, beside [`MouseMirror`]'s and the outward one, and
+    /// held for the same reason each of those is: `Change::Text` renders control characters inert by
+    /// contract, so a mode sequence cannot be queued on the surface. Sound for the same reason too —
+    /// this client is single-threaded, so no two handles write at once, and each sequence leaves in
+    /// one `write_all`.
+    tty: std::fs::File,
+}
+
+impl Screen {
+    /// Take `terminal`, with `tty` for the sequences the surface cannot carry.
+    fn over(terminal: SystemTerminal, tty: std::fs::File) -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            buffered: BufferedTerminal::new(terminal)?,
+            tty,
+        })
+    }
+
+    /// Queue one change on the surface. Nothing reaches the person until [`present`](Self::present).
+    fn add_change(&mut self, change: impl Into<Change>) {
+        self.buffered.add_change(change);
+    }
+
+    /// Queue changes on the surface. Nothing reaches the person until [`present`](Self::present).
+    fn add_changes(&mut self, changes: Vec<Change>) {
+        self.buffered.add_changes(changes);
+    }
+
+    /// Re-shape the surface this client draws on — a window change, and the boot fallback.
+    fn resize(&mut self, cols: usize, rows: usize) {
+        self.buffered.resize(cols, rows);
+    }
+
+    /// The terminal underneath, for the questions that are not about drawing: polling for input,
+    /// and asking how big it is.
+    fn terminal(&mut self) -> &mut SystemTerminal {
+        self.buffered.terminal()
+    }
+
+    /// Put everything queued on the person's terminal as ONE atomic frame.
+    fn present(&mut self) -> Result<(), Box<dyn Error>> {
+        self.synchronized(true);
+        let flushed = self.buffered.flush();
+        // BEFORE the `?`: see the type's doc — a frame left open outlives the error that opened it.
+        self.synchronized(false);
+        flushed?;
+        Ok(())
+    }
+
+    /// Open or close the atomic update, named rather than spelled — the discipline the mouse modes
+    /// are held to a few hundred lines below, and for the same reason: a number in a byte string is
+    /// a number nobody can look up.
+    ///
+    /// A write that fails is dropped, exactly as [`MouseMirror::set`]'s is: the only place this
+    /// client could report it is the screen it is painting the person's panes onto.
+    fn synchronized(&mut self, open: bool) {
+        let mode = DecPrivateMode::Code(DecPrivateModeCode::SynchronizedOutput);
+        let mut out = String::new();
+        let _ = write!(
+            out,
+            "{}",
+            CSI::Mode(if open {
+                Mode::SetDecPrivateMode(mode)
+            } else {
+                Mode::ResetDecPrivateMode(mode)
+            })
+        );
+        let _ = self.tty.write_all(out.as_bytes());
+        let _ = self.tty.flush();
     }
 }
 
@@ -1455,7 +1559,7 @@ enum Clear {
 /// stamped, through [`PaintCache`]. The cursor is unaffected: it is `O(1)` and a bare cursor move
 /// stamps no row, which is exactly why it is painted separately.
 fn paint(
-    screen: &mut BufferedTerminal<SystemTerminal>,
+    screen: &mut Screen,
     host: &WireHost,
     tiling: &Tiling,
     screen_area: Rect,
@@ -1485,7 +1589,7 @@ fn paint(
         // still attached to a session and can still be pressed at, so the one surface able to say
         // so must not be the thing that disappears with the panes.
         screen.add_changes(status_changes(status, &Status::of(host), message));
-        screen.flush()?;
+        screen.present()?;
         return Ok(());
     }
     if clear == Clear::Yes {
@@ -1550,7 +1654,7 @@ fn paint(
             screen.add_changes(help_changes(screen_area, showing.help(), showing.scroll()));
         }
     }
-    screen.flush()?;
+    screen.present()?;
     Ok(())
 }
 
@@ -1581,7 +1685,7 @@ fn paint(
 /// every one of those inputs lives in, so a verdict moving, a pane opening and a pane closing are
 /// the same event to it. A host that will not promise a token answers `None` and this skips
 /// nothing, which is the direction a mistake here has to fall.
-fn retitle(screen: &mut BufferedTerminal<SystemTerminal>, host: &WireHost, held: &mut Painted) {
+fn retitle(screen: &mut Screen, host: &WireHost, held: &mut Painted) {
     let session = host.current_session();
     // The whole input to the digest, in one value: the host's token for the pane verdicts plus the
     // session the baseline names. `None` from the host means it will not promise a token, and the
@@ -1832,13 +1936,13 @@ fn showing(message: &Option<Message>) -> Option<String> {
 /// [`Status`] is read from the host here rather than passed in, so this and [`paint`] cannot come to
 /// disagree about where the client is.
 fn paint_status(
-    screen: &mut BufferedTerminal<SystemTerminal>,
+    screen: &mut Screen,
     host: &WireHost,
     area: Rect,
     message: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     screen.add_changes(status_changes(area, &Status::of(host), message));
-    screen.flush()?;
+    screen.present()?;
     Ok(())
 }
 
@@ -2139,12 +2243,12 @@ impl Asking {
 /// other path goes through [`paint`], which draws this same row last so a repaint cannot lose it —
 /// see [`prompt_changes`] for why the row is an overlay and not a reserved line.
 fn paint_prompt(
-    screen: &mut BufferedTerminal<SystemTerminal>,
+    screen: &mut Screen,
     screen_area: Rect,
     asking: &Asking,
 ) -> Result<(), Box<dyn Error>> {
     screen.add_changes(asking_changes(screen_area, asking));
-    screen.flush()?;
+    screen.present()?;
     Ok(())
 }
 
@@ -2190,12 +2294,12 @@ fn asking_changes(screen_area: Rect, asking: &Asking) -> Vec<termwiz::surface::C
 /// for a page-down would be paying for panes nobody can see. Every other path goes through
 /// [`paint`], which draws this last so a repaint cannot lose it.
 fn paint_help(
-    screen: &mut BufferedTerminal<SystemTerminal>,
+    screen: &mut Screen,
     screen_area: Rect,
     showing: &Showing,
 ) -> Result<(), Box<dyn Error>> {
     screen.add_changes(help_changes(screen_area, showing.help(), showing.scroll()));
-    screen.flush()?;
+    screen.present()?;
     Ok(())
 }
 

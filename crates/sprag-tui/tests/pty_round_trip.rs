@@ -697,6 +697,40 @@ impl Tui {
             .any(|window| window == text.as_bytes())
     }
 
+    /// Everything this client wrote, split into what it painted INSIDE an atomic frame (DEC private
+    /// mode 2026) and what it wrote OUTSIDE one — plus how many frames it closed.
+    ///
+    /// Read off [`Tui::transcript`] for the reason that field exists: a screen is a state that gets
+    /// overwritten, and the question here is about every byte the client has ever emitted rather
+    /// than about any moment. Nothing is dropped — every byte lands in exactly one of the two — so
+    /// the two halves replayed together are the whole conversation, which is what lets an assertion
+    /// about one of them mean something about all of it.
+    fn framed_and_loose(&self) -> (Vec<u8>, Vec<u8>, usize) {
+        const OPEN: &[u8] = b"\x1b[?2026h";
+        const CLOSE: &[u8] = b"\x1b[?2026l";
+        let bytes = self
+            .transcript
+            .lock()
+            .expect("the transcript mutex")
+            .clone();
+        let (mut framed, mut loose, mut frames) = (Vec::new(), Vec::new(), 0);
+        let (mut at, mut inside) = (0, false);
+        while at < bytes.len() {
+            if !inside && bytes[at..].starts_with(OPEN) {
+                inside = true;
+                at += OPEN.len();
+            } else if inside && bytes[at..].starts_with(CLOSE) {
+                inside = false;
+                frames += 1;
+                at += CLOSE.len();
+            } else {
+                if inside { &mut framed } else { &mut loose }.push(bytes[at]);
+                at += 1;
+            }
+        }
+        (framed, loose, frames)
+    }
+
     /// Whether the client has TAKEN the terminal — the edge before which nothing may be typed.
     ///
     /// **This is not fussiness, it is the difference between a passing test and a test that types
@@ -4526,6 +4560,100 @@ fn a_repeat_window_is_judged_on_when_a_key_arrived_not_on_when_it_was_handled() 
                 &vec![(left - 3, BOOT_PANES.1), (right + 3, BOOT_PANES.1)],
             )
         },
+    );
+}
+
+/// **Everything the person can READ was painted inside ONE atomic frame.**
+///
+/// A repaint is a difference — rows an arrangement moved, a divider drawn between two panes, a
+/// status row rewritten — and a terminal presenting each of those writes as it arrives shows the
+/// reader the states BETWEEN two arrangements. DEC private mode 2026 is the protocol that says
+/// "everything between these two is one update"; sprag's own emulator has honoured it for a pane's
+/// CHILD since long before this client emitted it, and this is the claim that it now pays the same
+/// courtesy outward, to the terminal it is itself a child of.
+///
+/// # The assertion, and why it is made this way round
+///
+/// A test that looked for the sequences would pass over a client that emitted a bracket once and
+/// painted everything else outside it — which is exactly the failure a sixth paint site introduces.
+/// So the transcript is SPLIT and the LOOSE half is replayed on its own: whatever this client wrote
+/// outside a frame, put on a terminal by itself, must leave a screen with nothing on it. Setting a
+/// mode, asking for focus reports and forwarding a notification are all legitimately outside a
+/// frame — none of them is something a person reads off the grid — and the split says so precisely,
+/// where a count of escape sequences could not.
+///
+/// The FRAMED half is replayed too, and that is the half that keeps the first from passing
+/// vacuously: a client that wrote nothing at all would satisfy "nothing outside a frame". Replaying
+/// only the frames has to reproduce the panes, the divider between them and the status row — the
+/// whole picture, from the atomic updates alone.
+#[test]
+fn everything_the_person_can_read_was_painted_inside_one_atomic_frame() {
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+
+    tui.type_bytes(b"live");
+    wait_for("the client to be painting", || painted(&mut tui, "live"));
+
+    // A SECOND frame, and one that redraws most of the screen: the split re-tiles both panes, draws
+    // a divider and rewrites the status row, which is the repaint a person would actually see tear.
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"%");
+    let (near, far) = halves(BOOT_PANES.0);
+    wait_for("both panes to reach their own half's size", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
+        )
+    });
+    wait_for("a divider to stand between the two panes", || {
+        let column = tui.pane_column(near);
+        if column.chars().all(|glyph| glyph == '\u{2502}') {
+            Ok(())
+        } else {
+            Err(format!("column {near} reads {column:?}: {:?}", tui.rows()))
+        }
+    });
+
+    let (framed, loose, frames) = tui.framed_and_loose();
+    assert!(
+        frames >= 2,
+        "a client that painted a boot frame and a re-tile closed at least two atomic updates, \
+         not {frames}",
+    );
+
+    let replayed = |bytes: &[u8]| {
+        let mut emulator = Emulator::new(BOOT_PTY.0, BOOT_PTY.1);
+        emulator.advance(bytes);
+        let screen = VtPort::screen(&emulator);
+        (0..screen.rows())
+            .map(|row| screen.row_text(row).trim_end().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let outside = replayed(&loose);
+    assert!(
+        outside.iter().all(String::is_empty),
+        "everything this client wrote OUTSIDE an atomic frame, replayed on a terminal of its own, \
+         leaves nothing a person could read: {outside:?}",
+    );
+
+    // ...and the frames alone carry the whole picture, which is what stops the claim above from
+    // being one about a client that painted nothing.
+    let inside = replayed(&framed);
+    assert!(
+        inside[0].starts_with("live"),
+        "the panes are painted from the atomic frames alone: {inside:?}",
+    );
+    assert!(
+        inside
+            .iter()
+            .any(|row| row.chars().nth(usize::from(near)) == Some('\u{2502}')),
+        "so is the divider between them: {inside:?}",
+    );
+    assert!(
+        inside
+            .iter()
+            .any(|row| row.contains(&format!("[{session}]"))),
+        "and so is the row this client speaks in: {inside:?}",
     );
 }
 
