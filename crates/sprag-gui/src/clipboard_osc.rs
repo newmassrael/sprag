@@ -8,7 +8,9 @@
 //! ## Why a policy, and its default (the security posture)
 //!
 //! A READ lets a program in a pane — possibly remote over SSH — exfiltrate whatever is on your
-//! clipboard, so Ghostty / kitty / xterm all DENY reads by default. A WRITE only lets a program
+//! clipboard, so no mainstream terminal grants it silently: ghostty PROMPTS (`clipboard-read` =
+//! `ask`, against `clipboard-write` = `allow` — measured at `2602886`), kitty / xterm deny. A
+//! WRITE only lets a program
 //! set your clipboard (paste-injection), the common and lower-risk case (copying from a remote
 //! vim / tmux). So the default when `SPRAG_OSC52` is unset is WRITES ALLOWED, READS DENIED. This
 //! is already tmux-superior: tmux's `set-clipboard` is on/off with no read at all, and one server
