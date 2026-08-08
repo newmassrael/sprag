@@ -767,6 +767,29 @@ pub trait HostClient: crate::wake::WakeSource {
                   SESSION is not something a re-read tells the person who pressed the key"]
     fn kill_window(&self, window: sprag_terminal::WindowId) -> Option<Ended>;
 
+    /// PIN the size of the scoped session's CURRENT window, or un-pin it, answering what the daemon
+    /// stored AND the policy it is arbitrating under — [`None`] if it refused (tmux
+    /// `resize-window`).
+    ///
+    /// # It names no window, for [`rename_window`](Self::rename_window)'s reason
+    ///
+    /// The CLI verb takes an optional window; this takes none. A keystroke can only ever mean *the
+    /// window I am on*, and a client that read its mirror for the current window's NAME and then
+    /// resized by that name would be addressing a fact about the past — the impostor shape R304
+    /// measured. There is no target here to go stale.
+    ///
+    /// # Why the ANSWER is a [`WindowPin`](crate::wire::WindowPin) and not a rectangle
+    ///
+    /// Three of the four spellings a caller may send are DESCRIPTIONS the daemon resolves, so the
+    /// rectangle is news. The policy is the other half and it is the half a display client cannot
+    /// get anywhere else: a pin stored under a policy that does not read it moves nothing, so a key
+    /// that pinned would look exactly like a key that is not bound. Reading the config file HERE to
+    /// find that out would be the CLI's old mistake rebuilt in a client that re-reads its config per
+    /// keystroke (R319) — see the type's own doc.
+    #[must_use = "a resize the daemon REFUSED, and a size it stored under a policy that ignores it, \
+                  are both facts no repaint carries"]
+    fn resize_window(&self, size: crate::window::SizeRequest) -> Option<crate::wire::WindowPin>;
+
     /// Rename the scoped session's CURRENT window, answering the name the daemon RECORDED — or
     /// [`None`] if it refused (tmux `rename-window`).
     ///
@@ -3011,6 +3034,39 @@ impl HostClient for Host {
         outcome.ok().map(|outcome| outcome.ended())
     }
 
+    /// The default session's current window, pinned under the registry lock.
+    ///
+    /// The in-process host tracks no wire clients, so it folds NO reported areas — which makes
+    /// `-a`/`-A` refuse here rather than answer, exactly as they do at the daemon for a session
+    /// nobody is attached to. That is [`crate::window::arbitrate`]'s rule and not a shortcut taken
+    /// here: this host has one surface and never needed arbitrating, which is the same reason
+    /// [`client_areas`](crate::workspace) is empty for it.
+    ///
+    /// The POLICY is this process's own — it IS the process that lays the panes out — so the answer
+    /// carries it rather than [`None`].
+    fn resize_window(&self, size: crate::window::SizeRequest) -> Option<crate::wire::WindowPin> {
+        let policy = crate::config::window_size();
+        let mut registry = lock(&self.registry);
+        let session = registry.default_session().name().to_owned();
+        let window = registry.session(&session)?.current_window();
+        let pinned = window
+            .manual_size()
+            .map(|(cols, rows)| crate::attach::ClientSize { cols, rows });
+        let name = window.name().to_owned();
+        // No client reports, so the arbitration answers only what is PINNED — and the fallback is
+        // the daemon's own: a stored rectangle is the one thing anybody has declared for this
+        // window, so a relative resize can still move it.
+        let current = crate::window::arbitrate(policy, &[], pinned).or(pinned);
+        let resolved = size.resolve(current, &[]).ok()?;
+        registry
+            .resize_window(&session, &name, resolved.map(|size| (size.cols, size.rows)))
+            .ok()?;
+        Some(crate::wire::WindowPin {
+            size: resolved,
+            policy: Some(policy),
+        })
+    }
+
     /// The default session's current window, renamed under the registry lock. The three renames
     /// below are the in-process arm of the same verbs the wire client sends — each answers the
     /// RECORDED name, which is the registry's own answer rather than a re-read.
@@ -4504,6 +4560,63 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("the sent text never echoed back through the host");
+    }
+
+    /// **The IN-PROCESS arm of `resize_window`** (R331) — a driver, because the register keeps
+    /// filing this shape (53b, 54a) as *"reached only by a GUI running its own host"* and one unit
+    /// test is cheaper than the note saying it is untested.
+    ///
+    /// Two arms and they differ in a way no wire test can show: this host tracks NO clients, so
+    /// `-a`/`-A` have nothing to fold and are refused, while an exact rectangle is stored — the same
+    /// distinction the daemon draws for a session nobody is attached to, arrived at through a
+    /// completely different code path.
+    ///
+    /// The POLICY on the answer is `Some` and not `None`: this process IS the one that lays the
+    /// panes out, so it always knows what it is arbitrating under. A `None` here would be a client
+    /// telling itself it could not find out what it had just decided.
+    #[test]
+    fn the_in_process_host_pins_a_window_and_refuses_a_fold_with_no_clients() {
+        use crate::window::SizeRequest;
+
+        let host = Host::new((40, 6));
+        let pinned = HostClient::resize_window(
+            &host,
+            SizeRequest::Exact(crate::attach::ClientSize {
+                cols: 100,
+                rows: 30,
+            }),
+        )
+        .expect("an exact rectangle needs nothing from a client");
+        assert_eq!(
+            pinned.size,
+            Some(crate::attach::ClientSize {
+                cols: 100,
+                rows: 30
+            }),
+        );
+        assert!(
+            pinned.policy.is_some(),
+            "the process that lays the panes out always knows its own policy: {pinned:?}",
+        );
+        // ...and a RELATIVE request moves the pin that is now there, which is what says the store
+        // above reached the registry rather than only the answer.
+        let moved = HostClient::resize_window(&host, SizeRequest::Adjust { cols: -20, rows: 0 })
+            .expect("a relative request has the pin to move");
+        assert_eq!(
+            moved.size,
+            Some(crate::attach::ClientSize { cols: 80, rows: 30 }),
+        );
+        assert_eq!(
+            HostClient::resize_window(&host, SizeRequest::Clients(crate::WindowSize::Largest)),
+            None,
+            "this host folds no clients, so a fold names no rectangle — refused, never an un-pin",
+        );
+        assert_eq!(
+            HostClient::resize_window(&host, SizeRequest::Clear)
+                .expect("an un-pin needs nothing at all")
+                .size,
+            None,
+        );
     }
 
     #[test]

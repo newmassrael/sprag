@@ -825,11 +825,45 @@ fn attached_client_via(launch: fn(&Path, &str) -> Tui) -> (Daemon, PathBuf, Host
 
 /// [`attached_client_via`] whose boot pane runs `program` — the mouse tests need a child that ASKS
 /// for tracking, and `cat` never does.
+/// [`attached_client`] with `config` reaching BOTH processes — the daemon and the client.
+///
+/// ⚠ **`attached_client_with` gives the config to the CLIENT ONLY**, which is right for a claim about
+/// a keymap (the keymap is a client's) and WRONG for any claim that also depends on a daemon-side
+/// option: the daemon then reads the developer's own `~/.config/sprag/config.toml`. R331 wrote a
+/// resize gate that way and it passed for that reason — this machine's file happens to say
+/// `window-size = "manual"`, which is the very option the test was setting. On a machine without
+/// that line it would have failed, which is the recorded shape (R318, R319) arriving a third time.
+///
+/// So: a test whose subject is an OPTION uses this. A test whose subject is the two processes
+/// DISAGREEING gives them one config home each, which is the CLI gate
+/// `the_policy_note_comes_from_the_daemon_and_not_from_the_callers_own_config`.
+fn attached_client_under(
+    config: &ConfigHome,
+    program: &[&str],
+) -> (Daemon, PathBuf, HostConn, String, Tui) {
+    let home = config.as_str().to_owned();
+    attached_client_using(
+        |sock, session| Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", home.as_str())]),
+        program,
+        Some(config.as_str()),
+    )
+}
+
 fn attached_client_with(
     launch: impl FnOnce(&Path, &str) -> Tui,
     program: &[&str],
 ) -> (Daemon, PathBuf, HostConn, String, Tui) {
-    let (daemon, sock) = spawn_daemon_running(program);
+    attached_client_using(launch, program, None)
+}
+
+/// The one boot-and-attach both fixtures above share, with the daemon's config home as the axis
+/// they differ on.
+fn attached_client_using(
+    launch: impl FnOnce(&Path, &str) -> Tui,
+    program: &[&str],
+    daemon_config: Option<&str>,
+) -> (Daemon, PathBuf, HostConn, String, Tui) {
+    let (daemon, sock) = spawn_daemon_with_config(program, daemon_config);
     let mut conn = observe(&sock);
     let session = boot_session(&mut conn);
     let tui = launch(&sock, &session);
@@ -3564,6 +3598,195 @@ fn an_unresolvable_resize_window_is_refused_and_leaves_the_pin_alone() {
     );
 }
 
+/// **R331's VERB, PRESSED** — `resize-window -a` from a real key, on a client whose own area is the
+/// thing being folded.
+///
+/// Measured before this round: `sprag bind-key R resize-window -a` answered *"resize-window" is a
+/// verb a keystroke could mean and sprag does not bind it yet*. It was the last-but-one entry in
+/// [`vocabulary`]'s keyboard gap, and what it was waiting on was not a grammar — it was a
+/// `HostClient` call and a daemon that says which policy it arbitrated under.
+///
+/// # Why `-a` and not `-x`/`-y`
+///
+/// `-a` is the spelling that cannot be faked. An exact rectangle is a number the config file
+/// carried, so a client that sent the ask and a client that pinned locally would be
+/// indistinguishable; the SMALLEST fold is resolved from the areas the DAEMON has been told about,
+/// and the only one here is this client's — which the client reports as its terminal LESS its status
+/// row ([`panes_of`]). So the pin landing on that number says the request crossed, was resolved
+/// there, and came back.
+///
+/// The client is deliberately resized to something neither the daemon's boot pane nor the pty's own
+/// size, so the number cannot be right by accident.
+///
+/// # The un-pin is the second half, and it is what makes the first one a PIN
+///
+/// A window whose size merely follows its only client looks exactly like a pinned one while nothing
+/// changes. Pressing the second key hands the size back, and then the daemon's `manual` deferral
+/// puts the panes back on the same rectangle — so the observable is the STORED size, read through a
+/// second `resize-window -R` whose refusal-or-answer depends on it. Instead of that indirection this
+/// re-pins to an exact rectangle first, moves the panes off the client's area, and then folds: the
+/// panes coming BACK to the client's own area is a fact only a fold could produce.
+#[test]
+fn the_resize_key_pins_the_window_to_the_area_this_client_reported() {
+    let config = ConfigHome::new(
+        "[options]\nwindow-size = \"manual\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -a\"\n",
+    );
+    // BOTH processes, and the daemon is the half that matters: `window-size` is read by the DAEMON,
+    // so a fixture that gave this file to the client alone would be asserting against whatever the
+    // developer's own config says — which on the machine this was written on happens to be the same
+    // value. See `attached_client_under`.
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client_under(&config, &["cat"]);
+
+    tui.type_bytes(b"before");
+    wait_for("the client to be painting", || painted(&mut tui, "before"));
+
+    // OFF the answer first, and by an EXACT pin so the move below cannot be the client's own report
+    // arriving late. A fixture that left the window already on the client's area would pass whether
+    // the key did anything at all — R330's vacuous-gate finding, on a different verb.
+    let elsewhere = (123, 37);
+    sprag_on(
+        &sock,
+        &config,
+        &[
+            "resize-window",
+            "-t",
+            &session,
+            "-x",
+            &elsewhere.0.to_string(),
+            "-y",
+            &elsewhere.1.to_string(),
+        ],
+    );
+    wait_for("the window to be somewhere no client reported", || {
+        settled(pane_size(&mut conn, &session), &Some(elsewhere))
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"R");
+    wait_for("the key to fold this client's own reported area", || {
+        settled(pane_size(&mut conn, &session), &Some(BOOT_PANES))
+    });
+    // ...and it STAYS, which is what tells a PIN from the arbitration merely catching up: under
+    // `manual` an un-pinned window defers to the default policy and would land on the same number,
+    // so the discriminator is the re-pin below rather than this rectangle alone.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(BOOT_PANES),
+        "the folded pin did not hold",
+    );
+    // THE DISCRIMINATOR: a RELATIVE resize moves what the window IS. It answers a rectangle only
+    // because something is pinned to move — and it lands 10 columns off the folded number, which is
+    // a fact no deferral could produce.
+    let relative = sprag_on(
+        &sock,
+        &config,
+        &["resize-window", "-t", &session, "-R", "10"],
+    );
+    assert!(
+        relative.status.success(),
+        "the key's pin is what a relative resize moves: {}",
+        String::from_utf8_lossy(&relative.stderr),
+    );
+    wait_for("the relative resize to move the key's own pin", || {
+        settled(
+            pane_size(&mut conn, &session),
+            &Some((BOOT_PANES.0 + 10, BOOT_PANES.1)),
+        )
+    });
+    assert_eq!(
+        tui.liveness(),
+        "running",
+        "and the client is still alive, having resized the window it is painting",
+    );
+}
+
+/// **A key that STORED a size the daemon is not laying anything out over SAYS SO** (R331) — the
+/// third outcome, and the whole reason this verb could be bound at all.
+///
+/// # Why a sentence and not a repaint
+///
+/// Every other key in this vocabulary either changes the screen or is refused. `resize-window` under
+/// a policy that is not `manual` does neither: the daemon accepts the request, stores the rectangle,
+/// and goes on laying the panes out over what the clients report. Nothing moves and nothing was
+/// refused — so without a row the key is indistinguishable from one that is not bound, which is this
+/// project's own definition of a defect (R316's measurement, one verb over).
+///
+/// # What makes it a claim about the DAEMON
+///
+/// The sentence names the policy the daemon is arbitrating under, and it is the DAEMON's answer that
+/// carries it (`wire::WindowPin`). The client's own `XDG_CONFIG_HOME` here is the same file, so this
+/// gate cannot tell the two authorities apart — the CLI gate
+/// `the_policy_note_comes_from_the_daemon_and_not_from_the_callers_own_config` is where that claim
+/// lives, with a config home per process. What THIS gate says is that the sentence reaches a person
+/// at a display client, which no CLI test can show.
+///
+/// The CONTROL is the second half and it runs after: with `manual` in force the same key pins for
+/// real, the panes move, and the row goes back to naming where the client is. A build that warned
+/// on every pin would fail it.
+#[test]
+fn a_pin_the_policy_ignores_says_so_on_the_status_row() {
+    let config = ConfigHome::new(
+        "[options]\nwindow-size = \"largest\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -x 90 -y 25\"\n",
+    );
+    // The DAEMON reads `window-size`, so it gets this file too — see `attached_client_under`.
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client_under(&config, &["cat"]);
+
+    // THE CONTROL FIRST: the row says where the client is, so a row that had been showing the
+    // sentence all along cannot pass.
+    let where_it_is = format!("[{session}] 0:0*");
+    wait_for("the row to say where the client is", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    // Under `largest` with one client, the window IS that client's area — which is what makes the
+    // pin below inert and this the state the sentence is about.
+    wait_for("the window to be this client's own area", || {
+        settled(pane_size(&mut conn, &session), &Some(BOOT_PANES))
+    });
+
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"R");
+    wait_for(
+        "the row to say the size was stored and is not in force",
+        || {
+            settled(
+                tui.row(STATUS_ROW).contains("window-size is largest"),
+                &true,
+            )
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        },
+    );
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(BOOT_PANES),
+        "the pin was inert, which is what the sentence is about",
+    );
+
+    // THE CONTROL, on the other side of the same key: with `manual` in force the pin is performed,
+    // the panes move, and there is nothing to say. `set-option` edits the one file both processes
+    // read, so nothing is restarted.
+    let flipped = sprag_on(&sock, &config, &["set-option", "window-size", "manual"]);
+    assert!(
+        flipped.status.success(),
+        "set-option failed: {}",
+        String::from_utf8_lossy(&flipped.stderr),
+    );
+    wait_for("the row to come back before the second press", || {
+        settled(tui.row(STATUS_ROW), &where_it_is)
+    });
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"R");
+    wait_for("the same key to move the panes for real", || {
+        settled(pane_size(&mut conn, &session), &Some((90, 25)))
+    });
+    assert!(
+        !tui.row(STATUS_ROW).contains("window-size"),
+        "a pin the daemon USES said something anyway: {:?}",
+        tui.row(STATUS_ROW),
+    );
+}
+
 /// **The claim that stands in for tmux's per-WINDOW `window-size` option: it is already expressible.**
 ///
 /// sprag has ONE global `window-size` value, where tmux's is a window option. That looks like a
@@ -3606,6 +3829,35 @@ fn one_global_manual_still_gives_each_window_its_own_size() {
             .trim()
             .to_owned();
     assert_ne!(born, "0", "the new window has its own name: {born:?}");
+
+    // ⚠ **THE NAMED ARM, driven while the named window is NOT the current one** (R331's debt
+    // question). Every other resize in this tree acts on the scope, so `ResizeWindowAsk`'s window
+    // key was written by the CLI and read by the daemon with no test in which the two windows
+    // DISAGREE — a request that dropped the name would have landed here, silently, on `born`.
+    //
+    // It re-pins window "0" to the same rectangle it already holds, which is deliberate: what is
+    // asserted is where the pin did NOT go. `born` is current and un-pinned, so it follows the
+    // client below; a resize that had acted on the scope would have pinned it instead and that wait
+    // would never settle.
+    let renamed = sprag_on(
+        &sock,
+        &config,
+        &[
+            "resize-window",
+            "-t",
+            &session,
+            "0",
+            "-x",
+            &pinned.0.to_string(),
+            "-y",
+            &pinned.1.to_string(),
+        ],
+    );
+    assert!(
+        renamed.status.success(),
+        "a resize NAMING a window that is not the current one: {}",
+        String::from_utf8_lossy(&renamed.stderr),
+    );
 
     let terminal = (60, 20);
     // What the client REPORTS out of that terminal — one row less, kept for its status line.

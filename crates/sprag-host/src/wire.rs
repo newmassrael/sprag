@@ -2505,6 +2505,39 @@ impl WindowRef {
             (Some(_), Some(_)) => Err(MalformedWindowRef),
         }
     }
+
+    /// [`read`](Self::read) at a door that has only the NAME form: the name, [`None`] for the
+    /// request's own scope, and an ERROR for an identity.
+    ///
+    /// # Why an identity is a malformation here and not an ignorable extra
+    ///
+    /// `rename_window` and `resize_window` reach the registry by NAME — there is no
+    /// identity-addressed entry for either, and nothing in this product paints a row that commits
+    /// one for them (register item 55a). A well-formed `window_id` dropped on the floor would leave
+    /// the request acting on the SCOPED window instead, which is the silent wrong act
+    /// [`WIRE_PROTOCOL`] 16 moved for. Refusing says so.
+    ///
+    /// It exists as its own function because it was written out twice — once inside the daemon's
+    /// `window_target` and once beside it — and the second copy is where a grammar starts to drift.
+    /// The day one of those verbs gains an identity door, this call site is the one to change, and
+    /// its callers are the list of who is waiting.
+    ///
+    /// # Errors
+    ///
+    /// [`MalformedWindowRef`] for a malformed reference, a doubly-spelled one, or an IDENTITY.
+    pub fn read_named(map: &Map<String, Value>) -> Result<Option<&str>, MalformedWindowRef> {
+        match Self::read(map)? {
+            None => Ok(None),
+            // Borrowed back out of the map rather than returned from the owned `read` above: every
+            // caller wants a `&str` and the owned copy would be allocated only to be dropped. The
+            // key is `read`'s own, so the two cannot come apart.
+            Some(Self::Named(_)) => match map.get(Self::WINDOW_KEY) {
+                Some(Value::String(name)) => Ok(Some(name)),
+                _ => Err(MalformedWindowRef),
+            },
+            Some(Self::Picked(_)) => Err(MalformedWindowRef),
+        }
+    }
 }
 
 /// A [`WindowRef`] a request could not name: a key of the wrong type, or a NAME and an IDENTITY at
@@ -2515,6 +2548,296 @@ impl WindowRef {
 /// them apart, and the SURFACES say which one because each knows what it sent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MalformedWindowRef;
+
+/// The REQUEST grammar of [`RESIZE_WINDOW_ACTION`] — which window, and which of the four ways of
+/// naming a rectangle.
+///
+/// [`JoinAsk`]'s shape one verb over and for its reason: the daemon [`parse`](Self::parse)s one of
+/// these and every caller [`to_args`](Self::to_args) builds one, so the six keys are spelled ONCE
+/// for the daemon, the CLI verb, the [`crate::HostClient`] call and the keybinding.
+///
+/// # This is the hole the shape pin names in its own doc
+///
+/// `the_wire_shape_is_what_this_protocol_number_stands_for` pins *"the grammars that are a TYPE"*
+/// and says a key spelled at a `json!` call site is invisible to it. `resize-window` was that call
+/// site: the CLI built `args["cols"]`, `args["adjust_cols"]` and `args["from"]` by hand while the
+/// daemon read them through its own private function, so the two halves of one grammar could drift
+/// with nothing failing. R330 found three of exactly this class the day it hoisted [`WindowRef`];
+/// this is the fourth, and it is now pinned by bytes like the rest.
+///
+/// # The window is a NAME or the scope, never an identity
+///
+/// [`WindowRef::read_named`]'s rule, and this type carries `Option<String>` rather than a
+/// [`WindowRef`] so that the refusal is not something a caller can construct and be surprised by:
+/// an identity is unrepresentable in this ask, which is the same trick
+/// [`crate::keymap::SelectWindowBind`] plays one surface up. The wire KEYS are still
+/// [`WindowRef`]'s, so a client that sends `window_id` meets one stated refusal rather than a
+/// second grammar.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ResizeWindowAsk {
+    /// Which window of the request's session — [`None`] for the one it is scoped to.
+    pub window: Option<String>,
+    /// Which rectangle, in the four spellings [`crate::window::SizeRequest`] admits.
+    pub size: crate::window::SizeRequest,
+}
+
+impl ResizeWindowAsk {
+    /// The request key naming an exact width (tmux `-x`).
+    pub const COLS_KEY: &'static str = "cols";
+    /// The request key naming an exact height (tmux `-y`).
+    pub const ROWS_KEY: &'static str = "rows";
+    /// The request key moving the vertical edges by a SIGNED amount (tmux `-L` / `-R`).
+    pub const ADJUST_COLS_KEY: &'static str = "adjust_cols";
+    /// The request key moving the horizontal edges by a SIGNED amount (tmux `-U` / `-D`).
+    pub const ADJUST_ROWS_KEY: &'static str = "adjust_rows";
+    /// The request key naming a `window-size` policy to fold the attached clients under (tmux
+    /// `-a` / `-A`).
+    pub const FROM_KEY: &'static str = "from";
+
+    /// The `args` object a caller sends for this ask.
+    ///
+    /// [`SizeRequest::Clear`](crate::window::SizeRequest::Clear) renders as the EMPTY object, which
+    /// is the action's own reading of a request naming no rectangle. That is what makes the un-pin
+    /// spelling additive rather than a fifth key.
+    #[must_use]
+    pub fn to_args(&self) -> Value {
+        use crate::window::SizeRequest;
+
+        let mut map = Map::new();
+        if let Some(window) = &self.window {
+            WindowRef::Named(window.clone()).write(&mut map);
+        }
+        match self.size {
+            SizeRequest::Clear => {}
+            SizeRequest::Exact(size) => {
+                map.insert(Self::COLS_KEY.to_owned(), Value::from(size.cols));
+                map.insert(Self::ROWS_KEY.to_owned(), Value::from(size.rows));
+            }
+            // Each axis only when it MOVES, so `-R 4` and `-R 4 -U 0` are one request rather than
+            // two spellings — and an unnamed axis stays unnamed on the wire, which is the reading
+            // the action gives it ("leave that edge").
+            SizeRequest::Adjust { cols, rows } => {
+                if cols != 0 {
+                    map.insert(Self::ADJUST_COLS_KEY.to_owned(), Value::from(cols));
+                }
+                if rows != 0 {
+                    map.insert(Self::ADJUST_ROWS_KEY.to_owned(), Value::from(rows));
+                }
+                // ...and an adjustment that names NEITHER edge still says so, because the empty
+                // object is the UN-PIN. No surface builds one (every flag parser refuses a zero
+                // count), but a grammar in which "move nothing" and "throw the size away" render
+                // identically is one a caller can be silently betrayed by, and the cost of not
+                // being is one key.
+                if cols == 0 && rows == 0 {
+                    map.insert(Self::ADJUST_COLS_KEY.to_owned(), Value::from(0));
+                }
+            }
+            SizeRequest::Clients(policy) => {
+                map.insert(Self::FROM_KEY.to_owned(), Value::from(policy.name()));
+            }
+        }
+        Value::Object(map)
+    }
+
+    /// The ask an `args` value names, or [`None`] for anything this grammar does not admit — which
+    /// is what the action turns into its one `TypeMismatch`.
+    ///
+    /// Refused rather than resolved, in the order a caller can act on:
+    ///
+    /// * an IDENTITY for the window ([`WindowRef::read_named`]'s rule);
+    /// * HALF a rectangle — a width whose height came from a different decision is a shape nobody
+    ///   chose, so it is refused whole rather than completed from what happens to be pinned;
+    /// * a `from` naming `manual` or a policy this build does not know — `manual` reads a STORED
+    ///   size rather than folding clients, so as a SOURCE for a new stored size it names nothing;
+    /// * TWO spellings at once, because they are four ways to name ONE rectangle and a request
+    ///   carrying two is a caller that has not decided.
+    #[must_use]
+    pub fn parse(args: &Value) -> Option<Self> {
+        use crate::window::SizeRequest;
+
+        let map = match args {
+            Value::Object(map) => map,
+            _ => return None,
+        };
+        let window = WindowRef::read_named(map).ok()?.map(str::to_owned);
+        let exact = match (
+            dimension(map, Self::COLS_KEY)?,
+            dimension(map, Self::ROWS_KEY)?,
+        ) {
+            (Some(cols), Some(rows)) => Some(crate::attach::ClientSize { cols, rows }),
+            (None, None) => None,
+            _ => return None,
+        };
+        let adjust = match (
+            delta(map, Self::ADJUST_COLS_KEY)?,
+            delta(map, Self::ADJUST_ROWS_KEY)?,
+        ) {
+            (None, None) => None,
+            (cols, rows) => Some(SizeRequest::Adjust {
+                cols: cols.unwrap_or(0),
+                rows: rows.unwrap_or(0),
+            }),
+        };
+        let from = match map.get(Self::FROM_KEY).filter(|value| !value.is_null()) {
+            None => None,
+            Some(Value::String(name)) => match crate::WindowSize::parse(name) {
+                Some(crate::WindowSize::Manual) | None => return None,
+                Some(policy) => Some(policy),
+            },
+            Some(_) => return None,
+        };
+        let size = match (exact, adjust, from) {
+            (None, None, None) => SizeRequest::Clear,
+            (Some(size), None, None) => SizeRequest::Exact(size),
+            (None, Some(adjust), None) => adjust,
+            (None, None, Some(policy)) => SizeRequest::Clients(policy),
+            _ => return None,
+        };
+        Some(Self { window, size })
+    }
+}
+
+/// A dimension key of a [`ResizeWindowAsk`]: absent, or a positive extent that fits a cell count.
+///
+/// `Some(None)` is absent and `None` is malformed — the two outcomes a caller must not confuse,
+/// which is why this is not an `Option<u16>`. A ZERO is refused here rather than clamped: a
+/// zero-column window is not a window, and a caller that typed one has made a mistake the far end
+/// cannot repair.
+fn dimension(map: &Map<String, Value>, key: &str) -> Option<Option<u16>> {
+    match map.get(key).filter(|value| !value.is_null()) {
+        None => Some(None),
+        Some(value) => u16::try_from(value.as_u64()?)
+            .ok()
+            .filter(|extent| *extent > 0)
+            .map(Some),
+    }
+}
+
+/// An adjustment key of a [`ResizeWindowAsk`]: absent, or a signed cell count that fits an `i32`.
+///
+/// [`dimension`]'s two-level answer for its reason. A zero is ADMITTED here where a dimension
+/// refuses one — "move this edge by nothing" is a legal request that resolves to the current size,
+/// and refusing it would make an arithmetic caller special-case the identity.
+fn delta(map: &Map<String, Value>, key: &str) -> Option<Option<i32>> {
+    match map.get(key).filter(|value| !value.is_null()) {
+        None => Some(None),
+        Some(value) => i32::try_from(value.as_i64()?).ok().map(Some),
+    }
+}
+
+/// The ANSWER of [`RESIZE_WINDOW_ACTION`] — the rectangle now pinned, and whether the daemon is
+/// laying the panes out over it.
+///
+/// # Why the POLICY is on the answer and not read from the caller's own config
+///
+/// The pin is stored whatever `window-size` says, so a pin under `largest` is a value that silently
+/// does nothing — which is the exact failure this project keeps finding, and the CLI has printed a
+/// note about it since the verb existed. That note was built by reading the user's file **in the
+/// CLI's own process**, with a comment saying so: *"the daemon was never asked what it thinks the
+/// policy is"*. It is the wrong authority twice over — a second reader of a fact the daemon
+/// arbitrates by, and a reader that a differing `XDG_CONFIG_HOME` makes wrong in both directions
+/// (silent when the pin is inert, and noisy when it is in force). Building a KEYBOARD on that shape
+/// would have made a third copy, in a client whose config is re-read per keystroke (R319).
+///
+/// So the process that PERFORMS the arbitration says what it arbitrated under, and every surface
+/// spells the consequence with [`note`](Self::note).
+///
+/// # The skew arm
+///
+/// [`policy`](Self::policy) is [`None`] from a daemon older than this key. That is
+/// absent-not-wrong: such a daemon still pins, and the honest degradation is to say NOTHING about
+/// the policy rather than to guess from a file this process happens to be able to read. An added
+/// answer key is additive, so [`WIRE_PROTOCOL`] does not move for it — the rule
+/// [`unknown_slot`]'s doc states.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WindowPin {
+    /// The rectangle the daemon RESOLVED and stored, or [`None`] for an un-pin.
+    ///
+    /// The resolved one, never the requested one: three of the four spellings are descriptions the
+    /// caller cannot work out, which is why they are sent as descriptions at all.
+    pub size: Option<crate::attach::ClientSize>,
+    /// The `window-size` policy the daemon is arbitrating under, or [`None`] from one too old to
+    /// say.
+    pub policy: Option<crate::WindowSize>,
+}
+
+impl WindowPin {
+    /// The answer key naming the pinned width.
+    pub const COLS_KEY: &'static str = ResizeWindowAsk::COLS_KEY;
+    /// The answer key naming the pinned height.
+    pub const ROWS_KEY: &'static str = ResizeWindowAsk::ROWS_KEY;
+    /// The answer key naming the policy in force at the DAEMON.
+    pub const POLICY_KEY: &'static str = "policy";
+
+    /// The answer value the action returns.
+    ///
+    /// An un-pin renders the two dimensions as JSON `null` rather than omitting them, because a
+    /// reader that saw no key could not tell an un-pin from a daemon that answered nothing — and
+    /// `null` is what the action has always sent for it.
+    #[must_use]
+    pub fn to_answer(&self) -> Value {
+        let mut map = Map::new();
+        let (cols, rows) = match self.size {
+            Some(size) => (Value::from(size.cols), Value::from(size.rows)),
+            None => (Value::Null, Value::Null),
+        };
+        map.insert(Self::COLS_KEY.to_owned(), cols);
+        map.insert(Self::ROWS_KEY.to_owned(), rows);
+        if let Some(policy) = self.policy {
+            map.insert(Self::POLICY_KEY.to_owned(), Value::from(policy.name()));
+        }
+        Value::Object(map)
+    }
+
+    /// The pin an answer carries. A missing or unreadable dimension pair is an UN-PIN, and a
+    /// missing policy is the skew arm.
+    ///
+    /// Read key by key with explicit fallbacks — the shape pin's own rule for what it does not
+    /// pin — so a daemon that grows a key here cannot break this reader.
+    #[must_use]
+    pub fn read(answer: &Value) -> Self {
+        let size = match (
+            answer[Self::COLS_KEY].as_u64(),
+            answer[Self::ROWS_KEY].as_u64(),
+        ) {
+            (Some(cols), Some(rows)) => u16::try_from(cols)
+                .ok()
+                .zip(u16::try_from(rows).ok())
+                .map(|(cols, rows)| crate::attach::ClientSize { cols, rows }),
+            _ => None,
+        };
+        Self {
+            size,
+            policy: answer[Self::POLICY_KEY]
+                .as_str()
+                .and_then(crate::WindowSize::parse),
+        }
+    }
+
+    /// What a person needs told that the screen cannot show them: a size was STORED and the daemon
+    /// is not laying anything out over it.
+    ///
+    /// [`None`] when there is nothing to add — the pin is in force (the panes moved, which is the
+    /// answer), the request was an un-pin, or the daemon did not say what policy it is under.
+    ///
+    /// **One wording, three surfaces.** `sprag resize-window` prints it, and both display clients
+    /// show it in the row a keybinding's report goes to; a second wording would be two answers to
+    /// one question, which is what this module exists to prevent. It is written to fit a status row
+    /// ([`crate::report::MessageText::MAX_BYTES`]), which the CLI's own longer sentence did not
+    /// have to be.
+    #[must_use]
+    pub fn note(&self) -> Option<String> {
+        let policy = self.policy?;
+        if self.size.is_none() || policy == crate::WindowSize::Manual {
+            return None;
+        }
+        Some(format!(
+            "size stored, but window-size is {} so the panes still follow the clients — \
+             `sprag set-option window-size manual` to use it",
+            policy.name(),
+        ))
+    }
+}
 
 /// The REQUEST grammar of [`JOIN_PANE_ACTION`] — the pane to move and where it goes.
 ///
@@ -3614,6 +3937,198 @@ mod tests {
         );
     }
 
+    /// **The RESIZE-WINDOW grammar round trips through the bytes it sends** (R331) — the request
+    /// half that was a `json!` at a CLI call site and so invisible to the shape pin.
+    ///
+    /// Every spelling is asserted as BYTES and not only as a round trip, because the failure this
+    /// prevents is not an unreadable request: it is the CLI and the daemon drifting to two spellings
+    /// of one key, which round-trips perfectly on each side and matches on neither.
+    ///
+    /// REVERT-PROOF: make `to_args` omit the zero-axis guard and the un-pin/no-op pair collapses;
+    /// make `parse` accept a `window_id` and the identity assertion goes green with a request the
+    /// registry has no door for.
+    #[test]
+    fn the_window_resize_grammar_round_trips_through_the_bytes_it_sends() {
+        use crate::window::SizeRequest;
+
+        let shapes = [
+            (
+                ResizeWindowAsk {
+                    window: None,
+                    size: SizeRequest::Exact(crate::attach::ClientSize {
+                        cols: 100,
+                        rows: 30,
+                    }),
+                },
+                json!({"cols": 100, "rows": 30}),
+            ),
+            (
+                ResizeWindowAsk {
+                    window: Some("build".to_owned()),
+                    size: SizeRequest::Adjust { cols: -20, rows: 0 },
+                },
+                json!({"window": "build", "adjust_cols": -20}),
+            ),
+            (
+                ResizeWindowAsk {
+                    window: None,
+                    size: SizeRequest::Clients(crate::WindowSize::Smallest),
+                },
+                json!({"from": "smallest"}),
+            ),
+            (
+                ResizeWindowAsk {
+                    window: None,
+                    size: SizeRequest::Clear,
+                },
+                json!({}),
+            ),
+            // The all-zero adjustment, which no flag parser builds and which the grammar must still
+            // keep DISTINCT from the un-pin above it: the empty object means "throw the size away".
+            (
+                ResizeWindowAsk {
+                    window: None,
+                    size: SizeRequest::Adjust { cols: 0, rows: 0 },
+                },
+                json!({"adjust_cols": 0}),
+            ),
+        ];
+        for (ask, bytes) in &shapes {
+            assert_eq!(&ask.to_args(), bytes, "{ask:?}");
+            assert_eq!(
+                ResizeWindowAsk::parse(bytes),
+                Some(ask.clone()),
+                "{bytes} must read back as what wrote it",
+            );
+        }
+
+        // THE ADDRESS: a NAME or the scope, and an identity is REFUSED rather than acted on. This
+        // door has no identity-addressed registry entry, so a `window_id` dropped on the floor
+        // would resize the SCOPED window instead — the silent wrong act R330 moved the protocol
+        // number for, one verb over.
+        assert_eq!(ResizeWindowAsk::parse(&json!({"window_id": 7})), None);
+        assert_eq!(
+            ResizeWindowAsk::parse(&json!({"window": "build", "window_id": 7})),
+            None,
+        );
+        for refused in [
+            json!(null),
+            json!([]),
+            json!("100x30"),
+            // HALF a rectangle, both ways round.
+            json!({"cols": 100}),
+            json!({"rows": 30}),
+            // A zero dimension is not a window.
+            json!({"cols": 0, "rows": 30}),
+            // TWO spellings of one rectangle — four ways, one per request.
+            json!({"cols": 100, "rows": 30, "adjust_cols": 4}),
+            json!({"cols": 100, "rows": 30, "from": "largest"}),
+            json!({"adjust_rows": 2, "from": "smallest"}),
+            // `manual` reads a STORED size rather than folding clients, so as a SOURCE it names
+            // nothing — a request to pin the window to whatever it is pinned to.
+            json!({"from": "manual"}),
+            json!({"from": "nonesuch"}),
+            json!({"from": 3}),
+            json!({"window": 7}),
+            json!({"adjust_cols": "4"}),
+            json!({"cols": "100", "rows": 30}),
+        ] {
+            assert_eq!(ResizeWindowAsk::parse(&refused), None, "admitted {refused}");
+        }
+        assert_eq!(
+            ResizeWindowAsk::parse(&json!({"window": null, "cols": 100, "rows": 30})),
+            Some(shapes[0].0.clone()),
+            "an explicit null is an absent key — `WindowRef::read`'s rule",
+        );
+    }
+
+    /// **The ANSWER carries the POLICY, and a daemon too old to say so is absent-not-wrong** (R331).
+    ///
+    /// The note is the whole reason the key exists, so both directions are pinned: a pin under a
+    /// policy that ignores it SAYS so, and a pin the daemon performs says nothing — because the
+    /// panes moved, which is the answer. The skew arm is the third: no policy key means no claim
+    /// about one, never a guess from the reading process's own config file.
+    #[test]
+    fn a_pin_answers_the_policy_it_was_resolved_under() {
+        let pinned = |policy| WindowPin {
+            size: Some(crate::attach::ClientSize {
+                cols: 100,
+                rows: 30,
+            }),
+            policy,
+        };
+        assert_eq!(
+            pinned(Some(crate::WindowSize::Manual)).to_answer(),
+            json!({"cols": 100, "rows": 30, "policy": "manual"}),
+        );
+        assert_eq!(
+            WindowPin {
+                size: None,
+                policy: Some(crate::WindowSize::Latest),
+            }
+            .to_answer(),
+            json!({"cols": null, "rows": null, "policy": "latest"}),
+            "an un-pin sends the keys as NULL rather than omitting them, so a reader can tell it \
+             from a daemon that answered nothing at all",
+        );
+        for policy in [
+            None,
+            Some(crate::WindowSize::Manual),
+            Some(crate::WindowSize::Largest),
+        ] {
+            assert_eq!(WindowPin::read(&pinned(policy).to_answer()), pinned(policy));
+        }
+
+        assert_eq!(
+            pinned(Some(crate::WindowSize::Manual)).note(),
+            None,
+            "a pin the daemon USES needs no words: the panes moved",
+        );
+        let inert = pinned(Some(crate::WindowSize::Largest))
+            .note()
+            .expect("a stored-but-inert pin has something to say");
+        assert!(
+            inert.contains("largest") && inert.contains("manual"),
+            "it names the policy in force AND the way out: {inert:?}",
+        );
+        assert!(
+            inert.len() <= crate::report::MessageText::MAX_BYTES,
+            "the note is shown in a status row, so it has to fit one: {} bytes",
+            inert.len(),
+        );
+        assert_eq!(
+            WindowPin {
+                size: None,
+                policy: Some(crate::WindowSize::Largest),
+            }
+            .note(),
+            None,
+            "an UN-PIN under any policy has nothing to warn about — nothing was stored",
+        );
+        assert_eq!(
+            pinned(None).note(),
+            None,
+            "and a daemon that did not say makes no claim: the skew arm is silent, never a guess \
+             from this process's own config file",
+        );
+
+        // THE PRE-R331 ANSWER, which a client of this build still meets: `{cols, rows}` and no
+        // policy. It reads as a pin with nothing said about the policy — not as an un-pin, and not
+        // as `manual`.
+        assert_eq!(
+            WindowPin::read(&json!({"cols": 100, "rows": 30})),
+            pinned(None),
+        );
+        assert_eq!(
+            WindowPin::read(&Value::Null),
+            WindowPin {
+                size: None,
+                policy: None,
+            },
+            "the older un-pin answer was a bare `null`, and it still reads as an un-pin",
+        );
+    }
+
     /// Every reading the SWAP grammar does not admit — one `TypeMismatch` at the daemon, so this is
     /// the only surface that says what the set is.
     ///
@@ -3946,6 +4461,52 @@ mod tests {
             )
             .expect("a detached birth serialises"),
             r#"{"detached":true,"opened_by":7}"#,
+            "{}",
+            BUMP,
+        );
+
+        // The RESIZE request and its ANSWER (R331), both sides of a grammar that was two `json!`
+        // call sites until this round — the exact hole this pin's own doc says it cannot see. The
+        // un-pin renders EMPTY, which is what makes every other spelling additive to it.
+        assert_eq!(
+            serde_json::to_string(
+                &ResizeWindowAsk {
+                    window: None,
+                    size: crate::window::SizeRequest::Clear,
+                }
+                .to_args()
+            )
+            .expect("an un-pin serialises"),
+            "{}",
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &ResizeWindowAsk {
+                    window: Some("build".to_owned()),
+                    size: crate::window::SizeRequest::Adjust { cols: -20, rows: 3 },
+                }
+                .to_args()
+            )
+            .expect("a relative resize serialises"),
+            r#"{"window":"build","adjust_cols":-20,"adjust_rows":3}"#,
+            "{}",
+            BUMP,
+        );
+        assert_eq!(
+            serde_json::to_string(
+                &WindowPin {
+                    size: Some(crate::attach::ClientSize {
+                        cols: 100,
+                        rows: 30
+                    }),
+                    policy: Some(crate::WindowSize::Largest),
+                }
+                .to_answer()
+            )
+            .expect("a pin serialises"),
+            r#"{"cols":100,"rows":30,"policy":"largest"}"#,
             "{}",
             BUMP,
         );

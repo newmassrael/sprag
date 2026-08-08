@@ -884,6 +884,44 @@ fn run() -> Result<(), Box<dyn Error>> {
                         )?;
                         report
                     }
+                    // THE WINDOW'S OWN RECTANGLE (R331), and the arm that has something to SAY more
+                    // often than it has something to show. Under `window-size manual` the pin is
+                    // performed and the panes re-tile, which the reconcile below makes visible;
+                    // under any other policy the daemon stores a value it is not laying anything
+                    // out over, and the ONLY thing that happened is a sentence — which is why this
+                    // arm exists in a vocabulary that otherwise refuses acts a keystroke cannot
+                    // show the result of.
+                    //
+                    // `Clear::Yes`, unlike the pane resize beside it: a window that SHRANK no longer
+                    // partitions this client's screen, so the cells outside the new tiling have no
+                    // author and the diff would leave the old frame's contents standing there.
+                    Command::Act(BoundAction::ResizeWindow { size }) => {
+                        let action = BoundAction::ResizeWindow { size };
+                        // The daemon's own words, in the order a person needs them: a refusal is
+                        // R325's stored sentence (taken below, outranking whatever is built here);
+                        // a pin the policy ignores is the note; a pin in force is the screen.
+                        let report = match host.resize_window(size) {
+                            Some(pinned) => Report::pinned(&pinned),
+                            None => Report::nowhere(&action),
+                        };
+                        tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        mouse.follow(&host, &tiling);
+                        paint(
+                            &mut screen,
+                            &host,
+                            &tiling,
+                            split.panes,
+                            Frame {
+                                focus,
+                                clear: Clear::Yes,
+                                overlay: &overlay,
+                                status: split.status,
+                                message: showing(&message).as_deref(),
+                            },
+                            &mut held,
+                        )?;
+                        report
+                    }
                     // The ASKING actions are consumed above, where `Ask::of` turns them into a
                     // question. This arm is reached only when it answered `None` — a `rename-pane`
                     // pressed with no pane focused, which has no subject and so nothing to ask

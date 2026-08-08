@@ -1001,6 +1001,12 @@ mod tests {
         fn kill_window(&self, _window: sprag_terminal::WindowId) -> Option<sprag_terminal::Ended> {
             None
         }
+        fn resize_window(
+            &self,
+            _size: sprag_host::window::SizeRequest,
+        ) -> Option<sprag_host::wire::WindowPin> {
+            None
+        }
         /// This fixture drives the session RAIL, which renames nothing — an honest refusal, which
         /// is also what a host that cannot rename should answer.
         fn rename_window(&self, _name: &str) -> Option<String> {

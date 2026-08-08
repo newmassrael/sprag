@@ -540,6 +540,33 @@ impl Report {
             .map_or_else(Self::on_screen, |beyond| Self::at(Severity::Warn, beyond))
     }
 
+    /// A resize the daemon PERFORMED and is not laying anything out over — *"size stored, but
+    /// window-size is largest …"*.
+    ///
+    /// [`Report::on_screen`] when the pin is in force, which is the common case and needs no words:
+    /// the panes re-tiled under the person's eyes, which is the answer.
+    ///
+    /// # Why a pin needs this and no other acting verb does
+    ///
+    /// Every other key in this vocabulary either changes the screen or is refused. This one has a
+    /// third outcome: the daemon accepts the request, stores the rectangle, and lays nothing out
+    /// over it because `window-size` names a different source. Nothing on screen moves, and nothing
+    /// was refused — so without a sentence the key is indistinguishable from one that is not bound,
+    /// which is this vocabulary's own definition of a defect.
+    ///
+    /// # The clause is [`WindowPin::note`](crate::wire::WindowPin::note)'s and not this function's
+    ///
+    /// [`cascaded`](Self::cascaded)'s rule, one verb over: one wording for every surface, because
+    /// `sprag resize-window` prints the same sentence. What is decided HERE is only that it is worth
+    /// a row and at what weight — [`Severity::Warn`], because a person who asked for a size and got
+    /// a stored value needs telling, while it is not the kind that waits to be acknowledged.
+    ///
+    /// No `#[must_use]` here and none is missing, [`said`](Self::said)'s note.
+    pub fn pinned(pin: &crate::wire::WindowPin) -> Self {
+        pin.note()
+            .map_or_else(Self::on_screen, |note| Self::at(Severity::Warn, note))
+    }
+
     /// A spoken report at `severity` — the one private constructor the three public ones share, so
     /// a new sentence cannot be added without choosing how much it matters.
     fn at(severity: Severity, line: String) -> Self {

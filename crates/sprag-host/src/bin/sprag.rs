@@ -184,6 +184,7 @@ use sprag_host::pane_address::{
 };
 use sprag_host::shellword::shell_quote;
 use sprag_host::vocabulary::{self, Verb};
+use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
     ENDED_KEY, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
@@ -191,14 +192,14 @@ use sprag_host::wire::{
     NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, RELEASE_AGENT_ACTION,
     RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
     SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, ZOOM_PANE_ACTION, events_slot_since, find_slot_for,
-    pane_processes_at, project_slot_for, regex_slot_for, session_activity_at, unknown_action,
-    unknown_slot,
+    TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, events_slot_since,
+    find_slot_for, pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
+    unknown_action, unknown_slot,
 };
-use sprag_host::{PaneFind, SshTarget, mux_action_path, pane_input_path};
+use sprag_host::{ClientSize, PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, HOST_SOCKET, HostConn, HostEndpoint,
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
@@ -5064,7 +5065,10 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
     const RIGHT: usize = 1;
     const UP: usize = 2;
     const DOWN: usize = 3;
-    let mut from: Option<&'static str> = None;
+    // The POLICY itself and not its name: the wire spelling is `WindowSize`'s own
+    // (`ResizeWindowAsk::to_args`), so a string here would be a second place that has to agree with
+    // it.
+    let mut from: Option<sprag_host::WindowSize> = None;
     let mut unpin = false;
     let mut it = rest.into_iter();
     while let Some(arg) = it.next() {
@@ -5094,8 +5098,8 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
                     "resize-window: -a and -A name opposite folds — use one".to_owned(),
                 ));
             }
-            "-a" => from = Some("smallest"),
-            "-A" => from = Some("largest"),
+            "-a" => from = Some(sprag_host::WindowSize::Smallest),
+            "-A" => from = Some(sprag_host::WindowSize::Largest),
             "-u" | "--unset" => unpin = true,
             _ if window.is_none() => window = Some(arg),
             other => return Err(bad(format!("resize-window: unexpected argument {other:?}"))),
@@ -5108,14 +5112,16 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
             )));
         }
     }
-    let delta = |less: usize, more: usize| -> Option<i64> {
+    let delta = |less: usize, more: usize| -> Option<i32> {
         match (edges[less], edges[more]) {
             (None, None) => None,
             // A `u64` count reaches the wire as an `i32` delta; a count past that range is a typo,
             // not a resize, and the clamp at the far end is the resolver's business, not this cast's.
+            // Saturating, so the difference of two clamped counts stays in the type the wire takes.
             (less, more) => Some(
-                i64::from(i32::try_from(more.unwrap_or(0)).unwrap_or(i32::MAX))
-                    - i64::from(i32::try_from(less.unwrap_or(0)).unwrap_or(i32::MAX)),
+                i32::try_from(more.unwrap_or(0))
+                    .unwrap_or(i32::MAX)
+                    .saturating_sub(i32::try_from(less.unwrap_or(0)).unwrap_or(i32::MAX)),
             ),
         }
     };
@@ -5156,34 +5162,45 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
         };
     }
 
+    // The flags become the ASK — one grammar, so the keys this sends are the keys the daemon reads
+    // and the wire's shape pin can see them. Built from the mutually exclusive slots checked above,
+    // in the same order they were counted, so a fifth spelling would have to change the count and
+    // this together.
+    let size = if unpin {
+        SizeRequest::Clear
+    } else if let Some(policy) = from {
+        SizeRequest::Clients(policy)
+    } else if adjust_cols.is_some() || adjust_rows.is_some() {
+        // The cast the wire's own key admits; the range check is `delta`'s and the clamp at the far
+        // end is the resolver's, neither of them this call's.
+        SizeRequest::Adjust {
+            cols: adjust_cols.unwrap_or(0),
+            rows: adjust_rows.unwrap_or(0),
+        }
+    } else {
+        // Both dimensions, guaranteed by the half-a-rectangle check above.
+        SizeRequest::Exact(ClientSize {
+            cols: dimension(cols, "-x")?,
+            rows: dimension(rows, "-y")?,
+        })
+    };
+
     let mut conn = connect(None)?;
     let session = require_target(&mut conn, session.as_deref(), "resize-window")?;
-    let mut action_args = json!({});
-    if let Some(window) = &window {
-        action_args["window"] = json!(window);
-    }
-    if let (Some(cols), Some(rows)) = (cols, rows) {
-        action_args["cols"] = json!(cols);
-        action_args["rows"] = json!(rows);
-    }
-    if let Some(delta) = adjust_cols {
-        action_args["adjust_cols"] = json!(delta);
-    }
-    if let Some(delta) = adjust_rows {
-        action_args["adjust_rows"] = json!(delta);
-    }
-    if let Some(policy) = from {
-        action_args["from"] = json!(policy);
-    }
     let target = window.as_deref().unwrap_or("the current window");
     let answer = scoped_window_action(
         &mut conn,
         &session,
         RESIZE_WINDOW_ACTION,
-        action_args,
-        // Two causes in one message, because the wire does not distinguish them — the same honesty
-        // `resize_pane` already practises. Named in the order a user can act on: the size is what
-        // they just typed, the window name is what they typed before it.
+        ResizeWindowAsk {
+            window: window.clone(),
+            size,
+        }
+        .to_args(),
+        // Two causes in one message, because a daemon too old to state its own reason does not
+        // distinguish them — the same honesty `resize_pane` already practises. A daemon of this
+        // build SAYS which (`sprag_host::window::NoBasis` has an arm per cause) and R325's funnel
+        // prefers that sentence over this one.
         &format!(
             "resize-window: could not resize {target} of session {session:?} — that size could not \
              be worked out (-a/-A need an attached client that has reported an area; -L/-R/-U/-D \
@@ -5192,24 +5209,37 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
     )?;
     // What the DAEMON pinned, not what was asked for: the two differ for every spelling but -x/-y,
     // and printing the request would be this CLI quietly claiming to have done the arithmetic.
-    match (answer["cols"].as_u64(), answer["rows"].as_u64()) {
-        (Some(cols), Some(rows)) => println!("pinned {target} to {cols}x{rows}"),
-        _ => println!("un-pinned {target}"),
+    let pinned = WindowPin::read(&answer);
+    match pinned.size {
+        Some(size) => println!("pinned {target} to {}x{}", size.cols, size.rows),
+        None => println!("un-pinned {target}"),
     }
     // The gap between storing a size and USING one, named the moment it exists rather than left for
-    // the user to discover as "I resized and nothing moved". Read from the user's file here, the way
-    // every option verb reads it — the daemon was never asked what it thinks the policy is.
-    if !unpin {
-        let policy = sprag_host::config::window_size();
-        if policy != sprag_host::WindowSize::Manual {
-            eprintln!(
-                "sprag: note: window-size is {}, so the panes still follow the attached clients \
-                 — `sprag set-option window-size manual` to lay them out over this size",
-                policy.name()
-            );
-        }
+    // the user to discover as "I resized and nothing moved" — and named by the DAEMON, which is the
+    // process that arbitrates. Reading the user's file here (which is what this did until R331) put
+    // the note's authority in the wrong process: a `sprag` run whose `XDG_CONFIG_HOME` differs from
+    // the daemon's was wrong in both directions, silent when the pin was inert and noisy when it was
+    // in force.
+    if let Some(note) = pinned.note() {
+        eprintln!("sprag: note: {note}");
     }
     Ok(())
+}
+
+/// A dimension the flag parser has already checked, as the `u16` the wire's rectangle takes.
+///
+/// The `expect`-free spelling of a value that cannot be absent here: the half-a-rectangle check
+/// above is what guarantees both are present, and a cell count past `u16` is a typo rather than a
+/// window. Refused with the flag the user typed, which is the only thing they can act on.
+fn dimension(value: Option<u64>, flag: &str) -> io::Result<u16> {
+    value
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("resize-window: {flag} is not a cell count this window could have"),
+            )
+        })
 }
 
 /// Issue a scoped window `scene/invoke`, mapping a request-level refusal (`Other`) to `message` —

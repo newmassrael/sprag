@@ -97,12 +97,12 @@ use sprag_host::wire::{
     KILL_WINDOW_ACTION, LAYOUT_SLOT, MOUSE_ACTION, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
     MoveWindowAsk, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION,
     PROMPT_MARKS_SLOT, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    RESIZE_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, TREE_SLOT, WINDOW_SIZE_SLOT,
-    WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION, cells_slot_at, find_slot_for, project_slot_for,
-    regex_slot_for, session_activity_at,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_DISPLAY_MAX_AGE, SESSION_SLOT,
+    SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION,
+    SWAP_PANE_ACTION, SelectAsk, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, TREE_SLOT,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowPin, WindowRef, ZOOM_PANE_ACTION, cells_slot_at,
+    find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
@@ -2825,6 +2825,28 @@ impl HostClient for WireHost {
         let answer = self.request("scene/invoke", params, "move_window")?;
         self.refresh_view();
         MoveWindowAsk::read_answer(&answer)
+    }
+
+    /// Pin the CURRENT window's size over the wire, answering what the daemon stored and the policy
+    /// it is under.
+    ///
+    /// The ask names NO window — [`HostClient::resize_window`]'s rule — so the daemon resolves *the
+    /// one this connection is scoped to* under its own lock, where this client's mirror can be a
+    /// revision behind. That is the same discipline `rename_window` and `move_window`'s bare form
+    /// keep, and it is why the [`ResizeWindowAsk`] built here has `window: None` rather than a name
+    /// read back off the layout mirror.
+    ///
+    /// The view is refreshed BEFORE the answer is read, so a caller that paints on the strength of
+    /// the returned pin is painting over a mirror the resize has already reached — the shape every
+    /// acting method here keeps.
+    fn resize_window(&self, size: sprag_host::window::SizeRequest) -> Option<WindowPin> {
+        let params = invoke(
+            &mux_action_path(RESIZE_WINDOW_ACTION),
+            ResizeWindowAsk { window: None, size }.to_args(),
+        );
+        let answer = self.request("scene/invoke", params, "resize_window")?;
+        self.refresh_view();
+        Some(WindowPin::read(&answer))
     }
 
     fn new_window(&self) -> String {

@@ -156,6 +156,7 @@ fn main() -> ExitCode {
             // found it.
             check_a_window_and_a_terminal_agree_on_one_pane_size(&mut smoke, &mut report);
             check_a_pinned_window_overrides_what_this_window_measured(&mut smoke, &mut report);
+            check_the_resize_key_pins_this_windows_own_area(&mut smoke, &mut report);
             // AFTER every check that needs the client this run booted, because it REPLACES that
             // client twice. Before the session kill, which is happy to kill whichever session the
             // client it finds is attached to.
@@ -734,7 +735,10 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
 fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut Report) {
     // The float row acts on the FOCUSED pane, and headless there is none to start with
     // ([`Smoke::focus_pane`] says why it must be driven rather than waited for).
-    report.check("a pane can be focused to act on", smoke.focus_pane(0));
+    report.check(
+        "a pane can be focused to act on",
+        smoke.focus_first_pane().is_some(),
+    );
     if !smoke.run_palette_row("Split into a new pane", report) {
         return;
     }
@@ -1831,14 +1835,16 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         return;
     };
     // A keystroke goes to the FOCUSED pane, so the focus has to be real (see [`Smoke::focus_pane`]).
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to type into", false);
         return;
-    }
+    };
 
     report.check(
         "an unprefixed command key is accepted",
-        smoke.press(0, "%", false).is_ok(),
+        smoke.press(pane, "%", false).is_ok(),
     );
     report.check(
         &format!("...and divides nothing ({before} pane(s))"),
@@ -1847,8 +1853,8 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
 
     // The DEFAULT prefix, which this user's file has moved: it arms nothing, so the key after it is
     // still the program's.
-    let _ = smoke.press(0, "b", true);
-    let _ = smoke.press(0, "%", false);
+    let _ = smoke.press(pane, "b", true);
+    let _ = smoke.press(pane, "%", false);
     report.check(
         "the default prefix arms nothing once the file has moved it",
         smoke.pane_count() == Ok(before),
@@ -1857,11 +1863,11 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
     // ...and the prefix the FILE names does.
     report.check(
         "the user's prefix is accepted",
-        smoke.press(0, "a", true).is_ok(),
+        smoke.press(pane, "a", true).is_ok(),
     );
     report.check(
         "and the command key after it is too",
-        smoke.press(0, "%", false).is_ok(),
+        smoke.press(pane, "%", false).is_ok(),
     );
     let grown = smoke.wait_for(|s| {
         let count = s.pane_count().ok()?;
@@ -1885,14 +1891,14 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         report.check("a root-table config can be written", false);
         return;
     }
-    let _ = smoke.press(0, "F6", false);
+    let _ = smoke.press(pane, "F6", false);
     report.check(
         &format!("an unbound key still divides nothing ({grown} pane(s))"),
         smoke.pane_count() == Ok(grown),
     );
     report.check(
         "a root-table key is accepted with no prefix",
-        smoke.press(0, "F5", false).is_ok(),
+        smoke.press(pane, "F5", false).is_ok(),
     );
     let rooted = smoke.wait_for(|s| {
         let count = s.pane_count().ok()?;
@@ -2617,6 +2623,177 @@ fn check_a_pinned_window_overrides_what_this_window_measured(
     let _ = smoke.write_user_config("");
 }
 
+/// **`resize-window` from a KEY, through the shipped GUI binary (R331).**
+///
+/// The GUI half of `sprag-tui`'s pty gate, and R318's rule for why both exist: the keymap arm is
+/// shared, the `perform` that carries it out is each front's own. Measured before this round,
+/// `sprag bind-key R resize-window -a` was refused — *"a verb a keystroke could mean and sprag does
+/// not bind it yet"* — so there was no key to press at either front.
+///
+/// # `-a` is the spelling that cannot be faked, and `-u` is what proves it was a PIN
+///
+/// The fold is resolved from the areas the DAEMON was told about, and the only client here is this
+/// window — so the panes landing on what this window MEASURED says the request crossed, was resolved
+/// there, and came back. The fixture pins somewhere else FIRST so that number is not already the
+/// answer; without that the check would pass on a key that did nothing.
+///
+/// `-u` then hands it back, which is the direction that separates a stored decision from a window
+/// that merely happened to follow its only client: under `manual` an un-pinned window defers to the
+/// default policy and lands on the same rectangle, so what is asserted after the un-pin is that a
+/// RELATIVE resize — which needs something to move — is refused.
+fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &mut Report) {
+    let Some(session) = smoke.attached_session() else {
+        report.check("the window names its session for the resize key", false);
+        return;
+    };
+    let Ok(mut daemon) = smoke.daemon() else {
+        report.check("the smoke reaches the daemon for the resize key", false);
+        return;
+    };
+    let Some(measured) = window_size(&mut daemon, &session) else {
+        report.check("this window reported an area to fold", false);
+        return;
+    };
+    if smoke
+        .write_user_config(
+            "[options]\nwindow-size = \"manual\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -a\"\n\n[[bind]]\nkey = \"U\"\naction = \"resize-window -u\"\n",
+        )
+        .is_err()
+    {
+        report.check("the smoke binds the resize keys", false);
+        return;
+    }
+    // The pane SLOTS are not re-packed as panes come and go, so the first docked one is read rather
+    // than assumed to be zero — a check earlier in this run kills a pane, and slot 0 need not still
+    // hold one by the time this runs.
+    let docked = smoke
+        .docked_panes()
+        .ok()
+        .and_then(|panes| panes.first().copied());
+    let focused = docked.is_some_and(|pane| smoke.focus_pane(pane));
+    report.check(
+        &format!("a pane can be focused to drive the resize key ({docked:?})"),
+        focused,
+    );
+    let (Some(pane), true) = (docked, focused) else {
+        let _ = smoke.write_user_config("");
+        return;
+    };
+    // OFF THE ANSWER FIRST. A window already on this client's area would satisfy the fold check
+    // whether the key did anything at all — the vacuous-fixture shape R330's mutation pass caught.
+    let elsewhere = (measured.0 + 17, measured.1 + 9);
+    if let Err(error) = smoke.cli(&[
+        "resize-window",
+        "-t",
+        &session,
+        "-x",
+        &elsewhere.0.to_string(),
+        "-y",
+        &elsewhere.1.to_string(),
+    ]) {
+        report.check("the smoke pins the window somewhere else first", false);
+        eprintln!("      {error}");
+        let _ = smoke.write_user_config("");
+        return;
+    }
+    report.check(
+        "the window starts somewhere no client reported",
+        smoke
+            .wait_for(|_| (window_size(&mut daemon, &session) == Some(elsewhere)).then_some(()))
+            .is_ok(),
+    );
+
+    // PAST THE REPEAT WINDOW, on R308's hazard — inside it the prefix table is still live.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "R", false).is_ok();
+    report.check("the GUI accepts `prefix R`", pressed);
+    let folded =
+        smoke.wait_for(|_| (window_size(&mut daemon, &session) == Some(measured)).then_some(()));
+    report.check(
+        &format!("`prefix R` pinned the window to this client's own area ({measured:?})"),
+        folded.is_ok(),
+    );
+
+    // THE UN-PIN. Its discriminator is a RE-PIN first: with the window back on a rectangle no client
+    // reported, only an un-pin can bring it back to this window's own area — `manual` defers to the
+    // default policy when nothing is stored, which is this client's report.
+    //
+    // ⚠ The obvious discriminator does NOT work and measuring said so: a relative resize after the
+    // un-pin still SUCCEEDS, because that deferral gives it a basis. A check written on the
+    // reasonable-sounding version of this claim passed the pin half and hung on the un-pin.
+    if let Err(error) = smoke.cli(&[
+        "resize-window",
+        "-t",
+        &session,
+        "-x",
+        &elsewhere.0.to_string(),
+        "-y",
+        &elsewhere.1.to_string(),
+    ]) {
+        report.check("the smoke re-pins the window for the un-pin key", false);
+        eprintln!("      {error}");
+        let _ = smoke.write_user_config("");
+        return;
+    }
+    if smoke
+        .wait_for(|_| (window_size(&mut daemon, &session) == Some(elsewhere)).then_some(()))
+        .is_err()
+    {
+        report.check("the window is pinned again before the un-pin key", false);
+        let _ = smoke.write_user_config("");
+        return;
+    }
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let released = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "U", false).is_ok();
+    report.check("the GUI accepts `prefix U`", released);
+    let unpinned =
+        smoke.wait_for(|_| (window_size(&mut daemon, &session) == Some(measured)).then_some(()));
+    report.check(
+        &format!("`prefix U` handed the window back to this client's own area ({unpinned:?})"),
+        unpinned.is_ok(),
+    );
+
+    // ⚠ **THE THIRD OUTCOME, and the mutation pass is why it is here.** Under a policy that is not
+    // `manual` the daemon STORES the size and lays nothing out over it — so the key changes nothing
+    // on screen and is refused by nobody, which is indistinguishable from a key that is not bound
+    // unless a sentence says so. Dropping `Report::pinned` from this front's arm left every check
+    // above green; only this one turns it red.
+    //
+    // The keymap goes back in with the policy, because the client re-reads its config per keystroke
+    // and a file holding only the option would unbind the key this check is about to press.
+    if smoke
+        .write_user_config(
+            "[options]\nwindow-size = \"largest\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -x 90 -y 25\"\n",
+        )
+        .is_err()
+    {
+        report.check("the smoke flips the policy for the inert-pin sentence", false);
+        let _ = smoke.write_user_config("");
+        return;
+    }
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    let stored = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "R", false).is_ok();
+    report.check(
+        "the GUI accepts `prefix R` under a policy that ignores it",
+        stored,
+    );
+    let said = smoke
+        .wait_for_tag("sprag_message_strip")
+        .ok()
+        .and_then(|tags| {
+            tags.get("sprag_message_strip")
+                .map(|p| p.text.join("\u{1f}"))
+        })
+        .unwrap_or_default();
+    report.check(
+        &format!("a pin the policy IGNORES says so on this window ({said:?})"),
+        said.contains("window-size is largest"),
+    );
+
+    // Leave the file as this check found it, so a later one reads its own settings and not these.
+    let _ = smoke.write_user_config("");
+}
+
 /// **The WINDOW keys, through the shipped GUI binary** (R305) — `prefix c` creates a window and
 /// `prefix n` walks the ring, judged against the DAEMON's own window list.
 ///
@@ -2641,10 +2818,12 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
         report.check("the smoke reaches the daemon for the window keys", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the window keys", false);
         return;
-    }
+    };
     let before = windows_of(&mut daemon, &session);
     report.check(
         &format!("the session has windows to start from ({before:?})"),
@@ -2652,7 +2831,7 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
     );
 
     // `prefix c` — the key that did nothing at all before this round.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "c", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "c", false).is_ok();
     report.check("the GUI accepts `prefix c`", pressed);
     let grown = smoke.wait_for(|s| {
         let _ = s;
@@ -2671,7 +2850,7 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
 
     // `prefix n` — the RING, walked by the daemon. From the last window it WRAPS onto the first,
     // which is the half a client-side walk would be free to get wrong.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "n", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "n", false).is_ok();
     report.check("the GUI accepts `prefix n`", pressed);
     let walked = smoke.wait_for(|s| {
         let _ = s;
@@ -2719,14 +2898,16 @@ fn check_the_break_key_gives_a_pane_a_window_of_its_own(smoke: &mut Smoke, repor
         &format!("the window holds more than one pane to break out of ({panes})"),
         panes > 1,
     );
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the break key", false);
         return;
-    }
+    };
     let before = windows_of(&mut daemon, &session);
     // PAST THE REPEAT WINDOW, on R308's hazard — see the guarded kill's own statement of it.
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "!", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "!", false).is_ok();
     report.check("the GUI accepts `prefix !`", pressed);
     let grown = smoke.wait_for(|s| {
         let _ = s;
@@ -2777,10 +2958,12 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
         report.check("the smoke reaches the daemon for the session keys", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the session keys", false);
         return;
-    }
+    };
     // A SECOND session, or the ring wraps onto the one we are on and every assertion below passes
     // without discriminating — the vacuous-fixture shape this project has now caught six times.
     let made = daemon.call(
@@ -2807,7 +2990,7 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
     // `prefix )` — one step along the ring. `)` is a SHIFTED character, R306's class: winit reports
     // it with the shift flag where a pty reports it without one, so this press is also the standing
     // check that the masking fix still holds one verb further on.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, ")", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, ")", false).is_ok();
     report.check("the GUI accepts `prefix )`", pressed);
     let moved = smoke.wait_for(|s| {
         let _ = s;
@@ -2839,7 +3022,7 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
 
     // `prefix L` — back to the session VISITED before this one. A key that merely stepped again
     // would satisfy nothing here on a two-session ring, so the assertion is the NAME: `home`.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "L", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "L", false).is_ok();
     report.check("the GUI accepts `prefix L`", pressed);
     let back = smoke.wait_for(|s| {
         let _ = s;
@@ -2881,10 +3064,12 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
         report.check("the smoke reaches the daemon for the chooser", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to open the chooser", false);
         return;
-    }
+    };
     // A SECOND session to pick, made here rather than inherited: this check must discriminate on
     // its own, and a fixture that depended on an earlier check's leftovers would pass or fail for
     // that check's reasons.
@@ -2907,7 +3092,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
     // chooser at the wrong moment. R308 registered this hazard; R315's own `sprag-tui` test was
     // caught by it.
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "s", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "s", false).is_ok();
     report.check("the GUI accepts `prefix s`", pressed);
     let opened = smoke.wait_for_tag("sprag_chooser_panel");
     report.check(
@@ -2944,7 +3129,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
     // is judged on the DAEMON's pane list rather than on this client's paint.
     let panes_before = daemon_panes(&mut daemon, &home);
     for key in ["s", "m", "o", "k", "e", "-", "c"] {
-        let _ = smoke.press(0, key, false);
+        let _ = smoke.press(pane, key, false);
     }
     let panes_after = daemon_panes(&mut daemon, &home);
     report.check(
@@ -2954,7 +3139,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
 
     // ...AND ENTER GOES THERE. Judged on the daemon's badges: OFF the session this client was on,
     // and ON the one whose row survived the query.
-    let _ = smoke.press(0, "Enter", false);
+    let _ = smoke.press(pane, "Enter", false);
     let landed = smoke.wait_for(|s| {
         let _ = s;
         (attached_to(&mut daemon, "smoke-chosen") > 0 && attached_to(&mut daemon, &home) == 0)
@@ -2975,8 +3160,8 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
 
     // BACK, so what follows inherits the session this check was handed. `prefix L` is the verb for
     // exactly this and is already proved by the check above it.
-    let _ = smoke.press(0, "b", true);
-    let _ = smoke.press(0, "L", false);
+    let _ = smoke.press(pane, "b", true);
+    let _ = smoke.press(pane, "L", false);
     let back = smoke.wait_for(|s| {
         let _ = s;
         (attached_to(&mut daemon, &home) > 0).then_some(())
@@ -3014,10 +3199,12 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         report.check("the smoke reaches the daemon for the report", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to press a reporting key", false);
         return;
-    }
+    };
     // A session the GOOD key can reach, made here so this check discriminates on its own.
     let made = daemon.call(
         "scene/invoke",
@@ -3042,7 +3229,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
 
     // THE GOOD KEY, pressed first so the silence below is measured on a client that was WORKING.
-    let good = smoke.press(0, "b", true).is_ok() && smoke.press(0, "y", false).is_ok();
+    let good = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "y", false).is_ok();
     report.check("the GUI accepts the good binding", good);
     let moved = smoke.wait_for(|s| {
         let _ = s;
@@ -3063,7 +3250,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
 
     // THE BAD KEY. The strip must appear, and it must NAME the session that is not there.
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
-    let bad = smoke.press(0, "b", true).is_ok() && smoke.press(0, "g", false).is_ok();
+    let bad = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "g", false).is_ok();
     report.check("the GUI accepts the bad binding", bad);
     let shown = smoke.wait_for_tag("sprag_message_strip");
     report.check(
@@ -3107,7 +3294,8 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
     // the leftmost pane has nowhere to go, and the arm that says so is `perform`'s — this front's
     // own code, which the terminal front's live fixture cannot speak for.
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
-    let edged = smoke.press(0, "b", true).is_ok() && smoke.press(0, "ArrowLeft", false).is_ok();
+    let edged =
+        smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "ArrowLeft", false).is_ok();
     report.check("the GUI accepts `prefix ArrowLeft`", edged);
     let at_edge = smoke.wait_for_tag("sprag_message_strip");
     let said_edge = at_edge
@@ -3224,7 +3412,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
     // that could have cleared the strip. It also leaves the prefix consumed, so the cleanup below
     // starts from the steady state (the first draft pressed the prefix ALONE and the cleanup's own
     // chord was then eaten as a `send-prefix`, which is what the failing run said).
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "q", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "q", false).is_ok();
     report.check("the GUI accepts the acknowledging keystroke", pressed);
     let acknowledged = smoke.wait_for(|s| {
         let tags = s.tags().ok()?;
@@ -3251,14 +3439,17 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
     // The CHILD raises it: a `printf` typed into the pane's own shell, which is how a build script
     // or a test runner does it. Typed through the DAEMON's input external — the client's socket
     // cannot reach a pane's input, which is the seam `Smoke::daemon` exists for.
-    let pane = daemon_panes(&mut daemon, "smoke-report")
+    // Named apart from the focused SLOT above: this is a daemon PANE ID and that one is this
+    // client's slot index. Both were called `pane` and the second shadowed the first, which the
+    // keyboard lines at the end of this check silently inherited (R331).
+    let raising = daemon_panes(&mut daemon, "smoke-report")
         .first()
         .copied()
         .unwrap_or(0);
     let typed = daemon.call(
         "scene/invoke",
         json!({
-            "path": sprag_host::wire::pane_input_path(u64::from(pane), sprag_host::wire::TEXT_ACTION),
+            "path": sprag_host::wire::pane_input_path(u64::from(raising), sprag_host::wire::TEXT_ACTION),
             "session": "smoke-report",
             "args": { "text": "printf '\\033]9;build finished: 3 errors\\007'\r" },
         }),
@@ -3299,7 +3490,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
     );
     report.check(
         &format!("...and the strip NAMES the pane it came from ({said_pane:?})"),
-        said_pane.contains(&format!("pane {pane}")),
+        said_pane.contains(&format!("pane {raising}")),
     );
 
     // WHAT IT LEAVES: the shipped table back, and this client where it started.
@@ -3309,8 +3500,8 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         restored.is_ok(),
     );
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
-    let _ = smoke.press(0, "b", true);
-    let _ = smoke.press(0, "L", false);
+    let _ = smoke.press(pane, "b", true);
+    let _ = smoke.press(pane, "L", false);
     let back = smoke.wait_for(|s| {
         let _ = s;
         (attached_to(&mut daemon, &home) > 0).then_some(())
@@ -3616,10 +3807,12 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
         report.check("the smoke reaches the daemon for the order keys", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the order keys", false);
         return;
-    }
+    };
     let before = windows_of(&mut daemon, &session);
     // TWO windows at least, or a move has nowhere to go and every assertion below is vacuous —
     // which is the shape this project has caught five times, so it is checked rather than assumed.
@@ -3645,7 +3838,7 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
     // measured `prefix %` failing on in this client on a real keyboard: winit reports it with the
     // shift flag where a pty reports it without one. So this press is also the standing check that
     // the fix held.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, ">", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, ">", false).is_ok();
     report.check("the GUI accepts `prefix >`", pressed);
     let moved = smoke.wait_for(|s| {
         let _ = s;
@@ -3680,7 +3873,7 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
         painted.is_ok(),
     );
 
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "<", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "<", false).is_ok();
     report.check("the GUI accepts `prefix <`", pressed);
     let back = smoke.wait_for(|s| {
         let _ = s;
@@ -3717,10 +3910,12 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
         report.check("the smoke reaches the daemon for the resize key", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the resize key", false);
         return;
-    }
+    };
     // The CURRENT WINDOW's tiled panes and their widths, which is the only set this verb can move.
     // The pane LIST spans every window of the session, so a check that measured it would be
     // reading panes no boundary here touches — and an earlier version of this check did, which is
@@ -3737,7 +3932,7 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
 
     // A boundary needs two panes IN THIS WINDOW. `prefix %` is the shipped default, and the split
     // selects the pane it opens.
-    let split = smoke.press(0, "b", true).is_ok() && smoke.press(0, "%", false).is_ok();
+    let split = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "%", false).is_ok();
     report.check("the GUI accepts `prefix %` to make a boundary", split);
     let grew = smoke.wait_for(|s| {
         let _ = s;
@@ -3776,7 +3971,8 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
     // It deliberately does NOT assert that one pane gave up what another took: stacked panes share
     // their columns, so a sum over widths is not a conserved quantity. That claim is made where the
     // arrangement is known, in the daemon's own tests and the CLI's.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "ArrowLeft", true).is_ok();
+    let pressed =
+        smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "ArrowLeft", true).is_ok();
     report.check("the GUI accepts `prefix C-Left`", pressed);
     let moved = smoke.wait_for(|s| {
         let _ = s;
@@ -3806,7 +4002,7 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
     // the key would go to the shell and the arrow after it would follow. An unbound key is
     // swallowed and ends the window whether one was open or not, which is the only disarm that is
     // correct in both states. (The pty test found this first, one surface over.)
-    let _ = smoke.press(0, "k", false);
+    let _ = smoke.press(pane, "k", false);
 
     // THE DISCRIMINATOR: the opposite flag from the same pane moves the SAME boundary the OTHER
     // way. A client that resized on any arrow, or one that grew whichever pane asked, would move
@@ -3817,7 +4013,8 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
     // these presses in the run that found it), and every pane's width moves when the window does.
     // The direction the boundary travelled is the claim that survives that; the exact arithmetic is
     // asserted where the window is fixed, in the daemon's own tests and the CLI's.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "ArrowRight", true).is_ok();
+    let pressed =
+        smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "ArrowRight", true).is_ok();
     report.check("the GUI accepts `prefix C-Right`", pressed);
     let back = smoke.wait_for(|s| {
         let _ = s;
@@ -3874,15 +4071,17 @@ fn check_the_guarded_kill_key_asks_and_a_yes_reaches_the_daemon(
         report.check("the smoke can count panes for the guarded kill", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the guarded kill", false);
         return;
-    }
+    };
     // PAST THE REPEAT WINDOW, on the hazard R308 measured: a check placed after a `-r` one inherits
     // its armed prefix table, inside which `C-b` is `send-prefix` and the next key goes to the pane.
     // Nothing enforces this, so every check that presses a prefix states it.
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "x", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "x", false).is_ok();
     report.check("the GUI accepts `prefix x`", pressed);
 
     let prompt = smoke
@@ -3954,10 +4153,12 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
         report.check("the smoke reaches the daemon for the key table", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the key table", false);
         return;
-    }
+    };
     // PAST THE REPEAT WINDOW FIRST, and this is not padding. The check before this one drives
     // `resize-pane`, which is `-r`: while its window is open the prefix table is still armed, so
     // `C-b` means `send-prefix` (the self-send) rather than arming anything, and the `?` after it
@@ -3966,7 +4167,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
     // test states one crate over. It is item 15's "a check leaves a state for whatever follows it",
     // on a resource nothing had noticed a check could leave behind.
     std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, "?", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "?", false).is_ok();
     report.check("the GUI accepts `prefix ?`", pressed);
     let opened = smoke.wait_for_tag("sprag_keyhelp_panel");
     report.check(
@@ -4011,7 +4212,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
         !text.contains(form),
     );
     for _ in 0..4 {
-        let _ = smoke.press(0, "PageDown", false);
+        let _ = smoke.press(pane, "PageDown", false);
     }
     let paged = smoke.wait_for(|s| {
         let tags = s.tags().ok()?;
@@ -4034,8 +4235,8 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
     // Judged on the DAEMON's pane list, never on this client's paint: a client that split and
     // painted nothing would satisfy a check made on its own tree.
     let panes_before = daemon_panes(&mut daemon, &session);
-    let _ = smoke.press(0, "b", true);
-    let _ = smoke.press(0, "%", false);
+    let _ = smoke.press(pane, "b", true);
+    let _ = smoke.press(pane, "%", false);
     let panes_after = daemon_panes(&mut daemon, &session);
     report.check(
         &format!("no key reaches the panes behind it ({panes_before:?} -> {panes_after:?})"),
@@ -4043,7 +4244,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
     );
 
     // AND A KEY GIVES THEM BACK.
-    let closed = smoke.press(0, "Escape", false).is_ok();
+    let closed = smoke.press(pane, "Escape", false).is_ok();
     report.check("the GUI accepts the `Escape` that closes it", closed);
     let gone = smoke.wait_for(|s| {
         let tags = s.tags().ok()?;
@@ -4079,10 +4280,12 @@ fn check_the_rename_key_asks_and_the_answer_reaches_the_daemon(
         report.check("the smoke reaches the daemon for the rename key", false);
         return;
     };
-    if !smoke.focus_pane(0) {
+    // ANY pane, read back rather than assumed to be slot 0 — the slots are not
+    // re-packed, so an earlier check closing a pane frees the one this used to name.
+    let Some(pane) = smoke.focus_first_pane() else {
         report.check("a pane can be focused to drive the rename key", false);
         return;
-    }
+    };
     let before = windows_of(&mut daemon, &session);
     let Some(current) = before
         .iter()
@@ -4094,7 +4297,7 @@ fn check_the_rename_key_asks_and_the_answer_reaches_the_daemon(
     };
 
     // `prefix ,` — tmux's rename key, which before this round was `Routed::Swallow`.
-    let pressed = smoke.press(0, "b", true).is_ok() && smoke.press(0, ",", false).is_ok();
+    let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, ",", false).is_ok();
     report.check("the GUI accepts `prefix ,`", pressed);
     let asked = smoke.wait_for_tag("sprag_prompt_panel");
     report.check(
@@ -4125,7 +4328,7 @@ fn check_the_rename_key_asks_and_the_answer_reaches_the_daemon(
         &format!("...and HOLDS it, seed and all ({held:?})"),
         held == Ok(Value::String(format!("{current}z"))),
     );
-    let answered = smoke.press(0, "Enter", false).is_ok();
+    let answered = smoke.press(pane, "Enter", false).is_ok();
     report.check("the GUI accepts the `Enter` that answers", answered);
     let wanted = format!("{current}z");
     let renamed = smoke.wait_for(|s| {
@@ -4762,6 +4965,26 @@ impl Smoke {
             self.call("scene/modifiers", json!({}))?;
         }
         sent.map(|_| ())
+    }
+
+    /// Put the within-app focus on a pane that ACTUALLY EXISTS, answering which slot it landed on.
+    ///
+    /// The honest form of [`focus_pane`](Self::focus_pane) for the twelve checks that mean *any
+    /// pane*: pane SLOTS are not re-packed as panes come and go, so slot 0 is free the moment a
+    /// check earlier in the run closes the pane that had it — and a key check that then pressed at
+    /// `sprag_gui.pane.0` would be typing into nothing.
+    ///
+    /// **Measured, not anticipated** (R331): `a pane can be focused to drive the order keys` failed
+    /// one run in three at exactly that, after `prefix n` walked the client onto another window, and
+    /// R331's own new check failed it every time. A flake is a bug rather than something to retry,
+    /// and the bug was in the harness's assumption.
+    ///
+    /// The FIRST docked pane rather than a chosen one, because these callers do not care which:
+    /// what they need is a pane the keyboard can be pointed at. A check that needs a SPECIFIC pane
+    /// still says so with [`focus_pane`](Self::focus_pane).
+    fn focus_first_pane(&mut self) -> Option<usize> {
+        let pane = self.docked_panes().ok()?.first().copied()?;
+        self.focus_pane(pane).then_some(pane)
     }
 
     /// Put the within-app focus on pane `i`, so the palette's pane-scoped rows are offered.

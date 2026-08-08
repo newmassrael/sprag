@@ -1366,6 +1366,10 @@ mod tests {
         /// by identity because a log of names cannot tell a kill that landed where the row pointed
         /// from one that landed on whatever had taken the label since (R330).
         killed_windows: Vec<WindowId>,
+        /// The size REQUESTS a resize sent, in order. Recorded as the request rather than as a
+        /// rectangle because three of the four spellings are descriptions a daemon resolves, so
+        /// what a binding is answerable for is which description it asked for (R331).
+        resized_windows: Vec<sprag_host::window::SizeRequest>,
         /// The sessions a kill named. The in-process `Host` deliberately no-ops `kill_session` (it
         /// renders only the default session), so a recording fake is the ONLY way to observe that this
         /// arm addresses the right one at all.
@@ -1476,6 +1480,25 @@ mod tests {
         fn kill_window(&self, window: sprag_terminal::WindowId) -> Option<sprag_terminal::Ended> {
             self.log.borrow_mut().killed_windows.push(window);
             Some(sprag_terminal::Ended::Window)
+        }
+        /// RECORDED with the POLICY THIS FIXTURE IS UNDER, because that is the half a caller acts
+        /// on: a pin answered without one can never produce the note, so a fake that dropped it
+        /// would make the row untestable here.
+        fn resize_window(
+            &self,
+            size: sprag_host::window::SizeRequest,
+        ) -> Option<sprag_host::wire::WindowPin> {
+            self.log.borrow_mut().resized_windows.push(size);
+            Some(sprag_host::wire::WindowPin {
+                size: match size {
+                    sprag_host::window::SizeRequest::Exact(size) => Some(size),
+                    sprag_host::window::SizeRequest::Clear => None,
+                    // The two DESCRIPTIONS resolve at a daemon; this fixture has no clients and no
+                    // window, so it answers the one rectangle a fake can honestly produce.
+                    _ => Some(sprag_host::ClientSize { cols: 80, rows: 24 }),
+                },
+                policy: Some(sprag_host::WindowSize::Manual),
+            })
         }
         /// RECORDED, and answering the TRIMMED name — a fake that echoed its argument would let a
         /// caller that paints its own input pass a test the daemon would fail it on.

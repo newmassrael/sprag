@@ -215,6 +215,21 @@ impl SlotView {
         self.host.resize_toward(dir, cells)
     }
 
+    /// Ask the daemon to PIN THE WINDOW's own cell size, or hand it back — see
+    /// [`HostClient::resize_window`].
+    ///
+    /// The whole answer travels, unlike the boolean the boundary resize above reduces to: this verb
+    /// has an outcome that neither succeeds visibly nor is refused (a size stored under a policy
+    /// that does not read it), and the only thing that says so is the pin's own policy. Reducing it
+    /// here would put the note's decision in this file instead of in
+    /// [`Report::pinned`](sprag_host::report::Report::pinned), where both frontends read it.
+    pub(crate) fn resize_window(
+        &self,
+        size: sprag_host::window::SizeRequest,
+    ) -> Option<sprag_host::wire::WindowPin> {
+        self.host.resize_window(size)
+    }
+
     /// The display slot holding `pane` — the inverse of [`Self::id`], for PROJECTING
     /// host-side state that names panes by identity (the window's arrangement) onto this
     /// client's slots.
@@ -1297,6 +1312,12 @@ mod tests {
             String::new()
         }
         fn kill_window(&self, _window: sprag_terminal::WindowId) -> Option<sprag_terminal::Ended> {
+            None
+        }
+        fn resize_window(
+            &self,
+            _size: sprag_host::window::SizeRequest,
+        ) -> Option<sprag_host::wire::WindowPin> {
             None
         }
         /// These fixtures exercise slot ROUTING, not renaming — refused honestly rather than

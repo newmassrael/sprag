@@ -522,16 +522,19 @@ impl Verb {
                     "move-window --first|--last|-n|-p|--before [<window>]|--after <window>",
                 ),
             ),
-            // A key could mean the FIT forms (`-a` / `-A` / `-u`), which carry no number. What
-            // stops it today is that no client has a call for it: `HostClient` has `resize_toward`
-            // for a pane boundary and nothing for a window's forced size.
+            // BINDABLE SINCE R331, and the SIZE travels where a window name may not: a rectangle is
+            // a decision a config file can fix, which is exactly what `rename-window`'s rule asks of
+            // an argument. What had to be built was not the grammar but the ANSWER — a pin stored
+            // under a policy that does not read it moves nothing, so until the daemon said which
+            // policy it was under, a key for this could not tell a person their resize had done
+            // nothing (`wire::WindowPin`).
             Self::ResizeWindow => (
                 "resize-window",
                 shell(
                     Group::Window,
                     "[window] <-x COLS -y ROWS | -a | -A | -L/-R/-U/-D N | -u> [-t SESSION]",
                 ),
-                Keystroke::NotBuilt,
+                Keystroke::Means("resize-window -x COLS -y ROWS|-a|-A|-L/-R/-U/-D N|-u"),
             ),
             // BINDABLE SINCE R323, on tmux's own `prefix !`. The pane is the focused one and the
             // name is optional, so a keystroke carries everything this verb needs — which is why it
@@ -1018,7 +1021,7 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (24, 2, 28),
+            (25, 1, 28),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
@@ -1029,11 +1032,7 @@ mod tests {
             .filter(|verb| verb.keystroke() == Keystroke::NotBuilt)
             .map(|verb| verb.name())
             .collect();
-        assert_eq!(
-            pending,
-            ["run", "resize-window"],
-            "the keyboard's remaining gap, by name",
-        );
+        assert_eq!(pending, ["run"], "the keyboard's remaining gap, by name",);
     }
 
     /// The forms the keyboard lists are exactly the bindable verbs, each spelling its own name

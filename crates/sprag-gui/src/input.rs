@@ -317,6 +317,9 @@ fn action_label(action: &BoundAction) -> &'static str {
         BoundAction::JoinPane => "join-pane",
         BoundAction::KillWindow => "kill-window",
         BoundAction::RenameWindow => "rename-window",
+        // Its own verb, and NOT `resize-pane`: the two differ only in what they act on, which is
+        // exactly the confusion a shared label would bake into every trace line.
+        BoundAction::ResizeWindow { .. } => "resize-window",
         // Both move forms label as the VERB: the place says WHERE, and where the window landed is
         // in the next frame's window strip — the split's rule, one level up.
         BoundAction::MoveWindow { .. } | BoundAction::MoveWindowBefore => "move-window",
@@ -517,6 +520,18 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
         BoundAction::MoveWindow { place } => match use_terminal().slots.move_window(None, place) {
             Some((_, PlaceHow::Moved)) => Report::on_screen(),
             Some((_, _)) | None => Report::nowhere(&action),
+        },
+        // NO window named, the move's rule one verb over — and the THIRD outcome this vocabulary
+        // has only here: the daemon can accept a size and lay nothing out over it. `Report::pinned`
+        // owns which of the three it was, so this front and the terminal one cannot come to
+        // disagree about when a resize is worth a sentence (R331).
+        //
+        // Nothing repaints here on this module's standing rule: the pin the daemon performs
+        // announces an arrangement, and the layout mirror re-reads it — the same path a split's new
+        // pane arrives by.
+        BoundAction::ResizeWindow { size } => match use_terminal().slots.resize_window(*size) {
+            Some(pinned) => Report::pinned(&pinned),
+            None => Report::nowhere(&action),
         },
         // THE SESSION LEVEL (R314). The ring is the DAEMON's for the same reason the window ring
         // above it is, and more sharply: this client's `sessions` mirror is refreshed by a poll, so

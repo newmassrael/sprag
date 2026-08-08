@@ -3798,6 +3798,81 @@ fn the_cli_pins_a_window_size_and_reports_when_the_policy_ignores_it() {
     );
 }
 
+/// **THE NOTE IS THE DAEMON'S FACT, not this process's reading of a file** (R331) — driven by
+/// giving the two processes DIFFERENT config homes, which is the only fixture in which the two
+/// authorities can be told apart at all.
+///
+/// The verb printed that note by calling `sprag_host::config::window_size()` in the CLI's own
+/// process, with a comment saying *"the daemon was never asked what it thinks the policy is"*. Both
+/// directions were wrong and only one of them is loud:
+///
+/// * the daemon on `largest` and this process's file on `manual` — the pin is INERT and the user is
+///   told NOTHING, which is the "I resized and nothing moved" discovery the note exists to prevent;
+/// * the daemon on `manual` and this process's file on anything else — the pin is IN FORCE and the
+///   user is told it is not, about a resize they can see on their own screen.
+///
+/// Both are asserted here, in that order, because the first is the one that fails silently and the
+/// second is the one a fix could reintroduce by over-reporting. The PANES are read between them: a
+/// note is a claim about whether the panes moved, so a gate that checked only the words could pass
+/// while the sentence was about the wrong window.
+#[test]
+fn the_policy_note_comes_from_the_daemon_and_not_from_the_callers_own_config() {
+    // THREE homes, because an option verb edits the file the process running it resolves: the
+    // daemon's own (which `set-option` below is pointed at deliberately), and one per DIRECTION for
+    // the caller. A gate that shared a home between the two processes could not fail.
+    let served = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let quiet = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
+    let loud = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let daemon = [("XDG_CONFIG_HOME", served.as_str())];
+    let (_host, sock) = spawn_host_env(&daemon);
+
+    let before = sprag(&sock, &["panes"]).stdout;
+    let pinned = sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "77", "-y", "21"],
+        &[("XDG_CONFIG_HOME", quiet.as_str())],
+    );
+    assert!(
+        pinned.ok,
+        "the pin is stored whatever the policy: {}",
+        pinned.stderr
+    );
+    assert_eq!(
+        sprag(&sock, &["panes"]).stdout,
+        before,
+        "the fixture's whole point: under `largest` with nobody attached the pin moves nothing",
+    );
+    assert!(
+        pinned.stderr.contains("largest"),
+        "a pin that did nothing must say so, naming the policy the DAEMON is under — this \
+         process's own file says `manual` and would have said nothing at all: {:?}",
+        pinned.stderr,
+    );
+
+    // ...and the other direction, which is the one an over-eager note would get wrong: the DAEMON's
+    // file moves to `manual`, so the same pin is now IN FORCE and the panes say so, while the caller
+    // reads a file that still says `largest`. A note here would be telling a user their resize did
+    // nothing while they watch it happen.
+    let flipped = sprag_env(&sock, &["set-option", "window-size", "manual"], &daemon);
+    assert!(flipped.ok, "set-option succeeded: {}", flipped.stderr);
+    let in_force = sprag_env(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "78", "-y", "22"],
+        &[("XDG_CONFIG_HOME", loud.as_str())],
+    );
+    assert!(in_force.ok, "the pin succeeded: {}", in_force.stderr);
+    assert!(
+        sprag(&sock, &["panes"]).stdout.contains("78x22"),
+        "the pin is in force at the daemon: {:?}",
+        sprag(&sock, &["panes"]).stdout,
+    );
+    assert!(
+        in_force.stderr.is_empty(),
+        "a pin the daemon USES needs no note, whatever this process's own file says: {:?}",
+        in_force.stderr,
+    );
+}
+
 /// A RELATIVE resize reads the window's current size on the DAEMON side and answers the rectangle it
 /// produced — the one form a CLI could almost have computed for itself, and deliberately does not.
 ///
@@ -3941,10 +4016,13 @@ fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
 
     // `-A` with no client that has reported an area names no rectangle. The refusal must NOT be read
     // as "no size", which would un-pin the window the user was trying to resize.
+    //
+    // ⚠ **AND IT MUST NOT MENTION THE PIN** (R331) — proved at the END of this test, where a
+    // rectangle can be stored without breaking the nothing-was-written claim below.
     let unfoldable = sprag(&sock, &["resize-window", "-t", "0", "-A"]);
     assert!(
-        !unfoldable.ok && unfoldable.stderr.contains("reported an area"),
-        "{}",
+        !unfoldable.ok && unfoldable.stderr.contains("-a/-A"),
+        "the refusal names the flags that needed a client: {}",
         unfoldable.stderr,
     );
 
@@ -3961,6 +4039,31 @@ fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
         sprag(&sock, &["panes"]).stdout.contains("80x24"),
         "a refused resize-window pins nothing: {:?}",
         sprag(&sock, &["panes"]).stdout,
+    );
+
+    // ⚠ **THE FOLD'S REFUSAL WITH A PIN IN PLACE** (R331), last because it is the one call here
+    // that WRITES. This refusal used to carry one sentence for two causes — *"nothing is pinned and
+    // no client has reported an area"* — and with a rectangle stored its first clause is MEASURABLY
+    // FALSE. Driven at the shipped daemon before the fix, that is exactly what an operator who had
+    // just typed `-x 100 -y 30` was told about their own window.
+    //
+    // The pin is the FIXTURE and the discriminator both: without it the old sentence and the new one
+    // are equally true here, and this assertion would pass on the defect.
+    let stored = sprag(
+        &sock,
+        &["resize-window", "-t", "0", "-x", "100", "-y", "30"],
+    );
+    assert!(stored.ok, "the fixture pins a rectangle: {}", stored.stderr);
+    let folded = sprag(&sock, &["resize-window", "-t", "0", "-a"]);
+    assert!(
+        !folded.ok,
+        "a fold of no clients was accepted: {}",
+        folded.stdout
+    );
+    assert!(
+        !folded.stderr.contains("pinned"),
+        "a fold's refusal claimed something about a pin it never read, and this session HAS one: {}",
+        folded.stderr,
     );
 }
 
@@ -6993,9 +7096,12 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // no axis, so its BARE form is the whole verb and `sprag bind-key F9 join-pane` is accepted
     // outright. The two together are what the four columns are for — closing a gap can land in
     // either of the bindable ones and only the count says which.
+    // R331 moved `resize-window` from the fourth to the SECOND, `move-pane`'s shape: a bare resize
+    // has named no rectangle, and reading it as the un-pin would throw a decision away on an empty
+    // config line — so the verb is bindable and its BARE form is refused with the sizes it takes.
     assert_eq!(
         counts,
-        (15, 9, 28, 2),
+        (15, 10, 28, 1),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

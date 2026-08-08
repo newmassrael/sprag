@@ -73,6 +73,8 @@ use std::time::{Duration, Instant};
 use sprag_input::Modifiers;
 use sprag_terminal::{OrderStep, PaneDir, SplitDir, WindowPlace};
 
+use crate::window::SizeRequest;
+
 /// tmux's own `repeat-time` default, and the one sprag takes when the options table is silent.
 ///
 /// Read from `tmux 3.2a`'s `show-options -g repeat-time` on this machine rather than recalled. It
@@ -790,6 +792,51 @@ pub enum BoundAction {
     ///
     /// It names no window, on [`NewWindow`](Self::NewWindow)'s rule.
     RenameWindow,
+    /// `resize-window <-x C -y R | -a | -A | -L/-R/-U/-D N | -u>` — PIN the current window's cell
+    /// size, or hand it back to the policy (tmux `resize-window`, which binds no key to it either).
+    ///
+    /// # What made it unbindable, and it was not the grammar
+    ///
+    /// This verb sat in [`Keystroke::NotBuilt`](crate::vocabulary::Keystroke::NotBuilt) with the
+    /// note *"no client has a call for it: `HostClient` has `resize_toward` for a pane boundary and
+    /// nothing for a window's forced size"*. That was true and it was half the story. The other half
+    /// is what a key has to be able to SAY afterwards: a pin stored under a `window-size` policy
+    /// that does not read it moves nothing, so a key that pinned would be indistinguishable from a
+    /// key that is not bound — this vocabulary's own definition of a defect. Building the call meant
+    /// first making the daemon ANSWER the policy it arbitrates under
+    /// ([`crate::wire::WindowPin`]), because a client deriving that from its own config file is the
+    /// authority mistake the CLI had been making since the verb existed.
+    ///
+    /// # It carries a SIZE and no window
+    ///
+    /// The window is the one the key was pressed on ([`NewWindow`](Self::NewWindow)'s rule, and
+    /// [`HostClient::resize_window`](crate::host::HostClient::resize_window) takes no target at
+    /// all). The SIZE is carried, because unlike a name it is exactly the kind of argument a config
+    /// file may fix: `bind-key -r M-Left resize-window -L 5` means one thing every time it is
+    /// pressed, which is what [`RenameWindow`](Self::RenameWindow)'s rule asks of an argument.
+    ///
+    /// All five spellings are admitted, including the exact rectangle — a user who wants a key that
+    /// forces 80x24 is naming a decision, not an address. What is refused is a WINDOW argument, on
+    /// the standing rule, and the [`SizeRequest`] type is the CLI verb's own so a row read out of
+    /// `list-keys` types back into a shell unchanged.
+    ///
+    /// **BINDABLE AND UNBOUND BY DEFAULT**, on [`KillSession`](Self::KillSession)'s reasoning:
+    /// tmux spends no chord on it, and a default binding is a chord taken from a user who may never
+    /// pin a window's size.
+    ///
+    /// # The GUI palette has no row for it, and that is a decision
+    ///
+    /// Stated because an undocumented absence is not one. A palette row carries no argument, so the
+    /// four spellings that name a NUMBER are unreachable from one — and the three that do not
+    /// (`-a` / `-A` / `-u`) are the shape a row could take, which is why this says *not yet* rather
+    /// than *never*. What stops it today is that nobody has asked for it, and a menu row is offered
+    /// to everybody: `sprag_host::vocabulary` files this verb where a person looking for it will
+    /// find it, and `sprag list-keys` teaches the forms.
+    ResizeWindow {
+        /// Which rectangle, in the four spellings the wire admits — [`SizeRequest::Clear`] is the
+        /// `-u` form, which is a decision and not an absence.
+        size: SizeRequest,
+    },
     /// `break-pane` — take the focused pane out of its window and into a new one of its own (tmux
     /// `prefix !`).
     ///
@@ -1061,6 +1108,9 @@ impl BoundAction {
             | Self::BreakPane
             | Self::KillSession
             | Self::NewSession
+            // The SIZE is carried, so there is nothing to ask: a resize binding names its own
+            // rectangle where a rename cannot name its own string (`RenameWindow`'s rule).
+            | Self::ResizeWindow { .. }
             | Self::KillWindow => false,
         }
     }
@@ -1117,6 +1167,9 @@ impl BoundAction {
             | Self::KillSession
             | Self::NewSession
             | Self::RenameWindow
+            // A WINDOW verb: it pins the window the key was pressed on, whatever the focus is
+            // standing on inside it.
+            | Self::ResizeWindow { .. }
             | Self::RenameSession => false,
         }
     }
@@ -1163,6 +1216,10 @@ impl BoundAction {
             // Its neighbour's group, and `sprag_host::vocabulary` files it there too: a join moves
             // a pane BETWEEN windows, so what the act is about is the windows.
             | Self::JoinPane
+            // The WINDOW's own rectangle, not a pane's share of it — `resize-pane` is the pane
+            // verb and is filed above, and `sprag_host::vocabulary` puts these two in the same two
+            // groups. Two verbs a finger-memory could confuse, kept apart by what they act on.
+            | Self::ResizeWindow { .. }
             | Self::RenameWindow => ActionSubject::Window,
             Self::RenameSession | Self::KillSession | Self::NewSession => ActionSubject::Session,
             // The CLIENT, with `detach-client` — see the arm's own doc. It changes no session; it
@@ -1234,6 +1291,9 @@ impl BoundAction {
             | Self::KillSession
             | Self::NewSession
             | Self::RenameWindow
+            // A RECTANGLE is not a name — it names no thing that could be missing, so a refusal
+            // for it says `nowhere` rather than `no window called …` (`Report::no_such`'s rule).
+            | Self::ResizeWindow { .. }
             | Self::RenameSession
             | Self::RenamePane
             | Self::SwitchClient { .. }
@@ -1292,6 +1352,7 @@ impl BoundAction {
             | Self::KillSession
             | Self::NewSession
             | Self::RenameWindow
+            | Self::ResizeWindow { .. }
             | Self::RenameSession
             | Self::RenamePane
             | Self::SwitchClient { .. }
@@ -1529,6 +1590,113 @@ impl BoundAction {
                      takes are what a keystroke cannot carry",
                 )),
             },
+            // FIVE spellings of one rectangle and exactly one per binding, which is the CLI verb's
+            // own rule — a config line carrying two has not decided, and picking one silently is
+            // how a key ends up resizing to something nobody chose. Folded flag by flag rather than
+            // matched on the vector, because `-L 5 -U 2` is a legal PAIR (two axes, one request)
+            // and `resize-pane`'s two-word match cannot express that.
+            "resize-window" => {
+                // One slot per DIRECTION rather than a running total, so `-L 5 -R 3` is caught as
+                // the contradiction it is instead of quietly becoming "2 narrower" — the CLI's
+                // rule, and the same four indices.
+                let mut edges: [Option<u16>; 4] = [None; 4];
+                let mut exact: [Option<u16>; 2] = [None; 2];
+                let mut from = None;
+                let mut unpin = false;
+                let mut flags = flags.into_iter();
+                let count = |value: Option<&str>, flag: &str| -> Result<u16, KeyError> {
+                    value
+                        .and_then(|value| value.parse::<u16>().ok())
+                        .filter(|count| *count > 0)
+                        .ok_or_else(|| {
+                            bad(&format!(
+                                "{flag} needs a cell count of 1 or more; a key that moved nothing \
+                                 is one a user cannot tell from a broken one"
+                            ))
+                        })
+                };
+                while let Some(flag) = flags.next() {
+                    match flag {
+                        "-x" => exact[0] = Some(count(flags.next(), "-x")?),
+                        "-y" => exact[1] = Some(count(flags.next(), "-y")?),
+                        "-L" => edges[0] = Some(count(flags.next(), "-L")?),
+                        "-R" => edges[1] = Some(count(flags.next(), "-R")?),
+                        "-U" => edges[2] = Some(count(flags.next(), "-U")?),
+                        "-D" => edges[3] = Some(count(flags.next(), "-D")?),
+                        "-a" | "-A" if from.is_some() => {
+                            return Err(bad("-a and -A name opposite folds — use one"));
+                        }
+                        "-a" => from = Some(crate::WindowSize::Smallest),
+                        "-A" => from = Some(crate::WindowSize::Largest),
+                        "-u" => unpin = true,
+                        // The WINDOW argument the CLI verb takes, which is the one thing a binding
+                        // must not carry: `split-window`'s standing rule, one level up.
+                        other => {
+                            return Err(bad(&format!(
+                                "{other:?} is not a flag a binding takes (a binding pins the \
+                                 window the key was pressed on, so it names none)"
+                            )));
+                        }
+                    }
+                }
+                for (less, more, axis) in [(0, 1, "-L and -R"), (2, 3, "-U and -D")] {
+                    if edges[less].is_some() && edges[more].is_some() {
+                        return Err(bad(&format!(
+                            "{axis} move the same edge opposite ways — name one"
+                        )));
+                    }
+                }
+                let adjust = |less: usize, more: usize| -> Option<i32> {
+                    match (edges[less], edges[more]) {
+                        (None, None) => None,
+                        (less, more) => {
+                            Some(i32::from(more.unwrap_or(0)) - i32::from(less.unwrap_or(0)))
+                        }
+                    }
+                };
+                let (adjust_cols, adjust_rows) = (adjust(0, 1), adjust(2, 3));
+                let named = [
+                    u8::from(exact.iter().any(Option::is_some)),
+                    u8::from(adjust_cols.is_some() || adjust_rows.is_some()),
+                    u8::from(from.is_some()),
+                    u8::from(unpin),
+                ];
+                match named.iter().sum::<u8>() {
+                    // Bare is REFUSED rather than read as `-u`: an argument-less resize has named
+                    // no intent, and reading it as "hand the size back" would throw a decision away
+                    // on an empty config line. The CLI verb refuses it for the same words.
+                    0 => Err(bad(
+                        "needs a size: -x COLS -y ROWS, -a, -A, -L/-R/-U/-D N, or -u to un-pin",
+                    )),
+                    1 => {
+                        let size = if unpin {
+                            SizeRequest::Clear
+                        } else if let Some(policy) = from {
+                            SizeRequest::Clients(policy)
+                        } else if adjust_cols.is_some() || adjust_rows.is_some() {
+                            SizeRequest::Adjust {
+                                cols: adjust_cols.unwrap_or(0),
+                                rows: adjust_rows.unwrap_or(0),
+                            }
+                        } else {
+                            // HALF a rectangle is refused whole rather than completed from
+                            // whatever is pinned: a window whose height came from a different
+                            // decision than its width is a shape nobody chose.
+                            let [Some(cols), Some(rows)] = exact else {
+                                return Err(bad(
+                                    "needs both dimensions (-x COLS -y ROWS), or -u to un-pin",
+                                ));
+                            };
+                            SizeRequest::Exact(crate::ClientSize { cols, rows })
+                        };
+                        Ok(Self::ResizeWindow { size })
+                    }
+                    _ => Err(bad(
+                        "-x/-y, -a, -A, -L/-R/-U/-D and -u are five ways to name one size — use \
+                         one",
+                    )),
+                }
+            }
             // `select-window`'s shape one LEVEL up, plus the two arms a window ring cannot have:
             // `-l` (only a client visits things) and a bare `-t` (only an ADDRESS may be left for
             // the user to supply — `move-window --before`'s rule).
@@ -1757,6 +1925,34 @@ impl fmt::Display for BoundAction {
             // `list-keys` is typed back into a shell, and this shell's verb is `sprag new`.
             Self::NewSession => f.write_str("new"),
             Self::RenameWindow => f.write_str("rename-window"),
+            // The CLI verb's own flags, so a row read out of `list-keys` types back into a shell
+            // unchanged — and the ADJUST arm renders the edge each signed axis moves, which is why
+            // it cannot be written as one `write!`: a negative column count is `-L`, a positive one
+            // `-R`, and a zero axis is left UNSAID rather than rendered as `-R 0`.
+            Self::ResizeWindow { size } => {
+                f.write_str("resize-window")?;
+                match size {
+                    SizeRequest::Clear => f.write_str(" -u"),
+                    SizeRequest::Exact(size) => write!(f, " -x {} -y {}", size.cols, size.rows),
+                    SizeRequest::Clients(crate::WindowSize::Smallest) => f.write_str(" -a"),
+                    SizeRequest::Clients(_) => f.write_str(" -A"),
+                    SizeRequest::Adjust { cols, rows } => {
+                        for (extent, less, more) in [(*cols, "-L", "-R"), (*rows, "-U", "-D")] {
+                            match extent.cmp(&0) {
+                                std::cmp::Ordering::Equal => {}
+                                std::cmp::Ordering::Less => {
+                                    // `unsigned_abs` and not a negation: `i32::MIN` has no positive
+                                    // counterpart, and a spelling that panicked on one input would
+                                    // be a `list-keys` that crashes on a config file.
+                                    write!(f, " {less} {}", extent.unsigned_abs())?;
+                                }
+                                std::cmp::Ordering::Greater => write!(f, " {more} {extent}")?,
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+            }
             Self::RenameSession => f.write_str("rename-session"),
             Self::RenamePane => f.write_str("rename-pane"),
             // Rendered by rendering the action it wraps, so a nested spelling round-trips through
@@ -2963,7 +3159,7 @@ mod tests {
     /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
-    const ARMS: usize = 26;
+    const ARMS: usize = 27;
 
     /// Which arm a value is, as an index — an EXHAUSTIVE match, and the only reason the census
     /// below is a check rather than a list somebody maintains.
@@ -3000,6 +3196,7 @@ mod tests {
             BoundAction::NewSession => 23,
             BoundAction::MovePane { .. } => 24,
             BoundAction::JoinPane => 25,
+            BoundAction::ResizeWindow { .. } => 26,
         }
     }
 
@@ -3050,6 +3247,12 @@ mod tests {
             BoundAction::NewSession,
             BoundAction::ConfirmBefore {
                 action: Box::new(BoundAction::KillWindow),
+            },
+            // The ADJUST spelling deliberately, and not the exact one: it is the arm whose
+            // rendering is not a straight `write!` (a signed axis picks its own flag and a zero
+            // axis says nothing), so the census carries the value that exercises it.
+            BoundAction::ResizeWindow {
+                size: SizeRequest::Adjust { cols: -3, rows: 2 },
             },
         ];
         let mut seen: Vec<usize> = every.iter().map(arm_of).collect();
@@ -3505,6 +3708,111 @@ mod tests {
             BoundAction::parse("confirm-before resize-pane -L 5").expect("guardable"),
             BoundAction::ConfirmBefore {
                 action: Box::new(parsed("resize-pane -L 5")),
+            },
+        );
+    }
+
+    /// **A WINDOW resize binding carries a RECTANGLE and no window** (R331) — all five spellings,
+    /// each round-tripping through what `list-keys` prints.
+    ///
+    /// The round trip is the load-bearing half and it is not ceremony here: the ADJUST arm is the
+    /// only rendering in this file that CHOOSES a flag from the sign of a number, so a `-L 5`
+    /// re-rendered as `-R 5` would be a `list-keys` row that resizes the other way when typed back.
+    /// The four directions are all exercised for exactly that reason.
+    #[test]
+    fn a_window_resize_binding_carries_a_rectangle_and_names_no_window() {
+        let parsed = |spec: &str| BoundAction::parse(spec).expect("a well-formed resize binding");
+        assert_eq!(
+            parsed("resize-window -x 100 -y 30"),
+            BoundAction::ResizeWindow {
+                size: SizeRequest::Exact(crate::ClientSize {
+                    cols: 100,
+                    rows: 30
+                }),
+            },
+        );
+        assert_eq!(
+            parsed("resize-window -a"),
+            BoundAction::ResizeWindow {
+                size: SizeRequest::Clients(crate::WindowSize::Smallest),
+            },
+            "-a is tmux's SMALLEST fold, which is the one a user reaches for to fit what they have",
+        );
+        assert_eq!(
+            parsed("resize-window -A"),
+            BoundAction::ResizeWindow {
+                size: SizeRequest::Clients(crate::WindowSize::Largest),
+            },
+        );
+        assert_eq!(
+            parsed("resize-window -u"),
+            BoundAction::ResizeWindow {
+                size: SizeRequest::Clear,
+            },
+            "-u is a DECISION (hand the size back), never an absence",
+        );
+        // Each flag names an EDGE and pushes it, so `-L`/`-U` SHRINK and `-R`/`-D` grow — the CLI
+        // verb's convention, asserted rather than described because a reader gets it backwards.
+        assert_eq!(
+            parsed("resize-window -L 5"),
+            BoundAction::ResizeWindow {
+                size: SizeRequest::Adjust { cols: -5, rows: 0 },
+            },
+        );
+        assert_eq!(
+            parsed("resize-window -R 4 -U 2"),
+            BoundAction::ResizeWindow {
+                size: SizeRequest::Adjust { cols: 4, rows: -2 },
+            },
+            "two AXES are one request; two directions on one axis are not",
+        );
+        for spelling in [
+            "resize-window -x 100 -y 30",
+            "resize-window -a",
+            "resize-window -A",
+            "resize-window -u",
+            "resize-window -L 5",
+            "resize-window -R 4 -U 2",
+            "resize-window -D 3",
+        ] {
+            assert_eq!(
+                parsed(spelling).to_string(),
+                spelling,
+                "what `list-keys` prints must parse back to the same action",
+            );
+        }
+
+        let bad = |spec: &str| match BoundAction::parse(spec) {
+            Err(KeyError::BadFlags { why, .. }) => why,
+            other => panic!("{spec:?} must be refused as bad flags, got {other:?}"),
+        };
+        // THE STANDING RULE, and the one refusal this verb exists to keep: a binding acts on the
+        // window the key was pressed on, so the CLI verb's window argument is what it must not
+        // carry. Without this a config file could fix an address that means a different window
+        // every time the name moves — R330's whole finding, one surface up.
+        assert!(
+            bad("resize-window logs -a").contains("names none"),
+            "a binding pins where the user is and refuses a window argument",
+        );
+        assert!(bad("resize-window").contains("needs a size"));
+        assert!(bad("resize-window -x 100").contains("needs both dimensions"));
+        assert!(bad("resize-window -x 100 -y 30 -a").contains("use one"));
+        assert!(bad("resize-window -a -A").contains("opposite folds"));
+        assert!(bad("resize-window -L 5 -R 3").contains("opposite ways"));
+        assert!(
+            bad("resize-window -L 0").contains("cannot tell from a broken one"),
+            "a key that moves nothing is refused rather than accepted as a no-op",
+        );
+        assert!(bad("resize-window -x 0 -y 30").contains("cannot tell from a broken one"));
+
+        // It names no THING, so a refusal for it says `nowhere` rather than inventing a noun — and
+        // it does not ask, so `confirm-before` may guard it.
+        assert_eq!(parsed("resize-window -u").names(), None);
+        assert!(!parsed("resize-window -u").asks());
+        assert_eq!(
+            BoundAction::parse("confirm-before resize-window -u").expect("guardable"),
+            BoundAction::ConfirmBefore {
+                action: Box::new(parsed("resize-window -u")),
             },
         );
     }

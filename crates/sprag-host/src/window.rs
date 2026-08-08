@@ -156,7 +156,7 @@ pub enum SizeRequest {
     /// Relative to what the window currently IS, not to what it was pinned to, because that is what
     /// the user can see: under a derived policy with nothing pinned, "a bit wider" means wider than
     /// the rectangle on their screen. A window with no current size has nothing to be relative to,
-    /// and that is [`NoBasis`].
+    /// and that is [`NoBasis::NoCurrentSize`].
     Adjust { cols: i32, rows: i32 },
     /// Whatever the attached clients fold to under this policy — tmux's `-a` (smallest) and `-A`
     /// (largest), which exist so a user can pin "what I have right now" without reading numbers off
@@ -166,18 +166,52 @@ pub enum SizeRequest {
     Clear,
 }
 
-/// A [`SizeRequest`] that named no rectangle a caller could have meant: an [`Adjust`](SizeRequest::Adjust)
-/// with no current size to move, or a [`Clients`](SizeRequest::Clients) with no client reporting an area.
+/// A [`SizeRequest`] that named no rectangle a caller could have meant — with an arm per CAUSE,
+/// because the two are missing different facts and only one of them is about the pin.
 ///
 /// A distinct outcome from [`SizeRequest::Clear`] on purpose. Both could be spelled "no size", and
 /// collapsing them would make `resize-window -R 10` on a window nobody is watching silently UN-PIN
 /// it — the opposite of what was asked, which is the class of thing this front keeps finding.
+///
+/// # Why it is two arms and was one
+///
+/// It was a unit struct whose whole `Display` read *"nothing is pinned and no client has reported an
+/// area"*, and **MEASURED against a live daemon that clause was FALSE for half the callers**: with
+/// `100x30` pinned and `window-size manual`, `sprag resize-window -a` told the operator nothing was
+/// pinned. A fold of the attached clients does not read the pin at all, so the pin's state is not
+/// only unhelpful there — it is a fact about their own window that the sentence gets wrong.
+///
+/// The two are exactly [`SizeRequest::resolve`]'s two failing arms, and the conditions differ:
+/// [`NoClientArea`](Self::NoClientArea) is `reports.is_empty()` alone, where
+/// [`NoCurrentSize`](Self::NoCurrentSize) is that AND nothing pinned — which is why the second
+/// sentence may name the pin and the first may not. One `InvokeError` still carries both across the
+/// wire (the payload has no room for an arm), so the SENTENCE is what tells them apart, which is
+/// what makes it worth getting right.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct NoBasis;
+pub enum NoBasis {
+    /// [`SizeRequest::Clients`] with no client reporting an area — tmux `-a` / `-A` fold the
+    /// attached clients, and this session has none to fold.
+    NoClientArea,
+    /// [`SizeRequest::Adjust`] with no current size to move — nothing pinned AND no client
+    /// reporting, which is the only way [`arbitrate`] answers nothing.
+    NoCurrentSize,
+}
 
 impl std::fmt::Display for NoBasis {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("this window has no size to resize: nothing is pinned and no client has reported an area")
+        f.write_str(match self {
+            // It names the FLAGS, because the fact a user is missing is which of their own
+            // arguments needed a client — and says nothing about the pin, which this request never
+            // reads.
+            Self::NoClientArea => {
+                "-a/-A fold the attached clients and this session has none: attach one, or name a \
+                 size with -x/-y"
+            }
+            Self::NoCurrentSize => {
+                "this window has no size to move: nothing is pinned and no client has reported an \
+                 area"
+            }
+        })
     }
 }
 
@@ -205,8 +239,9 @@ impl SizeRequest {
     ///
     /// # Errors
     ///
-    /// [`NoBasis`] when the description cannot be resolved: an adjustment with no current size, or a
-    /// client fold with no client reporting one.
+    /// [`NoBasis`] when the description cannot be resolved, with the arm naming WHICH fact is
+    /// missing: [`NoCurrentSize`](NoBasis::NoCurrentSize) for an adjustment with no current size,
+    /// [`NoClientArea`](NoBasis::NoClientArea) for a client fold with no client reporting one.
     pub fn resolve(
         self,
         current: Option<ClientSize>,
@@ -215,9 +250,11 @@ impl SizeRequest {
         match self {
             Self::Clear => Ok(None),
             Self::Exact(size) => Ok(Some(size)),
-            Self::Clients(policy) => arbitrate(policy, reports, None).map(Some).ok_or(NoBasis),
+            Self::Clients(policy) => arbitrate(policy, reports, None)
+                .map(Some)
+                .ok_or(NoBasis::NoClientArea),
             Self::Adjust { cols, rows } => {
-                let base = current.ok_or(NoBasis)?;
+                let base = current.ok_or(NoBasis::NoCurrentSize)?;
                 Ok(Some(ClientSize {
                     cols: adjusted(base.cols, cols),
                     rows: adjusted(base.rows, rows),
@@ -583,18 +620,66 @@ mod tests {
     fn an_unresolvable_request_is_refused_and_is_not_a_clear() {
         assert_eq!(
             SizeRequest::Adjust { cols: 10, rows: 0 }.resolve(None, &[]),
-            Err(NoBasis),
+            Err(NoBasis::NoCurrentSize),
             "an adjustment with no current size has nothing to move"
         );
         assert_eq!(
             SizeRequest::Clients(WindowSize::Largest).resolve(Some(size(80, 24)), &[]),
-            Err(NoBasis),
+            Err(NoBasis::NoClientArea),
             "a fold of no clients is not the window's current size either"
         );
         assert_eq!(
             SizeRequest::Clear.resolve(None, &[]),
             Ok(None),
             "and the request that really does mean `no size` still says so"
+        );
+    }
+
+    /// **THE MEASURED DEFECT (R331).** A fold of the attached clients must not say anything about
+    /// the PIN, because it does not read it — and the sentence it used to say was measurably FALSE.
+    ///
+    /// Driven at the shipped daemon before the fix, with `window-size manual` and `100x30` pinned:
+    /// `sprag resize-window -a` printed *"nothing is pinned and no client has reported an area"* at
+    /// an operator whose window was pinned to a rectangle they had just typed. One sentence for two
+    /// causes, and the half that did not apply was the half that was wrong.
+    ///
+    /// The FIXTURE is what makes this discriminating and it is the thing to keep: `current` is
+    /// `Some` — a window that HAS a size — so a `NoBasis` with one arm could not tell the two
+    /// callers apart at all, and this assertion would have been unwritable. The
+    /// [`NoCurrentSize`](NoBasis::NoCurrentSize) half below is the control: it runs on the state
+    /// where the old sentence was TRUE, so a fix that merely re-worded everything reddens it.
+    #[test]
+    fn a_client_fold_that_finds_no_client_says_nothing_about_the_pin() {
+        let pinned_window_no_clients =
+            SizeRequest::Clients(WindowSize::Smallest).resolve(Some(size(100, 30)), &[]);
+        let said = pinned_window_no_clients
+            .expect_err("a fold of no clients is refused")
+            .to_string();
+        assert!(
+            !said.contains("pinned"),
+            "a fold does not read the pin, so its refusal must not claim anything about one: \
+             {said:?}",
+        );
+        assert!(
+            said.contains("-a/-A"),
+            "it names the flags that needed a client, which is the fact the user is missing: \
+             {said:?}",
+        );
+
+        // THE CONTROL, on the state the old sentence described correctly: an adjustment really does
+        // have nothing to move only when nothing is pinned AND nobody has reported, so naming both
+        // is honest there and stays.
+        let adjusted = SizeRequest::Adjust { cols: 4, rows: 0 }
+            .resolve(None, &[])
+            .expect_err("an adjustment with no basis is refused")
+            .to_string();
+        assert!(
+            adjusted.contains("nothing is pinned") && adjusted.contains("no client"),
+            "the arm whose two conditions are BOTH necessary still names both: {adjusted:?}",
+        );
+        assert_ne!(
+            said, adjusted,
+            "two causes, two sentences — one wording for both is the defect",
         );
     }
 

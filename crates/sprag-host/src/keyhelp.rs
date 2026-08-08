@@ -438,15 +438,16 @@ mod tests {
                 .collect()
         };
         let mut keymap = Keymap::default();
-        // THE FOUR THAT SHIP UNBOUND, in the vocabulary's own order. Named rather than counted, so
-        // binding one is a change here and a fifth joining them cannot slip past as a number.
+        // THE FIVE THAT SHIP UNBOUND, in the vocabulary's own order. Named rather than counted, so
+        // binding one is a change here and a sixth joining them cannot slip past as a number.
         //
-        // `move-pane` joined them at R328 and `join-pane` at R329, both unbound DELIBERATELY: tmux
-        // binds a key to neither, and a chord spent by default on a verb that opens a chooser is a
-        // chord taken from a user who may never move a pane. They are bindable, they are listed
-        // here as bindable-and-not, and `sprag list-keys` teaches the forms — which is the whole
-        // difference from the state they left, where a keystroke could not mean them at all.
+        // `move-pane` joined them at R328, `join-pane` at R329 and `resize-window` at R331, all
+        // unbound DELIBERATELY: tmux binds a key to none of them, and a chord spent by default on a
+        // verb a user may never reach for is a chord taken from them. They are bindable, they are
+        // listed here as bindable-and-not, and `sprag list-keys` teaches the forms — which is the
+        // whole difference from the state they left, where a keystroke could not mean them at all.
         let ships_unbound = vec![
+            "resize-window -x COLS -y ROWS|-a|-A|-L/-R/-U/-D N|-u".to_owned(),
             "join-pane".to_owned(),
             "move-pane -h|-v [-b]".to_owned(),
             "new".to_owned(),
@@ -471,7 +472,9 @@ mod tests {
                 "list-keys".to_owned(),
                 "kill-window".to_owned(),
                 // Between the two window verbs and the session ones, which is where the vocabulary
-                // files it — the order here is the table's, not this test's.
+                // files it — the order here is the table's, not this test's. `resize-window` sits
+                // ahead of both for the same reason: `sprag_host::vocabulary` declares it there.
+                "resize-window -x COLS -y ROWS|-a|-A|-L/-R/-U/-D N|-u".to_owned(),
                 "join-pane".to_owned(),
                 "move-pane -h|-v [-b]".to_owned(),
                 "new".to_owned(),
@@ -488,6 +491,7 @@ mod tests {
                 "confirm-before <action>".to_owned(),
                 "kill-pane".to_owned(),
                 "kill-window".to_owned(),
+                "resize-window -x COLS -y ROWS|-a|-A|-L/-R/-U/-D N|-u".to_owned(),
                 "join-pane".to_owned(),
                 "move-pane -h|-v [-b]".to_owned(),
                 "new".to_owned(),
