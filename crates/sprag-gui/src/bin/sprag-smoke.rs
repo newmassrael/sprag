@@ -5392,6 +5392,41 @@ impl Drop for Smoke {
     }
 }
 
+/// Mesa's software Vulkan ICD on THIS machine, found rather than spelled.
+///
+/// The path used to be written out, and the machine moved under it: Mesa dropped the architecture
+/// suffix, so `lvp_icd.x86_64.json` became `lvp_icd.json` and the smoke pointed at a file that was
+/// not there. wgpu then reported *"Failed to create surface for any enabled backend"*, which reads
+/// exactly like a renderer regression in sprag and is not one — the least guessable line in this
+/// file had become the least true one.
+///
+/// So it is DERIVED from the directory that serves it. Every lavapipe ICD found is offered, joined
+/// the way the loader reads the variable, and the fallback is the historical name so that a machine
+/// with no ICD directory at all fails the way it used to rather than in some new way. Nothing is
+/// asserted here: the failure this guards against belongs to the boot check, which says *the smoke
+/// could not boot* with the child's own log beside it.
+fn lavapipe_icd() -> String {
+    let mut found: Vec<String> = std::fs::read_dir("/usr/share/vulkan/icd.d")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("lvp_icd") && name.ends_with(".json"))
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    // Deterministic: a directory listing is in whatever order the filesystem gives, and a smoke that
+    // picked a different ICD on two runs would be a smoke nobody could compare.
+    found.sort();
+    if found.is_empty() {
+        return "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json".to_owned();
+    }
+    found.join(":")
+}
+
 /// Spawn `binary` with the smoke's isolated environment, its stderr captured into `log`.
 ///
 /// Stdout is discarded and stderr goes to a FILE rather than to the terminal: a child's tracing
@@ -5422,10 +5457,7 @@ fn spawn(binary: &Path, host: &Path, gui: &Path, state: &Path, log: &Path) -> io
         .env("XDG_CONFIG_HOME", state.join("config"))
         // Mesa lavapipe: software Vulkan, so wgpu finds a device with no GPU surface (see the
         // module docs — this is the single least guessable line in the file).
-        .env(
-            "VK_ICD_FILENAMES",
-            "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
-        )
+        .env("VK_ICD_FILENAMES", lavapipe_icd())
         .env("WGPU_BACKEND", "vulkan")
         .env("SPRAG_GUI_PANES", "1")
         .stdout(std::process::Stdio::null())
