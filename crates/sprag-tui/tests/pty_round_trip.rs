@@ -532,10 +532,23 @@ struct Tui {
     /// attempts at this gate (R326's fixed 3-second window, R327's `rows_until_settled`) each
     /// tightened the sampler without leaving the sampling.
     ///
-    /// Recording here removes the poll from the observation path entirely: the reader applies every
-    /// byte the client ever writes, so a row it painted is a row this trail holds. The residual
-    /// granularity is one `read`, not one poll interval.
+    /// Recording here removes the POLL from the observation path, but ⚠ **NOT the sampling**: the
+    /// granularity is one `read`, and under heavy load a client's successive frames coalesce into a
+    /// single one — measured at 2x CPU oversubscription, where this trail came back as
+    /// `["[beta] 0:0*"]`, holding neither the starting row nor the message. Sound for the row a
+    /// client SETTLES on (a settled state does not pass), unsound for one that goes by. For the
+    /// latter read [`Tui::said`], which samples nothing.
     status_trail: Arc<Mutex<Vec<String>>>,
+    /// Every byte the client has ever written.
+    ///
+    /// The only LOSSLESS record of what a client said. A screen is a state that gets overwritten
+    /// and can therefore be missed by any observer that is not looking at the instant it holds;
+    /// the byte stream is a history, so "did this client ever say X" is answered without a clock,
+    /// a poll or a scheduling assumption anywhere in it.
+    ///
+    /// It cannot say WHERE the text was painted, which is why it does not replace the trail: the
+    /// pair is "it said this" (here) plus "it came to rest on that" (the trail's last row).
+    transcript: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Drop for Tui {
@@ -614,15 +627,21 @@ impl Tui {
             .expect("clone the pty reader");
         let writer = pair.master.take_writer().expect("take the pty writer");
         let status_trail = Arc::new(Mutex::new(Vec::new()));
+        let transcript = Arc::new(Mutex::new(Vec::new()));
         std::thread::spawn({
             let (screen, written) = (Arc::clone(&screen), Arc::clone(&written));
             let status_trail = Arc::clone(&status_trail);
+            let transcript = Arc::clone(&transcript);
             move || {
                 let mut buf = [0u8; 8192];
                 while let Ok(n) = reader.read(&mut buf) {
                     if n == 0 {
                         break;
                     }
+                    transcript
+                        .lock()
+                        .expect("the transcript mutex")
+                        .extend_from_slice(&buf[..n]);
                     {
                         let mut emulator = screen.lock().expect("the screen mutex");
                         emulator.advance(&buf[..n]);
@@ -652,6 +671,7 @@ impl Tui {
             screen,
             written,
             status_trail,
+            transcript,
         }
     }
 
@@ -661,6 +681,20 @@ impl Tui {
             .lock()
             .expect("the status trail mutex")
             .clone()
+    }
+
+    /// Whether this client has EVER written `text` — see [`Tui::transcript`].
+    ///
+    /// The sound way to ask "did it say that" about a sentence which expires: the answer does not
+    /// depend on when anybody looked. A client repaints a whole row, so the sentence appears in the
+    /// stream contiguously; a wrapped one would not, and no message this suite asserts on is near
+    /// the width.
+    fn said(&self, text: &str) -> bool {
+        self.transcript
+            .lock()
+            .expect("the transcript mutex")
+            .windows(text.len())
+            .any(|window| window == text.as_bytes())
     }
 
     /// Whether the client has TAKEN the terminal — the edge before which nothing may be typed.
@@ -4359,20 +4393,22 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
 
     // ONE prefix, then the resize key. tmux's own default, and its own byte sequence: xterm sends
     // Ctrl+Left as CSI 1;5D.
+    // ONE PREFIX, THREE PRESSES, NOTHING OBSERVED IN BETWEEN. The repeat window opens when the
+    // client acts on the first press and lasts `repeat-time` (500 ms by default), so anything
+    // waited for between the presses is waited for ON THAT CLOCK — and a `pane_sizes` round trip
+    // to the daemon is exactly what does not fit under load. Measured at 2x CPU oversubscription:
+    // this gate timed out at 45 s with the boundary at -1, the two repeat presses having gone to
+    // the shell as ordinary keys. Its sibling `a_repeat_binding_acts_twice_...` had the same defect
+    // and was fixed one round earlier; this one was missed because it never failed unloaded.
+    //
+    // -3 rather than -1 is also the STRONGER discriminator, not a weaker one: a build that ignored
+    // `-r` lands on -1, so the two outcomes are told apart by the same single assertion that used
+    // to need two.
     tui.type_bytes(&[0x02]);
     tui.type_bytes(b"\x1b[1;5D");
-    wait_for("the boundary to move one cell left", || {
-        settled(
-            pane_sizes(&mut conn, &session),
-            &vec![(left - 1, BOOT_PANES.1), (right + 1, BOOT_PANES.1)],
-        )
-    });
-
-    // NO SECOND PREFIX. This is `-r`, and it is what makes the verb usable: a boundary is dragged
-    // to where it looks right, which is a dozen presses.
     tui.type_bytes(b"\x1b[1;5D");
     tui.type_bytes(b"\x1b[1;5D");
-    wait_for("two more presses inside the repeat window", || {
+    wait_for("three presses on one prefix to move the boundary", || {
         settled(
             pane_sizes(&mut conn, &session),
             &vec![(left - 3, BOOT_PANES.1), (right + 3, BOOT_PANES.1)],
@@ -6886,9 +6922,11 @@ fn a_window_kill_that_took_the_session_says_so() {
     // second sentence back came out GREEN, which is what said so.
     let rows = rows_until_settled(&mut tui, "[beta] 0:0*");
 
+    // Asked of the TRANSCRIPT, not of the rows: the sentence expires, and a row record samples at
+    // `read` granularity, which coalesces under load (see [`Tui::transcript`]). The rows are still
+    // the diagnostic, and the settled-row assertion below is still asked of them.
     assert!(
-        rows.iter()
-            .any(|row| row.contains("the session went with it")),
+        tui.said("the session went with it"),
         "the kill reached past the window it named and must say so: {rows:?}",
     );
 
@@ -7244,8 +7282,9 @@ fn a_destroyed_session_moves_the_terminal_client_and_says_so() {
     // which reads as *"it never said anything"* rather than as *"you looked too late"*.
     let rows = rows_until_settled(&mut tui, "[beta] 0:0*");
     let says = format!("session {session:?} was destroyed; now on \"beta\"");
+    // Asked of the TRANSCRIPT — see the sibling gate above and [`Tui::transcript`].
     assert!(
-        rows.iter().any(|row| row.contains(says.as_str())),
+        tui.said(&says),
         "the client must say what happened to it: {rows:?}",
     );
     // ...and once the sentence expires the row names WHERE THIS CLIENT IS, not the session that
