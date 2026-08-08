@@ -383,6 +383,25 @@ fn pane_text_of(conn: &mut HostConn, session: &str, pane: u64) -> String {
     .unwrap_or_else(|| "<unreadable>".to_owned())
 }
 
+/// [`pane_text_of`] with every whitespace character removed — the only sound reading for a needle
+/// that may be WRAPPED.
+///
+/// ⚠⚠ **A WORD ON A 40-COLUMN PANE IS NOT A WORD IN ITS TEXT.** Measured at 4x oversubscription:
+/// a pane split off an 80-column terminal holds `"coin@host:~$ elsewhe\nre"`, so
+/// `contains("elsewhere")` is FALSE about a screen a person can read the word on. That is a nuisance
+/// for a positive check and a **VACUITY for a negative one** — `!contains("elsewhere")` passes for
+/// a pane that is showing exactly the thing the assertion exists to forbid, and passes silently.
+///
+/// R334 recorded the same shape one surface over (a status-row site that folded whitespace before
+/// matching, which is why a grep for the quoted sentence could not find it). Here it is the
+/// difference between a claim and a decoration, so both directions read through this.
+fn pane_words(conn: &mut HostConn, session: &str, pane: u64) -> String {
+    pane_text_of(conn, session, pane)
+        .chars()
+        .filter(|glyph| !glyph.is_whitespace())
+        .collect()
+}
+
 /// Wait until THIS CLIENT routes what is typed into `pane`, by sending one `.` at a time until one
 /// more of them is on that pane's screen than was there before.
 ///
@@ -2424,14 +2443,19 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
     // decoration. The divider is the visible proof, as `a_split_made_by_another_client_re_tiles`
     // uses it.
     //
-    // ⚠⚠ **AND IT IS NOT ENOUGH — MEASURED, UNEXPLAINED (R334).** At 4x CPU oversubscription this
-    // gate fails with `elsewhere` in PANE 0: a divider says the client RE-TILED, and where a
-    // keystroke goes is a different fact. Establishing the precondition with an ACT
-    // (`typing_follows` onto the new pane) was tried and is NOT the answer — it left the same
-    // reading with the probe's own dots in pane 0 beside it, so the client is reaching pane 0 after
-    // its typing has demonstrably reached pane 1. **Registered rather than guessed at, for that
-    // reason and no other**: the cause is not established, and a change that does not explain it is
-    // a change nobody can attribute.
+    // ⚠⚠ **AND IT IS NOT ENOUGH — R334 registered this as measured and UNEXPLAINED, and R335
+    // reproduced it (1 run in 8 at 4x oversubscription) and explained it.** The failure reads
+    // `elsewhere..followed` in PANE 0: the word typed BEFORE the select, then the probe dots, then
+    // the word after. So `elsewhere` was routed to pane 0, and the race is not about focus at all —
+    // it is between THIS TEST'S OWN TWO ACTS. `type_bytes` writes to the pty master and flushes;
+    // nothing observes the client CONSUMING those bytes. The select then goes out on a different
+    // connection. Under load the client has not read `elsewhere` yet when the select lands, so it
+    // routes the whole word to the pane it has just been moved to.
+    //
+    // That also explains the reading R334 could not attribute: `typing_follows` proves where a key
+    // went at an EARLIER moment, and proves nothing about bytes still sitting in the pty. Hence the
+    // wait below, which is the condition the claim is actually about — R327's rule, that an
+    // observation window ends on the thing being claimed rather than on a proxy for it.
     wait_for("the client to re-tile around its own split", || {
         let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
@@ -2440,7 +2464,27 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
             Err(format!("column {near} reads {column:?}"))
         }
     });
+    let split_pane = pane_ids(&mut conn, &session)
+        .into_iter()
+        .find(|id| *id != 0)
+        .expect("the split made a second pane");
     tui.type_bytes(b"elsewhere");
+    // ⚠ THE ORDERING THIS TEST'S CLAIM NEEDS. The negative assertion at the end is *what was typed
+    // before the select stayed where it was typed*, which is only a claim about the product once
+    // those keys have DEMONSTRABLY been delivered. Waiting for them here is not decoration and not a
+    // longer timeout: it removes the concurrency instead of tolerating it, so a failure below is the
+    // client failing to follow rather than this harness racing itself.
+    wait_for(
+        "the keys typed before the select to land in the pane they were typed into",
+        || {
+            let held = pane_words(&mut conn, &session, split_pane);
+            if held.contains("elsewhere") {
+                Ok(())
+            } else {
+                Err(format!("pane {split_pane} holds {held:?}"))
+            }
+        },
+    );
 
     // The outside select: pane 0, the one running `cat`.
     conn.call(
@@ -2488,7 +2532,10 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
             Err(format!("pane 0 holds {held:?}"))
         }
     });
-    let held = pane_text(&mut conn, &session);
+    // ⚠ READ WHITESPACE-FOLDED, and that is not tidiness: this is a NEGATIVE assertion, so a word
+    // that WRAPPED reads as absent and the check passes about a pane that is showing it. See
+    // [`pane_words`] — the wrap was measured on the other pane of this very split.
+    let held = pane_words(&mut conn, &session, 0);
     assert!(
         !held.contains("elsewhere"),
         "what was typed before the outside select stayed in the pane it was typed into: {held:?}",

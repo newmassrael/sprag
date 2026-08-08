@@ -49,13 +49,21 @@
 //! [`WindowInfo`](sprag_terminal::WindowInfo) and [`SessionInfo`](sprag_terminal::SessionInfo) by
 //! name. That derivation PRUNED the list rather than filling it:
 //!
-//! * There is no `WindowRenamed`. A window's public shape is its name and whether it is current, so
-//!   a rename is indistinguishable from a close plus a create by anything reading that shape. A
-//!   variant nothing can produce is a promise to a client that the daemon cannot keep.
-//!   **[`Event::PaneRenamed`] is the same argument coming out the other way**, which is why the two
-//!   sit here together: a PANE's public shape is its ID, and the id survives a rename, so a name
-//!   change beside an unchanged id is unambiguous rather than a close plus a create. The rule
-//!   pruned one variant and admitted the other, which is what a rule has to be able to do.
+//! * There **was** no `WindowRenamed`, on the argument that a window's public shape is its name and
+//!   whether it is current, so a rename is indistinguishable from a close plus a create by anything
+//!   reading that shape — and a variant nothing can produce is a promise the daemon cannot keep.
+//!   **[`Event::PaneRenamed`] was the same argument coming out the other way**: a PANE's public
+//!   shape is its ID, the id survives a rename, so a name change beside an unchanged id is
+//!   unambiguous. The rule pruned one variant and admitted the other, which is what a rule has to
+//!   be able to do.
+//!
+//!   ⚠ **AND THEN THE PREMISE MOVED, so the variant EXISTS** ([`Event::WindowRenamed`]). A window
+//!   grew an IDENTITY its name is only the address of (the shape this module reads carries it), which is exactly the
+//!   fact the pane arm always had — so the derivation can prefer the honest reading, and it was
+//!   MEASURED producing `window_created beta` + `window_closed alpha` for one `rename-window`
+//!   before it did. **The rule was right and its input was stale**; this paragraph stood for
+//!   rounds after the variant shipped, contradicted by the field and the variant in this same file,
+//!   and a rival re-audit is what read it. A documented *"we never do X"* is a decision, not a law.
 //! * There is no `PaneOutput`. Output already advances the revision a client is parked on, and a
 //!   record per batch of PTY output would evict this ring at output rate — destroying, for the
 //!   panes a reader actually cares about, the delivery guarantee the ring exists to give. That is a
@@ -82,9 +90,10 @@
 //! notification, its liveness and its exit status all move when the CHILD writes, which reaches the
 //! daemon through a pane's `on_dirty` hook and never through a dispatch at all. A `PaneUpdated`
 //! variant was declared here before that was read from the code, and it is now gone rather than
-//! left standing with nothing able to produce it — the same rule that struck `WindowRenamed`,
+//! left standing with nothing able to produce it — the same rule that once struck `WindowRenamed`,
 //! applied to a variant this module had already shipped. It returns if and when an observer that
-//! can see it exists, the way [`Event::AgentStateChanged`] arrived with its own.
+//! can see it exists, the way [`Event::AgentStateChanged`] arrived with its own — and the way
+//! [`Event::WindowRenamed`] did once a window carried an identity to derive it from.
 //!
 //! That sentence has since been taken up twice rather than once: [`Event::PaneJobChanged`] is the
 //! second variant to arrive with the settle waker as its observer, and it is the one that reaches
@@ -450,7 +459,9 @@ pub enum Event {
     PaneClosed(u64),
     /// A pane's NAME changed — it was given one, given a different one, or had it taken away.
     /// `id` is the pane, which is unchanged by definition: a rename that moved the id would be a
-    /// close plus a create, and is why there is no `WindowRenamed` (module docs).
+    /// close plus a create. That is the same argument [`Event::WindowRenamed`] rests on, which is
+    /// why the two sit here together — a window reached it later, when it grew an identity of its
+    /// own (module docs).
     ///
     /// Named by its subject like every variant here, so a reader re-reads the pane list to learn
     /// what the name now IS. That matters more here than elsewhere: a name is an ADDRESS, so a
