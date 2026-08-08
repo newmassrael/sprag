@@ -106,6 +106,21 @@ impl ClientKeys {
     /// The clock is read HERE rather than inside the keymap so a repeat window can be tested by
     /// passing an instant. This is the whole of what `-r` costs the event loop: no timer, no thread,
     /// no tick — nothing observes a window closing except the next keystroke.
+    ///
+    /// ⚠ **THIS CLOCK IS THIS CLIENT'S, NOT THE PERSON'S — and that is PINION-PR84, filed and open.**
+    /// A repeat window is a statement about the user's own timeline, so it has to be judged against
+    /// the moment the keystroke ARRIVED; `Instant::now()` here is the moment this client got round
+    /// to it, which is later by however long the previous key's blocking round trip to the daemon
+    /// took ([`SlotView::resize_toward`](crate::slotview::SlotView::resize_toward) and its peers).
+    /// `sprag-tui` measured that as a user-facing defect and fixed it — 3 failures in 6 runs at 2x
+    /// CPU oversubscription, down to 0 — by dating each keystroke at the read it came out of.
+    ///
+    /// **This frontend cannot do the same**: `pinion_core::event::KeyEvent` carries a key code and
+    /// nothing else, there is no event time anywhere on the dispatch path, and the event queue
+    /// cannot be drained by the embedder, so not even "these two arrived together" is knowable. The
+    /// line changes to pass an arrival instant the moment PR-84 is delivered; until then the two
+    /// frontends judge one user's table by two clocks, which is the cost this comment exists to
+    /// keep visible rather than to justify.
     pub(crate) fn route(
         &self,
         mode: PrefixMode,
