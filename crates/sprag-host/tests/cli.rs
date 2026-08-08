@@ -69,6 +69,25 @@ fn spawn_host_with(program_and_args: &[&str], envs: &[(&str, &str)]) -> (HostChi
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn the sprag-term host binary");
+    // ⚠ WAIT FOR THE BIND, and this is a flake fix rather than tidiness (R331). The `sprag` CLI
+    // gives a connect 500ms and refuses after it — deliberately, because a management command talks
+    // to an ALREADY-RUNNING daemon and has no spawn race to wait out. This harness has exactly that
+    // race: it returned the moment `spawn` did, so every test here was betting the daemon would
+    // bind within the first command's budget. Under a full-workspace run that bet is lost, and it
+    // was: `the_cli_lists_attached_clients_and_shows_the_attached_count` failed one run with *"no
+    // server running"* and passed alone. The product's budget is right; the harness owed the wait.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if HostConn::connect(&sock, Duration::from_millis(200)).is_ok() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never bound {}",
+            sock.display(),
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     (HostChild(child, sock.clone()), sock)
 }
 

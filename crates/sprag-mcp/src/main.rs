@@ -115,16 +115,18 @@ use sprag_host::pane_address::{
 };
 use sprag_host::report::Severity;
 use sprag_host::shellword::shell_quote;
+use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, ENDED_KEY, EVENTS_WAIT_METHOD,
     FULL_TEXT_SLOT, KEY_ACTION, KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT,
     NEW_WINDOW_ACTION, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION,
-    RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, ResizeAsk, ResizeHow, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk,
-    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk,
-    WindowRef, find_slot_for, pane_processes_at, regex_slot_for,
+    RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow,
+    ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM,
+    SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow,
+    TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, WindowPin, WindowRef, find_slot_for,
+    pane_processes_at, regex_slot_for,
 };
-use sprag_host::{PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
+use sprag_host::{ClientSize, PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
     CallError, HostConn, INVALID_PARAMS, NEEDLE_PARAM, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PATTERN_PARAM,
@@ -310,8 +312,11 @@ fn handle_initialize(message: &Value) -> Value {
             whole screenful of your own — created WITHOUT moving the user, who cannot see it until \
             you call `select_window`. That split is deliberate: making a place and showing it are \
             two acts, and only the second takes a person's screen. `rename_window` and \
-            `close_window` finish the job, and both act ONLY on a window you opened — a person's \
-            window is refused, and so is closing the session's last one. \
+            `close_window` finish the job, and `resize_window` forces its SHAPE when what you are \
+            reading needs more columns than the people watching can give it — all three act ONLY \
+            on a window you opened, a person's window is refused, and so is closing the session's \
+            last one. A forced size is only laid out while the `window-size` option is `manual`, \
+            so read what `resize_window` answers rather than assuming the columns moved. \
             If a tool reports it is not inside a sprag terminal, these tools do not apply to \
             this session."
     })
@@ -1064,6 +1069,41 @@ fn tools_list() -> Value {
                     "required": ["window", "name"],
                     "additionalProperties": false
                 }
+            },
+            {
+                "name": "resize_window",
+                "description": "Force the cell size of a window YOU opened, or give the forcing \
+                    back. Refused for a person's window: how big their window is belongs to them. \
+                    Use it when what you are READING needs a shape the people watching cannot \
+                    give it — a wide table, a diff, a log that wraps — because a window's size is \
+                    what decides the columns every pane in it gets, and read_pane sees exactly \
+                    those columns. Name a rectangle with `cols` and `rows` together, or pass \
+                    NEITHER to un-pin and let the window follow the clients again. IT MAY DO \
+                    NOTHING: a pinned size is only laid out when the `window-size` option is \
+                    `manual`, and the answer SAYS which policy is in force, so read it rather \
+                    than assuming the panes moved. A window bigger than a person's terminal shows \
+                    them only part of it, which is why this is a tool for a window you own.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "window": {
+                            "type": "string",
+                            "description": "The window's name, from list_windows."
+                        },
+                        "cols": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "How many columns wide. Give `rows` too, or neither."
+                        },
+                        "rows": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "How many rows tall. Give `cols` too, or neither."
+                        }
+                    },
+                    "required": ["window"],
+                    "additionalProperties": false
+                }
             }
         ]
     })
@@ -1109,6 +1149,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "select_pane" => tool_select_pane(&args),
         "swap_pane" => tool_swap_pane(&args),
         "resize_pane" => tool_resize_pane(&args),
+        "resize_window" => tool_resize_window(&args),
         other => Err(format!("unknown tool: {other}")),
     };
     match outcome {
@@ -1788,6 +1829,102 @@ fn tool_rename_window(args: &Value) -> Result<String, String> {
         window.name,
         relisted_windows()
     ))
+}
+
+/// `resize_window` — PIN a window's cell size, or hand it back (tmux `resize-window`).
+///
+/// # The two spellings an agent gets, and why not the other three
+///
+/// The verb has five: an exact rectangle, two client FOLDS (`-a`/`-A`), a relative adjustment and
+/// the un-pin. An agent is not a client and reports no area, so the folds would ask it to name a
+/// rectangle out of what the PEOPLE watching can see — a thing it cannot check and has no business
+/// choosing. A relative adjustment needs a current size it would have to read back and race. What
+/// is left is the pair a caller can be answerable for: say the rectangle, or say nothing and take
+/// the forcing off.
+///
+/// # It reports the POLICY, and that is the whole point of the answer
+///
+/// A pin under a `window-size` that is not `manual` is stored and laid out over by nothing. A tool
+/// that answered "resized" there would be telling an agent its columns had changed when
+/// `read_pane` will show it the same width as before — the shape R331 measured and this is the
+/// agent-facing half of. [`WindowPin::note`] is the same sentence a person gets, and the surface
+/// that cannot see a screen is the one that most needs it.
+fn tool_resize_window(args: &Value) -> Result<String, String> {
+    let window = resolve_window(args, WindowRef::WINDOW_KEY)?;
+    require_own_window(
+        &window,
+        "resize_window",
+        "How big their window is belongs to them.",
+    )?;
+    let dimension = |key: &str| -> Result<Option<u16>, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .filter(|n| *n > 0)
+                .map(Some)
+                .ok_or_else(|| {
+                    format!("'{key}' must be a whole number of cells, 1 or more — {value} is not")
+                }),
+        }
+    };
+    // HALF a rectangle is refused whole rather than completed from whatever is pinned: a window
+    // whose height came from a different decision than its width is a shape nobody chose, and the
+    // wire refuses it anyway — said here so the agent is told which of its own arguments to fix.
+    let size = match (dimension("cols")?, dimension("rows")?) {
+        (Some(cols), Some(rows)) => SizeRequest::Exact(ClientSize { cols, rows }),
+        (None, None) => SizeRequest::Clear,
+        _ => {
+            return Err(
+                "resize_window needs 'cols' AND 'rows' together, or neither to un-pin: half a \
+                 rectangle is a size nobody chose"
+                    .to_owned(),
+            );
+        }
+    };
+    let answer = host_call_kinded(
+        "scene/invoke",
+        with_args(
+            json!({ "path": mux_action_path(RESIZE_WINDOW_ACTION) }),
+            ResizeWindowAsk {
+                window: Some(window.name.clone()),
+                size,
+            }
+            .to_args(),
+        ),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "could not resize window {}: no window of this session is called that. Call \
+                 list_windows to see which names are in use.",
+                window.name,
+            ),
+        )
+    })?;
+    let pinned = WindowPin::read(&answer);
+    let did = match pinned.size {
+        Some(size) => format!(
+            "Window {} is pinned to {}x{} cells.",
+            window.name, size.cols, size.rows
+        ),
+        None => format!(
+            "Window {} is un-pinned and follows the clients watching it again.",
+            window.name
+        ),
+    };
+    // The NOTE is the half an agent cannot see for itself, so it leads the second paragraph rather
+    // than being appended as a footnote: a caller that stopped reading after the first line would
+    // otherwise act on a size that is not in force.
+    Ok(match pinned.note() {
+        Some(note) => format!("{did}\n\nNothing moved: {note}"),
+        None => format!(
+            "{did} Every pane in it is re-tiled to that rectangle, so read_pane now sees those \
+             columns."
+        ),
+    })
 }
 
 /// The window listing, re-read after a verb that changed the set — [`relisted`]'s rule one level
@@ -4978,7 +5115,8 @@ mod tests {
                 "open_window",
                 "select_window",
                 "close_window",
-                "rename_window"
+                "rename_window",
+                "resize_window"
             ]
         );
         for tool in tools["tools"].as_array().unwrap() {

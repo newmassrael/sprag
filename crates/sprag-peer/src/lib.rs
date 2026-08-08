@@ -99,6 +99,16 @@ pub struct Missing {
     /// which is the state a blanket refusal cannot express, because a client that cannot read its
     /// panes never starts.
     pub paths: Vec<String>,
+    /// It performs the verb and its REPLY is one key short — the additive-answer-key skew.
+    ///
+    /// The one shape here that no refusal can express, and the reason it is data rather than a
+    /// fourth boolean: a `scene/invoke` answer key added by this build is *absent-not-wrong* to an
+    /// older daemon, so the client's degradation is silent by design and therefore untestable by
+    /// every other tool in this crate. R331 added `policy` to `resize_window`'s answer and had a
+    /// unit test for a value it could construct and no daemon that would ever send one.
+    ///
+    /// Only the top level of `result` is stripped, which is where an additive key goes.
+    pub answer_keys: Vec<String>,
 }
 
 impl Missing {
@@ -110,6 +120,7 @@ impl Missing {
             actions: true,
             refuses_without_reason: false,
             paths: Vec::new(),
+            answer_keys: Vec::new(),
         }
     }
 
@@ -121,6 +132,7 @@ impl Missing {
             actions: false,
             refuses_without_reason: false,
             paths: Vec::new(),
+            answer_keys: Vec::new(),
         }
     }
 
@@ -132,6 +144,7 @@ impl Missing {
             actions: true,
             refuses_without_reason: false,
             paths: Vec::new(),
+            answer_keys: Vec::new(),
         }
     }
 
@@ -147,6 +160,7 @@ impl Missing {
             actions: false,
             refuses_without_reason: true,
             paths: Vec::new(),
+            answer_keys: Vec::new(),
         }
     }
 
@@ -159,7 +173,42 @@ impl Missing {
             actions: false,
             refuses_without_reason: false,
             paths: paths.to_vec(),
+            answer_keys: Vec::new(),
         }
+    }
+
+    /// A daemon that PERFORMS every verb and sends a reply one key short — the additive-answer-key
+    /// skew, which no refusal can express.
+    ///
+    /// The realistic shape for a key a NEW build added to an existing action's answer: nothing is
+    /// missing that a client can be refused for, so the only way to drive the degradation is to
+    /// take the key back out of a real daemon's reply.
+    #[must_use]
+    pub fn answer_keys(keys: &[String]) -> Self {
+        Self {
+            slots: false,
+            actions: false,
+            refuses_without_reason: false,
+            paths: Vec::new(),
+            answer_keys: keys.to_vec(),
+        }
+    }
+
+    /// `frame` with every key this older daemon does not send taken out of its `result` — the reply
+    /// half of [`refusal`](Self::refusal), and [`None`] when nothing was removed so the pump can
+    /// forward the ORIGINAL bytes rather than a re-serialisation of them.
+    fn stripped(&self, frame: &str) -> Option<String> {
+        if self.answer_keys.is_empty() {
+            return None;
+        }
+        let mut reply: Value = serde_json::from_str(frame).ok()?;
+        let result = reply.get_mut("result")?.as_object_mut()?;
+        let removed = self
+            .answer_keys
+            .iter()
+            .filter(|key| result.remove(key.as_str()).is_some())
+            .count();
+        (removed > 0).then(|| reply.to_string())
     }
 
     /// The reply this peer gives one request, or [`None`] to pass it on / answer it normally.
@@ -346,10 +395,16 @@ fn relay(client: &UnixStream, upstream: &Path, missing: &Missing) {
         client.try_clone().expect("split the peer's connection"),
     ));
     let pumping = Arc::clone(&to_client);
+    let policy = missing.clone();
     let from_daemon = up.try_clone().expect("split the upstream connection");
     let pump = std::thread::spawn(move || {
         for line in BufReader::new(from_daemon).lines() {
             let Ok(line) = line else { return };
+            // The ONE place a real daemon's reply is edited, and it edits nothing unless the
+            // policy names a key: an untouched frame is forwarded as the bytes that arrived, so a
+            // peer with no answer-key policy is byte-transparent (which every other test here
+            // depends on).
+            let line = policy.stripped(&line).unwrap_or(line);
             let mut out = pumping.lock().expect("the peer's writer");
             if writeln!(out, "{line}").is_err() {
                 return;

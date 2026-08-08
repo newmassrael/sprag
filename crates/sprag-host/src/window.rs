@@ -146,7 +146,16 @@ impl WindowSize {
 /// That the descriptions reduce to [`arbitrate`] is the point rather than a saving:
 /// [`Clients`](Self::Clients) IS an arbitration, and [`Adjust`](Self::Adjust) moves whatever the
 /// arbitration currently says. Neither introduces geometry of its own.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// # The serde derive is NOT the wire form
+///
+/// [`WindowPlace`](sprag_terminal::WindowPlace)'s note, verbatim and for its reason: this is a
+/// client's own storage for a bound action and for a palette row, never what crosses the socket.
+/// The wire spelling is [`ResizeWindowAsk`](crate::wire::ResizeWindowAsk)'s six explicit keys, which
+/// a derive could not produce and which the protocol's shape pin holds by BYTES — so a change here
+/// cannot move what a daemon reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SizeRequest {
     /// Exactly this rectangle — tmux `-x`/`-y`.
     Exact(ClientSize),

@@ -3163,6 +3163,123 @@ fn an_agent_closes_and_renames_only_the_windows_it_opened() {
     );
 }
 
+/// **An agent can force the SHAPE of a window it opened, and is TOLD when the pin does nothing**
+/// (R331).
+///
+/// # Why this tool exists at all
+///
+/// A pane's columns are what `read_pane` sees, and a window's size is what decides them. Before
+/// this the agent surface could widen a pane's SHARE of a window (`resize_pane`) and could not
+/// change the window — so an agent reading a wide table in a window a person had sized small had no
+/// move to make.
+///
+/// # The three claims, and the third is the one an agent cannot check for itself
+///
+/// * a person's window is REFUSED, `rename_window`'s gate one verb over;
+/// * its own window takes the rectangle, and the panes are re-tiled to it — read from the DAEMON's
+///   pane list, not from the tool's own sentence;
+/// * with `window-size` NOT `manual` the daemon stores the size and lays nothing out over it, and
+///   the answer SAYS SO. An agent has no screen; a tool that reported "resized" there would have it
+///   act on columns that do not exist. This is the half a code reading cannot check — the sentence
+///   comes from the daemon's own policy, so the fixture flips the option through the real verb.
+#[test]
+fn an_agent_resizes_only_its_own_window_and_is_told_when_the_pin_is_inert() {
+    // The DAEMON's own config home: `window-size` is read by the daemon, and the third claim below
+    // is about what IT arbitrates under. A test that pointed only this process at a file would be
+    // asserting against whatever the developer's own config says (R331).
+    let dir = std::env::temp_dir().join(format!(
+        "sprag-mcp-winsize-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("create the temp config dir");
+    std::fs::write(
+        dir.join("sprag").join("config.toml"),
+        "[options]\nwindow-size = \"manual\"\n",
+    )
+    .expect("write the config");
+    let home = dir.display().to_string();
+    let (_daemon, sock) = spawn_daemon_with(&["cat"], BOOT_PANE, &[("XDG_CONFIG_HOME", &home)]);
+    let cli = PathBuf::from(env!("CARGO_BIN_EXE_sprag-mcp"))
+        .parent()
+        .expect("the built sprag-mcp has a directory")
+        .join("sprag");
+    let sprag = |args: &[&str]| -> String {
+        let out = Command::new(&cli)
+            .args(args)
+            .env(SOCK_ENV, &sock)
+            .env("XDG_CONFIG_HOME", &home)
+            .output()
+            .expect("run the sprag CLI");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    let theirs = mux_current_window(&sock);
+    server.call_tool("open_window", json!({ "name": "mine" }));
+
+    let refused = server.call_tool_error(
+        "resize_window",
+        json!({ "window": theirs.clone(), "cols": 100, "rows": 30 }),
+    );
+    assert!(
+        refused.contains(&format!(
+            "window {theirs} was opened by a person, not by you"
+        )),
+        "a person's window is not an agent's to reshape: {refused}",
+    );
+
+    // HALF a rectangle, refused where it was typed and naming which argument to fix.
+    let half = server.call_tool_error("resize_window", json!({ "window": "mine", "cols": 100 }));
+    assert!(
+        half.contains("'cols' AND 'rows' together"),
+        "half a rectangle is a size nobody chose: {half}",
+    );
+
+    let pinned = server.call_tool(
+        "resize_window",
+        json!({ "window": "mine", "cols": 100, "rows": 30 }),
+    );
+    assert!(
+        pinned.contains("Window mine is pinned to 100x30 cells")
+            && pinned.contains("read_pane now sees those columns"),
+        "its own window takes the rectangle: {pinned}",
+    );
+    // THE DAEMON's account, not the tool's: the panes of the agent's own window were really
+    // re-tiled. Read through the CLI's window-scoped listing, because the agent's window is not the
+    // session's current one.
+    // The agent's window is not the session's current one, so it is SELECTED first — `panes` reads
+    // the current window, and asserting on the person's would say nothing about the pin.
+    let _ = sprag(&["select-window", "-t", "0", "mine"]);
+    let listed = sprag(&["panes", "-t", "0"]);
+    assert!(
+        listed.contains("100x30"),
+        "the pin reached the agent's own panes: {listed:?}",
+    );
+
+    // ...and the same call under a policy that reads no pin. `set-option` edits the one file the
+    // daemon reads, so nothing is restarted and the answer changes because the DAEMON's rule did.
+    let _ = sprag(&["set-option", "window-size", "largest"]);
+    let inert = server.call_tool(
+        "resize_window",
+        json!({ "window": "mine", "cols": 120, "rows": 40 }),
+    );
+    assert!(
+        inert.contains("Nothing moved:") && inert.contains("window-size is largest"),
+        "a stored-but-inert pin must not read as a resize: {inert}",
+    );
+    assert!(
+        inert.contains("120x40"),
+        "and it names the rectangle it stored, which the agent can see nowhere else: {inert}",
+    );
+
+    let released = server.call_tool("resize_window", json!({ "window": "mine" }));
+    assert!(
+        released.contains("un-pinned and follows the clients watching it again"),
+        "no rectangle at all is the un-pin: {released}",
+    );
+}
+
 /// **An agent tidying up its own workbench cannot end a person's SESSION.**
 ///
 /// R309 made a kill cascade: a session's last window ends the session, and the last session ends

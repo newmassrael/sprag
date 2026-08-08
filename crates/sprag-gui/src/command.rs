@@ -78,6 +78,7 @@ use sprag_host::ProjectAction;
 use sprag_host::keymap::SelectWindowBind;
 use sprag_host::keymap::{BoundAction, SwitchClientAsk};
 use sprag_host::report::Report;
+use sprag_host::window::SizeRequest;
 use sprag_terminal::{OrderStep, WindowId, WindowInfo, WindowPlace};
 
 use crate::slotview::SlotView;
@@ -123,6 +124,22 @@ pub(crate) enum Command {
     ZoomPane,
     /// Move the target pane into a new window of its own (tmux `break-pane`).
     BreakOut,
+    /// Force THIS window's cell size, or hand it back to the policy (tmux `resize-window`, and the
+    /// keyboard's `resize-window -a` / `-A` / `-u`).
+    ///
+    /// # Only the spellings a ROW can carry
+    ///
+    /// `resize-window` has five, and four of them name a NUMBER — a rectangle or a distance — which
+    /// a menu row has nowhere to put. The three that name no number are the FOLDS and the un-pin,
+    /// and each is a whole sentence on its own: *fit this window to the clients watching it*, or
+    /// *stop forcing it*. So this arm carries a [`SizeRequest`]
+    /// and the catalogue offers exactly those three, which is the same cut
+    /// [`BoundAction::ResizeWindow`]'s doc predicted
+    /// and R331 left unbuilt until the owner asked why it had been registered rather than built.
+    ///
+    /// It names NO window, unlike its neighbours: a size is forced on the window a person is
+    /// looking at, and the palette's `Go to window …` rows are how they get to another one first.
+    ResizeWindow(sprag_host::window::SizeRequest),
     /// Move the target pane into the window this row IDENTIFIES (tmux `join-pane`) — `BreakOut`'s
     /// inverse.
     ///
@@ -241,6 +258,20 @@ impl Command {
                 WindowPlace::Before(name) => format!("Move window before {name}"),
                 WindowPlace::After(name) => format!("Move window after {name}"),
             },
+            // The words say what a person SEES happen, not what the flag is called: `-a` folds to
+            // the SMALLEST watcher, which is "fit so everyone can see all of it", and `-A` to the
+            // largest, which is "use every cell somebody has". A row reading `resize-window -a`
+            // would be the grammar leaking into a surface whose whole job is to name things.
+            Self::ResizeWindow(size) => match size {
+                SizeRequest::Clients(sprag_host::WindowSize::Smallest) => {
+                    "Fit this window to the smallest client watching it".to_owned()
+                }
+                SizeRequest::Clients(_) => {
+                    "Fit this window to the largest client watching it".to_owned()
+                }
+                // The verb LEADS on the way OUT too, so a query of "fit" finds the way back.
+                _ => "Fit this window: stop forcing a size".to_owned(),
+            },
             Self::NewSession => "New session".to_owned(),
             Self::SwitchSession(name) => format!("Switch to session {name}"),
             Self::LastSession => "Switch to the last session".to_owned(),
@@ -315,7 +346,10 @@ impl Command {
             | Self::ZoomPane
             | Self::NewWindow
             | Self::SelectWindow { .. }
-            | Self::MoveWindow(_) => None,
+            | Self::MoveWindow(_)
+            // The window's own rectangle, and no hint beyond the chord `bound`
+            // derives — the same answer every argument-free row here gives.
+            | Self::ResizeWindow(_) => None,
         }
     }
 
@@ -369,6 +403,9 @@ impl Command {
             // PAIRED, unlike `Kill window <name>` beside it: this row names no window either, so
             // the two really do the same thing and a user pressing `prefix <` gets exactly what
             // this row does. The join is what puts the chord in the hint column.
+            // The chord column is DERIVED, so a user who binds one of these three sees it here
+            // without a second table being told (R314's rule, R323's repeat of it).
+            Self::ResizeWindow(size) => Some(BoundAction::ResizeWindow { size: *size }),
             Self::MoveWindow(place) => Some(BoundAction::MoveWindow {
                 place: place.clone(),
             }),
@@ -499,6 +536,7 @@ impl Command {
             | Self::NewWindow
             | Self::SelectWindow { .. }
             | Self::MoveWindow(_)
+            | Self::ResizeWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
             | Self::LastSession
@@ -547,6 +585,7 @@ impl Command {
             | Self::NewWindow
             | Self::SelectWindow { .. }
             | Self::MoveWindow(_)
+            | Self::ResizeWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
             | Self::LastSession
@@ -599,6 +638,7 @@ impl Command {
             | Self::NewWindow
             | Self::SelectWindow { .. }
             | Self::MoveWindow(_)
+            | Self::ResizeWindow(_)
             | Self::NewSession
             | Self::SwitchSession(_)
             | Self::LastSession
@@ -776,6 +816,13 @@ impl Command {
             Self::MoveWindow(place) => match slots.move_window(None, place) {
                 Some((_, sprag_terminal::PlaceHow::Moved)) => Report::on_screen(),
                 Some((_, _)) | None => self.reported(Report::nowhere),
+            },
+            // `Report::pinned` owns the THIRD outcome this verb alone has — a size the daemon
+            // stored and is laying nothing out over — so this row, the keybinding and the CLI
+            // cannot come to disagree about when a resize is worth a sentence.
+            Self::ResizeWindow(size) => match slots.resize_window(*size) {
+                Some(pinned) => Report::pinned(&pinned),
+                None => self.reported(Report::nowhere),
             },
             // Creates AND switches, like the rail's "+". The name is read BEFORE for the reason
             // the bound arm states: `new_session` answers the CURRENT name when the daemon would
@@ -973,6 +1020,12 @@ pub(crate) fn catalog(target: Option<usize>, slots: &SlotView) -> Catalog {
         Command::MoveWindow(WindowPlace::Step(OrderStep::Next)),
         Command::MoveWindow(WindowPlace::First),
         Command::MoveWindow(WindowPlace::Last),
+        // The three spellings of `resize-window` a ROW can carry — the two folds and the way back.
+        // After the placings because they are about the window's own rectangle rather than its
+        // position, and the un-pin last because it is the undo of the two above it.
+        Command::ResizeWindow(SizeRequest::Clients(sprag_host::WindowSize::Smallest)),
+        Command::ResizeWindow(SizeRequest::Clients(sprag_host::WindowSize::Largest)),
+        Command::ResizeWindow(SizeRequest::Clear),
     ]);
     // A pane command with no pane to act on is not offered at all: a row that is guaranteed to do
     // nothing is worse than a shorter list, because the user cannot tell the two apart. (A project
@@ -2738,6 +2791,62 @@ mod tests {
             .collect();
         let (saturated, _log) = slots_with(&window_refs, &["0"], "0");
         assert_eq!(menu_rows(&saturated).len(), MAX_MENU_ROWS);
+    }
+
+    /// **The palette offers the three `resize-window` spellings a ROW can carry, and each SENDS its
+    /// own** (R331, built when the owner asked why it had been registered rather than built).
+    ///
+    /// Four claims, and the third is the one a title-only test would miss:
+    ///
+    /// * exactly THREE rows — the two folds and the un-pin. A fourth would mean a numeric spelling
+    ///   had been given a row it cannot carry an argument for.
+    /// * each names what a person SEES happen rather than the flag that does it, so the palette's
+    ///   own search ("fit") reaches the whole set.
+    /// * each REQUEST is the one its row promises. `-a` and `-A` differ by one enum value and
+    ///   produce identical-looking rows, so a swapped pair is invisible to every assertion about
+    ///   titles — this is what tells them apart.
+    /// * the chord column is DERIVED (`bound()`), so a user who binds one sees it here with no
+    ///   second table told about it (R314's rule).
+    ///
+    /// REVERT-PROOF: swap `Smallest` and `Largest` in the catalogue and the third claim fails; drop
+    /// `Command::ResizeWindow`'s `run` arm and the log is empty.
+    #[test]
+    fn the_palette_offers_the_fits_a_row_can_carry_and_sends_each_one() {
+        let (slots, log) = slots_with(&[("main", true)], &["0"], "0");
+        let rows = catalog(Some(0), &slots);
+        let offered: Vec<Command> = rows
+            .commands
+            .iter()
+            .filter(|command| matches!(command, Command::ResizeWindow(_)))
+            .cloned()
+            .collect();
+        assert_eq!(
+            offered.iter().map(|c| c.title()).collect::<Vec<_>>(),
+            vec![
+                "Fit this window to the smallest client watching it".to_owned(),
+                "Fit this window to the largest client watching it".to_owned(),
+                "Fit this window: stop forcing a size".to_owned(),
+            ],
+            "the three spellings with no number in them, in the order a person undoes them",
+        );
+        assert!(
+            offered.iter().all(|command| command.bound().is_some()),
+            "every one of them is a bindable verb, so the chord column can derive a hint",
+        );
+
+        for command in &offered {
+            let _ = command.run(Some(0), &slots);
+        }
+        assert_eq!(
+            log.borrow().resized_windows,
+            vec![
+                SizeRequest::Clients(sprag_host::WindowSize::Smallest),
+                SizeRequest::Clients(sprag_host::WindowSize::Largest),
+                SizeRequest::Clear,
+            ],
+            "each row sends the request its own title promises — the two folds differ by one enum \
+             value and by nothing a title assertion can see",
+        );
     }
 
     /// A kill reaches the host addressed by the NAME it carries — the whole reason the destructive

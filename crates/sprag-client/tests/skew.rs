@@ -264,3 +264,69 @@ fn a_read_a_daemon_cannot_serve_says_nothing_to_the_person() {
         "the same seam, on the acting side, is what makes the silence above a POLICY",
     );
 }
+
+/// **AN ADDED ANSWER KEY DEGRADES TO SILENCE, NOT TO A GUESS** (R331) — driven against a daemon
+/// whose reply really is one key short.
+///
+/// # Why this needed a new kind of peer
+///
+/// Every other skew in this file is an ABSENCE a client can be refused for: a missing address, a
+/// missing action, a refusal with no reason. An answer key added to an action that already exists
+/// is none of those — the verb works, the reply parses, and the client is simply told less. That is
+/// *absent-not-wrong*, which is exactly why it is dangerous: the degradation is silent by design, so
+/// nothing fails when a client fills the gap in from somewhere else.
+///
+/// And it nearly did. `resize_window` answers the `window-size` policy in force, and the CLI it
+/// replaced computed that from **its own config file**. A client that kept a fallback like that
+/// would meet an old daemon and confidently report a policy the daemon is not under.
+/// [`sprag_peer::Missing::answer_keys`] takes the key back out of a REAL daemon's reply, which is
+/// the only fixture in which "the client makes no claim" can be told from "the client guessed
+/// right".
+///
+/// The CONTROL is the same call against the daemon itself: without it, a `None` policy could mean
+/// the peer stripped the key OR that this build never sends one.
+#[test]
+fn an_answer_key_an_old_daemon_does_not_send_becomes_no_claim_at_all() {
+    use sprag_host::window::SizeRequest;
+
+    let (_daemon, upstream) = spawn_daemon();
+    let session = boot_session(&upstream);
+    let sock = socket_path("nopolicy");
+    let peer = sprag_peer::OldDaemon::proxying(
+        &sock,
+        &upstream,
+        sprag_peer::Missing::answer_keys(&[sprag_host::wire::WindowPin::POLICY_KEY.to_owned()]),
+    );
+
+    let size = SizeRequest::Exact(sprag_host::ClientSize {
+        cols: 100,
+        rows: 30,
+    });
+
+    // THE CONTROL FIRST, and it is not ceremony: this build's daemon DOES send the key, so a `None`
+    // through the peer below is the strip and not this client's own reader.
+    let direct = boot(&upstream, &session)
+        .resize_window(size)
+        .expect("this build's daemon performs the resize");
+    assert!(
+        direct.policy.is_some(),
+        "the daemon under the peer answers a policy, which is what makes the strip observable",
+    );
+
+    let aged = boot(peer.sock(), &session)
+        .resize_window(size)
+        .expect("an OLDER daemon performs this verb perfectly well — only its reply is shorter");
+    assert_eq!(
+        aged.size, direct.size,
+        "the act itself is unaffected: the rectangle is stored and answered either way",
+    );
+    assert_eq!(
+        aged.policy, None,
+        "the key it did not send becomes NO CLAIM, never a value read from somewhere else",
+    );
+    assert_eq!(
+        aged.note(),
+        None,
+        "and with no policy there is no sentence — a client that guessed would say one here",
+    );
+}

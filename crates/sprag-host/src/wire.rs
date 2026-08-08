@@ -2814,28 +2814,53 @@ impl WindowPin {
         }
     }
 
-    /// What a person needs told that the screen cannot show them: a size was STORED and the daemon
-    /// is not laying anything out over it.
+    /// What a person needs told that the screen cannot show them: this resize changed a stored
+    /// value and the daemon is not laying anything out over it.
     ///
-    /// [`None`] when there is nothing to add — the pin is in force (the panes moved, which is the
-    /// answer), the request was an un-pin, or the daemon did not say what policy it is under.
+    /// [`None`] when there is nothing to add — the policy IS `manual`, so the panes moved and that
+    /// is the answer, or the daemon did not say what policy it is under.
+    ///
+    /// # It carries the RECTANGLE, because a display client has shown nothing else
+    ///
+    /// The CLI prints the resolved size on stdout; a key press prints nothing anywhere. A note that
+    /// said only *"size stored"* would leave the person who pressed `resize-window -a` with no way
+    /// to learn what their own client folded to — and three of the four spellings are descriptions
+    /// the caller cannot work out, so there is nothing for them to infer it from. The CLI repeating
+    /// the number on stderr is the honest cost of one wording; the two go to different streams and
+    /// different readers.
+    ///
+    /// # The UN-PIN speaks too, under a policy that was ignoring the pin
+    ///
+    /// `-u` under `manual` releases a size that WAS in force, so the panes reflow and the screen is
+    /// the answer. Under any other policy it removes something that was doing nothing, and nothing
+    /// changes — which is the same "a key that did nothing looks like a key that is not bound"
+    /// failure the pin half is about, arrived at from the other side.
     ///
     /// **One wording, three surfaces.** `sprag resize-window` prints it, and both display clients
     /// show it in the row a keybinding's report goes to; a second wording would be two answers to
     /// one question, which is what this module exists to prevent. It is written to fit a status row
-    /// ([`crate::report::MessageText::MAX_BYTES`]), which the CLI's own longer sentence did not
-    /// have to be.
+    /// ([`crate::report::MessageText::MAX_BYTES`]), asserted at the widest rectangle a `u16` pair
+    /// can spell.
     #[must_use]
     pub fn note(&self) -> Option<String> {
         let policy = self.policy?;
-        if self.size.is_none() || policy == crate::WindowSize::Manual {
+        if policy == crate::WindowSize::Manual {
             return None;
         }
-        Some(format!(
-            "size stored, but window-size is {} so the panes still follow the clients — \
-             `sprag set-option window-size manual` to use it",
-            policy.name(),
-        ))
+        Some(match self.size {
+            Some(size) => format!(
+                "{}x{} stored, but window-size is {} so the panes still follow the clients — \
+                 `sprag set-option window-size manual` to use it",
+                size.cols,
+                size.rows,
+                policy.name(),
+            ),
+            None => format!(
+                "un-pinned, but window-size is {} so this window was following the clients either \
+                 way",
+                policy.name(),
+            ),
+        })
     }
 }
 
@@ -4096,14 +4121,46 @@ mod tests {
             "the note is shown in a status row, so it has to fit one: {} bytes",
             inert.len(),
         );
+        assert!(
+            inert.contains("100x30"),
+            "the note carries the RECTANGLE, because a key press shows it nowhere else: {inert:?}",
+        );
+        // THE WIDEST a `u16` pair can spell, so the status-row bound above is asserted at the
+        // extreme rather than at a convenient value.
+        let widest = WindowPin {
+            size: Some(crate::attach::ClientSize {
+                cols: u16::MAX,
+                rows: u16::MAX,
+            }),
+            policy: Some(crate::WindowSize::Smallest),
+        }
+        .note()
+        .expect("the widest pin still has something to say");
+        assert!(
+            widest.len() <= crate::report::MessageText::MAX_BYTES,
+            "the widest note must still fit a status row: {} bytes",
+            widest.len(),
+        );
+        // THE UN-PIN under a policy that was ignoring the pin: nothing changes on screen, which is
+        // the pin half's failure arrived at from the other side.
+        let released = WindowPin {
+            size: None,
+            policy: Some(crate::WindowSize::Largest),
+        }
+        .note()
+        .expect("an un-pin under a policy that ignored the pin changed nothing visible");
+        assert!(
+            released.contains("un-pinned") && released.contains("largest"),
+            "it says what happened and why nothing moved: {released:?}",
+        );
         assert_eq!(
             WindowPin {
                 size: None,
-                policy: Some(crate::WindowSize::Largest),
+                policy: Some(crate::WindowSize::Manual),
             }
             .note(),
             None,
-            "an UN-PIN under any policy has nothing to warn about — nothing was stored",
+            "an un-pin the policy WAS using needs no words: the panes reflow",
         );
         assert_eq!(
             pinned(None).note(),

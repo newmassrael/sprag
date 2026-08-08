@@ -3629,7 +3629,8 @@ fn an_unresolvable_resize_window_is_refused_and_leaves_the_pin_alone() {
 #[test]
 fn the_resize_key_pins_the_window_to_the_area_this_client_reported() {
     let config = ConfigHome::new(
-        "[options]\nwindow-size = \"manual\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -a\"\n",
+        "[options]\nwindow-size = \"manual\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -a\"\n\n\
+         [[bind]]\nkey = \"W\"\naction = \"resize-window -R 10\"\n",
     );
     // BOTH processes, and the daemon is the half that matters: `window-size` is read by the DAEMON,
     // so a fixture that gave this file to the client alone would be asserting against whatever the
@@ -3675,20 +3676,15 @@ fn the_resize_key_pins_the_window_to_the_area_this_client_reported() {
         Some(BOOT_PANES),
         "the folded pin did not hold",
     );
-    // THE DISCRIMINATOR: a RELATIVE resize moves what the window IS. It answers a rectangle only
-    // because something is pinned to move — and it lands 10 columns off the folded number, which is
-    // a fact no deferral could produce.
-    let relative = sprag_on(
-        &sock,
-        &config,
-        &["resize-window", "-t", &session, "-R", "10"],
-    );
-    assert!(
-        relative.status.success(),
-        "the key's pin is what a relative resize moves: {}",
-        String::from_utf8_lossy(&relative.stderr),
-    );
-    wait_for("the relative resize to move the key's own pin", || {
+    // THE DISCRIMINATOR, and the ADJUST spelling driven from a KEY in the same press: a relative
+    // resize moves what the window IS, so it lands 10 columns off the folded number — a fact no
+    // deferral could produce. Bound rather than run through the CLI because this is the one
+    // spelling whose FLAG is chosen from the sign of a number, and the binding is where that
+    // happens; without this press no test moved a window from a key by anything but a fold.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"W");
+    wait_for("the relative key to move the fold key's own pin", || {
         settled(
             pane_size(&mut conn, &session),
             &Some((BOOT_PANES.0 + 10, BOOT_PANES.1)),
@@ -3727,7 +3723,8 @@ fn the_resize_key_pins_the_window_to_the_area_this_client_reported() {
 #[test]
 fn a_pin_the_policy_ignores_says_so_on_the_status_row() {
     let config = ConfigHome::new(
-        "[options]\nwindow-size = \"largest\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -x 90 -y 25\"\n",
+        "[options]\nwindow-size = \"largest\"\n\n[[bind]]\nkey = \"R\"\naction = \"resize-window -x 90 -y 25\"\n\n\
+         [[bind]]\nkey = \"U\"\naction = \"resize-window -u\"\n",
     );
     // The DAEMON reads `window-size`, so it gets this file too — see `attached_client_under`.
     let (_daemon, sock, mut conn, session, mut tui) = attached_client_under(&config, &["cat"]);
@@ -3760,6 +3757,26 @@ fn a_pin_the_policy_ignores_says_so_on_the_status_row() {
         pane_size(&mut conn, &session),
         Some(BOOT_PANES),
         "the pin was inert, which is what the sentence is about",
+    );
+    assert!(
+        tui.row(STATUS_ROW).contains("90x25"),
+        "the sentence carries the RECTANGLE, which a key press shows nowhere else: {:?}",
+        tui.row(STATUS_ROW),
+    );
+
+    // THE UN-PIN, from the other side of the same failure: it removes something that was doing
+    // nothing, so nothing on screen moves and only a sentence says the key did anything at all.
+    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+    tui.type_bytes(PREFIX);
+    tui.type_bytes(b"U");
+    wait_for("the row to say the un-pin changed nothing visible", || {
+        settled(tui.row(STATUS_ROW).contains("un-pinned"), &true)
+            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+    });
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(BOOT_PANES),
+        "and nothing moved, which is why it needed saying",
     );
 
     // THE CONTROL, on the other side of the same key: with `manual` in force the pin is performed,
