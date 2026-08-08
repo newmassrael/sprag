@@ -51,6 +51,7 @@ use portable_pty::{
     Child as PtyChild, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system,
 };
 use serde_json::{Value, json};
+use sprag_host::keymap::{Keymap, PrefixMode, Routed};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
     RENAME_SESSION_ACTION, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, TREE_SLOT,
@@ -492,6 +493,82 @@ fn wait_for_still<T: PartialEq + Copy + std::fmt::Debug>(mut read: impl FnMut() 
     panic!("timed out after {DEADLINE:?} waiting for a reading to stop moving (last {last:?})");
 }
 
+/// Close any repeat window this client is holding, so the NEXT prefix is a prefix.
+///
+/// # Why a keystroke and not a sleep
+///
+/// A `-r` binding leaves the prefix table armed for `repeat-time`, and inside that window `C-b` is
+/// `send-prefix` — tmux's own rule — so a test that starts a second gesture with a prefix has its
+/// prefix typed into the pane and the key behind it follows. The obvious answer is to wait the
+/// window out, and this file did, nine times. **That clock cannot be read from here.** The window
+/// runs from the moment the acting key ARRIVED at the client, an instant no test observes, and the
+/// margin left over is whatever the sleep exceeds `repeat-time` by — which is why a run at 2x CPU
+/// oversubscription found two of those sites failing with the whole gesture in the pane.
+///
+/// One keystroke ends it instead, with no clock anywhere: a key bound in NEITHER table routes
+/// `ToPane`, and `Routed::next` makes that `PrefixMode::ToPane`. The window is shut when this
+/// returns, whatever was left of it, because the mode is one keystroke long by construction.
+///
+/// # ...and why it takes the character back
+///
+/// The key reaches the PANE, which is the price of closing the window without a clock — and a
+/// character left on the child's line is not free. Measured at 4x CPU oversubscription: with four
+/// `q`s standing on a shell's line, the unprefixed `C-Left`s that a later claim sends to that same
+/// shell moved the cursor over them, and the word typed to prove the keys had arrived was inserted
+/// in the middle of them. So the erase is part of the gesture, not tidiness: the line the child
+/// holds is exactly what it was.
+///
+/// Both keys go out in ONE write, which is what makes the erase reliable rather than another race —
+/// the child's line discipline sees the pair together, and neither of them is the client's.
+fn end_the_repeat_window(tui: &mut Tui) {
+    // ASSERTED, not assumed. A future default binding on either key would silently turn "close the
+    // window" into "run something", and the failure would look like the flake this replaces.
+    let bound_nowhere = |mode, name| {
+        matches!(
+            Keymap::default().route(
+                mode,
+                Instant::now(),
+                name,
+                sprag_input::Modifiers::default()
+            ),
+            Routed::ToPane,
+        )
+    };
+    let armed = PrefixMode::Repeating {
+        until: Instant::now() + Duration::from_secs(60),
+    };
+    assert!(
+        bound_nowhere(armed, "q"),
+        "the window-closing key must be bound in neither table, or this closes nothing",
+    );
+    assert!(
+        bound_nowhere(PrefixMode::ToPane, "Backspace"),
+        "the erase must be the CHILD's key once the window is shut, or it never reaches the line",
+    );
+    tui.type_bytes(b"q\x7f");
+}
+
+/// `Ok` when this client has PAINTED a status row containing `want` in SOME frame, else every
+/// distinct row it has painted.
+///
+/// **The sound reading for a message that EXPIRES**, and the reason is the one [`Tui::status_trail`]
+/// is written around: a `display-time` message is on the row for its deadline and then gone, so
+/// `tui.row(STATUS_ROW)` inside a [`wait_for`] can only see it by happening to look while it is
+/// there — and under load the whole test process is descheduled for longer than the message lives.
+/// The trail is a history of the client's frames, so this question has no clock in it.
+///
+/// It is a STRICTLY WEAKER claim than the one a poll makes, and that is why it is not the default:
+/// this says the row HELD `want` at some point, where `settled(tui.row(STATUS_ROW), &landing)` says
+/// the row IS the landing now. Use it where the sentence is the thing under test and expiring is
+/// what it is FOR; a claim about where a client came to rest is a claim about a state that does not
+/// pass, and a poll is the honest instrument for that.
+fn announced(tui: &Tui, want: &str) -> Result<(), String> {
+    if tui.status_rows().iter().any(|row| row.contains(want)) {
+        return Ok(());
+    }
+    Err(format!("the rows painted were {:?}", tui.status_rows()))
+}
+
 /// `Ok` when SOME row of the client's screen contains `want`, else the whole screen.
 ///
 /// [`painted`] pins the TOP row exactly, which is right for a pane's own output. A prompt is drawn
@@ -521,8 +598,8 @@ struct Tui {
     /// How many bytes the client has written, which is how [`Tui::holds_the_terminal`] knows it is
     /// safe to type.
     written: Arc<AtomicUsize>,
-    /// Every DISTINCT status row the client has painted, in order, recorded by the READER THREAD as
-    /// it applies each batch.
+    /// Every DISTINCT status row the client has painted, in order, recorded by the READER THREAD at
+    /// each FRAME the client closed.
     ///
     /// ⚠ A POLL CANNOT WITNESS A STATE THAT PASSES BETWEEN TWO LOOKS. A displayed message is on the
     /// row for its `display-time` and then gone, and a test loop that samples every [`POLL`] sees it
@@ -532,12 +609,19 @@ struct Tui {
     /// attempts at this gate (R326's fixed 3-second window, R327's `rows_until_settled`) each
     /// tightened the sampler without leaving the sampling.
     ///
-    /// Recording here removes the POLL from the observation path, but ⚠ **NOT the sampling**: the
-    /// granularity is one `read`, and under heavy load a client's successive frames coalesce into a
-    /// single one — measured at 2x CPU oversubscription, where this trail came back as
-    /// `["[beta] 0:0*"]`, holding neither the starting row nor the message. Sound for the row a
-    /// client SETTLES on (a settled state does not pass), unsound for one that goes by. For the
-    /// latter read [`Tui::said`], which samples nothing.
+    /// **The granularity is the CLIENT'S OWN FRAME, which is why this is a history and not a
+    /// sample.** Recording per `read` removed the poll and kept the sampling: the OS decides how
+    /// much of a busy client's output comes back at once, so successive frames coalesced into one
+    /// batch and only the last of them was recorded — measured at 2x CPU oversubscription, where
+    /// this trail came back as `["[beta] 0:0*"]`, holding neither the starting row nor the message.
+    /// Now that the client brackets each frame in DEC private mode 2026 (see its `Screen`), the
+    /// reader splits a batch at the frame CLOSES inside it and records one row per frame. A read
+    /// carrying four frames records four rows; a read carrying half a frame records none until the
+    /// rest arrives. Nothing the OS does to the read boundaries can lose a frame, so a row this
+    /// client painted is a row this trail holds.
+    ///
+    /// The pair with [`Tui::said`] stands, and is now about POSITION rather than about soundness:
+    /// this says WHERE — the status row and not a pane — where the byte stream cannot.
     status_trail: Arc<Mutex<Vec<String>>>,
     /// Every byte the client has ever written.
     ///
@@ -634,6 +718,7 @@ impl Tui {
             let transcript = Arc::clone(&transcript);
             move || {
                 let mut buf = [0u8; 8192];
+                let mut splitter = FrameSplitter::new();
                 while let Ok(n) = reader.read(&mut buf) {
                     if n == 0 {
                         break;
@@ -644,18 +729,28 @@ impl Tui {
                         .extend_from_slice(&buf[..n]);
                     {
                         let mut emulator = screen.lock().expect("the screen mutex");
-                        emulator.advance(&buf[..n]);
-                        // Read the status row INSIDE the same lock the batch was applied under, so
-                        // the trail cannot record a row from a state no single batch produced. See
-                        // `status_trail` for why this is here and not in a polling loop.
-                        let row = VtPort::screen(&*emulator)
-                            .row_text(STATUS_ROW)
-                            .trim_end()
-                            .to_owned();
-                        let mut trail = status_trail.lock().expect("the status trail mutex");
-                        if trail.last() != Some(&row) {
-                            trail.push(row);
+                        let mut from = 0;
+                        for end in splitter.closes_in(&buf[..n]) {
+                            // The frame's own bytes, terminator included: what the client presented.
+                            emulator.advance(&buf[from..end]);
+                            from = end;
+                            // Read INSIDE the same lock the frame was applied under, so the trail
+                            // cannot record a row from a state no frame produced. See `status_trail`
+                            // for why this is here and not in a polling loop.
+                            let row = VtPort::screen(&*emulator)
+                                .row_text(STATUS_ROW)
+                                .trim_end()
+                                .to_owned();
+                            let mut trail = status_trail.lock().expect("the status trail mutex");
+                            if trail.last() != Some(&row) {
+                                trail.push(row);
+                            }
                         }
+                        // Whatever follows the last close is a frame the client has NOT presented
+                        // yet, or output that belongs to no frame at all (a mode sequence, a
+                        // forwarded notification). Applied, so a poll still sees the newest state;
+                        // not recorded, because the trail counts frames.
+                        emulator.advance(&buf[from..n]);
                     }
                     // AFTER the emulator, so a reader that sees the count move can also see
                     // everything that moved it.
@@ -706,8 +801,8 @@ impl Tui {
     /// the two halves replayed together are the whole conversation, which is what lets an assertion
     /// about one of them mean something about all of it.
     fn framed_and_loose(&self) -> (Vec<u8>, Vec<u8>, usize) {
-        const OPEN: &[u8] = b"\x1b[?2026h";
-        const CLOSE: &[u8] = b"\x1b[?2026l";
+        const OPEN: &[u8] = FRAME_OPEN;
+        const CLOSE: &[u8] = FRAME_CLOSE;
         let bytes = self
             .transcript
             .lock()
@@ -2213,6 +2308,11 @@ fn the_shifted_arrows_move_the_pane_and_leave_the_cursor_on_it() {
     // send the pane back to the right and the assertion below would catch it.
     tui.type_bytes(PREFIX);
     tui.type_bytes(SHIFT_ARROW_LEFT);
+    // The swap arrows are `-r`, so the window the press above opened is still running and the
+    // prefix below would be a SELF-SEND with the arrow following it into the pane. Measured: with
+    // all four bytes in one read this fails every time, and it only ever passed because a client
+    // slower than `repeat-time` had let the window lapse between them.
+    end_the_repeat_window(&mut tui);
     tui.type_bytes(PREFIX);
     tui.type_bytes(SHIFT_ARROW_RIGHT);
     wait_for("the shifted RIGHT arrow to trade them back", || {
@@ -3789,7 +3889,7 @@ fn the_resize_key_pins_the_window_to_the_area_this_client_reported() {
     // deferral could produce. Bound rather than run through the CLI because this is the one
     // spelling whose FLAG is chosen from the sign of a number, and the binding is where that
     // happens; without this press no test moved a window from a key by anything but a fold.
-    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+    end_the_repeat_window(&mut tui);
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"W");
     wait_for("the relative key to move the fold key's own pin", || {
@@ -3853,33 +3953,32 @@ fn a_pin_the_policy_ignores_says_so_on_the_status_row() {
     tui.type_bytes(b"R");
     wait_for(
         "the row to say the size was stored and is not in force",
-        || {
-            settled(
-                tui.row(STATUS_ROW).contains("window-size is largest"),
-                &true,
-            )
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
-        },
+        || announced(&tui, "window-size is largest"),
     );
     assert_eq!(
         pane_size(&mut conn, &session),
         Some(BOOT_PANES),
         "the pin was inert, which is what the sentence is about",
     );
+    // ONE row carrying BOTH, over the trail rather than off the row now: the sentence is a note on
+    // `display-time`, so a read taken after the wait above may be looking at a row it has already
+    // left. Requiring one frame to hold both is also the stronger claim — two rows each holding
+    // half would be a client that said the policy and the rectangle at different moments.
     assert!(
-        tui.row(STATUS_ROW).contains("90x25"),
+        tui.status_rows()
+            .iter()
+            .any(|row| row.contains("window-size is largest") && row.contains("90x25")),
         "the sentence carries the RECTANGLE, which a key press shows nowhere else: {:?}",
-        tui.row(STATUS_ROW),
+        tui.status_rows(),
     );
 
     // THE UN-PIN, from the other side of the same failure: it removes something that was doing
     // nothing, so nothing on screen moves and only a sentence says the key did anything at all.
-    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+    end_the_repeat_window(&mut tui);
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"U");
     wait_for("the row to say the un-pin changed nothing visible", || {
-        settled(tui.row(STATUS_ROW).contains("un-pinned"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "un-pinned")
     });
     assert_eq!(
         pane_size(&mut conn, &session),
@@ -3899,16 +3998,22 @@ fn a_pin_the_policy_ignores_says_so_on_the_status_row() {
     wait_for("the row to come back before the second press", || {
         settled(tui.row(STATUS_ROW), &where_it_is)
     });
-    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+    end_the_repeat_window(&mut tui);
+    // The trail is append-only, so an index into it now is a mark on the history: everything from
+    // here on is what THIS press painted, and the two sentences the first half of the test put on
+    // the row are behind it.
+    let before_the_real_pin = tui.status_rows().len();
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"R");
     wait_for("the same key to move the panes for real", || {
         settled(pane_size(&mut conn, &session), &Some((90, 25)))
     });
     assert!(
-        !tui.row(STATUS_ROW).contains("window-size"),
-        "a pin the daemon USES said something anyway: {:?}",
-        tui.row(STATUS_ROW),
+        !tui.status_rows()[before_the_real_pin..]
+            .iter()
+            .any(|row| row.contains("window-size")),
+        "a pin the daemon USES said something anyway, in some frame: {:?}",
+        &tui.status_rows()[before_the_real_pin..],
     );
 }
 
@@ -4457,8 +4562,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     // prefix typed here would go to the shell and the arrow after it would follow. Waiting past
     // `repeat-time` is the honest way to start a new gesture, and the first version of this test
     // did not and measured exactly that.
-    let past_the_repeat_window = || std::thread::sleep(Duration::from_millis(700));
-    past_the_repeat_window();
+    end_the_repeat_window(&mut tui);
     tui.type_bytes(&[0x02]);
     tui.type_bytes(b"\x1b[1;5C"); // Ctrl+Right
     wait_for("the boundary to come back one cell", || {
@@ -4469,7 +4573,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     });
 
     // And the FIVE-cell family, on tmux's own second key.
-    past_the_repeat_window();
+    end_the_repeat_window(&mut tui);
     tui.type_bytes(&[0x02]);
     tui.type_bytes(b"\x1b[1;3C"); // Alt+Right
     wait_for("the coarse key to move five cells at once", || {
@@ -4483,7 +4587,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     // nothing. Without this the test would pass over a client that resized on every arrow key and
     // took the chord away from the program in the pane for good — which is the whole reason these
     // eight defaults are not root bindings (`C-Left` is word-motion in readline).
-    past_the_repeat_window();
+    end_the_repeat_window(&mut tui);
     tui.type_bytes(b"\x1b[1;5D");
     tui.type_bytes(b"\x1b[1;5D");
     // Something the pane WILL answer, sent after them, so this waits on a real event rather than on
@@ -5121,6 +5225,104 @@ fn a_session_made_while_the_chooser_is_open_appears_in_it() {
 
 // ----- what a key DID, on the row this client speaks in (R316) -----
 
+/// The two sequences a client wraps ONE frame in — DEC private mode 2026, set and reset.
+///
+/// The bytes are spelled here rather than built from termwiz's escape vocabulary because this is
+/// the READING side: a test that asked the same library the client writes with to say what the
+/// client should have written would agree with it about a wrong answer. What a terminal is owed is
+/// a literal byte string, so that is what is compared against.
+const FRAME_OPEN: &[u8] = b"\x1b[?2026h";
+/// The reset half of [`FRAME_OPEN`] — where a frame ENDS, and so where the status trail records.
+const FRAME_CLOSE: &[u8] = b"\x1b[?2026l";
+
+/// Where the frames a client presented END inside a stream that arrives in arbitrary pieces.
+///
+/// The reader thread is handed whatever the OS felt like returning: four frames in one batch, or
+/// half of a frame terminator with the other half in the next read. Both cases are the SAME
+/// mistake if the scanner has no memory — the first records one row for four frames, the second
+/// misses a frame entirely — and both are what made the per-`read` trail a sampler. Carrying the
+/// partial match across batches is the whole of what makes the granularity the client's frame
+/// rather than the OS's read size.
+///
+/// A type rather than two locals in the thread's closure, so the claim can be made where it lives:
+/// [`a_frame_boundary_survives_a_read_that_splits_it`] drives it with the batches an OS would have
+/// to be provoked into producing.
+struct FrameSplitter {
+    /// How much of [`FRAME_CLOSE`] stood at the end of the last batch.
+    matched: usize,
+}
+
+impl FrameSplitter {
+    /// A splitter that has seen nothing.
+    const fn new() -> Self {
+        Self { matched: 0 }
+    }
+
+    /// The index ONE PAST each frame close inside `batch` — so `batch[..end]` is everything up to
+    /// and including a terminator, and the slice after the last one is a frame still open.
+    fn closes_in(&mut self, batch: &[u8]) -> Vec<usize> {
+        let mut closes = Vec::new();
+        for (at, byte) in batch.iter().enumerate() {
+            // FRAME_CLOSE begins with the only ESC in it, so a failed match can restart at this
+            // byte and never needs to look further back than one — no partial-overlap table.
+            self.matched = if *byte == FRAME_CLOSE[self.matched] {
+                self.matched + 1
+            } else {
+                usize::from(*byte == FRAME_CLOSE[0])
+            };
+            if self.matched == FRAME_CLOSE.len() {
+                self.matched = 0;
+                closes.push(at + 1);
+            }
+        }
+        closes
+    }
+}
+
+/// **The status trail's granularity is the CLIENT's frame, not the OS's read.**
+///
+/// The two batchings an OS can impose are the two ways a per-`read` trail loses a frame, and this
+/// drives both directly rather than trying to provoke a scheduler into producing them: several
+/// frames arriving at once, and one frame's terminator torn in half across two reads. A scanner
+/// with no memory reports 1 close for the first and 0 for the second, which is exactly the trail
+/// that came back holding neither the starting row nor the message at 2x oversubscription.
+#[test]
+fn a_frame_boundary_survives_a_read_that_splits_it() {
+    let frame = |body: &str| [FRAME_OPEN, body.as_bytes(), FRAME_CLOSE].concat();
+
+    // FOUR frames in ONE batch: four closes, not one.
+    let mut splitter = FrameSplitter::new();
+    let batch = [frame("a"), frame("b"), frame("c"), frame("d")].concat();
+    assert_eq!(
+        splitter.closes_in(&batch).len(),
+        4,
+        "a read carrying four frames ends four of them",
+    );
+
+    // ...and each close is where the terminator ACTUALLY ends, so the bytes before it are that
+    // frame's and no other's.
+    let mut splitter = FrameSplitter::new();
+    let one = frame("live");
+    assert_eq!(splitter.closes_in(&one), vec![one.len()]);
+
+    // A TERMINATOR TORN IN HALF. Neither batch holds the whole sequence, so a scanner that starts
+    // afresh on each finds nothing at all; the close belongs to the batch the last byte arrived in.
+    let mut splitter = FrameSplitter::new();
+    let (head, tail) = one.split_at(one.len() - 3);
+    assert_eq!(splitter.closes_in(head), Vec::<usize>::new());
+    assert_eq!(splitter.closes_in(tail), vec![3]);
+
+    // A FALSE START is not a close, and does not eat the real one behind it: an ESC that opens
+    // something else leaves the scanner able to match a terminator beginning at the very next byte.
+    let mut splitter = FrameSplitter::new();
+    let noise = [b"\x1b[?2026", FRAME_CLOSE].concat();
+    assert_eq!(
+        splitter.closes_in(&noise),
+        vec![noise.len()],
+        "the prefix that diverged is not a frame, and the terminator after it still is",
+    );
+}
+
 /// The status row's index on a [`BOOT_PTY`]-sized terminal — the last one, which is what
 /// `sprag_tui::Split` reserves.
 ///
@@ -5182,11 +5384,7 @@ fn a_key_bound_to_a_session_that_does_not_exist_says_so() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"g");
     wait_for("the refusal to be painted on the status row", || {
-        settled(
-            tui.row(STATUS_ROW).contains("no session called \"ghost\""),
-            &true,
-        )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "no session called \"ghost\"")
     });
 
     assert_eq!(
@@ -5233,11 +5431,7 @@ fn the_message_goes_away_on_its_own_and_the_row_comes_back() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"g");
     wait_for("the refusal to be painted", || {
-        settled(
-            tui.row(STATUS_ROW).contains("no session called \"ghost\""),
-            &true,
-        )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "no session called \"ghost\"")
     });
 
     // NOTHING IS TYPED from here on. A client that cleared the row on its next event would hold the
@@ -5498,13 +5692,12 @@ fn the_swap_the_resize_and_the_move_all_say_when_they_go_nowhere() {
     ] {
         // PAST THE REPEAT WINDOW: the arrows are `-r`, so inside it the prefix table is still live
         // and the next chord's first character would be a self-send (R308's hazard, R315's bite).
-        std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + Duration::from_millis(80));
+        // PAST THE REPEAT WINDOW: the arrows are `-r`, and inside a window the prefix below is a
+        // self-send. Closed by a keystroke rather than waited out — see `end_the_repeat_window`.
+        end_the_repeat_window(&mut tui);
         tui.type_bytes(PREFIX);
         tui.type_bytes(keys);
-        wait_for(&format!("{want:?} to be painted"), || {
-            settled(tui.row(STATUS_ROW).contains(want), &true)
-                .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
-        });
+        wait_for(&format!("{want:?} to be painted"), || announced(&tui, want));
         wait_for("the row to come back before the next press", || {
             settled(tui.row(STATUS_ROW), &where_it_is)
         });
@@ -5559,8 +5752,7 @@ fn a_message_sent_by_another_process_reaches_the_person_at_this_client() {
     );
 
     wait_for("the message to be painted on the status row", || {
-        settled(tui.row(STATUS_ROW).contains("the deploy finished"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "the deploy finished")
     });
 
     // WHO it reached, named. A delivery to nobody and a delivery to this client must not read alike,
@@ -5692,9 +5884,11 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
 
     // THE CONTROL: a NOTE expires on its own, with nothing pressed.
     send("note", "a passing note");
+    // `announced`, not a poll: `display-time` is 300 ms here, so the note is on the row for
+    // three POLLs and a descheduled test process sees none of them. The row EXPIRING is the next
+    // claim and stays a poll, because a client at rest is a state that does not pass.
     wait_for("the note to be painted", || {
-        settled(tui.row(STATUS_ROW).contains("a passing note"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "a passing note")
     });
     wait_for("the note to expire with no keystroke", || {
         settled(tui.row(STATUS_ROW), &where_it_is)
@@ -5739,16 +5933,16 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
     // nothing drove through the verb until the audit asked.
     send("warn", "the retry did not help");
     wait_for("the warning to be painted", || {
-        settled(
-            tui.row(STATUS_ROW).contains("the retry did not help"),
-            &true,
-        )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "the retry did not help")
     });
+    // Over the TRAIL and not the row, and that is what keeps the claim from going vacuous when the
+    // wait above stops requiring the sentence to still be there: read at a moment, this would pass
+    // on a client that had marked the warning and then let it expire. Read over every frame, it
+    // says the mark was never painted at all — the stronger sentence, and the one meant.
     assert!(
-        !tui.row(STATUS_ROW).contains("warn:"),
+        !tui.status_rows().iter().any(|row| row.contains("warn:")),
         "only an ALERT is marked; a warning explains itself: {:?}",
-        tui.row(STATUS_ROW),
+        tui.status_rows(),
     );
     wait_for("the warning to expire on the clock, like a note", || {
         settled(tui.row(STATUS_ROW), &where_it_is)
@@ -5789,17 +5983,19 @@ fn a_note_does_not_take_the_row_from_a_live_alert() {
             .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
     send("note", "a passing note");
-    // Sampled rather than looked at once: the note would have to WIN to fail this, and a single read
-    // could take place before it ever arrived. Long enough for several wakes.
-    let deadline = Instant::now() + Duration::from_millis(1200);
-    while Instant::now() < deadline {
-        assert!(
-            !tui.row(STATUS_ROW).contains("a passing note"),
-            "a note must not take the row from a live alert: {:?}",
-            tui.row(STATUS_ROW),
-        );
-        std::thread::sleep(Duration::from_millis(40));
-    }
+    // The WINDOW is still a window — the note has to arrive and lose, and nothing observable says
+    // when it has — but nothing is SAMPLED inside it any more. A note that took the row for one
+    // frame between two of the old 40 ms reads was invisible to them and is a frame in the trail,
+    // so the claim is now about every frame this client painted rather than about thirty of them.
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        !tui.status_rows()
+            .iter()
+            .any(|row| row.contains("a passing note")),
+        "a note must not take the row from a live alert, and no frame of this client's had one: \
+         {:?}",
+        tui.status_rows(),
+    );
     assert!(
         tui.row(STATUS_ROW).contains("the deploy needs you"),
         "and the alert is still the one being shown: {:?}",
@@ -5814,8 +6010,7 @@ fn a_note_does_not_take_the_row_from_a_live_alert() {
     });
     send("note", "a passing note");
     wait_for("the note to be painted", || {
-        settled(tui.row(STATUS_ROW).contains("a passing note"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "a passing note")
     });
     send("alert", "the deploy needs you");
     wait_for("the alert to take the row from the note", || {
@@ -5907,8 +6102,7 @@ fn a_named_client_is_reached_from_a_request_scoped_to_another_session() {
         "the delivery names the client it crossed to: {out:?}",
     );
     wait_for("the cross-session message to be painted", || {
-        settled(tui.row(STATUS_ROW).contains("across the sessions"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "across the sessions")
     });
     let _ = settled_at;
     assert_eq!(
@@ -6028,11 +6222,7 @@ fn the_verb_refuses_a_bad_severity_and_works_with_no_target_at_all() {
     assert!(ok, "display-message with no target is a normal call: {err}");
     assert!(out.starts_with("shown to gui-"), "{out:?}");
     wait_for("the message sent with no -t to be painted", || {
-        settled(
-            tui.row(STATUS_ROW).contains("the default scope works"),
-            &true,
-        )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "the default scope works")
     });
 }
 
@@ -6156,8 +6346,7 @@ fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
     // THE CONTROL: `u=1`, an ordinary notification. It paints and then goes away on its own.
     tui.type_bytes(b"1 the ordinary one\r");
     wait_for("the ordinary notification to paint", || {
-        settled(tui.row(STATUS_ROW).contains("the ordinary one"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "the ordinary one")
     });
     wait_for("...and to expire without anybody touching a key", || {
         settled(tui.row(STATUS_ROW), &where_it_is)
@@ -6240,8 +6429,7 @@ fn each_attention_source_has_its_own_switch() {
     // a measured bound for the silence below rather than a guess at one.
     tui.type_bytes(b"ring\r");
     wait_for("the bell to reach the row", || {
-        settled(tui.row(STATUS_ROW).contains("pane 0: bell"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "pane 0: bell")
     });
     wait_for("...and to expire, leaving the row as it was", || {
         settled(tui.row(STATUS_ROW), &where_it_is)
@@ -6265,16 +6453,24 @@ fn each_attention_source_has_its_own_switch() {
         settled(note.as_str(), &Some("notification while switched off"))
             .map_err(|got| format!("{got}: the pane row's notification is {note}"))
     });
-    // Sampled past the lifetime the bell above MEASURED on this same client: it painted and cleared
-    // inside this window, so a delivery that had been made would have been visible in it.
-    for _ in 0..20 {
-        std::thread::sleep(Duration::from_millis(100));
-        let row = tui.row(STATUS_ROW);
-        assert_eq!(
-            row, where_it_is,
-            "the silenced source must not paint, and nothing else may either",
-        );
-    }
+    // Past the lifetime the bell above MEASURED on this same client: it painted and cleared inside
+    // this window, so a delivery that had been made would have been painted in it too. Read over
+    // the TRAIL rather than sampled at twenty moments — a row that appeared and cleared between two
+    // of those reads was invisible to them, and a silenced source that flashes once is not silent.
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !tui.status_rows()
+            .iter()
+            .any(|row| row.contains("notification while switched off")),
+        "the silenced source must not paint, in ANY frame: {:?}",
+        tui.status_rows(),
+    );
+    assert_eq!(
+        tui.status_rows().last().map(String::as_str),
+        Some(where_it_is.as_str()),
+        "...and nothing else may either, so the client came to rest where it started: {:?}",
+        tui.status_rows(),
+    );
 }
 
 // ----- where a message goes when the person is NOT HERE (R319) -----
@@ -6336,8 +6532,7 @@ fn a_message_follows_the_person_out_of_the_room() {
     // has changed since the mode was set). The words reach the row and expire on their own.
     tui.type_bytes(b"the first one\r");
     wait_for("the control's words to reach the row", || {
-        settled(tui.row(STATUS_ROW).contains("pane 0: the first one"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "pane 0: the first one")
     });
     wait_for("...and to expire, leaving the row as it was", || {
         settled(tui.row(STATUS_ROW), &where_it_is)
@@ -6389,11 +6584,7 @@ fn a_message_follows_the_person_out_of_the_room() {
     });
     // ...and the row still says it too: the copy is a copy, not a redirection.
     wait_for("the row to say it as well", || {
-        settled(
-            tui.row(STATUS_ROW).contains("pane 0: the second one"),
-            &true,
-        )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "pane 0: the second one")
     });
 
     let text = pane_text_of(&mut conn, &session, 0);
@@ -6407,8 +6598,7 @@ fn a_message_follows_the_person_out_of_the_room() {
     tui.type_bytes(b"\x1b[I");
     tui.type_bytes(b"the third one\r");
     wait_for("the third message to reach the row", || {
-        settled(tui.row(STATUS_ROW).contains("pane 0: the third one"), &true)
-            .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "pane 0: the third one")
     });
     let (note, seq) = tui.forwarded();
     assert_eq!(
@@ -7108,7 +7298,7 @@ fn a_window_kill_that_took_the_session_says_so() {
     // below was VACUOUS for exactly that — it sampled only after the row had settled, by which time
     // a message that should not have existed had already come and gone. The mutation that put the
     // second sentence back came out GREEN, which is what said so.
-    let rows = rows_until_settled(&mut tui, "[beta] 0:0*");
+    let rows = rows_until_settled(&tui, "the session went with it", "[beta] 0:0*");
 
     // Asked of the TRANSCRIPT, not of the rows: the sentence expires, and a row record samples at
     // `read` granularity, which coalesces under load (see [`Tui::transcript`]). The rows are still
@@ -7371,23 +7561,30 @@ fn the_join_pane_key_opens_a_chooser_that_says_so_and_a_pick_puts_the_pane_in_th
 /// function only decides when to STOP waiting, and the generous cap is a failure bound rather than a
 /// sample point: a run that never settles returns everything the client ever painted, and the
 /// caller's own assertion prints the whole list. One list, every claim, no clock to tune.
-fn rows_until_settled(tui: &mut Tui, landing: &str) -> Vec<String> {
-    let watching = Instant::now();
-    loop {
-        let rows = tui.status_rows();
-        // The LAST row, not "any row": a message can carry the landing's name inside it, and the
-        // claim is about what the client comes to rest on.
-        if rows.last().map(String::as_str) == Some(landing) || watching.elapsed() >= WAIT_SETTLED {
-            return rows;
-        }
-        std::thread::sleep(POLL);
-    }
+fn rows_until_settled(tui: &Tui, sentence: &str, landing: &str) -> Vec<String> {
+    wait_for(
+        &format!("this client to say {sentence:?} and then come to rest on {landing:?}"),
+        || {
+            // BOTH conditions, and the sentence is the one that was missing. ⚠ SETTLING IS NOT THE
+            // CLAIM: a client can reach the row it lands on BEFORE it writes the sentence its
+            // gesture owes, and a window that ended on the landing alone has stopped watching
+            // before the thing under test happened. Measured at 2x CPU oversubscription, where this
+            // returned `["[0] 0:0*", "[beta] 0:0*"]` and the caller's assertion failed against a
+            // LOSSLESS byte stream — so the sentence was not missed, it had not been written yet.
+            // That is R327's own rule biting one condition further in: end the window on what the
+            // claim is about.
+            //
+            // The LAST row, not "any row": a message can carry the landing's name inside it, and
+            // the second claim is about what the client comes to rest on.
+            let rows = tui.status_rows();
+            if rows.last().map(String::as_str) == Some(landing) && tui.said(sentence) {
+                return Ok(());
+            }
+            Err(format!("the rows painted were {rows:?}"))
+        },
+    );
+    tui.status_rows()
 }
-
-/// How long [`rows_until_settled`] waits for a client to come to rest before handing back whatever
-/// it saw. Generous because it is a FAILURE bound and not a sample point — nothing is measured by
-/// reaching it.
-const WAIT_SETTLED: Duration = Duration::from_secs(30);
 
 /// A live `sprag-tui` under `detach-on-destroy = policy`, with a spare session `beta` to land in
 /// and its own boot session destroyed OUT OF BAND by the `sprag` CLI.
@@ -7468,8 +7665,8 @@ fn a_destroyed_session_moves_the_terminal_client_and_says_so() {
     // `wait_for`s failed 1 full-workspace run in 6: under load the sentence had come and gone
     // before the first one sampled, and the diagnostic printed the settled row (`[beta] 0:0*`),
     // which reads as *"it never said anything"* rather than as *"you looked too late"*.
-    let rows = rows_until_settled(&mut tui, "[beta] 0:0*");
     let says = format!("session {session:?} was destroyed; now on \"beta\"");
+    let rows = rows_until_settled(&tui, &says, "[beta] 0:0*");
     // Asked of the TRANSCRIPT — see the sibling gate above and [`Tui::transcript`].
     assert!(
         tui.said(&says),
