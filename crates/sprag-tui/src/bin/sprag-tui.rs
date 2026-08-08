@@ -1475,36 +1475,58 @@ impl Screen {
     }
 
     /// Put everything queued on the person's terminal as ONE atomic frame.
-    fn present(&mut self) -> Result<(), Box<dyn Error>> {
-        self.synchronized(true);
-        let flushed = self.buffered.flush();
-        // BEFORE the `?`: see the type's doc — a frame left open outlives the error that opened it.
-        self.synchronized(false);
-        flushed?;
-        Ok(())
-    }
-
-    /// Open or close the atomic update, named rather than spelled — the discipline the mouse modes
-    /// are held to a few hundred lines below, and for the same reason: a number in a byte string is
-    /// a number nobody can look up.
     ///
-    /// A write that fails is dropped, exactly as [`MouseMirror::set`]'s is: the only place this
-    /// client could report it is the screen it is painting the person's panes onto.
-    fn synchronized(&mut self, open: bool) {
-        let mode = DecPrivateMode::Code(DecPrivateModeCode::SynchronizedOutput);
-        let mut out = String::new();
-        let _ = write!(
-            out,
-            "{}",
-            CSI::Mode(if open {
-                Mode::SetDecPrivateMode(mode)
-            } else {
-                Mode::ResetDecPrivateMode(mode)
-            })
-        );
-        let _ = self.tty.write_all(out.as_bytes());
-        let _ = self.tty.flush();
+    /// DESTRUCTURED rather than two `self` calls, so the ordering rule lives in [`present_frame`]
+    /// where something can drive it: the terminal trait this surface sits on cannot be implemented
+    /// outside `termwiz` (`Terminal::waker` answers a type with no public constructor), so a fake
+    /// screen is not a thing this file can build. Narrowing the role is what makes the door
+    /// testable — the rule is about ORDER, and order needs no terminal to observe.
+    fn present(&mut self) -> Result<(), Box<dyn Error>> {
+        let Self { buffered, tty } = self;
+        present_frame(
+            |open| synchronized(tty, open),
+            || buffered.flush().map_err(Box::<dyn Error>::from),
+        )
     }
+}
+
+/// Open the atomic update, write the frame, and close it — **closing even when the write failed.**
+///
+/// A terminal left holding an update open shows the person nothing at all until something else
+/// closes it, so the one path where this client is in trouble is exactly the path that must not
+/// strand the screen. That is a rule about ORDER and nothing else, which is why it is a free
+/// function over two closures: it can be driven by a test that owns no terminal, and
+/// [`a_frame_is_closed_even_when_the_write_failed`] does.
+fn present_frame<E>(
+    mut synchronized: impl FnMut(bool),
+    write: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    synchronized(true);
+    let written = write();
+    synchronized(false);
+    written
+}
+
+/// Open or close the atomic update on `tty`, named rather than spelled — the discipline the mouse
+/// modes are held to a few hundred lines below, and for the same reason: a number in a byte string
+/// is a number nobody can look up.
+///
+/// A write that fails is dropped, exactly as [`MouseMirror::set`]'s is: the only place this client
+/// could report it is the screen it is painting the person's panes onto.
+fn synchronized(tty: &mut std::fs::File, open: bool) {
+    let mode = DecPrivateMode::Code(DecPrivateModeCode::SynchronizedOutput);
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "{}",
+        CSI::Mode(if open {
+            Mode::SetDecPrivateMode(mode)
+        } else {
+            Mode::ResetDecPrivateMode(mode)
+        })
+    );
+    let _ = tty.write_all(out.as_bytes());
+    let _ = tty.flush();
 }
 
 /// What this client has already put on the terminal — the baseline every frame is a difference
@@ -2672,6 +2694,53 @@ mod tests {
     }
 
     const CTRL_B: &[u8] = &[0x02];
+
+    /// **A frame the person's terminal is holding open is CLOSED even when the write failed.**
+    ///
+    /// The claim is one about ORDER, and it is the one thing about [`Screen::present`] a reader
+    /// cannot see: a terminal that has been told an atomic update began and is never told it ended
+    /// shows nothing at all until something else closes it — so a client in trouble would take the
+    /// person's screen with it, and the failure would look like a hang rather than like the error
+    /// it is.
+    ///
+    /// Driven against the ordering rule itself rather than against a screen, because there is no
+    /// screen to build: `termwiz::Terminal::waker` answers a type with no public constructor, so the
+    /// trait cannot be implemented outside that crate. Narrowing the rule to two closures is what
+    /// made it reachable at all — the alternative was a doc comment nothing could contradict.
+    #[test]
+    fn a_frame_is_closed_even_when_the_write_failed() {
+        let marks = std::cell::RefCell::new(Vec::new());
+        let out = present_frame(
+            |open| marks.borrow_mut().push(if open { "open" } else { "close" }),
+            || {
+                marks.borrow_mut().push("write");
+                Err("the terminal went away")
+            },
+        );
+        assert_eq!(
+            out,
+            Err("the terminal went away"),
+            "the error still reaches the caller — closing the frame must not swallow it",
+        );
+        assert_eq!(
+            marks.into_inner(),
+            ["open", "write", "close"],
+            "the close runs AFTER a failed write, and before the error is propagated",
+        );
+
+        // ...and the ordinary path is the same three, which is what says the assertion above is
+        // about the FAILURE and not about the order being written down twice.
+        let marks = std::cell::RefCell::new(Vec::new());
+        let out: Result<(), &str> = present_frame(
+            |open| marks.borrow_mut().push(if open { "open" } else { "close" }),
+            || {
+                marks.borrow_mut().push("write");
+                Ok(())
+            },
+        );
+        assert_eq!(out, Ok(()));
+        assert_eq!(marks.into_inner(), ["open", "write", "close"]);
+    }
 
     /// The steady state: a key is the program's, not the client's.
     #[test]

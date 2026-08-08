@@ -401,18 +401,20 @@ fn pane_text_of(conn: &mut HostConn, session: &str, pane: u64) -> String {
 /// sibling test one screen down had already recorded the mechanism ("the client learns of the select
 /// on its next wake") and solved it with one character typed until it lands.
 fn typing_follows(tui: &mut Tui, conn: &mut HostConn, session: &str, pane: u64) {
-    // WAIT PAST THE REPEAT WINDOW FIRST, and this is the one place it is enforced rather than
+    // CLOSE THE REPEAT WINDOW FIRST, and this is the one place it is enforced rather than
     // remembered. R308 registered the hazard and left it to each caller: after an `-r` binding the
     // prefix table stays armed for `repeat-time`, so a character typed inside it is read as a
     // PREFIX key and never reaches the pane. The probe below is `.`, and R310 bound `prefix .` to
     // `move-window --before` — which opens a PROMPT that then eats every following character, so
     // the two arrow tests hung for the full deadline rather than failing on one lost keystroke.
     //
-    // Sleeping is honest here where it usually is not: the thing being waited for is a TIMER in
-    // another process, and no observable this side moves when it expires. It is the keymap's own
-    // constant plus a margin, not a guessed number — and it is paid once per call, in a helper that
-    // already polls for 45 seconds when something is wrong.
-    std::thread::sleep(sprag_host::keymap::DEFAULT_REPEAT_TIME + POLL);
+    // ⚠ This SLEPT `repeat-time + POLL` and the comment beside it argued that sleeping was honest
+    // here because nothing observable moves when a timer in another process expires. The argument
+    // was wrong in its premise rather than in its reasoning: the window does not run from the sleep,
+    // it runs from the moment the acting KEY ARRIVED at the client, which is earlier than anything
+    // this side saw — so the margin was never `POLL`, it was `POLL` minus an unknown. An ACT ends
+    // the mode with no clock in it at all. See [`end_the_repeat_window`].
+    end_the_repeat_window(tui);
     let before = pane_text_of(conn, session, pane).matches('.').count();
     wait_for(
         &format!("this client's typing to follow the session onto pane {pane}"),
@@ -2421,6 +2423,15 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
     // pane the user just split, which is what makes this wait part of the test rather than
     // decoration. The divider is the visible proof, as `a_split_made_by_another_client_re_tiles`
     // uses it.
+    //
+    // ⚠⚠ **AND IT IS NOT ENOUGH — MEASURED, UNEXPLAINED (R334).** At 4x CPU oversubscription this
+    // gate fails with `elsewhere` in PANE 0: a divider says the client RE-TILED, and where a
+    // keystroke goes is a different fact. Establishing the precondition with an ACT
+    // (`typing_follows` onto the new pane) was tried and is NOT the answer — it left the same
+    // reading with the probe's own dots in pane 0 beside it, so the client is reaching pane 0 after
+    // its typing has demonstrably reached pane 1. **Registered rather than guessed at, for that
+    // reason and no other**: the cause is not established, and a change that does not explain it is
+    // a change nobody can attribute.
     wait_for("the client to re-tile around its own split", || {
         let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
@@ -5572,15 +5583,19 @@ fn a_key_bound_to_a_window_that_does_not_exist_says_so() {
     // is a guess about the other end's vocabulary.
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"w");
-    let mut said = String::new();
     wait_for("the refusal to name the window that is not there", || {
-        said = tui.row(STATUS_ROW);
-        settled(said.contains("nowindow"), &true)
-            .map_err(|got| format!("{got}: row reads {said:?}"))
+        announced(&tui, "nowindow")
     });
+    // Over the TRAIL, like the wait above: a refusal is on `display-time`, so a row read after the
+    // wait returned may be one the client has already left. The name and the WORDING are two claims
+    // and both are made here — a client that named the window but paraphrased the registry would
+    // satisfy the wait and fail this.
     assert!(
-        said.contains("no window named \"nowindow\""),
-        "the sentence is the registry's own, not this client's paraphrase: {said:?}",
+        tui.status_rows()
+            .iter()
+            .any(|row| row.contains("no window named \"nowindow\"")),
+        "the sentence is the registry's own, not this client's paraphrase: {:?}",
+        tui.status_rows(),
     );
 
     let text = pane_text_of(&mut conn, &session, 0);
@@ -6298,12 +6313,7 @@ fn a_notification_a_pane_child_raised_reaches_the_person_at_this_client() {
     });
 
     wait_for("the child's words to be painted on the status row", || {
-        settled(
-            tui.row(STATUS_ROW)
-                .contains("pane 0: build finished: 3 errors"),
-            &true,
-        )
-        .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
+        announced(&tui, "pane 0: build finished: 3 errors")
     });
 
     // ...and it was a MESSAGE the client painted, not text in the pane: this child echoes nothing
@@ -6761,20 +6771,10 @@ fn the_outward_policy_is_this_clients_own_and_not_the_daemons() {
     // under full-suite load at `4289edf` (`false at off: row reads "[0] 0:0*"`): a claim about a
     // TIMED message needs one observation window, not two. Latching rather than requiring both rows
     // to hold it at the SAME instant, so the gate does not swap one race for a tighter one.
-    let mut seen = [false; 2];
     wait_for("the message to reach both rows", || {
-        let rows = [always.row(STATUS_ROW), off.row(STATUS_ROW)];
-        for (held, row) in seen.iter_mut().zip(&rows) {
-            *held |= row.contains("one message, two clients");
-        }
-        if seen.iter().all(|held| *held) {
-            Ok(())
-        } else {
-            Err(format!(
-                "seen {seen:?}; rows read always={:?} off={:?}",
-                rows[0], rows[1]
-            ))
-        }
+        announced(&always, "one message, two clients")
+            .and(announced(&off, "one message, two clients"))
+            .map_err(|got| format!("{got} (the other client's rows are the pair to it)"))
     });
 
     // THE CLAIM: only the client whose file said `always` copied it out.
@@ -7202,22 +7202,30 @@ fn a_key_that_reaches_a_daemon_too_old_to_act_says_so() {
 
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"c");
+    let folded = |row: &str| -> String { row.chars().filter(|c| !c.is_whitespace()).collect() };
     wait_for("the row to say the daemon could not do it", || {
-        let row = tui.row(STATUS_ROW);
-        let flat: String = row.chars().filter(|c| !c.is_whitespace()).collect();
+        let rows = tui.status_rows();
+        let row = rows
+            .iter()
+            .find(|row| folded(row).contains("doesnotperform"));
+        let flat = row.map(|row| folded(row)).unwrap_or_default();
         // "does not PERFORM", which is the acting half — the reading half says "does not serve",
         // and the first draft of this probe watched for that one. It timed out against a working
         // fix, which is what a test looking for the wrong words looks like from the outside.
         if flat.contains("doesnotperform") {
             Ok(())
         } else {
-            Err(format!("{row:?} (client: {})", tui.liveness()))
+            Err(format!("the rows painted were {rows:?}"))
         }
     });
-    let said = tui.row(STATUS_ROW);
+    // Over every frame, not over the row now: the sentence expires, so a read taken after the wait
+    // would be looking at a row the client has already left and the claim would go vacuous.
     assert!(
-        !said.contains("UnknownInvokePath"),
-        "a Rust variant name must not reach a person: {said}",
+        !tui.status_rows()
+            .iter()
+            .any(|row| row.contains("UnknownInvokePath")),
+        "a Rust variant name must not reach a person: {:?}",
+        tui.status_rows(),
     );
 
     // ...and NOTHING HAPPENED, which is the half that makes the sentence worth painting.
