@@ -1,0 +1,83 @@
+# The gates, off this developer's machine.
+#
+# `.githooks/` already runs rustfmt, clippy, the rustdoc gate and the Mnemosyne SSOT check on every
+# commit — but all of it on ONE Linux box. A platform nobody builds is a platform nobody supports,
+# and this repository has been carrying exactly that: `README.md` promised Windows while
+# `crates/sprag-peer/src/lib.rs` imported `std::os::unix::net` at the crate root, ungated, which
+# cannot compile there at all. Nothing caught it because nothing else ever built the tree.
+#
+# So this file's job is not to duplicate the hooks. It is to check the claims the hooks cannot: that
+# the tree builds somewhere other than here.
+#
+# WHAT IS DELIBERATELY NOT HERE YET
+#
+#   * The GUI crate. `--exclude sprag-gui` is not a cost dodge — it is measured: the remaining
+#     workspace compiles ZERO display or GPU crates (no wgpu, winit, vello, ash, fontconfig,
+#     wayland, x11), so these jobs need no system packages and cannot be broken by a runner image
+#     changing them. That also makes this a GATE on the headless/display split the architecture
+#     rests on: the day something pulls a display dependency into the host, these jobs stop
+#     compiling and say so.
+#   * Windows. It is not built because it is not claimed. See `README.md`.
+#   * The Mnemosyne gates. They need `mnemosyne-cli`, which is not published; the commit hook is
+#     their home.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  headless-linux:
+    name: headless (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt clippy
+          rustc --version
+
+      # `--all` is safe here, unlike in the commit hook: since PR-22 the pinion crates are GIT
+      # dependencies rather than path dependencies, so the workspace members rustfmt walks are
+      # sprag's own and it cannot reach into pinion's tree.
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --exclude sprag-gui --all-targets
+
+      # `--no-fail-fast` because a plain run stops at the FIRST failing binary, which reports one
+      # failure and hides the rest. The exit code is the verdict; a summary read out of the log is
+      # not (interleaved output drops lines).
+      - name: Test
+        run: cargo test --workspace --exclude sprag-gui --no-fail-fast
+
+  headless-macos:
+    name: headless (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
+
+      # THE POINT OF THIS JOB. sprag's Unix support has never been built anywhere but Linux, so
+      # "Unix" has been a claim rather than a fact — `target_os = "macos"` appears in four places
+      # against seventy-two for Linux. A red first run here is not a regression; it is the first
+      # measurement, and what it finds is a defect that was already there.
+      - name: Build
+        run: cargo build --workspace --exclude sprag-gui
+
+      - name: Test
+        run: cargo test --workspace --exclude sprag-gui --no-fail-fast
