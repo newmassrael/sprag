@@ -42,8 +42,8 @@ use crate::history::HistoryLimits;
 use crate::port::{
     Attrs, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite, Color, Cursor,
     CursorShape, Hyperlink, Image, InputModes, KittyKeyboardFlags, MouseEncoding, MouseProtocol,
-    Notification, Palette, PromptMark, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle,
-    Urgency, VtPort, Width, char_columns,
+    Notification, Palette, PromptMark, Rgb, Screen, ScreenKind, ScrollRegion, ShellState,
+    UnderlineStyle, Urgency, VtPort, Width, char_columns,
 };
 
 /// Build a single-char cluster with no heap allocation.
@@ -176,18 +176,33 @@ pub struct Emulator {
     /// display geometry, so RIS PRESERVES it (see [`Self::hard_reset`]) rather than clearing it.
     cell_pixel_width: u16,
     cell_pixel_height: u16,
-    /// The DECSTBM scroll region as an INCLUSIVE, 0-based row range
-    /// `[scroll_top, scroll_bottom]`, defaulting to `[0, rows - 1]` = the whole screen.
-    /// A line feed / IND at `scroll_bottom` scrolls the region up (its top line leaving);
-    /// a reverse index (RI) at `scroll_top` scrolls it down; IL/DL/SU/SD act within it;
-    /// rows outside the region stay put — the `less` / `vim` / tmux-status-bar split-region
-    /// idiom. Reset to the full screen on resize and on every alt-screen transition (the
-    /// region is screen-relative, and a fullscreen app sets its own after entering the alt
-    /// screen). Under [`Self::origin_mode`] (DECOM) cursor addressing is region-relative and
-    /// a DECSTBM homes the cursor to the region's top-left; otherwise it homes to the SCREEN
-    /// top-left.
-    scroll_top: u16,
-    scroll_bottom: u16,
+    /// The scrolling region: DECSTBM's row range crossed with DECSLRM's column range, as one
+    /// INCLUSIVE 0-based rectangle defaulting to the whole screen (see [`ScrollRegion`]).
+    /// A line feed / IND at `region.bottom` scrolls the region up (its top line leaving);
+    /// a reverse index (RI) at `region.top` scrolls it down; IL/DL/SU/SD act within it;
+    /// cells outside the region stay put — the `less` / `vim` / tmux-status-bar split-region
+    /// idiom, and (horizontally) the side-by-side-columns idiom DECLRMM exists for. Reset to
+    /// the full screen on resize and on every alt-screen transition (the region is
+    /// screen-relative, and a fullscreen app sets its own after entering the alt screen).
+    /// Under [`Self::origin_mode`] (DECOM) cursor addressing is region-relative on BOTH axes
+    /// and a DECSTBM or DECSLRM homes the cursor to the region's top-left; otherwise it homes
+    /// to the SCREEN top-left. The horizontal margins move only while
+    /// [`Self::left_right_margin_mode`] is on.
+    region: ScrollRegion,
+    /// DECLRMM / DECVSSM (DEC private mode 69), default OFF — whether the horizontal half of
+    /// [`Self::region`] can move at all. Off (the power-on state), DECSLRM is INERT and the
+    /// region spans every column, so every margin-aware rule below collapses to the ordinary
+    /// full-width behaviour. `CSI ? 69 h` arms it; `CSI ? 69 l` disarms it AND restores the
+    /// full-width margins, because leaving a narrowed region in force with no way to change it
+    /// would strand every later scroll inside it.
+    ///
+    /// The mode is also what disambiguates a bare `CSI s`: DECSC (save cursor) while off,
+    /// DECSLRM-with-defaults while on. termwiz cannot make that call — it has no mode state —
+    /// so it always reports [`CsiCursor::SaveCursor`] and the decision lands here
+    /// ([`Self::cursor_op`]).
+    ///
+    /// A terminal MODE, not cursor state, so DECSC does not save it. RIS and DECSTR clear it.
+    left_right_margin_mode: bool,
     /// DECAWM autowrap (DEC private mode 7), default ON. On (the xterm default), a grapheme
     /// printed past the right margin wraps to the next line as a SOFT line-continuation; off,
     /// the cursor pins at the last column and each further grapheme overwrites it — the VT100
@@ -206,11 +221,11 @@ pub struct Emulator {
     /// Cleared by RIS (via [`Emulator::new`]); left untouched by DECSTR (an xterm private extension
     /// outside the DEC soft-reset set, like mouse / focus).
     reverse_wraparound: bool,
-    /// DECOM origin mode (DEC private mode 6), default OFF. On, CUP / HVP / VPA address rows
-    /// RELATIVE to [`Self::scroll_top`] and the cursor is CONFINED to the region
-    /// `[scroll_top, scroll_bottom]`; setting or resetting it — and any DECSTBM — homes the
-    /// cursor to the origin (the region top when on, the screen top when off). Part of the
-    /// cursor state DECSC / DECRC saves and restores (VT100), unlike [`Self::autowrap`].
+    /// DECOM origin mode (DEC private mode 6), default OFF. On, CUP / HVP / VPA / CHA / HPA
+    /// address BOTH axes RELATIVE to [`Self::region`]'s top-left and the cursor is CONFINED to
+    /// that rectangle; setting or resetting it — and any DECSTBM or DECSLRM — homes the cursor to
+    /// the origin (the region's top-left when on, the screen's when off). Part of the cursor
+    /// state DECSC / DECRC saves and restores (VT100), unlike [`Self::autowrap`].
     origin_mode: bool,
     /// IRM insert / replace mode (ANSI mode 4), default OFF (replace). On, each printed graphic
     /// character first shifts the cells at and right of the cursor one column right (per its width),
@@ -494,8 +509,8 @@ impl Emulator {
             rows: rows.max(1),
             cell_pixel_width: 0,
             cell_pixel_height: 0,
-            scroll_top: 0,
-            scroll_bottom: rows.max(1) - 1,
+            region: ScrollRegion::full(cols.max(1), rows.max(1)),
+            left_right_margin_mode: false,
             autowrap: true,
             reverse_wraparound: false,
             origin_mode: false,
@@ -835,26 +850,34 @@ impl Emulator {
         self.charsets[g] = set;
     }
 
-    /// RI (reverse index, `ESC M`): move the cursor UP one line. At the top margin this
-    /// scrolls the region DOWN by one (a blank line opens at the top margin, the cursor
-    /// stays put) — the mirror of a line feed at the bottom margin. Above the region (a
-    /// cursor parked over a fixed header) it just steps up, stopping at the screen top.
+    /// RI (reverse index, `ESC M`): move the cursor UP one line. At the top margin — and only
+    /// while the cursor is also WITHIN the horizontal margins — this scrolls the region DOWN by
+    /// one (a blank line opens at the top margin, the cursor stays put), the mirror of a line
+    /// feed at the bottom margin. Anywhere else, including at the top row but outside the left /
+    /// right margins, it just steps up, stopping at the screen top.
     fn reverse_index(&mut self) {
-        if self.row == self.scroll_top {
+        if self.row == self.region.top && self.region.contains_col(self.col) {
             let g = self.next_gen();
-            self.screen
-                .scroll_region_down(self.scroll_top, self.scroll_bottom, 1, g);
+            let region = self.region;
+            self.screen.scroll_region_down(region, 1, g);
         } else if self.row > 0 {
             self.row -= 1;
         }
     }
 
-    /// Reset the DECSTBM scroll region to the whole screen. The region is screen-relative,
-    /// so a resize or an alt-screen transition (a fresh buffer) starts it at the full
-    /// extent; an app that wants a sub-region sets one with DECSTBM afterwards.
+    /// Reset the scroll region to the whole screen, BOTH axes. The region is screen-relative,
+    /// so a resize or an alt-screen transition (a fresh buffer) starts it at the full extent;
+    /// an app that wants a sub-region sets one with DECSTBM / DECSLRM afterwards.
     fn reset_scroll_region(&mut self) {
-        self.scroll_top = 0;
-        self.scroll_bottom = self.rows.saturating_sub(1);
+        self.region = ScrollRegion::full(self.cols, self.rows);
+    }
+
+    /// Restore the full-width horizontal margins, leaving the DECSTBM rows alone. This is what a
+    /// DECLRMM reset (`CSI ? 69 l`) does: disarming the mode must also widen the region, or a
+    /// narrowed one would be stranded in force with no sequence left that can change it.
+    fn reset_horizontal_margins(&mut self) {
+        self.region.left = 0;
+        self.region.right = self.cols.saturating_sub(1);
     }
 
     /// DECSTBM (`CSI Pt ; Pb r`): set the scroll region to the inclusive, 0-based rows
@@ -869,9 +892,32 @@ impl Emulator {
         let top = u16::try_from(top).unwrap_or(u16::MAX).min(max_row);
         let bottom = u16::try_from(bottom).unwrap_or(u16::MAX).min(max_row);
         if top < bottom {
-            self.scroll_top = top;
-            self.scroll_bottom = bottom;
-            self.col = 0;
+            self.region.top = top;
+            self.region.bottom = bottom;
+            self.col = self.origin_col();
+            self.row = self.origin_row();
+        }
+    }
+
+    /// DECSLRM (`CSI Pl ; Pr s`): set the scroll region's inclusive, 0-based columns
+    /// `[left, right]` — the horizontal mirror of [`Self::set_scroll_region`].
+    ///
+    /// INERT unless DECLRMM ([`Self::left_right_margin_mode`]) is on: the mode is the arming
+    /// switch, and a terminal that honoured DECSLRM without it would narrow the region under an
+    /// app that never asked for margins. Like DECSTBM a region needs at least two columns, so an
+    /// inverted or degenerate request (`left >= right`) is IGNORED rather than clamped, and the
+    /// cursor homes to the origin on a valid set.
+    fn set_left_right_margins(&mut self, left: u32, right: u32) {
+        if !self.left_right_margin_mode {
+            return;
+        }
+        let max_col = self.cols.saturating_sub(1);
+        let left = u16::try_from(left).unwrap_or(u16::MAX).min(max_col);
+        let right = u16::try_from(right).unwrap_or(u16::MAX).min(max_col);
+        if left < right {
+            self.region.left = left;
+            self.region.right = right;
+            self.col = self.origin_col();
             self.row = self.origin_row();
         }
     }
@@ -879,19 +925,64 @@ impl Emulator {
     /// The row the cursor homes to on a DECSTBM, a DECOM set / reset, or any "home": the scroll
     /// region's top under origin mode, else the screen top.
     fn origin_row(&self) -> u16 {
-        if self.origin_mode { self.scroll_top } else { 0 }
+        if self.origin_mode { self.region.top } else { 0 }
+    }
+
+    /// The column the cursor homes to — the mirror of [`Self::origin_row`]: the region's left
+    /// margin under origin mode, else column 0.
+    fn origin_col(&self) -> u16 {
+        if self.origin_mode {
+            self.region.left
+        } else {
+            0
+        }
     }
 
     /// Resolve a 0-based vertical target (a CUP / HVP line or a VPA row parameter) to an absolute
     /// screen row. Under origin mode the parameter is RELATIVE to the region top and CONFINED to
-    /// `[scroll_top, scroll_bottom]`; otherwise it is screen-absolute, clamped to the last row.
+    /// `[region.top, region.bottom]`; otherwise it is screen-absolute, clamped to the last row.
     fn resolve_origin_row(&self, zero_based: u16) -> u16 {
         if self.origin_mode {
-            self.scroll_top
+            self.region
+                .top
                 .saturating_add(zero_based)
-                .min(self.scroll_bottom)
+                .min(self.region.bottom)
         } else {
             zero_based.min(self.rows.saturating_sub(1))
+        }
+    }
+
+    /// Resolve a 0-based horizontal target (a CUP / HVP column or an HPA parameter) to an
+    /// absolute screen column — the mirror of [`Self::resolve_origin_row`]. Under origin mode the
+    /// parameter is RELATIVE to the left margin and CONFINED to `[region.left, region.right]`;
+    /// otherwise it is screen-absolute, clamped to the last column. Without DECLRMM the margins
+    /// span the screen, so both branches agree and this is a no-op difference.
+    fn resolve_origin_col(&self, zero_based: u16) -> u16 {
+        if self.origin_mode {
+            self.region
+                .left
+                .saturating_add(zero_based)
+                .min(self.region.right)
+        } else {
+            zero_based.min(self.cols.saturating_sub(1))
+        }
+    }
+
+    /// Whether the cursor is inside the scroll region on BOTH axes — the gate the line-shaped
+    /// edits (IL / DL) and the character-shaped ones (ICH / DCH, via
+    /// [`ScrollRegion::contains_col`]) apply before touching anything.
+    fn cursor_in_region(&self) -> bool {
+        self.region.contains_row(self.row) && self.region.contains_col(self.col)
+    }
+
+    /// The sub-region an IL / DL acts on: the scroll region re-anchored at the CURSOR's row, so
+    /// the rows above the cursor stay put while everything from it down to the bottom margin
+    /// shifts. The horizontal margins are carried through unchanged — that is the whole point of
+    /// deriving this from [`Self::region`] rather than rebuilding it from loose bounds.
+    fn region_from_cursor_row(&self) -> ScrollRegion {
+        ScrollRegion {
+            top: self.row,
+            ..self.region
         }
     }
 
@@ -899,19 +990,62 @@ impl Emulator {
     /// below it (a cursor already above the region stops at the screen top). xterm's margin-aware
     /// relative motion — the scroll region bounds vertical motion independently of origin mode.
     fn move_cursor_up(&mut self, n: u16) {
-        let floor = if self.row >= self.scroll_top {
-            self.scroll_top
+        let floor = if self.row >= self.region.top {
+            self.region.top
         } else {
             0
         };
         self.row = self.row.saturating_sub(n).max(floor);
     }
 
+    /// CUB: move the cursor left `n` columns without crossing the LEFT margin when it starts at
+    /// or right of it (a cursor already left of the region stops at column 0). The horizontal
+    /// mirror of [`Self::move_cursor_up`]; without DECLRMM the margin is column 0 and this is the
+    /// plain clamp it has always been.
+    fn move_cursor_left(&mut self, n: u16) {
+        let floor = if self.col >= self.region.left {
+            self.region.left
+        } else {
+            0
+        };
+        self.col = self.col.saturating_sub(n).max(floor);
+    }
+
+    /// CUF: move the cursor right `n` columns without crossing the RIGHT margin when it starts at
+    /// or left of it (a cursor already right of the region stops at the last column).
+    fn move_cursor_right(&mut self, n: u16) {
+        self.col = self.col.saturating_add(n).min(self.tab_ceiling());
+    }
+
+    /// The rightmost column a forward horizontal move may reach: the RIGHT MARGIN for a cursor at
+    /// or left of it, else the last column (a cursor already outside the region is bounded by the
+    /// screen, not pulled back into a region it is not in). Shared by CUF and HT so the two
+    /// cannot drift apart.
+    fn tab_ceiling(&self) -> u16 {
+        if self.col <= self.region.right {
+            self.region.right
+        } else {
+            self.cols.saturating_sub(1)
+        }
+    }
+
+    /// The column a carriage return lands on. Under origin mode that is ALWAYS the left margin;
+    /// otherwise it is the left margin only for a cursor at or right of it, so a cursor parked
+    /// LEFT of the margins (which addressing outside origin mode can still reach) returns to
+    /// column 0 rather than being pulled into a region it was never in.
+    fn carriage_return_col(&self) -> u16 {
+        if self.origin_mode || self.col >= self.region.left {
+            self.region.left
+        } else {
+            0
+        }
+    }
+
     /// CUD / CNL: move the cursor down `n` rows without crossing the bottom margin when it starts
     /// at or above it (a cursor already below the region stops at the screen bottom).
     fn move_cursor_down(&mut self, n: u16) {
-        let ceil = if self.row <= self.scroll_bottom {
-            self.scroll_bottom
+        let ceil = if self.row <= self.region.bottom {
+            self.region.bottom
         } else {
             self.rows.saturating_sub(1)
         };
@@ -953,6 +1087,11 @@ impl Emulator {
         self.origin_mode = false;
         self.insert_mode = false;
         self.autowrap = true;
+        // DECLRMM goes back to OFF with the region it governs. Widening the margins without
+        // disarming the mode would be a legal state, but it would leave `CSI s` still meaning
+        // DECSLRM after a sequence whose whole purpose is to return the terminal to a state the
+        // next program can assume — a recovering app sending DECSC would silently set margins.
+        self.left_right_margin_mode = false;
         self.reset_scroll_region();
         self.col = 0;
         self.row = 0;
@@ -1407,31 +1546,36 @@ impl Emulator {
                 // LNM (ANSI mode 20): under new-line mode a line feed also returns the cursor to
                 // column 0 (a CR+LF); off (the default) it moves straight down, keeping the column.
                 if self.input_modes.newline_mode {
-                    self.col = 0;
+                    self.col = self.carriage_return_col();
                 }
             }
-            ControlCode::CarriageReturn => self.col = 0,
+            // CR returns to the LEFT MARGIN (column 0 unless DECLRMM narrowed the region) — see
+            // [`Self::carriage_return_col`] for the cursor-left-of-the-margin case.
+            ControlCode::CarriageReturn => self.col = self.carriage_return_col(),
             ControlCode::Backspace => {
                 // Reverse wraparound (DEC 45): a backspace at the left margin backs up over the
                 // autowrap that put the cursor here — to the last column of the previous row — but
                 // ONLY when that row actually soft-wrapped into this one, so it is the exact inverse
                 // of the wrap and never merges across a hard line break (see `reverse_wraparound`).
-                // Off, or at a hard break / the top row, it is the ordinary non-destructive clamp.
+                // Off, or at a hard break / the top row, it is the ordinary non-destructive clamp
+                // ([`Self::move_cursor_left`], which stops at the left margin). The reverse wrap
+                // lands on the RIGHT MARGIN, the column the wrap it undoes came from.
                 if self.reverse_wraparound
-                    && self.col == 0
+                    && self.col == self.region.left
                     && self.row > 0
                     && self.screen.wrapped(self.row - 1)
                 {
                     self.row -= 1;
-                    self.col = self.cols.saturating_sub(1);
+                    self.col = self.region.right;
                 } else {
-                    self.col = self.col.saturating_sub(1);
+                    self.move_cursor_left(1);
                 }
             }
             ControlCode::HorizontalTab => {
-                // Advance to the next 8-column tab stop, clamped to width.
+                // Advance to the next 8-column tab stop, clamped to the RIGHT MARGIN: a tab must
+                // not carry the cursor out of a region DECLRMM narrowed.
                 let next = ((self.col / 8) + 1) * 8;
-                self.col = next.min(self.cols.saturating_sub(1));
+                self.col = next.min(self.tab_ceiling());
             }
             // BEL (`\a`) — the tmux monitor-bell attention ping. Count it (a text-less attention
             // event); it does not touch the grid. See `bell_seq`.
@@ -1594,8 +1738,11 @@ impl Emulator {
     ///   and TITLE REPORTS (`20 t` icon label / `21 t` window title) are DROPPED: manipulation is
     ///   the GUI's to own (a child cannot move sprag's window through the terminal), and echoing the
     ///   title back to the child is a known injection vector xterm gates off by default — sprag
-    ///   never reports it (matching ghostty). DECRQCRA (a rectangular-area checksum) is out of the
-    ///   modeled subset. All of these carry no cells, so — like a query — they stamp no row damage.
+    ///   never reports it. (ghostty reaches the same DEFAULT by a different design: it implements
+    ///   `21 t` and ships it disabled behind a `title_report` switch. sprag has no switch, so the
+    ///   drop is unconditional — measured at ghostty `2602886`.) DECRQCRA (a rectangular-area
+    ///   checksum) is out of the modeled subset — and out of ghostty's too, which implements it
+    ///   nowhere. All of these carry no cells, so — like a query — they stamp no row damage.
     fn window_op(&mut self, w: &Window) {
         match w {
             // 18t — text area size in CELLS: CSI 8 ; rows ; cols t.
@@ -1970,9 +2117,16 @@ impl Emulator {
             // DECSTBM (`r`) — the scroll region as 1-based inclusive `top;bottom`.
             b"r" => Some(format!(
                 "{};{}r",
-                self.scroll_top + 1,
-                self.scroll_bottom + 1
+                self.region.top + 1,
+                self.region.bottom + 1
             )),
+            // DECSLRM (`s`) — the horizontal margins as 1-based inclusive `left;right`, but ONLY
+            // while DECLRMM is armed. Disarmed, DECSLRM is not a setting this terminal has, so the
+            // honest answer is the INVALID one (`DCS 0 $ r ST`) rather than a full-width pair that
+            // would tell an app its margins are in force when no DECSLRM could take effect.
+            b"s" => self
+                .left_right_margin_mode
+                .then(|| format!("{};{}s", self.region.left + 1, self.region.right + 1)),
             _ => None,
         };
         match pt {
@@ -2073,45 +2227,63 @@ impl Emulator {
     }
 
     fn cursor_op(&mut self, c: CsiCursor) {
-        let max_col = self.cols.saturating_sub(1);
         match c {
-            // Relative vertical motion is margin-aware (see `move_cursor_up` / `_down`); the
-            // horizontal moves are plain screen-column clamps (no left / right margins modeled).
+            // Relative motion is margin-aware on BOTH axes (see `move_cursor_up` / `_down` /
+            // `_left` / `_right`): the scroll region bounds a relative move independently of
+            // origin mode, and without DECLRMM the horizontal margins span the screen so the
+            // clamp is the plain screen-edge one.
             CsiCursor::Up(n) => self.move_cursor_up(clamp_count(n)),
             CsiCursor::Down(n) => self.move_cursor_down(clamp_count(n)),
-            CsiCursor::Left(n) => self.col = self.col.saturating_sub(clamp_count(n)),
-            CsiCursor::Right(n) => self.col = (self.col + clamp_count(n)).min(max_col),
-            // CUP / HVP — the line is origin-mode-relative (`resolve_origin_row`); the column is a
-            // plain screen-absolute clamp.
+            CsiCursor::Left(n) => self.move_cursor_left(clamp_count(n)),
+            CsiCursor::Right(n) => self.move_cursor_right(clamp_count(n)),
+            // CUP / HVP — both axes are origin-mode-relative (`resolve_origin_row` /
+            // `resolve_origin_col`).
             CsiCursor::Position { line, col } => {
                 self.row = self.resolve_origin_row(zero_based_u16(line.as_zero_based()));
-                self.col = zero_based_u16(col.as_zero_based()).min(max_col);
+                self.col = self.resolve_origin_col(zero_based_u16(col.as_zero_based()));
             }
+            // CHA / HPA — a horizontal absolute address, so it is origin-mode-relative too.
             CsiCursor::CharacterAbsolute(c) | CsiCursor::CharacterPositionAbsolute(c) => {
-                self.col = zero_based_u16(c.as_zero_based()).min(max_col);
+                self.col = self.resolve_origin_col(zero_based_u16(c.as_zero_based()));
             }
             // VPA — a vertical absolute address, so it too is origin-mode-relative.
             CsiCursor::LinePositionAbsolute(n) => {
                 self.row = self.resolve_origin_row(zero_based_u16(n.saturating_sub(1)));
             }
+            // CNL / CPL — a vertical move plus a carriage return, so the column lands where a CR
+            // would put it: the LEFT MARGIN, not necessarily column 0.
             CsiCursor::NextLine(n) => {
                 self.move_cursor_down(clamp_count(n));
-                self.col = 0;
+                self.col = self.carriage_return_col();
             }
             CsiCursor::PrecedingLine(n) => {
                 self.move_cursor_up(clamp_count(n));
-                self.col = 0;
+                self.col = self.carriage_return_col();
             }
-            // DECSC / DECRC in their `CSI s` / `CSI u` spelling (same save/restore as `ESC 7/8`).
-            CsiCursor::SaveCursor => self.save_cursor(),
+            // `CSI s` is AMBIGUOUS and termwiz cannot resolve it — it has no mode state, so it
+            // always reports `SaveCursor` and leaves the call here. With DECLRMM armed the
+            // sequence is DECSLRM with both parameters defaulted (the full width); otherwise it
+            // is DECSC, the `ESC 7` save. See [`Self::left_right_margin_mode`].
+            CsiCursor::SaveCursor => {
+                if self.left_right_margin_mode {
+                    let max_col = u32::from(self.cols.saturating_sub(1));
+                    self.set_left_right_margins(0, max_col);
+                } else {
+                    self.save_cursor();
+                }
+            }
             CsiCursor::RestoreCursor => self.restore_cursor(),
+            // DECSLRM (`CSI Pl ; Pr s`) — the horizontal margins, inert unless DECLRMM is armed.
+            CsiCursor::SetLeftAndRightMargins { left, right } => {
+                self.set_left_right_margins(left.as_zero_based(), right.as_zero_based());
+            }
             // DECSCUSR — the cursor style: a shape (block / underline / bar) AND whether it blinks,
             // both carried by the one parameter ([`decscusr_cursor`]).
             CsiCursor::CursorStyle(style) => {
                 (self.cursor_shape, self.cursor_blink) = decscusr_cursor(style);
             }
-            // DECSTBM — set the top/bottom scroll margins (`SetLeftAndRightMargins`, DECSLRM,
-            // stays out of the subset).
+            // DECSTBM — set the top/bottom scroll margins (DECSLRM, its horizontal mirror, is
+            // handled above).
             CsiCursor::SetTopAndBottomMargins { top, bottom } => {
                 self.set_scroll_region(top.as_zero_based(), bottom.as_zero_based());
             }
@@ -2122,7 +2294,7 @@ impl Emulator {
             // dropped in the wildcard below.
             CsiCursor::RequestActivePositionReport => {
                 let report_row = if self.origin_mode {
-                    self.row.saturating_sub(self.scroll_top) + 1
+                    self.row.saturating_sub(self.region.top) + 1
                 } else {
                     self.row + 1
                 };
@@ -2196,17 +2368,27 @@ impl Emulator {
                     EraseInDisplay::EraseScrollback => self.screen.clear_scrollback(),
                 }
             }
-            // ICH — insert n blanks at the cursor, shifting the rest of the row right.
+            // ICH — insert n blanks at the cursor, shifting the row right AS FAR AS THE RIGHT
+            // MARGIN (the last column unless DECLRMM narrowed the region). A no-op when the
+            // cursor sits outside the horizontal margins — the VT510 rule that keeps an app
+            // parked outside its own margins from disturbing them.
             Edit::InsertCharacter(n) => {
-                let g = self.next_gen();
-                self.screen
-                    .insert_cells(self.col, self.row, clamp_count(n), g);
+                if self.region.contains_col(self.col) {
+                    let g = self.next_gen();
+                    let right = self.region.right;
+                    self.screen
+                        .insert_cells(self.col, self.row, clamp_count(n), right, g);
+                }
             }
-            // DCH — delete n cells at the cursor, shifting the rest of the row left.
+            // DCH — delete n cells at the cursor, shifting the row left within the margins and
+            // opening blanks AT the right margin. Same outside-the-margins no-op as ICH.
             Edit::DeleteCharacter(n) => {
-                let g = self.next_gen();
-                self.screen
-                    .delete_cells(self.col, self.row, clamp_count(n), g);
+                if self.region.contains_col(self.col) {
+                    let g = self.next_gen();
+                    let right = self.region.right;
+                    self.screen
+                        .delete_cells(self.col, self.row, clamp_count(n), right, g);
+                }
             }
             // ECH — blank n cells at the cursor in place (no shift).
             Edit::EraseCharacter(n) => {
@@ -2224,55 +2406,48 @@ impl Emulator {
             }
             // IL — insert n blank lines at the cursor, within the scroll region: rows from
             // the cursor down to the bottom margin shift down, the tail falling past the
-            // margin. A no-op when the cursor is outside the region (the VT100 rule). The
-            // active position moves to the line home (column 0) per ECMA-48.
+            // margin. A no-op when the cursor is outside the region on EITHER axis (the VT510
+            // rule). The active position moves to the line home, which is the LEFT MARGIN —
+            // column 0 only when DECLRMM has not narrowed the region.
             Edit::InsertLine(n) => {
-                if self.row >= self.scroll_top && self.row <= self.scroll_bottom {
+                if self.cursor_in_region() {
                     let g = self.next_gen();
-                    self.screen
-                        .scroll_region_down(self.row, self.scroll_bottom, clamp_count(n), g);
-                    self.col = 0;
+                    let below = self.region_from_cursor_row();
+                    self.screen.scroll_region_down(below, clamp_count(n), g);
+                    self.col = self.region.left;
                 }
             }
             // DL — delete n lines at the cursor, within the scroll region: rows below shift
             // up to the cursor, blanks opening at the bottom margin. A no-op outside the
-            // region; column homes to 0. DL is an EDIT, so it never feeds the scrollback —
-            // even a DL at row 0 removes the line rather than scrolling it off the top.
+            // region; the column homes to the left margin. DL is an EDIT, so it never feeds the
+            // scrollback — even a DL at row 0 removes the line rather than scrolling it off.
             Edit::DeleteLine(n) => {
-                if self.row >= self.scroll_top && self.row <= self.scroll_bottom {
+                if self.cursor_in_region() {
                     let g = self.next_gen();
+                    let below = self.region_from_cursor_row();
                     self.screen.scroll_region_up(
-                        self.row,
-                        self.scroll_bottom,
+                        below,
                         clamp_count(n),
                         false, // an edit, not an output-flow scroll: no scrollback
                         g,
                     );
-                    self.col = 0;
+                    self.col = self.region.left;
                 }
             }
             // SU — scroll the region up n lines (data moves up); the cursor does not move.
-            // An output-flow scroll, so a top-anchored region feeds the scrollback.
+            // An output-flow scroll, so a top-anchored full-width region feeds the scrollback.
             Edit::ScrollUp(n) => {
                 let g = self.next_gen();
-                self.screen.scroll_region_up(
-                    self.scroll_top,
-                    self.scroll_bottom,
-                    clamp_count(n),
-                    true,
-                    g,
-                );
+                let region = self.region;
+                self.screen
+                    .scroll_region_up(region, clamp_count(n), true, g);
             }
             // SD — scroll the region down n lines (data moves down); the cursor does not
             // move. A down scroll discards the bottom line, never the top, so no scrollback.
             Edit::ScrollDown(n) => {
                 let g = self.next_gen();
-                self.screen.scroll_region_down(
-                    self.scroll_top,
-                    self.scroll_bottom,
-                    clamp_count(n),
-                    g,
-                );
+                let region = self.region;
+                self.screen.scroll_region_down(region, clamp_count(n), g);
             }
         }
     }
@@ -2336,12 +2511,24 @@ impl Emulator {
             DecPrivateModeCode::AutoWrap => self.autowrap = on,
             // 45 — reverse wraparound: a left-margin backspace backs up over a soft wrap.
             DecPrivateModeCode::ReverseWraparound => self.reverse_wraparound = on,
-            // DECOM (6) — origin mode: on makes addressing region-relative and confined; either edge
-            // homes the cursor (to the region top when on, the screen top when off).
+            // DECOM (6) — origin mode: on makes addressing region-relative and confined on BOTH
+            // axes; either edge homes the cursor (to the region's top-left when on, the screen's
+            // when off).
             DecPrivateModeCode::OriginMode => {
                 self.origin_mode = on;
-                self.col = 0;
+                self.col = self.origin_col();
                 self.row = self.origin_row();
+            }
+            // DECLRMM (69) — arm / disarm the horizontal margins. Setting it only ALLOWS a
+            // DECSLRM (the region stays full-width until one arrives); resetting it also RESTORES
+            // the full width, because a narrowed region left in force with DECSLRM disarmed could
+            // never be widened again. Neither edge homes the cursor — unlike DECOM, this mode
+            // changes what is settable, not how an address is read.
+            DecPrivateModeCode::LeftRightMarginMode => {
+                self.left_right_margin_mode = on;
+                if !on {
+                    self.reset_horizontal_margins();
+                }
             }
             // 1049 / 1047 / 47 — enter / exit the one modeled alternate screen.
             DecPrivateModeCode::ClearAndEnableAlternateScreen
@@ -2417,6 +2604,10 @@ impl Emulator {
             DecPrivateModeCode::AutoWrap => self.autowrap,
             DecPrivateModeCode::ReverseWraparound => self.reverse_wraparound,
             DecPrivateModeCode::OriginMode => self.origin_mode,
+            // DECLRMM reports the ARMING switch, not whether margins are currently narrowed: an
+            // app that sets 69 and sends no DECSLRM still reads it SET, exactly as it would read
+            // DECAWM set with nothing yet wrapped.
+            DecPrivateModeCode::LeftRightMarginMode => self.left_right_margin_mode,
             // One alt screen is modeled (`saved_main` present iff on the alt); all three enable
             // spellings report that single state.
             DecPrivateModeCode::ClearAndEnableAlternateScreen
@@ -2561,6 +2752,32 @@ impl Emulator {
         }
     }
 
+    /// One past the last column a printed grapheme may occupy: the RIGHT MARGIN + 1 for a cursor
+    /// inside the region, else the screen width.
+    ///
+    /// The second case is what keeps DECLRMM from trapping output that was never in the region:
+    /// a cursor parked to the RIGHT of the margins (reachable outside origin mode) prints and
+    /// wraps against the screen edge, exactly as it did before any margin was set.
+    ///
+    /// **Why the test is `> right + 1` and not `> right`.** sprag has no separate pending-wrap
+    /// flag: a cursor that has just filled the last cell it may occupy sits ONE PAST it, and the
+    /// next print is what notices and wraps. So `right + 1` is the pending-wrap position of a
+    /// margined region, not a position outside it — reading it as "outside" would hand the cursor
+    /// the screen width and the wrap would never fire, which is exactly the bug this comment
+    /// replaced. The cost is one documented divergence: a cursor EXPLICITLY addressed to
+    /// `right + 1` is indistinguishable from one that arrived there by printing, so it wraps into
+    /// the region rather than printing on past it. That errs toward keeping text inside the region
+    /// the app asked for, and the alternative — a real pending-wrap flag threaded through every
+    /// cursor assignment in the emulator — is a far larger change to the cursor model than the
+    /// margins themselves.
+    fn print_right_limit(&self) -> u16 {
+        if self.col > self.region.right.saturating_add(1) {
+            self.cols
+        } else {
+            self.region.right.saturating_add(1)
+        }
+    }
+
     /// Print one grapheme, advancing the cursor with autowrap.
     ///
     /// `Action::Print` (the bulk-output hot path — termwiz emits one per printed
@@ -2592,18 +2809,21 @@ impl Emulator {
         let g = self.single_shift.take().unwrap_or(self.gl);
         let ch = self.charsets[g].translate(ch);
         let cell_w = char_columns(ch) as u16; // the one width authority (port::char_columns)
-        if self.col + cell_w > self.cols {
+        let right_limit = self.print_right_limit();
+        if self.col + cell_w > right_limit {
             if self.autowrap {
-                // DECAWM on (the default): this row's logical line continues onto the next.
+                // DECAWM on (the default): this row's logical line continues onto the next,
+                // resuming at the LEFT MARGIN — under DECLRMM text poured into a narrowed region
+                // stays inside it instead of spilling across the whole screen.
                 self.screen.set_wrapped(self.row, true);
-                self.col = 0;
+                self.col = self.region.left;
                 self.line_feed();
             } else {
                 // DECAWM off: pin at the right margin and overwrite. Back the cursor up so the
                 // grapheme lands in the last cell(s); the `self.col += cell_w` below returns it
                 // to the margin, so the next grapheme overwrites the same position — the VT100
                 // "replace at the right margin" rule (used by full-width, non-scrolling lines).
-                self.col = self.cols.saturating_sub(cell_w);
+                self.col = right_limit.saturating_sub(cell_w);
             }
         }
         let g = self.next_gen();
@@ -2613,7 +2833,15 @@ impl Emulator {
             // inserts rather than overwrites. The wrap / pin above has already guaranteed
             // `col + cell_w <= cols`, so the gap fits exactly — a wide glyph opens two cells for
             // its head + trailer.
-            self.screen.insert_cells(self.col, self.row, cell_w, g);
+            //
+            // The shift stops at THE SAME LIMIT THE WRAP USED, not at `region.right`: under
+            // DECLRMM that keeps the columns beyond the margin — someone else's column, in the
+            // side-by-side idiom — from moving, while a cursor printing OUTSIDE the margins still
+            // inserts against the screen edge. Deriving both from the one `right_limit` is what
+            // stops an outside-the-margins IRM print from silently dropping its insert.
+            let right = right_limit.saturating_sub(1);
+            self.screen
+                .insert_cells(self.col, self.row, cell_w, right, g);
         }
         let head = Cell {
             cluster: cluster_from_char(ch),
@@ -2722,15 +2950,16 @@ impl Emulator {
     }
 
     /// Move the cursor down one line (IND / the LF part of a line feed). At the bottom
-    /// margin this scrolls the scroll region up by one — for the default full-screen region
-    /// that is the ordinary "output flows off the top into scrollback" scroll. Below the
-    /// bottom margin (a cursor parked over a fixed footer) it advances until the last row,
-    /// then stops; it never scrolls a region it is not the bottom of.
+    /// margin — and only while the cursor is also within the HORIZONTAL margins — this scrolls
+    /// the scroll region up by one; for the default full-screen region that is the ordinary
+    /// "output flows off the top into scrollback" scroll. Below the bottom margin (a cursor
+    /// parked over a fixed footer), or outside the left / right margins, it advances until the
+    /// last row and then stops; it never scrolls a region it is not inside.
     fn line_feed(&mut self) {
-        if self.row == self.scroll_bottom {
+        if self.row == self.region.bottom && self.region.contains_col(self.col) {
             let g = self.next_gen();
-            self.screen
-                .scroll_region_up(self.scroll_top, self.scroll_bottom, 1, true, g);
+            let region = self.region;
+            self.screen.scroll_region_up(region, 1, true, g);
         } else if self.row + 1 < self.rows {
             self.row += 1;
         }
@@ -7161,7 +7390,8 @@ mod tests {
     #[test]
     fn xtwinops_never_reports_the_title_back_to_the_child() {
         // Title / icon-label reports (20t / 21t) are an injection vector xterm gates off by
-        // default; sprag never answers them (matching ghostty). No bytes on the response channel.
+        // default; sprag never answers them — unconditionally, where ghostty answers `21t` behind
+        // a switch that defaults off. No bytes on the response channel.
         let mut em = Emulator::new(8, 1);
         em.advance(b"\x1b]2;secret\x07");
         em.advance(b"\x1b[21t\x1b[20t");
@@ -7702,6 +7932,492 @@ mod tests {
             em.take_responses(),
             b"\x1b[20;1$y",
             "LNM reports set after SM 20"
+        );
+    }
+
+    // ---- DECLRMM (DEC private mode 69) + DECSLRM: the horizontal scroll margins ----------------
+
+    /// Arm DECLRMM and set the margins to the 1-based inclusive columns `left..=right`.
+    fn arm_margins(em: &mut Emulator, left: u16, right: u16) {
+        em.advance(b"\x1b[?69h");
+        em.advance(format!("\x1b[{left};{right}s").as_bytes());
+    }
+
+    #[test]
+    fn decslrm_is_inert_until_declrmm_arms_it() {
+        // The mode is the arming switch: a DECSLRM that arrives without it must not narrow the
+        // region, and must not home the cursor either (an ignored sequence changes nothing).
+        let mut em = Emulator::new(10, 3);
+        em.advance(b"\x1b[2;3H"); // park the cursor away from home
+        em.advance(b"\x1b[3;6s"); // DECSLRM with mode 69 OFF
+        assert_eq!(
+            (em.screen().cursor().col, em.screen().cursor().row),
+            (2, 1),
+            "an ignored DECSLRM leaves the cursor where it was"
+        );
+        em.advance(b"\x1b[1;1H0123456789");
+        assert_eq!(
+            em.screen().row_text(0),
+            "0123456789",
+            "printing still spans the full width: no margins were set"
+        );
+    }
+
+    #[test]
+    fn declrmm_then_decslrm_sets_the_margins_and_homes_the_cursor() {
+        let mut em = Emulator::new(10, 3);
+        em.advance(b"\x1b[2;3H");
+        arm_margins(&mut em, 3, 6);
+        assert_eq!(
+            (em.screen().cursor().col, em.screen().cursor().row),
+            (0, 0),
+            "a valid DECSLRM homes the cursor, like DECSTBM"
+        );
+    }
+
+    #[test]
+    fn decslrm_refuses_an_inverted_or_degenerate_request() {
+        // A region needs at least two columns. An invalid request is IGNORED — margins and cursor
+        // unchanged — rather than clamped into some other rectangle (the DECSTBM rule, mirrored).
+        let mut em = Emulator::new(10, 2);
+        arm_margins(&mut em, 3, 7); // a good region first
+        em.advance(b"\x1b[2;9H"); // park the cursor
+        em.advance(b"\x1b[8;4s"); // inverted: left > right
+        em.advance(b"\x1b[5;5s"); // degenerate: left == right
+        assert_eq!(
+            (em.screen().cursor().col, em.screen().cursor().row),
+            (8, 1),
+            "both refusals left the cursor alone"
+        );
+        // The earlier good region is still the one in force: prove it by where a wrap lands.
+        em.advance(b"\x1b[1;3Habcdefg");
+        assert_eq!(
+            em.screen().row_text(0),
+            "  abcde",
+            "the 3..=7 region from before both refusals is still in force"
+        );
+    }
+
+    #[test]
+    fn resetting_declrmm_restores_the_full_width() {
+        // Disarming the mode must also widen the region, or a narrowed one would be stranded in
+        // force with no sequence left that could change it.
+        let mut em = Emulator::new(10, 2);
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[?69l");
+        em.advance(b"\x1b[1;1H0123456789");
+        assert_eq!(
+            em.screen().row_text(0),
+            "0123456789",
+            "the region is full-width again after CSI ? 69 l"
+        );
+    }
+
+    #[test]
+    fn a_bare_csi_s_is_decsc_while_disarmed_and_decslrm_once_armed() {
+        // termwiz cannot resolve `CSI s` — it has no mode state — so the decision lands in the
+        // emulator. Disarmed it is DECSC; armed it is DECSLRM with both parameters defaulted.
+        let mut em = Emulator::new(10, 2);
+        em.advance(b"\x1b[1;5H"); // cursor at col 4
+        em.advance(b"\x1b[s"); // DECSC (mode 69 off)
+        em.advance(b"\x1b[1;1H");
+        em.advance(b"\x1b[u"); // DECRC
+        assert_eq!(
+            em.screen().cursor().col,
+            4,
+            "disarmed, CSI s saved the cursor for CSI u to restore"
+        );
+        // Now arm the mode and narrow the region, then let a bare `CSI s` widen it again.
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[s"); // DECSLRM with defaults = the full width
+        em.advance(b"\x1b[1;1H0123456789");
+        assert_eq!(
+            em.screen().row_text(0),
+            "0123456789",
+            "armed, a bare CSI s reset the margins to the full width"
+        );
+    }
+
+    #[test]
+    fn autowrap_wraps_at_the_right_margin_and_resumes_at_the_left() {
+        // The whole point of DECLRMM: text poured into a narrowed region stays inside it.
+        let mut em = Emulator::new(10, 4);
+        arm_margins(&mut em, 3, 6); // 0-based columns 2..=5, four wide
+        em.advance(b"\x1b[1;1H"); // home (outside origin mode, so absolute)
+        em.advance(b"\x1b[1;3H"); // to the left margin
+        em.advance(b"abcdefgh");
+        assert_eq!(
+            em.screen().row_text(0),
+            "  abcd",
+            "the first four land inside the margins"
+        );
+        assert_eq!(
+            em.screen().row_text(1),
+            "  efgh",
+            "the wrap resumed at the LEFT MARGIN, not column 0"
+        );
+    }
+
+    #[test]
+    fn a_line_feed_at_the_bottom_margin_scrolls_only_the_band() {
+        // The columns outside the margins must not move — that is the side-by-side idiom.
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[1;1HLLrrrrRR"); // row 0: L=left of, r=inside, R=right of the band
+        em.advance(b"\x1b[2;1HLLssssRR");
+        em.advance(b"\x1b[3;1HLLttttRR");
+        arm_margins(&mut em, 3, 6); // 0-based 2..=5
+        em.advance(b"\x1b[3;3H\n"); // to the bottom row, inside the margins, then LF
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLssssRR",
+            "the band scrolled up; the outside columns of row 0 are untouched"
+        );
+        assert_eq!(em.screen().row_text(1), "LLttttRR");
+        assert_eq!(
+            em.screen().row_text(2),
+            "LL    RR",
+            "only the BAND was blanked at the bottom; LL and RR survive"
+        );
+    }
+
+    #[test]
+    fn a_banded_scroll_never_reaches_the_scrollback() {
+        // A row fragment is not a history line. A top-anchored but NARROWED region must not push
+        // anything into the scrollback FIFO.
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop");
+        let before = em.screen().scrollback_len();
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[2;3H\n\n\n"); // repeated scrolls of the banded region
+        assert_eq!(
+            em.screen().scrollback_len(),
+            before,
+            "a banded scroll retains no history"
+        );
+    }
+
+    #[test]
+    fn a_line_feed_outside_the_margins_does_not_scroll_the_region() {
+        // The VT510 rule: an app that parks the cursor outside its own margins cannot disturb them.
+        let mut em = Emulator::new(8, 2);
+        em.advance(b"\x1b[1;1Habcdefgh\x1b[2;1Hijklmnop");
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[2;8H\n"); // bottom row, but column 7 is RIGHT of the margin
+        assert_eq!(
+            em.screen().row_text(0),
+            "abcdefgh",
+            "no scroll happened: the cursor was outside the horizontal margins"
+        );
+        assert_eq!(em.screen().row_text(1), "ijklmnop");
+    }
+
+    #[test]
+    fn carriage_return_lands_on_the_left_margin() {
+        let mut em = Emulator::new(10, 2);
+        arm_margins(&mut em, 4, 8); // 0-based left margin 3
+        em.advance(b"\x1b[1;7H\r");
+        assert_eq!(
+            em.screen().cursor().col,
+            3,
+            "CR returns to the left margin, not column 0"
+        );
+        // A cursor parked LEFT of the margins is not pulled into a region it was never in.
+        em.advance(b"\x1b[1;2H\r");
+        assert_eq!(
+            em.screen().cursor().col,
+            0,
+            "left of the margins, CR still returns to column 0"
+        );
+    }
+
+    #[test]
+    fn relative_horizontal_motion_stops_at_the_margins() {
+        let mut em = Emulator::new(12, 2);
+        arm_margins(&mut em, 4, 9); // 0-based 3..=8
+        em.advance(b"\x1b[1;5H\x1b[20C"); // CUF far past the right margin
+        assert_eq!(em.screen().cursor().col, 8, "CUF stops at the right margin");
+        em.advance(b"\x1b[20D"); // CUB far past the left margin
+        assert_eq!(em.screen().cursor().col, 3, "CUB stops at the left margin");
+        // Outside the region the screen edge bounds the move, not the margin.
+        em.advance(b"\x1b[1;11H\x1b[9C");
+        assert_eq!(
+            em.screen().cursor().col,
+            11,
+            "right of the region, CUF is bounded by the screen"
+        );
+    }
+
+    #[test]
+    fn a_tab_stops_at_the_right_margin() {
+        let mut em = Emulator::new(24, 2);
+        arm_margins(&mut em, 1, 12); // 0-based right margin 11
+        em.advance(b"\x1b[1;9H\t"); // col 8 -> next stop would be 16, past the margin
+        assert_eq!(
+            em.screen().cursor().col,
+            11,
+            "HT clamps to the right margin instead of the screen width"
+        );
+    }
+
+    #[test]
+    fn origin_mode_addresses_columns_relative_to_the_left_margin() {
+        let mut em = Emulator::new(12, 4);
+        arm_margins(&mut em, 4, 9); // 0-based 3..=8
+        em.advance(b"\x1b[?6h"); // DECOM
+        assert_eq!(
+            em.screen().cursor().col,
+            3,
+            "setting origin mode homes to the region's top-left"
+        );
+        em.advance(b"\x1b[1;2H"); // CUP column 2 -> relative to the left margin
+        assert_eq!(em.screen().cursor().col, 4, "CUP column is margin-relative");
+        em.advance(b"\x1b[1;99H"); // past the right margin
+        assert_eq!(
+            em.screen().cursor().col,
+            8,
+            "an over-range CUP column is confined to the right margin"
+        );
+        em.advance(b"\x1b[3G"); // CHA -> margin-relative too
+        assert_eq!(em.screen().cursor().col, 5, "CHA is margin-relative");
+    }
+
+    #[test]
+    fn insert_and_delete_line_are_banded_and_gated_by_the_margins() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[1;1HLLaaaaRR\x1b[2;1HLLbbbbRR\x1b[3;1HLLccccRR");
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[1;3H\x1b[L"); // IL at the top row, inside the margins
+        assert_eq!(
+            em.screen().row_text(0),
+            "LL    RR",
+            "IL opened a blank BAND, leaving LL / RR in place"
+        );
+        assert_eq!(em.screen().row_text(1), "LLaaaaRR");
+        assert_eq!(
+            em.screen().cursor().col,
+            2,
+            "IL homes the cursor to the LEFT MARGIN"
+        );
+        // Outside the margins it is a no-op.
+        em.advance(b"\x1b[1;8H\x1b[M"); // DL with the cursor right of the margin
+        assert_eq!(
+            em.screen().row_text(0),
+            "LL    RR",
+            "a DL outside the horizontal margins changed nothing"
+        );
+    }
+
+    #[test]
+    fn insert_and_delete_character_stop_at_the_right_margin() {
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[1;1HLLabcdRR");
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[1;3H\x1b[@"); // ICH 1 at the left margin
+        assert_eq!(
+            em.screen().row_text(0),
+            "LL abcRR",
+            "the shifted-out cell fell off the RIGHT MARGIN, not the screen edge"
+        );
+        em.advance(b"\x1b[1;3H\x1b[P"); // DCH 1
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLabc RR",
+            "DCH opened its blank AT the right margin"
+        );
+        // Outside the margins, both are no-ops.
+        em.advance(b"\x1b[1;8H\x1b[3P");
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLabc RR",
+            "a DCH outside the horizontal margins changed nothing"
+        );
+    }
+
+    #[test]
+    fn an_irm_print_inserts_against_the_margin_inside_and_the_screen_outside() {
+        // The IRM shift must use the SAME limit the wrap does. Bounding it at `region.right`
+        // unconditionally would make a print RIGHT of the margins drop its insert entirely,
+        // because the cursor sits past that bound.
+        let mut em = Emulator::new(10, 1);
+        em.advance(b"\x1b[1;1HLLabcdRRZZ");
+        arm_margins(&mut em, 3, 6); // 0-based 2..=5
+        em.advance(b"\x1b[4h"); // IRM on
+        em.advance(b"\x1b[1;3HX"); // print at the left margin, INSIDE the region
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLXabcRRZZ",
+            "the insert shifted only up to the right margin: `d` fell off there, RRZZ stayed"
+        );
+        // Column 7 is unambiguously right of the region — past the `right + 1` pending-wrap
+        // position, so `print_right_limit` hands it the screen width.
+        em.advance(b"\x1b[1;8HY");
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLXabcRYRZ",
+            "outside the margins the insert still happened, bounded by the screen edge"
+        );
+    }
+
+    #[test]
+    fn insert_and_delete_character_are_a_no_op_left_of_the_left_margin() {
+        // This is what makes the emulator's cursor gate load-bearing rather than ceremony. RIGHT
+        // of the margins the Screen primitive's own bound would refuse the shift anyway; LEFT of
+        // them the shift is perfectly in range, so only the explicit VT510 rule stops it.
+        let mut em = Emulator::new(8, 1);
+        em.advance(b"\x1b[1;1HLLabcdRR");
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[1;1H\x1b[@"); // ICH at column 0, LEFT of the left margin
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLabcdRR",
+            "an ICH left of the margins changed nothing"
+        );
+        em.advance(b"\x1b[1;1H\x1b[P"); // DCH likewise
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLabcdRR",
+            "a DCH left of the margins changed nothing"
+        );
+    }
+
+    #[test]
+    fn reverse_index_outside_the_margins_does_not_scroll_the_region() {
+        // The mirror of the line-feed gate: at the TOP row but outside the horizontal margins, RI
+        // must step the cursor without touching the region.
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[1;1HLLaaaaRR\x1b[2;1HLLbbbbRR\x1b[3;1HLLccccRR");
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[1;8H\x1bM"); // top row, column 7 is RIGHT of the margin
+        assert_eq!(
+            em.screen().row_text(0),
+            "LLaaaaRR",
+            "no scroll happened: the cursor was outside the horizontal margins"
+        );
+        assert_eq!(em.screen().row_text(1), "LLbbbbRR");
+        assert_eq!(em.screen().row_text(2), "LLccccRR");
+    }
+
+    #[test]
+    fn an_image_outside_the_band_does_not_move_with_a_banded_scroll() {
+        // Those cells did not move, so neither may the image anchored on them. Without the column
+        // bound the anchor would track a scroll that never touched it.
+        let mut em = Emulator::new(8, 3);
+        em.advance(format!("\x1b[3;8H{}", tiny_image_apc()).as_bytes());
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            (7, 2),
+            "anchored right of where the margins will be"
+        );
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[3;3H\n"); // a banded scroll of the region the image is NOT in
+        assert_eq!(
+            em.screen().images()[0].anchor,
+            (7, 2),
+            "the anchor stayed put: its column is outside the scrolled band"
+        );
+    }
+
+    #[test]
+    fn reverse_index_at_the_top_margin_scrolls_only_the_band() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[1;1HLLaaaaRR\x1b[2;1HLLbbbbRR\x1b[3;1HLLccccRR");
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[1;3H\x1bM"); // RI at the top row, inside the margins
+        assert_eq!(
+            em.screen().row_text(0),
+            "LL    RR",
+            "the band scrolled down, opening a blank band at the top"
+        );
+        assert_eq!(em.screen().row_text(1), "LLaaaaRR");
+        assert_eq!(em.screen().row_text(2), "LLbbbbRR");
+    }
+
+    #[test]
+    fn scroll_up_and_down_respect_the_horizontal_margins() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"\x1b[1;1HLLaaaaRR\x1b[2;1HLLbbbbRR\x1b[3;1HLLccccRR");
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[S"); // SU 1
+        assert_eq!(em.screen().row_text(0), "LLbbbbRR");
+        assert_eq!(em.screen().row_text(2), "LL    RR");
+        em.advance(b"\x1b[T"); // SD 1 puts the band back one
+        assert_eq!(
+            em.screen().row_text(1),
+            "LLbbbbRR",
+            "SD moved the band back down"
+        );
+        assert_eq!(
+            em.screen().row_text(0),
+            "LL    RR",
+            "SD blanked only the band at the top"
+        );
+    }
+
+    #[test]
+    fn decrqm_reports_declrmm_and_decrqss_reports_the_margins() {
+        let mut em = Emulator::new(10, 2);
+        em.advance(b"\x1b[?69$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?69;2$y",
+            "DECLRMM reports reset by default"
+        );
+        // Disarmed, DECSLRM is not a setting this terminal has: the honest DECRQSS answer is the
+        // INVALID one, not a full-width pair that would imply margins are in force.
+        em.advance(b"\x1bP$qs\x1b\\");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1bP0$r\x1b\\",
+            "DECRQSS for DECSLRM is invalid while disarmed"
+        );
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[?69$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?69;1$y",
+            "DECLRMM reports set once armed"
+        );
+        em.advance(b"\x1bP$qs\x1b\\");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1bP1$r3;6s\x1b\\",
+            "DECRQSS reports the 1-based inclusive margins"
+        );
+    }
+
+    #[test]
+    fn a_soft_reset_disarms_declrmm_and_widens_the_region() {
+        // Leaving the mode armed across a DECSTR would leave `CSI s` still meaning DECSLRM, so a
+        // recovering app sending DECSC would silently set margins.
+        let mut em = Emulator::new(10, 2);
+        arm_margins(&mut em, 3, 6);
+        em.advance(b"\x1b[!p"); // DECSTR
+        em.advance(b"\x1b[1;1H0123456789");
+        assert_eq!(
+            em.screen().row_text(0),
+            "0123456789",
+            "the region is full-width after a soft reset"
+        );
+        em.advance(b"\x1b[?69$p");
+        assert_eq!(
+            em.take_responses(),
+            b"\x1b[?69;2$y",
+            "DECSTR disarmed the mode itself, not just the margins"
+        );
+    }
+
+    #[test]
+    fn a_resize_returns_the_horizontal_margins_to_the_new_width() {
+        // The margins were defined against the old geometry; a resize returns the whole region to
+        // the full new screen, exactly as it already did for DECSTBM.
+        let mut em = Emulator::new(10, 3);
+        arm_margins(&mut em, 3, 6);
+        em.resize(16, 3);
+        em.advance(b"\x1b[1;1H0123456789abcdef");
+        assert_eq!(
+            em.screen().row_text(0),
+            "0123456789abcdef",
+            "the region spans the resized width"
         );
     }
 }

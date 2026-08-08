@@ -1247,6 +1247,64 @@ pub struct Image {
     pub seq: u64,
 }
 
+/// The scrolling region: the INCLUSIVE, 0-based RECTANGLE that vertical scrolls and the
+/// line / character edits act inside.
+///
+/// The vertical extent is DECSTBM (`CSI Pt ; Pb r`); the horizontal extent is DECSLRM
+/// (`CSI Pl ; Pr s`), settable only while DECLRMM — DEC private mode 69 — is on. They are ONE
+/// value rather than two independent pairs because every scrolling primitive needs all four
+/// bounds: a caller that passed the rows and forgot the columns would silently scroll the full
+/// width, and that is the bug this type exists to make unrepresentable.
+///
+/// Defaults to the whole screen ([`Self::full`]) — what RIS, DECSTR, a resize, an alt-screen
+/// transition and a DECLRMM reset all restore. A region is always non-empty and in-bounds:
+/// `top <= bottom < rows` and `left <= right < cols`, which the setters enforce by REFUSING an
+/// inverted or degenerate request rather than clamping it into a different rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScrollRegion {
+    pub(crate) top: u16,
+    pub(crate) bottom: u16,
+    pub(crate) left: u16,
+    pub(crate) right: u16,
+}
+
+impl ScrollRegion {
+    /// The whole screen — the power-on region, and what every reset restores. A zero-sized
+    /// screen degenerates to `[0,0] x [0,0]`; the primitives all bail on `rows == 0 || cols == 0`
+    /// before reading it, so the value is inert rather than a source of underflow.
+    pub(crate) fn full(cols: u16, rows: u16) -> Self {
+        Self {
+            top: 0,
+            bottom: rows.saturating_sub(1),
+            left: 0,
+            right: cols.saturating_sub(1),
+        }
+    }
+
+    /// Whether the region spans every column of a `cols`-wide screen. This is the discriminator
+    /// between the WHOLE-ROW fast paths (a slice rotation, allocation-free) and the BANDED ones,
+    /// and it also gates the two behaviours that only make sense for a full-width scroll: history
+    /// retention (a partial row leaving the top is not a scrollback line) and the soft-wrap /
+    /// prompt-mark metadata moving with the rows (both are per-ROW facts, and a banded scroll
+    /// moves only part of a row).
+    pub(crate) fn full_width(&self, cols: u16) -> bool {
+        self.left == 0 && self.right == cols.saturating_sub(1)
+    }
+
+    /// Whether `col` lies within the horizontal margins. A cursor OUTSIDE them makes the
+    /// line-shaped edits (IL / DL / ICH / DCH) and the scroll-triggering index / reverse-index
+    /// no-ops — the VT510 rule, so an app that parks the cursor outside its own margins cannot
+    /// disturb the region.
+    pub(crate) fn contains_col(&self, col: u16) -> bool {
+        col >= self.left && col <= self.right
+    }
+
+    /// Whether `row` lies within the vertical margins.
+    pub(crate) fn contains_row(&self, row: u16) -> bool {
+        row >= self.top && row <= self.bottom
+    }
+}
+
 /// A queryable terminal screen: a `cols x rows` grid of cells plus the
 /// cursor, screen kind, and per-row damage generations.
 ///
@@ -1995,21 +2053,25 @@ impl Screen {
     }
 
     /// Insert `n` blank cells at `(col, row)`, shifting the cells from `col` rightward by `n`
-    /// (ICH — INSERT CHARACTER). Cells pushed past the right margin fall off; the opened gap
-    /// `[col, col+n)` becomes blank. Row-local (no scroll region interaction), so it is correct
-    /// regardless of any top/bottom margins. Bumps the row's damage generation; a shift breaks the
-    /// row's soft-wrap continuation (its tail changed), so the wrap flag is cleared.
-    pub(crate) fn insert_cells(&mut self, col: u16, row: u16, n: u16, generation: u64) {
+    /// (ICH — INSERT CHARACTER). Cells pushed past `right` — the RIGHT MARGIN, which is the last
+    /// column unless DECLRMM has narrowed the region — fall off; the opened gap `[col, col+n)`
+    /// becomes blank, and the columns beyond `right` are untouched. Row-local (no top/bottom
+    /// margin interaction). Bumps the row's damage generation; a shift breaks the row's soft-wrap
+    /// continuation (its tail changed), so the wrap flag is cleared.
+    pub(crate) fn insert_cells(&mut self, col: u16, row: u16, n: u16, right: u16, generation: u64) {
         if row >= self.rows || col >= self.cols || n == 0 {
             return;
         }
         let base = row as usize * self.cols as usize;
         let col = col as usize;
-        let cols = self.cols as usize;
-        let n = (n as usize).min(cols - col);
-        // Shift right: move [col, cols-n) to [col+n, cols), walking from the right so a source is
+        let end = (right.min(self.cols - 1) as usize) + 1; // one past the right margin
+        if col >= end {
+            return; // the cursor sits right of the margin: nothing to shift
+        }
+        let n = (n as usize).min(end - col);
+        // Shift right: move [col, end-n) to [col+n, end), walking from the right so a source is
         // read before it is overwritten.
-        for dst in (col + n..cols).rev() {
+        for dst in (col + n..end).rev() {
             self.cells[base + dst] = self.cells[base + dst - n].clone();
         }
         for cell in &mut self.cells[base + col..base + col + n] {
@@ -2020,21 +2082,25 @@ impl Screen {
     }
 
     /// Delete `n` cells at `(col, row)`, shifting the cells from `col+n` leftward to `col` and
-    /// blanking the `n` cells vacated at the right margin (DCH — DELETE CHARACTER). Row-local, the
-    /// inverse of [`Self::insert_cells`]. Bumps the row's generation and clears its wrap flag.
-    pub(crate) fn delete_cells(&mut self, col: u16, row: u16, n: u16, generation: u64) {
+    /// blanking the `n` cells vacated at the RIGHT MARGIN `right` (DCH — DELETE CHARACTER).
+    /// Row-local, the inverse of [`Self::insert_cells`], and like it it leaves the columns beyond
+    /// `right` alone. Bumps the row's generation and clears its wrap flag.
+    pub(crate) fn delete_cells(&mut self, col: u16, row: u16, n: u16, right: u16, generation: u64) {
         if row >= self.rows || col >= self.cols || n == 0 {
             return;
         }
         let base = row as usize * self.cols as usize;
         let col = col as usize;
-        let cols = self.cols as usize;
-        let n = (n as usize).min(cols - col);
-        // Shift left: move [col+n, cols) to [col, cols-n), walking from the left.
-        for dst in col..cols - n {
+        let end = (right.min(self.cols - 1) as usize) + 1; // one past the right margin
+        if col >= end {
+            return; // the cursor sits right of the margin: nothing to shift
+        }
+        let n = (n as usize).min(end - col);
+        // Shift left: move [col+n, end) to [col, end-n), walking from the left.
+        for dst in col..end - n {
             self.cells[base + dst] = self.cells[base + dst + n].clone();
         }
-        for cell in &mut self.cells[base + cols - n..base + cols] {
+        for cell in &mut self.cells[base + end - n..base + end] {
             *cell = Cell::blank();
         }
         self.stamp_row(row, generation);
@@ -2497,32 +2563,38 @@ impl Screen {
         }
     }
 
-    /// Scroll rows `[top, bottom]` (inclusive) UP by `n`: the `n` rows leaving the top of
-    /// the region are discarded (or retained as scrollback, see below) and the `n` rows
-    /// vacated at the bottom become blank. Rows above `top` and below `bottom` are
-    /// untouched. This is the scroll-region primitive behind IND / a line feed at the
-    /// bottom margin, SU (`CSI S`), and DL (`CSI M`) — see [`crate::emulator`]. With the
-    /// default full-screen region (`top == 0`, `bottom == rows - 1`, `n == 1`) it is the
-    /// ordinary "output flows off the top" scroll.
+    /// Scroll the [`ScrollRegion`] UP by `n`: the `n` rows leaving the top of the region are
+    /// discarded (or retained as scrollback, see below) and the `n` rows vacated at the bottom
+    /// become blank. Cells outside the region — above `top`, below `bottom`, and (under DECLRMM)
+    /// left of `left` or right of `right` — are untouched. This is the scroll-region primitive
+    /// behind IND / a line feed at the bottom margin, SU (`CSI S`), and DL (`CSI M`) — see
+    /// [`crate::emulator`]. With the default full-screen region and `n == 1` it is the ordinary
+    /// "output flows off the top" scroll.
     ///
     /// The rows leaving the top are pushed to the bounded scrollback FIFO — as STYLED
-    /// cells, so history paints in its original colors — only when `to_scrollback` is set
-    /// AND the region is anchored at the screen top (`top == 0`) on the MAIN screen. That
-    /// is history genuinely leaving the top of the screen. `to_scrollback` is `true` for
-    /// output-flow scrolls (a line feed at the bottom margin, SU) and `false` for the DL
-    /// edit, which REMOVES lines rather than scrolling output away — so a DL at row 0 does
-    /// not pollute the scrollback. A mid-screen region (`top > 0`) never reaches the
-    /// scrollback regardless (those lines are interior, not off the top). Every row the op
-    /// moves or blanks is damaged at `generation`.
+    /// cells, so history paints in its original colors — only when `to_scrollback` is set,
+    /// the region is anchored at the screen top (`top == 0`), the region is FULL-WIDTH, and
+    /// this is the MAIN screen. That is history genuinely leaving the top of the screen.
+    /// `to_scrollback` is `true` for output-flow scrolls (a line feed at the bottom margin, SU)
+    /// and `false` for the DL edit, which REMOVES lines rather than scrolling output away — so a
+    /// DL at row 0 does not pollute the scrollback. A mid-screen region (`top > 0`) never reaches
+    /// the scrollback regardless (those lines are interior, not off the top), and neither does a
+    /// margined one: a row fragment is not a history line. Every row the op moves or blanks is
+    /// damaged at `generation`.
     ///
-    /// Soft-wrap continuation flags ([`Self::wrapped`]) move in lockstep with the rows;
-    /// blanked rows drop their flag. A logical line soft-wrapped ACROSS a region boundary
-    /// is a documented bound: scroll regions and reflow do not compose cleanly, and
-    /// region-using apps position explicitly rather than relying on autowrap.
+    /// **Full-width vs banded.** A full-width region rotates whole rows — a memmove, allocating
+    /// nothing — and carries the per-row metadata (soft-wrap flags, prompt marks) with them;
+    /// blanked rows drop theirs. A BANDED region (DECLRMM in force) moves only the columns
+    /// `[left, right]`, by element swaps, and leaves the per-row metadata where it is: a wrap
+    /// flag and a prompt mark are facts about a WHOLE row, and half a row moving does not
+    /// relocate them. The touched rows do drop their soft-wrap flag, because a row whose middle
+    /// was scrolled out from under it no longer continues into the next one. A logical line
+    /// soft-wrapped ACROSS a region boundary is a documented bound: scroll regions and reflow do
+    /// not compose cleanly, and region-using apps position explicitly rather than relying on
+    /// autowrap.
     pub(crate) fn scroll_region_up(
         &mut self,
-        top: u16,
-        bottom: u16,
+        region: ScrollRegion,
         n: u16,
         to_scrollback: bool,
         generation: u64,
@@ -2530,8 +2602,11 @@ impl Screen {
         if self.rows == 0 || self.cols == 0 {
             return;
         }
-        let bottom = bottom.min(self.rows - 1);
-        if top > bottom {
+        let top = region.top;
+        let bottom = region.bottom.min(self.rows - 1);
+        let left = region.left;
+        let right = region.right.min(self.cols - 1);
+        if top > bottom || left > right {
             return;
         }
         let height = bottom - top + 1;
@@ -2539,12 +2614,17 @@ impl Screen {
         if n == 0 {
             return;
         }
-        // An image tracks the grid like a cell: its anchor row scrolls up with the region. Do this
+        let full_width = region.full_width(self.cols);
+        // An image tracks the grid like a cell: its anchor scrolls up with the region. Do this
         // FIRST, before the row-clear below blanks the vacated rows (post-shift no image sits there,
         // so `clear_row`'s own image-drop is a no-op here). See [`Self::shift_images_up`].
-        self.shift_images_up(top, bottom, n);
+        self.shift_images_up(top, bottom, left, right, n);
+        if !full_width {
+            self.scroll_band_up(top, bottom, left, right, n, generation);
+            return;
+        }
         // Retain the rows leaving the top (`[top, top+n)`) as history, oldest first, only
-        // for an output-flow scroll of a top-anchored region on the main screen.
+        // for an output-flow scroll of a top-anchored FULL-WIDTH region on the main screen.
         if to_scrollback && top == 0 && self.kind == ScreenKind::Main {
             for r in 0..n {
                 // Carry the row's shell-integration mark AND its soft-wrap flag into history WITH
@@ -2567,8 +2647,8 @@ impl Screen {
         // bulk scroll O(cells) heap allocations — a throughput wall on `cat`-style output (a screen
         // of continuous text scrolled ~74 KiB/s). A rotation is memmove-cheap and allocates nothing.
         // The already-evicted top `n` rows land at the bottom, to be blanked next.
-        let region = (top as usize * cols)..((bottom as usize + 1) * cols);
-        self.cells[region].rotate_left(n as usize * cols);
+        let span = (top as usize * cols)..((bottom as usize + 1) * cols);
+        self.cells[span].rotate_left(n as usize * cols);
         // The per-row metadata rotates in lockstep (cheap Copy scalars).
         self.wrapped[top as usize..=bottom as usize].rotate_left(n as usize);
         self.marks[top as usize..=bottom as usize].rotate_left(n as usize);
@@ -2583,19 +2663,21 @@ impl Screen {
         }
     }
 
-    /// Scroll rows `[top, bottom]` (inclusive) DOWN by `n`: the `n` rows leaving the bottom
-    /// of the region are discarded and the `n` rows vacated at the top become blank. Rows
-    /// above `top` and below `bottom` are untouched. The mirror of [`Self::scroll_region_up`]
-    /// behind RI / a reverse index at the top margin, SD (`CSI T`), and IL (`CSI L`). A
-    /// down scroll never reaches the scrollback — it discards the bottom, not the top.
-    /// Soft-wrap flags move with the rows; blanked top rows drop theirs. Every moved or
-    /// blanked row is damaged at `generation`.
-    pub(crate) fn scroll_region_down(&mut self, top: u16, bottom: u16, n: u16, generation: u64) {
+    /// Scroll the [`ScrollRegion`] DOWN by `n`: the `n` rows leaving the bottom of the region are
+    /// discarded and the `n` rows vacated at the top become blank. Cells outside the region are
+    /// untouched. The mirror of [`Self::scroll_region_up`] behind RI / a reverse index at the top
+    /// margin, SD (`CSI T`), and IL (`CSI L`). A down scroll never reaches the scrollback — it
+    /// discards the bottom, not the top. Full-width and banded behave exactly as documented on
+    /// [`Self::scroll_region_up`]. Every moved or blanked row is damaged at `generation`.
+    pub(crate) fn scroll_region_down(&mut self, region: ScrollRegion, n: u16, generation: u64) {
         if self.rows == 0 || self.cols == 0 {
             return;
         }
-        let bottom = bottom.min(self.rows - 1);
-        if top > bottom {
+        let top = region.top;
+        let bottom = region.bottom.min(self.rows - 1);
+        let left = region.left;
+        let right = region.right.min(self.cols - 1);
+        if top > bottom || left > right {
             return;
         }
         let height = bottom - top + 1;
@@ -2604,13 +2686,17 @@ impl Screen {
             return;
         }
         // An image's anchor scrolls down with the region (mirror of [`Self::scroll_region_up`]).
-        self.shift_images_down(top, bottom, n);
+        self.shift_images_down(top, bottom, left, right, n);
+        if !region.full_width(self.cols) {
+            self.scroll_band_down(top, bottom, left, right, n, generation);
+            return;
+        }
         let cols = self.cols as usize;
         // Move the surviving rows down by `n` as an in-place slice ROTATION (mirror of
         // [`Self::scroll_region_up`] — no per-cell clone, so a reverse-scroll allocates nothing).
         // The bottom `n` rows wrap to the top, to be blanked next.
-        let region = (top as usize * cols)..((bottom as usize + 1) * cols);
-        self.cells[region].rotate_right(n as usize * cols);
+        let span = (top as usize * cols)..((bottom as usize + 1) * cols);
+        self.cells[span].rotate_right(n as usize * cols);
         self.wrapped[top as usize..=bottom as usize].rotate_right(n as usize);
         self.marks[top as usize..=bottom as usize].rotate_right(n as usize);
         // The surviving rows (now at `[top + n, bottom]`) are dirty at the new generation.
@@ -2623,17 +2709,92 @@ impl Screen {
         }
     }
 
-    /// Shift every inline image whose anchor row is in the scrolled region `[top, bottom]` UP by
-    /// `n` — the image tracks its text (a sixel scrolls with the output, R1404 Stage 3). An image
-    /// anchored in the `n` rows leaving the top of the region (`[top, top+n)`) is EVICTED, exactly
-    /// as those rows' cells leave; an image outside the region is untouched. Anchor-granular (an
-    /// image straddling the region boundary tracks by its anchor cell — a documented bound).
+    /// The BANDED half of [`Self::scroll_region_up`]: move only the columns `[left, right]` of the
+    /// rows `[top, bottom]` up by `n`, blanking the band in the `n` rows vacated at the bottom.
+    ///
+    /// A whole-row rotation is unavailable here — the untouched columns either side must stay put —
+    /// so the move is a walk of element SWAPS, which is still allocation-free: a [`Cell`] owns a
+    /// heap cluster, and swapping moves the ownership rather than cloning it. Walking `r` upward
+    /// while swapping `band(r)` with `band(r + n)` leaves the surviving bands in order at the top
+    /// and parks the evicted ones at the bottom, exactly as `rotate_left` would.
+    ///
+    /// The per-row metadata does NOT move (see [`Self::scroll_region_up`]), but every touched row
+    /// drops its soft-wrap flag: a row whose middle was scrolled out from under it no longer
+    /// continues into the next one, and a stale flag would make a later reflow join two unrelated
+    /// lines.
+    fn scroll_band_up(
+        &mut self,
+        top: u16,
+        bottom: u16,
+        left: u16,
+        right: u16,
+        n: u16,
+        generation: u64,
+    ) {
+        let cols = self.cols as usize;
+        let shift = (bottom - top + 1) - n;
+        for r in top..top + shift {
+            let (src, dst) = ((r + n) as usize * cols, r as usize * cols);
+            for c in left as usize..=right as usize {
+                self.cells.swap(dst + c, src + c);
+            }
+        }
+        // Blank the band in the `n` rows vacated at the bottom.
+        for r in top + shift..=bottom {
+            let base = r as usize * cols;
+            for c in left as usize..=right as usize {
+                self.cells[base + c] = Cell::blank();
+            }
+        }
+        for r in top..=bottom {
+            self.wrapped[r as usize] = false;
+            self.stamp_row(r, generation);
+        }
+    }
+
+    /// The BANDED half of [`Self::scroll_region_down`] — the mirror of [`Self::scroll_band_up`],
+    /// walking `r` DOWNWARD so a source band is read before it is overwritten.
+    fn scroll_band_down(
+        &mut self,
+        top: u16,
+        bottom: u16,
+        left: u16,
+        right: u16,
+        n: u16,
+        generation: u64,
+    ) {
+        let cols = self.cols as usize;
+        for r in ((top + n)..=bottom).rev() {
+            let (src, dst) = ((r - n) as usize * cols, r as usize * cols);
+            for c in left as usize..=right as usize {
+                self.cells.swap(dst + c, src + c);
+            }
+        }
+        // Blank the band in the `n` rows vacated at the top.
+        for r in top..top + n {
+            let base = r as usize * cols;
+            for c in left as usize..=right as usize {
+                self.cells[base + c] = Cell::blank();
+            }
+        }
+        for r in top..=bottom {
+            self.wrapped[r as usize] = false;
+            self.stamp_row(r, generation);
+        }
+    }
+
+    /// Shift every inline image ANCHORED INSIDE the scrolled region UP by `n` — the image tracks
+    /// its text (a sixel scrolls with the output, R1404 Stage 3). An image anchored in the `n` rows
+    /// leaving the top of the region (`[top, top+n)`) is EVICTED, exactly as those rows' cells
+    /// leave; one anchored outside the region — including outside its COLUMNS when DECLRMM has
+    /// narrowed it — is untouched, because those cells did not move. Anchor-granular (an image
+    /// straddling a region boundary tracks by its anchor cell — a documented bound).
     /// Scrollback-image retention (re-appearing when you scroll back up) is a deferred bound: a
     /// scrolled-off-the-top image is dropped, not kept.
-    fn shift_images_up(&mut self, top: u16, bottom: u16, n: u16) {
+    fn shift_images_up(&mut self, top: u16, bottom: u16, left: u16, right: u16, n: u16) {
         self.images.retain_mut(|img| {
-            let r = img.anchor.1;
-            if r < top || r > bottom {
+            let (c, r) = img.anchor;
+            if r < top || r > bottom || c < left || c > right {
                 true // outside the scrolled region — unmoved
             } else if r < top + n {
                 false // in the rows leaving the top — evicted
@@ -2644,12 +2805,12 @@ impl Screen {
         });
     }
 
-    /// Shift every inline image whose anchor row is in `[top, bottom]` DOWN by `n`, evicting one
-    /// that leaves the bottom — the mirror of [`Self::shift_images_up`] (RI / SD / IL).
-    fn shift_images_down(&mut self, top: u16, bottom: u16, n: u16) {
+    /// Shift every inline image anchored inside the region DOWN by `n`, evicting one that leaves
+    /// the bottom — the mirror of [`Self::shift_images_up`] (RI / SD / IL).
+    fn shift_images_down(&mut self, top: u16, bottom: u16, left: u16, right: u16, n: u16) {
         self.images.retain_mut(|img| {
-            let r = img.anchor.1;
-            if r < top || r > bottom {
+            let (c, r) = img.anchor;
+            if r < top || r > bottom || c < left || c > right {
                 true
             } else if r + n > bottom {
                 false // leaving the bottom of the region — evicted
