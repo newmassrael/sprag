@@ -409,6 +409,69 @@ impl Tree {
         }
         Ok(())
     }
+
+    /// Remove every cgroup in the tree that nothing is running in, and report how many went.
+    ///
+    /// # Why a sweep, and not a note of which pane died
+    ///
+    /// The obvious alternative is a table from pane to cgroup, written at birth and read at death.
+    /// It has to be right in three places — birth, death, and every path that ends a pane without
+    /// going through the usual death — and a table that is wrong is invisible: the leak it leaves
+    /// is an empty directory nobody looks at.
+    ///
+    /// The kernel is already keeping the fact. `rmdir` on a cgroup with a live process in it fails
+    /// with `EBUSY`, so "is this pane still running?" needs no bookkeeping at all — asking IS the
+    /// answer. That also makes this self-healing: a tree left behind by a daemon that was killed
+    /// outright is cleaned by the next one to adopt the same root, which no side table could do.
+    ///
+    /// Never returns an error. A level that refuses to go is a level that is still in use, which is
+    /// the normal case for every sweep but the last.
+    pub fn sweep(&self) -> usize {
+        let mut removed = 0;
+        // Deepest first, so a window emptied by its last pane goes in the same pass rather than
+        // waiting for the next one.
+        for session in interior_children(&self.root) {
+            for window in interior_children(&session) {
+                for pane in interior_children(&window) {
+                    removed += usize::from(std::fs::remove_dir(&pane).is_ok());
+                }
+            }
+        }
+        for session in interior_children(&self.root) {
+            for window in interior_children(&session) {
+                removed += usize::from(std::fs::remove_dir(&window).is_ok());
+            }
+            removed += usize::from(std::fs::remove_dir(&session).is_ok());
+        }
+        removed
+    }
+}
+
+/// The cgroup directories this tree made under `parent`, and nothing else.
+///
+/// Filtered to the tree's own `session-` / `window-` / `pane-` spelling so a sweep can never reach
+/// the daemon's own leaf, or anything a person put in the subtree by hand.
+fn interior_children(parent: &Path) -> Vec<PathBuf> {
+    // Collected rather than lazy: the listing is a handful of entries, and the sweep REMOVES
+    // directories as it walks — reading a directory while unlinking out of it is the kind of thing
+    // that works until the day it does not.
+    std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("session-")
+                            || name.starts_with("window-")
+                            || name.starts_with("pane-")
+                    })
+        })
+        .collect()
 }
 
 /// One pane's cgroup, made.
@@ -828,6 +891,31 @@ mod tests {
         // The sibling keeps its window, and the window keeps its session.
         assert!(fs.root.join("session-1/window-2/pane-4").exists());
         assert!(fs.root.join("session-1").exists());
+    }
+
+    #[test]
+    fn a_sweep_takes_the_empty_levels_and_leaves_the_daemons_own_home_alone() {
+        let fs = FakeCgroupFs::new("sweep");
+        fs.bare("session-1/window-2/pane-3");
+        fs.bare("session-1/window-2/pane-4");
+        fs.bare("session-9/window-9/pane-9");
+        fs.bare(DAEMON_LEAF);
+        let tree = Tree {
+            root: fs.root.clone(),
+        };
+
+        // Nothing is running in a fixture, so every pane level is sweepable and the levels that
+        // held only those panes go with them, deepest first, in ONE pass.
+        let removed = tree.sweep();
+
+        // Three panes, the two windows they emptied, and the two sessions those emptied.
+        assert_eq!(removed, 7);
+        assert!(!fs.root.join("session-1").exists());
+        assert!(!fs.root.join("session-9").exists());
+        // The daemon's own leaf is not spelled like a level of the tree, so a sweep cannot reach
+        // it — taking it would put the daemon's threads back in an interior cgroup and invalidate
+        // everything below.
+        assert!(fs.root.join(DAEMON_LEAF).exists());
     }
 
     #[test]

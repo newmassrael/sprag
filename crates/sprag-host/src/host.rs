@@ -52,9 +52,9 @@ use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, Attention, CommandBuilder, DividerStep, Ended, HistoryLimitSource,
     LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneBirthHooks, PaneDir, PaneEnvSource, PaneId,
-    PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect, SessionId,
-    SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, WindowId,
-    WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
+    PaneLineage, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect,
+    SessionId, SessionInfo, SessionRegistry, Share, Snapshot, SnapshotError, SplitDir, SplitSide,
+    Tree, WindowId, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1533,6 +1533,18 @@ pub struct Host {
     /// [`with_pane_env`](Self::with_pane_env). HELD as well as installed on the registry because a
     /// [`restore`](Self::restore) replaces the registry's pools wholesale and must re-install it.
     pane_env: Option<PaneEnvSource>,
+    /// The cgroup subtree every pane born here is placed in, if this daemon was given one (R336).
+    ///
+    /// `None` for a host that has no tree — the GUI's in-process host, every test, and a daemon on
+    /// a machine that cannot enforce a share. That absence is the DESIGNED state, not a degraded
+    /// one: a pane opens either way, and only the enforcement is missing.
+    shares: Option<Arc<Tree>>,
+    /// Serialises placing a pane against sweeping away the panes that ended.
+    ///
+    /// A freshly placed cgroup is EMPTY until its child is moved in, and empty is exactly what the
+    /// sweep collects. Without this, one thread's birth could be swept out from under it by
+    /// another's, and the pane would come up unweighted for no reason anybody could reproduce.
+    placing: Mutex<()>,
 }
 
 /// The `on_dirty` FACTORY a [`Host`] wires each client-created pane with: a fresh hook per pane,
@@ -1607,6 +1619,8 @@ impl Host {
             samplers: crate::Samplers::default(),
             pane_hooks: None,
             pane_env: None,
+            shares: None,
+            placing: Mutex::new(()),
         }
     }
 
@@ -1653,6 +1667,18 @@ impl Host {
         self
     }
 
+    /// Place every pane born under this host in `tree` — the daemon's adopted cgroup subtree
+    /// (R336). A caller with no tree installs none and its panes open exactly as before.
+    ///
+    /// Unlike [`with_pane_env`](Self::with_pane_env) nothing is installed on the registry: the tree
+    /// is consulted at BIRTH, from a host that already knows the pool it spawned into, so a
+    /// [`restore`](Self::restore) that replaces the pools wholesale needs no re-installation.
+    #[must_use]
+    pub fn with_shares(mut self, tree: Arc<Tree>) -> Self {
+        self.shares = Some(tree);
+        self
+    }
+
     /// Spawn a boot pane running `command` (labelled `label`) at `cols x rows`,
     /// returning its id. `on_dirty` is the pinion-free wake hook a windowed client
     /// passes (`Some(Box::new(move || sink.request_repaint()))`, the R999
@@ -1678,7 +1704,65 @@ impl Host {
         hooks: PaneBirthHooks,
     ) -> Result<PaneId, PanePtyError> {
         let workspace = self.workspace();
-        lock(&workspace).spawn_with_dirty(command, label, cols, rows, hooks)
+        // Asked BEFORE the pool is locked, and answered by `Arc` identity rather than by pane —
+        // the registry's lock is taken and released here, so the pool lock below is never held
+        // under it (the ordering `LocatedWindow` names).
+        let home = lock(&self.registry).window_of_pool(&workspace);
+        let id = lock(&workspace).spawn_with_dirty(command, label, cols, rows, hooks)?;
+        self.place_share(home, id, &workspace);
+        Ok(id)
+    }
+
+    /// Put a newborn pane's child in the cgroup its identities name, if this host has a tree.
+    ///
+    /// Never fails the birth. A pane that could not be placed is a pane running unweighted, which
+    /// is what every pane did before this existed; refusing to open it instead would trade a
+    /// missing guarantee for a missing terminal.
+    ///
+    /// The child is moved AFTER it starts, which leaves the window `Placement::join` documents: a
+    /// process that forked in those microseconds leaves children outside the cgroup. Closing it
+    /// needs the spawn seam to own its own `fork`/`exec` (`clone3(CLONE_INTO_CGROUP)`), which is
+    /// the next step and not this one.
+    fn place_share(
+        &self,
+        home: Option<(SessionId, WindowId)>,
+        pane: PaneId,
+        workspace: &Arc<Mutex<Workspace>>,
+    ) {
+        let (Some(tree), Some((session, window))) = (self.shares.as_ref(), home) else {
+            return;
+        };
+        let _placing = lock(&self.placing);
+        // The cgroups of panes that have ended, collected here rather than from a death signal.
+        //
+        // `rmdir` refuses a cgroup with a live process in it, so the kernel already holds the fact
+        // a pane-to-cgroup table would duplicate — and asking it is what makes this self-healing
+        // across a daemon that was killed outright, which no table could be. The honest cost is
+        // stated rather than hidden: cgroups of dead panes linger until the NEXT pane is born. They
+        // are empty directories, births and deaths alternate in a terminal, and a daemon whose last
+        // pane died is on its way out anyway.
+        tree.sweep();
+        let lineage = PaneLineage {
+            session,
+            window,
+            pane,
+        };
+        let placed = match tree.place(lineage, Share::EVEN) {
+            Ok(placed) => placed,
+            Err(error) => {
+                tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
+                return;
+            }
+        };
+        // The pid is read back from the pool rather than returned by the spawn: `PanePty` owns the
+        // child, and a birth that hands its pid out would be handing out a way to signal it.
+        let Some(pid) = lock(workspace).pane(pane).and_then(|p| p.pty().pid()) else {
+            tracing::warn!(pane = pane.0, "a newborn pane has no pid to place");
+            return;
+        };
+        if let Err(error) = placed.join(pid) {
+            tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
+        }
     }
 
     /// Rebuild this host's registry from a durability [`Snapshot`] and re-spawn its panes — the

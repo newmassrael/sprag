@@ -131,7 +131,7 @@ fn main() -> io::Result<()> {
     // terminal's transient scope DIES WITH THAT TERMINAL, which is the opposite of what a
     // multiplexer promises. Its own scope outlives the window that started it.
     #[cfg(target_os = "linux")]
-    take_share_subtree();
+    let shares = take_share_subtree();
 
     // The one Workspace owner (shared with the GUI as a code component): boot the
     // initial pane through it, then wrap it in HostState to serve the RPC surface.
@@ -149,6 +149,14 @@ fn main() -> io::Result<()> {
     // installs nothing and its panes are spawned exactly as before. The path is `sock`, resolved
     // above once, so what a pane is told and what `mount` binds cannot differ.
     let host = Host::new((args.cols, args.rows)).with_pane_env(sprag_host::pane_env_source(&sock));
+    // Every pane this daemon births lands in the subtree taken above, so a person's session cannot
+    // be starved by whichever neighbour spawned the most threads. A host with no tree spawns
+    // exactly as it always did.
+    #[cfg(target_os = "linux")]
+    let host = match shares {
+        Some(tree) => host.with_shares(tree),
+        None => host,
+    };
     // The persistent snapshot path, used only in the daemon arms below.
     let snap_path = snapshot_path(&sock);
     // Self-cleaning lifetime: when the LAST live pane across all sessions exits, the daemon has
@@ -335,32 +343,38 @@ fn init_tracing() {
 /// The handle is dropped on purpose. `adopt` acts on the MACHINE — the process is moved, the
 /// controllers are on — and the pane-birth path re-derives the same tree from the same root.
 #[cfg(target_os = "linux")]
-fn take_share_subtree() {
-    use sprag_terminal::share::{Enforcement, Tree, Unenforceable};
+fn take_share_subtree() -> Option<Arc<sprag_terminal::Tree>> {
+    use sprag_terminal::share::{Enforcement, Tree};
 
     let delegated = match sprag_host::delegation::acquire(std::process::id()) {
         Ok(delegated) => delegated,
         Err(error) => {
             tracing::warn!(%error, "pane shares will not be enforced");
-            return;
+            return None;
         }
     };
     // Asked AFTER the move, about the cgroup this process is in NOW: the answer before it would
     // have described the terminal's scope, which is the one that cannot weight anything.
     match Enforcement::probe() {
         Enforcement::Available { home } => match Tree::adopt(home.clone()) {
-            Ok(_tree) => tracing::info!(
-                unit = delegated.unit(),
-                root = %home.display(),
-                "pane shares enforced"
-            ),
-            Err(error) => tracing::warn!(%error, "pane shares will not be enforced"),
+            Ok(tree) => {
+                tracing::info!(
+                    unit = delegated.unit(),
+                    root = %home.display(),
+                    "pane shares enforced"
+                );
+                Some(Arc::new(tree))
+            }
+            Err(error) => {
+                tracing::warn!(%error, "pane shares will not be enforced");
+                None
+            }
         },
         Enforcement::Unenforceable { reason } => {
             // A scope that was delegated and still cannot weight is worth its own sentence: it
             // means the user manager handed over a subtree without the CPU controller in it.
-            let reason: Unenforceable = reason;
             tracing::warn!(%reason, unit = delegated.unit(), "pane shares will not be enforced");
+            None
         }
     }
 }

@@ -62,7 +62,9 @@ pub use registry::{
 pub use remote::SshRemote;
 pub use sampled::{Reading, Sampled};
 pub use session_name::{SessionName, SessionNameError};
-pub use share::{Enforcement, Share, ShareError, Unenforceable};
+pub use share::{
+    Enforcement, PaneLineage, Placement, Share, ShareError, Tree, TreeError, Unenforceable,
+};
 pub use snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneHistory, PaneRestore, PaneSnapshot, RestorePlan,
     SNAPSHOT_VERSION, SessionSnapshot, Snapshot, SnapshotError, WindowSnapshot, pane_histories,

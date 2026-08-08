@@ -3852,6 +3852,30 @@ impl SessionRegistry {
             .find(|w| w.name == window)
             .map(|w| Arc::clone(w.workspace()))
     }
+
+    /// Which session and window a pane POOL belongs to — the identities a pane born into it
+    /// descends from (R336).
+    ///
+    /// # Why it asks by POOL and not by pane
+    ///
+    /// A pane's own answer is not available when it is needed. Placement happens at birth, and a
+    /// newborn pane is in its pool before the reconcile that puts it in the window's layout, so a
+    /// lookup by [`PaneId`] would either miss it or have to lock every pool to find it. Locking
+    /// pools from under the registry lock is precisely the ordering [`LocatedWindow`] exists to
+    /// avoid — it says to take a pool's lock on its OWN, after the registry's is released.
+    ///
+    /// Asking by `Arc` identity needs neither: the caller already holds the pool it is about to
+    /// spawn into, and pointer equality answers without touching a single pane or a second lock.
+    #[must_use]
+    pub fn window_of_pool(&self, pool: &Arc<Mutex<Workspace>>) -> Option<(SessionId, WindowId)> {
+        self.sessions.iter().find_map(|session| {
+            session
+                .windows
+                .iter()
+                .find(|window| Arc::ptr_eq(window.workspace(), pool))
+                .map(|window| (session.id, window.id))
+        })
+    }
 }
 
 #[cfg(test)]
