@@ -347,8 +347,9 @@ impl Command {
             | Self::NewWindow
             | Self::SelectWindow { .. }
             | Self::MoveWindow(_)
-            // The window's own rectangle, and no hint beyond the chord `bound`
-            // derives — the same answer every argument-free row here gives.
+            // R331's three fits joined them the day the keyboard gained the verb — the group's own
+            // rule, and the reason this arm is UNREACHABLE rather than a decision: `bound()` is
+            // `Some` for it, so the chord is answered above and never from here.
             | Self::ResizeWindow(_) => None,
         }
     }

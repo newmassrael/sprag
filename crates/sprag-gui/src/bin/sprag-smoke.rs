@@ -2790,6 +2790,37 @@ fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &m
         said.contains("window-size is largest"),
     );
 
+    // ⚠ **THE PALETTE ROW, RUN LIVE** — the third mouth for this verb, and the debt question is why
+    // it is here: R331 shipped three rows and drove them through `Command::run` in a unit test,
+    // which is not a test that the palette OFFERS them or that a click reaches the host. The row's
+    // own title is the address, so a row renamed out from under this fails by name.
+    //
+    // The FIT is the one to drive: the window is still pinned to `elsewhere` from the press above,
+    // so a row that lands puts it back on this client's own area — a fact only a fold produces.
+    if let Err(error) = smoke.cli(&[
+        "resize-window",
+        "-t",
+        &session,
+        "-x",
+        &elsewhere.0.to_string(),
+        "-y",
+        &elsewhere.1.to_string(),
+    ]) {
+        report.check("the smoke re-pins the window for the palette row", false);
+        eprintln!("      {error}");
+        let _ = smoke.write_user_config("");
+        return;
+    }
+    let _ = smoke.write_user_config("[options]\nwindow-size = \"manual\"\n");
+    if smoke.run_palette_row("Fit this window to the smallest client watching it", report) {
+        let fitted = smoke
+            .wait_for(|_| (window_size(&mut daemon, &session) == Some(measured)).then_some(()));
+        report.check(
+            &format!("the palette's fit row folded this client's own area ({fitted:?})"),
+            fitted.is_ok(),
+        );
+    }
+
     // Leave the file as this check found it, so a later one reads its own settings and not these.
     let _ = smoke.write_user_config("");
 }
@@ -3533,6 +3564,15 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     };
     let state = smoke.state.clone();
     let client = smoke.gui.id();
+    // The pane the ACKNOWLEDGEMENT presses below are aimed at, read rather than assumed to be slot
+    // 0: an alert waits for a keypress, and a `prefix q` sent at an empty slot acknowledges nothing
+    // — which would leave the strip standing and time out a wait in this check or the next. Slots
+    // are not re-packed, so a check earlier in this run frees the one a literal 0 names (R331).
+    let acking = smoke
+        .docked_panes()
+        .ok()
+        .and_then(|panes| panes.first().copied())
+        .unwrap_or(0);
 
     // THE POLICY IS WRITTEN, NOT INHERITED. R318 and R319 both shipped gates that read whatever
     // `notify-outward` happened to be in force; here the isolation holds (every child gets its own
@@ -3646,8 +3686,8 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     // The alert above is acknowledged FIRST: the mailbox holds one message per client, and a
     // sentence that waits for a keystroke would otherwise still be the one on the strip when this
     // one is asserted.
-    let _ = smoke.press(0, "b", true);
-    let _ = smoke.press(0, "q", false);
+    let _ = smoke.press(acking, "b", true);
+    let _ = smoke.press(acking, "q", false);
     let cleared_first = smoke.wait_for(|s| {
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
@@ -3772,8 +3812,8 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     );
     // ...and the OFF control's own alert acknowledged, so the strip is clear for whatever runs
     // next. `prefix q` is bound to nothing, so the acknowledgement is the only thing it can do.
-    let _ = smoke.press(0, "b", true);
-    let _ = smoke.press(0, "q", false);
+    let _ = smoke.press(acking, "b", true);
+    let _ = smoke.press(acking, "q", false);
     let cleared = smoke.wait_for(|s| {
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
