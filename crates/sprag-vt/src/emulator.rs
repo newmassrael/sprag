@@ -1671,6 +1671,15 @@ impl Emulator {
     fn control(&mut self, code: ControlCode) {
         match code {
             ControlCode::LineFeed | ControlCode::VerticalTab | ControlCode::FormFeed => {
+                // ⚠ VT (`0x0B`) IS "LINE TABULATION" IN ECMA-48, and it deliberately does NOT read
+                // the line tab stops [`Self::line_tab`] moves over. Every terminal in use treats VT
+                // as a line feed — Ghostty maps `.LF, .VT, .FF` to one `linefeed` handler
+                // (`stream.zig:1186` at `2602886`) — and a program emitting `\v` today means "down
+                // one line". Honouring the standard here would silently change where existing
+                // output lands, which is a worse answer than diverging from a clause nobody
+                // implements. CVT (`CSI Ps Y`) is the spelling that DOES read the table, and it has
+                // no legacy meaning to break. Recorded so a later reader does not "fix" this.
+                //
                 // A line feed ends this row's logical line (a hard break) — UNLESS it
                 // is the editor's resize-redraw wrap idiom, where it CONTINUES the
                 // line (a soft wrap). See `in_resize_redraw` for why.
