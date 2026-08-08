@@ -4229,16 +4229,32 @@ fn the_prefix_reaches_another_session_and_then_the_one_before_it() {
 ///   the `0x02` the action sent;
 /// * after it, `%` is the program's and puts a literal `%` there.
 ///
-/// `repeat-time` is 100 ms and the lapse is a 500 ms sleep — five times the window. That is not a
-/// race: the window closes at a deadline the client computed when it acted, so sleeping PAST it is a
-/// one-directional guarantee rather than something being waited for.
+/// The lapse is a sleep PAST `repeat-time`, which is one-directional: the window closes at a
+/// deadline the client computed when it acted, so overshooting it cannot fail in the other
+/// direction. That reasoning is sound and it was written about the third claim only.
+///
+/// ⚠ THE SECOND CLAIM USED TO BE A RACE, and the paragraph above is why nobody looked: this test
+/// typed the second `%` only after WAITING for the pane to echo the first, and that wait is a round
+/// trip through three processes. It had to finish inside a 100 ms window. Measured at
+/// `4289edf`, before the round that found it: **2 failures in 5 isolated runs**, on a tree where
+/// nothing about repeat had changed. The diagnostic was `live^B%` — the exact screen the
+/// revert-proof below predicts for a BROKEN product, so the flake was indistinguishable from the
+/// defect this gate exists to catch.
+///
+/// The fix is structural rather than a longer timeout. The two `%` are typed BACK TO BACK, so what
+/// has to happen inside the window is the client reading two bytes it already holds rather than an
+/// echo travelling to `cat` and back; nothing observable is waited for while the clock runs. The
+/// window is then set an order of magnitude above any plausible scheduling delay, so the remaining
+/// margin is not a number anybody has to tune. Both halves are needed: raising the window alone
+/// would leave the round trip inside it, and typing back to back alone would leave a 100 ms budget
+/// for a client the whole suite is competing with.
 ///
 /// REVERT-PROOF: answer `PrefixMode::ToPane` for a repeating act (i.e. ignore `-r`) and the second
 /// claim times out — the screen reads `live^B%`, the `%` having gone straight to `cat`.
 #[test]
 fn a_repeat_binding_acts_twice_on_one_prefix_and_then_lets_go() {
     let config = ConfigHome::new(
-        "[options]\nrepeat-time = 100\n\
+        "[options]\nrepeat-time = 1000\n\
          [[bind]]\nkey = \"%\"\naction = \"send-prefix\"\nrepeat = true\n",
     );
     let (_daemon, _sock, _conn, _session, mut tui) = attached_client_with(
@@ -4251,20 +4267,18 @@ fn a_repeat_binding_acts_twice_on_one_prefix_and_then_lets_go() {
     tui.type_bytes(b"live");
     wait_for("the client to be painting", || painted(&mut tui, "live"));
 
+    // The prefix ONCE, then the bound key TWICE with nothing observed in between: the repeat window
+    // is running from the moment the client acts on the first `%`, so anything waited for here is
+    // waited for on the clock. Both bytes are already in the client's pipe when it acts.
     tui.type_bytes(&[0x02]); // the prefix, ONCE
     tui.type_bytes(b"%");
-    wait_for("the bound key to send the prefix", || {
-        painted(&mut tui, "live^B")
-    });
-
-    // No second prefix. This is `-r`.
-    tui.type_bytes(b"%");
-    wait_for("the repeat to act again without a second prefix", || {
+    tui.type_bytes(b"%"); // no second prefix. This is `-r`.
+    wait_for("both acts to reach the pane on one prefix", || {
         painted(&mut tui, "live^B^B")
     });
 
     // Past the deadline the client itself computed — so the window is shut, not merely likely to be.
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(1500));
     tui.type_bytes(b"%");
     wait_for("the lapsed window to hand the key back to the pane", || {
         painted(&mut tui, "live^B^B%")
@@ -6284,15 +6298,30 @@ fn the_outward_policy_is_this_clients_own_and_not_the_daemons() {
 
     // THE CONTROL: it reaches BOTH rows, so the difference below is about the policy and not about
     // one client having missed the message.
-    for (tui, name) in [(&always, "always"), (&off, "off")] {
-        wait_for("the message to reach both rows", || {
-            settled(
-                tui.row(STATUS_ROW).contains("one message, two clients"),
-                &true,
-            )
-            .map_err(|got| format!("{got} at {name}: row reads {:?}", tui.row(STATUS_ROW)))
-        });
-    }
+    //
+    // ⚠ ONE observation window, LATCHING per client — not a `wait_for` each. A displayed message is
+    // TIMED: it leaves the row again on its own. Waiting for `always` to show it and only then
+    // starting to watch `off` spends the second client's whole display window on the first client's
+    // round trip, and what the second wait then observes is the row AFTER the message has expired —
+    // which reads exactly like a message that never arrived. That is the failure this test produced
+    // under full-suite load at `4289edf` (`false at off: row reads "[0] 0:0*"`): a claim about a
+    // TIMED message needs one observation window, not two. Latching rather than requiring both rows
+    // to hold it at the SAME instant, so the gate does not swap one race for a tighter one.
+    let mut seen = [false; 2];
+    wait_for("the message to reach both rows", || {
+        let rows = [always.row(STATUS_ROW), off.row(STATUS_ROW)];
+        for (held, row) in seen.iter_mut().zip(&rows) {
+            *held |= row.contains("one message, two clients");
+        }
+        if seen.iter().all(|held| *held) {
+            Ok(())
+        } else {
+            Err(format!(
+                "seen {seen:?}; rows read always={:?} off={:?}",
+                rows[0], rows[1]
+            ))
+        }
+    });
 
     // THE CLAIM: only the client whose file said `always` copied it out.
     wait_for("the loud client to copy it out", || {
