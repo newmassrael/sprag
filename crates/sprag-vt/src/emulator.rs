@@ -26,9 +26,10 @@ use termwiz::escape::apc::{
     KittyImageTransmit,
 };
 use termwiz::escape::csi::{
-    CSI, CsiParam, Cursor as CsiCursor, CursorStyle, DecPrivateMode, DecPrivateModeCode, Device,
-    Edit, EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode, Mode, Sgr, TerminalMode,
-    TerminalModeCode, Unspecified, Window, XtSmGraphicsItem,
+    CSI, CsiParam, Cursor as CsiCursor, CursorStyle, CursorTabulationControl, DecPrivateMode,
+    DecPrivateModeCode, Device, Edit, EraseInDisplay, EraseInLine, Keyboard, KittyKeyboardMode,
+    Mode, Sgr, TabulationClear, TerminalMode, TerminalModeCode, Unspecified, Window,
+    XtSmGraphicsItem,
 };
 use termwiz::escape::osc::{
     ChangeColorPair, ColorOrQuery, DynamicColorNumber, FinalTermSemanticPrompt, Selection,
@@ -45,6 +46,7 @@ use crate::port::{
     Notification, Palette, PromptMark, Rgb, Screen, ScreenKind, ScrollRegion, ShellState,
     UnderlineStyle, Urgency, VtPort, Width, char_columns,
 };
+use crate::tabstops::{DEFAULT_TAB_INTERVAL, TabStops};
 
 /// Build a single-char cluster with no heap allocation.
 ///
@@ -189,6 +191,15 @@ pub struct Emulator {
     /// to the SCREEN top-left. The horizontal margins move only while
     /// [`Self::left_right_margin_mode`] is on.
     region: ScrollRegion,
+    /// The character (column) and line (row) tabulation stops — see [`TabStops`].
+    ///
+    /// DEVICE state, not screen state: one table serves the main and the alternate screen alike
+    /// (an app that sets stops, switches to the alt screen and comes back finds them), and the
+    /// DECSC / DECRC cursor save does not carry it. A RIS restores the power-on table through
+    /// [`Self::hard_reset`]; DECSTR deliberately does NOT, because VT510's DECSTR set does not
+    /// list tab stops. A resize GROWS it and never rebuilds it — the divergence from Ghostty that
+    /// [`crate::tabstops`] documents at length.
+    tabs: TabStops,
     /// DECLRMM / DECVSSM (DEC private mode 69), default OFF — whether the horizontal half of
     /// [`Self::region`] can move at all. Off (the power-on state), DECSLRM is INERT and the
     /// region spans every column, so every margin-aware rule below collapses to the ordinary
@@ -510,6 +521,7 @@ impl Emulator {
             cell_pixel_width: 0,
             cell_pixel_height: 0,
             region: ScrollRegion::full(cols.max(1), rows.max(1)),
+            tabs: TabStops::new(cols.max(1), rows.max(1)),
             left_right_margin_mode: false,
             autowrap: true,
             reverse_wraparound: false,
@@ -828,6 +840,14 @@ impl Emulator {
                 EscCode::DecRestoreCursorPosition => self.restore_cursor(),
                 EscCode::Index => self.line_feed(),
                 EscCode::ReverseIndex => self.reverse_index(),
+                // HTS — set a character tab stop at the cursor's column. Routed THROUGH
+                // `tabulation_control` rather than touching the table itself, because HTS is not a
+                // second action: it is the single-byte spelling of CTC 0 (and the one applications
+                // actually use — `tput hts`). Two doors onto one effect is how the two come to
+                // disagree the day one of them grows a guard.
+                EscCode::HorizontalTabSet => self.tabulation_control(
+                    CursorTabulationControl::SetCharacterTabStopAtActivePosition,
+                ),
                 EscCode::FullReset => self.hard_reset(),
                 // SCS — designate a charset into a G-set. termwiz parses only G0 / G1.
                 EscCode::DecLineDrawingG0 => self.designate(0, CharSet::DecLineDrawing),
@@ -1003,12 +1023,36 @@ impl Emulator {
     /// mirror of [`Self::move_cursor_up`]; without DECLRMM the margin is column 0 and this is the
     /// plain clamp it has always been.
     fn move_cursor_left(&mut self, n: u16) {
-        let floor = if self.col >= self.region.left {
+        self.col = self.col.saturating_sub(n).max(self.back_tab_floor());
+    }
+
+    /// The leftmost column a backward horizontal move may reach: the LEFT MARGIN for a cursor at or
+    /// right of it, else column 0 (a cursor already left of the region is bounded by the screen, not
+    /// pushed into a region it is not in). Shared by CUB and CBT so the two cannot drift apart —
+    /// the mirror of [`Self::tab_ceiling`], which CUF and HT share.
+    ///
+    /// This is a deliberate divergence from Ghostty, whose `horizontalTabBack` takes the left margin
+    /// as its limit only under ORIGIN MODE (`Terminal.zig:2172` at `2602886`) while its `cursorLeft`
+    /// takes it unconditionally (`:1829`). With margins armed and origin mode off, those two
+    /// disagree: a CUB stops at the margin and a CBT walks straight past it. One cursor cannot have
+    /// two answers about where the left of its region is, so sprag derives both from here.
+    fn back_tab_floor(&self) -> u16 {
+        if self.col >= self.region.left {
             self.region.left
         } else {
             0
-        };
-        self.col = self.col.saturating_sub(n).max(floor);
+        }
+    }
+
+    /// The lowest row a downward vertical move may reach: the BOTTOM MARGIN for a cursor at or above
+    /// it, else the last row. Shared by CUD / CNL and CVT, for the reason [`Self::back_tab_floor`]
+    /// gives.
+    fn line_tab_ceiling(&self) -> u16 {
+        if self.row <= self.region.bottom {
+            self.region.bottom
+        } else {
+            self.rows.saturating_sub(1)
+        }
     }
 
     /// CUF: move the cursor right `n` columns without crossing the RIGHT margin when it starts at
@@ -1029,6 +1073,101 @@ impl Emulator {
         }
     }
 
+    /// HT / CHT (`CSI Ps I`) — move forward over `n` character tab stops, each hop bounded by the
+    /// right margin. A `0` count is one hop (the CSI default), matching every other cursor verb.
+    ///
+    /// Each hop re-reads [`Self::tab_ceiling`] because the ceiling depends on where the cursor IS:
+    /// a cursor that has been driven right of a narrowed region is bounded by the screen, and one
+    /// hop can move it across that boundary.
+    fn forward_tab(&mut self, n: u16) {
+        for _ in 0..n.max(1) {
+            self.col = self.tabs.columns.next_after(self.col, self.tab_ceiling());
+        }
+    }
+
+    /// CBT (`CSI Ps Z`) — move back over `n` character tab stops, each hop bounded by the left
+    /// margin ([`Self::back_tab_floor`]). The mirror of [`Self::forward_tab`].
+    fn backward_tab(&mut self, n: u16) {
+        for _ in 0..n.max(1) {
+            self.col = self
+                .tabs
+                .columns
+                .prev_before(self.col, self.back_tab_floor());
+        }
+    }
+
+    /// CVT (`CSI Ps Y`) — move down over `n` LINE tab stops, each hop bounded by the bottom margin.
+    ///
+    /// The vertical peer of HT, and the half of ECMA-48 tabulation Ghostty does not implement at
+    /// all (no line-stop table, no `CSI Y` arm, and `CSI W` accepts only its character-stop values
+    /// at `2602886`). It is a complete feature here rather than a parsed-and-dropped one: CTC 1 and
+    /// TBC 1 / 4 / 5 move the same table this reads, so every sequence in the family has both a
+    /// setter and an observable effect.
+    ///
+    /// CVT does not SCROLL. ECMA-48 defines it as a move to the next line tab stop, and a screen
+    /// with no stop below the cursor has nowhere further to go; the sequences that scroll on
+    /// reaching the bottom (LF, IND, NEL) say so themselves.
+    fn line_tab(&mut self, n: u16) {
+        for _ in 0..n.max(1) {
+            self.row = self
+                .tabs
+                .lines
+                .next_after(self.row, self.line_tab_ceiling());
+        }
+    }
+
+    /// CTC (`CSI Ps W`) — Cursor Tabulation Control: the ECMA-48 verb that sets and clears stops on
+    /// BOTH axes, and the closed set `ESC H` (HTS) and `CSI g` (TBC) each cover part of.
+    ///
+    /// Exhaustive over termwiz's [`CursorTabulationControl`] deliberately — no catch-all arm — so a
+    /// value added to the parser is a COMPILE error here rather than a silent drop. That is the
+    /// shape the whole family was in before this round.
+    ///
+    /// Ghostty answers three of these seven (`0`, `2`, `5`) and warns on the rest
+    /// (`stream.zig:1578-1601` at `2602886`); the four it drops are the line-stop half plus
+    /// "clear this line's character stops".
+    fn tabulation_control(&mut self, ctc: CursorTabulationControl) {
+        match ctc {
+            CursorTabulationControl::SetCharacterTabStopAtActivePosition => {
+                self.tabs.columns.set(self.col);
+            }
+            CursorTabulationControl::SetLineTabStopAtActiveLine => self.tabs.lines.set(self.row),
+            CursorTabulationControl::ClearCharacterTabStopAtActivePosition => {
+                self.tabs.columns.unset(self.col);
+            }
+            CursorTabulationControl::ClearLineTabstopAtActiveLine => {
+                self.tabs.lines.unset(self.row)
+            }
+            // "…at the active line" is the whole set, because character stops are DEVICE state
+            // shared by every line (ECMA-48's TSM in its reset state, which is the only state sprag
+            // has — see the [`crate::tabstops`] module docs).
+            CursorTabulationControl::ClearAllCharacterTabStopsAtActiveLine
+            | CursorTabulationControl::ClearAllCharacterTabStops => self.tabs.columns.clear(),
+            CursorTabulationControl::ClearAllLineTabStops => self.tabs.lines.clear(),
+        }
+    }
+
+    /// TBC (`CSI Ps g`) — Tabulation Clear: the clearing half of [`Self::tabulation_control`], in
+    /// the encoding applications actually send. Exhaustive for the same reason.
+    ///
+    /// Ghostty answers two of these six (`0`, `3`) and warns on the rest (`stream.zig:1758-1774`,
+    /// `csi.zig:28` at `2602886`).
+    fn tabulation_clear(&mut self, tbc: TabulationClear) {
+        match tbc {
+            TabulationClear::ClearCharacterTabStopAtActivePosition => {
+                self.tabs.columns.unset(self.col);
+            }
+            TabulationClear::ClearLineTabStopAtActiveLine => self.tabs.lines.unset(self.row),
+            TabulationClear::ClearCharacterTabStopsAtActiveLine
+            | TabulationClear::ClearAllCharacterTabStops => self.tabs.columns.clear(),
+            TabulationClear::ClearAllLineTabStops => self.tabs.lines.clear(),
+            TabulationClear::ClearAllTabStops => {
+                self.tabs.columns.clear();
+                self.tabs.lines.clear();
+            }
+        }
+    }
+
     /// The column a carriage return lands on. Under origin mode that is ALWAYS the left margin;
     /// otherwise it is the left margin only for a cursor at or right of it, so a cursor parked
     /// LEFT of the margins (which addressing outside origin mode can still reach) returns to
@@ -1044,12 +1183,7 @@ impl Emulator {
     /// CUD / CNL: move the cursor down `n` rows without crossing the bottom margin when it starts
     /// at or above it (a cursor already below the region stops at the screen bottom).
     fn move_cursor_down(&mut self, n: u16) {
-        let ceil = if self.row <= self.region.bottom {
-            self.region.bottom
-        } else {
-            self.rows.saturating_sub(1)
-        };
-        self.row = self.row.saturating_add(n).min(ceil);
+        self.row = self.row.saturating_add(n).min(self.line_tab_ceiling());
     }
 
     /// RIS — Reset to Initial State (`ESC c`): a full hard reset to the power-on state. Rebuilding
@@ -1571,12 +1705,11 @@ impl Emulator {
                     self.move_cursor_left(1);
                 }
             }
-            ControlCode::HorizontalTab => {
-                // Advance to the next 8-column tab stop, clamped to the RIGHT MARGIN: a tab must
-                // not carry the cursor out of a region DECLRMM narrowed.
-                let next = ((self.col / 8) + 1) * 8;
-                self.col = next.min(self.tab_ceiling());
-            }
+            // HT — advance to the next CHARACTER tab stop, or to the RIGHT MARGIN when no stop lies
+            // between here and it (a tab must not carry the cursor out of a region DECLRMM
+            // narrowed). The stops are a real table the child can move, not the fixed eight-column
+            // grid this used to compute: see [`Self::forward_tab`].
+            ControlCode::HorizontalTab => self.forward_tab(1),
             // BEL (`\a`) — the tmux monitor-bell attention ping. Count it (a text-less attention
             // event); it does not touch the grid. See `bell_seq`.
             ControlCode::Bell => self.bell_seq += 1,
@@ -1853,7 +1986,23 @@ impl Emulator {
             (Some(b'"'), 'q') => self.decsca(&ints),
             (Some(b'?'), 'J') => self.decsed(&ints),
             (Some(b'?'), 'K') => self.decsel(&ints),
+            (Some(b'?'), 'W') => self.decst8c(&ints),
             _ => {}
+        }
+    }
+
+    /// DECST8C (`CSI ? 5 W`) — put the character tab stops back to one every eight columns.
+    ///
+    /// It arrives here rather than as a typed `TabulationControl` because the `?` private prefix
+    /// fails termwiz's parameter parse, exactly as the DECSED / DECSEL private forms do; the
+    /// UNPREFIXED `CSI 5 W` is CTC 5 (clear ALL character stops) and means the opposite, which is
+    /// why the two cannot share an arm.
+    ///
+    /// The parameter must be `5`: DEC defines no other, and honouring a bare `CSI ? W` would make
+    /// a truncated sequence reset a table the application spent stops building.
+    fn decst8c(&mut self, p: &[i64]) {
+        if p.first().copied() == Some(5) {
+            self.tabs.columns.reset_every(DEFAULT_TAB_INTERVAL);
         }
     }
 
@@ -2301,6 +2450,14 @@ impl Emulator {
                 let report = format!("\x1b[{};{}R", report_row, self.col + 1);
                 self.responses.extend_from_slice(report.as_bytes());
             }
+            // The TABULATION family — CHT / CBT / CVT move over the stop tables, CTC and TBC move
+            // the tables themselves. Every one of these was parsed by termwiz and dropped by the
+            // wildcard below until this round.
+            CsiCursor::ForwardTabulation(n) => self.forward_tab(clamp_count(n)),
+            CsiCursor::BackwardTabulation(n) => self.backward_tab(clamp_count(n)),
+            CsiCursor::LineTabulation(n) => self.line_tab(clamp_count(n)),
+            CsiCursor::TabulationControl(ctc) => self.tabulation_control(ctc),
+            CsiCursor::TabulationClear(tbc) => self.tabulation_clear(tbc),
             _ => {}
         }
     }
@@ -3027,6 +3184,12 @@ impl VtPort for Emulator {
         // The scroll region was defined against the old geometry; a resize returns it to
         // the full new screen (apps re-issue DECSTBM if they still want a sub-region).
         self.reset_scroll_region();
+        // The tab stops do NOT go with it. They are state the CHILD set, and in a multiplexer a
+        // resize is mostly not the child's business at all — a divider drag, a zoom, a second
+        // client attaching at another size. Growing the tables answers for the new geometry
+        // without forgetting a stop; see [`crate::tabstops`] for the argument and for why Ghostty, a
+        // single-window terminal, can afford to reset them here and sprag cannot.
+        self.tabs.resize(cols, rows);
         // The next batch of bytes is the line editor's `SIGWINCH` redraw; apply the
         // soft-wrap / erase reinterpretations to it (see `in_resize_redraw`). Only
         // the MAIN screen runs a line editor; a fullscreen app owns the alt screen.
@@ -8156,6 +8319,307 @@ mod tests {
             em.screen().cursor().col,
             11,
             "HT clamps to the right margin instead of the screen width"
+        );
+    }
+
+    /// HTS (`ESC H`) puts a stop where the cursor is, and the next HT lands on it.
+    ///
+    /// The whole family's entry point: before this round the eight-column grid was computed
+    /// arithmetically, so this sequence moved the cursor and changed nothing.
+    #[test]
+    fn hts_sets_a_stop_the_next_tab_lands_on() {
+        let mut em = Emulator::new(20, 2);
+        em.advance(b"\x1b[1;4H\x1bH\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            3,
+            "HT lands on the stop HTS set, not on the eight-column grid"
+        );
+    }
+
+    /// TBC 0 takes away the stop under the cursor, so the tab that used to land there goes on to
+    /// the next one.
+    #[test]
+    fn tbc_clears_the_stop_under_the_cursor() {
+        let mut em = Emulator::new(30, 2);
+        em.advance(b"\x1b[1;9H\x1b[0g\r\t"); // stand on column 8, clear it, tab from home
+        assert_eq!(
+            em.screen().cursor().col,
+            16,
+            "the cleared stop is skipped and the next one is found"
+        );
+    }
+
+    /// TBC 3 clears EVERY character stop, and a tab with no stop ahead of it runs to the margin.
+    #[test]
+    fn tbc_3_clears_every_stop_so_a_tab_runs_to_the_margin() {
+        let mut em = Emulator::new(30, 2);
+        em.advance(b"\x1b[3g\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            29,
+            "with no stops left a tab reaches the last column"
+        );
+    }
+
+    /// CBT (`CSI Ps Z`) walks BACK over stops, one hop per count.
+    #[test]
+    fn cbt_walks_back_over_stops() {
+        let mut em = Emulator::new(30, 2);
+        em.advance(b"\x1b[1;20H\x1b[Z"); // column 19 -> the stop at 16
+        assert_eq!(em.screen().cursor().col, 16);
+        em.advance(b"\x1b[Z"); // -> 8
+        assert_eq!(em.screen().cursor().col, 8);
+        em.advance(b"\x1b[2Z"); // two hops: 0, then nothing below it
+        assert_eq!(
+            em.screen().cursor().col,
+            0,
+            "a hop with no stop below it stops at the floor"
+        );
+    }
+
+    /// CHT (`CSI Ps I`) walks FORWARD over `n` stops in one sequence, and a `0` count is one hop.
+    #[test]
+    fn cht_walks_forward_over_n_stops() {
+        let mut em = Emulator::new(40, 2);
+        em.advance(b"\x1b[2I");
+        assert_eq!(em.screen().cursor().col, 16, "two hops: 8 then 16");
+        em.advance(b"\r\x1b[0I");
+        assert_eq!(em.screen().cursor().col, 8, "a zero count is one hop");
+    }
+
+    /// CVT (`CSI Ps Y`) moves DOWN to a line tab stop — the vertical half of the family, which
+    /// Ghostty does not implement at all.
+    ///
+    /// The stop is set through CTC 1, so this drives the setter and the mover together: a line
+    /// stop that nothing could reach would be exactly the hollow flag this project refuses.
+    #[test]
+    fn cvt_moves_down_to_a_line_tab_stop() {
+        let mut em = Emulator::new(20, 10);
+        em.advance(b"\x1b[4;1H\x1b[1W"); // stand on row 3, set a line stop there
+        em.advance(b"\x1b[8;1H\x1b[1W"); // and another on row 7
+        em.advance(b"\x1b[1;1H\x1b[Y"); // home, then one vertical tab
+        assert_eq!(em.screen().cursor().row, 3, "CVT finds the first line stop");
+        em.advance(b"\x1b[Y");
+        assert_eq!(em.screen().cursor().row, 7, "and then the next");
+        em.advance(b"\x1b[Y");
+        assert_eq!(
+            em.screen().cursor().row,
+            9,
+            "with no stop below, CVT reaches the bottom of the region"
+        );
+    }
+
+    /// A screen with no line tab stops set — the power-on state — answers CVT by going to the
+    /// bottom of the region. The control for [`cvt_moves_down_to_a_line_tab_stop`]: without it, a
+    /// CVT that ignored the table entirely would pass that test's last assertion.
+    #[test]
+    fn cvt_with_no_line_stops_reaches_the_bottom() {
+        let mut em = Emulator::new(20, 10);
+        em.advance(b"\x1b[Y");
+        assert_eq!(em.screen().cursor().row, 9);
+    }
+
+    /// CTC (`CSI Ps W`) covers BOTH axes across its seven values. Ghostty answers three of them.
+    #[test]
+    fn ctc_sets_and_clears_on_both_axes() {
+        let mut em = Emulator::new(30, 10);
+        // CTC 0 sets a character stop; CTC 2 clears one.
+        em.advance(b"\x1b[1;4H\x1b[0W\x1b[1;9H\x1b[2W\r\t");
+        assert_eq!(em.screen().cursor().col, 3, "CTC 0 set a stop at column 3");
+        em.advance(b"\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            16,
+            "CTC 2 cleared the stop at column 8"
+        );
+        // CTC 1 sets a line stop; CTC 3 clears it again.
+        em.advance(b"\x1b[5;1H\x1b[1W\x1b[1;1H\x1b[Y");
+        assert_eq!(em.screen().cursor().row, 4, "CTC 1 set a line stop");
+        em.advance(b"\x1b[5;1H\x1b[3W\x1b[1;1H\x1b[Y");
+        assert_eq!(em.screen().cursor().row, 9, "CTC 3 cleared it");
+        // CTC 6 clears every line stop; CTC 5 every character stop.
+        em.advance(b"\x1b[3;1H\x1b[1W\x1b[6W\x1b[1;1H\x1b[Y");
+        assert_eq!(em.screen().cursor().row, 9, "CTC 6 cleared all line stops");
+        em.advance(b"\x1b[5W\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            29,
+            "CTC 5 cleared all character stops"
+        );
+    }
+
+    /// CTC 4 names "all character stops at the active line". Character stops are DEVICE state, so
+    /// that set is every character stop — the reading the module docs justify, pinned here so a
+    /// later reader does not take it for a copy-paste of CTC 5.
+    #[test]
+    fn ctc_4_clears_the_character_stops_a_device_wide_table_makes_one_set() {
+        let mut em = Emulator::new(30, 4);
+        em.advance(b"\x1b[3;1H\x1b[4W"); // on row 2, "clear this line's character stops"
+        em.advance(b"\x1b[1;1H\t"); // a DIFFERENT row: the stops are gone there too
+        assert_eq!(em.screen().cursor().col, 29);
+    }
+
+    /// TBC 5 clears BOTH axes in one sequence — the only value that does.
+    #[test]
+    fn tbc_5_clears_both_axes() {
+        let mut em = Emulator::new(30, 10);
+        em.advance(b"\x1b[4;1H\x1b[1W"); // a line stop on row 3
+        em.advance(b"\x1b[5g");
+        em.advance(b"\x1b[1;1H\t");
+        assert_eq!(em.screen().cursor().col, 29, "the character stops went");
+        em.advance(b"\x1b[1;1H\x1b[Y");
+        assert_eq!(em.screen().cursor().row, 9, "and the line stops with them");
+    }
+
+    /// TBC 4 clears the LINE stops only, leaving the character stops standing. The discriminator
+    /// against TBC 5: a clear-everything implementation passes that test and fails this one.
+    #[test]
+    fn tbc_4_clears_the_line_stops_and_leaves_the_character_stops() {
+        let mut em = Emulator::new(30, 10);
+        em.advance(b"\x1b[4;1H\x1b[1W\x1b[4g");
+        em.advance(b"\x1b[1;1H\x1b[Y");
+        assert_eq!(em.screen().cursor().row, 9, "the line stop went");
+        em.advance(b"\x1b[1;1H\t");
+        assert_eq!(em.screen().cursor().col, 8, "the character stops stayed");
+    }
+
+    /// DECST8C (`CSI ? 5 W`) puts the eight-column default back, and the UNPREFIXED `CSI 5 W` is
+    /// CTC 5, which means the opposite. The `?` is the whole difference between the two.
+    #[test]
+    fn decst8c_restores_the_default_stops_where_ctc_5_removes_them() {
+        let mut em = Emulator::new(30, 2);
+        em.advance(b"\x1b[3g\x1b[?5W\r\t");
+        assert_eq!(em.screen().cursor().col, 8, "DECST8C restored the grid");
+        em.advance(b"\x1b[5W\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            29,
+            "the same digits without the ? mean clear-all"
+        );
+    }
+
+    /// DECST8C with no parameter, or with a parameter DEC never defined, does nothing: a truncated
+    /// sequence must not reset a table an application built.
+    #[test]
+    fn decst8c_requires_its_parameter() {
+        let mut em = Emulator::new(30, 2);
+        em.advance(b"\x1b[3g\x1b[?W\r\t");
+        assert_eq!(em.screen().cursor().col, 29, "a bare CSI ? W is a no-op");
+        em.advance(b"\x1b[?2W\r\t");
+        assert_eq!(em.screen().cursor().col, 29, "and so is a wrong parameter");
+    }
+
+    /// A RESIZE KEEPS the stops an application set — the deliberate divergence from Ghostty,
+    /// whose `resize` rebuilds the table from the eight-column default whenever the column count
+    /// changes (`Terminal.zig` at `2602886`).
+    ///
+    /// In a multiplexer the resize is usually not the application's doing at all, so letting one
+    /// client's window shape erase another pane's tab stops is a defect, not a simplification.
+    #[test]
+    fn a_resize_keeps_the_stops_an_application_set() {
+        let mut em = Emulator::new(30, 5);
+        em.advance(b"\x1b[3g"); // clear the grid
+        em.advance(b"\x1b[1;4H\x1bH"); // one stop, at column 3
+        em.resize(80, 24);
+        em.advance(b"\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            3,
+            "the stop survived the resize (Ghostty resets here)"
+        );
+        // And the widen did not smuggle the default grid back into the new columns either: the
+        // "clear ALL" the child said covered columns that did not exist yet.
+        em.advance(b"\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            79,
+            "no eight-column stops appeared in the new width"
+        );
+    }
+
+    /// Narrowing and widening again finds the stops where they were left. A pane zoom is exactly
+    /// this pair of resizes, and it must not be destructive.
+    #[test]
+    fn a_narrow_then_widen_restores_the_stops() {
+        let mut em = Emulator::new(80, 5);
+        em.advance(b"\x1b[3g\x1b[1;41H\x1bH"); // one stop, at column 40
+        em.resize(20, 5);
+        em.resize(80, 5);
+        em.advance(b"\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            40,
+            "the stop came back with the width"
+        );
+    }
+
+    /// RIS restores the power-on table; DECSTR does NOT touch it (VT510 does not list tab stops
+    /// among the soft-reset settings). The two resets in one gate, because the interesting claim is
+    /// that they DIFFER.
+    #[test]
+    fn ris_restores_the_default_stops_and_a_soft_reset_leaves_them_alone() {
+        let mut em = Emulator::new(30, 2);
+        em.advance(b"\x1b[3g\x1b[1;4H\x1bH"); // one stop, at column 3
+        em.advance(b"\x1b[!p"); // DECSTR
+        em.advance(b"\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            3,
+            "DECSTR left the tab stops standing"
+        );
+        em.advance(b"\x1bc"); // RIS
+        em.advance(b"\r\t");
+        assert_eq!(em.screen().cursor().col, 8, "RIS put the grid back");
+    }
+
+    /// The stops are DEVICE state: an application that sets one, switches to the alternate screen
+    /// and comes back finds it, and the alternate screen sees it too.
+    #[test]
+    fn the_alternate_screen_shares_the_tab_stops() {
+        let mut em = Emulator::new(30, 4);
+        em.advance(b"\x1b[3g\x1b[1;6H\x1bH"); // one stop, at column 5
+        em.advance(b"\x1b[?1049h\r\t");
+        assert_eq!(em.screen().cursor().col, 5, "the alt screen sees the stop");
+        em.advance(b"\x1b[?1049l\r\t");
+        assert_eq!(
+            em.screen().cursor().col,
+            5,
+            "and it is still there on return"
+        );
+    }
+
+    /// CBT stops at the LEFT MARGIN, the same bound CUB obeys.
+    ///
+    /// Ghostty takes the margin as CBT's limit only under origin mode while its CUB takes it
+    /// unconditionally, so with margins armed and origin mode off its two cursor-left verbs
+    /// disagree. sprag derives both from [`Emulator::back_tab_floor`], so this test and the CUB
+    /// margin test cannot come apart.
+    #[test]
+    fn cbt_stops_at_the_left_margin_exactly_as_cub_does() {
+        let mut em = Emulator::new(24, 2);
+        arm_margins(&mut em, 4, 20); // 0-based 3..=19
+        em.advance(b"\x1b[1;18H\x1b[3Z"); // three hops back from column 17: 16, 8, then the margin
+        assert_eq!(
+            em.screen().cursor().col,
+            3,
+            "CBT stops at the left margin rather than walking to column 0"
+        );
+        // The same start, the same distance, by CUB: the two verbs agree.
+        em.advance(b"\x1b[1;18H\x1b[99D");
+        assert_eq!(em.screen().cursor().col, 3, "CUB agrees about the margin");
+    }
+
+    /// CVT stops at the bottom margin, the bound CUD obeys.
+    #[test]
+    fn cvt_stops_at_the_bottom_margin() {
+        let mut em = Emulator::new(20, 12);
+        em.advance(b"\x1b[1;6r"); // DECSTBM rows 0..=4
+        em.advance(b"\x1b[1;1H\x1b[Y");
+        assert_eq!(
+            em.screen().cursor().row,
+            5,
+            "CVT is bounded by the scroll region, not the screen"
         );
     }
 

@@ -149,4 +149,47 @@ mod tests {
         // $SHELL when set, else /bin/sh -- either way the label is the program.
         assert!(!label.is_empty());
     }
+
+    /// **Every TABULATION capability this `TERM` promises is one the emulator honours.**
+    ///
+    /// The two halves of a promise, in one gate. `TERM=xterm-256color` is not a label: it is a
+    /// contract with ncurses, `tput` and every curses program, which read that terminfo entry and
+    /// emit exactly the byte strings below. Until R333 sprag honoured only `ht` — a child that took
+    /// the terminal at its word and sent `cbt`, `hts` or `tbc` got no refusal and no effect, so its
+    /// cursor ended up somewhere the child believed it was not. An unimplemented sequence is a
+    /// missing feature; an unimplemented sequence the terminal ADVERTISES is a wrong answer.
+    ///
+    /// The capability strings are pinned as literals rather than read from the local terminfo
+    /// database, which is a machine fact a test must not depend on. What ties them to reality is the
+    /// TERM assertion: change the advertised entry and this reddens, which is the moment to re-read
+    /// the new entry's capabilities rather than the moment to discover the mismatch in a user's
+    /// pane.
+    #[test]
+    fn every_tabulation_capability_this_term_advertises_is_one_the_emulator_honours() {
+        use sprag_vt::VtPort as _;
+
+        let (command, _label) = command_from_parts("sh", std::iter::empty::<&str>());
+        assert_eq!(
+            command.get_env("TERM").and_then(|term| term.to_str()),
+            Some("xterm-256color"),
+            "the advertised entry is what fixes the capability strings below",
+        );
+
+        // `infocmp xterm-256color`: ht=^I, hts=\EH, cbt=\E[Z, tbc=\E[3g.
+        let mut em = sprag_vt::Emulator::new(40, 4);
+        em.advance(b"\t");
+        assert_eq!(em.screen().cursor().col, 8, "ht=^I");
+
+        // hts=\EH sets a stop, and the ht above must then find it rather than the fixed grid.
+        em.advance(b"\r\x1b[1;4H\x1bH\r\t");
+        assert_eq!(em.screen().cursor().col, 3, "hts=\\EH");
+
+        // cbt=\E[Z walks back to the previous stop — here the one hts just set is behind us.
+        em.advance(b"\x1b[1;10H\x1b[Z");
+        assert_eq!(em.screen().cursor().col, 8, "cbt=\\E[Z");
+
+        // tbc=\E[3g clears every stop, so the next ht runs to the last column.
+        em.advance(b"\x1b[3g\r\t");
+        assert_eq!(em.screen().cursor().col, 39, "tbc=\\E[3g");
+    }
 }

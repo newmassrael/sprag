@@ -11,6 +11,11 @@ pub mod closed_set;
 pub mod emulator;
 pub mod history;
 pub mod port;
+// Emulator-INTERNAL device state, the peer of `port::ScrollRegion`: no tab stop ever reaches the
+// projection, the wire or a client, so nothing outside this crate can have an opinion about one.
+// A plain `//` for the reason given above `closed_set` — an outer doc here would merge into the
+// module's own `//!` and be resolved in THIS scope, where its types are not in scope at all.
+pub(crate) mod tabstops;
 
 pub use emulator::{Emulator, osc52_reply};
 pub use history::HistoryLimits;
