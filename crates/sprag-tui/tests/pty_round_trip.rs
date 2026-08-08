@@ -521,6 +521,21 @@ struct Tui {
     /// How many bytes the client has written, which is how [`Tui::holds_the_terminal`] knows it is
     /// safe to type.
     written: Arc<AtomicUsize>,
+    /// Every DISTINCT status row the client has painted, in order, recorded by the READER THREAD as
+    /// it applies each batch.
+    ///
+    /// ⚠ A POLL CANNOT WITNESS A STATE THAT PASSES BETWEEN TWO LOOKS. A displayed message is on the
+    /// row for its `display-time` and then gone, and a test loop that samples every [`POLL`] sees it
+    /// only if it happens to look while it is there — which under full-suite load it does not, since
+    /// the whole process can be descheduled for longer than the message lives. That is not a timing
+    /// constant to raise: sampling a transient is unsound at ANY interval, and the two earlier
+    /// attempts at this gate (R326's fixed 3-second window, R327's `rows_until_settled`) each
+    /// tightened the sampler without leaving the sampling.
+    ///
+    /// Recording here removes the poll from the observation path entirely: the reader applies every
+    /// byte the client ever writes, so a row it painted is a row this trail holds. The residual
+    /// granularity is one `read`, not one poll interval.
+    status_trail: Arc<Mutex<Vec<String>>>,
 }
 
 impl Drop for Tui {
@@ -598,15 +613,31 @@ impl Tui {
             .try_clone_reader()
             .expect("clone the pty reader");
         let writer = pair.master.take_writer().expect("take the pty writer");
+        let status_trail = Arc::new(Mutex::new(Vec::new()));
         std::thread::spawn({
             let (screen, written) = (Arc::clone(&screen), Arc::clone(&written));
+            let status_trail = Arc::clone(&status_trail);
             move || {
                 let mut buf = [0u8; 8192];
                 while let Ok(n) = reader.read(&mut buf) {
                     if n == 0 {
                         break;
                     }
-                    screen.lock().expect("the screen mutex").advance(&buf[..n]);
+                    {
+                        let mut emulator = screen.lock().expect("the screen mutex");
+                        emulator.advance(&buf[..n]);
+                        // Read the status row INSIDE the same lock the batch was applied under, so
+                        // the trail cannot record a row from a state no single batch produced. See
+                        // `status_trail` for why this is here and not in a polling loop.
+                        let row = VtPort::screen(&*emulator)
+                            .row_text(STATUS_ROW)
+                            .trim_end()
+                            .to_owned();
+                        let mut trail = status_trail.lock().expect("the status trail mutex");
+                        if trail.last() != Some(&row) {
+                            trail.push(row);
+                        }
+                    }
                     // AFTER the emulator, so a reader that sees the count move can also see
                     // everything that moved it.
                     written.fetch_add(n, Ordering::Release);
@@ -620,7 +651,16 @@ impl Tui {
             child,
             screen,
             written,
+            status_trail,
         }
+    }
+
+    /// Every distinct status row this client has painted, in order — see [`Tui::status_trail`].
+    fn status_rows(&self) -> Vec<String> {
+        self.status_trail
+            .lock()
+            .expect("the status trail mutex")
+            .clone()
     }
 
     /// Whether the client has TAKEN the terminal — the edge before which nothing may be typed.
@@ -7090,30 +7130,38 @@ fn the_join_pane_key_opens_a_chooser_that_says_so_and_a_pick_puts_the_pane_in_th
 /// **Measured after R327's debt question: 1 full-workspace run in 6.** Under the load the whole
 /// suite applies, the gesture, the daemon round trip and the message's own `display-time` do not
 /// fit in three seconds, so the window ended with the message still on screen and the *"the row
-/// settles on where it landed"* assertion read the message as the settled row. The pty suite alone
-/// passed 6 of 6, which is why nothing caught it until a full run did — [[a flake may need the
-/// load]], one layer over from where R326 met it.
+/// settles on where it landed"* assertion read the message as the settled row.
 ///
-/// So the window closes when the row IS the landing, and the generous cap is a failure rather than
-/// a sample point: a run that never settles returns everything it saw, and the caller's own
-/// assertion prints the whole list. One list, every claim, no clock to tune.
+/// **⚠ R333 MEASURED IT AGAIN: 1 full-workspace run in 3, and the third attempt is the one that
+/// stops sampling.** The diagnostic was `["[0] 0:0*", "[beta] 0:0*"]` — the sentence missing
+/// entirely — and four isolated runs showed the client emits it in order every time, so nothing was
+/// wrong with the ORDER. The loop simply never looked while it was there: a `display-time` message
+/// lives on the row for well under a second, and under full-suite load this process can be
+/// descheduled for longer than that. **Sampling a transient is unsound at ANY interval**, so both
+/// previous fixes were tightening a clock that cannot be made tight enough.
+///
+/// The rows now come from [`Tui::status_trail`], which the READER THREAD appends to as it applies
+/// each batch — every row the client painted is in it whether anybody was looking or not. This
+/// function only decides when to STOP waiting, and the generous cap is a failure bound rather than a
+/// sample point: a run that never settles returns everything the client ever painted, and the
+/// caller's own assertion prints the whole list. One list, every claim, no clock to tune.
 fn rows_until_settled(tui: &mut Tui, landing: &str) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
     let watching = Instant::now();
-    while watching.elapsed() < Duration::from_secs(30) {
-        let row = tui.row(STATUS_ROW);
-        if rows.last() != Some(&row) {
-            rows.push(row);
-        }
+    loop {
+        let rows = tui.status_rows();
         // The LAST row, not "any row": a message can carry the landing's name inside it, and the
         // claim is about what the client comes to rest on.
-        if rows.last().map(String::as_str) == Some(landing) {
-            break;
+        if rows.last().map(String::as_str) == Some(landing) || watching.elapsed() >= WAIT_SETTLED {
+            return rows;
         }
         std::thread::sleep(POLL);
     }
-    rows
 }
+
+/// How long [`rows_until_settled`] waits for a client to come to rest before handing back whatever
+/// it saw. Generous because it is a FAILURE bound and not a sample point — nothing is measured by
+/// reaching it.
+const WAIT_SETTLED: Duration = Duration::from_secs(30);
 
 /// A live `sprag-tui` under `detach-on-destroy = policy`, with a spare session `beta` to land in
 /// and its own boot session destroyed OUT OF BAND by the `sprag` CLI.
