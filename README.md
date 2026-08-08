@@ -75,7 +75,10 @@ pinion의 RPC(query/intervene/invoke/snapshot)와 External 계약이 이 인터�
 
 ## 비기능 요구사항
 
-- 크로스플랫폼: Linux(forkpty) + Windows(ConPTY). `portable-pty` 등 검증된 추상화 사용
+- 플랫폼: **현재 Unix 전용** — Linux에서 검증, macOS는 CI가 빌드한다(`.github/workflows/ci.yml`).
+  Windows(ConPTY)는 목표이나 **아직 빌드되지 않는다**: 막는 것은 pty가 아니라 전송 계층으로,
+  wire가 Unix 도메인 소켓이다(`sprag-rpc`/`sprag-client`/`sprag-peer`, 27곳). 먼저 그 자리에
+  플랫폼별 팔을 가진 로컬 스트림 추상이 필요하다
 - VT 호환성: 파서 직접 구현 금지, 검증된 라이브러리 임베드 (최대 리스크 지점)
 - 성능: 스크롤백/대용량 출력 렌더 가상화
 - 안전: AI 자동 루프 플러그인의 비용 폭주·무한 루프 방지를 1급 요구로
