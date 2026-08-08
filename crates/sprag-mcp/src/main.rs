@@ -122,6 +122,7 @@ use sprag_host::pane_address::{
 };
 use sprag_host::report::Severity;
 use sprag_host::shellword::shell_quote;
+use sprag_host::vocabulary::{Agent, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, ENDED_KEY,
@@ -1285,7 +1286,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "join_pane" => tool_join_pane(&args),
         "move_pane" => tool_move_pane(&args),
         "resize_window" => tool_resize_window(&args),
-        other => Err(format!("unknown tool: {other}")),
+        other => Err(no_such_tool(other)),
     };
     match outcome {
         Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
@@ -1293,6 +1294,59 @@ fn handle_tools_call(message: &Value) -> Value {
             "content": [{ "type": "text", "text": format!("Error: {error}") }],
             "isError": true
         }),
+    }
+}
+
+/// What an agent is told when it calls a tool this server does not serve.
+///
+/// # It used to be `unknown tool: X`, which is the sentence a TYPO gets
+///
+/// The exact defect R323 removed from the shell mouth, still standing on this one: a caller that
+/// asked sprag to do something sprag DOES was told the name meant nothing. Three of the answers
+/// below are about a real verb of this product, and only the fourth is a typo — and until the
+/// vocabulary grew an agent axis there was no way to tell them apart, because there was nothing to
+/// ask.
+///
+/// The name is normalised across the two spellings the product uses (`break_pane` here,
+/// `break-pane` in a shell), because a caller that read `sprag --help` will type the other one and
+/// that is a near miss rather than a mistake.
+///
+/// This is where [`sprag_host::vocabulary::NotAnAgents::why`] reaches a reader. A refusal rule that only a test can see is
+/// a rule nobody was told, which is [`sprag_host::vocabulary`]'s own argument for the keyboard's
+/// five reasons applied to its four.
+fn no_such_tool(asked: &str) -> String {
+    let spelled = asked.replace('_', "-");
+    let Some(verb) = Verb::parse(&spelled) else {
+        return format!(
+            "unknown tool: {asked}. Call tools/list for the {} this server serves.",
+            Verb::ALL.iter().flat_map(|verb| verb.tools()).count(),
+        );
+    };
+    match verb.agent() {
+        // A caller that typed the SHELL's spelling of a verb this surface does serve. Naming the
+        // tool is the whole answer.
+        Agent::Tools(tools) => format!(
+            "there is no tool called {asked}. sprag calls that {} here — {} is the shell's \
+             spelling of the same verb.",
+            tools
+                .iter()
+                .map(|tool| format!("`{tool}`"))
+                .collect::<Vec<_>>()
+                .join(" / "),
+            verb.name(),
+        ),
+        Agent::NotBuilt => format!(
+            "there is no tool called {asked}. sprag DOES have that verb — `sprag {}` runs it in a \
+             shell — and no tool serves it to an agent yet. Nothing about it is refused; it is a \
+             gap.",
+            verb.name(),
+        ),
+        Agent::Cannot(why) => format!(
+            "there is no tool called {asked}, and there will not be one: `{}` is a real verb of \
+             sprag's and an agent cannot ask for it because {why}.",
+            verb.name(),
+            why = why.why(),
+        ),
     }
 }
 
@@ -5456,7 +5510,6 @@ fn last_n_lines(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sprag_host::vocabulary::Verb;
 
     /// **THE COMPLETENESS RATCHET: every subject an agent is TOLD about, it can READ.**
     ///

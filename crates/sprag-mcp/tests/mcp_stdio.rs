@@ -3654,6 +3654,18 @@ fn a_tool_against_an_older_daemon_says_so() {
         ("write_pane", json!({ "pane": 1, "text": "x" })),
         ("open_pane", json!({ "dir": "right" })),
         ("display_message", json!({ "message": "hi" })),
+        // R335's arrangement family. Added here in the round that built them, because this is the
+        // ratchet a NEW tool is easiest to leave out of — the roster ratchets walk `tools/list` and
+        // find every tool by construction, and this one is a hand-written list of pairs. Each of
+        // the four reaches the wire (their pre-flights pass: the server IS in a pane), so each can
+        // leak a Rust variant name and none did before it was checked.
+        ("break_pane", json!({ "pane": 1 })),
+        ("join_pane", json!({ "pane": 1, "window": "0" })),
+        (
+            "move_pane",
+            json!({ "pane": 1, "target": 1, "dir": "left" }),
+        ),
+        ("zoom_pane", json!({ "pane": 1 })),
     ] {
         let said = server.call_tool_error(tool, args);
         if said.contains("UnknownIntrospectPath") || said.contains("UnknownInvokePath") {
@@ -3953,5 +3965,59 @@ fn the_zoom_answers_say_which_of_the_four_states_it_left() {
     assert!(
         already.contains("was not filling its window"),
         "the fourth state has its own sentence too: {already}",
+    );
+}
+
+/// **THE THIRD MOUTH REFUSES IN ITS OWN WORDS** — R323's finding, standing on this surface until
+/// R335.
+///
+/// `unknown tool: X` is the sentence a TYPO gets, and it was the only sentence this server had. The
+/// shell mouth stopped answering that way at R323, the keyboard at the same round, and the agent
+/// surface kept it because there was nothing to ask: no table said which verbs an agent may have.
+/// Now one does, so four different questions get four different answers, driven here through the
+/// shipped binary.
+///
+/// The CONTROL is the fourth: a word that names no verb at all is still a typo, and says so.
+#[test]
+fn a_tool_that_is_not_there_says_which_kind_of_absence_it_is() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    // THE SHELL'S SPELLING of a verb this surface really serves. A near miss, not a mistake.
+    let near = server.call_tool_error("break-pane", json!({}));
+    assert!(
+        near.contains("sprag calls that `break_pane` here"),
+        "a caller that typed the CLI spelling is told the tool's name: {near}",
+    );
+
+    // A VERB WITH NO TOOL YET. It must not read as a refusal — nothing about it is refused.
+    let gap = server.call_tool_error("move_window", json!({}));
+    assert!(
+        gap.contains("sprag DOES have that verb")
+            && gap.contains("`sprag move-window`")
+            && gap.contains("it is a gap"),
+        "a verb no tool serves is named as a gap, with the mouth that has it: {gap}",
+    );
+
+    // A VERB AN AGENT MAY NOT ASK FOR. It must say WHICH RULE, because that is what tells a caller
+    // whether to look for another tool or to stop looking.
+    let refused = server.call_tool_error("kill_server", json!({}));
+    assert!(
+        refused.contains("there will not be one")
+            && refused.contains("it reaches outside the session the agent works in"),
+        "a refusal names the rule it is, in the vocabulary's own words: {refused}",
+    );
+    let theirs = server.call_tool_error("set_option", json!({}));
+    assert!(
+        theirs.contains("it is the person's own"),
+        "and a different rule reads differently: {theirs}",
+    );
+
+    // THE CONTROL. Without it every assertion above is satisfied by a server that never says
+    // `unknown tool` at all.
+    let typo = server.call_tool_error("no_such_tool", json!({}));
+    assert!(
+        typo.contains("unknown tool: no_such_tool") && typo.contains("tools/list"),
+        "a word that names nothing is still a typo, and is told where the list is: {typo}",
     );
 }
