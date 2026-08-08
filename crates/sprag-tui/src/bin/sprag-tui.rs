@@ -314,7 +314,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // The one event this loop read AHEAD of itself and has not routed yet — see [`read_input`]. Empty
     // in the steady state: only a possible focus report puts anything here, and only for the one turn
     // it takes to find out that it was not one.
-    let mut pending: Option<InputEvent> = None;
+    let mut pending: Option<(InputEvent, Instant)> = None;
     loop {
         // The poll blocks until the terminal has something OR the waker fires — the select this
         // client's whole idle cost rests on. It blocks FOREVER unless a message is up, in which
@@ -352,7 +352,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // The table is re-read HERE, and only here, because this is the one moment its answer
             // is used: a repaint cannot change what a key means. Routed in a `let` before the match
             // so the borrow the re-read takes ends before an arm reads the prefix back out.
-            Input::Event(InputEvent::Key(event)) => {
+            Input::Event(InputEvent::Key(event), arrived) => {
                 // A message that waits to be ACKNOWLEDGED is cleared by this keystroke (R317). It
                 // is the only thing that can clear one — an alert has no deadline precisely because
                 // a timer is a bet that somebody is looking, and a key is the one event that proves
@@ -453,7 +453,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         }
                         continue;
                     }
-                    Overlay::None => command(&mut keys, refreshed(&mut keymap), &event),
+                    Overlay::None => command(&mut keys, refreshed(&mut keymap), &event, arrived),
                 };
                 // The keystroke above RE-READ the user's file, so this is where a changed
                 // `notify-outward` takes effect — the same edge that makes an edited BINDING live,
@@ -1010,7 +1010,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // A PASTE, and the prompt gets first refusal on it for the same reason it gets first
             // refusal on a keystroke: a name pasted into an open question must not land in the
             // shell behind it. Found by the debt audit — the key path was closed and this was not.
-            Input::Event(InputEvent::Paste(text)) => match &mut overlay {
+            Input::Event(InputEvent::Paste(text), _) => match &mut overlay {
                 Overlay::Asking(open) => {
                     // A yes/no has nowhere to put text, so only the line takes it — and the row is
                     // redrawn either way, which costs one idempotent repaint and means this arm has
@@ -1060,7 +1060,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             //
             // Found by the debt audit, not by a test: the arm below had no idea an overlay existed,
             // and the round that added a full-screen one is the round that had to notice.
-            Input::Event(InputEvent::Mouse(event))
+            Input::Event(InputEvent::Mouse(event), _)
                 if !matches!(
                     overlay,
                     Overlay::Showing(_) | Overlay::Asking(Asking::Choose { .. })
@@ -1148,7 +1148,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // every PANE, so the programs inside them reflow into their new rectangles. Clearing is
             // what keeps a shrunken screen honest — a partition of the OLD size says nothing about
             // cells the new one does not have.
-            Input::Event(InputEvent::Resized { .. }) => {
+            Input::Event(InputEvent::Resized { .. }, _) => {
                 // Re-read through `screen_size` rather than trusting the event's payload or
                 // `BufferedTerminal::check_for_resize`: both take the terminal's raw answer, so a
                 // terminal that reports 0 would undo the boot fallback and leave a 0x0 surface.
@@ -1177,7 +1177,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 )?;
             }
             // `Wake` carries no payload by design — which edge fired is in the flags below.
-            Input::Event(_) | Input::Nothing => {}
+            Input::Event(..) | Input::Nothing => {}
         }
         if quit.load(Ordering::Acquire) {
             break;
@@ -1308,8 +1308,16 @@ fn run() -> Result<(), Box<dyn Error>> {
 /// message) and a focus change (which must not). Collapsing them would make the row's own deadline
 /// depend on whether somebody switched windows.
 enum Input {
-    /// The terminal delivered something that has to be routed.
-    Event(InputEvent),
+    /// The terminal delivered something that has to be routed, and WHEN it handed it over.
+    ///
+    /// The stamp is not decoration and it is not `Instant::now()` spelled early. A repeat window
+    /// (`-r`) is a statement about the person's own timeline — "these presses are one gesture" —
+    /// and the only clock this client can read that belongs to that timeline is the moment the
+    /// terminal delivered the keystroke. Everything after it is this client's cost: a round trip to
+    /// the daemon and a repaint, which on a loaded machine is longer than the window itself. Routing
+    /// on `Instant::now()` therefore charges the user for the client's work, and a burst a keyboard
+    /// delivered in ONE read is judged as if it had been typed over that whole span.
+    Event(InputEvent, Instant),
     /// The person left this terminal or came back to it — already recorded, nothing to route.
     Focus,
     /// A timeout, or a wake with nothing behind it.
@@ -1327,46 +1335,70 @@ enum Input {
 /// and queues every event it found, and `poll_input` drains that queue before it polls, so a second
 /// event available with NO WAIT came from the same read.
 ///
-/// So a bracket — and only a bracket — costs one zero-wait poll. What comes back is either the other
-/// half of a report, or an event that has to be routed on the NEXT turn, which is what `pending`
-/// holds. Nothing is dropped and nothing is delayed by more than the turn it takes to decide.
+/// So a bracket costs one zero-wait poll. What comes back is either the other half of a report, or
+/// an event that has to be routed on the NEXT turn, which is what `pending` holds. Nothing is
+/// dropped and nothing is delayed by more than the turn it takes to decide.
 ///
-/// `person` is [`None`] when this client never asked its terminal to report focus, and then this is
-/// exactly `poll_input` with a pushback: no bracket is read ahead of, so no binding can be swallowed
-/// for a person who switched the feature off.
+/// # Why every event is read ahead of, and what that buys beyond focus
+///
+/// The read-ahead is UNCONDITIONAL rather than reserved for a bracket, because the sentence that
+/// justifies it for focus — *what comes back with no wait came from the same read* — is exactly the
+/// sentence that dates a keystroke. An event drained from termwiz's queue arrived when the read that
+/// filled that queue happened, not when this loop got round to draining it, so it inherits the
+/// stamp taken at that read and [`Input::Event`] can carry a time the person would recognise.
+///
+/// That is the whole of the fix for a repeat window closing on a busy client: a burst a keyboard
+/// delivered in one read is dated once, so three presses are one gesture however long each of them
+/// costs this client. Keystrokes that genuinely arrive later land in a later read and are dated
+/// later, which is the behaviour `-r` is for.
+///
+/// `person` is [`None`] when this client never asked its terminal to report focus, and then no
+/// bracket is INSPECTED — `focus::edge` is never consulted — so no binding can be swallowed for a
+/// person who switched the feature off. The pushback is the same either way.
 fn read_input(
     screen: &mut BufferedTerminal<SystemTerminal>,
     waiting: Option<Duration>,
-    pending: &mut Option<InputEvent>,
+    pending: &mut Option<(InputEvent, Instant)>,
     person: Option<&mut Person>,
 ) -> Result<Input, Box<dyn Error>> {
     // The read-ahead's leftover comes first and WITHOUT polling: it was read before this call, so a
-    // poll here could park on a timeout while an event this loop already holds waits behind it.
-    let event = match pending.take() {
-        Some(held) => Some(held),
-        None => screen.terminal().poll_input(waiting)?,
+    // poll here could park on a timeout while an event this loop already holds waits behind it. It
+    // brings its own stamp, which is the read it came out of rather than this moment.
+    let (event, arrived) = match pending.take() {
+        Some(held) => held,
+        None => match screen.terminal().poll_input(waiting)? {
+            // The stamp is taken HERE, before anything is decided about the event and long before
+            // anything is done about it — the closest this client can stand to the moment the
+            // terminal handed the keystroke over.
+            Some(event) => (event, Instant::now()),
+            None => return Ok(Input::Nothing),
+        },
     };
-    let Some(event) = event else {
-        return Ok(Input::Nothing);
-    };
+    // ZERO, not a small wait: the whole discriminator is that anything already queued is from the
+    // same read. A wait — any wait — would start catching people's later keystrokes and dating them
+    // as if they had arrived with this one.
+    let ahead = screen
+        .terminal()
+        .poll_input(Some(Duration::ZERO))?
+        .map(|event| (event, arrived));
     let Some(person) = person else {
-        return Ok(Input::Event(event));
+        *pending = ahead;
+        return Ok(Input::Event(event, arrived));
     };
     if !focus::opens_report(&event) {
-        return Ok(Input::Event(event));
+        *pending = ahead;
+        return Ok(Input::Event(event, arrived));
     }
-    // ZERO, not a small wait: the whole discriminator is that a report's second half is ALREADY
-    // queued. A wait — any wait — would start catching people's keystrokes instead.
-    let next = screen.terminal().poll_input(Some(Duration::ZERO))?;
-    match focus::edge(&event, next.as_ref()) {
+    match focus::edge(&event, ahead.as_ref().map(|(event, _)| event)) {
+        // A report: BOTH halves are consumed, so the read-ahead is not put back.
         Some(seen) => {
             *person = seen;
             Ok(Input::Focus)
         }
         // Not a report: the bracket is the person's, and so is whatever came back behind it.
         None => {
-            *pending = next;
-            Ok(Input::Event(event))
+            *pending = ahead;
+            Ok(Input::Event(event, arrived))
         }
     }
 }
@@ -2214,7 +2246,11 @@ enum Command {
 /// The DECODE is all this adds. Which keystroke is the prefix, what an armed key means, and when the
 /// mode ends are [`Keymap::route`]'s — shared with `sprag-gui`, whose keys arrive already spelled
 /// that way, so the two frontends cannot come to disagree about what a user's table says.
-fn command(keys: &mut PrefixMode, keymap: &Keymap, event: &KeyEvent) -> Command {
+///
+/// `arrived` is when the TERMINAL handed this keystroke over, taken by [`read_input`] and threaded
+/// here rather than read from the clock at this line. See [`Input::Event`] for why the difference is
+/// a user-visible one and not a matter of precision.
+fn command(keys: &mut PrefixMode, keymap: &Keymap, event: &KeyEvent, arrived: Instant) -> Command {
     // The prefix is a ONE-KEY mode, so it ends here — before anything looks at what the key is —
     // rather than in each outcome, where a new binding could forget it. Taking the old mode out in
     // the same move is what leaves exactly one place that can put it back.
@@ -2225,10 +2261,13 @@ fn command(keys: &mut PrefixMode, keymap: &Keymap, event: &KeyEvent) -> Command 
         return Command::Swallow;
     };
     let mut scratch = [0u8; 4];
-    // The clock is read HERE and passed in, which is all a repeat window (`-r`) costs this loop:
-    // nothing observes a window closing except the next keystroke, so there is still no timer, no
-    // tick and no timeout on the `select` — the property this client's whole idle cost rests on.
-    let routed = keymap.route(mode, Instant::now(), key.name(&mut scratch), key.mods());
+    // The KEYSTROKE'S OWN TIME, not this line's. A repeat window (`-r`) still costs this loop
+    // nothing — nothing observes a window closing except the next keystroke, so there is no timer,
+    // no tick and no timeout on the `select`, the property this client's whole idle cost rests on —
+    // but the clock it is judged against belongs to the terminal that delivered the key rather than
+    // to the client that got round to it. `Instant::now()` here charged the person for a round trip
+    // to the daemon and a repaint per press, which is more than the whole window on a busy machine.
+    let routed = keymap.route(mode, arrived, key.name(&mut scratch), key.mods());
     *keys = routed.next();
     match routed {
         Routed::ToPane => Command::ToPane(key),
@@ -2494,6 +2533,17 @@ mod tests {
             [InputEvent::Key(event)] => event.clone(),
             other => panic!("{bytes:?} is not one key event: {other:?}"),
         }
+    }
+
+    /// [`super::command`] on a keystroke that arrived AS IT IS ROUTED.
+    ///
+    /// Every test in this module asks what a key MEANS, which is a question about the table and not
+    /// about the clock; the one claim that is about a window — that it is judged on the time the
+    /// keystroke was handed over rather than on the time this client got to it — cannot be made
+    /// here at all, because both times are this line. It is made against a real client on a real
+    /// terminal, in `tests/pty_round_trip.rs`, where the two differ by a round trip to the daemon.
+    fn command(keys: &mut PrefixMode, keymap: &Keymap, event: &KeyEvent) -> Command {
+        super::command(keys, keymap, event, Instant::now())
     }
 
     /// The name a routed key would be sent to the pane under, or `None` if it goes nowhere.

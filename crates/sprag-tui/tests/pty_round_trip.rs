@@ -4469,6 +4469,66 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     );
 }
 
+/// **A repeat window is judged on when a key ARRIVED, not on when the client got round to it.**
+///
+/// The gate above types its three presses back to back for a stated reason — the window is running
+/// while the client works — and that reasoning was only half of the answer. It made the TEST stop
+/// observing anything on the clock; it did nothing about the CLIENT, which reads the window's clock
+/// once per keystroke at the moment it routes that keystroke, after the previous one's round trip to
+/// the daemon and repaint have already been paid for. Three presses that a terminal delivered in ONE
+/// read are then judged at three different times, and a slow enough machine closes the window
+/// between them: measured at 2x CPU oversubscription, the gate above failed 3 runs in 6, landing on
+/// -1 (the first press acted, the repeats went to the shell as raw arrow keys) or on 0.
+///
+/// **`repeat-time` here is 1 ms, and that is what makes this deterministic rather than a load
+/// experiment.** One `scene/invoke` round trip is orders of magnitude more than a millisecond on any
+/// machine, so a client that reads its clock after acting has ALWAYS closed the window by the second
+/// press, on an idle machine as surely as on a loaded one. What the window measures is the thing
+/// under test, so shrinking it below the client's own cost is the discriminator, not a trick: a
+/// build that stamps a keystroke when the terminal handed it over passes at 1 ms, and a build that
+/// stamps it when it gets round to it fails at any value under the cost of one act.
+///
+/// The presses are ONE `write`, which is what "arrived together" means at this seam: a pty write of
+/// 19 bytes is atomic, so they are in the client's terminal before its first read and cannot be
+/// split across two of them. That is exactly what an auto-repeating keyboard delivers to a busy
+/// client, and it is the case a person hits by holding a key down.
+///
+/// -3 is the whole claim in one number: -1 is the build that judges on handling time, 0 is a build
+/// that never reached the daemon at all.
+#[test]
+fn a_repeat_window_is_judged_on_when_a_key_arrived_not_on_when_it_was_handled() {
+    let config = ConfigHome::new("[options]\nrepeat-time = 1\n");
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client_with(
+        |sock, session| {
+            Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
+        },
+        &["cat"],
+    );
+
+    tui.type_bytes(&[0x02]);
+    tui.type_bytes(b"%");
+    let (left, right) = halves(BOOT_PANES.0);
+    wait_for("the split to reach two real PTYs", || {
+        settled(
+            pane_sizes(&mut conn, &session),
+            &vec![(left, BOOT_PANES.1), (right, BOOT_PANES.1)],
+        )
+    });
+
+    // ONE write: the prefix and three presses are in the terminal together, so nothing about when
+    // the client reads them can put them in different reads.
+    tui.type_bytes(b"\x02\x1b[1;5D\x1b[1;5D\x1b[1;5D");
+    wait_for(
+        "three presses delivered in one read to act as one gesture",
+        || {
+            settled(
+                pane_sizes(&mut conn, &session),
+                &vec![(left - 3, BOOT_PANES.1), (right + 3, BOOT_PANES.1)],
+            )
+        },
+    );
+}
+
 /// **THE GATE for R308: the key table a user opens is the table the user HAS.**
 ///
 /// Every unit test of the view hands it a `Keymap` and asks what rows come out, which says nothing
