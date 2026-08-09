@@ -860,6 +860,12 @@ impl PaneHomes {
     /// **Never fails a birth.** A pane that could not be placed runs unweighted, which is what every
     /// pane did before this existed; refusing to open it would trade a missing guarantee for a
     /// missing terminal. What went wrong is logged, once, at the moment it is known.
+    ///
+    /// This end of the promise was kept and the OTHER end was not, for two rounds: a descriptor
+    /// that opens is not a migration the kernel will allow, and the child's write is where the
+    /// second check happens. That half now answers with
+    /// [`Joined`](crate::pty::Joined) instead of failing the spawn — so the sentence above is true
+    /// of a pane on any host, rather than true of every pane except the ones it was written for.
     #[cfg(unix)]
     pub fn open(&self, at: PaneLineage) -> Option<std::os::fd::OwnedFd> {
         let tree = self.tree.as_ref()?;

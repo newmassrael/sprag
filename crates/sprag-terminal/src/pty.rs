@@ -35,6 +35,7 @@
 use std::ffi::{CStr, OsStr};
 use std::fs::File;
 use std::io;
+use std::io::Read as _;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt as _;
@@ -42,6 +43,41 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 use crate::command::CommandBuilder;
+
+/// Whether a pane's child reached the cgroup that was opened for it — [`Pty::spawn`]'s second
+/// answer.
+///
+/// # Why the birth answers this instead of failing
+///
+/// The join is done by the CHILD, between `fork` and `exec`, which is what makes it race-free
+/// (R336). The only channel out of that moment that `std::process::Command` offers is the
+/// `pre_exec` closure's own `Err`, and that one is FATAL by construction: std turns it into a
+/// failed spawn, so reporting a refused join through it costs the person their pane. A terminal
+/// that will not open a pane because a resource nicety was declined has the trade exactly
+/// backwards, and `PaneHomes::open`'s contract says as much in its own words — *never fails a
+/// birth*.
+///
+/// So the refusal comes back beside the child rather than instead of it, and the caller decides.
+/// Every arm here is ORDINARY on some host this product supports, which is why this is a value and
+/// not an error type: [`NotAsked`](Self::NotAsked) is every macOS pane and every pane on a daemon
+/// systemd would not delegate to, and [`Refused`](Self::Refused) is every pane on a host whose
+/// daemon sits outside the subtree it was given.
+#[derive(Debug)]
+pub enum Joined {
+    /// No cgroup was offered, so there was nothing to join — this host enforces nothing, or this
+    /// pane was never placed. The state every pane was in before R336.
+    NotAsked,
+    /// The child was in its pane's cgroup before its first instruction.
+    Joined,
+    /// A cgroup was opened for this child and the kernel refused to admit it, carrying the reason
+    /// the kernel gave.
+    ///
+    /// Opening the file and writing to it are two different checks and the second is the one that
+    /// fails here: cgroup v2's delegation containment rule compares the WRITER's own cgroup against
+    /// the destination, so no inspection of the destination can predict it. Measured on GitHub's
+    /// Linux runner, where the answer is `EACCES` for every pane.
+    Refused(io::Error),
+}
 
 /// A pseudoterminal pair: the master this process reads and writes, and the slave the child gets.
 ///
@@ -204,14 +240,18 @@ impl Pty {
     ///
     /// Consumes the slave: after this the child owns the device, and this process must not.
     ///
+    /// Answers with the child AND with whether it reached that cgroup — see [`Joined`] for why a
+    /// refused join is an answer here rather than a failed birth.
+    ///
     /// # Errors
     ///
     /// Returns the OS error if the pty was already spawned onto, or if the child could not start.
+    /// A cgroup the kernel would not admit the child to is NOT among them.
     pub fn spawn(
         &mut self,
         command: &CommandBuilder,
         cgroup: Option<BorrowedFd<'_>>,
-    ) -> io::Result<Child> {
+    ) -> io::Result<(Child, Joined)> {
         let slave = self.slave.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::AlreadyExists, "this pty already has a child")
         })?;
@@ -237,9 +277,26 @@ impl Pty {
         // Duplicated OUT of the borrow so the closure owns a plain descriptor: a `pre_exec` closure
         // must be `'static`, and it must not touch anything that could allocate or lock.
         let cgroup = cgroup.map(|fd| fd.try_clone_to_owned()).transpose()?;
+        // The child's channel for saying it did NOT get in. Only when a cgroup was offered: with
+        // nothing to join there is nothing to report, and a pipe per pane birth on a host that
+        // enforces nothing would be two descriptors bought for no answer.
+        //
+        // `std::io::pipe` rather than `libc::pipe2`, because the write end MUST be close-on-exec —
+        // it is how the parent learns the child got as far as `exec` — and `pipe2(O_CLOEXEC)` does
+        // not exist on Apple, where the two-call spelling would leak the descriptor into any child
+        // another thread spawned in between. Both ends are `CLOEXEC` here on both platforms, which
+        // is R340's rule applied before the platform can bite: put the gate on the syscall by
+        // picking one that has no divergence.
+        let (hear, tell) = match cgroup {
+            Some(_) => {
+                let (hear, tell) = io::pipe()?;
+                (Some(hear), Some(tell))
+            }
+            None => (None, None),
+        };
         // SAFETY: the closure runs in the child between `fork` and `exec`. Every call in it is
-        // async-signal-safe and none of them allocates: two `ioctl`-class syscalls and one `write`
-        // of a literal byte to a descriptor opened before the fork.
+        // async-signal-safe and none of them allocates: two `ioctl`-class syscalls and at most two
+        // `write`s of fixed-size buffers to descriptors opened before the fork.
         unsafe {
             spawn.pre_exec(move || {
                 // A session of its own, so this pty can become a controlling terminal at all.
@@ -262,8 +319,17 @@ impl Pty {
                     // "0" means the calling process. The whole point of R336: the child is in its
                     // pane's cgroup before it becomes the pane's program.
                     let wrote = libc::write(cgroup.as_raw_fd(), c"0".as_ptr().cast(), 1);
-                    if wrote < 0 {
-                        return Err(io::Error::last_os_error());
+                    // REPORTED, NEVER RETURNED. Returning here is what made a host that refuses the
+                    // migration a host with no panes at all; see `Joined`. The errno is captured
+                    // before anything else can overwrite it, and the report's own failure is
+                    // ignored on purpose — there is no one left to tell, and the pane is still the
+                    // thing worth having.
+                    if wrote < 0
+                        && let (Some(tell), Some(code)) =
+                            (&tell, io::Error::last_os_error().raw_os_error())
+                    {
+                        let code = code.to_ne_bytes();
+                        libc::write(tell.as_raw_fd(), code.as_ptr().cast(), code.len());
                     }
                 }
                 Ok(())
@@ -274,7 +340,36 @@ impl Pty {
         // The child holds the device now. Dropping ours is what lets the master read EOF when it
         // exits, and it must happen whether or not anything else here succeeds.
         drop(slave);
-        Ok(child)
+        // And dropping the COMMAND is what closes this process's only copy of the report pipe's
+        // write end — the closure above owns it, and the closure lives in here. Without this the
+        // read below would wait for a writer that is this very thread. It is safe now and not
+        // before: `spawn` has forked, so the closure has already been handed to the child.
+        drop(spawn);
+        Ok((child, Self::heard(hear)))
+    }
+
+    /// Read the child's verdict on its own cgroup join.
+    ///
+    /// Called only after `spawn` has returned, which is what makes this a read and not a wait:
+    /// `Command::spawn` does not answer until the child has reached `exec`, and `exec` closes the
+    /// child's `CLOEXEC` copy of the write end. So the pipe is already at end-of-file when this
+    /// looks, holding four bytes if the join was refused and nothing at all if it was not.
+    fn heard(hear: Option<io::PipeReader>) -> Joined {
+        let Some(mut hear) = hear else {
+            return Joined::NotAsked;
+        };
+        let mut code = [0u8; size_of::<i32>()];
+        match hear.read(&mut code) {
+            // The child wrote its errno and then execed anyway: it is running, outside its cgroup.
+            Ok(n) if n == code.len() => {
+                Joined::Refused(io::Error::from_raw_os_error(i32::from_ne_bytes(code)))
+            }
+            // End of file with nothing in it — the write landed and the child said nothing. A short
+            // read cannot happen for four bytes through a pipe, and reading the parent's own end
+            // cannot fail once the writer is closed; both fall here because the pane IS in its
+            // cgroup in the only ordering that produces them.
+            _ => Joined::Joined,
+        }
     }
 }
 

@@ -721,7 +721,9 @@ impl Tui {
         command.env("TERM", "xterm-256color");
 
         // `spawn` takes the slave and drops it, so the master reads EOF when the child exits.
-        let child = pair
+        // The second answer is the child's cgroup join, which is `NotAsked` here and everywhere
+        // else that offers no cgroup — this test drives a CLIENT, not a pane of the daemon's.
+        let (child, _joined) = pair
             .spawn(&command, None)
             .expect("spawn sprag-tui on the pty");
 

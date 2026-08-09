@@ -106,10 +106,11 @@ pub struct Pane {
     /// a person's `sprag kill-pane` removes it. Keeping the id at least says WHO to ask.
     opened_by: Option<PaneId>,
     /// Which cgroup this pane's processes ARE in, as the three ids that spell it — `None` for a
-    /// pane that was never placed (no window, nothing to enforce, or a placement that failed).
+    /// pane that was never placed (no window, nothing to enforce, a placement that failed, or a
+    /// join the kernel refused).
     ///
     /// It is the ANSWER to the placement and not the address the placement would have used; see
-    /// [`Workspace::take_home`] for what that distinction buys.
+    /// [`Workspace::landed_home`] for what that distinction buys and which half of it was missing.
     ///
     /// # Why the pane holds this and the sweep holds nothing
     ///
@@ -890,8 +891,10 @@ impl Workspace {
         // And the pane's cgroup is opened HERE, for the same reason and at the same moment: this is
         // where the pane and its id are together, and the pool has held the other two ids since its
         // window was made. No caller passes it, which is precisely why no caller can omit it.
-        let home = self.take_home(id, &mut bound);
+        self.offer_home(id, &mut bound);
         let pty = PanePty::spawn_with_dirty(command, cols, rows, bound, &[], history_limit)?;
+        // AFTER the spawn, because the birth is what answers it — see `landed_home`.
+        let home = self.landed_home(id, &pty);
         self.panes.push(Pane {
             id,
             pty,
@@ -906,28 +909,55 @@ impl Workspace {
         Ok(id)
     }
 
-    /// Open the newborn pane's cgroup into `hooks`, and answer where it actually landed.
-    ///
-    /// # Why the answer is the OPENED cgroup and not the lineage
-    ///
-    /// [`Pane::home`] is what a later [`adopt`](Self::adopt) migrates OUT of, so it has to mean
-    /// *this pane's processes are in this cgroup* and not *this is the cgroup they would be in*. A
-    /// pane whose placement failed — no tree, or a tree that would not take it — is in the daemon's
-    /// own cgroup, and recording an address for it would make a later move read an empty source,
-    /// log a failure and leave the processes exactly where they were while a fresh empty leaf
-    /// appeared under the new window. Deriving the answer from the descriptor makes that state
-    /// unrepresentable.
-    fn take_home(&self, id: PaneId, hooks: &mut PaneHooks) -> Option<PaneLineage> {
+    /// Open the newborn pane's cgroup into `hooks`, for its child to join before it execs.
+    fn offer_home(&self, id: PaneId, hooks: &mut PaneHooks) {
         #[cfg(unix)]
         {
             hooks.home = self.open_home(id);
-            hooks.home.as_ref().and_then(|_| self.lineage(id))
         }
         // A platform with no cgroups places nothing, so a pane there is never anywhere to be moved
         // out of. `Share` is still a fact of the product there; only its enforcement is missing.
         #[cfg(not(unix))]
         {
             let _ = (id, hooks);
+        }
+    }
+
+    /// Where the newborn pane's processes ACTUALLY landed — its lineage if its child got into the
+    /// cgroup [`offer_home`](Self::offer_home) opened, `None` if it is running in the daemon's.
+    ///
+    /// # Why the answer is the JOIN and not the OPEN
+    ///
+    /// [`Pane::home`] is what a later [`adopt`](Self::adopt) migrates OUT of, so it has to mean
+    /// *this pane's processes are in this cgroup* and not *this is the cgroup they would be in*. A
+    /// pane whose placement failed — no tree, or a tree that would not take it — is in the daemon's
+    /// own cgroup, and recording an address for it would make a later move read an empty source,
+    /// log a failure and leave the processes exactly where they were while a fresh empty leaf
+    /// appeared under the new window.
+    ///
+    /// Deriving it from the DESCRIPTOR made that state unrepresentable for one of the two ways in
+    /// and not the other, and the miss was the one the doc above already names: *a tree that would
+    /// not take it*. Opening `cgroup.procs` tests the permissions on a file; admitting a process to
+    /// it runs cgroup v2's containment rule against the WRITER's own cgroup, which no inspection of
+    /// the destination can predict. So a descriptor opens on hosts where every migration is then
+    /// refused — GitHub's Linux runner is one — and every pane there had a home recorded that its
+    /// processes were never in. The birth is the first moment the difference is knowable, so the
+    /// answer is taken from the birth.
+    #[allow(
+        clippy::unused_self,
+        reason = "the `cfg(not(unix))` arm uses neither field"
+    )]
+    fn landed_home(&self, id: PaneId, pty: &PanePty) -> Option<PaneLineage> {
+        #[cfg(unix)]
+        {
+            match pty.joined() {
+                crate::pty::Joined::Joined => self.lineage(id),
+                crate::pty::Joined::NotAsked | crate::pty::Joined::Refused(_) => None,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (id, pty);
             None
         }
     }
@@ -977,8 +1007,12 @@ impl Workspace {
         // able to arrive with `home` unset. A restore chose the id, so there is no minting to do —
         // only the same one binding site.
         let mut bound = hooks.bind(id);
-        let home = self.take_home(id, &mut bound);
+        self.offer_home(id, &mut bound);
         let pty = PanePty::spawn_with_dirty(command, cols, rows, bound, &history, history_limit)?;
+        // The RESTORE door, and it takes the answer from the birth for the same reason the spawn
+        // door does: a pane coming back from a snapshot joins its new cgroup exactly as a fresh one
+        // does, and can be refused exactly as one can.
+        let home = self.landed_home(id, &pty);
         // Reserve the id above the counter so a future mint cannot reissue it (saturating so a
         // pathological u64::MAX id cannot wrap the reservation back to 0). Relaxed matches the
         // mint path: ids need only uniqueness + monotonicity, not synchronization.
@@ -1221,6 +1255,94 @@ mod tests {
     /// processes stayed in the daemon's own. Recording the placement's ANSWER instead of its
     /// intended address makes that unreachable, and this is what says so.
     ///
+    /// **A pane the kernel would not admit is born anyway, and records NO home.**
+    ///
+    /// The pool's half of `pane_join_refused.rs`. That gate proves the birth survives; this proves
+    /// the pane does not then claim a cgroup its processes are not in — which is the half that
+    /// keeps every later reader honest. A `home` recorded for a refused pane would make
+    /// [`PaneHomes::charge`](crate::share::PaneHomes::charge) report an EMPTY leaf's counters as
+    /// that pane's usage (zero cores, zero memory, for a pane that may be pinning the machine) and
+    /// would make a later `break-pane` migrate out of a cgroup holding nothing.
+    ///
+    /// TWO panes in one pool, which is what makes this discriminate: the fixture refuses the second
+    /// one's `cgroup.procs` and accepts the first's, so a `landed_home` that answered `None` for
+    /// everything — or `Some` for everything — fails on one of them. Measured: with the answer
+    /// taken from the OPEN rather than from the JOIN, the second pane records a home.
+    ///
+    /// `/dev/full` is the refusal, for `pane_join_refused.rs`'s reason: it opens for writing and
+    /// fails every write, on every Linux, with no cgroup tree and no privileges. Nothing on the
+    /// birth path READS a leaf's `cgroup.procs` — `sweep` only `remove_dir`s and `place` only
+    /// writes weights — which is what makes a device that reads as an endless stream of zeros safe
+    /// to put here.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pane_the_kernel_will_not_admit_is_born_without_a_home() {
+        let root = std::env::temp_dir().join(format!("sprag-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // The interior levels and the two leaves, with the interface files the kernel would have
+        // made. Both leaves are pre-built because a plain directory is not a cgroup: nothing here
+        // creates `cgroup.procs`, so a leaf left to `place` could not be joined by EITHER pane and
+        // the two arms would stop differing.
+        let cgroup = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(&path).expect("fixture cgroup");
+            std::fs::write(path.join("cgroup.procs"), "").expect("fixture procs");
+            std::fs::write(path.join("cgroup.subtree_control"), "").expect("fixture subtree");
+            std::fs::write(path.join("cgroup.controllers"), "cpu memory pids\n")
+                .expect("fixture controllers");
+            std::fs::write(path.join("cpu.weight"), "100\n").expect("fixture weight");
+            path
+        };
+        cgroup("");
+        cgroup("session-1");
+        cgroup("session-1/window-1");
+        cgroup("session-1/window-1/pane-0");
+        // The SECOND pane's leaf, whose `cgroup.procs` accepts an open and refuses the write —
+        // exactly what a `cgroup.procs` looks like from a child cgroup v2 will not migrate.
+        let refused = cgroup("session-1/window-1/pane-1");
+        std::fs::remove_file(refused.join("cgroup.procs")).expect("replace the fixture procs");
+        std::os::unix::fs::symlink("/dev/full", refused.join("cgroup.procs"))
+            .expect("a write that always fails");
+
+        let mut pool = Workspace::new((80, 24));
+        pool.set_home(PoolLineage {
+            session: crate::registry::SessionId(1),
+            window: crate::registry::WindowId(1),
+        });
+        pool.set_pane_homes(Arc::new(crate::share::PaneHomes::over(
+            crate::share::Tree::adopt(root.clone()).expect("adopt a plain directory"),
+        )));
+
+        let admitted = pool.spawn(cmd(), "sh".to_string(), 80, 24).expect("pane 0");
+        let refused_pane = pool
+            .spawn(cmd(), "sh".to_string(), 80, 24)
+            .expect("a refused cgroup join must not cost the person their pane");
+        // The fixture spells its leaves by id, and ids are minted `0, 1, ...` from a fresh pool.
+        // Asserted rather than assumed so a change to the mint fails HERE, loudly, instead of
+        // silently aiming both panes at leaves the fixture never built.
+        assert_eq!(
+            (admitted.0, refused_pane.0),
+            (0, 1),
+            "the fixture's leaves are named for these ids",
+        );
+
+        assert!(
+            pool.pane(admitted)
+                .expect("the admitted pane")
+                .home()
+                .is_some(),
+            "a pane whose cgroup took it records where it is",
+        );
+        assert_eq!(
+            pool.pane(refused_pane).expect("the refused pane").home(),
+            None,
+            "a pane the kernel would not admit is in the DAEMON's cgroup, and must not claim a \
+             leaf of its own — every later read and every later move would be aimed at it",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Asserted by the FILESYSTEM: the destination tree is a real directory, and the claim is that
     /// nothing appears in it.
     #[test]

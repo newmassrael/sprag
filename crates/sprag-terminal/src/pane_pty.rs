@@ -295,6 +295,16 @@ pub struct PanePty {
     // metric so a child reads a real `TIOCGWINSZ` `ws_xpixel` / `ws_ypixel` (0 while unknown).
     resize_tx: Option<Sender<(u16, u16, u16, u16)>>,
     resize_thread: Option<JoinHandle<()>>,
+    /// Whether this pane's child reached the cgroup that was opened for it, answered by the birth
+    /// itself — see [`Joined`](crate::pty::Joined).
+    ///
+    /// Kept here because the birth is the only moment it is knowable and the POOL is what needs it:
+    /// a pane whose join was refused has no cgroup of its own, so it must not record one, or every
+    /// later read and every later move would be aimed at a leaf its processes are not in. Captured
+    /// rather than acted on here for this module's usual reason — this layer starts children, it
+    /// does not decide what a pane's resources mean.
+    #[cfg(unix)]
+    joined: crate::pty::Joined,
 }
 
 impl PanePty {
@@ -363,9 +373,16 @@ impl PanePty {
         // this daemon does not have to DISCOVER what a caller could only guess at from the child's
         // fd 0 (which the child is free to redirect).
         let tty = pty.tty_name();
-        let child = pty
+        // The cgroup join's outcome comes back BESIDE the child, never instead of it: a kernel that
+        // refuses the migration costs this pane its share and not its existence.
+        let (child, joined) = pty
             .spawn(&command, home.as_ref().map(std::os::fd::AsFd::as_fd))
             .map_err(|e| PanePtyError::new("spawn command", &e))?;
+        if let crate::pty::Joined::Refused(error) = &joined {
+            // Once, at the moment it is known, and in the same words `PaneHomes::open` uses for the
+            // failures it can see — this is the one it cannot, because it happens after the fork.
+            tracing::warn!(%error, "pane opened without an enforced share");
+        }
         // Split the handle before the child moves to the reader thread: the killer signals it, the
         // pid answers `/proc` questions. `clone_killer`'s own contract is this exact split ("send it
         // signals independently from a thread that may be blocked in `.wait`").
@@ -551,7 +568,20 @@ impl PanePty {
             reader_done,
             resize_tx: Some(resize_tx),
             resize_thread: Some(resize_thread),
+            #[cfg(unix)]
+            joined,
         })
+    }
+
+    /// Whether this pane's child reached the cgroup opened for it at its birth.
+    ///
+    /// The pool asks this to decide what the pane's [`home`](crate::Workspace) is: a refused join
+    /// means the processes are in the DAEMON's cgroup, so the pane has none of its own to be read,
+    /// weighted or moved out of.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn joined(&self) -> &crate::pty::Joined {
+        &self.joined
     }
 
     /// Read the current authoritative screen under the emulator lock.
