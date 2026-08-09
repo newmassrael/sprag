@@ -406,6 +406,15 @@ pub enum Blind {
     NoPanes,
     /// The tool this check is about is not installed here, so there is no configuration to judge.
     NotInstalled,
+    /// The tool IS here — its files are on this machine — and the program did not answer where this
+    /// daemon runs.
+    ///
+    /// A separate arm from [`NotInstalled`](Self::NotInstalled) because the two are different
+    /// people's problems: one is *install it*, the other is *put it on the PATH this daemon was
+    /// started with*. Measured rather than imagined — a daemon launched from a stripped `PATH`
+    /// reported `33 shims in /usr/lib/ccache` and `not installed on this host` in ONE report, which
+    /// is a sentence the reader can see is false.
+    Unanswered,
 }
 
 impl std::fmt::Display for Blind {
@@ -416,6 +425,9 @@ impl std::fmt::Display for Blind {
             Self::NoSubtree => f.write_str("this daemon was given no cgroup subtree"),
             Self::NoPanes => f.write_str("no panes to read"),
             Self::NotInstalled => f.write_str("not installed on this host"),
+            Self::Unanswered => {
+                f.write_str("installed, but the program did not answer where this daemon runs")
+            }
         }
     }
 }
@@ -966,9 +978,24 @@ fn judge_ccache_on_path(readings: &Readings) -> Finding {
 fn judge_ccache_sizing(readings: &Readings) -> Finding {
     let check = Check::CcacheSizing;
     let Some(cleanups) = readings.ccache.as_ref().and_then(|c| c.cleanups) else {
+        // WHICH absence, from the half of the reading that does not need the program: shims on the
+        // filesystem mean it is installed and something stopped it answering HERE. Collapsing the
+        // two put `33 shims in /usr/lib/ccache` and `not installed on this host` in one report.
+        let shims = readings
+            .ccache
+            .as_ref()
+            .and_then(|ccache| ccache.shims.as_ref());
         return check.found(
-            Verdict::Blind(Blind::NotInstalled),
-            Evidence::of("ccache -s", "no cleanup count"),
+            Verdict::Blind(if shims.is_some() {
+                Blind::Unanswered
+            } else {
+                Blind::NotInstalled
+            }),
+            match shims {
+                Some((dir, count)) => Evidence::of("ccache -s", "no cleanup count")
+                    .and("but its shims are here", format!("{count} in {dir}")),
+                None => Evidence::of("ccache -s", "no cleanup count"),
+            },
         );
     };
     let ccache = readings

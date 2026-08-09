@@ -622,6 +622,41 @@ fn a_host_without_ccache_is_blind_rather_than_faulty() {
     );
 }
 
+/// ⚠ THE SHIMS ARE HERE AND THE PROGRAM DID NOT ANSWER — a different absence from *not installed*,
+/// and a different person's problem: one is *install it*, the other is *put it on the PATH this
+/// daemon was started with*.
+///
+/// Reached for real, not imagined: a daemon launched from a stripped `PATH` during this round's
+/// cost measurement printed `shims: 33 in /usr/lib/ccache` and `not installed on this host` in ONE
+/// report. The reader can see that sentence is false, which is the worst kind of diagnostic.
+#[test]
+fn shims_without_a_program_that_answers_is_not_an_uninstalled_ccache() {
+    let mut unreachable = healthy();
+    let ccache = unreachable.ccache.as_mut().expect("ccache");
+    ccache.cleanups = None;
+    ccache.max_size = None;
+    ccache.hit_rate = None;
+    ccache.occupancy = None;
+
+    let (verdict, said) = judged(Check::CcacheSizing, &unreachable);
+    assert_eq!(verdict, Verdict::Blind(Blind::Unanswered));
+    assert!(
+        said.contains("but its shims are here=33 in /usr/lib/ccache"),
+        "and the report says why it knows it is installed: {said}",
+    );
+    assert_eq!(
+        Blind::Unanswered.to_string(),
+        "installed, but the program did not answer where this daemon runs",
+    );
+
+    // The other check reads the shims from the filesystem and is unaffected — which is exactly the
+    // pair that made the contradiction visible in one report.
+    assert_eq!(
+        judged(Check::CcacheOnPath, &unreachable).0,
+        Verdict::Healthy
+    );
+}
+
 /// A cleanup is the cache throwing away what was paid for, so any cleanup at all means the working
 /// set does not fit.
 #[test]
