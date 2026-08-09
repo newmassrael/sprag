@@ -167,7 +167,7 @@ pub const IMAGE_DATA_FIELD: SchemaField =
 const FIND_ARGS: &[SchemaArg] = &[SchemaArg::open("needle", "string")];
 
 /// The pane-input external query FAMILY: every literal match of `needle` in the pane's retained
-/// output — `find.<needle>` — as `{matches: [{line, col, cols}], truncated}`.
+/// output — `find.<needle>` — as `{matches: [{line, row, col, cols, wrapped?}], lines, truncated}`.
 ///
 /// **The needle rides the path VERBATIM, and that is exact rather than lax.** pinion hands an
 /// External everything after the first `/external/` untouched
@@ -180,10 +180,12 @@ const FIND_ARGS: &[SchemaArg] = &[SchemaArg::open("needle", "string")];
 /// keystroke, and an invoke would put a bump on that path — one client's typing waking every other
 /// attached client's parked `waitFor`. Searching a pane changes nothing about it.
 ///
-/// The answer is in the pane's LOGICAL coordinate ([`FindMatch`](sprag_vt::FindMatch)): `line`
-/// counts from the oldest retained line — the [`PROMPT_MARKS_SLOT`] axis, so a client jumps to a
-/// match with the scroll `offset_y` it already speaks — and `col`/`cols` are CELL columns, ready to
-/// overlay. An EMPTY needle is a malformed member and answers `Null`, the same shape a malformed
+/// The answer names both of a pane's axes ([`FindMatch`](sprag_vt::FindMatch)), because a search
+/// crosses them: `line` is the LOGICAL line, counted by the retained row it begins on — the
+/// [`PROMPT_MARKS_SLOT`] axis, so a client jumps to a match with the scroll `offset_y` it already
+/// speaks — while `row`/`col`/`cols` say where the match's first cell sits and `wrapped` carries
+/// the widths it covers on the rows it runs on to. A match that fits on its row omits `wrapped`
+/// entirely. An EMPTY needle is a malformed member and answers `Null`, the same shape a malformed
 /// `cells.<offset>` reports.
 pub const FIND_FIELD: SchemaField = SchemaField::parametric("find.<needle>", "object", FIND_ARGS);
 
@@ -5365,7 +5367,9 @@ mod tests {
     #[test]
     fn an_answers_value_space_cannot_widen_under_the_protocol_number() {
         const PINNED_VALUES: (u32, &[&str]) = (
-            18,
+            // R344: the number moved for a MEANING under an unchanged name (`PaneMatch::line`),
+            // not for a widened value space — every word below is the word it was at 18.
+            19,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -5503,6 +5507,88 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ And the OTHER kind of break the number is owed for: one an older reader does not notice.
+    ///
+    /// `WIRE_PROTOCOL` 19's cause is not a new word — every key still parses — it is that `line`
+    /// SAYS something else. Before R344 it was the retained row a match sat on; it is now the row
+    /// that match's LOGICAL line begins on, and for a match past a soft wrap those are different
+    /// numbers. A stand-in for the previous shape is the only way to state that, because the
+    /// failure has no error: serde ignores the keys it does not know, hands back a perfectly formed
+    /// value, and the client paints a row too high.
+    ///
+    /// The control is the ordinary match, where the two readings AGREE — which is why the version
+    /// is the only thing that can catch this and why nothing in the suite noticed when the meaning
+    /// moved.
+    #[test]
+    fn a_reader_of_the_previous_shape_misreads_a_match_past_a_wrap() {
+        use crate::PaneMatch;
+
+        /// `PaneMatch` as a build before R344 declared it — no `deny_unknown_fields`, exactly like
+        /// the real one, so the new keys are silently dropped rather than refused.
+        #[derive(Debug, serde::Deserialize)]
+        struct PaneMatchBefore {
+            line: usize,
+            #[allow(dead_code, reason = "carried so the stand-in is the real shape")]
+            col: u16,
+            #[allow(dead_code, reason = "carried so the stand-in is the real shape")]
+            cols: u16,
+        }
+
+        // A match on the CONTINUATION row of a line that began one row earlier.
+        let past_a_wrap = serde_json::to_value(PaneMatch {
+            line: 7,
+            row: 8,
+            col: 1,
+            cols: 5,
+            wrapped: Vec::new(),
+        })
+        .expect("a match serialises");
+
+        let old: PaneMatchBefore = serde_json::from_value(past_a_wrap.clone())
+            .expect("THE DANGER ITSELF: the old shape accepts the new answer without complaint");
+        assert_eq!(
+            old.line, 7,
+            "and reads 7 — the row the LINE starts on — for a match whose cells are on row 8",
+        );
+        let now: PaneMatch =
+            serde_json::from_value(past_a_wrap).expect("this build reads its own answer");
+        assert_eq!(now.row, 8, "this build paints where the match actually is");
+
+        // THE CONTROL: on a match that does not start past a wrap the two agree exactly, which is
+        // why no existing pin, and no test in this suite, could see the meaning move.
+        let ordinary = serde_json::to_value(PaneMatch {
+            line: 7,
+            row: 7,
+            col: 1,
+            cols: 5,
+            wrapped: Vec::new(),
+        })
+        .expect("a match serialises");
+        let old: PaneMatchBefore =
+            serde_json::from_value(ordinary.clone()).expect("the old shape reads it");
+        let now: PaneMatch = serde_json::from_value(ordinary).expect("and so does this one");
+        assert_eq!(
+            (old.line, now.row),
+            (7, 7),
+            "the readings agree for every match that was findable before R344",
+        );
+
+        // The absent-not-wrong half, stated so it is not confused with the cause above: a match
+        // that DOES wrap omits nothing an old reader needs to parse, it simply tells it less.
+        let wrapping = serde_json::to_value(PaneMatch {
+            line: 2,
+            row: 2,
+            col: 18,
+            cols: 2,
+            wrapped: vec![3],
+        })
+        .expect("a match serialises");
+        assert!(
+            serde_json::from_value::<PaneMatchBefore>(wrapping).is_ok(),
+            "`wrapped` on its own would not have owed a version — `line` did",
+        );
+    }
+
     /// What a failing shape pin has to say, since the person reading it is the one who moved the
     /// shape and is the only one who can decide the number.
     const BUMP: &str = "THE WIRE SHAPE CHANGED. An older peer cannot read this, and it will find \
@@ -5562,8 +5648,14 @@ mod tests {
     /// and a new ADDRESS is additive by the rule three paragraphs up: an older daemon refuses it by
     /// name (`UnknownIntrospectPath`, which every client renders as skew), and an older client never
     /// asks. The pin is what turned that from an argument into a measurement.
+    /// ⚠ **R344 moved the number with this list UNCHANGED, which is the case the assertion below
+    /// names and the first time it happened.** A search match's `line` stopped meaning "the
+    /// retained row this match is on" and started meaning "the retained row its LOGICAL line
+    /// begins on" — same address, same key, same JSON type, different answer. No pin over
+    /// ADDRESSES can see that, which is exactly why the version exists and why this constant
+    /// carries the number beside the list rather than only the list.
     const PINNED_SURFACE: (u32, &[&str]) = (
-        18,
+        19,
         &[
             "agent_manifests",
             "application_cursor_keys",

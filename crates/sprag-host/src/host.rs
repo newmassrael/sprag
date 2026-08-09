@@ -98,31 +98,45 @@ impl PaneScrollFacts {
 }
 
 /// One find-in-scrollback match, as a client reads it off the wire — the serde projection of
-/// [`sprag_vt::FindMatch`], whose coordinate this carries unchanged: `line` counts logical lines
-/// from the pane's OLDEST retained line (the scroll `offset_y` axis, so a client jumps to a match
-/// with the offset it already speaks) and `col`/`cols` are CELL columns, ready to overlay.
+/// [`sprag_vt::FindMatch`], whose coordinate this carries unchanged.
+///
+/// A pane holds ROWS and a person reads LINES, and a match knows both: `line` names the LOGICAL
+/// line by the retained row it begins on (the scroll `offset_y` axis, so a client jumps to it with
+/// the offset it already speaks, and the join key to [`PaneFindLine`]), while `row`/`col`/`cols`
+/// say where the match's first cell actually sits and `wrapped` carries the rest of it, one width
+/// per row it runs on to. `col`/`cols`/`wrapped` are CELL columns, ready to overlay.
 ///
 /// The VT layer stays serde-free by design ("the VT layer owns no wire shape"), so the wire shape
 /// lives here, beside [`PaneScrollFacts`] and for the same reason: ONE definition both the host's
 /// `find.<needle>` query and every client deserialize, so the JSON keys cannot drift.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PaneMatch {
-    /// Logical line index from the pane's oldest retained line.
+    /// The logical line, named by the retained row it begins on.
     pub line: usize,
-    /// Starting cell column within that line.
+    /// The retained row the match's first cell sits on (`line` unless it starts past a wrap).
+    pub row: usize,
+    /// Starting cell column within `row`.
     pub col: u16,
-    /// Width in cell columns (a wide cluster counts two).
+    /// Width in cell columns on `row` (a wide cluster counts two).
     pub cols: u16,
+    /// Width in cell columns on each row after `row`, each starting at column 0. Absent for a
+    /// match that lies within one row, which is nearly all of them — a find bar re-queries on
+    /// every keystroke and carries up to [`sprag_vt::FIND_MATCH_CAP`] of these, so the ordinary
+    /// answer does not pay for the extraordinary one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wrapped: Vec<u16>,
 }
 
-/// One line carrying at least one match, with its text — the serde projection of
+/// One LOGICAL line carrying at least one match, with its text — the serde projection of
 /// [`sprag_vt::FindLine`], and the DISPLAY view of a search beside [`PaneFind::matches`]'s
 /// coordinate view.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PaneFindLine {
-    /// The logical line index — the join key back to [`PaneMatch::line`].
+    /// The logical line, named by the retained row it begins on — the join key back to
+    /// [`PaneMatch::line`].
     pub line: usize,
-    /// The line's text, trailing blanks trimmed.
+    /// The line's text: every row it occupies, joined, trailing blanks trimmed. A line that
+    /// wrapped over three rows is ONE entry here, reading as the person reads it.
     pub text: String,
 }
 
@@ -165,8 +179,10 @@ impl PaneFind {
                 .iter()
                 .map(|m| PaneMatch {
                     line: m.line,
+                    row: m.row,
                     col: m.col,
                     cols: m.cols,
+                    wrapped: m.wrapped.clone(),
                 })
                 .collect(),
             lines: found

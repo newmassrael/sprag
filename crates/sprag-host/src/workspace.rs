@@ -5821,51 +5821,33 @@ mod tests {
         // ⚠ READ THROUGH THE SOFT WRAPS, and this is a fix rather than tidiness. The pane is 80
         // columns; the quoted path is 40-odd on Linux and NINETY on macOS, where `TMPDIR` is
         // `/private/var/folders/<two opaque components>/T/`. So the echo straddles the right edge
-        // there and `full_text` — which joins ROWS with `\n` — carries a break through the middle of
-        // it. This test was one of fourteen the first macOS run of this suite (R343) failed, and the
+        // there, and a reader that walks physical rows carries a break through the middle of it.
+        // This test was one of fourteen the first macOS run of this suite (R343) failed, and the
         // only difference from Linux was the length of a temporary directory's name.
         //
-        // Folded with the emulator's OWN continuation flag rather than by deleting every newline: a
-        // blind `replace` would also weld together lines that really are separate, and then a
-        // needle spanning two unrelated ones would read as present. `sprag_vt`'s
-        // `a_needle_that_straddles_the_right_edge_is_not_found_yet` pins the same gap in the SEARCH,
-        // which no caller can fold around and which needs a coordinate decision to close.
-        let folded = |screen: &sprag_vt::Screen| {
-            let width = usize::from(screen.cols());
-            let mut text = String::new();
-            for row in 0..screen.rows() {
-                let line = screen.row_text(row);
-                if screen.wrapped(row) {
-                    // ⚠ PADDED BACK TO THE FULL WIDTH. `row_text` trims trailing blanks, which is
-                    // right for a row that ENDS a line and wrong for one that continues: a wrapped
-                    // row occupies every cell, so a blank at its right edge is CONTENT. Without this
-                    // the fold silently deletes a space that lands on the boundary — measured:
-                    // `'…/a file.txt'` came back as `'…/afile.txt'`, and whether it happens at all
-                    // depends on where the pid's own length puts the wrap. The first version of this
-                    // fold passed for that reason and not for a good one.
-                    text.push_str(&line);
-                    text.extend(std::iter::repeat_n(
-                        ' ',
-                        width.saturating_sub(line.chars().count()),
-                    ));
-                } else {
-                    text.push_str(&line);
-                    text.push('\n');
-                }
-            }
-            text
-        };
+        // ⚠⚠ ASKED OF THE PRODUCT RATHER THAN FOLDED BY HAND (R344). This used to re-implement the
+        // join here — `row_text` per row, padded back to the full width on a wrapped one — which
+        // was a THIRD reader of "what is a logical line" beside the reflow and the history encoder,
+        // and it was wrong in the corner they were: a row that wraps EARLY (a wide cluster that
+        // will not fit) does not fill its width, so the padding invented a space. `Screen::find` is
+        // the wrap-aware search, and "does this pane's content contain X" is the question it exists
+        // to answer. It is also why a blind newline-strip is not the alternative: that would weld
+        // together lines that really are separate, and a needle spanning two unrelated ones would
+        // read as present. The search is gated in `sprag-vt` on its own, so this leans on a claim
+        // that is proved elsewhere rather than assuming one.
+        let echoed_path = |screen: &sprag_vt::Screen| !screen.find(&quoted).matches.is_empty();
+        let folded = |screen: &sprag_vt::Screen| screen.full_text();
 
         let pool = pool(&reg);
         let pane = PaneId(u64::try_from(id).unwrap());
         let deadline = Instant::now() + Duration::from_secs(5);
         let echoed = loop {
-            let text = lock(&pool)
+            if lock(&pool)
                 .pane(pane)
                 .expect("the pane is alive")
                 .pty()
-                .with_screen(folded);
-            if text.contains(&quoted) {
+                .with_screen(echoed_path)
+            {
                 break true;
             }
             if Instant::now() > deadline {
@@ -5875,7 +5857,7 @@ mod tests {
         };
         assert!(
             echoed,
-            "the quoted local path never reached the pane's PTY.\n  wanted: {quoted}\n  folded: {:?}",
+            "the quoted local path never reached the pane's PTY.\n  wanted: {quoted}\n  screen: {:?}",
             lock(&pool)
                 .pane(pane)
                 .expect("the pane is alive")

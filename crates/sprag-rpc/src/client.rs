@@ -453,7 +453,26 @@ impl ScopeAsk {
 ///   so a new client decoding its answer meets only arms it already had. That asymmetry is why
 ///   this is a version and not a capability check — the break is in the ANSWER, where a client has
 ///   nothing to negotiate with.
-pub const WIRE_PROTOCOL: u32 = 18;
+/// * **19** — a search match can SPAN A SOFT WRAP, so `sprag_host::PaneMatch` says which LINE it is
+///   in and which ROW it starts on (`line`, `row`, `col`, `cols`, `wrapped`), and
+///   `sprag_host::PaneFindLine` carries the whole logical line's text (R344).
+///
+///   ⚠ **THE SECOND BUMP FROM AN ANSWER, AND THE FIRST FROM A KEY THAT CHANGED MEANING.** Version
+///   18 added words to a value space; this one keeps every key parsing and changes what one of
+///   them SAYS. `line` used to be the retained row a match sat on, and is now the retained row its
+///   LOGICAL line begins on — the same number for every match that does not start past a wrap, and
+///   a different one for exactly the matches this version made findable. Nothing in the JSON can
+///   tell those apart, which is precisely why it needs the number: an old client parses the new
+///   answer perfectly and highlights the wrong row.
+///   Measured against a stand-in decoder of the previous shape
+///   (`sprag_host::wire::tests::a_reader_of_the_previous_shape_misreads_a_match_past_a_wrap`): it
+///   ACCEPTS the new answer without complaint and reads the line's row for a match whose cells are
+///   a row lower, while this build reads `row` and paints there — and the control shows the two
+///   agree on every match that was findable before, which is why no pin and no test in the suite
+///   could see the meaning move.
+///   `wrapped` is absent-not-wrong on its own (an old reader would paint the head of a match and
+///   miss its tail); the version is owed by `line` and `text`, not by it.
+pub const WIRE_PROTOCOL: u32 = 19;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

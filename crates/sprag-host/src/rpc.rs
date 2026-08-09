@@ -5065,11 +5065,12 @@ mod tests {
         assert_eq!(
             answer["result"]["matches"],
             serde_json::json!([
-                { "line": 0, "col": 4, "cols": 3 },
-                { "line": 1, "col": 0, "cols": 3 },
+                { "line": 0, "row": 0, "col": 4, "cols": 3 },
+                { "line": 1, "row": 1, "col": 0, "cols": 3 },
             ]),
-            "matches carry the LOGICAL line + CELL columns a client scrolls and highlights by: \
-             {answer}",
+            "matches carry the LOGICAL line, the ROW it starts on, and the CELL columns a client \
+             scrolls and highlights by — and `wrapped` is ABSENT on a match that does not wrap, \
+             which is what keeps a per-keystroke answer small: {answer}",
         );
         assert_eq!(answer["result"]["truncated"], false);
 
@@ -5077,7 +5078,7 @@ mod tests {
         let dotted = query_pane0(&state, &crate::wire::find_slot_for("a.b hit"));
         assert_eq!(
             dotted["result"]["matches"],
-            serde_json::json!([{ "line": 0, "col": 0, "cols": 7 }]),
+            serde_json::json!([{ "line": 0, "row": 0, "col": 0, "cols": 7 }]),
             "a needle containing the separator and a space addresses ONE search: {dotted}",
         );
 
@@ -5112,15 +5113,15 @@ mod tests {
         let literal = query_pane0(&state, &crate::wire::find_slot_for("a.b"));
         assert_eq!(
             literal["result"]["matches"],
-            serde_json::json!([{ "line": 0, "col": 4, "cols": 3 }]),
+            serde_json::json!([{ "line": 0, "row": 0, "col": 4, "cols": 3 }]),
             "literally, only the real dot: {literal}",
         );
         let pattern = query_pane0(&state, &crate::wire::regex_slot_for("a.b"));
         assert_eq!(
             pattern["result"]["matches"],
             serde_json::json!([
-                { "line": 0, "col": 0, "cols": 3 },
-                { "line": 0, "col": 4, "cols": 3 },
+                { "line": 0, "row": 0, "col": 0, "cols": 3 },
+                { "line": 0, "row": 0, "col": 4, "cols": 3 },
             ]),
             "as a pattern, the dot matches any character: {pattern}",
         );
