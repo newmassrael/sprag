@@ -214,6 +214,19 @@ use sprag_terminal::{
 /// at once or there is nothing to manage — no spawn-race retry to wait out.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// How long a REQUEST verb waits for the daemon's answer before saying it is not coming.
+///
+/// Every verb but the two that park is a request-response against a LOCAL daemon answering out of
+/// memory, so the honest scale here is microseconds — R340 measured the most expensive read on the
+/// wire, a `/proc` walk over eight panes, at 5.2 ms. Five seconds is that with four orders of
+/// magnitude of headroom, which is what keeps this from firing on a box under the 4x
+/// oversubscription this project's own gates run at. It is a *this is not coming* threshold, not a
+/// performance budget.
+///
+/// Longer than [`HOOK_DEADLINE`] on purpose: this is somebody waiting at their own terminal, and
+/// that one runs inside an agent's critical path where a person is waiting for something else.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("sprag: {error}");
@@ -378,7 +391,7 @@ fn run_project(args: Vec<String>) -> io::Result<()> {
         }
     }
 
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
     }
@@ -958,18 +971,36 @@ fn clear_snapshot() {
 /// already holds — herdr, which checks only client-side, spends a whole extra round trip per
 /// request to ask the same question.
 ///
-/// # `deadline` is stated BEFORE the connection exists, and that is the point
+/// # The deadline is stated BEFORE the connection exists, and that is the point
 ///
-/// This function now performs I/O of its own (the handshake), so a caller cannot bound it
-/// afterwards — by the time it holds a `HostConn` the unbounded read has already happened. That is
-/// not hypothetical: adding the handshake without this parameter re-opened the exact hole R273
-/// closed, and `a_wedged_daemon_cannot_stall_the_agents_hook` caught it. Every caller now answers
-/// "how long will you wait" as a condition of getting a connection at all.
+/// This function performs I/O of its own (the handshake), so a caller cannot bound it afterwards —
+/// by the time it holds a `HostConn` the unbounded read has already happened. That is not
+/// hypothetical: adding the handshake without a deadline parameter re-opened the exact hole R273
+/// closed, and `a_wedged_daemon_cannot_stall_the_agents_hook` caught it.
 ///
-/// `None` means wait indefinitely, which is right for a MANAGEMENT command: it is a person's
-/// command in a person's terminal, and they can interrupt it. `Some` is for the paths that run
-/// inside somebody else's process while that process waits.
-fn connect(deadline: Option<Duration>) -> io::Result<HostConn> {
+/// # ⚠ Waiting forever is the EXCEPTION now, and it has to be spelled
+///
+/// This took `Option<Duration>` and 26 of its 27 callers passed `None`, on a rationale written into
+/// [`events`]: *"every other verb here is a request-response against a local daemon answering from
+/// memory, so a reply that has not arrived in seconds is not slow, it is not coming."* That
+/// sentence was true and nothing enforced it — the default was *forever*, and each new call site
+/// got it by saying nothing.
+///
+/// R343 measured what that costs. `sprag-peer` dropped every connection it accepted on macOS, and
+/// two CLI runs in `tests/cli.rs` — with no person there to interrupt them — waited **3 h 38 min**,
+/// until GitHub killed the job. The suite reported nothing at all, which is why five rounds had
+/// recorded macOS as *unmeasured* rather than as *broken*.
+///
+/// So the bound is the default and the exception is named: a verb whose contract is to PARK
+/// ([`wait_for_output`], [`events`]) clears it with `set_read_deadline(None)` at the moment it
+/// parks — which `wait_for_output` already did, against a default that was not yet there.
+fn connect() -> io::Result<HostConn> {
+    connect_within(REQUEST_DEADLINE)
+}
+
+/// [`connect`] with a tighter bound than a person's command wants — for the paths that run inside
+/// somebody else's process while that process waits.
+fn connect_within(deadline: Duration) -> io::Result<HostConn> {
     let endpoint = HostEndpoint::for_opts(HOST_SOCKET);
     let mut conn = HostConn::connect(endpoint.path(), CONNECT_TIMEOUT).map_err(|_| {
         io::Error::new(
@@ -978,9 +1009,7 @@ fn connect(deadline: Option<Duration>) -> io::Result<HostConn> {
         )
     })?;
     // Set BEFORE the handshake, so the very first reply this process waits for is covered.
-    if let Some(deadline) = deadline {
-        conn.set_read_deadline(Some(deadline))?;
-    }
+    conn.set_read_deadline(Some(deadline))?;
     conn.handshake(&cli_client_id())?;
     // Where this process is, asked once and before any command has shaped a request — every params
     // builder below consults the answer, and a cache filled halfway through a command would make
@@ -1016,7 +1045,7 @@ fn cli_client_id() -> String {
 /// updating the instant it is printed and is then read for as long as somebody looks at it. That
 /// costs this command one `/proc` walk, which is a cost it asked for.
 fn ls() -> io::Result<()> {
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let sessions = query_slot(&mut conn, json!({ "path": mux_action_path(SESSIONS_SLOT) }))?;
     // Best-effort: a daemon too old to serve the family leaves every line in its structural form
     // rather than failing a listing (`sprag ls` answers "what may I name?" first and foremost). The
@@ -1085,7 +1114,7 @@ fn ls() -> io::Result<()> {
 /// the line is `client -> session`, the honest subset tmux's `struct client` row reduces to here.
 fn list_clients(args: Vec<String>) -> io::Result<()> {
     let filter = optional_target(args, "list-clients")?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     if let Some(session) = &filter {
         require_session(&mut conn, session)?;
     }
@@ -1151,7 +1180,7 @@ fn find(args: Vec<String>) -> io::Result<()> {
     } else {
         find_slot_for(&needle)
     };
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
     }
@@ -1235,7 +1264,7 @@ fn wait_for_output(args: Vec<String>) -> io::Result<()> {
     let pane = pane.ok_or_else(|| {
         bad_input("wait-for-output: --pane is required (a wait names the pane it watches)")
     })?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     if let Some(session) = &session {
         require_session(&mut conn, session)?;
     }
@@ -1389,7 +1418,7 @@ fn optional_target(args: Vec<String>, command: &str) -> io::Result<Option<String
 /// allocates the lowest free name when none is given) — and print the name it got, the string to
 /// scope a client to. The CLI passes no `cmd`/size, so the birth pane runs the default `$SHELL`.
 fn new(name: Option<String>) -> io::Result<()> {
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let args = match &name {
         Some(name) => json!({ "name": name }),
         None => json!({}),
@@ -1450,7 +1479,7 @@ fn ssh(args: Vec<String>) -> io::Result<()> {
     // The structured endpoint marks the birth pane a sanctioned remote workspace (reconnect on
     // restore + dropped-file scp), alongside the argv the pane actually runs.
     let remote = serde_json::to_value(target.remote()).expect("SshRemote serialises");
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let answer = invoke_action(
         &mut conn,
         json!({
@@ -1575,7 +1604,7 @@ fn attach(args: Vec<String>) -> io::Result<()> {
         return attach_remote(&destination, &name);
     }
     let sock = socket_path(HOST_SOCKET);
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     if !session_exists(&mut conn, &name)? {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -1851,7 +1880,7 @@ fn kill_session(name: Option<String>) -> io::Result<()> {
             "kill-session needs a session name",
         )
     })?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     match kill_one(&mut conn, &name) {
         Ok(answer) => {
             println!("{}", killed_sentence(&name, &answer, Ended::Session));
@@ -1894,7 +1923,7 @@ fn kill_server(args: Vec<String>) -> io::Result<()> {
             format!("kill-server: unexpected argument {other:?} (only --purge is accepted)"),
         ));
     }
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let sessions = query_slot(&mut conn, json!({ "path": mux_action_path(SESSIONS_SLOT) }))?;
     let names: Vec<String> = sessions
         .as_array()
@@ -2070,7 +2099,7 @@ fn scope_and_rest(args: Vec<String>, command: &str) -> io::Result<(Option<String
 /// [`require_session`]. An ABSENT scope is not checked: the default session is whatever the daemon
 /// says it is, and a client that names nothing cannot have named it wrong.
 fn connect_scoped(session: Option<&str>) -> io::Result<HostConn> {
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     if let Some(session) = session {
         require_session(&mut conn, session)?;
     }
@@ -2638,7 +2667,7 @@ fn display_message(args: Vec<String>) -> io::Result<()> {
             format!("display-message: {why}"),
         )
     })?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let mut params = serde_json::json!({ "text": text.as_str() });
     if let Some(severity) = severity {
         params["severity"] = Value::String(severity);
@@ -3100,7 +3129,7 @@ fn deliver_hook(args: Vec<String>) -> Option<()> {
         .ok()?;
     // The bound is stated to `connect`, not set after it: the handshake it performs is itself a
     // wait, and this one runs while an agent holds still for it.
-    let mut conn = connect(Some(HOOK_DEADLINE)).ok()?;
+    let mut conn = connect_within(HOOK_DEADLINE).ok()?;
     let (action, params) = match outcome {
         hooks::Outcome::Report(state) => (
             REPORT_AGENT_ACTION,
@@ -3335,7 +3364,7 @@ fn layout(args: Vec<String>) -> io::Result<()> {
 /// fresh walk rather than printing something held for a display poll.
 fn processes(args: Vec<String>) -> io::Result<()> {
     let (session, asked) = pane_and_scope(args, "processes")?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     // The READING is registry-wide and the NARROWING is client-side, so `-t` says only which
     // session a pane NAME is resolved in — which is what makes `sprag processes buildout -t work`
     // mean anything.
@@ -3447,7 +3476,7 @@ fn pane_and_scope(args: Vec<String>, verb: &str) -> io::Result<(Option<String>, 
 /// and an agent cannot come to disagree about how long is long enough.
 fn resources(args: Vec<String>) -> io::Result<()> {
     let (session, asked) = pane_and_scope(args, "resources")?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     // The READING is registry-wide — a machine is not divided by session, and the pane eating it may
     // be in one the caller is not scoped to — so the narrowing is client-side, exactly as
     // `processes` does it.
@@ -3694,7 +3723,7 @@ fn doctor(args: Vec<String>) -> io::Result<()> {
              session)"
         )));
     }
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let answer = query_slot(
         &mut conn,
         json!({ "path": mux_action_path(&doctor_over(DOCTOR_WINDOW_MS)) }),
@@ -4823,7 +4852,7 @@ fn require_target(conn: &mut HostConn, session: Option<&str>, command: &str) -> 
 /// `windows -t SESSION`: one line per window — its name, and `(current)` on the active one.
 fn windows(args: Vec<String>) -> io::Result<()> {
     let (session, _rest) = target_and_rest(args, "windows")?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "windows")?;
     let windows = query_slot(
         &mut conn,
@@ -4877,7 +4906,7 @@ fn new_window(args: Vec<String>) -> io::Result<()> {
         sprag_terminal::WindowName::parse(name)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     }
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "new-window")?;
     // Through the grammar TYPE, not a key spelled here: `WindowBirthAsk` is the one place these
     // keys are written down, so the CLI, the agent surface and the daemon cannot come to spell them
@@ -4945,7 +4974,7 @@ fn select_window(args: Vec<String>) -> io::Result<()> {
         // id is minted at runtime and appears on no surface a person reads.
         window => SelectWindowAsk::At(sprag_host::wire::WindowRef::Named(window.to_owned())),
     };
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "select-window")?;
     let landed = scoped_window_action(
         &mut conn,
@@ -5034,7 +5063,7 @@ fn move_window(args: Vec<String>) -> io::Result<()> {
         window: window.clone(),
         place: place.clone(),
     };
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "move-window")?;
     // The skew is told APART from a refusal — R307's finding on the verb it added, now
     // [`invoke_action`]'s job for every verb: an ADDED ACTION passes `client/hello`, so a
@@ -5285,7 +5314,7 @@ fn rename_window(args: Vec<String>) -> io::Result<()> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     // An optional leading positional names the window to rename; absent ⇒ the current one.
     let window = rest.pop();
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "rename-window")?;
     let action_args = match &window {
         Some(window) => json!({ "window": window, "name": new }),
@@ -5384,7 +5413,7 @@ fn rename_session(args: Vec<String>) -> io::Result<()> {
 fn kill_window(args: Vec<String>) -> io::Result<()> {
     let (session, rest) = target_and_rest(args, "kill-window")?;
     let window = rest.into_iter().next();
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "kill-window")?;
     // The key is the GRAMMAR's, never spelled here: `WindowRef` is the one place this product
     // writes `window` vs `window_id`. This verb is the NAME caller by design — a person typed the
@@ -5600,7 +5629,7 @@ fn resize_window(args: Vec<String>) -> io::Result<()> {
         })
     };
 
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "resize-window")?;
     let target = window.as_deref().unwrap_or("the current window");
     let answer = scoped_window_action(
@@ -5785,7 +5814,7 @@ fn break_pane(args: Vec<String>) -> io::Result<()> {
     let mut rest = rest.into_iter();
     let asked = required_pane(rest.next(), "break-pane")?;
     let name = rest.next();
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "break-pane")?;
     // Registry-wide at the daemon (a break derives the source window from the pane's id), so this
     // needs the NAME to resolve and no window narrowing.
@@ -5822,7 +5851,7 @@ fn join_pane(args: Vec<String>) -> io::Result<()> {
             "join-pane needs a destination window",
         )
     })?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "join-pane")?;
     // Registry-wide at the daemon for [`break_pane`]'s reason: both windows are derived from the
     // pane's id, so this needs the NAME to resolve and no window narrowing.
@@ -5903,7 +5932,7 @@ fn move_pane(args: Vec<String>) -> io::Result<()> {
              -h (right) or -v (below); use join-pane to append into a window instead"
         ))
     })?;
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "move-pane")?;
     // Registry-wide at the daemon: BOTH windows are derived from the two pane ids (R284), so this
     // needs only the names to resolve.
@@ -6130,7 +6159,7 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
             other => return Err(bad(format!("zoom-pane: unexpected argument {other:?}"))),
         }
     }
-    let mut conn = connect(None)?;
+    let mut conn = connect()?;
     let session = require_target(&mut conn, session.as_deref(), "zoom-pane")?;
     // Registry-wide at the daemon (measured: a bare `zoom_pane` reaches a pane one window over),
     // so this needs only the name to resolve.

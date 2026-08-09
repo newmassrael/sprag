@@ -17,7 +17,7 @@ use sprag_host::wire::{
     RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
     SPAWN_ACTION, SWAP_PANE_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, pane_input_path,
 };
-use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HostConn};
+use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HOST_SILENT, HostConn};
 
 /// Reaps the spawned host process and its socket file on drop — including on a panicked
 /// assertion, so a failed run leaks neither.
@@ -5874,6 +5874,60 @@ fn an_installed_hook_moves_its_own_pane_and_stays_silent_outside_one() {
         }),
         "the release handed the pane back: {}",
         sprag(&sock, &["agent"]).stdout,
+    );
+}
+
+/// A daemon that is UP but wedged cannot stall a REQUEST VERB either — it says so and exits.
+///
+/// The hook path below has been bounded since R273 because an agent waits for it. Every other verb
+/// waited forever, on a rationale that said a person can interrupt their own command. **Measured on
+/// the first macOS CI run this repository ever completed**: nothing here is a person. Two `sprag`
+/// processes started by this very file waited **3 h 38 min** against a peer that had dropped their
+/// connections, the job died without reporting, and five rounds had already recorded macOS as
+/// *unmeasured* because a hang produces no log at all.
+///
+/// So the claim has two halves and both are asserted: it GIVES UP, and it SAYS WHICH SILENCE THIS
+/// IS. A bare `TimedOut` reaches an operator as the OS's `Resource temporarily unavailable`, which
+/// reads like a socket that is not there — and this one is there, it accepted, and it is quiet.
+/// [`sprag_rpc::HOST_SILENT`] is asserted from the wire's own constant rather than a copy, so a
+/// reworded sentence fails here rather than drifting.
+///
+/// `ls` is the verb because it is the plainest read on the wire; the deadline is set in `connect`,
+/// so any of the twenty-six would do.
+#[test]
+fn a_wedged_daemon_cannot_stall_a_request_verb() {
+    let sock = socket_path();
+    let listener = std::os::unix::net::UnixListener::bind(&sock).expect("a stand-in daemon");
+    std::thread::spawn(move || {
+        // HELD, not dropped, for the reason the hook's stand-in holds it: a closed stream is an EOF,
+        // and an EOF is an answer. Being ignored is the case under test. The sleep outlasts the
+        // CLI's own deadline by enough that a pass cannot come from this thread ending early.
+        let _held = listener.accept();
+        std::thread::sleep(Duration::from_secs(60));
+    });
+
+    let start = Instant::now();
+    let run = sprag(&sock, &["ls"]);
+    let waited = start.elapsed();
+    let _ = std::fs::remove_file(&sock);
+
+    assert!(
+        !run.ok,
+        "a verb that got no answer must not report success: {:?}",
+        run.stdout,
+    );
+    // The two halves are asserted in this order so that each names its own defect: drop the
+    // deadline and it is THIS one that fires (measured: 60 s, the stand-in's own sleep, because
+    // nothing else was going to end the wait); keep the deadline and hand the OS's message
+    // straight up, and only the one below does.
+    assert!(
+        waited < Duration::from_secs(30),
+        "it gave up on the daemon rather than on the person: waited {waited:?}",
+    );
+    assert!(
+        run.stderr.contains(HOST_SILENT),
+        "it must name WHICH silence this is, not hand over an errno: {:?}",
+        run.stderr,
     );
 }
 

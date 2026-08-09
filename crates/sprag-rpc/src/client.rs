@@ -1148,13 +1148,25 @@ impl HostConn {
         let mut line = String::new();
         loop {
             line.clear();
-            let read = self.reader.read_line(&mut line).inspect_err(|error| {
+            let read = match self.reader.read_line(&mut line) {
+                Ok(read) => read,
                 // Both spellings the platforms use for "the timeout elapsed" mean the same thing
                 // here — see `set_read_deadline`.
-                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
                     self.timed_out = true;
+                    // SAID, not passed on. What the OS hands back for an elapsed `SO_RCVTIMEO` is
+                    // `Resource temporarily unavailable`, which describes a socket rather than the
+                    // situation: the host is THERE — it accepted this connection — and it is not
+                    // answering. An operator reading the first spelling goes looking for a socket
+                    // that is missing; one reading the second restarts the daemon. The distinction
+                    // is known HERE and nowhere above, because only this frame knows a deadline
+                    // was set and that it was the deadline that ended the read.
+                    return Err(io::Error::new(ErrorKind::TimedOut, HOST_SILENT));
                 }
-            })?;
+                Err(error) => return Err(error),
+            };
             if read == 0 {
                 return Err(io::Error::new(
                     ErrorKind::UnexpectedEof,
@@ -1177,6 +1189,20 @@ impl HostConn {
 /// share, for the reason [`SESSION_PARAM`] is: a number the writer and the reader must agree on
 /// has one home.
 pub const INVALID_PARAMS: i64 = -32602;
+
+/// What a client says when a host ACCEPTED its connection and then answered nothing within the
+/// deadline the caller set ([`HostConn::set_read_deadline`]).
+///
+/// Its own sentence because it is its own diagnosis, and the two it sits between are acted on
+/// differently: *"no server running"* sends a person to start one, a daemon's own refusal sends
+/// them to their argument, and this one — the host is there, it took the connection, it is not
+/// talking — sends them to the daemon's log. Left as the OS's `Resource temporarily unavailable`
+/// it reads like the first of those and is the third.
+///
+/// A constant rather than a literal for [`UNKNOWN_SLOT_FAULT`]'s reason: a test asserting the
+/// sentence must assert THE sentence, and a copy of it in a test file is a second authority that
+/// goes on passing after this one is reworded.
+pub const HOST_SILENT: &str = "the host accepted this connection and did not answer in time";
 
 /// The `data` a daemon attaches when it does not have the ADDRESS a read named.
 ///
@@ -1718,9 +1744,17 @@ mod tests {
             .call("scene/never", json!({}))
             .expect_err("a host that never answers must not answer");
         let waited = start.elapsed();
-        assert!(
-            matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+        assert_eq!(
+            error.kind(),
+            ErrorKind::TimedOut,
             "the failure must say it timed out, not something a caller would retry: {error:?}",
+        );
+        // AND IT MUST SAY SO IN WORDS. The kind alone reaches an operator as whatever the OS put in
+        // the message, which for an elapsed `SO_RCVTIMEO` is `Resource temporarily unavailable` —
+        // a sentence about a socket, for a situation about a daemon that is right there and silent.
+        assert!(
+            error.to_string().contains(HOST_SILENT),
+            "and it must say WHICH silence this is: {error}",
         );
         assert!(
             waited >= deadline && waited < deadline * 20,
