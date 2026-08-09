@@ -49,6 +49,26 @@
 //! that moves between windows takes its processes with it
 //! ([`PaneHomes::relocate`](PaneHomes::relocate)), because otherwise the window a person pulled a
 //! runaway build OUT of goes on being charged for it.
+//!
+//! # Measured against ghostty at `2602886`, honest trade first
+//!
+//! ghostty has a real cgroup layer and R336's note that it "still has the post-fork race" was
+//! WRONG — re-read at source, `src/apprt/gtk/pre_exec.zig` makes the CHILD wait up to 250 ms for
+//! the parent's D-Bus move to land, with `linux-cgroup-hard-fail` to refuse the exec if it never
+//! does. That refusal is a knob sprag does not have.
+//!
+//! | | ghostty | sprag |
+//! |---|---|---|
+//! | ceilings | `memory.high`, `pids.max` | the same pair |
+//! | CPU weight | none (`cpu.weight` appears nowhere) | `cpu.weight` per leaf |
+//! | shape | one flat scope per surface | `session/window/pane`, weighted per LEVEL |
+//! | D-Bus calls | one per surface | one per DAEMON, then plain `mkdir` |
+//! | the fork/exec race | child POLLS, ≤250 ms, may time out | closed by construction |
+//!
+//! The race is the difference that is structural rather than a feature gap: ghostty asks systemd
+//! for a scope the child must then wait to be moved into, so there is a window and a timeout.
+//! sprag holds a DELEGATED subtree, so the pane's cgroup can be made *before the child exists* and
+//! the child joins itself with one write — nothing to wait for and no way to time out.
 
 use std::path::{Path, PathBuf};
 
