@@ -7144,6 +7144,76 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ EVERY CHECK REACHES THE AGENT — the claim `render_health_answer` had NO test for at all.
+    ///
+    /// R339 built this renderer and R342 added a check to the set it renders; between them nothing
+    /// asserted that a check the daemon judged is a check the agent is TOLD about. Measured:
+    /// dropping one row from the loop below left the whole crate GREEN, so the agent surface for
+    /// layer 2 could have silently lost any row at any time.
+    ///
+    /// Both halves, because they are different code paths: a DEGRADED check is printed by the
+    /// first loop with its criterion and remedy, and everything else by the second. A gate on one
+    /// says nothing about the other — which is the shape this project keeps meeting at doors.
+    #[test]
+    fn every_check_the_daemon_judged_reaches_the_agent() {
+        use sprag_terminal::doctor::{Blind, Evidence, Finding, Verdict};
+
+        // One report holding every check, alternating the three verdicts so that both loops run
+        // and neither is empty. Built from `Check::ALL`, so a check added to the set is in this
+        // test the day it compiles.
+        let findings: Vec<Finding> = sprag_terminal::Check::ALL
+            .iter()
+            .enumerate()
+            .map(|(nth, check)| Finding {
+                check: *check,
+                verdict: match nth % 3 {
+                    0 => Verdict::Degraded,
+                    1 => Verdict::Healthy,
+                    _ => Verdict::Blind(Blind::NoPanes),
+                },
+                evidence: Evidence::of("what it read", format!("reading {nth}")),
+            })
+            .collect();
+        let answer = render_health_answer(&Diagnosis {
+            findings: findings.clone(),
+        });
+
+        // ⚠ MATCHED AS A ROW, NOT AS A SUBSTRING. The first version of this asked
+        // `answer.contains(entry.name)` and was GREEN while `pane-admission` was deleted from the
+        // renderer — because `pane-isolation`'s REMEDY names that row in its prose. A probe whose
+        // pattern appears in text it did not come from answers about the wrong thing (R253/R338/
+        // R339, and now this test). Every row here is printed as `<name> — ...` at a line start,
+        // so that is what is asserted.
+        for finding in &findings {
+            let entry = finding.check.entry();
+            let row = format!("{} — ", entry.name);
+            assert!(
+                answer.lines().any(|line| line.starts_with(&row)),
+                "{:?} was judged {:?} and the agent gets no row for it: {answer}",
+                finding.check,
+                finding.verdict,
+            );
+        }
+        assert!(
+            answer.contains("reading"),
+            "and the rows arrive with what they measured: {answer}",
+        );
+        // The counts in the opening sentence are the report's, not a hand-tallied number.
+        assert!(
+            answer.contains(&format!("of {} checks", findings.len())),
+            "the agent is told how many checks there were: {answer}",
+        );
+        // A degraded row carries its remedy; a clean one must not pretend to have been checked.
+        assert!(
+            answer.contains("do not do it yourself"),
+            "a remedy is named as the PERSON's to run: {answer}",
+        );
+        assert!(
+            answer.contains("not measurable"),
+            "and a blind row says so rather than reading as healthy: {answer}",
+        );
+    }
+
     /// A pane with no reading says WHICH reason it is, never a blank or a zero.
     ///
     /// Each is acted on differently — a whole machine that enforces nothing, one pane nobody placed,
