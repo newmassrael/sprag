@@ -3553,6 +3553,103 @@ fn window_size_latest_takes_the_client_that_reported_last() {
     window_size_policy_case("latest", panes_of(SECOND_CLIENT));
 }
 
+/// **WHAT THE SMALLER CLIENT ACTUALLY SEES when the window is bigger than its terminal.**
+///
+/// Every other gate above asks the DAEMON what size it arbitrated. None of them asks what the
+/// client that lost the arbitration is looking at, and that is the half a person notices: under
+/// `largest`, a phone attached beside a desktop is holding a terminal narrower than the window it
+/// has been given, and the cells past its right edge have to go somewhere.
+///
+/// There are only two honest answers and they are very different products. Either the client CLIPS
+/// — the columns it cannot show are simply not drawn, and its own last row is still its status line
+/// — or it writes them anyway, the small terminal WRAPS them onto the next row, and every row below
+/// is displaced: the arrangement tears, the status line is pushed off, and what the person sees is
+/// not the session. This pins the first.
+///
+/// The needle is deliberately longer than the narrow client and shorter than the window, so it is
+/// text the wide client can show in full and the narrow one cannot show at all.
+#[test]
+fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let (wide_pty, narrow_pty) = ((100u16, 24u16), (60u16, 24u16));
+    let window = panes_of(wide_pty);
+
+    let mut wide = Tui::attach(&sock, &session);
+    wait_for("the wide client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    wide.resize(wide_pty.0, wide_pty.1);
+    wait_for("the wide client's area to become the window", || {
+        settled(pane_size(&mut conn, &session), &Some(window))
+    });
+
+    let mut narrow = Tui::attach(&sock, &session);
+    wait_for(
+        "the daemon to count two attached clients",
+        || match attached(&mut conn, &session) {
+            2 => Ok(()),
+            n => Err(format!("{n} attached")),
+        },
+    );
+    // The narrow client is DEFAULT-sized until it reports; give it its own small terminal and hold
+    // the window at the wide one's area, which is what `largest` is for.
+    narrow.resize(narrow_pty.0, narrow_pty.1);
+    wait_for(
+        "the window to stay the wider client's under `largest`",
+        || settled(pane_size(&mut conn, &session), &Some(window)),
+    );
+
+    // Text that fits the WINDOW and not the narrow terminal: 80 columns of it, against 60.
+    let needle: String = std::iter::repeat_n('A', 80).collect();
+    wide.type_bytes(needle.as_bytes());
+    wide.wait_for("the wide client to paint the whole line", || {
+        settled(wide.row(0), &needle)
+    });
+
+    // 1. THE NARROW CLIENT KEEPS ITS OWN LAST ROW. This is the assertion that separates a clip from
+    //    a wrap: 80 columns written into a 60-column terminal is one extra row of displacement, and
+    //    it lands on the row the client reserved for itself.
+    narrow.wait_for("the narrow client to paint the line it can hold", || {
+        settled(narrow.row(0), &"A".repeat(usize::from(narrow_pty.0)))
+    });
+    let status = narrow.row(STATUS_ROW);
+    assert!(
+        status.starts_with(&format!("[{session}]")),
+        "the narrow client's last row is still its OWN, not the pane spilling over it: \
+         {status:?} ({})",
+        narrow.picture(),
+    );
+
+    // 2. AND NOTHING WRAPPED ONTO THE ROW BELOW — the tell a clip is a clip. A wrap would put the
+    //    twenty columns the terminal could not hold at the start of row 1.
+    assert_eq!(
+        narrow.row(1),
+        "",
+        "the columns past this client's edge were WRAPPED, not clipped: {}",
+        narrow.picture(),
+    );
+
+    // 3. The wide client is untouched by any of it — the clip is the narrow client's own business
+    //    and must not have cost the session a column.
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(window),
+        "a client too small for the window must not shrink it",
+    );
+    assert_eq!(
+        wide.row(0),
+        needle,
+        "...and the client that CAN show the whole line still does",
+    );
+}
+
 /// **The announce half of `window-size`**: a client that reported NOTHING still re-tiles when
 /// somebody else changes the window.
 ///
