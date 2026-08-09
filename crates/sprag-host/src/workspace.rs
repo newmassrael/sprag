@@ -5831,10 +5831,25 @@ mod tests {
         // `a_needle_that_straddles_the_right_edge_is_not_found_yet` pins the same gap in the SEARCH,
         // which no caller can fold around and which needs a coordinate decision to close.
         let folded = |screen: &sprag_vt::Screen| {
+            let width = usize::from(screen.cols());
             let mut text = String::new();
             for row in 0..screen.rows() {
-                text.push_str(&screen.row_text(row));
-                if !screen.wrapped(row) {
+                let line = screen.row_text(row);
+                if screen.wrapped(row) {
+                    // ⚠ PADDED BACK TO THE FULL WIDTH. `row_text` trims trailing blanks, which is
+                    // right for a row that ENDS a line and wrong for one that continues: a wrapped
+                    // row occupies every cell, so a blank at its right edge is CONTENT. Without this
+                    // the fold silently deletes a space that lands on the boundary — measured:
+                    // `'…/a file.txt'` came back as `'…/afile.txt'`, and whether it happens at all
+                    // depends on where the pid's own length puts the wrap. The first version of this
+                    // fold passed for that reason and not for a good one.
+                    text.push_str(&line);
+                    text.extend(std::iter::repeat_n(
+                        ' ',
+                        width.saturating_sub(line.chars().count()),
+                    ));
+                } else {
+                    text.push_str(&line);
                     text.push('\n');
                 }
             }
@@ -5858,7 +5873,15 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(echoed, "the quoted local path never reached the pane's PTY");
+        assert!(
+            echoed,
+            "the quoted local path never reached the pane's PTY.\n  wanted: {quoted}\n  folded: {:?}",
+            lock(&pool)
+                .pane(pane)
+                .expect("the pane is alive")
+                .pty()
+                .with_screen(folded),
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
