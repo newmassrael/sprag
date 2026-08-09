@@ -1538,10 +1538,12 @@ fn the_cli_ssh_passes_local_forwards_to_exec() {
 /// scan attributes it to the ssh session — no ssh-specific code in the scan, an ssh pane is just a
 /// pane. Proves the composition end to end (`/proc` attribution itself is unit-covered in
 /// `sprag_terminal::ports`). Linux-only, like the port scan; needs python3 to hold the socket.
-// Linux AND macOS: the restore-after-SIGKILL path stopped being Linux-shaped when `daemon_pid`
-// went through the portable process table (R343). A gate left on a test after its subject
-// became portable is a claim that the subject is not.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+// ⚠ LINUX ONLY, and unlike its neighbours this one has not moved: what it drives is the LISTENING
+// PORTS reader — `/proc/net/tcp` plus a walk of `/proc/<pid>/fd`, with no cheap macOS counterpart
+// (`proc_pidfdinfo`, per descriptor). R343 ungated it by SWEEPING FOR THE PATTERN rather than
+// reading each site's subject — **the doc comment right above says "Linux-only, like the port
+// scan"** — and the macOS runner said so within the hour.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_cli_ssh_forward_surfaces_the_local_port_in_the_sidebar() {
     let has_python = Command::new("python3")

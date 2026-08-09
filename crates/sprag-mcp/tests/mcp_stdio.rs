@@ -378,8 +378,16 @@ impl McpServer {
         let script = match own {
             // `$0` is the server binary, `$1` the socket it is given: passed as arguments so no path
             // is ever pasted into a shell word.
-            Some(_) => format!("{SOCK_ENV}=\"$1\" \"$0\""),
-            None => format!("unset {SOCK_ENV}; \"$0\""),
+            //
+            // ⚠ THE TRAILING `exit $?` IS WHAT MAKES THE SHELL FORK, and it is the whole premise:
+            // this fixture needs the shell to SURVIVE as an ancestor carrying the variable. A POSIX
+            // shell may exec straight into the LAST command of a `-c` script instead of forking, and
+            // whether it does is the shell's own choice — measured: Linux's `dash` forks here and
+            // macOS's `sh` (bash) execs, so `assert_forked` fired *"it exec'd into the server"* on
+            // one runner and not the other. Giving the script something to do afterwards removes
+            // the choice.
+            Some(_) => format!("{SOCK_ENV}=\"$1\" \"$0\"; exit $?"),
+            None => format!("unset {SOCK_ENV}; \"$0\"; exit $?"),
         };
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
