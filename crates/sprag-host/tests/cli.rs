@@ -6107,8 +6107,8 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
             // stopped being a hand-written list and started naming every verb the binary
             // dispatches: this verb had been dispatched and undocumented, so nothing derived from
             // the usage could see it.
-            "run" | "break-pane" | "processes" | "kill-pane" | "zoom-pane" | "capture-pane"
-            | "agent" | "release-agent" | "events" => vec![],
+            "run" | "break-pane" | "processes" | "resources" | "kill-pane" | "zoom-pane"
+            | "capture-pane" | "agent" | "release-agent" | "events" => vec![],
             other => panic!(
                 "the usage says {other:?} takes a PANE and this ratchet has no other arguments for \
                  it. Add them — a skipped verb is a verb this test believes it covered."
@@ -6183,6 +6183,19 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
             args.join(" "),
             run.stderr,
         );
+        // ⚠ **AND IT MUST NOT REFUSE THE ARGUMENTS ITS OWN USAGE SPELLS.** This line appended
+        // `-t 0` from the day it was written and asserted only that the NAME resolved — so a verb
+        // that rejected the whole command line before resolving anything passed it. `processes`
+        // did exactly that from R290: its usage promised `[PANE] [-t SESSION]` and its parser
+        // answered `unexpected argument "-t"`, measured against a live daemon at R338 when the new
+        // `resources` verb copied the parser along with the usage. A gate that passes on the defect
+        // it exists to catch is worse than no gate.
+        assert!(
+            !run.stderr.contains("unexpected argument"),
+            "`sprag {}` refuses an argument its OWN usage line spells: {}",
+            args.join(" "),
+            run.stderr,
+        );
         checked.push(verb.clone());
     }
 
@@ -6198,6 +6211,7 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
         "swap-pane",
         "resize-pane",
         "processes",
+        "resources",
         "find",
         "wait-for-output",
     ] {
@@ -6984,7 +6998,7 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
     }
     assert_eq!(
         (ran, refused, unbuilt),
-        (49, 5, 3),
+        (50, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7148,7 +7162,7 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // them — which is the whole reason a new verb is added to the TABLE rather than to a surface.
     assert_eq!(
         counts,
-        (15, 10, 31, 1),
+        (15, 10, 32, 1),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

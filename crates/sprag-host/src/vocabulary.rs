@@ -132,6 +132,8 @@ pub enum Verb {
     Layout,
     /// `processes` — what is running inside a pane.
     Processes,
+    /// `resources` — what each pane is TAKING of the machine.
+    Resources,
     /// `select-pane` — which pane the session is on.
     SelectPane,
     /// `swap-pane` — two panes trade places.
@@ -428,8 +430,8 @@ impl NotAKeystroke {
 ///
 /// It exists because a usage text is a DOCUMENT rather than a list — the grouping is what makes the
 /// verbs readable — and a group is the one piece of that document a verb has to carry for the
-/// document to be derivable from the verbs — 49 of them print, and the three mouths together hold
-/// 57.
+/// document to be derivable from the verbs — 50 of them print, and the three mouths together hold
+/// 58.
 ///
 /// **It moved out of [`Shell`] at R335**, where it had been a property of the CLI's spelling. That
 /// was wrong twice: a verb no shell runs still has a subject ([`Verb::SwitchClient`] is about a
@@ -506,7 +508,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 57] = [
+    pub const ALL: [Self; 58] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -531,6 +533,7 @@ impl Verb {
         Self::Panes,
         Self::Layout,
         Self::Processes,
+        Self::Resources,
         Self::SelectPane,
         Self::SwapPane,
         Self::SplitWindow,
@@ -576,7 +579,7 @@ impl Verb {
     /// from becoming forty opinions.
     #[must_use]
     pub const fn entry(self) -> Entry {
-        // A tuple so the 57 arms below read as a TABLE rather than as 57 struct literals — five
+        // A tuple so the 58 arms below read as a TABLE rather than as 58 struct literals — five
         // columns, in the order a reader asks them: what it is called, what it is about, and then
         // the three mouths.
         let (name, group, shell, key, agent) = match self {
@@ -806,6 +809,13 @@ impl Verb {
                 Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["pane_processes"]),
+            ),
+            Self::Resources => (
+                "resources",
+                Group::Pane,
+                Shell::Runs("[PANE] [-t SESSION]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["pane_resources"]),
             ),
             Self::SelectPane => (
                 "select-pane",
@@ -1416,7 +1426,7 @@ mod tests {
             .count();
         assert_eq!(
             (served, not_built, refused),
-            (30, 7, 20),
+            (31, 7, 20),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1563,7 +1573,7 @@ mod tests {
             .count();
         assert_eq!(
             (runs, not_built, refused),
-            (49, 3, 5),
+            (50, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1644,7 +1654,7 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (25, 1, 31),
+            (25, 1, 32),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

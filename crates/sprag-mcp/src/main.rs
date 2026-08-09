@@ -128,11 +128,12 @@ use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, ENDED_KEY,
     EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, JOIN_PANE_ACTION, JoinAsk, KEY_ACTION, KILL_WINDOW_ACTION,
     LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, MOVE_PANE_ACTION, NEW_WINDOW_ACTION, OUTCOME_KEY,
-    PANES_SLOT, PaneProcessesWire, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION,
-    RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk,
-    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk,
-    WindowPin, WindowRef, ZOOM_PANE_ACTION, find_slot_for, pane_processes_at, regex_slot_for,
+    PANES_SLOT, PaneProcessesWire, PaneResourcesWire, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION,
+    SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
+    WINDOWS_SLOT, WindowBirthAsk, WindowPin, WindowRef, ZOOM_PANE_ACTION, find_slot_for,
+    pane_processes_at, pane_resources_at, regex_slot_for, settled,
 };
 use sprag_host::{ClientSize, PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -140,7 +141,8 @@ use sprag_rpc::{
     PATTERN_PARAM,
 };
 use sprag_terminal::{
-    Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, SplitDir, SplitSide, WindowInfo, arrangement,
+    Counted, Cpu, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, SplitDir, SplitSide, Taken,
+    Waiting, WindowInfo, arrangement,
 };
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
@@ -292,7 +294,9 @@ fn handle_initialize(message: &Value) -> Value {
             pane YOU are in, and says which pane is left, right, above and below each one, so \
             \"the pane next to mine\" resolves to a number. Ask WHAT each one is running with \
             `pane_processes`, which is the operating system's answer and not a guess from the \
-            pane's text. \
+            pane's text, and what that is COSTING with `pane_resources` — the cores each pane \
+            holds and how much of the recent past it spent waiting for cores it did not get, \
+            which is how to tell your own work being heavy from another pane starving you. \
             DRIVE a pane with `write_pane` (type a command) and `send_keys` (named keys and \
             chords). \
             Instead of polling, WAIT: `wait_for_change` for the one change you name — a \
@@ -437,6 +441,24 @@ fn tools_list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "pane_resources",
+                "description": "Say WHAT EACH PANE IS TAKING of the machine — the CPU cores it is \
+                    holding, how much of the recent past it spent WAITING for cores it did not \
+                    get, its memory, and how many processes it holds. `pane_processes` says what \
+                    is running; this says what that is costing. Read the two numbers together: \
+                    holding little CPU while waiting a lot means this pane is being starved by \
+                    another one, and holding little while waiting for nothing means it simply has \
+                    nothing to do. If your own work feels slow, this is how to tell which of those \
+                    is happening before you change anything. A pane with no rate yet has been \
+                    sampled once; ask again in a moment. Every answer says how many milliseconds \
+                    ago it was sampled and what window each rate covers.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "pane": pane_arg.clone() },
                     "additionalProperties": false
                 }
             },
@@ -1263,6 +1285,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "list_sessions" => tool_list_sessions(),
         "pane_layout" => tool_pane_layout(&args),
         "pane_processes" => tool_pane_processes(&args),
+        "pane_resources" => tool_pane_resources(&args),
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
         "read_pane_links" => tool_read_pane_links(&args),
@@ -2388,6 +2411,7 @@ fn tool_pane_processes(args: &Value) -> Result<String, String> {
     let wanted = resolve_optional_pane_ref(args)?;
     let here = query_panes()?;
     let session = query_session_panes()?;
+    let registry = query_registry_tree()?;
     let answer = host_call(
         "scene/query",
         json!({ "path": mux_action_path(&pane_processes_at(0)) }),
@@ -2400,8 +2424,156 @@ fn tool_pane_processes(args: &Value) -> Result<String, String> {
         &wire,
         &here,
         &session,
+        &registry,
         wanted.as_ref(),
     ))
+}
+
+/// `pane_resources`: WHAT EACH PANE IS TAKING of the machine — cores held, waiting, memory,
+/// processes. `pane` narrows to one pane.
+///
+/// # Why an agent gets this, re-derived
+///
+/// [`tool_pane_processes`]'s test, applied here: an agent cannot get this fact another way, and it
+/// is a fact an agent acts on. An AI working in a pane that has become slow has exactly two
+/// explanations available to it from every other tool — its own work is heavy, or the machine is
+/// busy — and no way to tell them apart. The waiting figure separates them, and it is per PANE, so
+/// it also names the neighbour responsible. That is the difference between an agent that retries
+/// into a loaded machine and one that says *another pane is taking the CPU*.
+///
+/// The two reads and the pane-list-first ordering are [`tool_pane_processes`]'s, for its reasons.
+/// The settle is [`settled`]'s — an agent asks once, so it must not be handed the empty first
+/// reading a polling client would simply see replaced.
+fn tool_pane_resources(args: &Value) -> Result<String, String> {
+    let wanted = resolve_optional_pane_ref(args)?;
+    let here = query_panes()?;
+    let session = query_session_panes()?;
+    let registry = query_registry_tree()?;
+    let wire = settled(|| {
+        let answer = host_call(
+            "scene/query",
+            json!({ "path": mux_action_path(&pane_resources_at(0)) }),
+        )?;
+        serde_json::from_value::<PaneResourcesWire>(answer)
+            .map_err(|error| format!("the host's resource reading did not parse: {error}"))
+    })?;
+    Ok(render_resources_answer(
+        &wire,
+        &here,
+        &session,
+        &registry,
+        wanted.as_ref(),
+    ))
+}
+
+/// The text [`tool_pane_resources`] returns, as a pure function of what was read — so every shape is
+/// testable without a live host ([`render_processes_answer`]'s discipline).
+fn render_resources_answer(
+    wire: &PaneResourcesWire,
+    here: &[PaneInfo],
+    session: &[(String, PaneInfo)],
+    registry: &[sprag_terminal::TreeSession],
+    wanted: Option<&PaneRef>,
+) -> String {
+    let rows: Vec<_> = wire
+        .panes
+        .iter()
+        // By ID and never by number, for [`render_processes_answer`]'s reason.
+        .filter(|row| wanted.is_none_or(|pane| pane.id() == row.id))
+        .collect();
+    let mut out = format!(
+        "What each pane is taking of the machine, sampled {} ms ago:\n\n",
+        wire.sampled_ms_ago
+    );
+    if rows.is_empty() {
+        out.push_str("No pane in this terminal has a row in the reading.\n");
+        return out;
+    }
+    for row in rows {
+        let name = process_row_subject(row.id, here, session, registry);
+        match row.taken {
+            Taken::Measured {
+                cpu,
+                waiting,
+                memory,
+                processes,
+            } => {
+                out.push_str(&format!("{name}\n"));
+                out.push_str(&format!("  holding {}\n", agent_cores(cpu)));
+                out.push_str(&format!("  waiting {}\n", agent_waiting(waiting)));
+                out.push_str(&format!(
+                    "  {}, {}\n",
+                    agent_memory(memory),
+                    agent_processes(processes)
+                ));
+            }
+            // The reason, never a blank: an agent that reads "unmeasured" and an agent that reads
+            // "this whole daemon measures nothing" do different things next.
+            Taken::Unmeasured { reason } => out.push_str(&format!("{name}\n  {reason}\n")),
+        }
+    }
+    out.push_str(
+        "\nHolding little CPU while waiting a lot means this pane is being starved by another \
+         one; holding little while waiting for nothing means it has nothing to do. The window each \
+         rate covers is stated, because a burst and a steady load look the same without it.\n",
+    );
+    out
+}
+
+/// The cores a pane holds, in the agent's words.
+fn agent_cores(cpu: Cpu) -> String {
+    match cpu {
+        Cpu::Held {
+            millicores,
+            over_ms,
+        } => format!(
+            "{}.{:02} CPU cores, measured over the last {} ms",
+            millicores / 1000,
+            (millicores % 1000) / 10,
+            over_ms
+        ),
+        Cpu::Settling => {
+            "no rate yet — this pane has been sampled once; ask again in a moment".to_owned()
+        }
+    }
+}
+
+/// What a pane waited for, in the agent's words.
+fn agent_waiting(waiting: Waiting) -> String {
+    match waiting {
+        Waiting::Measured {
+            avg10,
+            avg60,
+            avg300,
+        } => format!(
+            "{avg10} of the last 10 seconds, {avg60} of the last minute, {avg300} of the last 5 \
+             minutes"
+        ),
+        // Not "0%": this kernel keeps no pressure accounting at all, and reporting zero would tell
+        // an agent that a pane which may have been starved of everything was never held up.
+        Waiting::NotAccounted => {
+            "unknown — this kernel keeps no pressure accounting, so starvation cannot be read"
+                .to_owned()
+        }
+    }
+}
+
+/// A pane's memory, in the agent's words.
+fn agent_memory(memory: Counted) -> String {
+    match memory {
+        Counted::Now(bytes) if bytes >= 1 << 20 => format!("{} MiB of memory", bytes >> 20),
+        Counted::Now(bytes) => format!("{bytes} bytes of memory"),
+        Counted::NoController => "memory unmeasured (no memory controller here)".to_owned(),
+    }
+}
+
+/// A pane's process count, in the agent's words.
+fn agent_processes(processes: Counted) -> String {
+    match processes {
+        Counted::Now(1) => "1 process".to_owned(),
+        Counted::Now(many) => format!("{many} processes"),
+        Counted::NoController => "process count unmeasured (no pids controller here)".to_owned(),
+    }
 }
 
 /// How a process row NAMES the pane it belongs to.
@@ -2417,20 +2589,49 @@ fn tool_pane_processes(args: &Value) -> Result<String, String> {
 ///
 /// So a row is named against BOTH listings, and the three answers are three different facts: this
 /// window numbers it, another window holds it, or nothing does — and only the last is the race.
-fn process_row_subject(id: u64, here: &[PaneInfo], session: &[(String, PaneInfo)]) -> String {
+fn process_row_subject(
+    id: u64,
+    here: &[PaneInfo],
+    session: &[(String, PaneInfo)],
+    registry: &[sprag_terminal::TreeSession],
+) -> String {
     if let Some(index) = here.iter().position(|pane| pane.id == id) {
         return format!("pane {} (id {id})", numbered(index));
     }
-    match session
-        .iter()
-        .find(|(_, pane)| pane.id == id)
-        .map(|(window, _)| window)
-    {
-        Some(window) => format!("pane id {id} (window {window})"),
+    if let Some((window, _)) = session.iter().find(|(_, pane)| pane.id == id) {
+        return format!("pane id {id} (window {window})");
+    }
+    // ANOTHER SESSION — the fourth answer, and R338 measured why it had to exist. R312 fixed this
+    // sentence for a pane one WINDOW over and left it wrong one SESSION over, where it fired on a
+    // live daemon: `pane_resources` reports on the whole machine, so a person running two sessions
+    // was told the pane taking nineteen cores was "gone since the pane list was read". Through the
+    // daemon's own reader, shared with the `sprag` CLI, so the two cannot disagree about which
+    // session holds a pane.
+    match sprag_host::wire::session_holding(registry, sprag_terminal::PaneId(id)) {
+        Some(session) => format!("pane id {id} (session {session})"),
         // The residual of the reads, said rather than smoothed over — and now it means what it
-        // says, because every window has been looked in.
+        // says, because every window of every session has been looked in.
         None => format!("pane ? (id {id}, gone since the pane list was read)"),
     }
+}
+
+/// Every session this daemon holds, descending — the registry-wide listing the two machine-wide
+/// tools name their rows against.
+///
+/// Read afresh rather than through [`our_session`]'s cache: that one answers a question whose answer
+/// cannot change for this process (which pane am I in), and this one answers what the registry holds
+/// right now.
+fn query_registry_tree() -> Result<Vec<sprag_terminal::TreeSession>, String> {
+    // UNSCOPED, because the subject is the set of sessions rather than one of them — the same
+    // reason the slot itself is registry-wide. The fault's sentence is kept and its kind dropped:
+    // every caller here answers a `String`.
+    let answer = host_call_unscoped(
+        "scene/query",
+        json!({ "path": mux_action_path(sprag_host::wire::TREE_SLOT) }),
+    )
+    .map_err(|(said, _)| said)?;
+    serde_json::from_value(answer)
+        .map_err(|error| format!("the host's session tree did not parse: {error}"))
 }
 
 /// The text [`tool_pane_processes`] returns, as a pure function of what was read — so every shape is
@@ -2443,6 +2644,7 @@ fn render_processes_answer(
     wire: &PaneProcessesWire,
     here: &[PaneInfo],
     session: &[(String, PaneInfo)],
+    registry: &[sprag_terminal::TreeSession],
     wanted: Option<&PaneRef>,
 ) -> String {
     let rows: Vec<_> = wire
@@ -2463,7 +2665,7 @@ fn render_processes_answer(
         return out;
     }
     for row in rows {
-        let name = process_row_subject(row.id, here, session);
+        let name = process_row_subject(row.id, here, session, registry);
         let device = row
             .tty
             .as_deref()
@@ -4780,7 +4982,10 @@ fn render_events(events: &[Value], here: &[PaneInfo], session: &[(String, PaneIn
                 // so an agent reporting to a human and a human checking the agent hold one picture.
                 out.push_str(&format!(
                     "  {kind}: {}\n",
-                    process_row_subject(id, here, session)
+                    // EMPTY registry on purpose: an event stream is scoped to the
+                    // caller's own session, so a pane it names and this listing cannot find really
+                    // is one that ended — which is the case the last arm is for.
+                    process_row_subject(id, here, session, &[])
                 ));
             }
             (_, Some(name), _) => out.push_str(&format!("  {kind}: window {name}\n")),
@@ -5703,7 +5908,7 @@ mod tests {
         );
         // THE CONTROL: this is not vacuously true over two empty lists. The count is asserted where
         // the register's estimate was, so a later round reads a measured number.
-        assert_eq!(advertised.len(), 33, "the agent surface's roster");
+        assert_eq!(advertised.len(), 34, "the agent surface's roster");
     }
 
     #[test]
@@ -6251,7 +6456,13 @@ mod tests {
         ]);
 
         assert_eq!(
-            render_processes_answer(&wire, &pool(&[40, 41]), &elsewhere("0", &[40, 41]), None),
+            render_processes_answer(
+                &wire,
+                &pool(&[40, 41]),
+                &elsewhere("0", &[40, 41]),
+                &[],
+                None,
+            ),
             "What each pane is running, sampled 7 ms ago:\n\
              \n\
              pane 1 (id 40) on /dev/pts/3, child process 900\n\
@@ -6278,8 +6489,13 @@ mod tests {
             row(41, Some("/dev/pts/4"), Some(901), None),
             row(99, None, Some(902), None),
         ]);
-        let answer =
-            render_processes_answer(&wire, &pool(&[40, 41]), &elsewhere("0", &[40, 41]), None);
+        let answer = render_processes_answer(
+            &wire,
+            &pool(&[40, 41]),
+            &elsewhere("0", &[40, 41]),
+            &[],
+            None,
+        );
 
         assert!(
             answer.contains("pane 1 (id 40) on /dev/pts/3 — no child process\n"),
@@ -6311,6 +6527,7 @@ mod tests {
             &wire,
             &here,
             &elsewhere("0", &[40, 41]),
+            &[],
             Some(&near(2, here[1].clone())),
         );
         assert!(answer.contains("pane 2 (id 41)"), "{answer}");
@@ -6334,7 +6551,8 @@ mod tests {
             row(41, None, Some(901), None),
             row(99, None, Some(902), None),
         ]);
-        let answer = render_processes_answer(&wire, &pool(&[40]), &elsewhere("build", &[41]), None);
+        let answer =
+            render_processes_answer(&wire, &pool(&[40]), &elsewhere("build", &[41]), &[], None);
         assert!(
             answer.contains("pane 1 (id 40)"),
             "your own window still numbers its panes: {answer}",
@@ -6368,6 +6586,155 @@ mod tests {
             .into_iter()
             .map(|pane| (window.to_owned(), pane))
             .collect()
+    }
+
+    /// Panes of ANOTHER SESSION, as the registry-wide tree publishes them — the third listing, and
+    /// the one that stops a live pane on somebody else's session being called gone.
+    fn other_session(name: &str, ids: &[u64]) -> Vec<sprag_terminal::TreeSession> {
+        vec![sprag_terminal::TreeSession {
+            id: sprag_terminal::SessionId(9),
+            name: name.to_owned(),
+            default: false,
+            attached: 0,
+            windows: vec![sprag_terminal::TreeWindow {
+                id: sprag_terminal::WindowId(1),
+                name: "0".to_owned(),
+                current: true,
+                panes: ids
+                    .iter()
+                    .map(|id| sprag_terminal::TreePane {
+                        id: sprag_terminal::PaneId(*id),
+                        name: None,
+                        command: "bash".to_owned(),
+                        active: false,
+                    })
+                    .collect(),
+            }],
+        }]
+    }
+
+    /// One pane's resource row, for the renderer tests.
+    fn taken(id: u64, millicores: u64, waiting_hundredths: u32) -> sprag_terminal::PaneResources {
+        sprag_terminal::PaneResources {
+            id,
+            taken: sprag_terminal::Taken::Measured {
+                cpu: sprag_terminal::Cpu::Held {
+                    millicores,
+                    over_ms: 1000,
+                },
+                waiting: sprag_terminal::Waiting::Measured {
+                    avg10: sprag_terminal::Percent::from_hundredths(waiting_hundredths),
+                    avg60: sprag_terminal::Percent::NONE,
+                    avg300: sprag_terminal::Percent::NONE,
+                },
+                memory: sprag_terminal::Counted::Now(6 * 1024 * 1024),
+                processes: sprag_terminal::Counted::Now(5),
+            },
+        }
+    }
+
+    fn resource_reading(rows: Vec<sprag_terminal::PaneResources>) -> PaneResourcesWire {
+        PaneResourcesWire {
+            sampled_ms_ago: 7,
+            panes: rows,
+        }
+    }
+
+    /// **A LIVE PANE ONE SESSION OVER IS NOT "GONE" EITHER** — R312's fix, finished.
+    ///
+    /// R312 taught this sentence about another WINDOW and left it wrong about another SESSION,
+    /// where nothing exercised it because no registry-wide tool had a reason to name one. R338's
+    /// does: `pane_resources` answers about the MACHINE, so the pane taking every core is very often
+    /// in a session the caller is not in — and it was rendered *"gone since the pane list was
+    /// read"* on a live daemon, in the same line that went on to report its 19 cores.
+    ///
+    /// The fixture makes the three answers DISAGREE: `41` is one window over, `77` is one session
+    /// over, `99` is nowhere.
+    #[test]
+    fn a_row_from_another_session_names_that_session_instead_of_calling_it_gone() {
+        let wire = resource_reading(vec![
+            taken(40, 100, 0),
+            taken(41, 200, 0),
+            taken(77, 19_000, 5011),
+            taken(99, 0, 0),
+        ]);
+
+        let answer = render_resources_answer(
+            &wire,
+            &pool(&[40]),
+            &elsewhere("build", &[41]),
+            &other_session("work", &[77]),
+            None,
+        );
+
+        assert!(
+            answer.contains("pane 1 (id 40)"),
+            "your own window still numbers its panes: {answer}",
+        );
+        assert!(
+            answer.contains("pane id 41 (window build)"),
+            "a pane one window over is named by its window: {answer}",
+        );
+        assert!(
+            answer.contains("pane id 77 (session work)"),
+            "a pane one SESSION over is named by its session, not called gone: {answer}",
+        );
+        assert!(
+            answer.contains("pane ? (id 99, gone since the pane list was read)"),
+            "and the race the last arm is for still says so: {answer}",
+        );
+    }
+
+    /// The two numbers arrive TOGETHER, and the window each rate covers is stated.
+    ///
+    /// The whole argument for this tool: cores held cannot be read without the waiting figure beside
+    /// it, and a rate cannot be read without the window it covers. A renderer that printed either
+    /// alone would be handing an agent a number it cannot act on.
+    #[test]
+    fn a_resource_row_states_what_it_got_what_it_waited_for_and_over_how_long() {
+        let wire = resource_reading(vec![taken(40, 3590, 774)]);
+
+        let answer = render_resources_answer(&wire, &pool(&[40]), &[], &[], None);
+
+        assert!(
+            answer.contains("holding 3.59 CPU cores, measured over the last 1000 ms"),
+            "{answer}"
+        );
+        assert!(
+            answer.contains("waiting 7.74% of the last 10 seconds"),
+            "{answer}"
+        );
+        assert!(answer.contains("6 MiB of memory, 5 processes"), "{answer}");
+    }
+
+    /// A pane with no reading says WHICH of the three reasons it is, never a blank or a zero.
+    ///
+    /// The three are acted on differently — a whole machine that enforces nothing, one pane that
+    /// failed to be placed, and a pane that ended — and an agent that read "0 cores" for any of them
+    /// would conclude the pane was idle.
+    #[test]
+    fn an_unmeasured_pane_says_which_of_the_three_reasons_it_is() {
+        for (reason, said) in [
+            (
+                sprag_terminal::Unmeasured::NothingEnforced,
+                "no cgroup subtree",
+            ),
+            (sprag_terminal::Unmeasured::NotPlaced, "never placed"),
+            (sprag_terminal::Unmeasured::Gone, "cgroup is gone"),
+        ] {
+            let wire = resource_reading(vec![sprag_terminal::PaneResources {
+                id: 40,
+                taken: sprag_terminal::Taken::Unmeasured { reason },
+            }]);
+
+            let answer = render_resources_answer(&wire, &pool(&[40]), &[], &[], None);
+
+            assert!(answer.contains(said), "{reason:?} rendered as: {answer}");
+            assert!(
+                !answer.contains("0.00 CPU cores"),
+                "an unmeasured pane must never read as an idle one: {answer}",
+            );
+        }
     }
 
     /// A resolved pane of the caller's own window, for the renderers that take one.

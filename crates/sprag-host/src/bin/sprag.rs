@@ -190,14 +190,14 @@ use sprag_host::wire::{
     ENDED_KEY, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
     KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk,
     NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
-    PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, RELEASE_AGENT_ACTION,
-    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
-    SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, events_slot_since,
-    find_slot_for, pane_processes_at, project_slot_for, regex_slot_for, session_activity_at,
-    unknown_action, unknown_slot,
+    PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire,
+    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
+    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
+    ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk,
+    SwapHow, TEXT_ACTION, TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION,
+    events_slot_since, find_slot_for, pane_processes_at, pane_resources_at, project_slot_for,
+    regex_slot_for, session_activity_at, settled, unknown_action, unknown_slot,
 };
 use sprag_host::{ClientSize, PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -205,7 +205,8 @@ use sprag_rpc::{
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
 use sprag_terminal::{
-    Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow, WindowPlace, arrangement,
+    Counted, Cpu, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow, Taken, Waiting,
+    WindowPlace, arrangement,
 };
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -275,6 +276,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Panes => panes(args.collect()),
         Verb::Layout => layout(args.collect()),
         Verb::Processes => processes(args.collect()),
+        Verb::Resources => resources(args.collect()),
         Verb::Agent => agent(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
         Verb::ReportAgent => report_agent(args.collect()),
@@ -3329,21 +3331,14 @@ fn layout(args: Vec<String>) -> io::Result<()> {
 /// identical to one that does not. Tolerance zero, so a one-shot human command waits for its own
 /// fresh walk rather than printing something held for a display poll.
 fn processes(args: Vec<String>) -> io::Result<()> {
-    let mut asked: Option<String> = None;
-    for arg in args {
-        if asked.is_some() {
-            return Err(bad_input(&format!(
-                "processes: unexpected argument {arg:?} (processes [PANE])"
-            )));
-        }
-        asked = Some(arg);
-    }
+    let (session, asked) = pane_and_scope(args, "processes")?;
     let mut conn = connect(None)?;
-    // The READING is registry-wide (this verb takes no `-t` for that reason) and the NARROWING is
-    // client-side, so resolving a name in the default session is what makes `sprag processes
-    // buildout` mean anything.
+    // The READING is registry-wide and the NARROWING is client-side, so `-t` says only which
+    // session a pane NAME is resolved in — which is what makes `sprag processes buildout -t work`
+    // mean anything.
     let wanted =
-        resolve_optional_pane(&mut conn, None, asked.as_deref(), "processes")?.map(|site| site.id);
+        resolve_optional_pane(&mut conn, session.as_deref(), asked.as_deref(), "processes")?
+            .map(|site| site.id);
     let reading = query_slot(
         &mut conn,
         json!({ "path": mux_action_path(&pane_processes_at(0)) }),
@@ -3404,6 +3399,160 @@ fn processes(args: Vec<String>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `VERB [PANE] [-t SESSION]`: the optional pane and the optional scope, for the two verbs whose
+/// READING is registry-wide and whose NARROWING is a pane name.
+///
+/// # The defect this exists to have fixed
+///
+/// `processes` shipped at R290 with a usage line reading `processes [PANE] [-t SESSION]` and a
+/// parser that refused any second argument, so `sprag processes buildout -t work` answered
+/// *"unexpected argument \"-t\""* about a flag its own `--help` promised. Measured against a live
+/// daemon at R338, when the new verb copied the parser along with the usage — which is what makes
+/// this one function rather than two: the two verbs make the same claim in `--help`, so they must
+/// take the same arguments, and a shared parser is the only shape where that cannot drift.
+///
+/// The scope is NOT a filter on the answer. Both readings cover the whole registry, because the
+/// question each asks is about the machine; `-t` says which session a pane NAME is looked up in.
+fn pane_and_scope(args: Vec<String>, verb: &str) -> io::Result<(Option<String>, Option<String>)> {
+    let (session, rest) = scope_and_rest(args, verb)?;
+    let mut rest = rest.into_iter();
+    let asked = rest.next();
+    if let Some(other) = rest.next() {
+        return Err(bad_input(&format!(
+            "{verb}: unexpected argument {other:?} ({verb} [PANE] [-t SESSION])"
+        )));
+    }
+    Ok((session, asked))
+}
+
+/// `resources [PANE] [-t SESSION]`: what each pane is TAKING of the machine.
+///
+/// # Two numbers, printed together, because either alone misleads
+///
+/// The cores a pane is holding cannot be read on their own: a pane holding a tenth of a core is
+/// either a pane with nothing to do or a pane being starved of what it asked for, and those want
+/// opposite responses from a person. So every row prints what the pane GOT and what it WAITED for,
+/// and the waiting column is not omitted when it is zero — a pane that took a little and waited for
+/// nothing is the answer *this pane is idle*, which is information.
+///
+/// # Why it may pause before it prints
+///
+/// A rate needs two samples, and a daemon nobody has asked yet has one. [`settled`] is the shared
+/// answer to that — one extra read after `SETTLE`, and the same one `sprag-mcp` makes, so the CLI
+/// and an agent cannot come to disagree about how long is long enough.
+fn resources(args: Vec<String>) -> io::Result<()> {
+    let (session, asked) = pane_and_scope(args, "resources")?;
+    let mut conn = connect(None)?;
+    // The READING is registry-wide — a machine is not divided by session, and the pane eating it may
+    // be in one the caller is not scoped to — so the narrowing is client-side, exactly as
+    // `processes` does it.
+    let wanted =
+        resolve_optional_pane(&mut conn, session.as_deref(), asked.as_deref(), "resources")?
+            .map(|site| site.id);
+    let wire = settled(|| {
+        let reading = query_slot(
+            &mut conn,
+            json!({ "path": mux_action_path(&pane_resources_at(0)) }),
+        )?;
+        serde_json::from_value::<PaneResourcesWire>(reading).map_err(|error| {
+            bad_input(&format!(
+                "resources: the host's answer did not parse: {error}"
+            ))
+        })
+    })?;
+    let rows: Vec<_> = wire
+        .panes
+        .iter()
+        .filter(|row| wanted.is_none_or(|id| row.id == id))
+        .collect();
+    if let Some(id) = wanted
+        && rows.is_empty()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "resources: no pane {id} (panes: {:?})",
+                wire.panes.iter().map(|row| row.id).collect::<Vec<_>>()
+            ),
+        ));
+    }
+    println!("sampled {} ms ago", wire.sampled_ms_ago);
+    for row in rows {
+        match row.taken {
+            Taken::Measured {
+                cpu,
+                waiting,
+                memory,
+                processes,
+            } => println!(
+                "{}: {}  waiting {}  {}  {}",
+                row.id,
+                held(cpu),
+                waited(waiting),
+                footprint(memory),
+                count(processes),
+            ),
+            // The reason, not a blank row: "nothing on this machine is measured" and "this one pane
+            // is not" send a reader in opposite directions.
+            Taken::Unmeasured { reason } => println!("{}: {reason}", row.id),
+        }
+    }
+    Ok(())
+}
+
+/// A pane's CPU as a person reads it — cores to two decimals, with the window it covers.
+///
+/// The window is printed rather than assumed because it is what makes the number a claim: four cores
+/// over 40 ms is a build starting and four cores over a minute is a build running away.
+fn held(cpu: Cpu) -> String {
+    match cpu {
+        Cpu::Held {
+            millicores,
+            over_ms,
+        } => format!(
+            "{}.{:02} cores over {}.{:01}s",
+            millicores / 1000,
+            (millicores % 1000) / 10,
+            over_ms / 1000,
+            (over_ms % 1000) / 100,
+        ),
+        Cpu::Settling => "(no rate yet)".to_owned(),
+    }
+}
+
+/// How much of the last ten seconds the pane spent runnable and not running.
+fn waited(waiting: Waiting) -> String {
+    match waiting {
+        Waiting::Measured { avg10, .. } => avg10.to_string(),
+        // Not "0%": this kernel keeps no pressure accounting, and a pane that may have waited for
+        // everything would be printed as one that never waited at all.
+        Waiting::NotAccounted => "(unaccounted)".to_owned(),
+    }
+}
+
+/// A pane's memory, in the largest unit that keeps it readable.
+fn footprint(memory: Counted) -> String {
+    match memory {
+        Counted::Now(bytes) if bytes >= 1 << 30 => {
+            format!("{}.{} GiB", bytes >> 30, (bytes >> 20) % 1024 * 10 / 1024)
+        }
+        Counted::Now(bytes) if bytes >= 1 << 20 => format!("{} MiB", bytes >> 20),
+        Counted::Now(bytes) => format!("{bytes} B"),
+        // The controller never reached this pane, so there is no number — which a `0 B` would
+        // report as a pane using no memory at all.
+        Counted::NoController => "(no memory controller)".to_owned(),
+    }
+}
+
+/// How many processes the pane holds.
+fn count(processes: Counted) -> String {
+    match processes {
+        Counted::Now(1) => "1 process".to_owned(),
+        Counted::Now(many) => format!("{many} processes"),
+        Counted::NoController => "(no pids controller)".to_owned(),
+    }
 }
 
 /// `agent [-t SESSION] [PANE]`: what the AI agent in each pane is doing — H3's verdict, from the

@@ -3665,8 +3665,9 @@ fn old_host() -> sprag_peer::OldDaemon {
 ///
 /// A tool is either DRIVEN (it reaches the wire, so it can leak a Rust variant name) or listed as
 /// `SKEW_EXEMPT` with the reason it cannot — every exemption is a sentence somebody wrote, not an
-/// absence. **`SKEW_EXEMPT` is currently empty**: all 33 tools reach the wire and all 33 name the
-/// skew, where the hand-written list checked 12.
+/// absence. **`SKEW_EXEMPT` is currently empty**: all 34 tools reach the wire and all 34 name the
+/// skew, where the hand-written list checked 12. R338's `pane_resources` was caught by it on the
+/// round it was added, which is the enumeration paying for itself a second time.
 ///
 /// ⚠⚠ **THE ENUMERATION FOUND A LIVE DEFECT ON ITS FIRST RUN.** `wait_for_change` answered *"the
 /// host did not report a scene revision"* — a fact with no cause and no remedy, which is debt item
@@ -3686,8 +3687,10 @@ fn a_tool_against_an_older_daemon_says_so() {
         Some(match tool {
             "list_panes" | "list_windows" | "list_sessions" | "pane_layout" => json!({}),
             "read_pane" | "read_last_command" | "read_pane_links" | "read_pane_images"
-            | "pane_processes" | "agent_state" | "agent_explain" | "select_pane" | "break_pane"
-            | "zoom_pane" | "close_pane" | "rename_pane" => json!({ "pane": 1 }),
+            | "pane_processes" | "pane_resources" | "agent_state" | "agent_explain"
+            | "select_pane" | "break_pane" | "zoom_pane" | "close_pane" | "rename_pane" => {
+                json!({ "pane": 1 })
+            }
             "send_keys" => json!({ "pane": 1, "keys": ["Enter"] }),
             "write_pane" => json!({ "pane": 1, "text": "x" }),
             "open_pane" => json!({ "dir": "right" }),
