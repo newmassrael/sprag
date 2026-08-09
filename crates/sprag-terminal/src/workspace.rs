@@ -1277,41 +1277,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_pane_the_kernel_will_not_admit_is_born_without_a_home() {
-        let root = std::env::temp_dir().join(format!("sprag-refused-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        // The interior levels and the two leaves, with the interface files the kernel would have
-        // made. Both leaves are pre-built because a plain directory is not a cgroup: nothing here
-        // creates `cgroup.procs`, so a leaf left to `place` could not be joined by EITHER pane and
-        // the two arms would stop differing.
-        let cgroup = |relative: &str| {
-            let path = root.join(relative);
-            std::fs::create_dir_all(&path).expect("fixture cgroup");
-            std::fs::write(path.join("cgroup.procs"), "").expect("fixture procs");
-            std::fs::write(path.join("cgroup.subtree_control"), "").expect("fixture subtree");
-            std::fs::write(path.join("cgroup.controllers"), "cpu memory pids\n")
-                .expect("fixture controllers");
-            std::fs::write(path.join("cpu.weight"), "100\n").expect("fixture weight");
-            path
-        };
-        cgroup("");
-        cgroup("session-1");
-        cgroup("session-1/window-1");
-        cgroup("session-1/window-1/pane-0");
-        // The SECOND pane's leaf, whose `cgroup.procs` accepts an open and refuses the write —
-        // exactly what a `cgroup.procs` looks like from a child cgroup v2 will not migrate.
-        let refused = cgroup("session-1/window-1/pane-1");
-        std::fs::remove_file(refused.join("cgroup.procs")).expect("replace the fixture procs");
-        std::os::unix::fs::symlink("/dev/full", refused.join("cgroup.procs"))
-            .expect("a write that always fails");
-
-        let mut pool = Workspace::new((80, 24));
-        pool.set_home(PoolLineage {
-            session: crate::registry::SessionId(1),
-            window: crate::registry::WindowId(1),
-        });
-        pool.set_pane_homes(Arc::new(crate::share::PaneHomes::over(
-            crate::share::Tree::adopt(root.clone()).expect("adopt a plain directory"),
-        )));
+        let (root, mut pool) = a_tree_that_refuses_pane("born", &[1]);
 
         let admitted = pool.spawn(cmd(), "sh".to_string(), 80, 24).expect("pane 0");
         let refused_pane = pool
@@ -1341,6 +1307,91 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **And the RESTORE door answers the same way.**
+    ///
+    /// A separate test rather than two panes in the one above, because a door is what this project
+    /// keeps getting wrong: R336 wired the join at one of five and said so, R337 found the restore
+    /// among the three that never filled a pane's home, and `PaneRebirth::hooks` carries that
+    /// history in its own doc. A restored pane joins a NEW cgroup exactly as a fresh one does and
+    /// can be refused exactly as one can, so the two doors are one claim asserted twice — which is
+    /// the only arrangement in which deleting the answer from one of them fails.
+    ///
+    /// It also gates the arm the spawn door cannot: a restore is handed its id, so this one names
+    /// the refusing leaf outright instead of relying on what a fresh pool's counter mints.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_restored_pane_the_kernel_will_not_admit_comes_back_without_a_home() {
+        let (root, mut pool) = a_tree_that_refuses_pane("restored", &[7]);
+
+        pool.spawn_restored(PaneRebirth {
+            id: PaneId(7),
+            command: cmd(),
+            label: "sh".to_string(),
+            size: (80, 24),
+            hooks: PaneBirthHooks::default(),
+            history: Vec::new(),
+        })
+        .expect("a refused cgroup join must not cost a person their restored pane");
+
+        assert_eq!(
+            pool.pane(PaneId(7)).expect("the restored pane").home(),
+            None,
+            "a restored pane the kernel would not admit must not claim a leaf either",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A stand-in delegated root under `tag`, and a pool placing into it, where the leaf of every
+    /// pane id in `refusing` opens for writing and REFUSES every write.
+    ///
+    /// Every level is built in advance because a plain directory is not a cgroup: nothing here
+    /// creates `cgroup.procs`, so a leaf left to `place` could not be joined by ANY pane and the
+    /// admitted and refused arms would stop differing. Ids `0..=8` get a leaf, which is more than
+    /// any caller needs and keeps the fixture from depending on where a pool's counter starts.
+    ///
+    /// `/dev/full` is the refusal, for `tests/pane_join_refused.rs`'s reason: it opens for writing
+    /// and fails every write, on every Linux, with no cgroup tree and no privileges. Nothing on the
+    /// birth path READS a leaf's `cgroup.procs` — `sweep` only `remove_dir`s and `place` only
+    /// writes weights — which is what makes a device that reads as an endless stream of zeros safe
+    /// to put here.
+    #[cfg(target_os = "linux")]
+    fn a_tree_that_refuses_pane(tag: &str, refusing: &[u64]) -> (std::path::PathBuf, Workspace) {
+        let root = std::env::temp_dir().join(format!("sprag-refused-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cgroup = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(&path).expect("fixture cgroup");
+            std::fs::write(path.join("cgroup.procs"), "").expect("fixture procs");
+            std::fs::write(path.join("cgroup.subtree_control"), "").expect("fixture subtree");
+            std::fs::write(path.join("cgroup.controllers"), "cpu memory pids\n")
+                .expect("fixture controllers");
+            std::fs::write(path.join("cpu.weight"), "100\n").expect("fixture weight");
+            path
+        };
+        cgroup("");
+        cgroup("session-1");
+        cgroup("session-1/window-1");
+        for id in 0..=8 {
+            let leaf = cgroup(&format!("session-1/window-1/pane-{id}"));
+            if refusing.contains(&id) {
+                std::fs::remove_file(leaf.join("cgroup.procs")).expect("replace the fixture procs");
+                std::os::unix::fs::symlink("/dev/full", leaf.join("cgroup.procs"))
+                    .expect("a write that always fails");
+            }
+        }
+
+        let mut pool = Workspace::new((80, 24));
+        pool.set_home(PoolLineage {
+            session: crate::registry::SessionId(1),
+            window: crate::registry::WindowId(1),
+        });
+        pool.set_pane_homes(Arc::new(crate::share::PaneHomes::over(
+            crate::share::Tree::adopt(root.clone()).expect("adopt a plain directory"),
+        )));
+        (root, pool)
     }
 
     /// Asserted by the FILESYSTEM: the destination tree is a real directory, and the claim is that
