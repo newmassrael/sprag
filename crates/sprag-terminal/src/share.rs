@@ -312,13 +312,25 @@ const MEMORY_HIGH: &str = "memory.high";
 /// What the kernel reads and writes for "no ceiling here" in both limit files.
 const UNCAPPED: &str = "max";
 
-/// What every interior level of the tree turns on for its children.
+/// What every interior level of the tree turns on for its children, IF the level has it to give.
 ///
 /// `cpu` is the point. `pids` bounds one pane's fork storm from taking the pid budget the person's
 /// other panes need. `memory` joined them when [`Limits`] gave a person a number to set — before
 /// that it was deliberately absent, because a controller enabled but unread buys per-cgroup
 /// accounting for no answer.
-const ENABLE_CONTROLLERS: &str = "+cpu +memory +pids";
+///
+/// A WISH LIST and not a command, because it is written as one write and the kernel takes that write
+/// **all or nothing**. Measured on a real delegated scope: `+cpu +nosuchctrl +pids` fails entirely
+/// and leaves `cgroup.subtree_control` EMPTY — not `cpu pids`, nothing. So a host whose delegation
+/// offers `cpu pids` and no `memory` would have every level fail to enable and every pane lose the
+/// share it used to get. That host is not hypothetical: systemd delegates whatever the parent slice
+/// enabled, and R336 measured a scope on this very machine listing `memory pids` with no `cpu`.
+/// [`available_controllers`] narrows this to what a level actually has.
+const WANTED_CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
+
+/// The file listing what a cgroup's PARENT enabled for it — which is exactly the set this cgroup may
+/// enable for its own children.
+const CONTROLLERS: &str = "cgroup.controllers";
 
 /// The three identities that already name a pane, which are also where its cgroup goes.
 ///
@@ -1061,9 +1073,44 @@ fn move_proc(cgroup: &Path, pid: u32) -> Result<(), TreeError> {
     }
 }
 
-/// Turn on what this cgroup's children need.
+/// Turn on as much of [`WANTED_CONTROLLERS`] as this cgroup actually has to give.
+///
+/// # Why it asks first instead of writing the whole list
+///
+/// The write is atomic in the worst way: naming one controller a level does not have fails the
+/// ENTIRE write and enables nothing (measured on a real delegated scope — see
+/// [`WANTED_CONTROLLERS`]). Asking narrows the failure to the controller that is missing, so a host
+/// that can weight panes but not cap their memory gets its weights, and only the ceilings are
+/// unenforced — which is the degradation [`Enforcement`] already models for the whole feature,
+/// applied per controller.
+///
+/// A level that has NONE of them writes nothing and succeeds. That is honest rather than lenient:
+/// the placement below it will still fail at `cpu.weight`, which is the file that does not exist
+/// when the CPU controller never reached this level, and that is where the caller is told.
 fn enable_controllers(cgroup: &Path) -> Result<(), TreeError> {
-    write_control(&cgroup.join(SUBTREE_CONTROL), ENABLE_CONTROLLERS)
+    let wanted: String = available_controllers(cgroup)?
+        .iter()
+        .map(|controller| format!("+{controller}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    write_control(&cgroup.join(SUBTREE_CONTROL), &wanted)
+}
+
+/// Which of [`WANTED_CONTROLLERS`] this cgroup's parent enabled for it, in the wish list's order.
+///
+/// Matched as whole TOKENS, never as substrings: `cpuset` contains `cpu`, and a substring test would
+/// read a host offering only `cpuset` as one that can weight children. The same trap
+/// [`lists_controller`] exists for on the probe side.
+fn available_controllers(cgroup: &Path) -> Result<Vec<&'static str>, TreeError> {
+    let path = cgroup.join(CONTROLLERS);
+    let body = std::fs::read_to_string(&path).map_err(|source| TreeError::Read { path, source })?;
+    Ok(WANTED_CONTROLLERS
+        .into_iter()
+        .filter(|wanted| body.split_whitespace().any(|have| have == *wanted))
+        .collect())
 }
 
 /// Write one value to a cgroup control file.
@@ -1187,6 +1234,11 @@ mod tests {
             std::fs::create_dir_all(&path).expect("fixture cgroup");
             std::fs::write(path.join(PROCS), procs).expect("fixture procs");
             std::fs::write(path.join(SUBTREE_CONTROL), "").expect("fixture subtree_control");
+            // What the PARENT enabled for this cgroup, which is what `enable_controllers` may
+            // enable below it. The fixture offers all three; `a_level_enables_only_what_it_has`
+            // makes one that does not.
+            std::fs::write(path.join(CONTROLLERS), WANTED_CONTROLLERS.join(" "))
+                .expect("fixture controllers");
             std::fs::write(path.join(CPU_WEIGHT), "100\n").expect("fixture cpu.weight");
             std::fs::write(path.join(PIDS_MAX), "max\n").expect("fixture pids.max");
             std::fs::write(path.join(MEMORY_HIGH), "max\n").expect("fixture memory.high");
@@ -1212,6 +1264,15 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    /// The `cgroup.subtree_control` write that turns `controllers` on, as the kernel takes it.
+    fn enabled(controllers: &[&str]) -> String {
+        controllers
+            .iter()
+            .map(|controller| format!("+{controller}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn address(session: u64, window: u64, pane: u64) -> PaneLineage {
@@ -1241,7 +1302,10 @@ mod tests {
         // The fake keeps only the last write to a file, so the LAST pid standing is what proves the
         // move ran through every process the root held rather than stopping at the first.
         assert_eq!(fs.read(&format!("{DAEMON_LEAF}/{PROCS}")), "222");
-        assert_eq!(fs.read(SUBTREE_CONTROL), ENABLE_CONTROLLERS);
+        assert_eq!(
+            fs.read(SUBTREE_CONTROL),
+            enabled(WANTED_CONTROLLERS.as_slice())
+        );
     }
 
     #[test]
@@ -1275,11 +1339,11 @@ mod tests {
         assert_eq!(placed.path(), fs.root.join("session-1/window-2/pane-3"));
         assert_eq!(
             fs.read(&format!("session-1/{SUBTREE_CONTROL}")),
-            ENABLE_CONTROLLERS
+            enabled(WANTED_CONTROLLERS.as_slice())
         );
         assert_eq!(
             fs.read(&format!("session-1/window-2/{SUBTREE_CONTROL}")),
-            ENABLE_CONTROLLERS
+            enabled(WANTED_CONTROLLERS.as_slice())
         );
         assert_eq!(
             fs.read(&format!("session-1/window-2/pane-3/{CPU_WEIGHT}")),
@@ -1531,6 +1595,69 @@ mod tests {
         let into = tree.place(to, Share::EVEN).expect("place the destination");
 
         assert_eq!(tree.migrate(from, &into).expect("migrate"), 2);
+    }
+
+    /// A level enables only what it HAS, and a missing controller costs only itself.
+    ///
+    /// # The live regression this exists for
+    ///
+    /// R337 added `memory` to the wish list as a bare string, and a `cgroup.subtree_control` write
+    /// is **all or nothing** — measured against a real delegated scope: `+cpu +nosuchctrl +pids`
+    /// left the file EMPTY, not `cpu pids`. So on a host whose delegation offers `cpu pids` and no
+    /// `memory` — systemd hands down whatever the parent slice enabled, and R336 measured a scope on
+    /// this machine listing `memory pids` with no `cpu` — `Tree::adopt` would have failed outright
+    /// and EVERY pane would have lost the share R336 gave it. A feature regressed to nothing by a
+    /// ceiling nobody had set.
+    ///
+    /// So the claim is two-sided and both sides are asserted: what IS available gets enabled, and
+    /// what is not is simply absent rather than fatal.
+    #[test]
+    fn a_level_enables_only_the_controllers_it_has_and_a_missing_one_is_not_fatal() {
+        let fs = FakeCgroupFs::new("narrow");
+        let level = fs.cgroup("session-1", "");
+        // The host that would have broken: no `memory` on offer.
+        std::fs::write(level.join(CONTROLLERS), "cpu pids\n").expect("fixture controllers");
+
+        enable_controllers(&level).expect("a level missing one controller still enables the rest");
+
+        assert_eq!(
+            fs.read(&format!("session-1/{SUBTREE_CONTROL}")),
+            enabled(&["cpu", "pids"]),
+            "the share survives a host that cannot cap memory",
+        );
+    }
+
+    /// A level with NOTHING on offer writes nothing and does not fail here.
+    ///
+    /// Where it fails is the leaf's `cpu.weight`, which is the file that is absent exactly when the
+    /// CPU controller never arrived — so the caller is told at the point the fact is true, rather
+    /// than by a write that could equally mean five other things.
+    #[test]
+    fn a_level_with_no_controllers_on_offer_writes_nothing() {
+        let fs = FakeCgroupFs::new("nothing-on-offer");
+        let level = fs.cgroup("session-1", "");
+        std::fs::write(level.join(CONTROLLERS), "\n").expect("fixture controllers");
+
+        enable_controllers(&level).expect("nothing to enable is not a failure");
+
+        assert_eq!(fs.read(&format!("session-1/{SUBTREE_CONTROL}")), "");
+    }
+
+    /// `cpuset` is not `cpu`, on the enabling side as well as the probing side.
+    ///
+    /// A substring test passes this and would write `+cpu` to a level that has no CPU controller —
+    /// which is the all-or-nothing write failing again, for a controller we asked for and could not
+    /// have had.
+    #[test]
+    fn enabling_matches_whole_controller_names_not_substrings() {
+        let fs = FakeCgroupFs::new("cpuset");
+        let level = fs.cgroup("session-1", "");
+        std::fs::write(level.join(CONTROLLERS), "cpuset memory\n").expect("fixture controllers");
+
+        assert_eq!(
+            available_controllers(&level).expect("read the offer"),
+            vec!["memory"]
+        );
     }
 
     #[test]

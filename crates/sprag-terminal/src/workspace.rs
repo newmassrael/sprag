@@ -1138,6 +1138,10 @@ mod tests {
             std::fs::create_dir_all(&path).expect("fixture cgroup");
             std::fs::write(path.join("cgroup.procs"), "").expect("fixture procs");
             std::fs::write(path.join("cgroup.subtree_control"), "").expect("fixture subtree");
+            // What the parent enabled here, which is what a level may enable below it. Present on
+            // every real cgroup; a fixture that omits it is a directory no placement can read.
+            std::fs::write(path.join("cgroup.controllers"), "cpu memory pids\n")
+                .expect("fixture controllers");
             std::fs::write(path.join("cpu.weight"), "100\n").expect("fixture weight");
         };
         cgroup("");
