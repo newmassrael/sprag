@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use portable_pty::{ChildKiller, PtySize, native_pty_system};
+use crate::pty::Pty;
 use sprag_vt::{
     ClipboardQuery, ClipboardWrite, Emulator, HistoryLimits, InputModes, MouseProtocol,
     Notification, Palette, Screen, ShellState, VtPort,
@@ -28,7 +28,7 @@ use sprag_vt::{
 
 // Re-exported so callers build commands without depending on portable-pty
 // directly (it is an implementation detail of the PTY seam).
-pub use portable_pty::CommandBuilder;
+pub use crate::command::CommandBuilder;
 
 /// The PTY master writer, shared (and interior-mutable) so both the owning
 /// [`PanePty`] and any [`PanePtyHandle`] can inject input without a
@@ -255,7 +255,9 @@ pub struct PanePty {
     // place that can block on `wait()` without stalling anything. What stays here is the ability to
     // SIGNAL it (`clone_killer` exists for exactly this split) and the two facts a reaped child can
     // no longer be asked for: its pid and its status.
-    killer: Box<dyn ChildKiller + Send + Sync>,
+    // The child is SIGNALLED by pid, because the reader thread owns the handle and is blocked in
+    // `wait` on it — `std`'s `kill` needs `&mut`. See `crate::pty::signal_child` for the pid-reuse
+    // window this leaves and why it is the same one the previous backend had.
     /// The child's OS pid, captured at spawn because the reader thread owns the handle that could
     /// report it. Read out through [`pid`](PanePty::pid), which gates it on the child NOT having
     /// been reaped — a reaped pid may be recycled onto an unrelated process, and the `/proc` walks
@@ -343,46 +345,27 @@ impl PanePty {
         } = hooks;
         let cols = cols.max(1);
         let rows = rows.max(1);
-        let pty_system = native_pty_system();
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        let pair = pty_system
-            .openpty(size)
-            .map_err(|e| PanePtyError::new("open pty", &e))?;
+        let mut pty = Pty::open(cols, rows).map_err(|e| PanePtyError::new("open pty", &e))?;
         // The pane's terminal DEVICE, taken here because this is the only moment it is reachable:
         // the master moves to the resize coalescer thread below and the slave is dropped before
         // that. It is `ttyname_r` on the slave fd, resolved by the PTY backend at `openpty` — so
         // this daemon does not have to DISCOVER what a caller could only guess at from the child's
         // fd 0 (which the child is free to redirect).
-        #[cfg(unix)]
-        let tty = pair.master.tty_name();
-        #[cfg(not(unix))]
-        let tty = None;
-        let child = pair
-            .slave
-            .spawn_command(command)
+        let tty = pty.tty_name();
+        let child = pty
+            .spawn(&command, None)
             .map_err(|e| PanePtyError::new("spawn command", &e))?;
         // Split the handle before the child moves to the reader thread: the killer signals it, the
         // pid answers `/proc` questions. `clone_killer`'s own contract is this exact split ("send it
         // signals independently from a thread that may be blocked in `.wait`").
-        let killer = child.clone_killer();
-        let pid = child.process_id();
-        // The child now holds the slave fd; drop ours so the master reads
-        // EOF once the child exits (otherwise the reader blocks forever).
-        drop(pair.slave);
-        let mut reader = pair
-            .master
-            .try_clone_reader()
+        let pid = child.id();
+        let mut reader = pty
+            .reader()
             .map_err(|e| PanePtyError::new("clone reader", &e))?;
-        let writer: SharedWriter = Arc::new(Mutex::new(
-            pair.master
-                .take_writer()
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(
+            pty.writer()
                 .map_err(|e| PanePtyError::new("take writer", &e))?,
-        ));
+        )));
 
         let emulator = Arc::new(Mutex::new(Emulator::with_history_limit(
             cols,
@@ -511,10 +494,8 @@ impl PanePty {
                 //   thread still believes it owns it. `Drop` signals through the killer and joins
                 //   here rather than waiting itself.
                 if let Ok(status) = child.wait() {
-                    *lock(&reader_exit) = Some(PaneExit {
-                        code: status.exit_code(),
-                        signal: status.signal().map(str::to_owned),
-                    });
+                    let (code, signal) = crate::pty::exit_facts(status);
+                    *lock(&reader_exit) = Some(PaneExit { code, signal });
                     // A second wake, because the status arrived after the one above: the title that
                     // said "(exited)" can now say WHICH exit. For the overwhelmingly common clean
                     // exit the rendering is unchanged, so this repaints nothing visible; it is the
@@ -532,7 +513,7 @@ impl PanePty {
         // debounces the PTY ioctl to the final one — so the live shell gets one
         // `SIGWINCH` per settle, not one per cell-width boundary.
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16, u16, u16)>();
-        let master = pair.master;
+        let master = pty;
         let resize_thread = std::thread::Builder::new()
             .name("sprag-pty-resize".to_string())
             .spawn(move || {
@@ -540,20 +521,14 @@ impl PanePty {
                     RESIZE_DEBOUNCE,
                     &resize_rx,
                     |(cols, rows, pixel_width, pixel_height)| {
-                        let _ = master.resize(PtySize {
-                            rows,
-                            cols,
-                            pixel_width,
-                            pixel_height,
-                        });
+                        let _ = master.resize(cols, rows, pixel_width, pixel_height);
                     },
                 );
             })
             .map_err(|e| PanePtyError::new("spawn resize thread", &e))?;
 
         Ok(Self {
-            killer,
-            pid,
+            pid: Some(pid),
             tty,
             exit,
             writer,
@@ -1159,7 +1134,7 @@ const RESIZE_DEBOUNCE: Duration = Duration::from_millis(40);
 
 /// How long [`PanePty::drop`] lets the polite hangup work before it stops asking and kills.
 ///
-/// A pane close hangs its child up ([`ChildKiller`], one `SIGHUP`) and then has to wait for the
+/// A pane close hangs its child up ([`crate::pty::signal_child`], one `SIGHUP`) and then has to wait for the
 /// reader thread, because that thread is the only reaper. The wait is the problem: `SIGHUP` is a
 /// REQUEST. `kill(2)` reporting success means the signal was raised, not that it did anything — a
 /// signal whose disposition is `SIG_IGN` at the moment of delivery is DISCARDED outright, leaving
@@ -1227,7 +1202,7 @@ impl Drop for PanePty {
         // waiting here is what keeps a single reaper: two threads calling `wait()` on one child race
         // for the status, and the loser would leave `exit_status` empty for a pane that plainly had
         // one.
-        let _ = self.killer.kill();
+        crate::pty::signal_child(self.pid.unwrap_or(0), libc::SIGHUP);
         let Some(handle) = self.reader_thread.take() else {
             return;
         };

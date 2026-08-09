@@ -63,7 +63,6 @@ tracing = { workspace = true }
 # The PTY gate (tests/pty_round_trip.rs) needs a real pseudoterminal to run the shipped
 # binary on — the same abstraction the producer gives every pane, used here from the
 # other side. NOT a runtime dependency: this client owns a terminal, it never makes one.
-portable-pty = { workspace = true }
 # The gate's observer connection: the assertions the SCREEN cannot make (how big the
 # pane's pty is, whether the daemon still counts the client) are asked over the wire.
 sprag-rpc = { workspace = true }

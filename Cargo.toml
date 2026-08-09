@@ -101,8 +101,6 @@ pinion-rpc-transport = { git = "https://github.com/newmassrael/pinion.git", rev 
 # sprag-owned (sprag-vt), isolated behind VtPort.
 termwiz = "0.23"
 
-# Cross-platform PTY (README NFR: portable-pty abstraction).
-portable-pty = "0.9"
 
 # SIGUSR1 runtime toggle for the RPC socket endpoint (PR-47 consumer-owned
 # policy): a dedicated `Signals::forever` thread flips TransportControl

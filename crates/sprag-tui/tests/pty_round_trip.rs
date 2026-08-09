@@ -47,9 +47,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{
-    Child as PtyChild, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system,
-};
 use serde_json::{Value, json};
 use sprag_host::keymap::{Keymap, PrefixMode, Routed};
 use sprag_host::wire::{
@@ -59,6 +56,8 @@ use sprag_host::wire::{
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
+use sprag_terminal::CommandBuilder;
+use sprag_terminal::pty::Pty;
 use sprag_vt::{Emulator, InputModes, MouseProtocol, VtPort};
 
 /// How long any single condition may take before the test calls it a failure.
@@ -620,10 +619,10 @@ fn shows(tui: &mut Tui, want: &str) -> Result<(), String> {
 /// painted.
 struct Tui {
     /// Held so the pty stays open and can be resized; dropping it would EOF the client's input.
-    master: Box<dyn MasterPty + Send>,
+    master: Pty,
     /// The client's input end. Held for the same reason: a dropped writer is an EOF.
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn PtyChild>,
+    writer: std::fs::File,
+    child: std::process::Child,
     /// Everything the client has written, as the emulator that consumed it — see the module docs
     /// for why the assertions read a screen and not a byte stream.
     screen: Arc<Mutex<Emulator>>,
@@ -712,14 +711,7 @@ impl Tui {
 
     /// Put `command` on a fresh pseudoterminal and start reading what it paints.
     fn start(mut command: CommandBuilder) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                cols: BOOT_PTY.0,
-                rows: BOOT_PTY.1,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open a pseudoterminal");
+        let mut pair = Pty::open(BOOT_PTY.0, BOOT_PTY.1).expect("open a pseudoterminal");
 
         // Hermetic: if the connect ever failed, the client would spawn a daemon of its own, and it
         // must be THIS build's rather than whatever is on the tester's PATH.
@@ -728,20 +720,15 @@ impl Tui {
         // independent of the terminal the test suite happens to be running in.
         command.env("TERM", "xterm-256color");
 
+        // `spawn` takes the slave and drops it, so the master reads EOF when the child exits.
         let child = pair
-            .slave
-            .spawn_command(command)
+            .spawn(&command, None)
             .expect("spawn sprag-tui on the pty");
-        // The child holds the slave now; drop ours so the master reads EOF when it exits.
-        drop(pair.slave);
 
         let screen = Arc::new(Mutex::new(Emulator::new(BOOT_PTY.0, BOOT_PTY.1)));
         let written = Arc::new(AtomicUsize::new(0));
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .expect("clone the pty reader");
-        let writer = pair.master.take_writer().expect("take the pty writer");
+        let mut reader = pair.reader().expect("clone the pty reader");
+        let writer = pair.writer().expect("take the pty writer");
         let status_trail = Arc::new(Mutex::new(Vec::new()));
         let transcript = Arc::new(Mutex::new(Vec::new()));
         std::thread::spawn({
@@ -792,7 +779,7 @@ impl Tui {
         });
 
         Self {
-            master: pair.master,
+            master: pair,
             writer,
             child,
             screen,
@@ -888,12 +875,7 @@ impl Tui {
     /// would start disagreeing with the client about where a cell is the moment the sizes diverged.
     fn resize(&mut self, cols: u16, rows: u16) {
         self.master
-            .resize(PtySize {
-                cols,
-                rows,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
+            .resize(cols, rows, 0, 0)
             .expect("resize the pty");
         self.screen
             .lock()
@@ -1024,7 +1006,7 @@ impl Tui {
     /// Bounded deliberately: `Child::wait` has no deadline, so a client that failed to act on a
     /// detach would stall the whole suite instead of failing it — which is how this test first
     /// behaved, and a gate that can hang is a gate nobody will keep running.
-    fn wait(&mut self) -> ExitStatus {
+    fn wait(&mut self) -> std::process::ExitStatus {
         let deadline = Instant::now() + DEADLINE;
         while Instant::now() < deadline {
             match self.child.try_wait().expect("wait for sprag-tui") {

@@ -13,7 +13,6 @@ publish = false
 # (scene assembly + RPC live in sprag-host).
 sprag-vt = { workspace = true }
 # Cross-platform PTY (README NFR: a verified portable abstraction).
-portable-pty = { workspace = true }
 # A window's logical layout crosses the wire to a display client (the
 # detach/reattach arc), so it derives serde HERE — the one definition of the
 # layout's field set, shared by the host's wire and every client.

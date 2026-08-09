@@ -29,6 +29,10 @@ pub mod processes;
 /// crate (crate-internal, Linux-only).
 #[cfg(target_os = "linux")]
 mod procfs;
+/// The OS pseudoterminal and the child on the far side of it — the platform boundary this crate
+/// owns (R336). Unix-only; a Windows arm would be a sibling of its two entry points.
+#[cfg(unix)]
+pub mod pty;
 pub mod registry;
 pub mod remote;
 pub mod sampled;
