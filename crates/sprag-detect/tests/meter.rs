@@ -27,9 +27,11 @@
 //! number assertable; the mutex serialises the tests inside it.
 
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use sprag_detect::{DEFAULT_SETTLE, Hysteresis, Ruleset, Tracker, built_ins, detect, work};
+use sprag_detect::{
+    AgentState, DEFAULT_SETTLE, Hysteresis, Report, Ruleset, Tracker, built_ins, detect, work,
+};
 use sprag_vt::{Emulator, VtPort};
 
 /// Serialises the tests in this binary, so each one's delta is its own.
@@ -41,6 +43,9 @@ const CLAUDE_FOOTER: &[&str] = &["❯", "  ⏸ manual mode on · ? for shortcuts
 
 /// An ordinary shell pane: nothing claims it, so every manifest is offered one.
 const SHELL: &[&str] = &["$ ls -la", "total 0", "$ "];
+
+/// A pane showing a yes/no dialog — blocked on sight, whoever claims it.
+const DIALOG: &[&str] = &["❯ 1. Yes", "  2. No"];
 
 fn painted(lines: &[&str]) -> Emulator {
     let mut em = Emulator::new(80, 24);
@@ -219,5 +224,67 @@ fn a_pane_nobody_claims_is_offered_every_manifest_and_a_claimed_one_stops() {
         after_claude.manifests_total - after_shell.manifests_total,
         1,
         "the first manifest claims it, and the rest are never consulted",
+    );
+}
+
+/// A reported pane does not run the rules at all — the cheapness claim, measured rather than argued.
+///
+/// # Why it lives HERE and not beside the tracker it is about
+///
+/// It was written in `track.rs`'s unit module, where this file's own preamble says a meter delta
+/// cannot be taken: dozens of neighbouring tests evaluate on the default parallel harness, so the
+/// delta measures whichever of them was in flight. It passed for rounds and then failed in a full
+/// workspace run at R338 — 86 against 85, one neighbour's evaluation landing between the two reads —
+/// which is the failure the rule three paragraphs up predicted, in the crate that wrote the rule.
+///
+/// Overruling the screen AFTER evaluating it would be correct and would pay for every pattern of
+/// every manifest on a path served per client wake, so the number is the claim.
+#[test]
+fn a_reported_pane_costs_no_evaluation() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let rules = Ruleset::new(vec![sprag_detect::claude(), sprag_detect::codex()]);
+    let mut tracker = Tracker::default();
+    let mut em = painted(DIALOG);
+    let base = Instant::now();
+
+    tracker.observe(em.screen(), Some("claude"), &rules, base);
+    tracker.report(Report {
+        state: AgentState::Working,
+        agent: None,
+        source: "hook".to_owned(),
+        seq: None,
+        owner: None,
+    });
+
+    // The screen moves, so the quiescence gate is not what is being measured here.
+    repaint(&mut em, CLAUDE_FOOTER);
+    let before = work().evaluations_total;
+    tracker.observe(
+        em.screen(),
+        Some("claude"),
+        &rules,
+        base + Duration::from_secs(1),
+    );
+    assert_eq!(
+        work().evaluations_total,
+        before,
+        "a reported pane's screen is recorded, not evaluated",
+    );
+
+    // The control: released, the same moved screen DOES cost an evaluation.
+    tracker.release_report();
+    repaint(&mut em, DIALOG);
+    let before = work().evaluations_total;
+    tracker.observe(
+        em.screen(),
+        Some("claude"),
+        &rules,
+        base + Duration::from_secs(2),
+    );
+    assert!(
+        work().evaluations_total > before,
+        "and the scrape still runs when it is the authority",
     );
 }

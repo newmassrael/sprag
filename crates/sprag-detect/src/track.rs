@@ -1598,59 +1598,6 @@ mod tests {
         );
     }
 
-    /// A reported pane does not run the rules at all — the cheapness claim, measured rather than
-    /// argued.
-    ///
-    /// `sprag_detect::work` counts evaluations process-wide, so the assertion is on the DELTA across
-    /// one observe. Overruling the screen after evaluating it would be correct and would pay for every
-    /// pattern of every manifest on a path served per client wake.
-    #[test]
-    fn a_reported_pane_costs_no_evaluation() {
-        let rules = Ruleset::new(vec![claude(), codex()]);
-        let mut tracker = Tracker::default();
-        let mut em = painted(DIALOG);
-        let base = Instant::now();
-
-        tracker.observe(em.screen(), Some("claude"), &rules, base);
-        tracker.report(Report {
-            state: AgentState::Working,
-            agent: None,
-            source: "hook".to_owned(),
-            seq: None,
-            owner: None,
-        });
-
-        // The screen moves, so the quiescence gate is not what is being measured here.
-        repaint(&mut em, CLAUDE_FOOTER);
-        let before = crate::work().evaluations_total;
-        tracker.observe(
-            em.screen(),
-            Some("claude"),
-            &rules,
-            base + Duration::from_secs(1),
-        );
-        assert_eq!(
-            crate::work().evaluations_total,
-            before,
-            "a reported pane's screen is recorded, not evaluated",
-        );
-
-        // The control: released, the same moved screen DOES cost an evaluation.
-        tracker.release_report();
-        repaint(&mut em, DIALOG);
-        let before = crate::work().evaluations_total;
-        tracker.observe(
-            em.screen(),
-            Some("claude"),
-            &rules,
-            base + Duration::from_secs(2),
-        );
-        assert!(
-            crate::work().evaluations_total > before,
-            "and the scrape still runs when it is the authority",
-        );
-    }
-
     #[test]
     fn a_pane_that_keeps_repainting_settles_when_the_candidate_has_held_long_enough() {
         let rules = Ruleset::new(vec![claude()]);
