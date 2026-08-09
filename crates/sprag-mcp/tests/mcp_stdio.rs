@@ -1546,6 +1546,58 @@ fn an_agent_waits_for_the_output_it_named_and_a_timeout_is_not_a_failure() {
     );
 }
 
+/// **THE surface R343 measured as blind, driven at both agent mouths** — a needle a person reads on
+/// one line that the pane broke in half at its right edge.
+///
+/// `wait_for_output` was the worst-affected door in the product: not slow, not partial, it simply
+/// **never fired**, and an agent waiting on a build whose marker happened to wrap waited out its
+/// whole timeout on output that was already there. `find_in_pane` answered "no matches" for text on
+/// the screen. Both are one search, and it walks LOGICAL lines now.
+///
+/// THE CONTROL IS `read_pane` IN THE SAME TEST, and it is a control in both directions: the
+/// RENDERED view still carries the row break — that is what the screen looks like, and a capture
+/// that quietly rejoined lines would stop describing it — while the SEARCH answers about content.
+/// The two disagreeing here is the design, and asserting both is what stops a later round
+/// "fixing" the render to match.
+#[test]
+fn an_agent_finds_and_waits_for_a_needle_the_pane_broke_at_its_edge() {
+    // Twenty columns, and a marker 24 characters long: one logical line over two rows, with the
+    // needle `done-now` straddling the margin (it ends at column 20, the first of row 1).
+    let (_daemon, sock) = spawn_daemon(&["cat"], (20, 6));
+    let mut server = McpServer::spawn(&sock);
+    let marker = "the-build-is-done-now-ok";
+
+    server.call_tool("write_pane", json!({ "pane": 1, "text": marker }));
+    // Twice: on a `cat` pane the first sighting is the PTY's echo of the keystrokes and the second
+    // is the child writing the line back — waiting for one would race the other.
+    let screen = server.wait_for_tool_count("read_pane", json!({ "pane": 1 }), "the-build-is-", 2);
+
+    // THE CONTROL, and the fixture check in one: the pane really did break the marker, so the
+    // rendered view does NOT contain it and every assertion below is about the wrap.
+    assert!(
+        !screen.contains(marker) && fold(&screen).contains(marker),
+        "the fixture must wrap: the marker is on the screen but not on any one row of it: \
+         {screen:?}",
+    );
+
+    let found = server.call_tool("find_in_pane", json!({ "pane": 1, "needle": "done-now" }));
+    assert!(
+        found.contains(marker),
+        "the search finds the needle across the wrap AND quotes back the whole logical line, not \
+         the twenty columns that fit on a row: {found}",
+    );
+
+    let waited = server.call_tool(
+        "wait_for_output",
+        json!({ "pane": 1, "needle": "done-now", "timeout_seconds": 20 }),
+    );
+    assert!(
+        waited.contains("printed \"done-now\"") && waited.contains(marker),
+        "and the wait fires for it — before R344 this timed out on output already on the screen: \
+         {waited}",
+    );
+}
+
 /// **R292 deleted the two re-call helpers that used to live here**, and their absence is the claim.
 ///
 /// `wait_until_quiet` re-called the tool until an answer said the terminal was quiet, and
@@ -3583,26 +3635,31 @@ fn a_window_an_agent_opens_starts_where_it_asks() {
         .to_str()
         .expect("a utf-8 temp dir")
         .to_owned();
-    // ⚠ AND THE ROW BREAKS ARE FOLDED OUT. The pane is narrow and that path is 55 characters on
-    // macOS, so what a person reads on one line arrives here across two — plus `/bin/bash` there
-    // prints Apple's *"the default interactive shell is now zsh"* banner into the same screen.
-    // Blunter than the emulator's own wrap flag (a rendered string is all this surface offers) and
-    // sound for THIS needle: an absolute path is not something two unrelated lines weld into by
-    // accident. `sprag-vt`'s `a_needle_that_straddles_the_right_edge_is_not_found_yet` is the same
-    // gap where no caller can fold around it.
-    let folded = |screen: &str| screen.lines().collect::<String>();
+    // ⚠ ASKED THROUGH `find_in_pane` RATHER THAN GREPPED OFF `read_pane` (R344). The pane is
+    // narrow and that path is 55 characters on macOS, so what a person reads on one line arrives
+    // on the screen across two — plus `/bin/bash` there prints Apple's *"the default interactive
+    // shell is now zsh"* banner into the same screen. This used to strip every newline out of the
+    // rendered text, which is blunter than the emulator's own wrap flag and welds unrelated lines
+    // together; the search walks LOGICAL lines now, so the question "did this pane print that
+    // path" has a product answer and no caller has to fold around anything.
+    //
+    // ⚠ A MISS ECHOES THE NEEDLE, so `contains(wanted)` alone would pass on `no matches for
+    // "/private/var/…"`. Both halves are asserted for that reason.
     server.call_tool("write_pane", json!({ "pane": "there", "text": "pwd" }));
-    let mut screen = String::new();
+    let mut found = String::new();
     for _ in 0..200 {
-        screen = server.call_tool("read_pane", json!({ "pane": "there" }));
-        if folded(&screen).contains(&wanted) {
+        found = server.call_tool(
+            "find_in_pane",
+            json!({ "pane": "there", "needle": wanted.clone() }),
+        );
+        if !found.contains("no matches") {
             break;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
     assert!(
-        folded(&screen).contains(&wanted),
-        "the shell started where the agent asked ({wanted}): {screen:?}",
+        !found.contains("no matches") && found.contains(&wanted),
+        "the shell started where the agent asked ({wanted}): {found:?}",
     );
     // A directory that is not one is refused BEFORE anything is created, naming the path.
     let refused = server.call_tool_error("open_window", json!({ "cwd": "/no/such/place/at/all" }));

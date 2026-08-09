@@ -56,12 +56,37 @@ fn spawn_host_running(program_and_args: &[&str]) -> (HostChild, PathBuf) {
     spawn_host_with(program_and_args, &[])
 }
 
+/// [`spawn_host_running`] on a pane of a chosen WIDTH — for a claim about what happens at the right
+/// margin, which the default size is too wide to reach.
+fn spawn_host_sized(cols: u16, rows: u16, program_and_args: &[&str]) -> (HostChild, PathBuf) {
+    spawn_host_argv(
+        &[
+            "--size".to_owned(),
+            format!("{cols}x{rows}"),
+            "--".to_owned(),
+        ],
+        program_and_args,
+        &[],
+    )
+}
+
 /// The one spawn: the boot command plus any daemon env overrides.
 fn spawn_host_with(program_and_args: &[&str], envs: &[(&str, &str)]) -> (HostChild, PathBuf) {
+    spawn_host_argv(&["--".to_owned()], program_and_args, envs)
+}
+
+/// The one spawn under both entry points: `leading` is whatever the daemon needs before the boot
+/// command (always ending in `--`), so a sized host and a default one cannot drift in how they
+/// wait for the bind.
+fn spawn_host_argv(
+    leading: &[String],
+    program_and_args: &[&str],
+    envs: &[(&str, &str)],
+) -> (HostChild, PathBuf) {
     let sock = socket_path();
     let _ = std::fs::remove_file(&sock);
     let child = Command::new(env!("CARGO_BIN_EXE_sprag-term"))
-        .arg("--")
+        .args(leading)
         .args(program_and_args)
         .env("SPRAG_HOST_RPC_SOCK", &sock)
         .env("SPRAG_HOST_RPC", "1")
@@ -1417,7 +1442,38 @@ fn the_cli_find_prints_matching_lines_from_the_session() {
     );
 }
 
-/// Wait until the stand-in's recorded argv carries EVERY token in `expected`/// Wait until the stand-in's recorded argv carries EVERY token in `expected`, panicking with what it
+/// `sprag find` at the SHELL mouth, for a line the pane broke at its right edge — and what it
+/// prints for one.
+///
+/// The three mouths answer from ONE search, so this is not a re-test of the traversal (that is
+/// `sprag-vt`'s) but of what a person at a terminal gets: one `PANE:LINE: text` row carrying the
+/// whole logical line, keyed on the row the LINE starts at. Printing the pane's rows instead would
+/// hand a script the word broken in half — the blindness one layer up from the search's own.
+#[test]
+fn the_cli_find_reads_a_line_the_pane_broke_at_its_edge() {
+    // Twenty columns and a 24-character marker: one logical line over two rows.
+    let (_host, sock) = spawn_host_sized(
+        20,
+        6,
+        &["sh", "-c", "printf 'the-build-is-done-now-ok\\n'; exec cat"],
+    );
+
+    let mut run = sprag(&sock, &["find", "done-now"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while run.stdout.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        run = sprag(&sock, &["find", "done-now"]);
+    }
+    assert!(run.ok, "sprag find succeeded: {}", run.stderr);
+    assert_eq!(
+        run.stdout.lines().collect::<Vec<_>>(),
+        vec!["0:0: the-build-is-done-now-ok"],
+        "one row of output carrying the WHOLE line, not the twenty columns that fit on a row: {:?}",
+        run.stdout,
+    );
+}
+
+/// Wait until the stand-in's recorded argv carries EVERY token in `expected`, panicking with what it
 /// did record if it never does.
 ///
 /// Polling `argv_file.exists()` and then reading it is a race, not a wait: the stub's
