@@ -3583,6 +3583,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sprag-gate"
+version = "0.0.1"
+
+[[package]]
 name = "sprag-grid"
 version = "0.0.1"
 dependencies = [

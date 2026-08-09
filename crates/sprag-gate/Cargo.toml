@@ -1,0 +1,18 @@
+[package]
+name = "sprag-gate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The gates a test cannot be: checks whose subject is what the SUITE did, so they have to stand outside it. DEV-ONLY — no sprag binary depends on this."
+publish = false
+
+# No dependencies, deliberately. A gate that stands outside the suite must not be able to fail
+# because the product failed to compile: the point of running it is to say something about a run
+# that may itself have gone wrong (`if: always()` in CI). `std` is the whole toolkit it needs.
+[dependencies]
+
+[[bin]]
+name = "ambient-home-guard"
+path = "src/bin/ambient-home-guard.rs"

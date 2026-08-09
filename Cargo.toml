@@ -43,6 +43,11 @@ members = [
     # three different refusal policies (R324). No binary depends on it; every front's
     # skew test does.
     "crates/sprag-peer",
+    # DEV-ONLY: the gates whose subject is what the SUITE did, so no test can be one — the
+    # environment they judge is process-global (R341/R343). Written in Rust rather than in the
+    # workflow file because the first one lived in `ci.yml`, was never tested, and failed
+    # unconditionally on every run that carried it.
+    "crates/sprag-gate",
 ]
 
 [workspace.package]

@@ -48,6 +48,24 @@ jobs:
   headless-linux:
     name: headless (linux)
     runs-on: ubuntu-latest
+    # ⚠ A HANG IS NOT A RESULT, AND THE DEFAULT IS SIX HOURS OF SILENCE.
+    #
+    # GitHub's default job timeout is 360 minutes and a job's log is not downloadable until it ends,
+    # so a suite that wedges says NOTHING for six hours and then says nothing about why. That is not
+    # a hypothetical: the macOS job below wedged in `sprag-host`'s `cli.rs` and four consecutive
+    # runs sat in it for 2.5-3.5 hours each. Five rounds recorded macOS as "unmeasured, the runners
+    # never report" — the runners were reporting fine; the suite was hung, and nothing here could
+    # say so. This bound turns that into a red job with a log, which is what a person can act on.
+    #
+    # Generous against the measured Linux run (11 min) on purpose: it is a WEDGE detector, not a
+    # performance budget, and a gate that fires on a slow runner is a gate people learn to re-run.
+    timeout-minutes: 45
+    # ONE declaration for both the suite and the guard that judges it. Two copies is how the guard
+    # came to be pointed somewhere the suite never wrote (see the guard step).
+    env:
+      XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
+      XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
+      XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
     steps:
       - uses: actions/checkout@v4
 
@@ -85,46 +103,37 @@ jobs:
         run: |
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
           cargo test --workspace --exclude sprag-gui --no-fail-fast
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
-          XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
-          XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
 
       # ⚠⚠ THE SUITE MUST NOT WRITE THE HOME OF WHOEVER RAN IT.
       #
-      # R341 measured `cargo test` creating `~/.config/sprag/config.toml` on the developer's box: a
-      # test ran `sprag set-option window-size manual` through a helper that passes no environment,
-      # so the child resolved the AMBIENT config home. A SIBLING unit test then read that file, and
-      # was green here and red on every host without it. `cargo test` silently edited the user's
-      # terminal configuration, and the suite's own green was resting on the edit.
-      #
-      # A test cannot be this guard. `XDG_CONFIG_HOME` is process-global, so a test can neither
-      # observe nor isolate what the tests running beside it do to it — the fix for any ONE call
-      # site is a seam, and nothing makes the NEXT call site take one. The guard has to stand
-      # outside the suite, which is what this step is.
+      # What this checks, why no test can be it, and what the `find` that used to live here got
+      # wrong are all in `crates/sprag-gate/src/lib.rs` — beside the code, where the next person to
+      # touch it will be. The short version: R341 measured `cargo test` creating
+      # `~/.config/sprag/config.toml` on the developer's box, and R342's shell guard for it looked
+      # at the PARENT of the three homes and so failed on every run it ever had.
       #
       # `if: always()` because a suite that FAILED can still have written the file, and that is
       # exactly when a person needs to know: it is the shape that makes a failure unreproducible
-      # anywhere else.
+      # anywhere else. `-p sprag-gate` builds a crate with NO dependencies, so this still runs — and
+      # still means something — after a step that failed to compile the product.
       #
-      # Locally: run the suite with the three variables pointed at a fresh directory and run the
-      # same `find`. That is the measurement that found the defect, so it is known to discriminate.
+      # Locally, the same binary under the same three variables: see the bin's own docs.
       - name: The suite must not write the home of whoever ran it
         if: always()
-        run: |
-          wrote=$(find "${{ runner.temp }}/ambient" -mindepth 1 2>/dev/null || true)
-          if [ -n "$wrote" ]; then
-            echo "::error::the test suite wrote the ambient XDG home. On a developer's machine"
-            echo "::error::that is THEIR ~/.config, and a sibling test that reads it is green"
-            echo "::error::here and red everywhere else. Give the call site below a seam."
-            echo "$wrote"
-            exit 1
-          fi
-          echo "the suite left the ambient config, data and state homes untouched"
+        run: cargo run -q -p sprag-gate --bin ambient-home-guard
 
   headless-macos:
     name: headless (macos)
     runs-on: macos-latest
+    # See the Linux job. THIS is the job that measured why the bound is needed: it wedged in
+    # `sprag-host`'s `cli.rs` and four runs sat there for hours apiece, saying nothing, because a
+    # job's log cannot be read until the job ends. Cancelling one by hand is what finally produced
+    # the log that named the binary.
+    timeout-minutes: 45
+    env:
+      XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
+      XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
+      XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
     steps:
       - uses: actions/checkout@v4
 
@@ -149,21 +158,8 @@ jobs:
         run: |
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
           cargo test --workspace --exclude sprag-gui --no-fail-fast
-        env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
-          XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
-          XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
 
       # See the Linux job for what this is and why a test cannot be it.
       - name: The suite must not write the home of whoever ran it
         if: always()
-        run: |
-          wrote=$(find "${{ runner.temp }}/ambient" -mindepth 1 2>/dev/null || true)
-          if [ -n "$wrote" ]; then
-            echo "::error::the test suite wrote the ambient XDG home. On a developer's machine"
-            echo "::error::that is THEIR ~/.config, and a sibling test that reads it is green"
-            echo "::error::here and red everywhere else. Give the call site below a seam."
-            echo "$wrote"
-            exit 1
-          fi
-          echo "the suite left the ambient config, data and state homes untouched"
+        run: cargo run -q -p sprag-gate --bin ambient-home-guard
