@@ -2310,10 +2310,28 @@ impl Screen {
     }
 
     /// Write a cell and bump the owning row's damage generation.
+    ///
+    /// ⚠ A write AT OR PAST the column this row wrapped at EXTENDS its share of the line, because
+    /// the cell is now content whatever put it there. Without that, a stale wrap column HIDES a
+    /// character that is on the screen: a row that wrapped at column 3 and is then written at
+    /// column 4 by direct cursor addressing renders `"ab世Z"` and answered NOTHING for a search
+    /// for `Z` — the exact blindness R344 exists to remove, re-introduced one layer down by its
+    /// own fix. Measured before this line existed.
+    ///
+    /// EXTENDED rather than cleared: the row's line does still continue onto the next (that is
+    /// what the flag says and it is still true), and only how much of THIS row belongs to it has
+    /// changed. Clearing would split one logical line into two on a plain overwrite. The ordinary
+    /// autowrap path never reaches this — it sets the column and immediately moves to the next row
+    /// — so this fires only for a writer that goes back.
     pub(crate) fn set_cell(&mut self, col: u16, row: u16, cell: Cell, generation: u64) {
         if let Some(i) = self.index(col, row) {
             self.cells[i] = cell;
             self.stamp_row(row, generation);
+            if let Some(slot) = self.continues.get_mut(row as usize)
+                && slot.is_some_and(|upto| col >= upto)
+            {
+                *slot = Some(col.saturating_add(1));
+            }
         }
     }
 
@@ -3840,6 +3858,51 @@ mod tests {
             screen.find("defghij").matches,
             vec![hit(2, 3, 7)],
             "the open line is closed and searched rather than dropped on the floor",
+        );
+    }
+
+    /// A cell written PAST the column its row wrapped at is still findable.
+    ///
+    /// R344's own hazard, measured and closed in the same round: the search stopped reading a
+    /// wrapped row at its wrap column, so a writer that went back and addressed a column beyond it
+    /// — which nothing clears the flag for — put a character on the screen that the search could
+    /// not see. `full_text` rendered `"ab世Z"` and `find("Z")` answered NOTHING.
+    ///
+    /// The wrap column EXTENDS on such a write rather than clearing, so the row keeps continuing
+    /// onto the next: both halves are asserted here, because clearing would pass the first
+    /// assertion and quietly split one logical line into two.
+    #[test]
+    fn a_cell_written_past_the_wrap_column_is_still_part_of_the_line() {
+        // Row 0 wraps EARLY at column 3 (世 will not fit in column 4), leaving column 4 a pad.
+        let mut e = em(5, 3, "ab\u{4e16}\u{4e16}");
+        assert_eq!(e.screen().find("Z").matches.len(), 0, "nothing to find yet");
+        // Address column 4 of row 0 directly and write there. Nothing clears the wrap flag.
+        e.advance(b"\x1b[1;5HZ");
+        let screen = e.screen();
+        assert_eq!(
+            screen.row_text(0),
+            "ab\u{4e16}Z",
+            "the fixture must put Z on the screen, past where the row wrapped",
+        );
+        assert_eq!(
+            screen.find("Z").matches,
+            vec![hit(0, 4, 1)],
+            "a character a person can see is a character the search can find",
+        );
+        assert!(
+            screen.wrapped(0),
+            "and the row still continues onto the next: the write moved the column, not the wrap",
+        );
+        assert_eq!(
+            screen.find("Z\u{4e16}").matches,
+            vec![FindMatch {
+                line: 0,
+                row: 0,
+                col: 4,
+                cols: 1,
+                wrapped: vec![2],
+            }],
+            "so the line still reads across the wrap, with Z now part of it",
         );
     }
 
