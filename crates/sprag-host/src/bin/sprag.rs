@@ -5923,6 +5923,51 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// The four columns `resources` prints, each shape of each one.
+    ///
+    /// # Why the shell's renderers are gated separately from the agent's
+    ///
+    /// They are two registers for one fact — a column a person scans against a sentence an agent
+    /// reads — and the agent's are gated in `sprag-mcp`. What must never differ is the MEANING, and
+    /// the shapes where that could slip are the absences: "no rate yet" must not print as `0.00`,
+    /// and a controller that never arrived must not print as `0 B`. Both are asserted here and both
+    /// are asserted there.
+    #[test]
+    fn every_resource_column_says_which_of_its_shapes_it_is() {
+        assert_eq!(
+            held(Cpu::Held {
+                millicores: 3990,
+                over_ms: 2500
+            }),
+            "3.99 cores over 2.5s"
+        );
+        // A pane the daemon has seen once has no rate — and a zero here would read as an idle pane,
+        // which is the one thing this whole reading exists to tell apart.
+        assert_eq!(held(Cpu::Settling), "(no rate yet)");
+
+        assert_eq!(
+            waited(Waiting::Measured {
+                avg10: sprag_terminal::Percent::from_hundredths(8869),
+                avg60: sprag_terminal::Percent::NONE,
+                avg300: sprag_terminal::Percent::NONE,
+            }),
+            "88.69%"
+        );
+        assert_eq!(waited(Waiting::NotAccounted), "(unaccounted)");
+
+        assert_eq!(footprint(Counted::Now(512)), "512 B");
+        assert_eq!(footprint(Counted::Now(6 * 1024 * 1024)), "6 MiB");
+        assert_eq!(
+            footprint(Counted::Now(3 * 1024 * 1024 * 1024 + (1 << 29))),
+            "3.5 GiB"
+        );
+        assert_eq!(footprint(Counted::NoController), "(no memory controller)");
+
+        assert_eq!(count(Counted::Now(1)), "1 process");
+        assert_eq!(count(Counted::Now(65)), "65 processes");
+        assert_eq!(count(Counted::NoController), "(no pids controller)");
+    }
+
     /// The property the whole of [`own_session`] exists for, asserted where it can be seen without
     /// a display: the spawned child LEADS a session of its own, so the hangup that goes to the
     /// launching terminal's foreground group has no path to it. Revert-proof by construction —

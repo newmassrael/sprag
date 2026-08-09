@@ -475,6 +475,15 @@ mod tests {
         assert_eq!(rate(None, &charge(0), Instant::now()), Cpu::Settling);
     }
 
+    /// Two samples at ONE instant are not a rate, whatever the counter says.
+    ///
+    /// Reachable: two reads with a zero staleness tolerance, back to back. No arithmetic turns a
+    /// window of zero into a rate, and the honest answer is the same one a first reading gets.
+    #[test]
+    fn two_samples_at_one_instant_are_not_a_rate() {
+        assert_eq!(Cpu::over(Duration::ZERO, 0, 5_000), Cpu::Settling);
+    }
+
     /// A full core held for the whole window reads as a thousand millicores.
     #[test]
     fn a_core_held_for_the_window_is_a_thousand_millicores() {
