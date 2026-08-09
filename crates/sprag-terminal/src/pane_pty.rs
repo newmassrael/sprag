@@ -1058,9 +1058,71 @@ fn read_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
-/// No `/proc` off Linux: cwd-from-pid needs a platform-specific syscall not yet wired, so a
-/// restored pane falls back to the daemon's own cwd. An honest `None`, not a guess.
-#[cfg(not(target_os = "linux"))]
+/// macOS: `proc_pidinfo(PROC_PIDVNODEPATHINFO)`, the same call `lsof` and `ps` make — the kernel
+/// answers with the process's current vnode directory and its path.
+///
+/// # This is the ONE fact off Linux that a terminal cannot ask the shell for
+///
+/// The obvious alternative is OSC 7: the shell emits an escape sequence naming its directory after
+/// every `cd`, and the terminal remembers the last one. **ghostty does exactly that and only that**
+/// (`src/terminal/osc.zig`'s `report_pwd`, at `260288614`; nothing in its tree calls `libproc`,
+/// `proc_pidinfo` or `F_GETPATH`), and herdr reads no process's directory at all — every `cwd` in
+/// its tree is one it was handed.
+///
+/// ⚠ **The honest trade OSC 7 has, stated first**: it survives SSH. A remote shell emits its own
+/// directory and the local terminal learns it, where this call can only ever answer about a process
+/// on THIS machine — which is why [`crate::PanePty::cwd`]'s caller returns nothing for a remote
+/// pane rather than reporting the daemon's own filesystem.
+///
+/// What asking the kernel buys is everything OSC 7 needs cooperation for: a pane running `vim`, a
+/// build, `cat`, or a shell with no integration installed still answers, and the answer cannot be
+/// stale — a sequence that was never sent is a directory the terminal still believes in.
+///
+/// # Reading it
+///
+/// `proc_pidinfo` answers with the number of bytes it filled, so a short write is a refusal and is
+/// treated as one. `vip_path` is a NUL-terminated `[c_char; MAXPATHLEN]`, which libc declares as
+/// `[[c_char; 32]; 32]` to stay buildable on old compilers — hence the flatten. Reading another
+/// user's process needs root; this only ever reads a child THIS daemon forked, so the uid matches
+/// by construction.
+#[cfg(target_os = "macos")]
+fn read_cwd(pid: u32) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let want = std::mem::size_of::<libc::proc_vnodepathinfo>();
+    // SAFETY: `info` is a live, correctly sized allocation of exactly the type this flavour writes,
+    // and the size handed over is its own. `pid` naming a process that is gone is an ordinary
+    // refusal (a short answer), not unsound.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            libc::c_int::try_from(want).ok()?,
+        )
+    };
+    if usize::try_from(got).ok()? != want {
+        return None;
+    }
+    let path: Vec<u8> = info
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .take_while(|&&byte| byte != 0)
+        .map(|&byte| byte as u8)
+        .collect();
+    // An empty path is the kernel saying it has no answer, which is an absence rather than the
+    // root directory — and `PathBuf::from("")` would be neither.
+    (!path.is_empty()).then(|| PathBuf::from(OsString::from_vec(path)))
+}
+
+/// Neither `/proc` nor `libproc`: an honest `None`, so a restored pane falls back to the daemon's
+/// own cwd rather than to a guess.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_cwd(_pid: u32) -> Option<PathBuf> {
     None
 }
@@ -1309,6 +1371,45 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::thread::sleep;
     use std::time::{Duration, Instant};
+
+    /// [`read_cwd`] answers about a process this one can name — asked of THIS process, whose
+    /// directory the test already knows.
+    ///
+    /// # Why the reader and not a pane
+    ///
+    /// Every other gate on this fact goes through a spawned child, so it exercises the reader only
+    /// as far as the pane machinery reaches — and it says nothing at all on a platform where the
+    /// reader answers `None`, because "the child has exited" and "this build cannot ask" arrive as
+    /// the same value. That is not hypothetical: `read_cwd` returned `None` on every non-Linux
+    /// target for the whole life of this file, and the first macOS run of this suite (R343) failed
+    /// FOUR tests on it, in `workspace` and in `host`, none of which named the reader.
+    ///
+    /// So this one is deliberately platform-blind: it asks for a directory it already knows, and
+    /// therefore fails on whichever platform's implementation is wrong. On Linux it drives the
+    /// `/proc` symlink; on macOS, `proc_pidinfo`; on anything else it asserts the honest absence,
+    /// which is a claim too — a build that starts guessing would fail here.
+    #[test]
+    fn a_process_this_one_can_name_reports_the_directory_it_is_working_in() {
+        let mine = std::env::current_dir().expect("this process is somewhere");
+        let read = read_cwd(std::process::id());
+
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            let read = read.expect("a platform with a reader must answer about its own process");
+            // CANONICALISED on both sides: macOS resolves `/var` to `/private/var` and the two
+            // spellings name one directory, so comparing the strings would fail on a difference
+            // that is not one.
+            assert_eq!(
+                read.canonicalize().ok(),
+                mine.canonicalize().ok(),
+                "the reader must answer with the directory this process is actually in",
+            );
+        } else {
+            assert_eq!(
+                read, None,
+                "a platform with no reader answers an honest absence, never a guess",
+            );
+        }
+    }
 
     /// End-to-end producer smoke test (DESIGN.md §5): real PTY output is
     /// parsed into the queryable screen, with no caller-side pump.
