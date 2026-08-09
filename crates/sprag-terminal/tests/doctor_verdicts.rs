@@ -16,7 +16,9 @@ use sprag_terminal::doctor::{
     Blind, Ccache, Check, Diagnosis, Evidence, Finding, Level, Load, Measurement, PaneReading,
     Readings, Sibling, SubtreeReading, Verdict,
 };
-use sprag_terminal::{Cpu, PaneId, Percent, Pressure, Waiting};
+use sprag_terminal::{
+    Cpu, Landing, PaneId, PaneLineage, Percent, Pressure, Refusal, SessionId, Waiting, WindowId,
+};
 
 /// A machine with nothing wrong with it, for one field at a time to be moved off.
 fn healthy() -> Readings {
@@ -86,6 +88,11 @@ fn pane(id: u64, cgroup: &str, waiting_hundredths: u32) -> PaneReading {
         swapped: Some(0),
         waiting: row(waiting_hundredths),
         ccache_on_path: Some(true),
+        landing: Landing::At(PaneLineage {
+            session: SessionId(1),
+            window: WindowId(1),
+            pane: PaneId(id),
+        }),
     }
 }
 
@@ -140,7 +147,7 @@ fn a_diagnosis_answers_every_check_in_the_sets_own_order() {
             .collect::<Vec<_>>(),
         Check::ALL.to_vec(),
     );
-    assert_eq!(Check::ALL.len(), 11, "the checks this round built");
+    assert_eq!(Check::ALL.len(), 12, "the checks this round built");
 }
 
 /// A healthy machine has nothing degraded, and every row still carries what it measured.
@@ -247,6 +254,146 @@ fn a_diagnosis_round_trips() {
 }
 
 // ── the checks ──────────────────────────────────────────────────────────────────────────────────
+
+/// A machine whose delegation is perfect and whose kernel refuses every pane — GitHub's Linux
+/// runner, and the design document's own second worked example.
+///
+/// `healthy()` with ONE field moved: the panes' landings. Everything else about this machine is
+/// correct, and that is the point — `cgroup.subtree_control` reads `cpu memory pids`, the
+/// controller-delegation row is HEALTHY, and not one pane is weighted.
+fn refusing_host() -> Readings {
+    let mut readings = healthy();
+    for pane in &mut readings.panes {
+        pane.landing = Landing::Refused(Refusal::from_errno(13));
+        // ⚠ AND ITS PROCESSES ARE WHERE THE DAEMON IS, which is what a refusal MEANS and what
+        // `/proc/<pid>/cgroup` reads back on such a host. The first version of this fixture moved
+        // only the landing and left each pane its own leaf path — a machine that cannot exist, and
+        // one on which the isolation row stayed clean, so the assertion below about which rows
+        // move was measuring a fiction. A refused pane never reached its leaf; there is nothing to
+        // read it under.
+        pane.cgroup = Some("/runner.slice".to_owned());
+    }
+    readings
+}
+
+/// ⚠⚠ THE ROW THIS ROUND EXISTS FOR: a setting that reads correct and never executes.
+///
+/// Before it, a diagnosis of the refusing host said DEGRADED only through pane-isolation — a
+/// symptom — and sent the reader to controller-delegation, which was Healthy and correct and had
+/// nothing to tell them. Every remaining row agreed the machine was fine. The reader's next move
+/// was to go and configure a delegation that was already right.
+#[test]
+fn a_host_that_refuses_every_join_says_so_and_says_what_the_kernel_said() {
+    let (verdict, said) = judged(Check::PaneAdmission, &refusing_host());
+    assert_eq!(verdict, Verdict::Degraded);
+    assert!(
+        said.contains("refused by the kernel=2") && said.contains("in a cgroup of their own=0"),
+        "the row counts both halves: {said}",
+    );
+    assert!(
+        said.contains("Permission denied") && said.contains("os error 13"),
+        "and prints the kernel's own sentence, which is what a person will recognise: {said}",
+    );
+
+    // THE CONTROL, and the reason this is a criterion and not a fixture: the same machine with the
+    // panes admitted is clean. Without it, a row hard-coded to Degraded would pass the assertions
+    // above.
+    let (verdict, said) = judged(Check::PaneAdmission, &healthy());
+    assert_eq!(verdict, Verdict::Healthy, "{said}");
+    assert!(said.contains("refused by the kernel=0"), "{said}");
+}
+
+/// ⚠ And the row it replaces still reads CLEAN on that machine, which is why the new one had to
+/// exist rather than the old one being made stricter.
+///
+/// `controller-delegation` is not wrong: the controllers really are delegated. It is answering a
+/// different question from the one the reader has, and this asserts the gap directly — a later
+/// change that made delegation degrade here would be reporting a configuration fault on a
+/// correctly configured machine, and this test is where that gets caught.
+#[test]
+fn the_delegation_row_is_still_healthy_on_a_host_where_nothing_is_weighted() {
+    let refusing = refusing_host();
+    assert_eq!(
+        judged(Check::ControllerDelegation, &refusing).0,
+        Verdict::Healthy,
+        "the controllers ARE delegated; that was never the fault",
+    );
+    assert_eq!(
+        Diagnosis::of(&refusing)
+            .degraded()
+            .map(|finding| finding.check)
+            .collect::<Vec<_>>(),
+        vec![Check::PaneIsolation, Check::PaneAdmission],
+        "isolation reports the symptom and admission reports the cause; nothing else moves",
+    );
+}
+
+/// A pane nobody tried to place is NOT a pane the kernel refused, and the row says the difference.
+///
+/// The two are the same process in the same cgroup afterwards, so nothing measured after the birth
+/// can tell them apart — which is exactly why the answer is carried from the birth. A check that
+/// counted "panes without a leaf" would call this machine broken, and its owner would go hunting a
+/// kernel refusal that never happened.
+#[test]
+fn a_pane_nobody_placed_is_not_a_pane_the_kernel_turned_away() {
+    let mut readings = healthy();
+    for pane in &mut readings.panes {
+        pane.landing = Landing::Unplaced;
+    }
+    let (verdict, said) = judged(Check::PaneAdmission, &readings);
+    assert_eq!(verdict, Verdict::Healthy, "{said}");
+    assert!(
+        said.contains("refused by the kernel=0") && said.contains("in a cgroup of their own=0"),
+        "and it still shows that nothing landed, which is the honest pair: {said}",
+    );
+}
+
+/// One refused pane among admitted ones is still the fault, and the row names WHICH pane.
+///
+/// The shape a person actually meets: a machine that mostly works. A check that only fired when
+/// EVERY pane was refused would be silent on it.
+#[test]
+fn one_refused_pane_among_healthy_ones_is_named() {
+    let mut readings = healthy();
+    readings.panes[1].landing = Landing::Refused(Refusal::from_errno(13));
+    let (verdict, said) = judged(Check::PaneAdmission, &readings);
+    assert_eq!(verdict, Verdict::Degraded);
+    assert!(
+        said.contains("panes refused=pane 2") && said.contains("in a cgroup of their own=1"),
+        "the pane is named, not just counted: {said}",
+    );
+}
+
+/// A machine that delegates nothing is BLIND here, not clean — the module's own rule, and the
+/// precedence `PaneHomes::charge` already follows: the machine's reason outranks the pane's.
+///
+/// Every pane on such a host is unplaced. Reading that as an admission failure would print a
+/// per-pane fault on a machine whose one true sentence is that it enforces nothing.
+#[test]
+fn a_host_that_delegates_nothing_is_blind_about_admission() {
+    let mut readings = healthy();
+    readings.subtree = None;
+    assert_eq!(
+        judged(Check::PaneAdmission, &readings).0,
+        Verdict::Blind(Blind::NoSubtree),
+    );
+
+    let mut readings = healthy();
+    readings.hierarchy = false;
+    readings.subtree = None;
+    assert_eq!(
+        judged(Check::PaneAdmission, &readings).0,
+        Verdict::Blind(Blind::NoHierarchy),
+    );
+
+    // And a daemon with a subtree and no panes has nothing to report either way.
+    let mut readings = healthy();
+    readings.panes.clear();
+    assert_eq!(
+        judged(Check::PaneAdmission, &readings).0,
+        Verdict::Blind(Blind::NoPanes),
+    );
+}
 
 /// Two panes in one cgroup is the defect this whole layer was reported for: CPU is then divided per
 /// PROCESS, so the pane running `make -j32` takes thirty-two times its neighbour's share and

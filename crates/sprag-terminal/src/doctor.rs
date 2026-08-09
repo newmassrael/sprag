@@ -45,7 +45,7 @@ use std::time::Duration;
 
 use crate::closed_set;
 use crate::resources::Cpu;
-use crate::share::{CgroupNode, Percent, Pressure, Waiting};
+use crate::share::{CgroupNode, Landing, Percent, Pressure, Waiting};
 use crate::workspace::PaneId;
 
 closed_set! {
@@ -66,6 +66,8 @@ closed_set! {
     pub enum Check {
         /// Do two panes share one cgroup, so that the kernel cannot tell their CPU apart?
         PaneIsolation,
+        /// Did the panes this daemon placed actually get INTO the cgroups it opened for them?
+        PaneAdmission,
         /// Which controllers reached this daemon's subtree, and which arbitration is therefore
         /// impossible here whatever anybody sets?
         ControllerDelegation,
@@ -125,8 +127,27 @@ impl Check {
                 criterion: "two panes reading the same cgroup path. Read from where each pane's \
                             child IS, not from where it was placed, so a pane that escaped its leaf \
                             is caught too",
-                remedy: "a pane sharing a cgroup was not placed; check `sprag doctor`'s \
-                         controller-delegation row for why the subtree could not take it",
+                remedy: "a pane sharing a cgroup was not placed; the pane-admission row below \
+                         says whether the kernel refused it, which is the usual reason and is not \
+                         one any sprag setting changes",
+            },
+            Self::PaneAdmission => Entry {
+                name: "pane-admission",
+                asks: "did the panes actually get into the cgroups opened for them?",
+                source: "what the kernel answered each pane's child at its birth, remembered per \
+                         pane — the one reading here that /proc cannot supply afterwards",
+                criterion: "any pane whose child the kernel refused to admit. Refused is not the \
+                            same as unplaced and the difference is the whole row: unplaced means \
+                            this daemon did not try, refused means it tried and was turned away, \
+                            and only the second is a fault outside this daemon. A host with no \
+                            delegated subtree is blind here rather than clean, because a pane \
+                            nobody offered a cgroup was never refused one",
+                remedy: "cgroup v2 checks delegation containment at the WRITE, against the common \
+                         ancestor of where the process IS and where it is going — so a daemon \
+                         running outside the subtree it was given cannot move anything into it, \
+                         however that subtree is configured. Start the daemon inside its own \
+                         scope, which is what a systemd unit does and what a bare process in a CI \
+                         runner does not",
             },
             Self::ControllerDelegation => Entry {
                 name: "controller-delegation",
@@ -254,6 +275,7 @@ impl Check {
     pub fn judge(self, readings: &Readings) -> Finding {
         match self {
             Self::PaneIsolation => judge_pane_isolation(readings),
+            Self::PaneAdmission => judge_pane_admission(readings),
             Self::ControllerDelegation => judge_controller_delegation(readings),
             Self::CompetingWeight => judge_competing_weight(readings),
             Self::CpuStall => judge_cpu_stall(readings),
@@ -543,6 +565,9 @@ pub struct PaneReading {
     pub waiting: Waiting,
     /// Whether the ccache shim directory is on the `PATH` this pane's child was executed with.
     pub ccache_on_path: Option<bool>,
+    /// What happened when this pane's child was asked to join its cgroup. See [`PaneSite::landing`]
+    /// for why this is carried from the birth rather than read from the machine.
+    pub landing: Landing,
 }
 
 /// This daemon's delegated subtree, and the competition above it.
@@ -699,6 +724,79 @@ fn judge_pane_isolation(readings: &Readings) -> Finding {
             evidence
                 .and("shared cgroup", (*cgroup).to_owned())
                 .and("panes sharing it", pane_list(panes)),
+        ),
+        None => check.found(Verdict::Healthy, evidence),
+    }
+}
+
+/// The check the design document's own second worked example asks for, and the one this module's
+/// third rule — *a setting is not a state* — was violated by for two rounds.
+///
+/// [`Check::ControllerDelegation`] reads `cgroup.subtree_control` and reports what the subtree
+/// turned on. On GitHub's Linux runner it reads `cpu memory pids` and says HEALTHY, the delegation
+/// succeeds, the enforcement probe answers `Available` — and every single pane's child is refused
+/// admission to its leaf, so nothing is weighted and no setting on the machine can change it. That
+/// is a configuration that parses perfectly and never executes, which is exactly what the design
+/// says a diagnosis must catch, written by the module that says so.
+///
+/// It reads no file. The refusal happens at the instant of a birth and leaves no trace afterwards —
+/// a refused pane's child and an unplaced pane's child are the same process in the same cgroup —
+/// so the only honest source is what the kernel said at the time, which the pane has carried since
+/// R342. That also keeps this check inside the module's SECOND rule: detecting admission by
+/// admitting a throwaway process would be a diagnosis that mutates the machine it is diagnosing.
+fn judge_pane_admission(readings: &Readings) -> Finding {
+    let check = Check::PaneAdmission;
+    // The MACHINE's reason outranks the pane's, which is `PaneHomes::charge`'s own precedence and
+    // is load-bearing for the same measured reason: where nothing is delegated, EVERY pane is
+    // unplaced, and a row that read that as an admission failure would report a fault per pane on
+    // a host whose single true sentence is that it enforces nothing.
+    if !readings.hierarchy {
+        return check.found(
+            Verdict::Blind(Blind::NoHierarchy),
+            Evidence::of("panes", readings.panes.len().to_string()),
+        );
+    }
+    let Some(subtree) = &readings.subtree else {
+        return check.found(
+            Verdict::Blind(Blind::NoSubtree),
+            Evidence::of("panes", readings.panes.len().to_string()),
+        );
+    };
+    if readings.panes.is_empty() {
+        return check.found(
+            Verdict::Blind(Blind::NoPanes),
+            Evidence::of("subtree", subtree.root.clone()).and("panes", "0"),
+        );
+    }
+    let refused: Vec<_> = readings
+        .panes
+        .iter()
+        .filter_map(|pane| match pane.landing {
+            Landing::Refused(why) => Some((pane.id, why)),
+            Landing::At(_) | Landing::Unplaced => None,
+        })
+        .collect();
+    let admitted = readings
+        .panes
+        .iter()
+        .filter(|pane| matches!(pane.landing, Landing::At(_)))
+        .count();
+    let evidence = Evidence::of("panes", readings.panes.len().to_string())
+        .and("in a cgroup of their own", admitted.to_string())
+        .and("refused by the kernel", refused.len().to_string());
+    match refused.first() {
+        // The kernel's own sentence, verbatim, beside the pane it was said about. A person who has
+        // never met cgroup delegation containment will not recognise the RULE, but they will
+        // recognise `Permission denied` — and the remedy is written for the reader who arrives
+        // holding exactly that.
+        Some((id, why)) => check.found(
+            Verdict::Degraded,
+            evidence
+                .and(
+                    "panes refused",
+                    pane_list(&refused.iter().map(|(id, _)| *id).collect::<Vec<_>>()),
+                )
+                .and("what the kernel said", format!("pane {} — {why}", id.0)),
         ),
         None => check.found(Verdict::Healthy, evidence),
     }
@@ -1189,6 +1287,14 @@ pub struct PaneSite {
     pub id: PaneId,
     /// The process on the far side of its pty.
     pub pid: u32,
+    /// Whether this pane's child reached the cgroup opened for it, and the kernel's reason if not.
+    ///
+    /// The one reading in this module that `/proc` cannot supply. A refused pane and a pane nobody
+    /// tried to place are the SAME process in the SAME cgroup afterwards — the daemon's own — so
+    /// the difference exists only at the instant of the birth, and only the daemon was there. Every
+    /// other field here is re-read on each capture; this one is remembered, because there is
+    /// nothing left to re-read it from.
+    pub landing: Landing,
 }
 
 impl Subject {
@@ -1225,6 +1331,7 @@ impl Subject {
                 Some(PaneSite {
                     id: pane.id(),
                     pid: pane.pty().pid()?,
+                    landing: pane.home(),
                 })
             }));
         }
@@ -1397,6 +1504,7 @@ fn read_pane(site: &PaneSite, sources: &Sources, shims: Option<&str>) -> PaneRea
         // reached, and a `false` there would be a verdict nobody measured.
         ccache_on_path: shims
             .and_then(|shims| Some(lists_dir(&path_of_pid(site.pid, sources)?, shims))),
+        landing: site.landing,
     }
 }
 
@@ -1742,6 +1850,19 @@ mod tests {
 
     /// The subtree, three levels down, with a sibling at each level — the shape a delegated
     /// scope really has (`/user.slice/user-1000.slice/user@1000.service/app.slice/sprag.scope`).
+    /// A pane the daemon placed successfully, for the fixtures that are not about admission.
+    fn admitted(id: u64, pid: u32) -> PaneSite {
+        PaneSite {
+            id: PaneId(id),
+            pid,
+            landing: Landing::At(crate::PaneLineage {
+                session: crate::SessionId(1),
+                window: crate::WindowId(1),
+                pane: PaneId(id),
+            }),
+        }
+    }
+
     fn machine_with_a_subtree(tag: &str) -> (FakeMachine, Subject) {
         let machine = FakeMachine::new(tag);
         machine.cgroup("", "100", 0, "");
@@ -1752,13 +1873,92 @@ mod tests {
         machine.cgroup("user.slice/sprag.scope/pane-1", "100", 10_000, "111\n");
         machine.process(111, "/user.slice/sprag.scope/pane-1", 0, "/usr/bin:/bin");
         let subject = Subject {
-            panes: vec![PaneSite {
-                id: PaneId(1),
-                pid: 111,
-            }],
+            panes: vec![admitted(1, 111)],
             subtree: Some(machine.root.join("cgroup/user.slice/sprag.scope")),
         };
         (machine, subject)
+    }
+
+    /// ⚠ THE DAEMON-SIDE SEAM: what the registry knows reaches the subject, refusal and all.
+    ///
+    /// Every other test in this module hands `Readings::capture_after` a `Subject` LITERAL, so the
+    /// one line that builds a real one from live panes — `Subject::of` — was covered by nothing:
+    /// replacing `pane.home()` there with a constant left this whole module, the verdict suite and
+    /// the host's own doctor test GREEN, and the admission row would have read clean on every host
+    /// forever. Measured, which is the only reason it is known.
+    ///
+    /// The refusal is `/dev/full` for `workspace`'s reason: it opens for writing, fails every
+    /// write, on every Linux, with no cgroup tree and no privileges.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_subject_carries_what_the_kernel_answered_each_pane() {
+        use std::sync::{Arc, Mutex};
+
+        let root = std::env::temp_dir().join(format!("sprag-subject-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cgroup = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(&path).expect("fixture cgroup");
+            for (file, body) in [
+                ("cgroup.procs", ""),
+                ("cgroup.subtree_control", ""),
+                ("cgroup.controllers", "cpu memory pids\n"),
+                ("cpu.weight", "100\n"),
+            ] {
+                std::fs::write(path.join(file), body).expect("fixture file");
+            }
+        };
+        cgroup("");
+
+        let registry = Arc::new(Mutex::new(crate::SessionRegistry::new((80, 24))));
+        let pool = {
+            let reg = registry.lock().expect("registry");
+            let name = reg.default_session().name().to_owned();
+            reg.workspace_of(&name).expect("the default session's pool")
+        };
+        let home = pool.lock().expect("pool").home().expect("a window");
+        let window = format!("session-{}/window-{}", home.session.0, home.window.0);
+        cgroup(&format!("session-{}", home.session.0));
+        cgroup(&window);
+        // Pane 0 gets a leaf that TAKES it and pane 1 a leaf that refuses, so the two arms differ
+        // inside one subject: a seam that answered the same thing for everything would pass a
+        // fixture where every pane was refused just as happily as one where none was.
+        cgroup(&format!("{window}/pane-0"));
+        cgroup(&format!("{window}/pane-1"));
+        std::fs::remove_file(root.join(format!("{window}/pane-1/cgroup.procs")))
+            .expect("replace the leaf's procs file");
+        std::os::unix::fs::symlink(
+            "/dev/full",
+            root.join(format!("{window}/pane-1/cgroup.procs")),
+        )
+        .expect("a leaf that refuses every write");
+
+        pool.lock()
+            .expect("pool")
+            .set_pane_homes(Arc::new(crate::share::PaneHomes::over(
+                crate::share::Tree::adopt(root.clone()).expect("adopt a plain directory"),
+            )));
+        for _ in 0..2 {
+            pool.lock()
+                .expect("pool")
+                .spawn(
+                    crate::command::default_shell_command().0,
+                    "sh".into(),
+                    40,
+                    8,
+                )
+                .expect("a refused join must never cost the person their pane");
+        }
+
+        let subject = Subject::of(&registry);
+        let landings: Vec<Landing> = subject.panes.iter().map(|site| site.landing).collect();
+        assert!(
+            matches!(landings.as_slice(), [Landing::At(_), Landing::Refused(_)]),
+            "the subject carries each pane's own answer, not one answer for all of them: \
+             {landings:?}",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The levels a walk reports are the interior cgroups between the subtree and the mount point,
@@ -1847,10 +2047,7 @@ mod tests {
         machine.write("shims/gcc", "");
         machine.write("shims/g++", "");
         let subject = Subject {
-            panes: vec![PaneSite {
-                id: PaneId(1),
-                pid: 111,
-            }],
+            panes: vec![admitted(1, 111)],
             subtree: Some(machine.root.join("cgroup/scope")),
         };
         let sources = Sources {
@@ -1900,13 +2097,15 @@ mod tests {
         machine.write("shims/cc", "");
         let subject = Subject {
             panes: vec![
-                PaneSite {
-                    id: PaneId(1),
-                    pid: 111,
-                },
+                admitted(1, 111),
+                // ⚠ AND THE SECOND ONE WAS REFUSED, so this fixture also proves the birth's
+                // answer survives a capture. Every other field here is re-read from the fake
+                // `/proc`; a `landing` dropped on the way through would be invisible to a test
+                // that only ever built admitted panes, which is what every other fixture does.
                 PaneSite {
                     id: PaneId(2),
                     pid: 999,
+                    landing: Landing::Refused(crate::Refusal::from_errno(13)),
                 },
             ],
             subtree: Some(machine.root.join("cgroup/scope")),
@@ -1921,6 +2120,21 @@ mod tests {
         assert_eq!(
             readings.panes[1].ccache_on_path, None,
             "a pane with no readable environ makes no claim either way",
+        );
+        // ⚠ AND THE BIRTH'S ANSWER SURVIVES THE CAPTURE. Every other field on a `PaneReading` is
+        // re-read from `/proc` here; this one is carried, because after the birth there is nothing
+        // left to read it from — a refused pane's child and an unplaced pane's child are the same
+        // process in the same cgroup. So a capture that dropped it would be invisible to every
+        // other assertion in this module, and the whole admission row would silently read clean.
+        // Measured: zeroing this field left all of `doctor::tests` GREEN until these two lines.
+        assert_eq!(
+            readings.panes[0].landing, subject.panes[0].landing,
+            "an admitted pane arrives in the reading as one",
+        );
+        assert_eq!(
+            readings.panes[1].landing,
+            Landing::Refused(crate::Refusal::from_errno(13)),
+            "and a refused one arrives carrying the kernel's own number, not an absence",
         );
     }
 
