@@ -468,7 +468,7 @@ fn typing_follows(tui: &mut Tui, conn: &mut HostConn, session: &str, pane: u64) 
 /// stand between an act and its observation, so "timed out" alone cannot tell a client that painted
 /// the wrong thing from one that painted nothing from one that never started.
 fn wait_for(what: &str, observe: impl FnMut() -> Result<(), String>) {
-    wait_bounded(what, observe, String::new);
+    wait_bounded(DEADLINE, what, observe, String::new);
 }
 
 /// [`wait_for`] with a STANDING diagnostic the condition itself cannot supply, rendered once at the
@@ -479,12 +479,20 @@ fn wait_for(what: &str, observe: impl FnMut() -> Result<(), String>) {
 /// other tests' own margins (R343 measured that shape breaking a debounce gate on the macOS runner).
 /// The condition's own `Err` is still the LAST one taken rather than a fresh reading, which is the
 /// property [`wait_for`]'s doc explains.
+///
+/// `within` is a PARAMETER and not [`DEADLINE`] read from the constant, for one reason: it is what
+/// lets the deadline path be DRIVEN. Every wait in this file reaches this panic only by failing, so
+/// the message that carries a round's whole diagnostic is the one line no green run has ever
+/// executed — R320's rule, that an instrument built to close a measurement debt is itself unmeasured
+/// until somebody asks. `the_deadline_says_what_it_wanted_and_what_was_standing_there` asks, in
+/// milliseconds rather than in [`DEADLINE`].
 fn wait_bounded(
+    within: Duration,
     what: &str,
     mut observe: impl FnMut() -> Result<(), String>,
     standing: impl Fn() -> String,
 ) {
-    let deadline = Instant::now() + DEADLINE;
+    let deadline = Instant::now() + within;
     let mut last = "nothing was observed at all".to_owned();
     while Instant::now() < deadline {
         match observe() {
@@ -494,9 +502,49 @@ fn wait_bounded(
         std::thread::sleep(POLL);
     }
     panic!(
-        "timed out after {DEADLINE:?} waiting for {what}\n  last observation: {last}{}",
+        "timed out after {within:?} waiting for {what}\n  last observation: {last}{}",
         standing(),
     );
+}
+
+/// **THE GATE FOR THE DIAGNOSTIC ITSELF** — the deadline names what was wanted, what was last seen,
+/// AND the standing facts the condition could not state.
+///
+/// The three are separate failures and each has cost a round: without `what`, a timeout in a test
+/// with nine waits does not say which one; without the last observation, a client painting the wrong
+/// thing looks like a client painting nothing; without [`Tui::standing`], a client that has LEFT
+/// looks like both (R343/R344/R345 — three occurrences, `last observation: ""`, and nothing in the
+/// message to tell a departure from a hang).
+///
+/// Driven here rather than trusted because a panic message is code that only a FAILING run executes:
+/// every one of this file's ninety-odd waits reaches it only by timing out, so a green suite says
+/// nothing about it at all.
+#[test]
+fn the_deadline_says_what_it_wanted_and_what_was_standing_there() {
+    let complaint = std::panic::catch_unwind(|| {
+        wait_bounded(
+            Duration::from_millis(50),
+            "a condition that is never going to hold",
+            || Err("the row read \"nothing\"".to_owned()),
+            || " (client: EXITED)".to_owned(),
+        );
+    })
+    .expect_err("a wait whose condition never holds must fail");
+    let said = complaint
+        .downcast_ref::<String>()
+        .expect("the panic carries its message")
+        .clone();
+
+    for owed in [
+        "a condition that is never going to hold",
+        "the row read \"nothing\"",
+        "(client: EXITED)",
+    ] {
+        assert!(
+            said.contains(owed),
+            "the deadline must carry {owed:?}, or the failure it reports is unattributable: {said}",
+        );
+    }
 }
 
 /// `Ok` when `got` is what was wanted, else `got` rendered as [`wait_for`]'s diagnostic.
@@ -1101,7 +1149,22 @@ impl Tui {
     /// [`says`]). Nothing enforced it, because the wait was a free function and the client was
     /// simply not in the room.
     fn wait_for(&self, what: &str, observe: impl FnMut() -> Result<(), String>) {
-        wait_bounded(what, observe, || self.standing());
+        self.wait_within(DEADLINE, what, observe);
+    }
+
+    /// [`Tui::wait_for`] on a deadline the caller names — the seam that lets the wiring be DRIVEN.
+    ///
+    /// Only one caller passes anything but [`DEADLINE`], and it is the gate in
+    /// [`the_client_leaves_when_its_session_is_destroyed`]: without it, "this client's standing facts
+    /// reach the panic" is a claim no run of this file makes, since every wait here arrives at that
+    /// line only by failing.
+    fn wait_within(
+        &self,
+        within: Duration,
+        what: &str,
+        observe: impl FnMut() -> Result<(), String>,
+    ) {
+        wait_bounded(within, what, observe, || self.standing());
     }
 
     /// Wait for the client to exit, and fail rather than block if it does not.
@@ -7885,6 +7948,39 @@ fn the_client_leaves_when_its_session_is_destroyed() {
         session_names(&mut conn),
         vec!["beta".to_owned()],
         "the spare session outlives the client that could not reach it",
+    );
+
+    // THE GATE FOR THE INSTRUMENT ITSELF, and this is the one fixture in the file that can hold it:
+    // a client that has genuinely LEFT. Every other test would have to break one on purpose.
+    //
+    // R345 rebuilt these waits because a departure and a hang read alike from one row (see `says`),
+    // and a diagnostic nothing drives is exactly the shape that silently loses a fact — R342 lost a
+    // whole renderer that way. So a wait is made to RUN OUT against this departed client, on a
+    // deadline a test can afford, and the sentence it fails with is read.
+    //
+    // ⚠ Driven through [`Tui::wait_within`] rather than by rendering the picture and asserting on
+    // it: a mutation that stopped [`Tui::wait_for`] handing its standing facts to the deadline left
+    // the rendering gate GREEN, because the rendering was never the half that was missing. The
+    // claim is that the panic CARRIES them.
+    let complaint = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tui.wait_within(
+            Duration::from_millis(50),
+            "a row this departed client is never going to paint",
+            || Err("the row read \"\"".to_owned()),
+        );
+    }))
+    .expect_err("a wait against a client that has left must run out");
+    let said = complaint
+        .downcast_ref::<String>()
+        .expect("the panic carries its message")
+        .clone();
+    assert!(
+        said.contains("client: EXITED"),
+        "the deadline must name a departure, or a hang and a detach read alike: {said}",
+    );
+    assert!(
+        said.contains("[beta] 0:0*") || said.contains("[0] 0:0*"),
+        "...and must still carry what the client painted before it left: {said}",
     );
 }
 
