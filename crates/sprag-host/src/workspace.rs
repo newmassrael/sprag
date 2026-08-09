@@ -6541,6 +6541,56 @@ mod tests {
         );
     }
 
+    /// **The `window_size` SLOT and the `resize_window` ACTION read ONE policy.**
+    ///
+    /// `size_policy` was written this round with a doc comment claiming exactly that, and claiming
+    /// it was the whole of the enforcement. **Measured: it was not.** Pointing the slot back at
+    /// `config::window_size` while the action kept the seam left all 753 tests in this crate green
+    /// — R338's *a rule written down is not a rule enforced*, in code written the same afternoon.
+    ///
+    /// The two answers must DIFFER, and that is what makes this independent of the machine it runs
+    /// on. Asserting either one alone would pass whenever the developer's `config.toml` happened to
+    /// name that policy, which is the defect this round exists to remove; a slot that ignored its
+    /// surface's policy would answer the SAME rectangle for both surfaces, whatever the ambient
+    /// file says.
+    #[test]
+    fn the_window_size_slot_reads_the_same_policy_the_resize_action_does() {
+        let reg = registry();
+
+        // A pin of 77x21 against a client reporting 100x30 — two rectangles, so WHICH one comes
+        // back names the policy that resolved it. The pin is stored in the shared registry, so the
+        // second surface below sees it too.
+        let mut manual =
+            control_with_a_window(&reg, 100, 30).with_window_size(|| crate::WindowSize::Manual);
+        manual
+            .invoke(
+                RESIZE_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"cols": 77, "rows": 21})),
+            )
+            .expect("the pin is stored");
+        let largest =
+            control_with_a_window(&reg, 100, 30).with_window_size(|| crate::WindowSize::Largest);
+
+        let under_manual = answer_doc(manual.query(WINDOW_SIZE_SLOT));
+        let under_largest = answer_doc(largest.query(WINDOW_SIZE_SLOT));
+
+        assert_eq!(
+            under_manual,
+            json!({"cols": 77, "rows": 21}),
+            "`manual` lays the stored rectangle over the window, so the slot answers the PIN",
+        );
+        assert_eq!(
+            under_largest,
+            json!({"cols": 100, "rows": 30}),
+            "`largest` folds the clients, so the slot answers what the one attached client reports",
+        );
+        assert_ne!(
+            under_manual, under_largest,
+            "the slot answered one rectangle under two policies, which means it resolved under \
+             neither of them — it is reading an authority its own surface does not name",
+        );
+    }
+
     /// **A kill addressed by IDENTITY destroys the window that was pointed at, over the wire** —
     /// the daemon's half of R330, driven through the action a client really sends.
     ///
