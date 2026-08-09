@@ -5738,12 +5738,40 @@ fn the_panes_stop_one_row_above_what_the_client_says() {
 
     // Fill the pane past its own last line, so the row under it is one the child WOULD have written
     // to if it had been given the whole terminal.
+    let last = BOOT_PTY.1 - 1;
     for line in 0..BOOT_PTY.1 {
         tui.type_bytes(format!("line{line}\r").as_bytes());
     }
-    tui.wait_for("the child's output to reach the pane's last line", || {
-        settled(tui.row(BOOT_PANES.1 - 1).trim_end().is_empty(), &false)
-            .map_err(|got| format!("{got}: rows {:?}", tui.rows()))
+
+    // ⚠ THE CONDITION IS A LEVEL, NOT A TRANSIENT, AND THAT DISTINCTION IS THIS TEST'S OWN FLAKE.
+    //
+    // It used to wait for the pane's LAST ROW to be non-empty. That row holds text only while the
+    // burst is in flight: the last line typed ends in a newline, so once the output settles the
+    // cursor sits on a blank row and the reading is `true` for as long as anybody cares to look.
+    // The wait therefore depended on a poll LANDING inside the burst — and on the CI runner, where
+    // this process can be descheduled for longer than the whole burst takes, every look landed
+    // after it. Measured, on a real Linux failure at `1edf92c`: 45 s of `rows [… "line23",
+    // "line23", "", "[0] 0:0*"]` — the pane full, overflowed, and its last row blank, which is the
+    // settled state and not a defect. Re-running the same commit turned it green.
+    //
+    // ⚠ And this box produces that screen EXACTLY, once you wait for true rest — ten identical
+    // looks 200 ms apart, which is what it takes, since a 150 ms quiet window lands in the gap
+    // between two characters of an input path that costs ~100 ms each. Held there, the old
+    // condition is RED 2 of 2 and this one GREEN 2 of 2. The runner was never doing anything this
+    // machine cannot; it was only ever looking later.
+    //
+    // [`Tui::status_trail`] records the same rule for the status row, and R333's wording covers
+    // both: A POLL CANNOT WITNESS A STATE THAT PASSES BETWEEN TWO LOOKS. The trail solved it by
+    // recording every frame; here the answer is cheaper, because the claim never needed a transient
+    // — what this test has to establish is that the pane OVERFLOWED, and both halves of that are
+    // levels which stay true forever after.
+    tui.wait_for("the child's output to overflow the pane", || {
+        let rows = tui.rows();
+        let showing = |want: &str| rows.iter().any(|row| row.contains(want));
+        if showing(&format!("line{last}")) && !showing("line0") {
+            return Ok(());
+        }
+        Err(tui.picture())
     });
 
     let status = tui.row(STATUS_ROW);
