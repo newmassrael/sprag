@@ -319,11 +319,12 @@ impl PaneLifecycle for WorkspacePaneAccess {
             // ...and its ATTENTION, on the same terms: opaque, registry-free, and minted for THIS
             // pane rather than shared with every other one.
             on_attention: self.on_attention.as_ref().map(|mint| mint()),
-            // A plugin-spawned pane is placed like any other; the host fills this in when it
-            // has a tree. See `sprag_terminal::PaneBirthHooks::home`.
-            #[cfg(unix)]
-            home: None,
         };
+        // Nothing here says where the pane's cgroup goes, and that is the point: the pool this
+        // spawns into carries its window's lineage and the daemon's subtree, so a plugin-spawned
+        // pane is weighted exactly like every other one (R337). It used to carry a `home: None` over
+        // a comment saying "the host fills this in when it has a tree" — the host did no such thing
+        // for this door, and the comment was the only thing that said otherwise.
         lock(&self.workspace)
             .spawn_with_dirty(command, program.clone(), cols, rows, hooks)
             .map_err(|e| PaneError::Spawn(e.to_string()))

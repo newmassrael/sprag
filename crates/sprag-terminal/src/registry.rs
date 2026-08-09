@@ -454,7 +454,19 @@ impl Window {
     /// An empty window named `name` over `pool` — which the caller obtains from
     /// [`Workspace::sibling`], so every window in the registry mints from ONE id counter
     /// (the load-bearing invariant; see the module docs).
-    fn new(name: &str, pool: Workspace, id: WindowId) -> Self {
+    ///
+    /// `session` is taken alongside `id` because together they are the pool's
+    /// [`PoolLineage`](crate::share::PoolLineage) — stamped HERE, at the one moment a pool becomes a
+    /// window's, so that every pane later born into or moved into it lands in the cgroup its
+    /// identities spell without any birth path being told (R337). A parameter rather than something
+    /// the caller stamps afterwards for the reason the whole of that round exists: a step a caller
+    /// performs is a step a caller omits.
+    fn new(name: &str, pool: Workspace, id: WindowId, session: SessionId) -> Self {
+        let mut pool = pool;
+        pool.set_home(crate::share::PoolLineage {
+            session,
+            window: id,
+        });
         Self {
             id,
             name: name.to_owned(),
@@ -515,10 +527,20 @@ impl Window {
     fn restore(
         pool: Workspace,
         id: WindowId,
+        session: SessionId,
         snapshot: WindowSnapshot,
     ) -> Result<Self, LayoutError> {
         let mut tree = LayoutTree::new();
         tree.set_from_wire(snapshot.layout)?;
+        let mut pool = pool;
+        // On [`Window::new`]'s argument, and it is the case that argument was written for: a restore
+        // builds a whole new set of pools, so a lineage the caller stamped would be a lineage the
+        // caller had to remember to stamp on the one path where forgetting is invisible until a
+        // reboot.
+        pool.set_home(crate::share::PoolLineage {
+            session,
+            window: id,
+        });
         Ok(Self {
             id,
             name: snapshot.name,
@@ -1732,7 +1754,7 @@ impl Session {
     /// total.
     fn new(name: &str, pool: Workspace, ids: Arc<AtomicU64>) -> Self {
         let id = SessionId(ids.fetch_add(1, Ordering::Relaxed));
-        let window = Window::new("0", pool, WindowId(ids.fetch_add(1, Ordering::Relaxed)));
+        let window = Window::new("0", pool, WindowId(ids.fetch_add(1, Ordering::Relaxed)), id);
         Self {
             id,
             name: name.to_owned(),
@@ -1867,7 +1889,7 @@ impl Session {
             .unwrap_or_else(PoisonError::into_inner)
             .sibling();
         let id = self.mint_window();
-        let mut window = Window::new(&name, pool, id);
+        let mut window = Window::new(&name, pool, id, self.id);
         window.opened_by = born.opened_by;
         self.windows.push(window);
         // DETACHED leaves the session where it is — tmux's `-d`. Creating a place and SHOWING it
@@ -2146,7 +2168,7 @@ impl Session {
         // last-pane guard checked first so a refusal leaves the pool untouched. Membership is
         // already known (window_index_of_pane found it in this pool).
         let src_ws = Arc::clone(self.windows[widx].workspace());
-        let (taken, mut new_pool) = {
+        let (taken, new_pool) = {
             let mut pool = src_ws.lock().unwrap_or_else(PoisonError::into_inner);
             if pool.panes().len() <= 1 {
                 return Err(PaneMoveError::LastPane);
@@ -2165,8 +2187,15 @@ impl Session {
         // pane out of somebody's window took their whole screen doing it, and could not afterwards
         // close what it had made, because `close_window` reads an `opened_by` a break never wrote.
         // Two facts, one type, one parse — the same three the window's own birth uses.
-        new_pool.adopt(taken);
-        let mut win = Window::new(&name, new_pool, self.mint_window());
+        // The window is built BEFORE the pane is adopted, and the order is load-bearing since R337:
+        // `Window::new` is what tells the pool which window it is, and `adopt` is what moves the
+        // pane's processes into that window's cgroup. Adopting first would relocate a pane into a
+        // pool that did not yet know where it was, which is silently no relocation at all.
+        let mut win = Window::new(&name, new_pool, self.mint_window(), self.id);
+        win.workspace()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(taken);
         win.opened_by = born.opened_by;
         win.reconcile_own();
         self.windows.push(win);
@@ -2692,6 +2721,10 @@ impl SessionRegistry {
                     s.name
                 )));
             }
+            // Minted BEFORE this session's windows, which is both what `Session::new` already does
+            // and what R337 needs: a window stamps its pool with the pair (session, window), so the
+            // session has to have an identity before its first window is built.
+            let session_id = SessionId(ids.fetch_add(1, Ordering::Relaxed));
             let mut windows = Vec::with_capacity(s.windows.len());
             let mut seen_windows = HashSet::new();
             for mut w in s.windows {
@@ -2753,6 +2786,7 @@ impl SessionRegistry {
                 let window = Window::restore(
                     seed.sibling(),
                     WindowId(ids.fetch_add(1, Ordering::Relaxed)),
+                    session_id,
                     w,
                 )
                 .map_err(|e| SnapshotError::Layout(e.to_string()))?;
@@ -2768,7 +2802,7 @@ impl SessionRegistry {
                     ))
                 })?;
             sessions.push(Session {
-                id: SessionId(ids.fetch_add(1, Ordering::Relaxed)),
+                id: session_id,
                 name: s.name,
                 windows,
                 current_window,
@@ -2833,6 +2867,30 @@ impl SessionRegistry {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .set_pane_env_source(Arc::clone(&source));
+            }
+        }
+    }
+
+    /// Install `homes` as where every pane of this registry lives in the machine — the daemon's
+    /// delegated cgroup subtree (R336), reaching every pool at once.
+    ///
+    /// Whole-registry and `&self` for [`set_history_limit_source`](Self::set_history_limit_source)'s
+    /// reasons, and a REPLACED registry (a restore) needs its own call for the same reason its pools
+    /// are new. **This is the ONLY way a share reaches a pane**, and that is the correction R337
+    /// makes: it used to be a hook one of four birth paths passed, so a pane born over the wire, one
+    /// restored after a reboot, and one an in-process client opened were all unweighted while the
+    /// gate written for the fourth stayed green.
+    ///
+    /// Each pool's own [`PoolLineage`](crate::share::PoolLineage) is stamped separately, when its
+    /// window is made — the subtree is the daemon's, the lineage is one window's.
+    pub fn set_pane_homes(&self, homes: Arc<crate::share::PaneHomes>) {
+        for session in self.sessions() {
+            for window in session.windows() {
+                window
+                    .workspace()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .set_pane_homes(Arc::clone(&homes));
             }
         }
     }
@@ -3851,30 +3909,6 @@ impl SessionRegistry {
             .iter()
             .find(|w| w.name == window)
             .map(|w| Arc::clone(w.workspace()))
-    }
-
-    /// Which session and window a pane POOL belongs to — the identities a pane born into it
-    /// descends from (R336).
-    ///
-    /// # Why it asks by POOL and not by pane
-    ///
-    /// A pane's own answer is not available when it is needed. Placement happens at birth, and a
-    /// newborn pane is in its pool before the reconcile that puts it in the window's layout, so a
-    /// lookup by [`PaneId`] would either miss it or have to lock every pool to find it. Locking
-    /// pools from under the registry lock is precisely the ordering [`LocatedWindow`] exists to
-    /// avoid — it says to take a pool's lock on its OWN, after the registry's is released.
-    ///
-    /// Asking by `Arc` identity needs neither: the caller already holds the pool it is about to
-    /// spawn into, and pointer equality answers without touching a single pane or a second lock.
-    #[must_use]
-    pub fn window_of_pool(&self, pool: &Arc<Mutex<Workspace>>) -> Option<(SessionId, WindowId)> {
-        self.sessions.iter().find_map(|session| {
-            session
-                .windows
-                .iter()
-                .find(|window| Arc::ptr_eq(window.workspace(), pool))
-                .map(|window| (session.id, window.id))
-        })
     }
 }
 
@@ -5238,6 +5272,71 @@ mod tests {
             b > a && b.0 == 1,
             "a shared, monotonic counter: {a} then {b}"
         );
+    }
+
+    /// Every pool a registry owns knows WHICH window it is, and no two agree.
+    ///
+    /// That pair of ids is what makes a pane's cgroup derivable from the pool alone (R337) — the
+    /// whole reason a spawn, a restore, an adopt and a plugin's birth can all place a pane without
+    /// anybody passing a lineage. Two mutations this discriminates, both measured RED:
+    ///
+    /// - `sibling()` inheriting `home` — the natural thing to write beside the other inherited
+    ///   sources, and it files a second window's panes under the first window's cgroup.
+    /// - `Window::new` not stamping at all — every pool answers `None`, every pane unplaced.
+    ///
+    /// The session is checked too, and not as ceremony: two windows of one session share a session
+    /// id, so a stamp that took the WINDOW id twice would pass a window-only assertion.
+    #[test]
+    fn every_pool_knows_which_window_of_which_session_it_is() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let first = default_name(&reg);
+        reg.new_window(&first, None, WindowBirth::default())
+            .expect("a second window");
+        reg.new_session(Some("other")).expect("a second session");
+
+        let homes: Vec<_> = reg
+            .sessions()
+            .iter()
+            .flat_map(|session| {
+                session.windows().iter().map(move |window| {
+                    (
+                        session.id(),
+                        window.id(),
+                        lock(window.workspace())
+                            .home()
+                            .expect("a pool of a registry"),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(homes.len(), 3, "two windows here, one there");
+
+        for (session, window, home) in &homes {
+            assert_eq!(home.session, *session, "the pool names its own session");
+            assert_eq!(home.window, *window, "the pool names its own window");
+        }
+
+        // And they are DISTINCT — the assertion above would hold for three pools that all answered
+        // the same wrong pair if the ids themselves collided.
+        let mut distinct: Vec<_> = homes.iter().map(|(_, _, home)| *home).collect();
+        distinct.sort_by_key(|home| (home.session.0, home.window.0));
+        distinct.dedup();
+        assert_eq!(distinct.len(), 3, "three windows, three lineages");
+
+        // The two windows of ONE session share its id, which is what makes the projection put them
+        // under one `session-<n>` level and split the machine per session.
+        assert_eq!(homes[0].0, homes[1].0);
+        assert_ne!(homes[1].0, homes[2].0);
+    }
+
+    /// A pool that no registry owns names no window, so a pane born there is placed nowhere.
+    ///
+    /// The other half of the rule above, and the reason `home` is an `Option`: a standalone
+    /// [`Workspace`] is what a unit test and `sprag-latency` build, and inventing a lineage for it
+    /// would put their panes in some other daemon's tree.
+    #[test]
+    fn a_pool_no_registry_owns_names_no_window() {
+        assert_eq!(Workspace::new((80, 24)).home(), None);
     }
 
     /// A DETACHED window is created and the session stays where it was — tmux's `new-window -d`,

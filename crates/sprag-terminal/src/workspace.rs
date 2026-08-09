@@ -36,6 +36,7 @@ use crate::pane_pty::{
     Attention, CommandBuilder, PaneExit, PaneHooks, PanePty, PanePtyError, PanePtyHandle,
 };
 use crate::remote::SshRemote;
+use crate::share::{PaneHomes, PaneLineage, PoolLineage};
 
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
 ///
@@ -104,6 +105,21 @@ pub struct Pane {
     /// agent-opened pane whose opener has closed is closable by no agent under either rule, and only
     /// a person's `sprag kill-pane` removes it. Keeping the id at least says WHO to ask.
     opened_by: Option<PaneId>,
+    /// Which cgroup this pane's processes ARE in, as the three ids that spell it — `None` for a
+    /// pane that was never placed (no window, nothing to enforce, or a placement that failed).
+    ///
+    /// It is the ANSWER to the placement and not the address the placement would have used; see
+    /// [`Workspace::take_home`] for what that distinction buys.
+    ///
+    /// # Why the pane holds this and the sweep holds nothing
+    ///
+    /// [`Tree::sweep`](crate::share::Tree::sweep) deliberately keeps no pane-to-cgroup table,
+    /// because the kernel already answers "is this pane still running?" and a table that is wrong is
+    /// invisible. This is a different question — *where is this pane's cgroup NOW* — and the kernel
+    /// cannot answer it once the pane has moved: `/proc/<pid>/cgroup` says where the processes are,
+    /// which is exactly the stale answer a move has to correct. So the pane carries its own address,
+    /// written at the two births and re-written by the one [`adopt`](Workspace::adopt) that moves it.
+    home: Option<PaneLineage>,
     /// The name a PERSON gave this pane (or the agent that opened it), `None` for a pane nobody
     /// named — which is every pane until somebody says otherwise.
     ///
@@ -368,18 +384,14 @@ pub struct PaneBirthHooks {
     /// The child-is-asking-for-a-person signal, as [`PaneHooks::on_attention`] — but taking the
     /// [`PaneId`] too, because the caller cannot know it and the pool can.
     pub on_attention: Option<Box<dyn Fn(PaneId, Attention) + Send>>,
-    /// Opens the cgroup a pane of this pool belongs in, once the pool has minted its id (R336).
-    ///
-    /// A FUNCTION of the id rather than an open descriptor, because the cgroup is named after the
-    /// pane and the pane has no name until [`Workspace::spawn_with_dirty`] mints one. It travels
-    /// with the other birth hooks for the same reason they do: this is the one moment a pane and
-    /// its id are together, and the caller cannot be there for it.
-    #[cfg(unix)]
-    pub home: Option<Box<dyn Fn(PaneId) -> Option<std::os::fd::OwnedFd> + Send>>,
 }
 
 impl PaneBirthHooks {
     /// Bind these hooks to the pane `id` names — the one moment the two are together.
+    ///
+    /// [`PaneHooks::home`] is left unset here and filled by the pool, which is the whole of R337's
+    /// correction: this type is what a CALLER supplies, a pane's cgroup is not a caller's to know,
+    /// and the four doors that each had to remember to say it are now four doors that cannot.
     #[must_use]
     pub fn bind(self, id: PaneId) -> PaneHooks {
         PaneHooks {
@@ -389,7 +401,7 @@ impl PaneBirthHooks {
                 Box::new(move |attention| tell(id, attention)) as Box<dyn Fn(Attention) + Send>
             }),
             #[cfg(unix)]
-            home: self.home.and_then(|open| open(id)),
+            home: None,
         }
     }
 }
@@ -413,14 +425,19 @@ pub struct PaneRebirth {
     pub label: String,
     /// The `(cols, rows)` to open at, so the restored pane is the size it was.
     pub size: (u16, u16),
-    /// The pane's reader-thread callbacks — already BOUND ([`PaneHooks`], not
-    /// [`PaneBirthHooks`]), because a restore does not mint an id: the caller chose it.
+    /// The pane's reader-thread callbacks, UNBOUND — the same [`PaneBirthHooks`] a fresh spawn
+    /// takes, even though a restore does not mint an id.
+    ///
+    /// They used to arrive already bound, on the argument that the caller had the id in hand. What
+    /// that also gave the caller was a [`PaneHooks::home`] to fill, and a restore is one of the
+    /// three doors that never filled it (R337). Binding in [`Workspace::spawn_restored`] instead
+    /// makes the pool the only thing that can say where a pane's cgroup is, on either path.
     ///
     /// A restored pane replays its recorded scrollback, which may contain the OSC that raised a
     /// notification BEFORE the reboot. That replay does not fire `on_attention`: the reader thread
     /// reads its starting marks after the replay ([`PanePty::spawn_with_dirty`]), so a restore is
     /// silent and only what THIS child says reaches a person.
-    pub hooks: PaneHooks,
+    pub hooks: PaneBirthHooks,
     /// The pane's recorded scrollback as replayable terminal bytes, applied to the fresh emulator
     /// before its child can write a byte. EMPTY brings the pane back blank — the behaviour before
     /// history was persisted, and what a disabled or unreadable history degrades to.
@@ -445,6 +462,27 @@ pub struct Workspace {
     default_size: (u16, u16),
     history_limit: HistoryLimitSource,
     pane_env: PaneEnvSource,
+    /// Which window this pool IS, and whose session — the two thirds of a
+    /// [`PaneLineage`] that are the same for every pane here.
+    ///
+    /// `None` for a pool no registry owns ([`Workspace::new`] standing alone, which is what a unit
+    /// test builds). Such a pool places nothing, and that is right: a pane with no window has no
+    /// leaf to be under.
+    ///
+    /// NOT inherited by a [`sibling`](Self::sibling) — a sibling is a DIFFERENT window, and a
+    /// lineage copied across would put two windows' panes under one cgroup. It is stamped by the
+    /// registry at the one moment a pool becomes a window's.
+    home: Option<PoolLineage>,
+    /// Where this pool's panes live in the machine, and what puts them there (R336, R337).
+    ///
+    /// Held by the POOL rather than passed at each birth because a pool is the one thing every door
+    /// onto pane life goes through — a spawn, a restore, and an [`adopt`](Self::adopt) from another
+    /// window. Passing it left three of four doors placing nothing, with the gate written for the
+    /// fourth green throughout.
+    ///
+    /// Inherited by a [`sibling`](Self::sibling), unlike [`home`](Self::home): the subtree is the
+    /// whole daemon's and the lineage is one window's.
+    homes: Arc<PaneHomes>,
 }
 
 /// Asked, at each pane's BIRTH, how many logical lines of scrollback that pane should retain —
@@ -532,7 +570,50 @@ impl Workspace {
             default_size,
             history_limit: default_history_limit_source(),
             pane_env: default_pane_env_source(),
+            home: None,
+            homes: Arc::new(PaneHomes::none()),
         }
+    }
+
+    /// Say which window this pool is, and whose session — the registry's to call, at the one moment
+    /// a pool becomes a window's.
+    ///
+    /// Until it is called the pool places nothing, which is what a standalone
+    /// [`Workspace::new`] should do. Panes already born here are NOT re-placed: a pool learns its
+    /// window before it holds anything, and a re-placement would be a move nobody asked for.
+    pub fn set_home(&mut self, home: PoolLineage) {
+        self.home = Some(home);
+    }
+
+    /// Which window this pool is, if a registry has told it.
+    #[must_use]
+    pub fn home(&self) -> Option<PoolLineage> {
+        self.home
+    }
+
+    /// Install where this pool's panes live in the machine — see
+    /// [`SessionRegistry::set_pane_homes`](crate::SessionRegistry::set_pane_homes), which is how a
+    /// daemon reaches every pool at once.
+    ///
+    /// Affects FUTURE births and moves. A pane already running keeps the cgroup it was born in
+    /// until something moves it, which is the same rule every other installed source keeps.
+    pub fn set_pane_homes(&mut self, homes: Arc<PaneHomes>) {
+        self.homes = homes;
+    }
+
+    /// The full lineage of a pane of this pool, if this pool has a window.
+    fn lineage(&self, pane: PaneId) -> Option<PaneLineage> {
+        self.home.map(|home| home.pane(pane))
+    }
+
+    /// Open the cgroup a pane of this pool belongs in, for its child to join before it execs.
+    ///
+    /// The composition the whole design rests on: the pool supplies the two ids it has held since
+    /// its window was made, the birth supplies the third, and no caller anywhere says a word about
+    /// cgroups. `None` where there is no window yet or nothing to enforce.
+    #[cfg(unix)]
+    fn open_home(&self, pane: PaneId) -> Option<std::os::fd::OwnedFd> {
+        self.homes.open(self.lineage(pane)?)
     }
 
     /// Install the [`HistoryLimitSource`] this pool's births consult — the seam `sprag-host` uses to
@@ -618,6 +699,18 @@ impl Workspace {
             // of the DEFAULT session's, so a source that closed over a session name would publish the
             // wrong one to every pane of every session created after boot.
             pane_env: Arc::clone(&self.pane_env),
+            // NOT inherited: a sibling is a DIFFERENT window, and this pair names one window.
+            //
+            // Belt-and-braces rather than load-bearing, and MEASURED as such: mutating this to
+            // `self.home` leaves every test green, because every sibling reaches a pane through
+            // `Window::new` or `Window::restore` and both stamp the new window's own lineage over
+            // whatever was here. The mutation that IS red is dropping that stamp. So this is `None`
+            // to say what a pool with no window of its own is, not to defend against a live path.
+            home: None,
+            // Inherited, on `pane_env`'s argument and for a sharper reason: the subtree belongs to
+            // the whole daemon, and a window whose panes were the only unweighted ones in it would
+            // be a gap that appeared the first time somebody opened a second window.
+            homes: Arc::clone(&self.homes),
         }
     }
 
@@ -696,8 +789,12 @@ impl Workspace {
         }
         // The id binds HERE, which is the whole reason this layer takes `PaneBirthHooks`: below this
         // line there is a pane with an id and a child, and above it there is neither.
-        let pty =
-            PanePty::spawn_with_dirty(command, cols, rows, hooks.bind(id), &[], history_limit)?;
+        let mut bound = hooks.bind(id);
+        // And the pane's cgroup is opened HERE, for the same reason and at the same moment: this is
+        // where the pane and its id are together, and the pool has held the other two ids since its
+        // window was made. No caller passes it, which is precisely why no caller can omit it.
+        let home = self.take_home(id, &mut bound);
+        let pty = PanePty::spawn_with_dirty(command, cols, rows, bound, &[], history_limit)?;
         self.panes.push(Pane {
             id,
             pty,
@@ -706,8 +803,35 @@ impl Workspace {
             remote: None,
             opened_by: None,
             name: None,
+            home,
         });
         Ok(id)
+    }
+
+    /// Open the newborn pane's cgroup into `hooks`, and answer where it actually landed.
+    ///
+    /// # Why the answer is the OPENED cgroup and not the lineage
+    ///
+    /// [`Pane::home`] is what a later [`adopt`](Self::adopt) migrates OUT of, so it has to mean
+    /// *this pane's processes are in this cgroup* and not *this is the cgroup they would be in*. A
+    /// pane whose placement failed — no tree, or a tree that would not take it — is in the daemon's
+    /// own cgroup, and recording an address for it would make a later move read an empty source,
+    /// log a failure and leave the processes exactly where they were while a fresh empty leaf
+    /// appeared under the new window. Deriving the answer from the descriptor makes that state
+    /// unrepresentable.
+    fn take_home(&self, id: PaneId, hooks: &mut PaneHooks) -> Option<PaneLineage> {
+        #[cfg(unix)]
+        {
+            hooks.home = self.open_home(id);
+            hooks.home.as_ref().and_then(|_| self.lineage(id))
+        }
+        // A platform with no cgroups places nothing, so a pane there is never anywhere to be moved
+        // out of. `Share` is still a fact of the product there; only its enforcement is missing.
+        #[cfg(not(unix))]
+        {
+            let _ = (id, hooks);
+            None
+        }
     }
 
     /// Re-spawn a pane exactly as it was recorded — the restore primitive. See [`PaneRebirth`] for
@@ -750,7 +874,13 @@ impl Workspace {
         for (key, value) in (self.pane_env)(id) {
             command.env(key, value);
         }
-        let pty = PanePty::spawn_with_dirty(command, cols, rows, hooks, &history, history_limit)?;
+        // Bound HERE rather than by the caller, for the reason [`spawn_with_dirty`] binds: this is
+        // where the pane's cgroup is opened, and a caller that bound its own hooks would be a caller
+        // able to arrive with `home` unset. A restore chose the id, so there is no minting to do —
+        // only the same one binding site.
+        let mut bound = hooks.bind(id);
+        let home = self.take_home(id, &mut bound);
+        let pty = PanePty::spawn_with_dirty(command, cols, rows, bound, &history, history_limit)?;
         // Reserve the id above the counter so a future mint cannot reissue it (saturating so a
         // pathological u64::MAX id cannot wrap the reservation back to 0). Relaxed matches the
         // mint path: ids need only uniqueness + monotonicity, not synchronization.
@@ -764,6 +894,7 @@ impl Workspace {
             remote: None,
             opened_by: None,
             name: None,
+            home,
         });
         Ok(())
     }
@@ -800,9 +931,23 @@ impl Workspace {
     ///
     /// The caller owns membership: it must have obtained `pane` from a [`close`](Self::close) it
     /// just performed, so the same id is never live in two pools at once.
-    pub fn adopt(&mut self, pane: Pane) {
+    ///
+    /// **A pane's share moves with it.** The resource tree is a projection of the identity tree, and
+    /// this is the one place a live pane's identity changes — so this is where the projection is
+    /// re-computed: the pane's processes are moved into the cgroup its NEW window spells and its old
+    /// leaf is released. Doing it here rather than in each of `break-pane` / `join-pane` /
+    /// `move-pane` / `swap` is the same argument the rest of this type makes: four callers of one
+    /// rule is three chances to write it differently.
+    pub fn adopt(&mut self, mut pane: Pane) {
         self.next_id
             .fetch_max(pane.id.0.saturating_add(1), Ordering::Relaxed);
+        let arriving = self.lineage(pane.id);
+        // Both halves have to be known: a pane arriving from a pool that never had a window has no
+        // cgroup to move out of, and a pool with no window of its own has none to move it into.
+        if let (Some(from), Some(to)) = (pane.home, arriving) {
+            self.homes.relocate(from, to);
+        }
+        pane.home = arriving;
         self.panes.push(pane);
     }
 
@@ -966,6 +1111,70 @@ mod tests {
         c
     }
 
+    /// A pane that was never placed is never MOVED out of a cgroup it was never in.
+    ///
+    /// The branch: a pool that knows its window but has nothing to enforce still spells a perfectly
+    /// good lineage for every pane it births. If a pane recorded that address anyway, a later move
+    /// into a pool that DOES have a tree would try to migrate processes out of a cgroup that does
+    /// not exist — logging a failure and leaving a fresh empty leaf under the new window while the
+    /// processes stayed in the daemon's own. Recording the placement's ANSWER instead of its
+    /// intended address makes that unreachable, and this is what says so.
+    ///
+    /// Asserted by the FILESYSTEM: the destination tree is a real directory, and the claim is that
+    /// nothing appears in it.
+    #[test]
+    fn a_pane_that_was_never_placed_is_not_relocated_when_it_moves() {
+        // A stand-in for a delegated root: real directories, with the interface files the KERNEL
+        // would have made (`share`'s own `FakeCgroupFs`, which is private to that module).
+        //
+        // The destination's interior levels are pre-made, and that is what makes this a gate rather
+        // than a fixture accident: without them `place` fails at `session-1` and NOTHING appears
+        // under the root whatever the code does, so the assertion below would hold for a pane that
+        // was wrongly relocated. Measured — the mutation was GREEN until these two lines existed.
+        let root = std::env::temp_dir().join(format!("sprag-unplaced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cgroup = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(&path).expect("fixture cgroup");
+            std::fs::write(path.join("cgroup.procs"), "").expect("fixture procs");
+            std::fs::write(path.join("cgroup.subtree_control"), "").expect("fixture subtree");
+            std::fs::write(path.join("cpu.weight"), "100\n").expect("fixture weight");
+        };
+        cgroup("");
+        cgroup("session-1");
+        cgroup("session-1/window-2");
+
+        // Born into a pool that has a window and NO tree — the GUI's in-process host, and every
+        // host on a machine that cannot enforce a share.
+        let mut origin = Workspace::new((80, 24));
+        origin.set_home(PoolLineage {
+            session: crate::registry::SessionId(1),
+            window: crate::registry::WindowId(1),
+        });
+        let id = origin.spawn(cmd(), "sh".to_string(), 80, 24).unwrap();
+        let taken = origin.close(id).expect("the pane leaves its pool");
+
+        // ...and moved into one that does.
+        let mut destination = origin.sibling();
+        destination.set_home(PoolLineage {
+            session: crate::registry::SessionId(1),
+            window: crate::registry::WindowId(2),
+        });
+        destination.set_pane_homes(Arc::new(crate::share::PaneHomes::over(
+            crate::share::Tree::adopt(root.clone()).expect("adopt a plain directory"),
+        )));
+
+        destination.adopt(taken);
+
+        assert!(
+            !root
+                .join(format!("session-1/window-2/pane-{}", id.0))
+                .exists(),
+            "a pane that was never in a cgroup was given one by moving",
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_pane_is_born_with_the_limit_its_pool_names() {
         // The whole seam in one assertion: the pool is asked at BIRTH, so the pane the user gets
@@ -1098,7 +1307,7 @@ mod tests {
             command: echoes("WS_TEST_PANE"),
             label: "sh".to_owned(),
             size: (20, 4),
-            hooks: PaneHooks::default(),
+            hooks: PaneBirthHooks::default(),
             history: Vec::new(),
         })
         .unwrap();
@@ -1270,7 +1479,7 @@ mod tests {
             command: cmd(),
             label: "sh".into(),
             size: (80, 24),
-            hooks: PaneHooks::default(),
+            hooks: PaneBirthHooks::default(),
             history: Vec::new(),
         })
         .unwrap();
@@ -1279,7 +1488,7 @@ mod tests {
             command: cmd(),
             label: "sh".into(),
             size: (80, 24),
-            hooks: PaneHooks::default(),
+            hooks: PaneBirthHooks::default(),
             history: Vec::new(),
         })
         .unwrap();

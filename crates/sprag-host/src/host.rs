@@ -51,10 +51,10 @@ use sprag_grid::ProjectionToken;
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, Attention, CommandBuilder, DividerStep, Ended, HistoryLimitSource,
-    LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneBirthHooks, PaneDir, PaneEnvSource, PaneId,
-    PaneLineage, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect,
-    SessionId, SessionInfo, SessionRegistry, Share, Snapshot, SnapshotError, SplitDir, SplitSide,
-    Tree, WindowId, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
+    LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneBirthHooks, PaneDir, PaneEnvSource, PaneHomes,
+    PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect,
+    SessionId, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, Tree,
+    WindowId, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1533,18 +1533,14 @@ pub struct Host {
     /// [`with_pane_env`](Self::with_pane_env). HELD as well as installed on the registry because a
     /// [`restore`](Self::restore) replaces the registry's pools wholesale and must re-install it.
     pane_env: Option<PaneEnvSource>,
-    /// The cgroup subtree every pane born here is placed in, if this daemon was given one (R336).
+    /// Where every pane of this host lives in the machine — the daemon's delegated cgroup subtree
+    /// (R336), or [`PaneHomes::none`] for a host with nothing to enforce.
     ///
-    /// `None` for a host that has no tree — the GUI's in-process host, every test, and a daemon on
-    /// a machine that cannot enforce a share. That absence is the DESIGNED state, not a degraded
-    /// one: a pane opens either way, and only the enforcement is missing.
-    shares: Option<Arc<Tree>>,
-    /// Serialises placing a pane against sweeping away the panes that ended.
-    ///
-    /// A freshly placed cgroup is EMPTY until its child is moved in, and empty is exactly what the
-    /// sweep collects. Without this, one thread's birth could be swept out from under it by
-    /// another's, and the pane would come up unweighted for no reason anybody could reproduce.
-    placing: Arc<Mutex<()>>,
+    /// Installed on the registry immediately by [`with_shares`](Self::with_shares) AND held, for the
+    /// reason [`pane_env`](Self::pane_env) is held: a [`restore`](Self::restore) replaces the pools
+    /// wholesale and must re-install it, or a pane would be placed on every path except after a
+    /// reboot.
+    homes: Arc<PaneHomes>,
 }
 
 /// The `on_dirty` FACTORY a [`Host`] wires each client-created pane with: a fresh hook per pane,
@@ -1619,8 +1615,7 @@ impl Host {
             samplers: crate::Samplers::default(),
             pane_hooks: None,
             pane_env: None,
-            shares: None,
-            placing: Arc::new(Mutex::new(())),
+            homes: Arc::new(PaneHomes::none()),
         }
     }
 
@@ -1667,15 +1662,20 @@ impl Host {
         self
     }
 
-    /// Place every pane born under this host in `tree` — the daemon's adopted cgroup subtree
-    /// (R336). A caller with no tree installs none and its panes open exactly as before.
+    /// Place every pane of this host in `tree` — the daemon's adopted cgroup subtree (R336). A
+    /// caller with no tree installs none and its panes open exactly as before.
     ///
-    /// Unlike [`with_pane_env`](Self::with_pane_env) nothing is installed on the registry: the tree
-    /// is consulted at BIRTH, from a host that already knows the pool it spawned into, so a
-    /// [`restore`](Self::restore) that replaces the pools wholesale needs no re-installation.
+    /// Installed on the REGISTRY, exactly like [`with_pane_env`](Self::with_pane_env), and R337
+    /// moved it there because the alternative had been measured: consulting the tree from this type
+    /// covered `Host::spawn` and left the daemon's wire, a restore, an in-process `new_pane` and a
+    /// cross-window move all placing nothing. A pool is what every one of those goes through.
     #[must_use]
     pub fn with_shares(mut self, tree: Arc<Tree>) -> Self {
-        self.shares = Some(tree);
+        // Cloned out of the `Arc` rather than shared: `PaneHomes` owns the serialisation a tree has
+        // none of, so two `PaneHomes` over one tree would be two locks over one subtree. Callers
+        // pass an `Arc<Tree>` because a test also wants to walk the root, and a `Tree` is a path.
+        self.homes = Arc::new(PaneHomes::over(Tree::clone(&tree)));
+        lock(&self.registry).set_pane_homes(Arc::clone(&self.homes));
         self
     }
 
@@ -1703,76 +1703,9 @@ impl Host {
         rows: u16,
         hooks: PaneBirthHooks,
     ) -> Result<PaneId, PanePtyError> {
-        let workspace = self.workspace();
-        // Asked BEFORE the pool is locked, and answered by `Arc` identity rather than by pane —
-        // the registry's lock is taken and released here, so the pool lock below is never held
-        // under it (the ordering `LocatedWindow` names).
-        let home = lock(&self.registry).window_of_pool(&workspace);
-        let mut hooks = hooks;
-        #[cfg(unix)]
-        {
-            hooks.home = self.share_opener(home);
-        }
-        lock(&workspace).spawn_with_dirty(command, label, cols, rows, hooks)
-    }
-
-    /// The hook that makes a pane's cgroup and hands back its open `cgroup.procs`, for the child to
-    /// write itself into before it execs (R336).
-    ///
-    /// # Why this is a hook and not a call around the spawn
-    ///
-    /// The cgroup is named after the pane, and the pane has no id until the pool mints one — which
-    /// happens inside the spawn. Placing it afterwards is what this used to do, and the window that
-    /// leaves is not theoretical: a pane running `sh -c 'sleep 60 & sleep 60'` had BOTH of its
-    /// children born in the daemon's own cgroup, because the shell forked while the parent was
-    /// still creating directories. Handing the pool an opener closes the window by construction —
-    /// the cgroup exists before the child does, and the child joins itself.
-    ///
-    /// Never fails a birth. A pane that could not be placed runs unweighted, which is what every
-    /// pane did before this existed; refusing to open it would trade a missing guarantee for a
-    /// missing terminal.
-    #[cfg(unix)]
-    fn share_opener(
-        &self,
-        home: Option<(SessionId, WindowId)>,
-    ) -> Option<Box<dyn Fn(PaneId) -> Option<std::os::fd::OwnedFd> + Send>> {
-        let (tree, (session, window)) = (self.shares.as_ref()?, home?);
-        let tree = Arc::clone(tree);
-        let placing = Arc::clone(&self.placing);
-        Some(Box::new(move |pane| {
-            let _placing = lock(&placing);
-            // The cgroups of panes that have ended, collected here rather than from a death signal.
-            //
-            // `rmdir` refuses a cgroup with a live process in it, so the kernel already holds the
-            // fact a pane-to-cgroup table would duplicate — and asking it is what makes this
-            // self-healing across a daemon that was killed outright, which no table could be. The
-            // honest cost, stated rather than hidden: a dead pane's cgroup lingers until the NEXT
-            // pane is born. They are empty directories, births and deaths alternate in a terminal,
-            // and a daemon whose last pane died is on its way out anyway.
-            //
-            // Under the same lock as the placement below, because a cgroup is EMPTY between being
-            // made and being joined, and empty is exactly what the sweep collects.
-            tree.sweep();
-            let lineage = PaneLineage {
-                session,
-                window,
-                pane,
-            };
-            let placed = match tree.place(lineage, Share::EVEN) {
-                Ok(placed) => placed,
-                Err(error) => {
-                    tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
-                    return None;
-                }
-            };
-            match placed.open_for_join() {
-                Ok(fd) => Some(fd),
-                Err(error) => {
-                    tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
-                    None
-                }
-            }
-        }))
+        // The pane's cgroup is the POOL's business now (R337) — this door says nothing about it, and
+        // neither does any other, which is the whole of what that round changed.
+        lock(&self.workspace()).spawn_with_dirty(command, label, cols, rows, hooks)
     }
 
     /// Rebuild this host's registry from a durability [`Snapshot`] and re-spawn its panes — the
@@ -1838,6 +1771,10 @@ impl Host {
         if let Some(source) = &self.pane_env {
             registry.set_pane_env_source(Arc::clone(source));
         }
+        // And where its panes live in the machine, for exactly that reason at exactly that moment.
+        // A restored pane placed nowhere would be the one unweighted pane in the daemon, and the gap
+        // would surface only after a reboot — which is where R337 found it.
+        registry.set_pane_homes(Arc::clone(&self.homes));
         // Swap the CONTENTS, preserving the Arc the reaper already holds a clone of, and claim the
         // birth in the same breath. The restored registry describes sessions whose panes are still
         // being spawned one at a time below, so it reads as "nothing live" for the whole loop: the
@@ -1888,19 +1825,14 @@ impl Host {
                 label,
                 size: (pane.cols, pane.rows),
                 // The attention hook is keyed by NOTHING, unlike the wake beside it: the router
-                // asks the registry which session holds the pane. The hooks are BOUND here rather
-                // than by the pool, because a restore does not mint an id — the caller chose it, and
-                // it is already in hand.
+                // asks the registry which session holds the pane. They arrive UNBOUND even though a
+                // restore has the id in hand, because binding is also where a pane's cgroup is
+                // opened and that is the pool's to know (R337).
                 hooks: PaneBirthHooks {
                     on_dirty: on_dirty(&pane.session),
                     on_exit: on_exit(),
                     on_attention: on_attention(),
-                    // ⚠ NOT PLACED YET, for the reason the mux door is not: the share tree hangs
-                    // off `Host::spawn`, and a restore re-spawns through the pool directly.
-                    #[cfg(unix)]
-                    home: None,
-                }
-                .bind(pane.id),
+                },
                 history: history(pane.id),
             });
             match spawned {

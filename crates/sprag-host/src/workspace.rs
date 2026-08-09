@@ -673,14 +673,12 @@ impl WorkspaceExternal {
             on_dirty: Some(bump_on_dirty(&self.channels.revision(self.scope.session()))),
             on_exit: self.on_pane_exit.as_ref().map(crate::pane_exit_hook),
             on_attention: self.attention.as_ref().map(crate::pane_attention_hook),
-            // ⚠ NOT PLACED YET. This is the DAEMON's spawn door — the one a wire `split` or
-            // `new-pane` comes through — and it is a second door onto pane birth beside
-            // `Host::spawn`, which is where the share tree lives. Reaching the tree from here means
-            // carrying it on `DaemonShared`; until that is done a pane born over the wire runs
-            // unweighted, and this comment is the only place that says so.
-            #[cfg(unix)]
-            home: None,
         };
+        // This door says nothing about the pane's cgroup, and that is what makes it correct. It is
+        // the DAEMON's spawn door — a wire `split` or `new-pane` — and it is built from the registry
+        // alone, so while placement hung off `Host` it could not have reached a share tree at all:
+        // every pane a person opened was unweighted while the boot pane was placed perfectly. Since
+        // R337 the POOL carries both halves, and this door gets it by spawning into one.
         let mut workspace = lock(pool);
         let (default_cols, default_rows) = workspace.default_size();
         let id = workspace

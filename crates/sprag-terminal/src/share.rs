@@ -34,9 +34,21 @@
 //! to be available before a weight means anything, and the same probe answers again — correctly —
 //! after the daemon has been given a subtree of its own.
 //!
-//! What this probe does NOT prove is that a weight has been applied to anything; there is no
-//! placement here yet. It answers whether placement could be enforced, which is the question that
-//! has to be answered first and the one nothing in this crate could answer before.
+//! What the probe does NOT prove is that a weight has been applied to anything. It answers whether
+//! placement COULD be enforced, which is the question that has to be answered first; [`Tree`] is
+//! what then makes the cgroups and [`PaneHomes`] is what puts panes in them.
+//!
+//! # Where a pane's cgroup is decided
+//!
+//! In [`PaneHomes`], which a [`Workspace`](crate::Workspace) holds — never at a call site. R336
+//! placed panes from one of the five doors a pane arrives through and the other four placed
+//! nothing, with the gate written for the first green throughout. A pool is what every door goes
+//! through, so the pool is what carries this.
+//!
+//! The tree is a PROJECTION of the identity tree, and a projection has to track its source: a pane
+//! that moves between windows takes its processes with it
+//! ([`PaneHomes::relocate`](PaneHomes::relocate)), because otherwise the window a person pulled a
+//! runaway build OUT of goes on being charged for it.
 
 use std::path::{Path, PathBuf};
 
@@ -293,6 +305,33 @@ pub struct PaneLineage {
     pub pane: PaneId,
 }
 
+/// The identities a pane POOL descends from — the window it is, and that window's session.
+///
+/// [`PaneLineage`] is this plus a pane, and [`pane`](Self::pane) is the only way to build one, which
+/// is the point: a pool knows its own two ids at the moment a window is made and learns the third
+/// only when it mints it. Keeping the pair as a value the pool holds is what lets EVERY birth path
+/// place a pane without being told where — the asymmetry R336 shipped, where one door of four
+/// carried the lineage in its arguments and the other three had nothing to carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PoolLineage {
+    /// The session the pool's window belongs to.
+    pub session: SessionId,
+    /// The window the pool IS.
+    pub window: WindowId,
+}
+
+impl PoolLineage {
+    /// The full lineage of `pane`, born into or moved into this pool.
+    #[must_use]
+    pub const fn pane(self, pane: PaneId) -> PaneLineage {
+        PaneLineage {
+            session: self.session,
+            window: self.window,
+            pane,
+        }
+    }
+}
+
 impl PaneLineage {
     /// This pane's cgroup, relative to the tree root — `session-<n>/window-<n>/pane-<n>`.
     #[must_use]
@@ -387,6 +426,47 @@ impl Tree {
         Ok(Placement { path, share })
     }
 
+    /// Move every process a pane has into `into`, and report how many distinct ones made the trip.
+    ///
+    /// # Why it loops, and why it stops on NEW work rather than on an empty source
+    ///
+    /// A live pane is a shell, and a shell forks. Reading `cgroup.procs` once and writing that list
+    /// across leaves a child born during the walk behind in a cgroup the pane no longer owns — so
+    /// the source is re-read.
+    ///
+    /// What it must NOT do is loop until the source is empty. A pid the kernel refuses to move
+    /// stays in the source forever, and "until empty" is then a spin that re-writes the same
+    /// refusal a bounded number of times and reports it as that many successes. Stopping when a pass
+    /// finds no pid it has not already tried terminates on the real condition — *there is nothing
+    /// left that I have not attempted* — and makes the count honest.
+    ///
+    /// Moving a process is not the same as moving its threads: cgroup v2's `cgroup.procs` migrates
+    /// the whole thread group, which is exactly the unit a pane is made of.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError`] if the source cannot be read or a pid cannot be written across. A
+    /// process that EXITED mid-migration is not an error — moving one already treats a vanished
+    /// pid as nothing to do, which is the common case when a pane is moved just as its command
+    /// finishes.
+    pub fn migrate(&self, from: PaneLineage, into: &Placement) -> Result<usize, TreeError> {
+        let source = self.root.join(from.relative());
+        let mut tried = std::collections::HashSet::new();
+        for _ in 0..MIGRATE_PASSES {
+            let fresh: Vec<u32> = read_procs(&source)?
+                .into_iter()
+                .filter(|pid| tried.insert(*pid))
+                .collect();
+            if fresh.is_empty() {
+                break;
+            }
+            for pid in fresh {
+                move_proc(&into.path, pid)?;
+            }
+        }
+        Ok(tried.len())
+    }
+
     /// Remove a pane's cgroup, and any level it leaves empty.
     ///
     /// A level that still holds a sibling refuses to go, and that refusal is the ANSWER rather than
@@ -444,6 +524,170 @@ impl Tree {
             removed += usize::from(std::fs::remove_dir(&session).is_ok());
         }
         removed
+    }
+}
+
+/// How many times [`Tree::migrate`] re-reads a source cgroup before giving up on its stragglers.
+///
+/// Three, because the second pass exists to catch what forked during the first and the third to say
+/// the second was not a fluke. A pane forking faster than three passes can drain is a pane whose
+/// resource use is not going to be fixed by a fourth: the stragglers stay where they are, charged to
+/// the window the pane left, which is bad accounting and not a broken terminal.
+const MIGRATE_PASSES: usize = 3;
+
+/// Where a pane's processes live, and the ONE thing that puts them there.
+///
+/// # Why this is a type and not two calls at each spawn
+///
+/// R336 placed panes from `Host::spawn` — one of FOUR doors a pane arrives through (the daemon's
+/// wire, a restore, an in-process client's `new_pane`, and another window's `break-pane`). The other
+/// three placed nothing, and the gate written for the first passed the whole time. That is what a
+/// policy carried in a caller's arguments buys: it is correct exactly where somebody remembered it.
+///
+/// So the policy lives here — sweep the dead, place the newborn, open its `cgroup.procs` for the
+/// child to join itself — and a [`Workspace`](crate::Workspace) holds one. Every door then goes
+/// through the pool, because a pool is what a pane is born into and moved into, and no door can
+/// forget what it never had to say.
+///
+/// [`none`](Self::none) is the honest spelling of "this host enforces nothing": a GUI's in-process
+/// host, a test, a machine [`Enforcement::probe`] found nothing on. Such a pane opens exactly as
+/// every pane did before any of this existed.
+#[derive(Debug, Default)]
+pub struct PaneHomes {
+    /// The subtree, or nothing to place into.
+    ///
+    /// An `Option` rather than two types because the ABSENCE is a designed state that every method
+    /// here answers the same way — do nothing, successfully — and a caller that had to branch on
+    /// which kind of homes it held would be a caller writing that branch four times.
+    tree: Option<Tree>,
+    /// Serialises placing a pane against sweeping away the panes that ended.
+    ///
+    /// A freshly placed cgroup is EMPTY until its child is moved in, and empty is exactly what the
+    /// sweep collects. Without this, one thread's birth could be swept out from under it by
+    /// another's, and the pane would come up unweighted for no reason anybody could reproduce.
+    placing: std::sync::Mutex<()>,
+}
+
+impl PaneHomes {
+    /// A host that enforces nothing — see the type docs for who those are.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Place panes into `tree`.
+    #[must_use]
+    pub fn over(tree: Tree) -> Self {
+        Self {
+            tree: Some(tree),
+            placing: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// The subtree these homes are in, if there is one — what a test walks to find a pane's leaf.
+    #[must_use]
+    pub fn tree(&self) -> Option<&Tree> {
+        self.tree.as_ref()
+    }
+
+    /// Make `at`'s cgroup and hand back its open `cgroup.procs`, for the child to write itself into
+    /// between `fork` and `exec`.
+    ///
+    /// # Why an open descriptor and not a call after the spawn
+    ///
+    /// Placing a child AFTER it execs is what R336 measured: a pane running `sh -c 'sleep 60 & sleep
+    /// 60'` had BOTH of its children born in the daemon's own cgroup, because the shell forked while
+    /// the parent was still creating directories. Handing the spawn an already-open descriptor
+    /// closes that window by construction — the cgroup exists before the child does, and the child
+    /// joins itself with one write and no allocation.
+    ///
+    /// **Never fails a birth.** A pane that could not be placed runs unweighted, which is what every
+    /// pane did before this existed; refusing to open it would trade a missing guarantee for a
+    /// missing terminal. What went wrong is logged, once, at the moment it is known.
+    #[cfg(unix)]
+    pub fn open(&self, at: PaneLineage) -> Option<std::os::fd::OwnedFd> {
+        let tree = self.tree.as_ref()?;
+        let _placing = self
+            .placing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The cgroups of panes that have ended, collected here rather than from a death signal.
+        //
+        // `rmdir` refuses a cgroup with a live process in it, so the kernel already holds the fact a
+        // pane-to-cgroup table would duplicate — and asking it is what makes this self-healing
+        // across a daemon that was killed outright, which no table could be. The honest cost, stated
+        // rather than hidden: a dead pane's cgroup lingers until the NEXT pane is born. They are
+        // empty directories, births and deaths alternate in a terminal, and a daemon whose last pane
+        // died is on its way out anyway.
+        tree.sweep();
+        match tree
+            .place(at, Share::EVEN)
+            .and_then(|placed| placed.open_for_join())
+        {
+            Ok(fd) => Some(fd),
+            Err(error) => {
+                tracing::warn!(%error, pane = at.pane.0, "pane opened without an enforced share");
+                None
+            }
+        }
+    }
+
+    /// Move an already-running pane's processes from the cgroup `from` names into the one `to` does
+    /// — what a `break-pane`, a `join-pane`, a `move-pane` or a `swap` owes the projection.
+    ///
+    /// # Why a move has to touch the kernel at all
+    ///
+    /// The resource tree is a PROJECTION of the identity tree. A pane's identity changes when it
+    /// moves between windows, so a projection computed only at birth stops being one at the first
+    /// move: a person who pulls a runaway build into its own window to contain it would find it
+    /// still eating the share of the window they pulled it out of. Re-placing the DIRECTORY is not
+    /// enough either — an empty new leaf beside a full old one changes nothing about who the kernel
+    /// charges.
+    ///
+    /// Like [`open`](Self::open) this never fails the operation it serves. A move whose cgroup half
+    /// did not work leaves a pane weighted where it used to be, which is worse accounting and not a
+    /// broken terminal, so it is logged and the pane still moves.
+    pub fn relocate(&self, from: PaneLineage, to: PaneLineage) {
+        let Some(tree) = self.tree.as_ref() else {
+            return;
+        };
+        if from == to {
+            return;
+        }
+        // NOT under a sweep, unlike a birth: the source leaf is occupied by the very processes about
+        // to be moved, and the destination is made and filled in one breath below.
+        let _placing = self
+            .placing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let placed = match tree.place(to, Share::EVEN) {
+            Ok(placed) => placed,
+            Err(error) => {
+                tracing::warn!(%error, pane = to.pane.0, "moved pane kept its old share");
+                return;
+            }
+        };
+        match tree.migrate(from, &placed) {
+            // Read rather than discarded, and at `debug` rather than dropped: ZERO is the reading
+            // that says the move did nothing, and it is indistinguishable from success in every
+            // other signal this function produces.
+            Ok(moved) => {
+                tracing::debug!(
+                    moved,
+                    pane = to.pane.0,
+                    "a moved pane took its processes with it"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(%error, pane = to.pane.0, "moved pane left processes behind");
+                return;
+            }
+        }
+        // Best effort, and last: a source that will not go is one something is still running in,
+        // which the next sweep collects once it is not.
+        if let Err(error) = tree.release(from) {
+            tracing::debug!(%error, pane = from.pane.0, "the pane's old cgroup outlived the move");
+        }
     }
 }
 
@@ -935,6 +1179,112 @@ mod tests {
         // it — taking it would put the daemon's threads back in an interior cgroup and invalidate
         // everything below.
         assert!(fs.root.join(DAEMON_LEAF).exists());
+    }
+
+    /// A pane that moves takes its PROCESSES with it, not just its directory.
+    ///
+    /// The claim that is easy to satisfy without meaning it: re-placing the directory under the new
+    /// window would give a new leaf and an absent old one while the kernel went on charging the old
+    /// window for every process. So the pids are read out of the destination.
+    ///
+    /// The RELEASE of the old leaf is not asserted here and cannot be — this fixture is ordinary
+    /// files, and `rmdir` refuses a directory holding the kernel's interface files that real
+    /// cgroupfs lets go (see [`FakeCgroupFs::bare`], which exists for exactly that and cannot be
+    /// used here because the migration has to read the source's `cgroup.procs` first). It is gated
+    /// on a real kernel instead, in `sprag-host/tests/pane_placement.rs`, by counting how many
+    /// leaves carry the moved pane's name.
+    #[test]
+    fn a_pane_that_moves_windows_takes_its_processes_into_the_new_windows_cgroup() {
+        let fs = FakeCgroupFs::new("relocate");
+        let homes = PaneHomes::over(Tree {
+            root: fs.root.clone(),
+        });
+        let (from, to) = (address(1, 1, 7), address(1, 2, 7));
+        fs.cgroup("session-1", "");
+        fs.cgroup("session-1/window-1", "");
+        fs.cgroup("session-1/window-1/pane-7", "4242\n");
+        // The levels the pane is moving INTO, with the interface files the kernel would have made:
+        // a directory of ordinary files has none, so `place` would fail here for a reason the real
+        // hierarchy does not have. See `FakeCgroupFs`.
+        fs.cgroup("session-1/window-2", "");
+        fs.cgroup("session-1/window-2/pane-7", "");
+
+        homes.relocate(from, to);
+
+        assert!(
+            fs.root.join(to.relative()).is_dir(),
+            "the pane has a leaf under the window it moved to"
+        );
+        assert_eq!(
+            fs.read(&format!("{}/{PROCS}", to.relative().display())),
+            "4242",
+            "the pane's processes are what moved, not just its directory"
+        );
+    }
+
+    /// A move within one window is not a move.
+    ///
+    /// It is reachable: `swap_panes` adopts each pane into the other's pool, and two panes of ONE
+    /// window swap into the pool they were already in. Without the guard the pane's own cgroup would
+    /// be placed, migrated into itself, and then RELEASED — which is a live pane's cgroup deleted
+    /// out from under it. The fixture makes that visible: the leaf still holds its process.
+    #[test]
+    fn a_pane_adopted_back_into_the_window_it_is_already_in_keeps_its_cgroup() {
+        let fs = FakeCgroupFs::new("relocate-same");
+        let homes = PaneHomes::over(Tree {
+            root: fs.root.clone(),
+        });
+        let at = address(1, 1, 7);
+        fs.cgroup("session-1", "");
+        fs.cgroup("session-1/window-1", "");
+        fs.cgroup("session-1/window-1/pane-7", "4242\n");
+
+        homes.relocate(at, at);
+
+        assert_eq!(
+            fs.read(&format!("{}/{PROCS}", at.relative().display())),
+            "4242\n",
+            "untouched — the fixture's own trailing newline is still there, so nothing rewrote it"
+        );
+    }
+
+    /// A host with nothing to enforce touches nothing at all.
+    ///
+    /// The designed state — a GUI's in-process host, a test, a machine with no delegated subtree —
+    /// and it has to be a no-op rather than a best effort: a `PaneHomes::none()` that created
+    /// directories would put a pane's cgroup somewhere no daemon owns.
+    #[test]
+    fn a_host_with_nothing_to_enforce_places_and_moves_nothing() {
+        let fs = FakeCgroupFs::new("no-homes");
+        let homes = PaneHomes::none();
+
+        homes.relocate(address(1, 1, 7), address(1, 2, 7));
+
+        assert!(!fs.root.join("session-1").exists());
+        assert_eq!(homes.tree(), None);
+    }
+
+    /// Migration tries each process ONCE, however many passes it takes to see them all.
+    ///
+    /// The fixture is the real kernel's opposite: writing a pid across does NOT remove it from the
+    /// source here, so a loop that ran "until the source is empty" would move the same pid three
+    /// times and report three. That is exactly the shape a pid the kernel REFUSES to move produces
+    /// on a real host, which is why the count is what is asserted.
+    #[test]
+    fn migration_counts_processes_and_not_passes() {
+        let fs = FakeCgroupFs::new("migrate-once");
+        let tree = Tree {
+            root: fs.root.clone(),
+        };
+        let (from, to) = (address(1, 1, 7), address(1, 2, 7));
+        fs.cgroup("session-1", "");
+        fs.cgroup("session-1/window-1", "");
+        fs.cgroup("session-1/window-1/pane-7", "11\n22\n");
+        fs.cgroup("session-1/window-2", "");
+        fs.cgroup("session-1/window-2/pane-7", "");
+        let into = tree.place(to, Share::EVEN).expect("place the destination");
+
+        assert_eq!(tree.migrate(from, &into).expect("migrate"), 2);
     }
 
     #[test]

@@ -257,10 +257,6 @@ fn main() -> io::Result<()> {
                 on_dirty: Some(bump_on_dirty(&channels.revision(BOOT_SESSION))),
                 on_exit: Some(pane_exit_hook(&on_pane_exit)),
                 on_attention: Some(pane_attention_hook(&attention)),
-                // Filled in by `Host::spawn`, which is where the share tree lives and where the
-                // pane's window is resolved; a value here would be discarded.
-                #[cfg(unix)]
-                home: None,
             },
         )
         .map_err(io::Error::other)?;
