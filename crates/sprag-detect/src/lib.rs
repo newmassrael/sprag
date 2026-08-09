@@ -1083,6 +1083,37 @@ mod tests {
         assert_eq!(v.state, AgentState::Idle);
     }
 
+    /// A dialog on a NARROW pane, where every line of it wraps, still reads as blocked.
+    ///
+    /// R344 made the search walk logical lines and then asked the same question of every other
+    /// reader that builds text out of rows. This one is a reader that should NOT change: the
+    /// window is a claim about how far up the SCREEN a dialog sits
+    /// (`a_dialog_further_up_than_the_window_does_not_match`), and rows are the unit distance is
+    /// measured in. The risk was that wrapped continuations would eat the window and push a
+    /// marker out of it.
+    ///
+    /// Measured across four widths rather than argued: 80 columns is the fixture's natural size,
+    /// 30 wraps every line of the dialog into two or three rows. The verdict does not move, so the
+    /// row window is the right unit here and this pins it — a later round that "fixes" this reader
+    /// the way R344 fixed the search will find out here.
+    #[test]
+    fn a_dialog_still_reads_as_blocked_when_every_line_of_it_wraps() {
+        for cols in [80_u16, 60, 40, 30] {
+            let mut em = Emulator::new(cols, 24);
+            em.advance(PERMISSION_DIALOG.join("\r\n").as_bytes());
+            // Non-vacuity: at the narrow widths the pane really is wrapping.
+            if cols <= 60 {
+                assert!(
+                    (0..em.screen().rows()).any(|row| em.screen().wrapped(row)),
+                    "the fixture must wrap at {cols} columns or it says nothing",
+                );
+            }
+            let v = detect(em.screen(), Some("✳ Claude Code"), &built_ins());
+            assert_eq!(v.state, AgentState::Blocked, "at {cols} columns");
+            assert_eq!(v.rule.as_deref(), Some("dialog-choice-list"), "at {cols}");
+        }
+    }
+
     #[test]
     fn bottom_lines_skips_blank_rows_and_reads_downward() {
         let em = painted(&["first", "", "   ", "second", "", "third"]);
