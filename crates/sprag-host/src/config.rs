@@ -52,6 +52,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use sprag_terminal::Limits;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value, value};
 
 use crate::keymap::{BoundAction, KeyError, KeySpec, KeyTable, Keymap};
@@ -306,6 +307,45 @@ pub fn history_limit_lines() -> usize {
         }
     };
     configured.map_or(sprag_vt::DEFAULT_SCROLLBACK_LINES, |lines| lines as usize)
+}
+
+/// One mebibyte, so the option's unit and the kernel's are converted in exactly one place.
+const MIB: u64 = 1024 * 1024;
+
+/// The ceilings a pane born NOW should carry — the user's
+/// [`pane-memory-limit`](crate::options::PANE_MEMORY_LIMIT) and
+/// [`pane-process-limit`](crate::options::PANE_PROCESS_LIMIT), uncapped where they have said
+/// nothing.
+///
+/// Read from the file on every call, like [`history_limit_lines`] and for its reason: a person who
+/// raises a ceiling gets it on their next pane with nothing to restart. Both are read in ONE call
+/// because they are set together and a pane is placed once — two readers would take two file reads
+/// per birth to answer one question.
+///
+/// **Zero is the user's spelling of "no ceiling"**, which is why it is mapped away here rather than
+/// passed down: [`Limits`] takes `None` for uncapped, and letting a `0` reach `pids.max` would be a
+/// pane that may run no processes at all.
+///
+/// A broken config logs and falls through to uncapped, which is the pre-R337 behaviour and the only
+/// safe direction: a daemon that could not read its config and invented a ceiling would stop
+/// somebody's build for a reason nothing on their screen explains.
+#[must_use]
+pub fn pane_limits() -> Limits {
+    let configured = match options() {
+        Ok(options) => options,
+        Err(error) => {
+            tracing::warn!(
+                target: "sprag_host::config",
+                %error,
+                "opening a pane with no resource ceilings",
+            );
+            return Limits::UNCAPPED;
+        }
+    };
+    let positive = |name| configured.number(name).filter(|value| *value > 0);
+    Limits::UNCAPPED
+        .with_memory(positive(options::PANE_MEMORY_LIMIT).map(|mib| u64::from(mib) * MIB))
+        .with_processes(positive(options::PANE_PROCESS_LIMIT))
 }
 
 /// Whether the switch option `name` is `on` — the reader for every
@@ -1750,6 +1790,49 @@ mod tests {
     use sprag_vt::VtPort as _;
 
     use super::*;
+
+    /// A ceiling a person CLEARED is no ceiling, not a ceiling of zero.
+    ///
+    /// The option surface floors both limits at 0 and spells "none" that way, because that is what
+    /// a person returns to by deleting the line. Letting the zero through would write `pids.max 0` —
+    /// a pane that may run nothing at all, which is a terminal that will not open — and
+    /// `memory.high 0`, which throttles a pane to a standstill the moment it allocates. Neither
+    /// failure names the config line that caused it.
+    ///
+    /// The three readings are the three states a person can be in, and the middle one is what a
+    /// gate testing only "set" and "absent" would miss.
+    #[test]
+    fn a_cleared_ceiling_is_no_ceiling_and_never_a_ceiling_of_zero() {
+        with_config(
+            Some("[options]\npane-memory-limit = 8\npane-process-limit = 64\n"),
+            || {
+                assert_eq!(
+                    pane_limits(),
+                    Limits::UNCAPPED
+                        .with_memory(Some(8 * MIB))
+                        .with_processes(Some(64)),
+                    "a person's mebibytes reach the kernel as bytes",
+                );
+            },
+        );
+        with_config(
+            Some("[options]\npane-memory-limit = 0\npane-process-limit = 0\n"),
+            || {
+                assert_eq!(
+                    pane_limits(),
+                    Limits::UNCAPPED,
+                    "zero is how a person says none"
+                );
+            },
+        );
+        with_config(Some("[options]\n"), || {
+            assert_eq!(
+                pane_limits(),
+                Limits::UNCAPPED,
+                "and saying nothing is the same"
+            );
+        });
+    }
 
     #[test]
     fn the_config_path_sits_under_xdg_config_home() {

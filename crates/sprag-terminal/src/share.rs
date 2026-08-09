@@ -280,14 +280,25 @@ const CPU_WEIGHT: &str = "cpu.weight";
 /// A cgroup's ceiling on live processes.
 const PIDS_MAX: &str = "pids.max";
 
+/// The memory level above which a cgroup is throttled and reclaimed from.
+///
+/// `memory.high` and NOT `memory.max`, and the difference is what happens to the person's work:
+/// `max` invokes the OOM killer, so a pane that touches the ceiling loses whatever it was doing;
+/// `high` puts the cgroup under reclaim pressure and throttles it, so a build that overshoots gets
+/// slow instead of dead. A ceiling a person set to protect their other panes should not be a way to
+/// lose the pane they set it on.
+const MEMORY_HIGH: &str = "memory.high";
+
+/// What the kernel reads and writes for "no ceiling here" in both limit files.
+const UNCAPPED: &str = "max";
+
 /// What every interior level of the tree turns on for its children.
 ///
-/// `cpu` is the point. `pids` rides along because it is what bounds one pane's fork storm from
-/// taking the pid budget the person's other panes need, and enabling it costs a counter.
-///
-/// `memory` is deliberately NOT here: nothing reads a memory number yet, and a controller that is
-/// enabled but unused buys per-cgroup accounting for no answer.
-const ENABLE_CONTROLLERS: &str = "+cpu +pids";
+/// `cpu` is the point. `pids` bounds one pane's fork storm from taking the pid budget the person's
+/// other panes need. `memory` joined them when [`Limits`] gave a person a number to set — before
+/// that it was deliberately absent, because a controller enabled but unread buys per-cgroup
+/// accounting for no answer.
+const ENABLE_CONTROLLERS: &str = "+cpu +memory +pids";
 
 /// The three identities that already name a pane, which are also where its cgroup goes.
 ///
@@ -539,20 +550,21 @@ const MIGRATE_PASSES: usize = 3;
 ///
 /// # Why this is a type and not two calls at each spawn
 ///
-/// R336 placed panes from `Host::spawn` — one of FOUR doors a pane arrives through (the daemon's
-/// wire, a restore, an in-process client's `new_pane`, and another window's `break-pane`). The other
-/// three placed nothing, and the gate written for the first passed the whole time. That is what a
-/// policy carried in a caller's arguments buys: it is correct exactly where somebody remembered it.
+/// R336 placed panes from `Host::spawn` — one of FIVE doors a pane arrives through (the daemon's
+/// wire, a restore, an in-process client's `new_pane`, and a plugin's spawn, plus a sixth arrival
+/// that is not a birth: another window's `break-pane`). The other four placed nothing, and the gate
+/// written for the first passed the whole time. That is what a policy carried in a caller's
+/// arguments buys: it is correct exactly where somebody remembered it.
 ///
-/// So the policy lives here — sweep the dead, place the newborn, open its `cgroup.procs` for the
-/// child to join itself — and a [`Workspace`](crate::Workspace) holds one. Every door then goes
-/// through the pool, because a pool is what a pane is born into and moved into, and no door can
-/// forget what it never had to say.
+/// So the policy lives here — sweep the dead, place the newborn, write its ceilings, open its
+/// `cgroup.procs` for the child to join itself — and a [`Workspace`](crate::Workspace) holds one.
+/// Every door then goes through the pool, because a pool is what a pane is born into and moved
+/// into, and no door can forget what it never had to say.
 ///
 /// [`none`](Self::none) is the honest spelling of "this host enforces nothing": a GUI's in-process
 /// host, a test, a machine [`Enforcement::probe`] found nothing on. Such a pane opens exactly as
 /// every pane did before any of this existed.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct PaneHomes {
     /// The subtree, or nothing to place into.
     ///
@@ -566,6 +578,21 @@ pub struct PaneHomes {
     /// sweep collects. Without this, one thread's birth could be swept out from under it by
     /// another's, and the pane would come up unweighted for no reason anybody could reproduce.
     placing: std::sync::Mutex<()>,
+    /// What ceilings each pane is born with, asked at every birth — `None` for uncapped, which is
+    /// what a host that has never been given a source answers.
+    limits: Option<LimitSource>,
+}
+
+impl std::fmt::Debug for PaneHomes {
+    /// Hand-written because a [`LimitSource`] is a closure and closures are not [`Debug`]. What a
+    /// reader of a log wants anyway is the two facts a derive could not have shown: whether there is
+    /// a tree at all, and what the ceilings say RIGHT NOW.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaneHomes")
+            .field("tree", &self.tree)
+            .field("limits", &self.limits())
+            .finish()
+    }
 }
 
 impl PaneHomes {
@@ -575,13 +602,32 @@ impl PaneHomes {
         Self::default()
     }
 
-    /// Place panes into `tree`.
+    /// Place panes into `tree`, with no ceilings on them.
     #[must_use]
     pub fn over(tree: Tree) -> Self {
         Self {
             tree: Some(tree),
             placing: std::sync::Mutex::new(()),
+            limits: None,
         }
+    }
+
+    /// Ask `source` at each birth what ceilings the pane should carry — the seam `sprag-host` uses
+    /// to put the user's `pane-memory-limit` and `pane-process-limit` behind every pane without
+    /// this crate learning what a config file is.
+    ///
+    /// A builder rather than a second constructor: a host with a tree and no ceilings is the
+    /// ordinary case, and making every call site name its absence would be making them say
+    /// something they have no opinion about.
+    #[must_use]
+    pub fn limited_by(mut self, source: LimitSource) -> Self {
+        self.limits = Some(source);
+        self
+    }
+
+    /// What a pane born now should be capped at.
+    fn limits(&self) -> Limits {
+        self.limits.as_ref().map_or(Limits::UNCAPPED, |ask| ask())
     }
 
     /// The subtree these homes are in, if there is one — what a test walks to find a pane's leaf.
@@ -620,10 +666,21 @@ impl PaneHomes {
         // empty directories, births and deaths alternate in a terminal, and a daemon whose last pane
         // died is on its way out anyway.
         tree.sweep();
-        match tree
-            .place(at, Share::EVEN)
-            .and_then(|placed| placed.open_for_join())
-        {
+        let placed = match tree.place(at, Share::EVEN) {
+            Ok(placed) => placed,
+            Err(error) => {
+                tracing::warn!(%error, pane = at.pane.0, "pane opened without an enforced share");
+                return None;
+            }
+        };
+        // A ceiling that will not take does NOT cost the pane its share, and the order says so: the
+        // weight is already written above, and a pane weighted but uncapped is strictly better than
+        // one that got neither. A person who set a ceiling the kernel refused needs to be told, so
+        // this warns rather than passing silently — and then opens the pane.
+        if let Err(error) = placed.limit(self.limits()) {
+            tracing::warn!(%error, pane = at.pane.0, "pane opened without the ceilings it was given");
+        }
+        match placed.open_for_join() {
             Ok(fd) => Some(fd),
             Err(error) => {
                 tracing::warn!(%error, pane = at.pane.0, "pane opened without an enforced share");
@@ -667,6 +724,13 @@ impl PaneHomes {
                 return;
             }
         };
+        // A moved pane keeps its ceilings, because they are a fact about the pane and not about the
+        // window it happens to be in. The source is asked again rather than the old leaf read back:
+        // the person may have changed the number since, and a re-read would restore what they no
+        // longer want.
+        if let Err(error) = placed.limit(self.limits()) {
+            tracing::warn!(%error, pane = to.pane.0, "moved pane lost the ceilings it was given");
+        }
         match tree.migrate(from, &placed) {
             // Read rather than discarded, and at `debug` rather than dropped: ZERO is the reading
             // that says the move did nothing, and it is indistinguishable from success in every
@@ -778,20 +842,88 @@ impl Placement {
             .map_err(|source| TreeError::Write { path, source })
     }
 
-    /// Cap the number of processes this pane may have alive at once.
+    /// Write this pane's ceilings, whatever they are — including "none", which is a value.
     ///
-    /// Left uncapped by default, deliberately: a ceiling invented without a person turns somebody's
-    /// working parallel build into a mysterious `fork: retry` at a number nobody chose. The
-    /// mechanism is here so the option surface can hand it a number that a person did choose.
+    /// Both files are written on EVERY placement rather than only when a number is set, and that is
+    /// what makes a ceiling a person REMOVED take effect on their next pane instead of surviving
+    /// until their next daemon. It is the same rule `history-limit` keeps, for the same reason.
     ///
     /// # Errors
     ///
-    /// Returns [`TreeError`] if the cap will not take, which means the `pids` controller did not
-    /// reach this level.
-    pub fn cap_processes(&self, most: u32) -> Result<(), TreeError> {
-        write_control(&self.path.join(PIDS_MAX), &most.to_string())
+    /// Returns [`TreeError`] if a ceiling will not take, which means the controller behind it did
+    /// not reach this level. The caller decides what that is worth: a pane with no ceiling is a
+    /// working pane, so [`PaneHomes`] logs it and opens the pane anyway.
+    pub fn limit(&self, limits: Limits) -> Result<(), TreeError> {
+        write_control(&self.path.join(MEMORY_HIGH), &limits.memory_high())?;
+        write_control(&self.path.join(PIDS_MAX), &limits.processes())
     }
 }
+
+/// The CEILINGS a pane may not cross — as distinct from the [`Share`] it is granted, which is a
+/// weight and has no ceiling in it at all.
+///
+/// # Why a share and a ceiling are different things
+///
+/// A [`Share`] cannot starve anybody: a pane weighted 10 beside an idle neighbour still takes the
+/// whole machine, and live grants always sum to what there is. A ceiling can, and that is the point
+/// of it — a person who says *this pane may not go past 4 GiB* is buying protection for everything
+/// else on the machine, and accepts that the pane pays. So the two are set separately, and the
+/// default here is NONE of them: a ceiling invented without a person turns somebody's working
+/// parallel build into a mysterious `fork: retry`, or an OOM, at a number nobody chose.
+///
+/// ghostty ships the same pair (`linux-cgroup-memory-limit`, `linux-cgroup-processes-limit`,
+/// measured at `2602886`) and no CPU weight; sprag now has both halves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Limits {
+    /// Bytes, at [`MEMORY_HIGH`]. `None` is uncapped.
+    memory_high: Option<u64>,
+    /// Live processes, at [`PIDS_MAX`]. `None` is uncapped.
+    processes: Option<u32>,
+}
+
+impl Limits {
+    /// No ceilings — what a pane gets unless a person has said otherwise.
+    pub const UNCAPPED: Self = Self {
+        memory_high: None,
+        processes: None,
+    };
+
+    /// A ceiling on memory, in BYTES. `None` removes it.
+    #[must_use]
+    pub const fn with_memory(mut self, bytes: Option<u64>) -> Self {
+        self.memory_high = bytes;
+        self
+    }
+
+    /// A ceiling on live processes. `None` removes it.
+    #[must_use]
+    pub const fn with_processes(mut self, most: Option<u32>) -> Self {
+        self.processes = most;
+        self
+    }
+
+    /// The memory ceiling as the kernel spells it.
+    #[must_use]
+    pub fn memory_high(self) -> String {
+        self.memory_high
+            .map_or_else(|| UNCAPPED.to_owned(), |bytes| bytes.to_string())
+    }
+
+    /// The process ceiling as the kernel spells it.
+    #[must_use]
+    pub fn processes(self) -> String {
+        self.processes
+            .map_or_else(|| UNCAPPED.to_owned(), |most| most.to_string())
+    }
+}
+
+/// Asked, at each pane's BIRTH, what ceilings that pane should carry.
+///
+/// A source rather than a value for [`crate::HistoryLimitSource`]'s reason: the answer is the
+/// user's and it can change, so `sprag-host` installs one that reads `config.toml` and raising a
+/// ceiling reaches the NEXT pane rather than the next daemon. A stored [`Limits`] would freeze the
+/// setting at the moment the daemon was given its subtree.
+pub type LimitSource = std::sync::Arc<dyn Fn() -> Limits + Send + Sync>;
 
 /// What went wrong building or tearing down the tree, and where.
 #[derive(Debug)]
@@ -1037,6 +1169,7 @@ mod tests {
             std::fs::write(path.join(SUBTREE_CONTROL), "").expect("fixture subtree_control");
             std::fs::write(path.join(CPU_WEIGHT), "100\n").expect("fixture cpu.weight");
             std::fs::write(path.join(PIDS_MAX), "max\n").expect("fixture pids.max");
+            std::fs::write(path.join(MEMORY_HIGH), "max\n").expect("fixture memory.high");
             path
         }
 
@@ -1222,6 +1355,37 @@ mod tests {
         );
     }
 
+    /// A pane that moves windows keeps the ceilings it was given.
+    ///
+    /// A ceiling is a fact about the PANE, not about the window it happens to be in, so a `break-`
+    /// or `join-pane` that dropped it would silently un-cap the very pane a person capped —
+    /// and the way they would find out is the machine going down. The new leaf is a NEW cgroup, so
+    /// nothing carries across on its own; this is what makes it.
+    #[test]
+    fn a_pane_that_moves_windows_keeps_the_ceilings_it_was_given() {
+        let fs = FakeCgroupFs::new("relocate-limits");
+        let homes = PaneHomes::over(Tree {
+            root: fs.root.clone(),
+        })
+        .limited_by(std::sync::Arc::new(|| {
+            Limits::UNCAPPED.with_processes(Some(77))
+        }));
+        let (from, to) = (address(1, 1, 7), address(1, 2, 7));
+        fs.cgroup("session-1", "");
+        fs.cgroup("session-1/window-1", "");
+        fs.cgroup("session-1/window-1/pane-7", "4242\n");
+        fs.cgroup("session-1/window-2", "");
+        fs.cgroup("session-1/window-2/pane-7", "");
+
+        homes.relocate(from, to);
+
+        assert_eq!(
+            fs.read(&format!("{}/{PIDS_MAX}", to.relative().display())),
+            "77",
+            "the pane arrived in its new window uncapped"
+        );
+    }
+
     /// A move within one window is not a move.
     ///
     /// It is reachable: `swap_panes` adopts each pane into the other's pool, and two panes of ONE
@@ -1246,6 +1410,68 @@ mod tests {
             "4242\n",
             "untouched — the fixture's own trailing newline is still there, so nothing rewrote it"
         );
+    }
+
+    /// A pane is born carrying the ceilings its source names, and "none" is written as a VALUE.
+    ///
+    /// Both halves matter. Writing `max` when a person has cleared the setting is what makes the
+    /// clearing take effect on their next pane — a placement that skipped the write would leave the
+    /// ceiling in whatever state the cgroup's parent had, which for a re-used leaf is the OLD
+    /// number. Measured on the fixture, which keeps the last write to each file.
+    #[test]
+    fn a_pane_is_born_with_the_ceilings_its_source_names_and_none_is_one() {
+        let fs = FakeCgroupFs::new("limits");
+        let at = address(1, 1, 7);
+        fs.cgroup("session-1", "");
+        fs.cgroup("session-1/window-1", "");
+        fs.cgroup("session-1/window-1/pane-7", "");
+
+        let capped = PaneHomes::over(Tree {
+            root: fs.root.clone(),
+        })
+        .limited_by(std::sync::Arc::new(|| {
+            Limits::UNCAPPED
+                .with_memory(Some(64 * 1024 * 1024))
+                .with_processes(Some(512))
+        }));
+        capped.open(at);
+        assert_eq!(
+            fs.read(&format!("{}/{MEMORY_HIGH}", at.relative().display())),
+            "67108864",
+            "the kernel is told BYTES, whatever unit the person typed"
+        );
+        assert_eq!(
+            fs.read(&format!("{}/{PIDS_MAX}", at.relative().display())),
+            "512"
+        );
+
+        // The person clears both. The next pane is uncapped, and it is uncapped because the files
+        // were WRITTEN, not because they were left alone.
+        let cleared = PaneHomes::over(Tree {
+            root: fs.root.clone(),
+        });
+        cleared.open(at);
+        assert_eq!(
+            fs.read(&format!("{}/{MEMORY_HIGH}", at.relative().display())),
+            UNCAPPED
+        );
+        assert_eq!(
+            fs.read(&format!("{}/{PIDS_MAX}", at.relative().display())),
+            UNCAPPED
+        );
+    }
+
+    /// A ceiling of zero is not a ceiling of zero.
+    ///
+    /// The option surface spells "no ceiling" as `0`, and letting that through would be a pane
+    /// allowed to run no processes at all — a terminal that cannot start a shell. The mapping is
+    /// `sprag-host`'s (`config::pane_limits`), and this is the type's half: `None` is the only way
+    /// to say uncapped here, so the wrong thing cannot be built.
+    #[test]
+    fn uncapped_is_absence_and_never_the_number_zero() {
+        assert_eq!(Limits::UNCAPPED.processes(), UNCAPPED);
+        assert_eq!(Limits::UNCAPPED.memory_high(), UNCAPPED);
+        assert_eq!(Limits::UNCAPPED.with_processes(Some(0)).processes(), "0");
     }
 
     /// A host with nothing to enforce touches nothing at all.

@@ -1674,7 +1674,13 @@ impl Host {
         // Cloned out of the `Arc` rather than shared: `PaneHomes` owns the serialisation a tree has
         // none of, so two `PaneHomes` over one tree would be two locks over one subtree. Callers
         // pass an `Arc<Tree>` because a test also wants to walk the root, and a `Tree` is a path.
-        self.homes = Arc::new(PaneHomes::over(Tree::clone(&tree)));
+        self.homes = Arc::new(
+            PaneHomes::over(Tree::clone(&tree))
+                // The user's ceilings, asked at each birth — `history_limit_source`'s seam exactly,
+                // and installed HERE rather than by the caller for its reason: a daemon that had to
+                // remember to pass it is a daemon that would place panes and cap none of them.
+                .limited_by(Arc::new(crate::config::pane_limits)),
+        );
         lock(&self.registry).set_pane_homes(Arc::clone(&self.homes));
         self
     }

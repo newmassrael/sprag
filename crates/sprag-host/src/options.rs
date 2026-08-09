@@ -219,6 +219,38 @@ pub const GUI_FONT: &str = "gui-font";
 /// reboot, silently.
 pub const HISTORY_LIMIT: &str = "history-limit";
 
+/// The most memory one pane may use before the kernel throttles it, in MEBIBYTES (R337).
+///
+/// A DAEMON-side option like [`HISTORY_LIMIT`] and read at each BIRTH for its reason: raising a
+/// ceiling reaches the user's next pane rather than their next daemon, and a live pane keeps what
+/// it was born with. Lowering a ceiling under a running build would be a config edit that changes
+/// what somebody's program is allowed to do mid-run, which is a verb aimed at a pane and not an
+/// option.
+///
+/// **Zero is a DECISION**, [`HISTORY_LIMIT`]'s distinction again and with the opposite polarity:
+/// `0` means NO CEILING, because that is the state a person returns to by clearing the setting and
+/// a ceiling of literally zero bytes is not a pane. Uncapped is also the default, deliberately — a
+/// number invented without a person is a number nobody can explain when their build slows down.
+///
+/// MEBIBYTES rather than bytes because it is what a person types; the kernel is told bytes. It maps
+/// to `memory.high`, which THROTTLES and reclaims, never `memory.max`, which OOM-kills: a ceiling
+/// set to protect the other panes should not be a way to lose the pane it is set on. Enforced only
+/// where a share is (see [`sprag_terminal::Enforcement`]); a host that cannot enforce says so once
+/// at start-up rather than pretending per pane.
+pub const PANE_MEMORY_LIMIT: &str = "pane-memory-limit";
+
+/// The most processes one pane may have alive at once (R337).
+///
+/// [`PANE_MEMORY_LIMIT`]'s twin in every respect — daemon-side, read at birth, `0` meaning no
+/// ceiling, uncapped by default — over `pids.max`. What it is FOR is the fork storm: one pane's
+/// runaway `make -j` taking the pid budget its neighbours need is the failure a weight cannot
+/// prevent, because a weight shares a resource that is contended and a pid table is a resource that
+/// simply runs out.
+///
+/// The mechanism landed at R336 with no caller, which is the shape the debt question hunts (*an
+/// answer nobody reads*); this is the person who reads it.
+pub const PANE_PROCESS_LIMIT: &str = "pane-process-limit";
+
 /// How long a client shows what a key just DID, in milliseconds — tmux's `display-time`.
 ///
 /// A CLIENT-side option like [`PREFIX`] and [`REPEAT_TIME`], and the reason is theirs sharpened: a
@@ -447,6 +479,22 @@ pub const OPTIONS: &[OptionSpec] = &[
         // are answers to this one being wrong for somebody, which is why it is the default rather
         // than the safe-looking `off`.
         default: "unfocused",
+    },
+    OptionSpec {
+        name: PANE_MEMORY_LIMIT,
+        // Floors at 0, where zero MEANS "no ceiling" rather than "unset" — the name's own doc says
+        // why that polarity is a decision and not a gap.
+        kind: OptionKind::Number { min: 0 },
+        // Uncapped. A number here would be a ceiling nobody chose, imposed on every pane of every
+        // session, and the person who hit it would have no way to know what had happened.
+        default: "0",
+    },
+    OptionSpec {
+        name: PANE_PROCESS_LIMIT,
+        kind: OptionKind::Number { min: 0 },
+        // Uncapped, on `pane-memory-limit`'s argument and more sharply: a pid ceiling shows up as
+        // `fork: retry`, which is the least explicable error a shell produces.
+        default: "0",
     },
     OptionSpec {
         name: PREFIX,

@@ -11,14 +11,15 @@
 //!
 //! # Why there is a test per DOOR
 //!
-//! R336 wired exactly one of them ([`Host::spawn`]) and said so. A pane also arrives from the
-//! daemon's wire (`spawn`/`split`), from a durability restore, from an in-process client's
-//! `new_pane`, and from another WINDOW when a person breaks it out. Four doors onto one action is
-//! the shape that produces a feature which works in the test that was written for it and nowhere a
-//! person actually goes — so each door is a test, and they assert the same thing about the same
-//! kernel file.
+//! R336 wired exactly one of them ([`Host::spawn`], the BOOT pane) and said so. A pane also
+//! arrives from the daemon's wire (`spawn`/`split` — the door a person actually uses), from a
+//! durability restore, from an in-process client's `new_pane`, and from a plugin. Five doors onto
+//! one action is the shape that produces a feature which works in the test written for it and
+//! nowhere a person actually goes — so each door is a test asserting the same thing about the same
+//! kernel file. Four of them are here; the plugin's is in `sprag-plugin` beside the code that opens
+//! it, because that crate has no host to build one from.
 //!
-//! The move is not a fifth door but the claim itself: the resource tree is a PROJECTION of the
+//! The move is not a sixth door but the claim itself: the resource tree is a PROJECTION of the
 //! identity tree, and a projection that only holds at birth is not one. A pane broken into a new
 //! window has a new identity, so its processes belong under the new window's cgroup — otherwise the
 //! window a person is looking at is charged for work it does not hold.
@@ -357,6 +358,47 @@ fn a_pane_broken_into_a_new_window_takes_its_cgroup_with_it() {
     }
 }
 
+/// A pane carries the CEILINGS a person set, all the way from `config.toml` to the kernel.
+///
+/// The share and the ceilings are different kinds of thing and this is the gate for the second:
+/// a [`Share`](sprag_terminal::Share) is a weight that cannot starve anybody, and a ceiling is a
+/// number a person chose precisely because it can. R336 shipped the process half as a method with
+/// **no caller** — the "an answer nobody reads" shape — and no memory half at all; this follows a
+/// person's two settings to `memory.high` and `pids.max` on a real delegated subtree.
+///
+/// It also holds the UNIT together: the option is mebibytes because that is what a person types,
+/// the kernel is told bytes, and the conversion lives in exactly one place. A gate asserting the
+/// number the person typed would pass against a daemon that never converted.
+#[test]
+fn a_pane_carries_the_ceilings_the_person_set() {
+    let Some((_holder, tree)) = delegated() else {
+        return;
+    };
+    let host = Host::new((80, 24)).with_shares(Arc::clone(&tree));
+
+    let pane = spawn_sleeper(&host, "capped");
+    let leaf = leaf_of(&pane_leaves(tree.root()), pane).to_path_buf();
+
+    let memory = std::fs::read_to_string(leaf.join("memory.high")).expect("memory.high");
+    assert_eq!(
+        memory.trim(),
+        (MEMORY_LIMIT_MIB * 1024 * 1024).to_string(),
+        "the person set {MEMORY_LIMIT_MIB} MiB and the kernel was told {}",
+        memory.trim()
+    );
+
+    let processes = std::fs::read_to_string(leaf.join("pids.max")).expect("pids.max");
+    assert_eq!(processes.trim(), PROCESS_LIMIT.to_string());
+
+    // And the pane WORKS under them — the whole point of a ceiling being a ceiling rather than a
+    // refusal. Without this the assertions above would hold just as well for a placement that
+    // capped a pane out of existence.
+    assert!(
+        !members_of(&leaf).is_empty(),
+        "the pane was capped and never started"
+    );
+}
+
 /// Spawn a long-lived, identifiable child into `host`'s current window.
 fn spawn_sleeper(host: &Host, label: &str) -> PaneId {
     let mut command = CommandBuilder::new("/bin/sleep");
@@ -399,6 +441,7 @@ fn assert_child_in_cgroup(tree: &Tree, pane: PaneId, program: &str) {
 /// The holder comes back with the tree because dropping it tears the scope down: a helper that
 /// returned the tree alone would hand every caller a root systemd had already reclaimed.
 fn delegated() -> Option<(Holder, Arc<Tree>)> {
+    hermetic_config();
     let mut holder = Holder::spawn()?;
     let delegated = match delegation::acquire(holder.pid()) {
         Ok(delegated) => delegated,
@@ -412,12 +455,26 @@ fn delegated() -> Option<(Holder, Arc<Tree>)> {
     Some((holder, Arc::new(tree)))
 }
 
-/// Point this test binary's config and state at a directory of its own, ONCE.
+/// The ceilings [`hermetic_config`] writes, and what the kernel must therefore hold.
 ///
-/// [`HostClient::new_pane`] runs the user's `default-command`, so without this the pane a test
-/// opens is whatever the developer running the suite has in `config.toml` — the rule R318/R319/R331
-/// each re-learned. Binary-wide rather than per test because the environment is process-global and
-/// these tests run in parallel: setting it per test would be one thread writing what another reads.
+/// A memory number that is page-aligned and small enough to be obviously deliberate, and a process
+/// number no test here comes near — the claim is that a person's setting ARRIVES, not that it bites.
+const MEMORY_LIMIT_MIB: u64 = 64;
+const PROCESS_LIMIT: u32 = 512;
+
+/// Point this test binary's config and state at a directory of its own, ONCE, and write the config
+/// every test in it runs against.
+///
+/// Two reasons, and the second is the newer one. [`HostClient::new_pane`] runs the user's
+/// `default-command`, so without this the pane a test opens is whatever the developer running the
+/// suite has in `config.toml` — the rule R318/R319/R331 each re-learned. And the file it writes
+/// names this binary's ceilings, so `a_pane_carries_the_ceilings_the_person_set` has a person's
+/// setting to follow all the way to `memory.high`.
+///
+/// Binary-wide rather than per test because the environment is process-global and these tests run
+/// in parallel: setting it per test would be one thread writing what another reads. Every test
+/// therefore opens panes under these ceilings, which is a second thing gated for free — a ceiling
+/// that broke placement would take every door's test with it.
 fn hermetic_config() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -430,6 +487,17 @@ fn hermetic_config() {
             // them).
             unsafe { std::env::set_var(var, &dir) };
         }
+        let config = base.join("xdg_config_home").join("sprag");
+        std::fs::create_dir_all(&config).expect("a config directory");
+        std::fs::write(
+            config.join("config.toml"),
+            format!(
+                "[options]\n\
+                 pane-memory-limit = {MEMORY_LIMIT_MIB}\n\
+                 pane-process-limit = {PROCESS_LIMIT}\n"
+            ),
+        )
+        .expect("a config naming this binary's ceilings");
     });
 }
 

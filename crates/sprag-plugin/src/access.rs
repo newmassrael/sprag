@@ -380,6 +380,66 @@ mod tests {
         workspace
     }
 
+    /// A pane a PLUGIN opens lands in the cgroup its pool's window names.
+    ///
+    /// The fifth door onto pane birth, and the one whose comment used to claim "the host fills this
+    /// in when it has a tree" while the host did no such thing for this path (R337). It is gated
+    /// here rather than trusted to the structure, because that comment is exactly what trusting the
+    /// structure looks like from the inside.
+    ///
+    /// A stand-in cgroup root of ordinary files: this asserts the pool PLACED the pane, which is
+    /// this layer's whole responsibility. That the kernel then honours the weight is
+    /// `sprag-terminal/tests/pane_share_cgroup.rs`, against a real delegated scope.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pane_a_plugin_opens_lands_in_the_cgroup_its_window_names() {
+        use sprag_terminal::share::{PaneHomes, PoolLineage, Tree};
+        use sprag_terminal::{SessionId, WindowId};
+
+        let root = std::env::temp_dir().join(format!("sprag-plugin-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cgroup = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(&path).expect("fixture cgroup");
+            std::fs::write(path.join("cgroup.procs"), "").expect("fixture procs");
+            std::fs::write(path.join("cgroup.subtree_control"), "").expect("fixture subtree");
+            std::fs::write(path.join("cpu.weight"), "100\n").expect("fixture weight");
+        };
+        cgroup("");
+        cgroup("session-3");
+        cgroup("session-3/window-4");
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        {
+            let mut pool = lock(&workspace);
+            pool.set_home(PoolLineage {
+                session: SessionId(3),
+                window: WindowId(4),
+            });
+            pool.set_pane_homes(Arc::new(PaneHomes::over(
+                Tree::adopt(root.clone()).expect("adopt the stand-in root"),
+            )));
+        }
+
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let pane = access
+            .spawn(
+                &["/bin/sh".to_owned(), "-c".to_owned(), "cat".to_owned()],
+                20,
+                4,
+            )
+            .expect("a plugin opens a pane");
+
+        assert!(
+            root.join(format!("session-3/window-4/pane-{}", pane.0))
+                .is_dir(),
+            "a plugin's pane was born outside the share tree its window owns",
+        );
+
+        let _ = access.close(pane);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn injects_and_reads_back_through_the_api() {
         let access = WorkspacePaneAccess::new(cat_workspace(20, 4));
