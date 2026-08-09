@@ -7144,21 +7144,34 @@ mod tests {
         );
     }
 
-    /// A pane with no reading says WHICH of the three reasons it is, never a blank or a zero.
+    /// A pane with no reading says WHICH reason it is, never a blank or a zero.
     ///
-    /// The three are acted on differently — a whole machine that enforces nothing, one pane that
-    /// failed to be placed, and a pane that ended — and an agent that read "0 cores" for any of them
-    /// would conclude the pane was idle.
+    /// Each is acted on differently — a whole machine that enforces nothing, one pane nobody placed,
+    /// one the KERNEL turned away, and one that ended — and an agent that read "0 cores" for any of
+    /// them would conclude the pane was idle.
+    ///
+    /// ⚠ **THE EXPECTED TEXT COMES FROM A MATCH AND NOT FROM THE LIST BESIDE IT.** The first
+    /// version of this test paired each reason with its words in one hand-written array, and when
+    /// R342 added [`Unmeasured::Refused`](sprag_terminal::Unmeasured::Refused) the array simply did
+    /// not mention it: the new arm reached an agent's screen with nothing asserting what it said.
+    /// A match cannot do that — a new arm stops this file compiling until somebody writes down
+    /// what an agent will read.
+    ///
+    /// ⚠ And the LIST is `Unmeasured::ALL`, not an array retyped here. The match forces a sentence
+    /// to be written down for a new arm; only the closed set forces the new arm to be RUN. Both
+    /// halves are needed and this test had neither — which is how the fourth reason shipped past
+    /// it. `Unmeasured` became a closed set in the same round for exactly this reason.
     #[test]
-    fn an_unmeasured_pane_says_which_of_the_three_reasons_it_is() {
-        for (reason, said) in [
-            (
-                sprag_terminal::Unmeasured::NothingEnforced,
-                "no cgroup subtree",
-            ),
-            (sprag_terminal::Unmeasured::NotPlaced, "never placed"),
-            (sprag_terminal::Unmeasured::Gone, "cgroup is gone"),
-        ] {
+    fn an_unmeasured_pane_says_which_reason_it_is() {
+        for reason in sprag_terminal::Unmeasured::ALL {
+            let said = match reason {
+                sprag_terminal::Unmeasured::NothingEnforced => "no cgroup subtree",
+                sprag_terminal::Unmeasured::NotPlaced => "never placed",
+                // The kernel's own sentence, not a paraphrase: it is what a person searching for
+                // why their panes are unweighted will actually have in front of them.
+                sprag_terminal::Unmeasured::Refused(_) => "would not admit",
+                sprag_terminal::Unmeasured::Gone => "cgroup is gone",
+            };
             let wire = resource_reading(vec![sprag_terminal::PaneResources {
                 id: 40,
                 taken: sprag_terminal::Taken::Unmeasured { reason },

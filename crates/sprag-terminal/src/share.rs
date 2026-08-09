@@ -918,18 +918,18 @@ impl PaneHomes {
     /// for a stronger reason than moving did: a reading taken at an address the pane was never put
     /// at would either fail, or — after that address was later re-used — report SOMEBODY ELSE'S
     /// numbers under this pane's id. So the absence is passed in rather than resolved here, and the
-    /// three ways there can be no reading are three values a caller shows a person.
+    /// ways there can be no reading are values a caller shows a person.
     ///
     /// # Errors
     ///
-    /// Returns [`Unmeasured`], which is a state and not a fault: two of its three arms are ordinary
-    /// on hosts this product supports.
-    pub fn charge(&self, at: Option<PaneLineage>) -> Result<Charge, Unmeasured> {
+    /// Returns [`Unmeasured`], which is a state and not a fault: three of its four arms are
+    /// ordinary on hosts this product supports.
+    pub fn charge(&self, at: Landing) -> Result<Charge, Unmeasured> {
         // The TREE first, then the pane: with no subtree every pane is unplaced, and answering
         // "this pane's placement failed" for all of them would send a person hunting a fault in
         // their pane instead of reading the one sentence that is true of their whole machine.
         let tree = self.tree.as_ref().ok_or(Unmeasured::NothingEnforced)?;
-        let at = at.ok_or(Unmeasured::NotPlaced)?;
+        let at = at.measurable()?;
         tree.charge(at).map_err(|error| {
             tracing::debug!(%error, pane = at.pane.0, "a placed pane had no cgroup to read");
             Unmeasured::Gone
@@ -950,12 +950,14 @@ impl PaneHomes {
     ///
     /// # Errors
     ///
-    /// Returns [`Unmeasured`] for the three reasons a pane has no leaf, which are the same three
+    /// Returns [`Unmeasured`] for the reasons a pane has no leaf, which are the same
     /// [`charge`](Self::charge) answers and mean the same things. A write the kernel refused is NOT
-    /// among them: it comes back in the reading, per-control, which is finer than a failure.
-    pub fn grant(&self, at: Option<PaneLineage>, grant: Grant) -> Result<Granted, Unmeasured> {
+    /// among them: it comes back in the reading, per-control, which is finer than a failure —
+    /// [`Unmeasured::Refused`] is the kernel refusing the pane's CHILD at its birth, which is a
+    /// different event and leaves no leaf to write to at all.
+    pub fn grant(&self, at: Landing, grant: Grant) -> Result<Granted, Unmeasured> {
         let tree = self.tree.as_ref().ok_or(Unmeasured::NothingEnforced)?;
-        let at = at.ok_or(Unmeasured::NotPlaced)?;
+        let at = at.measurable()?;
         // Logged and NOT propagated, for the reason above: `grant` fails per-control, and each of
         // those failures is a value the reading below carries. Failing here would replace three
         // specific answers with one vague one.
@@ -972,16 +974,16 @@ impl PaneHomes {
     /// there is nothing to read.
     ///
     /// [`charge`](Self::charge)'s twin, taking the placement ANSWER for the same reason and failing
-    /// in the same three ways: a grant read at an address a pane was never put at would report
-    /// somebody else's ceilings under this pane's id.
+    /// in the same ways: a grant read at an address a pane was never put at would report somebody
+    /// else's ceilings under this pane's id.
     ///
     /// # Errors
     ///
-    /// Returns [`Unmeasured`], which is a state and not a fault — two of its three arms are ordinary
-    /// on hosts this product supports.
-    pub fn granted(&self, at: Option<PaneLineage>) -> Result<Granted, Unmeasured> {
+    /// Returns [`Unmeasured`], which is a state and not a fault — three of its four arms are
+    /// ordinary on hosts this product supports.
+    pub fn granted(&self, at: Landing) -> Result<Granted, Unmeasured> {
         let tree = self.tree.as_ref().ok_or(Unmeasured::NothingEnforced)?;
-        let at = at.ok_or(Unmeasured::NotPlaced)?;
+        let at = at.measurable()?;
         tree.granted(at).map_err(|error| {
             tracing::debug!(%error, pane = at.pane.0, "a placed pane had no grant to read");
             Unmeasured::Gone
@@ -1474,11 +1476,21 @@ pub enum Counted {
     NoController,
 }
 
-/// Why a pane has no reading — three states, each of which a person acts on differently.
+crate::closed_set! {
+/// Why a pane has no reading — four states, each of which a person acts on differently.
 ///
-/// Not an absence and not an error: two of the three are ordinary on hosts this product supports,
+/// Not an absence and not an error: three of the four are ordinary on hosts this product supports,
 /// and the whole point of separating them is that *nothing on this machine is measured* and *this
 /// one pane is not* send a reader in opposite directions. [`Enforcement`]'s rule, one layer out.
+///
+/// # Why it is a CLOSED SET and what that fixed
+///
+/// A surface answering this type must answer all of it: a mouth that renders three reasons and
+/// falls silent on the fourth is how a person learns to distrust the row. Every such surface used
+/// to hold its own hand-written list of the arms, and when R342 added
+/// [`Refused`](Self::Refused) the agent mouth's list simply did not mention it — the arm reached a
+/// screen with no test naming what it said. `ALL` is generated from the variant list below, so
+/// there is nowhere for a fifth reason to hide from the surfaces that must speak it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Unmeasured {
@@ -1487,15 +1499,37 @@ pub enum Unmeasured {
     /// A fact about the machine rather than about the pane — the state [`Enforcement::probe`]
     /// describes, and the state every rival multiplexer measured so far is in permanently.
     NothingEnforced,
-    /// The daemon does place panes, and this one is not placed: its placement failed at its birth,
-    /// and it has been running unweighted ever since.
+    /// The daemon does place panes, and this one is not placed: nothing was opened for it, and it
+    /// has been running unweighted ever since.
     ///
     /// Distinct from the arm above precisely because it is actionable — one pane out of eight
     /// answering this is a fault to look at, and the daemon logged it when it happened.
     NotPlaced,
+    /// A cgroup WAS opened for this pane and the kernel would not let its child in, for the reason
+    /// carried here.
+    ///
+    /// # Why this is not [`NotPlaced`](Self::NotPlaced), which is what it used to answer
+    ///
+    /// The two are different people's problems and the difference is not visible from the pane.
+    /// `NotPlaced` says *this daemon did not try*, and the reader's next move is to look at the
+    /// daemon — a window with no home, a leaf that could not be created. This says *this daemon
+    /// tried and the KERNEL said no*, and the reader's next move is not in this daemon at all: on
+    /// the host where it was first measured (GitHub's Linux runner) the answer is `EACCES` for
+    /// every pane, and no amount of configuring sprag changes it.
+    ///
+    /// Collapsing them cost this project a whole round. `PaneHomes::open` succeeded, so eleven
+    /// panes were recorded as placed and were not; when R341 made the birth answer the JOIN, they
+    /// became honest and became indistinguishable from a pane nobody had tried to place. This is
+    /// the arm that was missing, and it is the project's own rule that an absence carries its
+    /// reason.
+    ///
+    /// The sample `ALL` carries is `EACCES`, which is the errno every host that does this in
+    /// practice answers with.
+    Refused(Refusal) = (Refusal::from_errno(13)),
     /// It has a cgroup and the read did not land, which in practice means the pane ended between
     /// the walk that listed it and the read that would have measured it.
     Gone,
+}
 }
 
 impl std::fmt::Display for Unmeasured {
@@ -1505,7 +1539,115 @@ impl std::fmt::Display for Unmeasured {
                 f.write_str("this daemon holds no cgroup subtree, so no pane is measured")
             }
             Self::NotPlaced => f.write_str("this pane was never placed in a cgroup of its own"),
+            Self::Refused(why) => {
+                write!(
+                    f,
+                    "the kernel would not admit this pane to its cgroup: {why}"
+                )
+            }
             Self::Gone => f.write_str("this pane's cgroup is gone"),
+        }
+    }
+}
+
+/// The reason the kernel gave for refusing to admit a pane's child to its cgroup.
+///
+/// The errno and nothing else. It is not an [`std::io::Error`] because this crosses the wire, is
+/// compared in tests and is stored on a pane — none of which that type does — and because the
+/// errno is the whole of what the kernel said: the write of `"0"` to `cgroup.procs` either lands or
+/// comes back with a number, and there is no message beneath it to lose.
+///
+/// # What the number usually is, and why the check that produces it surprises people
+///
+/// `EACCES`. cgroup v2's delegation containment rule is checked at the WRITE and compares the
+/// writer's own cgroup against the destination's — a non-root writer needs write access to the
+/// `cgroup.procs` of the common ancestor of where the process IS and where it is going. Opening the
+/// destination tests the permissions on one file and says nothing about that, so a descriptor opens
+/// cleanly on hosts where every migration is then refused. Rendered through
+/// [`Display`](std::fmt::Display) it reads as the kernel's own sentence, which is what a person
+/// needs in order to recognise it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Refusal(i32);
+
+impl Refusal {
+    /// The refusal the kernel signalled with `errno`.
+    #[must_use]
+    pub const fn from_errno(errno: i32) -> Self {
+        Self(errno)
+    }
+
+    /// The raw platform error number, for a caller that wants to compare it rather than print it.
+    #[must_use]
+    pub const fn errno(self) -> i32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::io::Error::from_raw_os_error(self.0).fmt(f)
+    }
+}
+
+/// Where a pane's processes ACTUALLY are — the answer its birth gave, and the one thing every
+/// resource reading has to be taken through.
+///
+/// # Why this is an enum and not an `Option<PaneLineage>`
+///
+/// It carries the same lineage the option did plus the reason there is none, and the reason is not
+/// recoverable afterwards: the kernel refuses the migration at the instant of the birth, and a
+/// process that is running in the daemon's cgroup looks identical whether it was never offered a
+/// leaf or was turned away from one. Holding the refusal beside the lineage in two fields would let
+/// them disagree — a pane both placed and refused is a state nothing should be able to spell — so
+/// they are one value with three arms.
+///
+/// Every arm is ORDINARY on some host this product supports, which is why this is not an error:
+/// [`Unplaced`](Self::Unplaced) is every pane on macOS and on a daemon systemd would not delegate
+/// to, and [`Refused`](Self::Refused) is every pane on a host whose daemon sits outside the subtree
+/// it was given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Landing {
+    /// No cgroup was opened for this pane, so its processes are in the daemon's own.
+    #[default]
+    Unplaced,
+    /// The child was in this leaf before its first instruction.
+    At(PaneLineage),
+    /// A leaf was opened and the kernel would not admit the child to it.
+    Refused(Refusal),
+}
+
+impl Landing {
+    /// The leaf to read this pane through, or the reason there is not one.
+    ///
+    /// ONE match, and every reader of a placement goes through it — the reason
+    /// [`PaneHomes::charge`], [`grant`](PaneHomes::grant) and [`granted`](PaneHomes::granted) all
+    /// take the placement rather than an address. Three matches would be three chances to answer
+    /// [`Unmeasured::NotPlaced`] about a pane the kernel actually refused, which is the sentence
+    /// this type exists to stop being printed.
+    ///
+    /// # Errors
+    ///
+    /// [`Unmeasured::NotPlaced`] or [`Unmeasured::Refused`], which are states and not faults.
+    pub const fn measurable(self) -> Result<PaneLineage, Unmeasured> {
+        match self {
+            Self::At(lineage) => Ok(lineage),
+            Self::Unplaced => Err(Unmeasured::NotPlaced),
+            Self::Refused(why) => Err(Unmeasured::Refused(why)),
+        }
+    }
+
+    /// The leaf a pane is in, for the callers that MOVE a pane rather than measure it.
+    ///
+    /// A refusal and an absence are one answer here on purpose: [`Workspace::adopt`] migrates
+    /// processes OUT of a source cgroup, and there is nothing to migrate out of in either case.
+    ///
+    /// [`Workspace::adopt`]: crate::workspace::Workspace::adopt
+    #[must_use]
+    pub const fn leaf(self) -> Option<PaneLineage> {
+        match self {
+            Self::At(lineage) => Some(lineage),
+            Self::Unplaced | Self::Refused(_) => None,
         }
     }
 }
@@ -2612,25 +2754,38 @@ mod tests {
         let tree = Tree::adopt(fs.root.clone()).expect("adopt");
         let homes = PaneHomes::over(tree);
         assert_eq!(
-            homes.grant(None, Grant::even(Limits::UNCAPPED)),
+            homes.grant(Landing::Unplaced, Grant::even(Limits::UNCAPPED)),
             Err(Unmeasured::NotPlaced),
         );
         assert_eq!(
-            PaneHomes::none().grant(Some(address(1, 1, 7)), Grant::even(Limits::UNCAPPED)),
+            PaneHomes::none().grant(Landing::At(address(1, 1, 7)), Grant::even(Limits::UNCAPPED)),
             Err(Unmeasured::NothingEnforced),
             "a machine that enforces nothing outranks any one pane's placement",
         );
-        // The READING door answers the same two, which is what lets one row of `sprag resources`
+        // The READING door answers the same ones, which is what lets one row of `sprag resources`
         // say why it has no grant without the caller knowing which door failed.
-        assert_eq!(homes.granted(None), Err(Unmeasured::NotPlaced));
+        assert_eq!(homes.granted(Landing::Unplaced), Err(Unmeasured::NotPlaced));
         assert_eq!(
-            PaneHomes::none().granted(Some(address(1, 1, 7))),
+            PaneHomes::none().granted(Landing::At(address(1, 1, 7))),
             Err(Unmeasured::NothingEnforced),
         );
-        // And a pane that WAS placed and whose leaf is gone is the third, distinct from both — the
+        // And a pane that WAS placed and whose leaf is gone is another, distinct from both — the
         // ordinary race where a pane ends between the walk that listed it and the read.
         let at = address(9, 9, 9);
-        assert_eq!(homes.granted(Some(at)), Err(Unmeasured::Gone));
+        assert_eq!(homes.granted(Landing::At(at)), Err(Unmeasured::Gone));
+        // ⚠ AND BOTH DOORS CARRY THE KERNEL'S REFUSAL THROUGH. A person who asks a refused pane
+        // for a ceiling is told the kernel would not admit it, not that nobody tried: it is the
+        // one absence whose remedy is outside this daemon entirely, so it is the one a person
+        // most needs spelled. Both doors, because they have separate `?`s.
+        let refused = Landing::Refused(Refusal::from_errno(13));
+        assert_eq!(
+            homes.grant(refused, Grant::even(Limits::UNCAPPED)),
+            Err(Unmeasured::Refused(Refusal::from_errno(13))),
+        );
+        assert_eq!(
+            homes.granted(refused),
+            Err(Unmeasured::Refused(Refusal::from_errno(13))),
+        );
     }
 
     #[test]
@@ -2825,12 +2980,12 @@ mod tests {
     /// differently: a whole machine that enforces nothing, one pane that failed to be placed, and a
     /// pane that ended while it was being read.
     #[test]
-    fn a_pane_with_no_reading_says_which_of_the_three_reasons_it_is() {
+    fn a_pane_with_no_reading_says_which_of_the_four_reasons_it_is() {
         let fs = FakeCgroupFs::new("charge-absent");
         let at = address(1, 1, 1);
 
         assert_eq!(
-            PaneHomes::none().charge(Some(at)),
+            PaneHomes::none().charge(Landing::At(at)),
             Err(Unmeasured::NothingEnforced),
             "a daemon with no subtree measures nothing, and that is about the machine"
         );
@@ -2840,7 +2995,7 @@ mod tests {
         // measured, when reversing the two questions left the test above GREEN while every pane on
         // such a host started reporting a placement fault of its own.
         assert_eq!(
-            PaneHomes::none().charge(None),
+            PaneHomes::none().charge(Landing::Unplaced),
             Err(Unmeasured::NothingEnforced),
             "the machine's reason outranks the pane's: a host that places nothing must not report \
              every pane as one that failed to be placed"
@@ -2850,14 +3005,59 @@ mod tests {
             root: fs.root.clone(),
         });
         assert_eq!(
-            homes.charge(None),
+            homes.charge(Landing::Unplaced),
             Err(Unmeasured::NotPlaced),
             "a daemon that DOES place panes and did not place this one is a fault to look at"
         );
         assert_eq!(
-            homes.charge(Some(at)),
+            homes.charge(Landing::At(at)),
             Err(Unmeasured::Gone),
             "a pane whose leaf is not there ended between the walk and the read"
+        );
+        // ⚠ THE FOURTH, and the one that had no spelling until this round: the daemon placed
+        // panes, it tried to place THIS one, and the kernel turned its child away. Every pane on
+        // GitHub's Linux runner is in this state, where the three above would have called it a
+        // placement this daemon never attempted and sent the reader hunting the wrong fault.
+        assert_eq!(
+            homes.charge(Landing::Refused(Refusal::from_errno(13))),
+            Err(Unmeasured::Refused(Refusal::from_errno(13))),
+            "a refusal is the kernel's answer and it is carried, not flattened into an absence"
+        );
+    }
+
+    /// Every reason says something, and something DIFFERENT — the one source both mouths render.
+    ///
+    /// `sprag resources` prints `{reason}` and nothing else, and the MCP tool renders the same
+    /// `Display`, so this is where a silent or duplicated arm would reach a person. Driven from
+    /// `ALL` rather than a list retyped here: the hand-written version of this claim on the agent
+    /// surface is what let the fourth reason ship untested.
+    #[test]
+    fn every_reason_a_pane_has_no_reading_says_its_own_sentence() {
+        let said: Vec<String> = Unmeasured::ALL
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        for (reason, sentence) in Unmeasured::ALL.iter().zip(&said) {
+            assert!(
+                !sentence.is_empty(),
+                "{reason:?} renders as nothing, and a blank row is what these arms exist to \
+                 prevent",
+            );
+            assert_eq!(
+                said.iter().filter(|other| *other == sentence).count(),
+                1,
+                "{reason:?} says the same thing as another reason ({sentence:?}), so a person \
+                 cannot act on the difference the arms were split for",
+            );
+        }
+        // And the refusal carries the KERNEL'S words, which is the whole of what a person on such
+        // a host has to go on. Not merely "different from its neighbours" — the errno itself.
+        assert!(
+            Unmeasured::Refused(Refusal::from_errno(13))
+                .to_string()
+                .contains("Permission denied"),
+            "a refusal prints what the kernel said: {}",
+            Unmeasured::Refused(Refusal::from_errno(13)),
         );
     }
 

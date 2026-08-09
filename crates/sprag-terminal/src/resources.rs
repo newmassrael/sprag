@@ -422,7 +422,8 @@ mod tests {
             .panes()
             .iter()
             .find(|held| held.id() == pane)
-            .and_then(crate::workspace::Pane::home)
+            .map(crate::workspace::Pane::home)
+            .and_then(crate::share::Landing::leaf)
             .expect("the pane was placed, or this test measures the unplaced path instead");
         let leaf = root.join(home.relative());
 

@@ -36,7 +36,7 @@ use crate::pane_pty::{
     Attention, CommandBuilder, PaneExit, PaneHooks, PanePty, PanePtyError, PanePtyHandle,
 };
 use crate::remote::SshRemote;
-use crate::share::{PaneHomes, PaneLineage, PoolLineage};
+use crate::share::{Landing, PaneHomes, PaneLineage, PoolLineage};
 
 /// A stable, monotonic identifier for a pane within a [`Workspace`].
 ///
@@ -105,12 +105,19 @@ pub struct Pane {
     /// agent-opened pane whose opener has closed is closable by no agent under either rule, and only
     /// a person's `sprag kill-pane` removes it. Keeping the id at least says WHO to ask.
     opened_by: Option<PaneId>,
-    /// Which cgroup this pane's processes ARE in, as the three ids that spell it — `None` for a
-    /// pane that was never placed (no window, nothing to enforce, a placement that failed, or a
-    /// join the kernel refused).
+    /// Which cgroup this pane's processes ARE in, as the three ids that spell it — or WHY there is
+    /// no such cgroup, which is two different answers and not one.
     ///
     /// It is the ANSWER to the placement and not the address the placement would have used; see
     /// [`Workspace::landed_home`] for what that distinction buys and which half of it was missing.
+    ///
+    /// # Why the absence is a reason and not a `None`
+    ///
+    /// R341 made this the join rather than the descriptor, which was right and left every pane on a
+    /// refusing host answering *never placed* — true of the outcome and wrong about the cause. A
+    /// person reading it went looking for a fault in a daemon that had done everything correctly,
+    /// and the kernel's own sentence, which names the real one, had already been read and thrown
+    /// away four lines earlier. [`Landing`] is that sentence kept.
     ///
     /// # Why the pane holds this and the sweep holds nothing
     ///
@@ -120,7 +127,7 @@ pub struct Pane {
     /// cannot answer it once the pane has moved: `/proc/<pid>/cgroup` says where the processes are,
     /// which is exactly the stale answer a move has to correct. So the pane carries its own address,
     /// written at the two births and re-written by the one [`adopt`](Workspace::adopt) that moves it.
-    home: Option<PaneLineage>,
+    home: Landing,
     /// What a person said about THIS pane's resources in particular, `None` for a pane nobody has
     /// singled out — which is every pane until somebody says otherwise.
     ///
@@ -206,12 +213,12 @@ impl Pane {
         self.opened_by
     }
 
-    /// Which cgroup this pane's processes ARE in, `None` for a pane that was never placed. See the
+    /// Which cgroup this pane's processes ARE in, or why there is none. See the
     /// [field](Self::home) for why this is the placement's answer rather than its address — which
     /// is what makes it the right thing to MEASURE through, since a reading taken at an address the
     /// pane was never put at would report somebody else's numbers under this pane's id.
     #[must_use]
-    pub fn home(&self) -> Option<PaneLineage> {
+    pub fn home(&self) -> Landing {
         self.home
     }
 
@@ -947,18 +954,31 @@ impl Workspace {
         clippy::unused_self,
         reason = "the `cfg(not(unix))` arm uses neither field"
     )]
-    fn landed_home(&self, id: PaneId, pty: &PanePty) -> Option<PaneLineage> {
+    fn landed_home(&self, id: PaneId, pty: &PanePty) -> Landing {
         #[cfg(unix)]
         {
             match pty.joined() {
-                crate::pty::Joined::Joined => self.lineage(id),
-                crate::pty::Joined::NotAsked | crate::pty::Joined::Refused(_) => None,
+                // `lineage` is `None` for a pane whose pool has no window home, which is a pane
+                // nothing was opened for — so the join cannot have been asked, let alone answered.
+                crate::pty::Joined::Joined => {
+                    self.lineage(id).map_or(Landing::Unplaced, Landing::At)
+                }
+                crate::pty::Joined::NotAsked => Landing::Unplaced,
+                // The errno the CHILD reported, kept rather than reduced to an absence: it is the
+                // only account of the refusal that will ever exist, the kernel does not record it
+                // anywhere a later read could find, and it is what tells a person the fault is not
+                // in this daemon. `raw_os_error` is `Some` by construction — `Pty::heard` builds
+                // this error with `from_raw_os_error` and nothing else constructs the arm — and the
+                // fallback spells the impossible case rather than unwrapping it.
+                crate::pty::Joined::Refused(error) => Landing::Refused(crate::Refusal::from_errno(
+                    error.raw_os_error().unwrap_or_default(),
+                )),
             }
         }
         #[cfg(not(unix))]
         {
             let _ = (id, pty);
-            None
+            Landing::Unplaced
         }
     }
 
@@ -1077,12 +1097,28 @@ impl Workspace {
         let arriving = self.lineage(pane.id);
         // Both halves have to be known: a pane arriving from a pool that never had a window has no
         // cgroup to move out of, and a pool with no window of its own has none to move it into.
-        if let (Some(from), Some(to)) = (pane.home, arriving) {
-            // The pane's OWN grant travels with it, and `None` is the answer for the pane nobody has
-            // singled out — see the field for why the kernel cannot supply this bit.
-            self.homes.relocate(from, to, pane.grant);
+        //
+        // ⚠ AND THE PANE'S ANSWER FOLLOWS THE MOVE THAT HAPPENED, not the one that was available.
+        // Assigning the destination unconditionally — which is what shipped — told a pane that had
+        // never been in a cgroup that it was now in one, on the strength of a `relocate` that the
+        // same condition had just declined to call. That is the defect `home` was made the join's
+        // answer to remove (R341), one layer up: an address recorded for processes that are not at
+        // it. A pane the kernel refused keeps the refusal, because refusing to move a process the
+        // kernel would not admit in the first place is not a move.
+        match (pane.home.leaf(), arriving) {
+            (Some(from), Some(to)) => {
+                // The pane's OWN grant travels with it, and `None` is the answer for the pane
+                // nobody has singled out — see the field for why the kernel cannot supply this bit.
+                self.homes.relocate(from, to, pane.grant);
+                pane.home = Landing::At(to);
+            }
+            // A pool with no window of its own has nowhere to move it into, so nothing moved and
+            // the processes are still where they were. Recording the destination here would name a
+            // leaf that was never made.
+            (Some(_), None) => {}
+            // Nothing to move out of: the birth's answer stands, whichever of the two it was.
+            (None, _) => {}
         }
-        pane.home = arriving;
         self.panes.push(pane);
     }
 
@@ -1293,17 +1329,22 @@ mod tests {
         );
 
         assert!(
-            pool.pane(admitted)
-                .expect("the admitted pane")
-                .home()
-                .is_some(),
+            matches!(
+                pool.pane(admitted).expect("the admitted pane").home(),
+                Landing::At(_),
+            ),
             "a pane whose cgroup took it records where it is",
         );
+        // ⚠ `Refused` AND NOT MERELY "no leaf". The weaker assertion — that the pane claims no
+        // address — is the one R341 shipped, and it is satisfied by throwing the kernel's answer
+        // away, which is what shipped with it. This is the same claim plus the reason, and the
+        // reason is the whole of what a person on such a host can act on.
         assert_eq!(
             pool.pane(refused_pane).expect("the refused pane").home(),
-            None,
+            Landing::Refused(crate::Refusal::from_errno(REFUSED_ERRNO)),
             "a pane the kernel would not admit is in the DAEMON's cgroup, and must not claim a \
-             leaf of its own — every later read and every later move would be aimed at it",
+             leaf of its own — every later read and every later move would be aimed at it — but \
+             it must say WHY, or a correct daemon reads as a broken one",
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1337,12 +1378,28 @@ mod tests {
 
         assert_eq!(
             pool.pane(PaneId(7)).expect("the restored pane").home(),
-            None,
-            "a restored pane the kernel would not admit must not claim a leaf either",
+            Landing::Refused(crate::Refusal::from_errno(REFUSED_ERRNO)),
+            "a restored pane the kernel would not admit must not claim a leaf either, and must \
+             carry the same reason the spawn door does",
         );
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// What the kernel answers a write to the leaf [`a_tree_that_refuses_pane`] refuses with.
+    ///
+    /// `ENOSPC`, because that leaf is `/dev/full` and that is what the device is for. MEASURED
+    /// rather than looked up (`write` to `/dev/full` → `Some(28)`, against a control write to an
+    /// ordinary file that returned `Ok`), and pinned rather than matched loosely: a gate that
+    /// accepted any refusal at all would stay green if the errno were dropped on the way through,
+    /// which is the one thing the arm carrying it exists to prevent.
+    ///
+    /// It is NOT the errno a real refusing host gives — that is `EACCES`, from cgroup v2's
+    /// delegation containment rule. The two differ on purpose: what is being gated here is that the
+    /// KERNEL'S OWN number arrives intact, and a fixture that could only produce the number the
+    /// product hard-codes would not be able to tell.
+    #[cfg(target_os = "linux")]
+    const REFUSED_ERRNO: i32 = 28;
 
     /// A stand-in delegated root under `tag`, and a pool placing into it, where the leaf of every
     /// pane id in `refusing` opens for writing and REFUSES every write.
@@ -1450,6 +1507,53 @@ mod tests {
                 .exists(),
             "a pane that was never in a cgroup was given one by moving",
         );
+        // ⚠ AND WHAT THE PANE SAYS AFTERWARDS, which the filesystem assertion above cannot see.
+        // `adopt` used to write the destination onto every arriving pane, including one it had
+        // just declined to relocate — so this pane claimed a leaf that the line above proves was
+        // never created, and the next reading of it would have gone looking there. Measured: with
+        // the destination assigned unconditionally the filesystem claim stays GREEN and only this
+        // one moves, which is why both are here.
+        assert_eq!(
+            destination.pane(id).expect("the moved pane").home(),
+            Landing::Unplaced,
+            "a pane nothing was opened for is still a pane nothing was opened for after a move",
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **And a REFUSED pane keeps the kernel's reason across a move.**
+    ///
+    /// The same claim as the test above with the other absence, and it is not the same test: the
+    /// two arrive at `adopt` through different arms and the reason is what distinguishes them. A
+    /// move that flattened a refusal into *unplaced* would lose the one fact a person on such a
+    /// host can act on, at the moment they are most likely to be acting — pulling a pane into its
+    /// own window is what somebody does when they are trying to contain it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pane_the_kernel_refused_still_says_so_after_it_moves() {
+        let (root, mut origin) = a_tree_that_refuses_pane("adopted", &[0]);
+        let id = origin.spawn(cmd(), "sh".to_string(), 80, 24).expect("pane");
+        assert_eq!(
+            origin.pane(id).expect("the refused pane").home(),
+            Landing::Refused(crate::Refusal::from_errno(REFUSED_ERRNO)),
+            "the fixture refused this pane's leaf, or the move below proves nothing",
+        );
+
+        let taken = origin.close(id).expect("the pane leaves its pool");
+        let mut destination = origin.sibling();
+        destination.set_home(PoolLineage {
+            session: crate::registry::SessionId(1),
+            window: crate::registry::WindowId(2),
+        });
+        destination.adopt(taken);
+
+        assert_eq!(
+            destination.pane(id).expect("the moved pane").home(),
+            Landing::Refused(crate::Refusal::from_errno(REFUSED_ERRNO)),
+            "a move is not an admission: the kernel refused this child and nothing since has \
+             asked it again",
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

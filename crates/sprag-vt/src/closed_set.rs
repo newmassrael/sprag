@@ -50,6 +50,28 @@
 ///
 /// The generated `ALL` is a `pub const [Self; N]` where `N` is COUNTED from the variant list rather
 /// than written, so the length cannot disagree with the contents either.
+///
+/// A variant that CARRIES something declares one sample beside its field types, and that sample is
+/// what it contributes to `ALL`:
+///
+/// ```
+/// sprag_vt::closed_set! {
+///     /// Why a door would not open.
+///     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///     pub enum Refused {
+///         /// It is locked.
+///         Locked,
+///         /// The lock answered with a number.
+///         Errno(i32) = (13),
+///     }
+/// }
+/// assert_eq!(Refused::ALL, [Refused::Locked, Refused::Errno(13)]);
+/// ```
+///
+/// Without this form such an enum simply has no `ALL`, which is how `sprag_terminal::Unmeasured`
+/// came to be enumerated by hand on three surfaces — and how a fourth variant added to it reached
+/// an agent's screen with no test mentioning it. A ratchet that cannot describe the type it guards
+/// is not guarding it.
 #[macro_export]
 macro_rules! closed_set {
     (
@@ -57,7 +79,7 @@ macro_rules! closed_set {
         $vis:vis enum $name:ident {
             $(
                 $(#[$vmeta:meta])*
-                $variant:ident
+                $variant:ident $( ( $($field:ty),+ $(,)? ) = ( $($sample:expr),+ $(,)? ) )?
             ),+ $(,)?
         }
     ) => {
@@ -65,7 +87,7 @@ macro_rules! closed_set {
         $vis enum $name {
             $(
                 $(#[$vmeta])*
-                $variant,
+                $variant $( ( $($field),+ ) )?,
             )+
         }
 
@@ -76,8 +98,16 @@ macro_rules! closed_set {
             /// cannot be missing a variant and its length cannot disagree with its contents. A caller
             /// that iterates this is iterating the whole type, and a ratchet built on it stays honest
             /// when a variant is added.
+            ///
+            /// # For a set with a variant that CARRIES something
+            ///
+            /// That variant contributes the SAMPLE its declaration names, so this is one value per
+            /// variant rather than every value of the type — the two are the same thing for a set of
+            /// unit variants and are not for the other kind. It is still the total the ratchets
+            /// want: what they ask is *does every variant have a reader*, and a variant that
+            /// carries a payload answers that question with any one inhabitant.
             pub const ALL: [Self; $crate::closed_set!(@count $($variant)+)] = [
-                $(Self::$variant,)+
+                $(Self::$variant $( ( $($sample),+ ) )?,)+
             ];
         }
     };
@@ -127,6 +157,37 @@ mod tests {
                 "{variant:?} appears once in ALL",
             );
         }
+    }
+
+    crate::closed_set! {
+        /// A set where one variant CARRIES something — the form `sprag_terminal::Unmeasured` needs.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Mixed {
+            /// Nothing to say.
+            Silent,
+            /// The kernel said a number.
+            Errno(i32) = (13),
+            /// Two of them.
+            Pair(u8, u8) = (1, 2),
+        }
+    }
+
+    /// A carrying variant is in `ALL` like any other, holding the sample its declaration names.
+    ///
+    /// The property that matters is the LENGTH: before this form existed, such an enum could have
+    /// no `ALL` at all, so every surface that wanted "each reason" wrote the list again by hand and
+    /// a new variant was added to none of them.
+    #[test]
+    fn a_variant_that_carries_something_is_still_in_all() {
+        assert_eq!(
+            Mixed::ALL,
+            [Mixed::Silent, Mixed::Errno(13), Mixed::Pair(1, 2)],
+        );
+        assert_eq!(
+            Mixed::ALL.len(),
+            3,
+            "counted from the variant list, as ever"
+        );
     }
 
     /// Docs and attributes survive, so a closed set reads as the enum it is.

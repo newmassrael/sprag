@@ -74,9 +74,9 @@ pub use resources::{Cpu, PaneResourceReading, PaneResourceSampler, PaneResources
 pub use sampled::{Reading, Sampled};
 pub use session_name::{SessionName, SessionNameError};
 pub use share::{
-    Ceiling, CgroupNode, Charge, Counted, Enforcement, Grant, Granted, LimitSource, Limits,
-    PaneHomes, PaneLineage, Percent, Placement, PoolLineage, Pressure, Share, ShareError, Tree,
-    TreeError, Unenforceable, Unmeasured, Waiting, mount_point,
+    Ceiling, CgroupNode, Charge, Counted, Enforcement, Grant, Granted, Landing, LimitSource,
+    Limits, PaneHomes, PaneLineage, Percent, Placement, PoolLineage, Pressure, Refusal, Share,
+    ShareError, Tree, TreeError, Unenforceable, Unmeasured, Waiting, mount_point,
 };
 pub use snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneHistory, PaneRestore, PaneSnapshot, RestorePlan,
