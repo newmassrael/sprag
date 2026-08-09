@@ -434,7 +434,26 @@ impl ScopeAsk {
 ///   The other direction is refused by number for version 12's reason: an old client never sends
 ///   either key and a new daemon treats their absence as the behaviour it already had, but a new
 ///   client that sent them and was ignored would report a quiet window that is not quiet.
-pub const WIRE_PROTOCOL: u32 = 17;
+/// * **18** — a pane can say the KERNEL refused to admit it, and the machine report can say the
+///   panes never got into their cgroups (`sprag_terminal::Unmeasured::Refused`,
+///   `sprag_terminal::Check::PaneAdmission`, R342).
+///
+///   ⚠ **THE FIRST BUMP CAUSED BY AN ANSWER'S VALUE SPACE RATHER THAN BY A NAME.** Every version
+///   above moved for an added argument, an added method or a changed meaning — things the
+///   surface pin in `sprag_host::wire` can see, because they are ADDRESSES. This one adds no
+///   address and renames nothing: two enums that a client decodes WHOLE each gained an arm, so
+///   the daemon can now answer a word that is inside the type's meaning and outside an older
+///   build's copy of it. serde rejects an unknown variant outright, so the failure is not a
+///   missing field a reader can default — it is the whole answer failing to parse.
+///   Measured both directions against stand-in decoders of the previous shape:
+///   `sprag doctor`'s report and `sprag resources`' rows each parse under this build and are
+///   REFUSED by the older one, naming the variant.
+///
+///   The other direction is safe and stays safe: an old daemon simply never produces either word,
+///   so a new client decoding its answer meets only arms it already had. That asymmetry is why
+///   this is a version and not a capability check — the break is in the ANSWER, where a client has
+///   nothing to negotiate with.
+pub const WIRE_PROTOCOL: u32 = 18;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

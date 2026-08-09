@@ -5342,6 +5342,167 @@ mod tests {
         }
     }
 
+    /// ⚠⚠ THE VALUE-SPACE PIN — the half of the wire the surface pin above is BLIND to.
+    ///
+    /// [`PINNED_SURFACE`] compares the ADDRESSES the daemon serves, and the shape pin renders one
+    /// canonical value of each type a client decodes. Neither can see an enum GAINING AN ARM: no
+    /// address moves, and every canonical value it already rendered still renders byte-identically.
+    /// R342 added `Unmeasured::Refused` and `Check::PaneAdmission`, ran the entire suite, and it
+    /// went green — while a `sprag` built the day before could no longer parse either answer.
+    ///
+    /// # Why an added arm is a BREAK where an added key is not
+    ///
+    /// An added answer KEY is absent-not-wrong to an old reader: it reads the keys it knows and
+    /// ignores the rest. An added VARIANT is not, because serde has nowhere to put it — a decoder
+    /// meeting `"pane-admission"` for a three-armed enum fails the whole document, so one refused
+    /// pane on one host turns `sprag doctor` into a parse error rather than a row nobody reads.
+    ///
+    /// # What this asserts
+    ///
+    /// The two closed sets a client decodes WHOLE, pinned by their serialised words. The list is
+    /// derived from `ALL` on both — a hand-typed list is the one a new arm is left out of, which is
+    /// the defect this pin exists for and would be an absurd way to build it.
+    #[test]
+    fn an_answers_value_space_cannot_widen_under_the_protocol_number() {
+        const PINNED_VALUES: (u32, &[&str]) = (
+            18,
+            &[
+                "check:pane-isolation",
+                "check:pane-admission",
+                "check:controller-delegation",
+                "check:competing-weight",
+                "check:cpu-stall",
+                "check:io-stall",
+                "check:memory-stall",
+                "check:swapping",
+                "check:build-saturation",
+                "check:ccache-on-path",
+                "check:ccache-sizing",
+                "check:fast-linker",
+                "unmeasured:nothing_enforced",
+                "unmeasured:not_placed",
+                "unmeasured:refused",
+                "unmeasured:gone",
+            ],
+        );
+
+        // The serialised WORD of each arm. A unit variant renders as its string; a carrying one
+        // renders as a one-key object, and the key is the word an older decoder would reject.
+        fn word(value: &serde_json::Value) -> String {
+            match value {
+                serde_json::Value::String(name) => name.clone(),
+                serde_json::Value::Object(map) => map
+                    .keys()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "<empty object>".to_owned()),
+                other => format!("<not a variant: {other}>"),
+            }
+        }
+
+        let mut served: Vec<String> = sprag_terminal::Check::ALL
+            .iter()
+            .map(|check| {
+                format!(
+                    "check:{}",
+                    word(&serde_json::to_value(check).expect("render"))
+                )
+            })
+            .chain(sprag_terminal::Unmeasured::ALL.iter().map(|reason| {
+                format!(
+                    "unmeasured:{}",
+                    word(&serde_json::to_value(reason).expect("render"))
+                )
+            }))
+            .collect();
+        let mut pinned: Vec<String> = PINNED_VALUES.1.iter().map(|n| (*n).to_owned()).collect();
+        served.sort_unstable();
+        pinned.sort_unstable();
+        assert_eq!(
+            served, pinned,
+            "AN ANSWER'S VALUE SPACE MOVED. A peer that decodes one of these enums whole cannot \
+             read a word it does not have, and serde fails the whole document rather than the \
+             field. An arm ADDED breaks OLDER READERS of the answer (the number must rise); an arm \
+             REMOVED or RENAMED breaks them too. Update this pin and \
+             sprag_rpc::WIRE_PROTOCOL together.",
+        );
+        assert_eq!(
+            PINNED_VALUES.0,
+            sprag_rpc::WIRE_PROTOCOL,
+            "THE PROTOCOL NUMBER MOVED WITH EVERY VALUE SPACE UNCHANGED — legitimate when some \
+             other part of the wire moved, and a mistake when this pin was simply not re-stamped.",
+        );
+    }
+
+    /// ⚠ And the pin above is only worth its words if an older decoder REALLY refuses. Measured.
+    ///
+    /// Stand-ins for the two enums as a build one commit older declares them — same serde
+    /// attributes, one arm short. This is the claim `WIRE_PROTOCOL` 18 rests on, and it is the kind
+    /// of claim this project has twice found to be false when it finally ran it: the surface pin's
+    /// own docs record that reverting the number left the whole suite green.
+    #[test]
+    fn a_reader_of_the_previous_shape_cannot_parse_the_new_words() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        #[allow(dead_code, reason = "only its parse is exercised")]
+        enum CheckBefore {
+            PaneIsolation,
+            ControllerDelegation,
+            CompetingWeight,
+            CpuStall,
+            IoStall,
+            MemoryStall,
+            Swapping,
+            BuildSaturation,
+            CcacheOnPath,
+            CcacheSizing,
+            FastLinker,
+        }
+
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        #[allow(dead_code, reason = "only its parse is exercised")]
+        enum UnmeasuredBefore {
+            NothingEnforced,
+            NotPlaced,
+            Gone,
+        }
+
+        // THE CONTROL FIRST: the old shape reads every word it always could, so a refusal below is
+        // the new arm and not a broken stand-in.
+        for (word, what) in [("pane-isolation", "a check"), ("cpu-stall", "another")] {
+            assert!(
+                serde_json::from_value::<CheckBefore>(json!(word)).is_ok(),
+                "the stand-in still reads {what} it always read: {word}",
+            );
+        }
+        assert!(serde_json::from_value::<UnmeasuredBefore>(json!("not_placed")).is_ok());
+
+        let refused = serde_json::from_value::<CheckBefore>(json!("pane-admission")).unwrap_err();
+        assert!(
+            refused.to_string().contains("pane-admission"),
+            "an older reader fails on the new check, naming it: {refused}",
+        );
+        let refused =
+            serde_json::from_value::<UnmeasuredBefore>(json!({"refused": 13})).unwrap_err();
+        assert!(
+            refused.to_string().contains("refused"),
+            "and on the new reason: {refused}",
+        );
+
+        // And THIS build reads both, which is the other half of a skew claim.
+        assert_eq!(
+            serde_json::from_value::<sprag_terminal::Check>(json!("pane-admission"))
+                .expect("this build reads its own word"),
+            sprag_terminal::Check::PaneAdmission,
+        );
+        assert_eq!(
+            serde_json::from_value::<sprag_terminal::Unmeasured>(json!({"refused": 13}))
+                .expect("this build reads its own word"),
+            sprag_terminal::Unmeasured::Refused(sprag_terminal::Refusal::from_errno(13)),
+        );
+    }
+
     /// What a failing shape pin has to say, since the person reading it is the one who moved the
     /// shape and is the only one who can decide the number.
     const BUMP: &str = "THE WIRE SHAPE CHANGED. An older peer cannot read this, and it will find \
@@ -5402,7 +5563,7 @@ mod tests {
     /// name (`UnknownIntrospectPath`, which every client renders as skew), and an older client never
     /// asks. The pin is what turned that from an argument into a measurement.
     const PINNED_SURFACE: (u32, &[&str]) = (
-        17,
+        18,
         &[
             "agent_manifests",
             "application_cursor_keys",
