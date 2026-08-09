@@ -7011,8 +7011,22 @@ fn every_acting_verb_explains_a_daemon_that_does_not_know_its_verb() {
     // NOT IN THE LIST, and the reason is a property worth pinning rather than an omission:
     // `set-option` writes the user's `config.toml` and never asks the daemon at all, so it is the
     // one verb that reads as an act and cannot meet this skew. It succeeds here, which is correct.
+    //
+    // ⚠ IT GETS A CONFIG HOME OF ITS OWN, and that is not tidiness. This line ran against the
+    // AMBIENT one, so `cargo test` wrote `window-size = "manual"` into the config file of whoever
+    // ran the suite — measured: one run of this test alone creates `$XDG_CONFIG_HOME/sprag/
+    // config.toml`, and with the variable unset that is `~/.config/sprag/config.toml`. It is how
+    // this developer's own file came to exist, which is in turn how a unit test of `resize_window`
+    // came to be gated against a policy that is not the default (R341). A test that WRITES the
+    // developer's config is the other half of the rule about tests that read it.
+    let own = ConfigHome::new("");
     assert!(
-        sprag(&sock, &["set-option", "window-size", "manual"]).ok,
+        sprag_env(
+            &sock,
+            &["set-option", "window-size", "manual"],
+            &[("XDG_CONFIG_HOME", own.as_str())],
+        )
+        .ok,
         "a verb that acts on the CONFIG FILE is not a verb the daemon can be too old for",
     );
 
