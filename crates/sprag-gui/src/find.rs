@@ -401,10 +401,16 @@ fn scroll_target(line: usize, top: i32, rows: u16, max: i32) -> Option<i32> {
 
 /// The match spans to highlight on pane `pane`'s VISIBLE grid, plus the current match's own span.
 ///
-/// The mapping is the whole reason the host answers in logical lines: the view's top row IS scroll
-/// `offset_y` (the axis `prompt_positions` and this share), so a match on line `L` paints on row
-/// `L - offset_y` — and rows outside `0..rows` are simply not painted, which is how a scrolled-away
-/// match costs nothing.
+/// The mapping is the whole reason the host answers on the retained-row axis: the view's top row
+/// IS scroll `offset_y` (the axis `prompt_positions` and this share), so a match starting on row
+/// `R` paints on grid row `R - offset_y` — and rows outside `0..rows` are simply not painted,
+/// which is how a scrolled-away match costs nothing.
+///
+/// A match that crossed a soft wrap paints as SEVERAL spans, one per row it covers: `hit.row` and
+/// `hit.cols` for its head, then `hit.wrapped`, each of those starting at column 0 of the next row
+/// down. Painting only the head would leave a person looking at half a highlighted word — and the
+/// spans are clipped independently, so a match half-scrolled off the top still highlights the half
+/// that is on screen.
 pub(crate) fn visible_spans(pane: usize, top: i32, rows: u16) -> (Vec<MatchSpan>, Vec<MatchSpan>) {
     if use_find_pane().get() != Some(pane) {
         return (Vec::new(), Vec::new());
@@ -414,23 +420,27 @@ pub(crate) fn visible_spans(pane: usize, top: i32, rows: u16) -> (Vec<MatchSpan>
     let mut all = Vec::new();
     let mut on_current = Vec::new();
     for (index, hit) in matches.iter().enumerate() {
-        let Some(row) = row_of(hit.line, top, rows) else {
-            continue;
-        };
-        let span = (row, hit.col, hit.cols);
-        if index == current {
-            on_current.push(span);
+        let target = if index == current {
+            &mut on_current
         } else {
-            all.push(span);
+            &mut all
+        };
+        for (offset, (col, cols)) in std::iter::once((hit.col, hit.cols))
+            .chain(hit.wrapped.iter().map(|cols| (0, *cols)))
+            .enumerate()
+        {
+            if let Some(row) = row_of(hit.row.saturating_add(offset), top, rows) {
+                target.push((row, col, cols));
+            }
         }
     }
     (all, on_current)
 }
 
-/// The visible row logical `line` paints on for a view whose top line is `top`, or `None` when it is
-/// off-screen.
-fn row_of(line: usize, top: i32, rows: u16) -> Option<u16> {
-    let line = i64::try_from(line).unwrap_or(i64::MAX);
+/// The visible grid row that retained row `retained` paints on for a view whose top is `top`, or
+/// `None` when it is off-screen.
+fn row_of(retained: usize, top: i32, rows: u16) -> Option<u16> {
+    let line = i64::try_from(retained).unwrap_or(i64::MAX);
     let row = line - i64::from(top.max(0));
     (row >= 0 && row < i64::from(rows)).then(|| u16::try_from(row).unwrap_or(u16::MAX))
 }
@@ -531,8 +541,16 @@ mod tests {
     use sprag_terminal::{CommandBuilder, PanePtyHandle};
     use std::time::{Duration, Instant};
 
+    /// A match on a line that occupies ONE row — the ordinary case. A wrapping match is built
+    /// field by field, because `row` and `wrapped` are what such a test is about.
     fn hit(line: usize, col: u16, cols: u16) -> PaneMatch {
-        PaneMatch { line, col, cols }
+        PaneMatch {
+            line,
+            row: line,
+            col,
+            cols,
+            wrapped: Vec::new(),
+        }
     }
 
     /// A long-lived `cat` pane: it echoes what is written to it, so a test can put known text on
@@ -548,14 +566,23 @@ mod tests {
     /// Poll `handle`'s row 0 until it contains `needle`, so the search runs against text that has
     /// actually reached the emulator (not a race with the echo).
     fn wait_for_row0(handle: &PanePtyHandle, needle: &str) {
+        wait_for_row(handle, 0, needle);
+    }
+
+    /// [`wait_for_row0`] for any row — a line that WRAPS lands its tail on the row below, and
+    /// waiting on row 0 would let the search run before the continuation had arrived.
+    fn wait_for_row(handle: &PanePtyHandle, row: u16, needle: &str) {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(5) {
-            if handle.with_screen(|s| s.row_text(0)).contains(needle) {
+            if handle.with_screen(|s| s.row_text(row)).contains(needle) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("the pane never echoed {needle:?}");
+        panic!(
+            "the pane never echoed {needle:?} onto row {row}; row {row} holds {:?}",
+            handle.with_screen(|s| s.row_text(row))
+        );
     }
 
     /// The whole find bar over a REAL pane: open -> search -> navigate -> close, driven through the
@@ -637,6 +664,118 @@ mod tests {
             assert_eq!(use_find_pane().get(), None, "Escape closes the bar");
             assert!(use_find_matches().get().is_empty());
             assert_eq!(visible_spans(0, 0, 6), (Vec::new(), Vec::new()));
+        });
+    }
+
+    /// A match that crosses the pane's right edge highlights on BOTH rows — R344's point at the
+    /// surface a person actually looks at.
+    ///
+    /// The pane echoes 26 characters onto a 20-column screen, so the alphabet is one logical line
+    /// over two rows. The needle `stuvw` straddles the margin: before R344 the search answered
+    /// NOTHING for it (the two rows were searched separately and neither held it), and a bar that
+    /// painted only `hit.col`/`hit.cols` would now show half a highlighted word instead.
+    ///
+    /// Driven end to end — real pane, real host query, real signal — because the claim is about
+    /// what the person sees, and the mapping from the answer's rows to grid rows is the part that
+    /// only this surface performs.
+    #[test]
+    fn a_match_that_wraps_highlights_every_row_it_covers() {
+        let host = Host::new((20, 6));
+        let id = host
+            .spawn(
+                cat(),
+                "cat".to_owned(),
+                20,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
+            .unwrap();
+        let handle = host.pane_handle(id).expect("pane handle");
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(host);
+            let terminal = use_terminal();
+            assert!(
+                terminal.slots.send_text(0, "abcdefghijklmnopqrstuvwxyz"),
+                "seed the pane",
+            );
+            wait_for_row(&handle, 1, "uvwxyz");
+
+            use_text_edit_state(FIND_FIELD_TAG).seed("stuvw".to_owned());
+            open(0);
+
+            assert_eq!(
+                use_find_matches().get().as_slice(),
+                &[PaneMatch {
+                    line: 0,
+                    row: 0,
+                    col: 18,
+                    cols: 2,
+                    wrapped: vec![3],
+                }],
+                "one match: `st` at the end of row 0, `uvw` at the start of row 1",
+            );
+            let (others, current) = visible_spans(0, 0, 6);
+            assert_eq!(
+                current,
+                vec![(0, 18, 2), (1, 0, 3)],
+                "the current match paints on BOTH rows, the continuation from column 0",
+            );
+            assert!(others.is_empty(), "there is only the one match");
+        });
+    }
+
+    /// A match that lies wholly on a CONTINUATION row highlights on that row — not on the row its
+    /// line began on.
+    ///
+    /// The pair to [`a_match_that_wraps_highlights_every_row_it_covers`], and the case that one
+    /// structurally cannot make: there the match starts where its line does, so a client that
+    /// confused the two would paint correctly by accident. Here `line` is 0 and `row` is 1, and
+    /// they must not be swapped — which is exactly the silent misrender that made R344 a wire
+    /// PROTOCOL bump rather than an additive key, since an old client parses the new answer
+    /// perfectly and paints a row too high.
+    #[test]
+    fn a_match_below_the_wrap_highlights_its_own_row_not_its_lines() {
+        let host = Host::new((20, 6));
+        let id = host
+            .spawn(
+                cat(),
+                "cat".to_owned(),
+                20,
+                6,
+                sprag_terminal::PaneBirthHooks::default(),
+            )
+            .unwrap();
+        let handle = host.pane_handle(id).expect("pane handle");
+        let owner = Owner::new();
+        owner.run(|| {
+            seed_terminal(host);
+            let terminal = use_terminal();
+            assert!(
+                terminal.slots.send_text(0, "abcdefghijklmnopqrstuvwxyz"),
+                "seed the pane",
+            );
+            wait_for_row(&handle, 1, "uvwxyz");
+
+            use_text_edit_state(FIND_FIELD_TAG).seed("vwxyz".to_owned());
+            open(0);
+
+            assert_eq!(
+                use_find_matches().get().as_slice(),
+                &[PaneMatch {
+                    line: 0,
+                    row: 1,
+                    col: 1,
+                    cols: 5,
+                    wrapped: Vec::new(),
+                }],
+                "the match is on row 1; the LINE it belongs to began on row 0",
+            );
+            assert_eq!(
+                visible_spans(0, 0, 6).1,
+                vec![(1, 1, 5)],
+                "and it highlights on row 1 — the row it is on, not the row its line started on",
+            );
         });
     }
 
