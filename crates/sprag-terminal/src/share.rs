@@ -1566,6 +1566,11 @@ impl std::fmt::Display for Unmeasured {
 /// cleanly on hosts where every migration is then refused. Rendered through
 /// [`Display`](std::fmt::Display) it reads as the kernel's own sentence, which is what a person
 /// needs in order to recognise it.
+///
+/// There is deliberately no accessor. It is READ through [`Display`](std::fmt::Display), which both
+/// mouths use, and through [`Eq`] against a `from_errno` of the number a caller means — which is
+/// everything anybody does with it. One was written this round, nothing called it, and an answer no
+/// caller reads is the shape this project sweeps for ([`Percent`]'s own words).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Refusal(i32);
@@ -1575,12 +1580,6 @@ impl Refusal {
     #[must_use]
     pub const fn from_errno(errno: i32) -> Self {
         Self(errno)
-    }
-
-    /// The raw platform error number, for a caller that wants to compare it rather than print it.
-    #[must_use]
-    pub const fn errno(self) -> i32 {
-        self.0
     }
 }
 

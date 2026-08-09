@@ -1521,6 +1521,107 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// **A pane that IS relocated records the leaf it was moved INTO** — the projection's whole
+    /// point, and the arm the round's debt sweep found ungated by the ENTIRE suite.
+    ///
+    /// ⚠ Not a defect this round introduced: the shipped line was `pane.home = arriving`, which is
+    /// the same value by a different route, and replacing it with an absence left all 52 binaries
+    /// GREEN (measured). So the one arm of `adopt` that actually moves a pane's processes had no
+    /// assertion anywhere that the pane then says where they went — while the two arms that move
+    /// nothing acquired one each this round. That asymmetry is what the sweep is for.
+    ///
+    /// What it would cost: `home` is what a LATER `adopt` migrates out of and what every resource
+    /// reading is taken through, so a pane that forgot its new leaf would be measured at the old
+    /// one — reporting a stranger's numbers under this pane's id, or a `Gone` where the pane is
+    /// running fine — and the next move would migrate out of an empty source.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pane_that_moves_records_the_leaf_it_moved_into() {
+        let (root, mut origin) = a_tree_that_refuses_pane("relocated", &[]);
+        // The DESTINATION window's levels, which the fixture only builds for window 1.
+        for relative in ["session-1/window-2", "session-1/window-2/pane-0"] {
+            let path = root.join(relative);
+            std::fs::create_dir_all(&path).expect("fixture cgroup");
+            for (file, body) in [
+                ("cgroup.procs", ""),
+                ("cgroup.subtree_control", ""),
+                ("cgroup.controllers", "cpu memory pids\n"),
+                ("cpu.weight", "100\n"),
+            ] {
+                std::fs::write(path.join(file), body).expect("fixture file");
+            }
+        }
+
+        let id = origin.spawn(cmd(), "sh".to_string(), 80, 24).expect("pane");
+        let born = PoolLineage {
+            session: crate::registry::SessionId(1),
+            window: crate::registry::WindowId(1),
+        }
+        .pane(id);
+        assert_eq!(
+            origin.pane(id).expect("the pane").home(),
+            Landing::At(born),
+            "it starts in its birth window's leaf, or the move below proves nothing",
+        );
+
+        let taken = origin.close(id).expect("the pane leaves its pool");
+        let mut destination = origin.sibling();
+        let moved_to = PoolLineage {
+            session: crate::registry::SessionId(1),
+            window: crate::registry::WindowId(2),
+        };
+        destination.set_home(moved_to);
+        destination.adopt(taken);
+
+        assert_eq!(
+            destination.pane(id).expect("the moved pane").home(),
+            Landing::At(moved_to.pane(id)),
+            "a pane that was relocated says the leaf it is in NOW; the old one is not where its \
+             processes are, and every read and every later move goes through this answer",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **And a PLACED pane moving into a pool with no window of its own keeps its old leaf.**
+    ///
+    /// The third arm of `adopt`'s match, and the one the round's own debt sweep found untested —
+    /// measured, by making it answer `Unplaced` and watching every test stay green.
+    ///
+    /// Nothing is relocated here because there is nowhere to relocate TO, so the pane's processes
+    /// are still in the leaf they were born into and saying otherwise would be a lie in the
+    /// direction this whole type exists to prevent: `home` is where the processes ARE. The shipped
+    /// code assigned the destination unconditionally, so this pane answered `None` — an absence
+    /// that would have made a later `break-pane` migrate out of nothing while a full leaf sat
+    /// under the old window.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_placed_pane_moving_nowhere_keeps_the_leaf_it_is_in() {
+        let (root, mut origin) = a_tree_that_refuses_pane("homeless", &[]);
+        let id = origin.spawn(cmd(), "sh".to_string(), 80, 24).expect("pane");
+        let Landing::At(born) = origin.pane(id).expect("the pane").home() else {
+            panic!("the fixture admits this pane, or the move below proves nothing");
+        };
+
+        let taken = origin.close(id).expect("the pane leaves its pool");
+        // A destination pool with NO window of its own — `sibling` does not inherit one.
+        let mut destination = origin.sibling();
+        assert!(
+            destination.home().is_none(),
+            "the destination has no window, which is the state this test is about",
+        );
+        destination.adopt(taken);
+
+        assert_eq!(
+            destination.pane(id).expect("the moved pane").home(),
+            Landing::At(born),
+            "nothing moved, so the pane is still where it was — an absence here would aim every \
+             later read and every later move at a leaf that is not the one holding its processes",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// **And a REFUSED pane keeps the kernel's reason across a move.**
     ///
     /// The same claim as the test above with the other absence, and it is not the same test: the
