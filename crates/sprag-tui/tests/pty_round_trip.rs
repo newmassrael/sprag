@@ -467,7 +467,23 @@ fn typing_follows(tui: &mut Tui, conn: &mut HostConn, session: &str, pane: u64) 
 /// rather than a fresh one made after the fact. The diagnostic is not decoration — three processes
 /// stand between an act and its observation, so "timed out" alone cannot tell a client that painted
 /// the wrong thing from one that painted nothing from one that never started.
-fn wait_for(what: &str, mut observe: impl FnMut() -> Result<(), String>) {
+fn wait_for(what: &str, observe: impl FnMut() -> Result<(), String>) {
+    wait_bounded(what, observe, String::new);
+}
+
+/// [`wait_for`] with a STANDING diagnostic the condition itself cannot supply, rendered once at the
+/// deadline — see [`Tui::wait_for`], which is the only caller that has one.
+///
+/// Once, and not per poll, because a failing wait takes [`DEADLINE`] over [`POLL`] looks and this
+/// binary's tests run in parallel: a diagnostic built two thousand times is load applied to the
+/// other tests' own margins (R343 measured that shape breaking a debounce gate on the macOS runner).
+/// The condition's own `Err` is still the LAST one taken rather than a fresh reading, which is the
+/// property [`wait_for`]'s doc explains.
+fn wait_bounded(
+    what: &str,
+    mut observe: impl FnMut() -> Result<(), String>,
+    standing: impl Fn() -> String,
+) {
     let deadline = Instant::now() + DEADLINE;
     let mut last = "nothing was observed at all".to_owned();
     while Instant::now() < deadline {
@@ -477,7 +493,10 @@ fn wait_for(what: &str, mut observe: impl FnMut() -> Result<(), String>) {
         }
         std::thread::sleep(POLL);
     }
-    panic!("timed out after {DEADLINE:?} waiting for {what}\n  last observation: {last}");
+    panic!(
+        "timed out after {DEADLINE:?} waiting for {what}\n  last observation: {last}{}",
+        standing(),
+    );
 }
 
 /// `Ok` when `got` is what was wanted, else `got` rendered as [`wait_for`]'s diagnostic.
@@ -489,17 +508,46 @@ fn settled<T: PartialEq + std::fmt::Debug>(got: T, want: &T) -> Result<(), Strin
     }
 }
 
-/// `Ok` when the client's top row reads `want`, else the WHOLE painted screen as the diagnostic.
-///
-/// The whole screen, not the row that failed, because the three ways this assertion fails look
-/// identical from one row: the client painted something else, the client painted nothing, or the
-/// client is GONE — and a client that exited has left the alternate screen, so every row reads
-/// blank rather than stale. Only the full picture separates them.
-fn painted(tui: &mut Tui, want: &str) -> Result<(), String> {
+/// `Ok` when the client's top row reads `want`, else [`Tui::picture`] as the diagnostic.
+fn painted(tui: &Tui, want: &str) -> Result<(), String> {
     if tui.row(0) == want {
         return Ok(());
     }
-    Err(format!("{:?} (client: {})", tui.rows(), tui.liveness()))
+    Err(tui.picture())
+}
+
+/// `Ok` when the client's STATUS ROW reads `want`, else [`Tui::picture`] as the diagnostic.
+///
+/// # ⚠ THE ROW ALONE COST THREE ROUNDS, AND THIS IS WHAT IT COST THEM
+///
+/// Forty-four waits here used to read this row through [`settled`], whose diagnostic is the row and
+/// nothing else. [`painted`] has stated since it was written that one row cannot separate the three
+/// ways such an assertion fails — *painted something else*, *painted nothing*, *GONE* — and a client
+/// that exited has left the alternate screen, so every row of it reads blank rather than stale.
+///
+/// **Measured, on a real CI failure**: `timed out after 45s … last observation: ""`. That empty
+/// string is a client that had EXITED, and it was carried across R343, R344 and R345 as an
+/// unattributable "pty flake" — three occurrences, two platforms, three different tests — because
+/// the one thing that separates a hang from a departure was the one thing not printed. The run that
+/// finally named it (R345) did so from [`Tui::status_trail`], a LOSSLESS record that was sitting in
+/// this same struct the whole time and that no status-row wait ever consulted.
+///
+/// So the picture is not a nicety here, it is the instrument: an assertion's message is part of it,
+/// and a gate that cannot say what it saw costs a reproduce cycle every time it fires.
+fn says(tui: &Tui, want: &str) -> Result<(), String> {
+    if tui.row(STATUS_ROW) == want {
+        return Ok(());
+    }
+    Err(tui.picture())
+}
+
+/// [`says`] for a row asserted by its CONTENTS rather than whole — the same diagnostic, because the
+/// three failures it cannot tell apart are the same three.
+fn mentions(tui: &Tui, needle: &str) -> Result<(), String> {
+    if tui.row(STATUS_ROW).contains(needle) {
+        return Ok(());
+    }
+    Err(tui.picture())
 }
 
 /// Wait until `read` answers the SAME value twice in a row, a settle window apart, and answer it.
@@ -589,7 +637,7 @@ fn end_the_repeat_window(tui: &mut Tui) {
 /// The trail is a history of the client's frames, so this question has no clock in it.
 ///
 /// It is a STRICTLY WEAKER claim than the one a poll makes, and that is why it is not the default:
-/// this says the row HELD `want` at some point, where `settled(tui.row(STATUS_ROW), &landing)` says
+/// this says the row HELD `want` at some point, where `says(&tui, &landing)` says
 /// the row IS the landing now. Use it where the sentence is the thing under test and expiring is
 /// what it is FOR; a claim about where a client came to rest is a claim about a state that does not
 /// pass, and a poll is the honest instrument for that.
@@ -622,7 +670,9 @@ struct Tui {
     master: Pty,
     /// The client's input end. Held for the same reason: a dropped writer is an EOF.
     writer: std::fs::File,
-    child: std::process::Child,
+    /// The client process. Behind a lock so [`Tui::liveness`] is a `&self` question — see it for
+    /// why that matters to every wait in this file.
+    child: Mutex<Child>,
     /// Everything the client has written, as the emulator that consumed it — see the module docs
     /// for why the assertions read a screen and not a byte stream.
     screen: Arc<Mutex<Emulator>>,
@@ -670,8 +720,9 @@ impl Drop for Tui {
     fn drop(&mut self) {
         // A test that failed before detaching leaves a client attached to a daemon that is about to
         // be killed; ending it here keeps a failure from stranding a process on the machine.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut child = self.child.lock().expect("the child mutex");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -783,7 +834,7 @@ impl Tui {
         Self {
             master: pair,
             writer,
-            child,
+            child: Mutex::new(child),
             screen,
             written,
             status_trail,
@@ -995,12 +1046,62 @@ impl Tui {
 
     /// Whether the client is still running, for a diagnostic — a client that has EXITED left the
     /// alternate screen on its way out, so its last painted frame is not what a reader sees.
-    fn liveness(&mut self) -> String {
-        match self.child.try_wait() {
+    ///
+    /// **`&self`, and that is the whole reason the child is behind a lock.** `Child::try_wait` needs
+    /// `&mut`, which made this a `&mut self` question — and a wait that reads the screen holds the
+    /// client immutably, so forty-four of them could not ask it even though every one of them wanted
+    /// the answer (see [`says`]). Reaping is not what the caller is doing; asking is.
+    fn liveness(&self) -> String {
+        match self.child.lock().expect("the child mutex").try_wait() {
             Ok(None) => "running".to_owned(),
             Ok(Some(status)) => format!("EXITED {status:?}"),
             Err(error) => format!("unknown ({error})"),
         }
+    }
+
+    /// EVERYTHING this harness knows about what the client has done — the ONE diagnostic every wait
+    /// on this client's screen fails with.
+    ///
+    /// Three facts, and no two of them answer the same question:
+    ///
+    /// * the SCREEN as it stands, which says what a person would be looking at;
+    /// * the LOSSLESS trail of every status row ever painted ([`Tui::status_trail`]), which says
+    ///   what the client did while nobody was looking — the half a screen can never hold, since a
+    ///   screen is a state that gets overwritten;
+    /// * whether the client is still THERE, which is what tells a blank screen that was painted
+    ///   from a blank screen that is simply gone.
+    ///
+    /// Drop any one of them and a real failure becomes unattributable; R345 measured all three
+    /// being needed to explain one 45-second timeout.
+    fn picture(&self) -> String {
+        format!("{:?} {}", self.rows(), self.standing())
+    }
+
+    /// The two facts about this client that a CONDITION can never put in its own diagnostic: what it
+    /// painted while nobody was looking, and whether it is still there.
+    ///
+    /// Split out of [`Tui::picture`] so [`Tui::wait_for`] can append it to a bespoke observation
+    /// without printing the screen twice — most of those already print the rows they are about, and
+    /// neither of these.
+    fn standing(&self) -> String {
+        format!(
+            "(status painted {:?}, client: {})",
+            self.status_rows(),
+            self.liveness(),
+        )
+    }
+
+    /// [`wait_for`], for a condition about THIS client — the deadline carries [`Tui::standing`]
+    /// whatever the condition itself chose to say.
+    ///
+    /// **A wait about a client is a method ON the client, so that it cannot be spelled without
+    /// one.** Twenty-eight waits here read this client's screen through a bespoke condition, and
+    /// every one of them could say what was painted and none of them could say whether anybody was
+    /// still painting — the distinction that took three rounds to make about the status row (see
+    /// [`says`]). Nothing enforced it, because the wait was a free function and the client was
+    /// simply not in the room.
+    fn wait_for(&self, what: &str, observe: impl FnMut() -> Result<(), String>) {
+        wait_bounded(what, observe, || self.standing());
     }
 
     /// Wait for the client to exit, and fail rather than block if it does not.
@@ -1011,7 +1112,13 @@ impl Tui {
     fn wait(&mut self) -> std::process::ExitStatus {
         let deadline = Instant::now() + DEADLINE;
         while Instant::now() < deadline {
-            match self.child.try_wait().expect("wait for sprag-tui") {
+            match self
+                .child
+                .lock()
+                .expect("the child mutex")
+                .try_wait()
+                .expect("wait for sprag-tui")
+            {
                 Some(status) => return status,
                 None => std::thread::sleep(POLL),
             }
@@ -1191,7 +1298,7 @@ fn typing_reaches_the_child_and_comes_back_painted() {
     tui.type_bytes(b"hello");
 
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "hello")
+        painted(&tui, "hello")
     });
 }
 
@@ -1210,13 +1317,13 @@ fn a_key_crosses_as_a_name_and_is_re_encoded_for_the_child() {
 
     tui.type_bytes(b"abc");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "abc")
+        painted(&tui, "abc")
     });
 
     // The alternative Backspace spelling — normalised by the host, not by this terminal.
     tui.type_bytes(&[0x08]);
     wait_for("the erase to come back painted", || {
-        painted(&mut tui, "ab").map_err(|screen| {
+        painted(&tui, "ab").map_err(|screen| {
             format!(
                 "{screen}; the pane holds {:?}",
                 pane_text(&mut conn, &session)
@@ -1250,7 +1357,7 @@ fn a_window_change_reaches_the_panes_pty() {
     // about an empty pane agreeing with an empty pane.
     tui.type_bytes(b"wide");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "wide")
+        painted(&tui, "wide")
     });
 
     let terminal = (100, 30);
@@ -1265,7 +1372,7 @@ fn a_window_change_reaches_the_panes_pty() {
     wait_for(
         "the reshaped pane to still hold what the child said",
         || {
-            painted(&mut tui, "wide").map_err(|screen| {
+            painted(&tui, "wide").map_err(|screen| {
                 format!(
                     "{screen}; the pane holds {:?}",
                     pane_text(&mut conn, &session)
@@ -1377,7 +1484,7 @@ fn the_order_keys_move_a_window_and_the_prompt_key_anchors_it() {
     let _ = &sock;
 
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
     // Three windows, so a step has somewhere to go and an anchor has something to name.
     for _ in 0..2 {
         tui.type_bytes(PREFIX);
@@ -1505,7 +1612,7 @@ fn the_window_keys_create_and_walk_the_sessions_windows() {
 
     // Something typed first, so the keys below are proven to act on a WORKING client.
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
     assert_eq!(
         windows_of(&mut conn, &session),
         vec![("0".to_owned(), true)],
@@ -1570,7 +1677,7 @@ fn the_break_key_puts_the_focused_pane_in_a_window_of_its_own() {
 
     // Typed first, so the key below is proven to act on a client that was WORKING.
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
     assert_eq!(
         windows_of(&mut conn, &session),
         vec![("0".to_owned(), true)],
@@ -1636,7 +1743,7 @@ fn the_session_keys_make_a_session_follow_it_and_kill_the_one_they_landed_on() {
     );
 
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
     assert_eq!(
         session_names(&mut conn),
         vec![session.clone()],
@@ -1692,7 +1799,7 @@ fn a_name_typed_at_the_prompt_renames_the_window_and_never_reaches_the_shell() {
     let _ = &sock;
 
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
     assert_eq!(
         windows_of(&mut conn, &session),
         vec![("0".to_owned(), true)],
@@ -1803,7 +1910,7 @@ fn the_kill_key_asks_and_only_a_yes_takes_the_window() {
     let _ = &sock;
 
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
 
     // A second window, so a kill has something to take that is not the session itself.
     tui.type_bytes(PREFIX);
@@ -1866,7 +1973,7 @@ fn the_pane_kill_key_says_what_it_will_take_and_takes_it() {
     let _ = &sock;
 
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
 
     // A second window, so emptying this one cannot end the session the test still has to read.
     tui.type_bytes(PREFIX);
@@ -1997,7 +2104,7 @@ fn a_split_gives_each_child_its_own_half_of_the_terminal() {
     // an empty pane agreeing with an empty pane would prove nothing.
     tui.type_bytes(b"left");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "left")
+        painted(&tui, "left")
     });
 
     tui.type_bytes(PREFIX);
@@ -2011,7 +2118,7 @@ fn a_split_gives_each_child_its_own_half_of_the_terminal() {
         )
     });
 
-    wait_for("a divider to stand between the two panes", || {
+    tui.wait_for("a divider to stand between the two panes", || {
         let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
@@ -2040,7 +2147,7 @@ fn the_other_split_key_divides_rows_instead_of_columns() {
 
     tui.type_bytes(b"top");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "top")
+        painted(&tui, "top")
     });
 
     tui.type_bytes(PREFIX);
@@ -2054,7 +2161,7 @@ fn the_other_split_key_divides_rows_instead_of_columns() {
         )
     });
 
-    wait_for("a divider to stand between the two panes", || {
+    tui.wait_for("a divider to stand between the two panes", || {
         let row = tui.row(near);
         if !row.is_empty() && row.chars().all(|glyph| glyph == '\u{2500}') {
             Ok(())
@@ -2078,7 +2185,7 @@ fn keys_follow_the_focus_the_prefix_moves() {
 
     tui.type_bytes(b"before");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "before")
+        painted(&tui, "before")
     });
 
     tui.type_bytes(PREFIX);
@@ -2148,7 +2255,7 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
 
     tui.type_bytes(b"before");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "before")
+        painted(&tui, "before")
     });
 
     // `-h` puts the panes side by SIDE, so pane 0 is the LEFT one and focus lands on the right.
@@ -2190,7 +2297,7 @@ fn the_arrow_keys_walk_the_arrangement_and_stop_at_its_edge() {
     // question keeps finding.
     tui.type_bytes(PREFIX);
     tui.type_bytes(ARROW_LEFT);
-    wait_for("the edge to be reported on the status row", || {
+    tui.wait_for("the edge to be reported on the status row", || {
         settled(
             tui.row(BOOT_PTY.1 - 1)
                 .contains("select-pane -L: nowhere to go"),
@@ -2284,7 +2391,7 @@ fn the_shifted_arrows_move_the_pane_and_leave_the_cursor_on_it() {
 
     tui.type_bytes(b"before");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "before")
+        painted(&tui, "before")
     });
 
     // `-h` puts the panes side by SIDE, so pane 0 is the LEFT one and focus lands on the right.
@@ -2363,7 +2470,7 @@ fn a_split_made_by_another_client_re_tiles_this_one() {
 
     tui.type_bytes(b"mine");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "mine")
+        painted(&tui, "mine")
     });
 
     let first = pane_ids(&mut conn, &session);
@@ -2392,7 +2499,7 @@ fn a_split_made_by_another_client_re_tiles_this_one() {
             )
         },
     );
-    wait_for("a divider to appear without a key being typed", || {
+    tui.wait_for("a divider to appear without a key being typed", || {
         let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
@@ -2452,7 +2559,7 @@ fn a_select_pane_made_by_another_client_moves_this_ones_focus() {
     // went at an EARLIER moment, and proves nothing about bytes still sitting in the pty. Hence the
     // wait below, which is the condition the claim is actually about — R327's rule, that an
     // observation window ends on the thing being claimed rather than on a proxy for it.
-    wait_for("the client to re-tile around its own split", || {
+    tui.wait_for("the client to re-tile around its own split", || {
         let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
@@ -2589,7 +2696,7 @@ fn a_rename_of_its_session_leaves_the_client_attached_and_painting() {
     };
 
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
 
     // 1. THE CONTROL: another session is renamed. Nothing about this client may move.
     let mut admin = observe(&sock);
@@ -2621,7 +2728,7 @@ fn a_rename_of_its_session_leaves_the_client_attached_and_painting() {
     // painting the SAME pane it was before the rename, not a fresh view of something else.
     tui.type_bytes(b"after");
     wait_for("the client to paint through the new address", || {
-        painted(&mut tui, "beforeafter")
+        painted(&tui, "beforeafter")
     });
     assert_eq!(
         pane_size(&mut conn, "prod"),
@@ -2648,7 +2755,7 @@ fn the_prefix_detaches_and_the_session_lives_on() {
     // Something typed first, so the detach is proven to end a client that was WORKING rather than
     // one that had never got going.
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     tui.type_bytes(&[0x02]); // the prefix
     tui.type_bytes(b"d"); // detach
@@ -2979,7 +3086,7 @@ fn a_divider_drag_moves_the_boundary_and_both_children() {
     });
 
     // ...and the line the user is pointing at is drawn where they dragged it.
-    wait_for("the divider to be painted in its new column", || {
+    tui.wait_for("the divider to be painted in its new column", || {
         let column = tui.pane_column(moved);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
@@ -3070,14 +3177,14 @@ fn a_prefix_declared_in_the_users_config_reaches_the_client() {
 
     // Typed first, so what follows is proven to act on a client that was WORKING.
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     // The OLD prefix is now just a key: both bytes reach `cat`, which echoes them back.
     tui.type_bytes(&[0x02]);
     tui.type_bytes(b"d");
     wait_for(
         "the old prefix to reach the pane as an ordinary key",
-        || painted(&mut tui, "live^Bd"),
+        || painted(&tui, "live^Bd"),
     );
 
     // ...and the DECLARED prefix is the one that opens the table.
@@ -3170,7 +3277,7 @@ fn a_bind_key_run_while_attached_reaches_the_running_client() {
 
     // Typed first, so everything after this is proven to act on a client that was WORKING.
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     // `prefix k` with `k` unbound: swallowed by the client, and NOT delivered to the child.
     tui.type_bytes(&[0x02]);
@@ -3179,7 +3286,7 @@ fn a_bind_key_run_while_attached_reaches_the_running_client() {
     // screen that has since been repainted rather than from one that simply had not caught up.
     tui.type_bytes(b"x");
     wait_for("the following ordinary key to reach the pane", || {
-        painted(&mut tui, "livex")
+        painted(&tui, "livex")
     });
     assert!(
         !pane_text(&mut conn, &session).contains('k'),
@@ -3239,13 +3346,13 @@ fn a_set_option_run_while_attached_reaches_the_running_client() {
 
     // Typed first, so everything after this is proven to act on a client that was WORKING.
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     // `C-a` is nobody's prefix yet: both bytes reach the child, which echoes them.
     tui.type_bytes(&[0x01]);
     tui.type_bytes(b"d");
     wait_for("C-a to reach the pane as an ordinary key", || {
-        painted(&mut tui, "live^Ad")
+        painted(&tui, "live^Ad")
     });
 
     // The edit, by the shipped CLI, into the file the running client read at startup.
@@ -3262,7 +3369,7 @@ fn a_set_option_run_while_attached_reaches_the_running_client() {
     tui.type_bytes(&[0x02]);
     tui.type_bytes(b"d");
     wait_for("the abandoned prefix to reach the pane", || {
-        painted(&mut tui, "live^Ad^Bd")
+        painted(&tui, "live^Ad^Bd")
     });
 
     // ...and the DECLARED prefix is the one that opens the table, with no reattach.
@@ -3431,7 +3538,7 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
             &vec![(wide_near, wide.1), (wide_far, wide.1)],
         )
     });
-    wait_for("the divider to be drawn at the wide column", || {
+    first.wait_for("the divider to be drawn at the wide column", || {
         let column = first.pane_column(wide_near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
@@ -3468,7 +3575,7 @@ fn a_client_that_reported_nothing_re_tiles_when_the_window_moves() {
     );
     // THE claim: the first client's own screen now draws the divider where the NARROW window puts
     // it. A client holding a stale window keeps drawing it at `wide_near`.
-    wait_for(
+    first.wait_for(
         "the un-reporting client to redraw its divider at the narrowed column",
         || {
             let column = first.pane_column(narrow_near);
@@ -3901,7 +4008,7 @@ fn the_resize_key_pins_the_window_to_the_area_this_client_reported() {
     let (_daemon, sock, mut conn, session, mut tui) = attached_client_under(&config, &["cat"]);
 
     tui.type_bytes(b"before");
-    wait_for("the client to be painting", || painted(&mut tui, "before"));
+    wait_for("the client to be painting", || painted(&tui, "before"));
 
     // OFF the answer first, and by an EXACT pin so the move below cannot be the client's own report
     // arriving late. A fixture that left the window already on the client's area would pass whether
@@ -3995,7 +4102,7 @@ fn a_pin_the_policy_ignores_says_so_on_the_status_row() {
     // sentence all along cannot pass.
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     // Under `largest` with one client, the window IS that client's area — which is what makes the
     // pin below inert and this the state the sentence is about.
@@ -4050,7 +4157,7 @@ fn a_pin_the_policy_ignores_says_so_on_the_status_row() {
         String::from_utf8_lossy(&flipped.stderr),
     );
     wait_for("the row to come back before the second press", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     end_the_repeat_window(&mut tui);
     // The trail is append-only, so an index into it now is a mark on the history: everything from
@@ -4235,7 +4342,7 @@ fn a_clear_that_moved_no_rectangle_still_redraws_the_panes() {
 
     tui.type_bytes(b"hello");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "hello")
+        painted(&tui, "hello")
     });
 
     // The terminal GROWS past the pinned window. The client re-reports, the daemon ignores it, the
@@ -4243,7 +4350,7 @@ fn a_clear_that_moved_no_rectangle_still_redraws_the_panes() {
     tui.resize(100, 30);
 
     wait_for("the pane to survive a clear that moved nothing", || {
-        painted(&mut tui, "hello")
+        painted(&tui, "hello")
     });
     // ...and it STAYS, rather than being one frame a later repaint takes back.
     std::thread::sleep(Duration::from_millis(300));
@@ -4289,7 +4396,7 @@ fn a_root_binding_acts_with_no_prefix_and_the_key_never_reaches_the_pane() {
     );
 
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     // No prefix. This is the whole of what `-n` means.
     tui.type_bytes(&[0x0f]);
@@ -4340,7 +4447,7 @@ fn a_bound_switch_client_asks_which_session_and_the_answer_moves_the_client() {
     .expect("new_session answers");
 
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
     let shell_before = pane_text_of(&mut conn, &session, 0);
     assert_eq!(
         attached(&mut conn, &session),
@@ -4431,7 +4538,7 @@ fn the_prefix_reaches_another_session_and_then_the_one_before_it() {
     }
     let _ = &sock;
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
     assert_eq!(
         attached(&mut conn, &session),
         1,
@@ -4532,7 +4639,7 @@ fn a_repeat_binding_acts_twice_on_one_prefix_and_then_lets_go() {
     );
 
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     // The prefix ONCE, then the bound key TWICE with nothing observed in between: the repeat window
     // is running from the moment the client acts on the first `%`, so anything waited for here is
@@ -4541,14 +4648,14 @@ fn a_repeat_binding_acts_twice_on_one_prefix_and_then_lets_go() {
     tui.type_bytes(b"%");
     tui.type_bytes(b"%"); // no second prefix. This is `-r`.
     wait_for("both acts to reach the pane on one prefix", || {
-        painted(&mut tui, "live^B^B")
+        painted(&tui, "live^B^B")
     });
 
     // Past the deadline the client itself computed — so the window is shut, not merely likely to be.
     std::thread::sleep(Duration::from_millis(1500));
     tui.type_bytes(b"%");
     wait_for("the lapsed window to hand the key back to the pane", || {
-        painted(&mut tui, "live^B^B%")
+        painted(&tui, "live^B^B%")
     });
 }
 
@@ -4647,7 +4754,7 @@ fn a_key_moves_a_real_boundary_and_repeats_without_a_second_prefix() {
     // Something the pane WILL answer, sent after them, so this waits on a real event rather than on
     // a duration: if the arrows had been swallowed the sizes would have moved before this arrives.
     tui.type_bytes(b"done");
-    wait_for("the unprefixed keys to reach the pane", || {
+    tui.wait_for("the unprefixed keys to reach the pane", || {
         if tui.rows().iter().any(|row| row.contains("done")) {
             Ok(())
         } else {
@@ -4749,7 +4856,7 @@ fn everything_the_person_can_read_was_painted_inside_one_atomic_frame() {
     let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
 
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     // A SECOND frame, and one that redraws most of the screen: the split re-tiles both panes, draws
     // a divider and rewrites the status row, which is the repaint a person would actually see tear.
@@ -4762,7 +4869,7 @@ fn everything_the_person_can_read_was_painted_inside_one_atomic_frame() {
             &vec![(near, BOOT_PANES.1), (far, BOOT_PANES.1)],
         )
     });
-    wait_for("a divider to stand between the two panes", || {
+    tui.wait_for("a divider to stand between the two panes", || {
         let column = tui.pane_column(near);
         if column.chars().all(|glyph| glyph == '\u{2502}') {
             Ok(())
@@ -4850,11 +4957,11 @@ fn the_key_table_shows_the_users_own_table_and_gives_the_panes_back() {
 
     // Typed first, so everything after it is proven to act on a client that was WORKING.
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     tui.type_bytes(&[0x01]); // C-a, the prefix this user declared
     tui.type_bytes(b"?");
-    wait_for("the key table to open on the user's own prefix", || {
+    tui.wait_for("the key table to open on the user's own prefix", || {
         let rows = tui.rows();
         let shows = |want: &str| rows.iter().any(|row| row.contains(want));
         if shows("keys") && shows("C-a z") && shows("zoom-pane") {
@@ -4887,7 +4994,7 @@ fn the_key_table_shows_the_users_own_table_and_gives_the_panes_back() {
     tui.type_bytes(b"\x1b[6~"); // PageDown
     tui.type_bytes(b"\x1b[6~");
     tui.type_bytes(b"\x1b[6~");
-    wait_for("the page key to reach the end of the table", || {
+    tui.wait_for("the page key to reach the end of the table", || {
         if tui.rows().iter().any(|row| row.contains(last_form)) {
             Ok(())
         } else {
@@ -4900,13 +5007,13 @@ fn the_key_table_shows_the_users_own_table_and_gives_the_panes_back() {
 
     tui.type_bytes(b"q");
     // The panes come back, and the row underneath is the one the client left there.
-    wait_for("the panes to come back", || painted(&mut tui, "live"));
+    wait_for("the panes to come back", || painted(&tui, "live"));
 
     // The pane is still the keyboard's, and it never saw the six characters above: `cat` echoes
     // what reaches it, so a leak would read `livewhoamiX` here.
     tui.type_bytes(b"X");
     wait_for("the pane to have the keyboard again", || {
-        painted(&mut tui, "liveX")
+        painted(&tui, "liveX")
     });
 }
 
@@ -4931,7 +5038,7 @@ fn a_pane_printing_underneath_does_not_wipe_the_key_table() {
         Tui::attach,
         &["sh", "-c", "while :; do printf 'tick\\n'; sleep 0.1; done"],
     );
-    wait_for("the pane to be printing", || {
+    tui.wait_for("the pane to be printing", || {
         if tui.rows().iter().any(|row| row.contains("tick")) {
             Ok(())
         } else {
@@ -4941,7 +5048,7 @@ fn a_pane_printing_underneath_does_not_wipe_the_key_table() {
 
     tui.type_bytes(&[0x02]); // prefix
     tui.type_bytes(b"?");
-    wait_for("the key table to open", || {
+    tui.wait_for("the key table to open", || {
         if tui.rows().iter().any(|row| row.contains("zoom-pane")) {
             Ok(())
         } else {
@@ -5005,7 +5112,7 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
 
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"?");
-    wait_for("the key table to cover the arrangement", || {
+    tui.wait_for("the key table to cover the arrangement", || {
         if tui.rows().iter().any(|row| row.contains("zoom-pane")) {
             Ok(())
         } else {
@@ -5034,7 +5141,7 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
     let last_form = *sprag_host::keymap::BoundAction::vocabulary()
         .last()
         .expect("the vocabulary is not empty");
-    wait_for("the client to have consumed everything sent since", || {
+    tui.wait_for("the client to have consumed everything sent since", || {
         if tui.rows().iter().any(|row| row.contains(last_form)) {
             Ok(())
         } else {
@@ -5049,7 +5156,7 @@ fn a_pointer_does_not_reach_a_divider_under_the_key_table() {
 
     // THE CONTROL: close it, send the same bytes, and the boundary moves.
     tui.type_bytes(b"q");
-    wait_for("the panes to come back", || {
+    tui.wait_for("the panes to come back", || {
         if tui.rows().iter().any(|row| row.contains("zoom-pane")) {
             Err(format!("the table is still up: {:?}", tui.rows()))
         } else {
@@ -5100,7 +5207,7 @@ fn the_prefix_opens_a_chooser_and_the_row_that_is_picked_is_where_the_client_lan
     }
     let _ = &sock;
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
     let shell_before = pane_text_of(&mut conn, &session, 0);
     assert_eq!(
         attached(&mut conn, &session),
@@ -5152,7 +5259,7 @@ fn the_prefix_opens_a_chooser_and_the_row_that_is_picked_is_where_the_client_lan
     // rather than still holding a list over it. What happens to the keyboard afterwards is the
     // CANCEL test's claim, and it is driven there on a `cat` pane that can be read back — this
     // session's pane runs the machine's `$SHELL`, whose echo is not a fixture.
-    wait_for("the chooser to leave the screen", || {
+    tui.wait_for("the chooser to leave the screen", || {
         if tui.rows().iter().any(|row| row.contains("(choose-tree)")) {
             Err(format!("{:?}", tui.rows()))
         } else {
@@ -5179,7 +5286,7 @@ fn a_cancelled_chooser_moves_nobody_and_hands_the_keyboard_back() {
     .expect("new_session answers");
     let _ = &sock;
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"s");
@@ -5229,7 +5336,7 @@ fn a_session_made_while_the_chooser_is_open_appears_in_it() {
     let (_daemon, sock, mut conn, session, mut tui) = attached_client();
     let _ = &sock;
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
 
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"s");
@@ -5416,10 +5523,10 @@ fn a_key_bound_to_a_session_that_does_not_exist_says_so() {
     );
 
     tui.type_bytes(b"live");
-    wait_for("the client to be painting", || painted(&mut tui, "live"));
+    wait_for("the client to be painting", || painted(&tui, "live"));
     let where_it_is = format!("[{session}]");
     wait_for("the status row to say where the client is", || {
-        settled(tui.row(STATUS_ROW).contains(&where_it_is), &true)
+        mentions(&tui, &where_it_is)
             .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
 
@@ -5478,7 +5585,7 @@ fn the_message_goes_away_on_its_own_and_the_row_comes_back() {
 
     let where_it_is = format!("[{session}]");
     wait_for("the status row to say where the client is", || {
-        settled(tui.row(STATUS_ROW).contains(&where_it_is), &true)
+        mentions(&tui, &where_it_is)
             .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
 
@@ -5493,7 +5600,7 @@ fn the_message_goes_away_on_its_own_and_the_row_comes_back() {
     wait_for(
         "the row to come back with no keystroke to prompt it",
         || {
-            settled(tui.row(STATUS_ROW).contains(&where_it_is), &true)
+            mentions(&tui, &where_it_is)
                 .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
         },
     );
@@ -5516,7 +5623,7 @@ fn the_status_row_follows_the_session_and_its_windows() {
 
     wait_for(
         "the row to name the boot session and its one window",
-        || settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*")),
+        || says(&tui, &format!("[{session}] 0:0*")),
     );
 
     // A SECOND window, made from a separate connection — so what moves the row is the daemon's
@@ -5527,7 +5634,7 @@ fn the_status_row_follows_the_session_and_its_windows() {
     )
     .expect("new_window answers");
     wait_for("the row to grow a window and move the marker", || {
-        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0 1:1*"))
+        says(&tui, &format!("[{session}] 0:0 1:1*"))
     });
 
     // ...and the NAME follows a rename this client did not make. A row holding the name it attached
@@ -5541,7 +5648,7 @@ fn the_status_row_follows_the_session_and_its_windows() {
     )
     .expect("rename_session answers");
     wait_for("the row to follow the rename", || {
-        settled(tui.row(STATUS_ROW), &"[renamed] 0:0 1:1*".to_owned())
+        says(&tui, "[renamed] 0:0 1:1*")
     });
 }
 
@@ -5571,7 +5678,7 @@ fn the_panes_stop_one_row_above_what_the_client_says() {
     for line in 0..BOOT_PTY.1 {
         tui.type_bytes(format!("line{line}\r").as_bytes());
     }
-    wait_for("the child's output to reach the pane's last line", || {
+    tui.wait_for("the child's output to reach the pane's last line", || {
         settled(tui.row(BOOT_PANES.1 - 1).trim_end().is_empty(), &false)
             .map_err(|got| format!("{got}: rows {:?}", tui.rows()))
     });
@@ -5606,7 +5713,7 @@ fn a_key_bound_to_a_window_that_does_not_exist_says_so() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to name the boot window", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     // THE CONTROL FIRST: the window that EXISTS is selected and says nothing, so a row that
@@ -5671,7 +5778,7 @@ fn display_time_zero_reports_nothing_at_all() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     tui.type_bytes(PREFIX);
@@ -5721,7 +5828,7 @@ fn the_swap_the_resize_and_the_move_all_say_when_they_go_nowhere() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     // Each press is separated by a wait for the row to come BACK, so a sentence left over from the
@@ -5757,7 +5864,7 @@ fn the_swap_the_resize_and_the_move_all_say_when_they_go_nowhere() {
         tui.type_bytes(keys);
         wait_for(&format!("{want:?} to be painted"), || announced(&tui, want));
         wait_for("the row to come back before the next press", || {
-            settled(tui.row(STATUS_ROW), &where_it_is)
+            says(&tui, &where_it_is)
         });
     }
 }
@@ -5794,7 +5901,7 @@ fn a_message_sent_by_another_process_reaches_the_person_at_this_client() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     let out = Command::new(sprag_cli_bin())
@@ -5937,7 +6044,7 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
         );
     };
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     // THE CONTROL: a NOTE expires on its own, with nothing pressed.
@@ -5949,14 +6056,14 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
         announced(&tui, "a passing note")
     });
     wait_for("the note to expire with no keystroke", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     // ...and an ALERT does not. Sampled over a window many times `display-time`, so a client that
     // treated every message alike would be caught rather than merely raced.
     send("alert", "the deploy needs you");
     wait_for("the alert to be painted", || {
-        settled(tui.row(STATUS_ROW).contains("the deploy needs you"), &true)
+        mentions(&tui, "the deploy needs you")
             .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
     let deadline = Instant::now() + Duration::from_millis(1800);
@@ -5984,7 +6091,7 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"\x1b");
     wait_for("the keystroke to acknowledge the alert", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     // A WARNING is on the clock like a note and carries NO mark — the arm between the two, which
@@ -6003,7 +6110,7 @@ fn an_alert_waits_for_a_keystroke_where_a_note_waits_for_the_clock() {
         tui.status_rows(),
     );
     wait_for("the warning to expire on the clock, like a note", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 }
 
@@ -6032,12 +6139,12 @@ fn a_note_does_not_take_the_row_from_a_live_alert() {
         assert!(out.status.success(), "display-message -s {severity} failed");
     };
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     send("alert", "the deploy needs you");
     wait_for("the alert to be painted", || {
-        settled(tui.row(STATUS_ROW).contains("the deploy needs you"), &true)
+        mentions(&tui, "the deploy needs you")
             .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
     send("note", "a passing note");
@@ -6063,16 +6170,14 @@ fn a_note_does_not_take_the_row_from_a_live_alert() {
     // THE CONTROL, the other way round: acknowledge, put a NOTE up, and the alert takes it.
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"\x1b");
-    wait_for("the alert to be acknowledged", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
-    });
+    wait_for("the alert to be acknowledged", || says(&tui, &where_it_is));
     send("note", "a passing note");
     wait_for("the note to be painted", || {
         announced(&tui, "a passing note")
     });
     send("alert", "the deploy needs you");
     wait_for("the alert to take the row from the note", || {
-        settled(tui.row(STATUS_ROW).contains("the deploy needs you"), &true)
+        mentions(&tui, "the deploy needs you")
             .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
 }
@@ -6104,7 +6209,7 @@ fn a_named_client_is_reached_from_a_request_scoped_to_another_session() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     let run = |args: &[&str]| -> (bool, String, String) {
@@ -6245,7 +6350,7 @@ fn the_verb_refuses_a_bad_severity_and_works_with_no_target_at_all() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     let run = |args: &[&str]| -> (bool, String, String) {
@@ -6328,7 +6433,7 @@ fn a_notification_a_pane_child_raised_reaches_the_person_at_this_client() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     // Settle the session so the raise below is the only thing in flight — without this a wake
     // already on its way could carry the delivery and the assertion could not fail (R315's rule).
@@ -6392,7 +6497,7 @@ fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
     );
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
 
@@ -6402,13 +6507,13 @@ fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
         announced(&tui, "the ordinary one")
     });
     wait_for("...and to expire without anybody touching a key", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     // THE CLAIM: `u=2`. It paints, and it is STILL there after several display-times.
     tui.type_bytes(b"2 the build needs you\r");
     wait_for("the critical notification to paint", || {
-        settled(tui.row(STATUS_ROW).contains("the build needs you"), &true)
+        mentions(&tui, "the build needs you")
             .map_err(|got| format!("{got}: row reads {:?}", tui.row(STATUS_ROW)))
     });
     std::thread::sleep(Duration::from_millis(2500));
@@ -6428,7 +6533,7 @@ fn a_critical_notification_holds_the_row_until_a_key_is_pressed() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"q");
     wait_for("the alert to clear once a person touched a key", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 }
 
@@ -6473,7 +6578,7 @@ fn each_attention_source_has_its_own_switch() {
     });
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
 
@@ -6485,7 +6590,7 @@ fn each_attention_source_has_its_own_switch() {
         announced(&tui, "pane 0: bell")
     });
     wait_for("...and to expire, leaving the row as it was", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     // THE SILENCED HALF. The daemon must still LATCH it — the switch is about delivery, not about
@@ -6571,7 +6676,7 @@ fn a_message_follows_the_person_out_of_the_room() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     // Settle the session so the raise below is the only thing in flight (R315's rule).
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
@@ -6588,7 +6693,7 @@ fn a_message_follows_the_person_out_of_the_room() {
         announced(&tui, "pane 0: the first one")
     });
     wait_for("...and to expire, leaving the row as it was", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     assert_eq!(
         tui.forwarded().1,
@@ -6705,7 +6810,7 @@ fn a_childs_own_urgency_reaches_the_persons_terminal() {
     });
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
     tui.type_bytes(b"\x1b[O");
@@ -6779,7 +6884,7 @@ fn the_outward_policy_is_this_clients_own_and_not_the_daemons() {
     let where_it_is = format!("[{session}] 0:0*");
     for tui in [&always, &off] {
         wait_for("each row to say where its client is", || {
-            settled(tui.row(STATUS_ROW), &where_it_is)
+            says(tui, &where_it_is)
         });
     }
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
@@ -6864,7 +6969,7 @@ fn a_persons_own_bracket_key_still_reaches_their_pane() {
         &["cat"],
     );
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+        says(&tui, &format!("[{session}] 0:0*"))
     });
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
     assert!(
@@ -6904,7 +7009,7 @@ fn the_focus_mode_is_given_back_when_the_client_leaves() {
         &["cat"],
     );
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+        says(&tui, &format!("[{session}] 0:0*"))
     });
     assert!(
         tui.asked_for_focus_reports(),
@@ -6954,7 +7059,7 @@ fn the_copy_names_the_session_the_client_is_on_now() {
     )
     .expect("new_session answers");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+        says(&tui, &format!("[{session}] 0:0*"))
     });
 
     // THE CONTROL: a message from where it started, naming where it started.
@@ -7014,7 +7119,7 @@ fn an_edited_notify_outward_takes_effect_without_a_restart() {
         &["cat"],
     );
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &format!("[{session}] 0:0*"))
+        says(&tui, &format!("[{session}] 0:0*"))
     });
     let _ = wait_for_still(|| pane_size(&mut conn, &session));
     assert!(
@@ -7069,7 +7174,7 @@ fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
     // indistinguishable from an empty pane that did not move.
     tui.type_bytes(b"zoomee");
     wait_for("the typed text to come back painted", || {
-        painted(&mut tui, "zoomee")
+        painted(&tui, "zoomee")
     });
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"%");
@@ -7082,7 +7187,7 @@ fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
         )
     });
     // THE CONTROL: the divider is standing, so the absence asserted below is a change.
-    wait_for("a divider to stand between the two panes", || {
+    tui.wait_for("a divider to stand between the two panes", || {
         let column = tui.pane_column(near);
         settled(column.chars().all(|glyph| glyph == '\u{2502}'), &true)
             .map_err(|got| format!("{got}: column {near} reads {column:?}"))
@@ -7097,7 +7202,7 @@ fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
 
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"z");
-    wait_for(
+    tui.wait_for(
         "the divider to go, leaving the zoomed pane the whole area",
         || {
             let column = tui.pane_column(near);
@@ -7107,7 +7212,7 @@ fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
     );
     // ...and the pane really OCCUPIES it: its own text is painted, and the columns the divider and
     // the other pane had are this pane's now.
-    wait_for("the zoomed pane to be painted across the terminal", || {
+    tui.wait_for("the zoomed pane to be painted across the terminal", || {
         settled(tui.span(0, 0..BOOT_PANES.0).starts_with("zoomee"), &true)
             .map_err(|got| format!("{got}: row 0 reads {:?}", tui.row(0)))
     });
@@ -7131,7 +7236,7 @@ fn the_zoom_key_gives_the_focused_pane_the_whole_area_and_gives_it_back() {
     // ...and it comes back.
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"z");
-    wait_for("the divider to come back when the zoom is released", || {
+    tui.wait_for("the divider to come back when the zoom is released", || {
         let column = tui.pane_column(near);
         settled(column.chars().all(|glyph| glyph == '\u{2502}'), &true)
             .map_err(|got| format!("{got}: column {near} reads {column:?}"))
@@ -7234,7 +7339,7 @@ fn a_key_that_reaches_a_daemon_too_old_to_act_says_so() {
 
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the client to be painting the session it is on", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
     assert_eq!(
         windows_of(&mut conn, &session),
@@ -7245,7 +7350,7 @@ fn a_key_that_reaches_a_daemon_too_old_to_act_says_so() {
     tui.type_bytes(PREFIX);
     tui.type_bytes(b"c");
     let folded = |row: &str| -> String { row.chars().filter(|c| !c.is_whitespace()).collect() };
-    wait_for("the row to say the daemon could not do it", || {
+    tui.wait_for("the row to say the daemon could not do it", || {
         let rows = tui.status_rows();
         let row = rows
             .iter()
@@ -7334,7 +7439,7 @@ fn a_window_kill_that_took_the_session_says_so() {
     // THE CONTROL: the row is idle before the key, so the sentence below is this key's.
     let where_it_is = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_is)
+        says(&tui, &where_it_is)
     });
 
     tui.type_bytes(PREFIX);
@@ -7439,7 +7544,7 @@ fn the_move_pane_key_opens_a_chooser_that_says_so_and_a_pick_moves_the_pane() {
     // IT SAYS WHAT IT IS FOR. `(move-pane -v)` is `chooser::Errand::asking()`, the canonical
     // spelling — the same words `bind-key` takes and `list-keys` prints. Before R328 this surface
     // said `(choose-tree)` whatever it had been opened to do.
-    wait_for(
+    tui.wait_for(
         "the chooser to open under the question it was opened for",
         || {
             let row = tui.row(0);
@@ -7556,7 +7661,7 @@ fn the_join_pane_key_opens_a_chooser_that_says_so_and_a_pick_puts_the_pane_in_th
     // IT SAYS WHAT IT IS FOR — `chooser::Errand::asking()`, the canonical spelling `bind-key` takes
     // and `list-keys` prints. Two errands paint the same rows, so opening the right list under the
     // wrong question is a defect no end-state check can see.
-    wait_for(
+    tui.wait_for(
         "the chooser to open under the question it was opened for",
         || {
             let row = tui.row(0);
@@ -7612,7 +7717,7 @@ fn the_join_pane_key_opens_a_chooser_that_says_so_and_a_pick_puts_the_pane_in_th
 /// sample point: a run that never settles returns everything the client ever painted, and the
 /// caller's own assertion prints the whole list. One list, every claim, no clock to tune.
 fn rows_until_settled(tui: &Tui, sentence: &str, landing: &str) -> Vec<String> {
-    wait_for(
+    tui.wait_for(
         &format!("this client to say {sentence:?} and then come to rest on {landing:?}"),
         || {
             // BOTH conditions, and the sentence is the one that was missing. ⚠ SETTLING IS NOT THE
@@ -7655,7 +7760,7 @@ fn client_whose_session_is_destroyed(policy: &str) -> (Daemon, ConfigHome, HostC
     // kill's doing.
     let where_it_was = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
-        settled(tui.row(STATUS_ROW), &where_it_was)
+        says(&tui, &where_it_was)
     });
 
     // OUT OF BAND, and BACK TO BACK ON ONE CONNECTION: a spare session to land in, and then this
@@ -7701,7 +7806,7 @@ fn client_whose_session_is_destroyed(policy: &str) -> (Daemon, ConfigHome, HostC
 ///    misdiagnosed once already).
 #[test]
 fn a_destroyed_session_moves_the_terminal_client_and_says_so() {
-    let (_daemon, _config, mut conn, session, mut tui) = client_whose_session_is_destroyed("next");
+    let (_daemon, _config, mut conn, session, tui) = client_whose_session_is_destroyed("next");
 
     // ONE OBSERVATION WINDOW for both claims about the row, for the reason
     // [`rows_until_settled`] states — and this test is where that reason was MEASURED. Its three
@@ -7749,11 +7854,10 @@ fn a_destroyed_session_moves_the_terminal_client_and_says_so() {
 #[test]
 fn every_switch_policy_moves_the_terminal_client() {
     for policy in ["off", "no-detached", "next", "previous"] {
-        let (_daemon, _config, _conn, _session, mut tui) =
-            client_whose_session_is_destroyed(policy);
+        let (_daemon, _config, _conn, _session, tui) = client_whose_session_is_destroyed(policy);
         wait_for(
             &format!("`detach-on-destroy = {policy:?}` to move the client to the survivor"),
-            || settled(tui.row(STATUS_ROW), &"[beta] 0:0*".to_owned()),
+            || says(&tui, "[beta] 0:0*"),
         );
         assert_eq!(
             tui.liveness(),
@@ -7769,8 +7873,8 @@ fn every_switch_policy_moves_the_terminal_client() {
 /// the same as a correct one.
 #[test]
 fn the_client_leaves_when_its_session_is_destroyed() {
-    let (_daemon, _config, mut conn, _session, mut tui) = client_whose_session_is_destroyed("on");
-    wait_for(
+    let (_daemon, _config, mut conn, _session, tui) = client_whose_session_is_destroyed("on");
+    tui.wait_for(
         "the client to leave the terminal it cannot serve",
         || match tui.liveness() {
             gone if gone.starts_with("EXITED") => Ok(()),
@@ -7826,7 +7930,7 @@ fn the_client_leaves_when_its_session_is_destroyed() {
 #[test]
 fn no_detached_leaves_rather_than_join_an_occupied_session() {
     let config = ConfigHome::new("[options]\ndetach-on-destroy = \"no-detached\"\n");
-    let (_daemon, sock, mut conn, session, mut mine) = attached_client_with(
+    let (_daemon, sock, mut conn, session, mine) = attached_client_with(
         |sock, session| {
             Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
         },
@@ -7850,7 +7954,7 @@ fn no_detached_leaves_rather_than_join_an_occupied_session() {
     // kill's doing.
     let where_it_was = format!("[{session}] 0:0*");
     wait_for("the row to say where this client is", || {
-        settled(mine.row(STATUS_ROW), &where_it_was)
+        says(&mine, &where_it_was)
     });
 
     // OUT OF BAND, by a third process — the path where nobody at either keyboard did anything.
@@ -7865,7 +7969,7 @@ fn no_detached_leaves_rather_than_join_an_occupied_session() {
         String::from_utf8_lossy(&killed.stderr),
     );
 
-    wait_for(
+    mine.wait_for(
         "the client to LEAVE rather than sit down beside somebody",
         || match mine.liveness() {
             gone if gone.starts_with("EXITED") => Ok(()),
