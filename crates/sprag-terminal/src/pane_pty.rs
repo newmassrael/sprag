@@ -1156,19 +1156,14 @@ fn read_cwd(_pid: u32) -> Option<PathBuf> {
 /// call the window is now microseconds wide instead of nanoseconds. It is the same window
 /// [`crate::PaneProcesses`] already documents for the same reason, not a new class, and closing it
 /// needs the exit to publish before the reap is observable.
-#[cfg(target_os = "linux")]
+/// ⚠ **NO LONGER PLATFORM-GATED, and the gate was on the wrong thing.** This body reads one field
+/// off one struct; the platform question is entirely `procfs::stat`'s, which answers it on Linux and
+/// on macOS now. A `cfg` here made a portable one-liner have two bodies and told every caller that
+/// *what job is this pane running* is a Linux question — the shape R340 removed from `procfs` and
+/// left behind here.
 #[must_use]
 pub fn foreground_pgid_of(pid: u32) -> Option<u32> {
     crate::procfs::stat(pid)?.tpgid
-}
-
-/// No `/proc` off Linux — the same honest `None` as this file's `read_cwd`, and with the same
-/// consequence: a report bound to a process group is simply never released by that rule, which is
-/// where this tree already was.
-#[cfg(not(target_os = "linux"))]
-#[must_use]
-pub fn foreground_pgid_of(_pid: u32) -> Option<u32> {
-    None
 }
 
 /// What the batch just applied to `emu` ASKED FOR — read against the counters this reader thread
@@ -1622,7 +1617,11 @@ mod tests {
     /// durability ring snapshots so a restored shell re-spawns in the same directory. The
     /// child is `cd`'d into a known dir at spawn (`CommandBuilder::cwd`), and `cwd()` reads
     /// it back through `/proc`. Linux-only: elsewhere `cwd()` is an honest `None`.
-    #[cfg(target_os = "linux")]
+    // Linux AND macOS: this drives a reader that stopped being Linux-only when `procfs` and
+    // `read_cwd` learned their macOS syscalls (R343). The gate that used to be here is the
+    // reason the absence went five rounds unnoticed — the tests for the fact were on the one
+    // platform that had it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn pid_and_cwd_report_the_live_child() {
         let dir = std::env::temp_dir();
@@ -1634,7 +1633,7 @@ mod tests {
         let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
 
         assert!(pty.pid().is_some(), "a live child has a process id");
-        let cwd = pty.cwd().expect("a live child's cwd is readable on Linux");
+        let cwd = pty.cwd().expect("a live child's cwd is readable here");
         // Canonicalize both: the spawn dir may be a symlink (e.g. /tmp), while /proc
         // resolves the link to the real path — comparing raw strings would spuriously fail.
         assert_eq!(
@@ -1655,7 +1654,11 @@ mod tests {
     ///
     /// The job is `sleep`, given a here-string of nothing to do, because what is being observed is
     /// terminal ownership rather than anything the job prints.
-    #[cfg(target_os = "linux")]
+    // Linux AND macOS: this drives a reader that stopped being Linux-only when `procfs` and
+    // `read_cwd` learned their macOS syscalls (R343). The gate that used to be here is the
+    // reason the absence went five rounds unnoticed — the tests for the fact were on the one
+    // platform that had it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn foreground_pgid_names_the_job_that_owns_the_terminal() {
         let mut command = CommandBuilder::new("/bin/bash");
@@ -1755,7 +1758,12 @@ mod tests {
 
     /// Poll `foreground_pgid` until `want` accepts it, or give up. Job control settles on the
     /// child's own schedule, so a fixed sleep would either be flaky or slow.
-    #[cfg(target_os = "linux")]
+    ///
+    /// Gated with its callers, and that is the point rather than bookkeeping: ungating the test
+    /// above without this one left `wait_for` undefined on macOS, and the local
+    /// `--target aarch64-apple-darwin` check said so in seconds. A helper's platform is its
+    /// callers' platform, always.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wait_for(pty: &PanePty, want: impl Fn(Option<u32>) -> bool) -> Option<u32> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {

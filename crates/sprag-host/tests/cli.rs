@@ -6056,8 +6056,12 @@ fn the_cli_says_what_each_pane_is_running() {
     let one = ran(&["processes", &second]);
     let mut lines = one.lines();
     let head = lines.next().expect("the pane's own line");
+    // `/dev/` rather than `/dev/pts/`: the SPELLING of a pty's slave device is the platform's, not
+    // this product's — Linux says `/dev/pts/7` and macOS says `/dev/ttys007`. Pinning the Linux
+    // spelling made this assertion a claim about a kernel's naming convention while reading as a
+    // claim about sprag's output, and the first macOS run of this suite is what separated the two.
     assert!(
-        head.starts_with(&format!("{second}: /dev/pts/")) && head.contains("  child "),
+        head.starts_with(&format!("{second}: /dev/")) && head.contains("  child "),
         "the pane names its id, its terminal DEVICE and the child the daemon spawned: {head:?}",
     );
     let job = lines.next().expect("the job's line");

@@ -19,12 +19,18 @@
 //! `read_to_string` and therefore answered `None` for precisely the process the other one had been
 //! written to survive. One parse, on bytes, removes the class rather than the instance.
 //!
-//! # What is Linux-only here, and what is not
+//! # What is per-platform here, and what is not
 //!
 //! The PARSE is a byte parser over a line's layout and has no platform in it at all, so it is
-//! compiled — and tested — everywhere. Only `stat` and `walk`, which open `/proc`, are
-//! Linux-only, and off Linux they answer the honest absence every caller here already handles: no
-//! such process, and no processes on the box.
+//! compiled — and tested — everywhere. Only `stat` and `walk` touch an OS: `/proc` on Linux,
+//! `proc_pidinfo` and `proc_listpids` on macOS, and elsewhere the honest absence every caller here
+//! already handles — no such process, and no processes on the box.
+//!
+//! ⚠ **The macOS half was that absence until R343, and nothing said so out loud.** `stat` answered
+//! `None` there, so a pane could not name its foreground job, an agent report bound to a process
+//! group was never released, and `sprag processes` had nothing to print — three user-facing
+//! silences from one unimplemented reader, none of which mentions this module. The first macOS run
+//! of this suite is what named it.
 //!
 //! That line was in the wrong place until the first non-Linux build ran. Gating the whole MODULE
 //! made `Stat` — a plain struct that names four fields of a line — vanish on macOS, and
@@ -69,6 +75,12 @@ impl Stat {
     /// a process than attribute a wrong parent or group to it.
     ///
     /// Takes BYTES: see the module docs for why a `&str` signature would be the bug.
+    ///
+    /// ⚠ COMPILED AND TESTED EVERYWHERE, CALLED ON LINUX. It is the Linux TRANSPORT's parser —
+    /// macOS fills the same struct from a kernel struct and needs no parse — and the `allow` states
+    /// that rather than a `cfg` deleting it off Linux, for the reason this module's own docs give:
+    /// gating the parse by platform is how the type came to vanish on macOS in the first place.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn parse(stat: &[u8]) -> Option<Self> {
         let close = stat.iter().rposition(|&b| b == b')')?;
         let open = stat.iter().position(|&b| b == b'(')?;
@@ -105,9 +117,60 @@ pub(crate) fn stat(pid: u32) -> Option<Stat> {
     Stat::parse(&std::fs::read(format!("/proc/{pid}/stat")).ok()?)
 }
 
-/// No `/proc` off Linux, so no process has a stat line to read — the same absence a process that
+/// macOS: the same four facts, from `proc_pidinfo(PROC_PIDTBSDINFO)`.
+///
+/// There is no line to parse here — the kernel fills in a struct — so this builds a [`Stat`]
+/// directly rather than going through [`Stat::parse`]. The struct is the portable shape; the parse
+/// is the Linux TRANSPORT's problem, and that split is the reason this module gates its syscalls
+/// instead of its type.
+///
+/// The four fields line up exactly, which is why this is a port and not a redesign: `pbi_comm` is
+/// the kernel's short name (capped at `MAXCOMLEN`, as Linux caps `comm` at 15 — a name to show a
+/// person, never an identity), `pbi_ppid` is the parent, `pbi_pgid` the process group, and
+/// **`e_tpgid` is the controlling terminal's foreground group** — the same fact Linux puts in field
+/// 8 and the one a pane's live job is read from.
+///
+/// # The absence rule, and it differs from Linux's
+///
+/// Linux writes `-1` into `tpgid` for *no controlling terminal*. Here the terminal is named
+/// separately by `e_tdev`, which is `NODEV` (all bits set) when there is none — so that, rather
+/// than a sentinel in the group field, is what an absence is keyed on. The extra `!= 0` guard costs
+/// nothing and covers the other spelling: group 0 is not a job anybody can name.
+#[cfg(target_os = "macos")]
+pub(crate) fn stat(pid: u32) -> Option<Stat> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let want = std::mem::size_of::<libc::proc_bsdinfo>();
+    // SAFETY: `info` is a live allocation of exactly the type this flavour writes, and the size
+    // passed is its own. A `pid` that has exited is an ordinary short answer, not unsound.
+    let got = unsafe {
+        libc::proc_pidinfo(
+            i32::try_from(pid).ok()?,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            libc::c_int::try_from(want).ok()?,
+        )
+    };
+    if usize::try_from(got).ok()? != want {
+        return None;
+    }
+    let comm: Vec<u8> = info
+        .pbi_comm
+        .iter()
+        .take_while(|&&byte| byte != 0)
+        .map(|&byte| byte as u8)
+        .collect();
+    Some(Stat {
+        comm: String::from_utf8_lossy(&comm).into_owned(),
+        ppid: info.pbi_ppid,
+        pgrp: info.pbi_pgid,
+        tpgid: (info.e_tdev != u32::MAX && info.e_tpgid != 0).then_some(info.e_tpgid),
+    })
+}
+
+/// Neither `/proc` nor `libproc`, so no process has facts to read — the same absence a process that
 /// has already exited produces, which every caller here already handles.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn stat(_pid: u32) -> Option<Stat> {
     None
 }
@@ -143,10 +206,57 @@ pub(crate) fn walk() -> Vec<(u32, Stat)> {
         .collect()
 }
 
-/// No `/proc` off Linux, so the walk finds no processes — which is the same answer a Linux box
-/// whose `/proc` could not be opened gives, and every index built from this is empty rather than
-/// wrong.
-#[cfg(not(target_os = "linux"))]
+/// macOS: the pid list from `proc_listpids`, then [`stat`] for each.
+///
+/// N+1 calls where Linux's walk is a directory read plus N file reads, so the SHAPE of the cost is
+/// the same and neither is a snapshot: a process that exits between the listing and its own read
+/// simply does not appear, exactly as on Linux, and every index built from this is short rather
+/// than wrong.
+///
+/// ⚠ `PROC_ALL_PIDS` is spelled here because libc does not export it. It is `1`, from
+/// `<sys/proc_info.h>`, and a wrong value would make `proc_listpids` answer nothing or refuse —
+/// which is why the walk's test asserts that the list contains THIS process rather than merely that
+/// the call returned. A constant nobody can check is a constant that should not be written down.
+#[cfg(target_os = "macos")]
+pub(crate) fn walk() -> Vec<(u32, Stat)> {
+    /// `<sys/proc_info.h>`'s `PROC_ALL_PIDS`.
+    const PROC_ALL_PIDS: u32 = 1;
+
+    // Asked for its size FIRST (a null buffer answers the bytes needed), because the count moves
+    // between the two calls on a live machine — so the buffer is over-allocated on purpose and the
+    // second answer, not the first, decides how much of it is real.
+    // SAFETY: a null buffer of size 0 is the documented way to ask for the size.
+    let bytes = unsafe { libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
+    let Ok(bytes) = usize::try_from(bytes) else {
+        return Vec::new();
+    };
+    let slack = bytes / std::mem::size_of::<u32>() + 64;
+    let mut pids = vec![0u32; slack];
+    // SAFETY: the buffer is `slack` u32s long and its byte length is what is handed over.
+    let filled = unsafe {
+        libc::proc_listpids(
+            PROC_ALL_PIDS,
+            0,
+            pids.as_mut_ptr().cast(),
+            libc::c_int::try_from(std::mem::size_of_val(pids.as_slice()))
+                .unwrap_or(libc::c_int::MAX),
+        )
+    };
+    let Ok(filled) = usize::try_from(filled) else {
+        return Vec::new();
+    };
+    pids.truncate(filled / std::mem::size_of::<u32>());
+    pids.into_iter()
+        // pid 0 is the kernel, which `proc_listpids` pads a short list with.
+        .filter(|&pid| pid != 0)
+        .filter_map(|pid| Some((pid, stat(pid)?)))
+        .collect()
+}
+
+/// Neither `/proc` nor `libproc`, so the walk finds no processes — which is the same answer a Linux
+/// box whose `/proc` could not be opened gives, and every index built from this is empty rather
+/// than wrong.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn walk() -> Vec<(u32, Stat)> {
     Vec::new()
 }
@@ -154,6 +264,82 @@ pub(crate) fn walk() -> Vec<(u32, Stat)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`stat`] answers about a process this one already knows the answers for — ITSELF.
+    ///
+    /// # Platform-blind on purpose
+    ///
+    /// The parser tests below drive a Linux line's LAYOUT on every platform, which is right for a
+    /// byte parser and says nothing at all about whether this box can read a process. That was the
+    /// gap: `stat` answered `None` everywhere but Linux for the whole life of this module, and the
+    /// first macOS run of this suite (R343) failed on it in `pane_pty`, in `processes` and in the
+    /// CLI — none of which named `procfs`.
+    ///
+    /// So this asks for facts the OS will also state directly, and fails on whichever platform's
+    /// implementation is wrong. `comm` is asserted non-empty rather than by name: the kernel caps it
+    /// (15 bytes on Linux, `MAXCOMLEN` here) so a test binary's long hashed name is truncated
+    /// differently on each, and pinning the spelling would be a claim about cargo rather than about
+    /// this reader.
+    #[test]
+    fn stat_reads_back_the_parent_and_group_this_process_was_given() {
+        let read = stat(std::process::id());
+
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert_eq!(
+                read, None,
+                "a platform with no reader answers an honest absence, never a guess",
+            );
+            return;
+        }
+
+        let read = read.expect("a platform with a reader must answer about its own process");
+        // SAFETY: both are argument-free getters that cannot fail.
+        let (ppid, pgrp) = unsafe { (libc::getppid(), libc::getpgrp()) };
+        assert_eq!(
+            read.ppid,
+            u32::try_from(ppid).expect("a pid is not negative"),
+            "the parent the OS reports for this process",
+        );
+        assert_eq!(
+            read.pgrp,
+            u32::try_from(pgrp).expect("a group is not negative"),
+            "and the process group it reports",
+        );
+        assert!(!read.comm.is_empty(), "and a name to show a person");
+    }
+
+    /// [`walk`] finds this process, with the same facts [`stat`] gives for it.
+    ///
+    /// ⚠ The one assertion that can catch a wrong `PROC_ALL_PIDS`: a bad flavour makes
+    /// `proc_listpids` answer nothing, and "the walk returned" would pass over that in silence
+    /// while every index built on it came back empty. Asking it to contain a process we can NAME is
+    /// what makes the constant checkable.
+    #[test]
+    fn the_walk_contains_this_process_and_agrees_with_stat_about_it() {
+        let me = std::process::id();
+        let walked = walk();
+
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert!(walked.is_empty(), "no reader, no processes, and no guesses");
+            return;
+        }
+
+        assert!(
+            walked.len() > 1,
+            "a box running this test is running more than one process: {}",
+            walked.len(),
+        );
+        let mine = walked
+            .iter()
+            .find(|(pid, _)| *pid == me)
+            .map(|(_, stat)| stat.clone())
+            .expect("the walk must contain the process doing the walking");
+        assert_eq!(
+            Some(&mine),
+            stat(me).as_ref(),
+            "and the walk's row for a process is the row a single read gives",
+        );
+    }
 
     /// The whole reason this parse counts from the LAST `)`: a `comm` full of spaces and
     /// parentheses (a real hazard — a process can name itself `(my proc)`) must not shift any field

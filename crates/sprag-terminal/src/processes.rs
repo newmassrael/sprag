@@ -306,11 +306,110 @@ fn argv(pid: u32) -> Vec<String> {
     split_cmdline(&raw)
 }
 
-/// No `/proc` off Linux, so no arguments — and the empty here means the same thing it means for a
-/// zombie, which is why [`JobProcess::argv`] documents empty as a fact.
-#[cfg(not(target_os = "linux"))]
+/// macOS: the same arguments, from `sysctl(KERN_PROCARGS2)`.
+///
+/// # The payload's shape, which is not `/proc/<pid>/cmdline`'s
+///
+/// The kernel answers one buffer: a 4-byte `argc`, then the **executable path**, then a run of
+/// padding NULs, then `argc` NUL-terminated arguments, then the environment. So unlike Linux —
+/// where the file IS the argument vector — two things have to be stepped over before the arguments
+/// begin, and the count is what says where they end. Taking the first `argc` strings after the
+/// padding is therefore not a heuristic: the environment that follows is excluded BY the count.
+///
+/// `argv[0]` is the program as the process was invoked with it, which is what
+/// [`JobProcess::argv`]'s Linux reader also yields — the executable path before it is the kernel's
+/// own resolution and is deliberately dropped, or a person would read the same program twice.
+///
+/// Lossy-decoded and short-answer-tolerant for [`split_cmdline`]'s reasons: an argument is
+/// arbitrary bytes, and a process that exits mid-read must produce an empty argv rather than
+/// delete the process from its job.
+#[cfg(target_os = "macos")]
+fn argv(pid: u32) -> Vec<String> {
+    let Ok(pid) = i32::try_from(pid) else {
+        return Vec::new();
+    };
+    // KERN_ARGMAX rather than a size probe: `KERN_PROCARGS2` does not answer a length for a null
+    // buffer, and the kernel's own ceiling is the only honest bound on how big the answer can be.
+    let mut argmax: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut ask = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    // SAFETY: `ask` is a two-element MIB, and the out-buffer and its length describe one `c_int`.
+    if unsafe {
+        libc::sysctl(
+            ask.as_mut_ptr(),
+            2,
+            std::ptr::from_mut(&mut argmax).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return Vec::new();
+    }
+    let Ok(argmax) = usize::try_from(argmax) else {
+        return Vec::new();
+    };
+
+    let mut buffer = vec![0u8; argmax];
+    let mut filled = argmax;
+    let mut ask = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    // SAFETY: `ask` is a three-element MIB and `filled` is `buffer`'s real length. Reading another
+    // user's arguments is refused by the kernel, which is a non-zero return and an empty answer —
+    // never a partial read of somebody else's memory.
+    if unsafe {
+        libc::sysctl(
+            ask.as_mut_ptr(),
+            3,
+            buffer.as_mut_ptr().cast(),
+            &raw mut filled,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return Vec::new();
+    }
+    buffer.truncate(filled);
+    split_procargs2(&buffer)
+}
+
+/// Neither `/proc` nor `sysctl`, so no arguments — and the empty here means the same thing it means
+/// for a zombie, which is why [`JobProcess::argv`] documents empty as a fact.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn argv(_pid: u32) -> Vec<String> {
     Vec::new()
+}
+
+/// Split a `KERN_PROCARGS2` payload into arguments.
+///
+/// Compiled and TESTED on every platform, like [`split_cmdline`] and for the same reason: the shape
+/// of a payload is not a syscall, and a parser only one runner ever builds is a parser only one
+/// runner can catch a mistake in. See [`argv`]'s macOS body for what the layout is and why the
+/// count rather than the first empty string is what ends the vector.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn split_procargs2(raw: &[u8]) -> Vec<String> {
+    let Some((count, rest)) = raw.split_at_checked(std::mem::size_of::<u32>()) else {
+        return Vec::new();
+    };
+    let argc = u32::from_ne_bytes([count[0], count[1], count[2], count[3]]);
+    let Ok(argc) = usize::try_from(argc) else {
+        return Vec::new();
+    };
+    // Step over the executable path, then over the padding NULs the kernel aligns it with. A
+    // payload that ends inside either has no arguments to give.
+    let after_exec = match rest.iter().position(|&byte| byte == 0) {
+        Some(end) => &rest[end..],
+        None => return Vec::new(),
+    };
+    let args = match after_exec.iter().position(|&byte| byte != 0) {
+        Some(start) => &after_exec[start..],
+        None => return Vec::new(),
+    };
+    args.split(|&byte| byte == 0)
+        .take(argc)
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .collect()
 }
 
 /// Split a `/proc/<pid>/cmdline` payload into arguments.
@@ -322,6 +421,12 @@ fn argv(_pid: u32) -> Vec<String> {
 ///
 /// Lossy-decoded: an argument is arbitrary bytes, and one that will not decode must still be shown
 /// rather than delete the process from the job.
+///
+/// ⚠ COMPILED AND TESTED EVERYWHERE, CALLED ON LINUX — the `allow` says so rather than a `cfg`
+/// hiding it. Gating the parser by platform is the mistake `procfs`'s module docs describe: a byte
+/// layout is not a syscall, and a parser only one runner builds is one only that runner can catch a
+/// mistake in. Its macOS peer is [`split_procargs2`], with the `allow` pointing the other way.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn split_cmdline(raw: &[u8]) -> Vec<String> {
     let body = raw.strip_suffix(b"\0").unwrap_or(raw);
     if body.is_empty() {
@@ -359,6 +464,59 @@ mod tests {
         assert_eq!(split_cmdline(b"\0"), Vec::<String>::new());
     }
 
+    /// The macOS payload is a DIFFERENT shape, and the count is what ends the vector.
+    ///
+    /// `KERN_PROCARGS2` answers `argc`, then the executable path, then padding NULs, then the
+    /// arguments — and then **the whole environment**. A reader that split on NUL and took
+    /// everything would hand a person their own environment as a command line, secrets included,
+    /// which is why the last case here is the one that matters most.
+    ///
+    /// Driven on every platform, deliberately: this is a parse of a byte layout, not a syscall, and
+    /// a parser only one runner ever builds is one only that runner can catch a mistake in — the
+    /// exact reasoning `procfs` states for keeping `Stat::parse` portable.
+    #[test]
+    fn the_macos_payload_stops_at_argc_and_never_reaches_the_environment() {
+        let payload = |argc: u32, body: &[u8]| {
+            let mut raw = argc.to_ne_bytes().to_vec();
+            raw.extend_from_slice(body);
+            raw
+        };
+
+        assert_eq!(
+            split_procargs2(&payload(
+                2,
+                b"/usr/bin/sleep\x00\x00\x00sleep\x00600\x00SHELL=/bin/zsh\x00"
+            )),
+            vec!["sleep", "600"],
+            "two arguments, and the environment behind them is not one of them",
+        );
+        assert_eq!(
+            split_procargs2(&payload(1, b"/bin/cat\x00cat\x00AWS_SECRET=hunter2\x00")),
+            vec!["cat"],
+            "the count ends the vector even with no padding between path and args",
+        );
+        assert_eq!(
+            split_procargs2(&payload(3, b"/bin/sh\x00\x00\x00sh\x00-c\x00\x00")),
+            vec!["sh", "-c", ""],
+            "an empty argument in the middle survives, as it does on Linux",
+        );
+        assert_eq!(
+            split_procargs2(&payload(0, b"/bin/true\x00\x00true\x00")),
+            Vec::<String>::new(),
+            "argc 0 is no arguments, not all of them",
+        );
+        assert_eq!(
+            split_procargs2(b"ab"),
+            Vec::<String>::new(),
+            "a payload too short to hold the count is refused whole",
+        );
+        assert_eq!(
+            split_procargs2(&payload(2, b"/no/terminator")),
+            Vec::<String>::new(),
+            "and one that ends inside the executable path has nothing to give",
+        );
+    }
+
     /// A registry with no session at all costs nothing and reports nothing — the idle daemon case,
     /// where a `/proc` walk would be pure waste.
     #[test]
@@ -377,7 +535,11 @@ mod tests {
     /// "the child": at a prompt they are the same group, and the entire reason this exists is the
     /// case where they are not. So the shell is sampled at rest first, and then while a job it
     /// started holds the terminal.
-    #[cfg(target_os = "linux")]
+    // Linux AND macOS now: these drive the foreground-job reader end to end against a real
+    // shell, and that reader stopped being Linux-only when `procfs` learned `proc_pidinfo`
+    // (R343). A gate left on a test after its subject became portable is a claim that the
+    // subject is not — and the platform this was hiding from is the one it had never run on.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_pane_reports_the_command_its_shell_is_running() {
         let registry = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
@@ -471,7 +633,11 @@ mod tests {
     ///  * the outer `sh` is the job's group leader, and `exec` keeps that pid as `sleep 400`;
     ///  * the inner `sh` starts `sleep 300` in the same group (no job control inside `sh -c`) and
     ///    exits, so `sleep 300` is reparented away while the group lives on through the leader.
-    #[cfg(target_os = "linux")]
+    // Linux AND macOS now: these drive the foreground-job reader end to end against a real
+    // shell, and that reader stopped being Linux-only when `procfs` learned `proc_pidinfo`
+    // (R343). A gate left on a test after its subject became portable is a claim that the
+    // subject is not — and the platform this was hiding from is the one it had never run on.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_reparented_member_of_the_job_is_still_in_it() {
         let registry = Arc::new(Mutex::new(SessionRegistry::new((80, 24))));
@@ -569,7 +735,11 @@ mod tests {
 
     /// Poll a fresh sample until `ready`, or give up — a real shell reaches its prompt and starts a
     /// job on its own schedule, and `Duration::ZERO` is what makes each read a genuinely new walk.
-    #[cfg(target_os = "linux")]
+    // Linux AND macOS now: these drive the foreground-job reader end to end against a real
+    // shell, and that reader stopped being Linux-only when `procfs` learned `proc_pidinfo`
+    // (R343). A gate left on a test after its subject became portable is a claim that the
+    // subject is not — and the platform this was hiding from is the one it had never run on.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn settle(
         sampler: &PaneProcessSampler,
         registry: &Arc<Mutex<SessionRegistry>>,
