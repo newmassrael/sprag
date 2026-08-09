@@ -5515,6 +5515,91 @@ mod tests {
         assert!(cmd.running);
     }
 
+    /// A command LONGER THAN THE PANE IS WIDE is read back whole — the same blindness the search
+    /// had, at the door an agent uses to learn what a pane just ran.
+    ///
+    /// Found by asking R344's own question of the neighbouring readers, and measured before it was
+    /// fixed: `read_last_command` answered `"$ echo the-quick-bro\nwn-fox"` — a command line with a
+    /// newline through the middle of a word, which an agent cannot re-run, quote, or compare. The
+    /// output half had it too. Both slices walk logical lines now, so they agree with the search
+    /// about where a line ends.
+    ///
+    /// THE CONTROL is the second output line: a HARD break is still a break, so the fix is "join
+    /// the wraps", not "delete the newlines".
+    #[test]
+    fn last_command_reads_back_a_command_wider_than_the_pane() {
+        let mut em = Emulator::new(20, 6);
+        em.advance(b"\x1b]133;A\x07$ echo the-quick-brown-fox\x1b]133;B\x07");
+        em.advance(b"\r\n\x1b]133;C\x07");
+        em.advance(b"the-quick-brown-fox-jumped\r\nover\r\n");
+        em.advance(b"\x1b]133;D;0\x07");
+        assert!(
+            em.screen().wrapped(0),
+            "the fixture must wrap: the command line is 26 columns on a 20-column pane",
+        );
+        let cmd = em.screen().last_command().expect("a command ran");
+        assert_eq!(
+            cmd.command, "$ echo the-quick-brown-fox",
+            "the command line comes back whole, not broken where the pane broke it",
+        );
+        assert_eq!(
+            cmd.output, "the-quick-brown-fox-jumped\nover",
+            "and so does the output — with the HARD break between its two lines kept",
+        );
+        assert_eq!(cmd.exit_status, Some(0));
+    }
+
+    /// Output the shell reports FINISHED while the cursor is still mid-line keeps its last line.
+    ///
+    /// A second defect, found by the fixture built for the first: `OSC 133 ; D` is emitted where
+    /// the cursor is, so a command whose output does not end in a newline puts the end mark on the
+    /// row holding the output's tail — and a range that stopped BEFORE that row dropped the tail.
+    /// Measured: `"the-quick-brown-fox-jumped"` came back as `"the-quick-brown-fox-"`. Commands
+    /// that end mid-line are ordinary (`printf` with no `\n`, a program that dies mid-write), and
+    /// what an agent loses is the last thing the command said.
+    ///
+    /// Including the end row is safe for the ordinary case rather than a trade: when output DOES
+    /// end in a newline the end mark lands on a blank row, and a trailing empty line is dropped.
+    #[test]
+    fn last_command_keeps_output_the_shell_ended_mid_line() {
+        let mut em = Emulator::new(20, 6);
+        em.advance(b"\x1b]133;A\x07$ x\x1b]133;B\x07\r\n\x1b]133;C\x07");
+        em.advance(b"the-quick-brown-fox-jumped"); // 26 columns, and NO trailing newline
+        em.advance(b"\x1b]133;D;0\x07");
+        let cmd = em.screen().last_command().expect("a command ran");
+        assert_eq!(
+            cmd.output, "the-quick-brown-fox-jumped",
+            "the tail sits on the row the end mark landed on, and it is still the command's",
+        );
+        assert_eq!(cmd.exit_status, Some(0));
+    }
+
+    /// A line still OPEN at the end of the slice is reported, not dropped on the floor.
+    ///
+    /// The peer of `a_line_still_open_at_the_last_retained_row_is_searched`, at the other reader of
+    /// a logical line, and it needs the same idiom to reach the state: `DECSTBM` reserves the rows
+    /// above and leaves the cursor parked on the last row, where a print past the margin sets the
+    /// wrap flag and the line feed has nowhere to scroll to. The slice ends there — the rows past
+    /// it are not this caller's — so the line has to be closed rather than carried, and without
+    /// that the whole of a running command's output goes MISSING rather than arriving short.
+    #[test]
+    fn last_command_reports_output_still_open_at_the_last_retained_row() {
+        let mut em = Emulator::new(10, 3);
+        em.advance(b"\x1b[1;2r\x1b[3;1H"); // region = rows 1..2, cursor parked on row 3
+        em.advance(b"\x1b]133;C\x07abcdefghijklm"); // output starts here and wraps onto nothing
+        let screen = em.screen();
+        assert!(
+            screen.wrapped(screen.rows() - 1),
+            "the fixture must leave the LAST row continuing onto a row that is not retained",
+        );
+        let cmd = screen.last_command().expect("a command is running");
+        assert!(cmd.running, "no end mark yet");
+        assert_eq!(
+            cmd.output, "klmdefghij",
+            "the open line is closed at the slice's end and reported",
+        );
+    }
+
     /// No output mark (`C`) yet — at a bare prompt, nothing has run — is `None`.
     #[test]
     fn last_command_is_none_without_an_output_mark() {

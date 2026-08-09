@@ -1193,12 +1193,12 @@ impl ShellState {
 /// tool, exactly as it projects [`ShellState`] via [`ShellState::wire_str`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LastCommand {
-    /// The command line: the prompt row(s) from the [`Prompt`](PromptMark::Prompt) up to the
+    /// The command line: the prompt LINES from the [`Prompt`](PromptMark::Prompt) up to the
     /// [`Output`](PromptMark::Output) mark, INCLUDING the shell's prompt string (input-start `B` is
     /// not a row mark — a documented bound). Empty when integration began after the prompt (an
     /// `Output` with no preceding `Prompt`).
     pub command: String,
-    /// The command's output: the rows from [`Output`](PromptMark::Output) to
+    /// The command's output: the LINES from [`Output`](PromptMark::Output) to
     /// [`CommandEnd`](PromptMark::CommandEnd), or to the bottom of the pane while [`running`](Self::running).
     pub output: String,
     /// The reported exit status, or `None` for a bare `OSC 133 ; D` (finished, unreported) or while
@@ -1922,21 +1922,7 @@ impl Screen {
             .rev()
             .find(|&i| mark_at(i) == Some(PromptMark::Prompt));
 
-        let text = |range: std::ops::Range<usize>| -> String {
-            let mut lines: Vec<String> = range
-                .map(|i| {
-                    if i < sb_len {
-                        cells_text(&self.scrollback[i].cells)
-                    } else {
-                        self.row_text((i - sb_len) as u16)
-                    }
-                })
-                .collect();
-            while lines.last().is_some_and(String::is_empty) {
-                lines.pop();
-            }
-            lines.join("\n")
-        };
+        let text = |range: std::ops::Range<usize>| self.logical_text_in(range);
 
         let exit_status = match d {
             Some(i) => match mark_at(i) {
@@ -1947,7 +1933,7 @@ impl Screen {
         };
         Some(LastCommand {
             command: a.map(|a| text(a..c)).unwrap_or_default(),
-            output: text(c..d.unwrap_or(total)),
+            output: text(c..d.map_or(total, |d| d + 1)),
             exit_status,
             running: d.is_none(),
         })
@@ -2065,6 +2051,57 @@ impl Screen {
         }))
     }
 
+    /// Retained row `index`'s cells and its soft-wrap continuation — scrollback first (`0` = the
+    /// oldest), then the visible grid. `None` past the last retained row.
+    ///
+    /// THE one place the two halves are indexed as one axis. Three readers needed it and each had
+    /// its own copy of the `if index < scrollback.len()` split; a fourth would have written a
+    /// fourth. The visible half is borrowed straight out of the row-major cell buffer, so walking
+    /// the whole retained region allocates nothing.
+    fn retained_row(&self, index: usize) -> Option<(&[Cell], Option<u16>)> {
+        let sb_len = self.scrollback.len();
+        if index < sb_len {
+            let history = &self.scrollback[index];
+            return Some((history.cells.as_slice(), history.continues));
+        }
+        let row = index - sb_len;
+        if row >= self.rows as usize {
+            return None;
+        }
+        let cols = self.cols as usize;
+        Some((
+            &self.cells[row * cols..(row + 1) * cols],
+            self.continues[row],
+        ))
+    }
+
+    /// The retained rows in `range` as TEXT, soft wraps joined and hard breaks kept as `"\n"`,
+    /// with trailing empty lines dropped.
+    ///
+    /// The text half of [`Self::scan_logical`]'s traversal, and it agrees with it line for line —
+    /// which is what makes a search answer and a command slice describe the same lines. A line
+    /// still open at the range's end is closed there: the range is what the caller asked about, and
+    /// the rows past it belong to somebody else's slice.
+    fn logical_text_in(&self, range: std::ops::Range<usize>) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let mut joined: Vec<Cell> = Vec::new();
+        for index in range.clone() {
+            let Some((cells, continues)) = self.retained_row(index) else {
+                break;
+            };
+            joined.extend_from_slice(line_cells(cells, continues));
+            if continues.is_some() && index + 1 < range.end {
+                continue;
+            }
+            lines.push(cells_text(&joined));
+            joined.clear();
+        }
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+
     /// Run `scan` over every retained LOGICAL line — scrollback first, then the visible grid, as
     /// ONE stream — collecting its matches and, for each line that produced one, its text.
     ///
@@ -2099,21 +2136,15 @@ impl Screen {
         mut scan: impl FnMut(&[Cell], &[RowShare], usize, &mut Vec<FindMatch>) -> bool,
     ) -> FindResult {
         let mut result = FindResult::default();
-        let sb_len = self.scrollback.len();
-        let cols = self.cols as usize;
-        let retained = sb_len + self.rows as usize;
+        let retained = self.scrollback.len() + self.rows as usize;
         // The line being built: its cells, where each row's share of them starts, and the row it
         // begins on. Reused across lines — a scrollback-deep search must not allocate per line.
         let mut joined: Vec<Cell> = Vec::new();
         let mut shares: Vec<RowShare> = Vec::new();
         let mut line = 0usize;
         for row in 0..retained {
-            let (cells, continues) = if row < sb_len {
-                let history = &self.scrollback[row];
-                (history.cells.as_slice(), history.continues)
-            } else {
-                let r = row - sb_len;
-                (&self.cells[r * cols..(r + 1) * cols], self.continues[r])
+            let Some((cells, continues)) = self.retained_row(row) else {
+                break;
             };
             if shares.is_empty() {
                 line = row;
