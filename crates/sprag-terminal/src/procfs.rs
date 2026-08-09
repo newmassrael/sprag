@@ -19,8 +19,20 @@
 //! `read_to_string` and therefore answered `None` for precisely the process the other one had been
 //! written to survive. One parse, on bytes, removes the class rather than the instance.
 //!
-//! Linux-only, like every other `/proc` reader here: off Linux the callers report an honest absence
-//! rather than a guess, so there is nothing for this module to do and it is not compiled.
+//! # What is Linux-only here, and what is not
+//!
+//! The PARSE is a byte parser over a line's layout and has no platform in it at all, so it is
+//! compiled — and tested — everywhere. Only `stat` and `walk`, which open `/proc`, are
+//! Linux-only, and off Linux they answer the honest absence every caller here already handles: no
+//! such process, and no processes on the box.
+//!
+//! That line was in the wrong place until the first non-Linux build ran. Gating the whole MODULE
+//! made `Stat` — a plain struct that names four fields of a line — vanish on macOS, and
+//! [`crate::processes`] holds one in a map whose type is not itself conditional, so a portable data
+//! structure failed to compile for want of a `/proc`. **A platform gate belongs on the syscall, not
+//! on the type the syscall fills in**; put it on the type and every caller inherits a `cfg` it has
+//! no opinion about. The five parser tests below now also run on every platform CI builds, where
+//! before they ran on one.
 
 /// The fields of one `/proc/<pid>/stat` line that this crate reads.
 ///
@@ -88,8 +100,16 @@ impl Stat {
 
 /// Read and parse one process's `/proc/<pid>/stat`. `None` when the process is gone (the common
 /// case, and a race no caller can avoid) or the line does not parse.
+#[cfg(target_os = "linux")]
 pub(crate) fn stat(pid: u32) -> Option<Stat> {
     Stat::parse(&std::fs::read(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// No `/proc` off Linux, so no process has a stat line to read — the same absence a process that
+/// has already exited produces, which every caller here already handles.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn stat(_pid: u32) -> Option<Stat> {
+    None
 }
 
 /// EVERY process on the box, as `(pid, its stat)`, from one pass over `/proc`.
@@ -105,6 +125,7 @@ pub(crate) fn stat(pid: u32) -> Option<Stat> {
 ///
 /// A process that exits mid-walk simply does not appear; there is no consistent snapshot of `/proc`
 /// to be had, and a caller that needed one would be asking the wrong question of the wrong OS.
+#[cfg(target_os = "linux")]
 pub(crate) fn walk() -> Vec<(u32, Stat)> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
@@ -120,6 +141,14 @@ pub(crate) fn walk() -> Vec<(u32, Stat)> {
             ))
         })
         .collect()
+}
+
+/// No `/proc` off Linux, so the walk finds no processes — which is the same answer a Linux box
+/// whose `/proc` could not be opened gives, and every index built from this is empty rather than
+/// wrong.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn walk() -> Vec<(u32, Stat)> {
+    Vec::new()
 }
 
 #[cfg(test)]

@@ -250,7 +250,12 @@ impl ProcessTable {
     /// Read and index `/proc`. Empty off Linux, where the honest answer to every question below is
     /// an absence rather than a guess — the same choice [`crate::ports`] and
     /// [`crate::pane_pty`] make.
-    #[cfg(target_os = "linux")]
+    ///
+    /// ONE body for every platform, because the platform difference is one level down:
+    /// [`crate::procfs::walk`] answers with no processes off Linux, so this indexes nothing and
+    /// [`foreground_job`](Self::foreground_job) reports nothing, which is exactly what the
+    /// hand-written non-Linux arm here used to do. A `cfg` that only restates what its callee
+    /// already guarantees is a second place for the two platforms to drift apart.
     fn read() -> Self {
         let mut by_pid = HashMap::new();
         let mut by_group: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -262,13 +267,6 @@ impl ProcessTable {
             members.sort_unstable();
         }
         Self { by_pid, by_group }
-    }
-
-    /// No `/proc` off Linux — an empty table, so [`foreground_job`](Self::foreground_job) honestly
-    /// reports nothing.
-    #[cfg(not(target_os = "linux"))]
-    fn read() -> Self {
-        Self::default()
     }
 
     /// The job owning the terminal of the process `pid` — its `tpgid`, and every process in that

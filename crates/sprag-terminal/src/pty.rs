@@ -35,7 +35,7 @@
 use std::ffi::{CStr, OsStr};
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
@@ -65,7 +65,12 @@ impl Pty {
     pub fn open(cols: u16, rows: u16) -> io::Result<Self> {
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
-        let size = winsize(cols, rows);
+        // `mut`, and the last two arguments are `*mut`, because the two platforms declare this
+        // differently: glibc takes `termp: *const termios, winp: *const winsize` and Apple's libc
+        // takes both as `*mut`. A `*mut` coerces to a `*const` and not the other way round, so the
+        // mutable spelling is the one that compiles on both — and it costs nothing, since `openpty`
+        // does not write through either pointer on any platform.
+        let mut size = winsize(cols, rows);
         // SAFETY: both descriptors are out-parameters the call fills in, `size` is a fully
         // initialised `winsize`, and the terminal-settings argument is deliberately null (the
         // child's shell sets its own).
@@ -74,8 +79,8 @@ impl Pty {
                 &raw mut master,
                 &raw mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                &raw const size,
+                std::ptr::null_mut(),
+                &raw mut size,
             )
         };
         if opened != 0 {
@@ -112,16 +117,27 @@ impl Pty {
     ///
     /// Resolved from the master rather than from the child's fd 0, which the child is free to
     /// redirect.
+    ///
+    /// # Why the call underneath is per-platform
+    ///
+    /// There is no portable thread-safe spelling of this question, and thread-safety is not a
+    /// nicety here: this daemon opens and names panes from many threads at once. POSIX `ptsname`
+    /// returns a pointer into ONE static buffer, so two panes opening together can each be handed
+    /// the other's device name. glibc's answer is `ptsname_r`, which writes into the caller's
+    /// buffer; Apple has never shipped `ptsname_r` and its answer is the `TIOCPTYGNAME` ioctl,
+    /// which does the same thing by another name. Both are asked for through
+    /// `ptsname_into` (crate-private), so this function has one body and the difference is
+    /// stated once.
     #[must_use]
     pub fn tty_name(&self) -> Option<PathBuf> {
-        let mut buf = [0i8; 128];
-        // SAFETY: `buf` is a valid writable buffer of the length passed, and the master is open.
-        let named =
-            unsafe { libc::ptsname_r(self.master.as_raw_fd(), buf.as_mut_ptr(), buf.len()) };
-        if named != 0 {
+        // `c_char` and not `i8`: the two are the same type on x86-64 Linux and on Apple, and
+        // DIFFERENT on aarch64 Linux, where `c_char` is unsigned. Spelling the element type as the
+        // C one is what keeps this compiling on a target neither CI job builds today.
+        let mut buf = [0 as libc::c_char; TTY_NAME_MAX];
+        if !ptsname_into(self.master.as_raw_fd(), &mut buf) {
             return None;
         }
-        // SAFETY: on success `ptsname_r` wrote a NUL-terminated string into `buf`.
+        // SAFETY: on success the call above wrote a NUL-terminated string into `buf`.
         let name = unsafe { CStr::from_ptr(buf.as_ptr()) };
         Some(PathBuf::from(OsStr::from_bytes(name.to_bytes())))
     }
@@ -147,8 +163,13 @@ impl Pty {
         size.ws_xpixel = pixel_width;
         size.ws_ypixel = pixel_height;
         // SAFETY: the master is open and `size` is a fully initialised `winsize`.
-        let sized =
-            unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
+        let sized = unsafe {
+            libc::ioctl(
+                self.master.as_raw_fd(),
+                libc::TIOCSWINSZ as _,
+                &raw const size,
+            )
+        };
         if sized != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -227,7 +248,14 @@ impl Pty {
                 }
                 // `std` has already put the slave on fd 0, so THIS is the device to claim. Claiming
                 // it is what makes Ctrl-C reach the child's foreground job instead of the daemon.
-                if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0 {
+                //
+                // `as _` because an ioctl request constant does NOT have one type across the targets
+                // this builds for, and neither does the parameter it goes into: glibc declares the
+                // constants as `Ioctl` (`c_ulong` on gnu, `c_int` on musl), and Apple's libc
+                // declares `TIOCSCTTY` as `c_uint` while declaring `TIOCSWINSZ` beside it as
+                // `c_ulong`. Inferring the target type from the signature is the only spelling that
+                // is right on all of them; naming any one of them would be right on that one.
+                if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if let Some(cgroup) = &cgroup {
@@ -248,6 +276,35 @@ impl Pty {
         drop(slave);
         Ok(child)
     }
+}
+
+/// How long a pty device name this crate is willing to read.
+///
+/// 128 because that is the size `TIOCPTYGNAME` is DECLARED with — Apple's request code
+/// (`0x40807453`) encodes its argument length in the middle two bytes, `0x080` — so a shorter buffer
+/// would be a buffer the kernel writes past. `/dev/pts/N` and `/dev/ttysNNN` are an order of
+/// magnitude shorter than that on both platforms.
+const TTY_NAME_MAX: usize = 128;
+
+/// Write the device name of `master`'s slave side into `buf`, thread-safely. `false` if the
+/// platform's call refused.
+///
+/// See [`Pty::tty_name`] for why this is per-platform at all. Both arms write a NUL-terminated
+/// string into the caller's buffer and neither touches a static one.
+#[cfg(not(target_vendor = "apple"))]
+fn ptsname_into(master: RawFd, buf: &mut [libc::c_char; TTY_NAME_MAX]) -> bool {
+    // SAFETY: `buf` is a valid writable buffer of the length passed, and `master` is open.
+    unsafe { libc::ptsname_r(master, buf.as_mut_ptr(), buf.len()) == 0 }
+}
+
+/// Apple's spelling: an ioctl that fills the caller's buffer, because `ptsname_r` does not exist
+/// here — verified against `libc`'s own `unix/bsd/apple/mod.rs`, which declares `TIOCPTYGNAME` and
+/// no `ptsname_r` at all.
+#[cfg(target_vendor = "apple")]
+fn ptsname_into(master: RawFd, buf: &mut [libc::c_char; TTY_NAME_MAX]) -> bool {
+    // SAFETY: `buf` is exactly the 128 bytes `TIOCPTYGNAME`'s request code declares, and `master`
+    // is open.
+    unsafe { libc::ioctl(master, libc::TIOCPTYGNAME as _, buf.as_mut_ptr()) == 0 }
 }
 
 /// The kernel's window size, with the pixel metrics left at zero — sprag reports cells, and a

@@ -27,8 +27,8 @@ pub mod pane_pty;
 mod ports;
 pub mod processes;
 /// The one parse of a process's `/proc/<pid>/stat` line, shared by every `/proc` reader in this
-/// crate (crate-internal, Linux-only).
-#[cfg(target_os = "linux")]
+/// crate (crate-internal). The PARSE is portable and compiled everywhere; only the two functions
+/// that open `/proc` are Linux-only.
 mod procfs;
 /// The OS pseudoterminal and the child on the far side of it — the platform boundary this crate
 /// owns (R336). Unix-only; a Windows arm would be a sibling of its two entry points.
