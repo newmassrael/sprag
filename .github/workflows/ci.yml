@@ -11,12 +11,25 @@
 #
 # WHAT IS DELIBERATELY NOT HERE YET
 #
-#   * The GUI crate. `--exclude sprag-gui` is not a cost dodge — it is measured: the remaining
-#     workspace compiles ZERO display or GPU crates (no wgpu, winit, vello, ash, fontconfig,
-#     wayland, x11), so these jobs need no system packages and cannot be broken by a runner image
-#     changing them. That also makes this a GATE on the headless/display split the architecture
-#     rests on: the day something pulls a display dependency into the host, these jobs stop
-#     compiling and say so.
+#   * The GUI crate. `--exclude sprag-gui` is not a cost dodge: the remaining workspace compiles no
+#     GPU or windowing crate at all (measured with `cargo tree -i`: wgpu, winit, vello, ash,
+#     wayland and x11 are each ABSENT). That makes these jobs a GATE on the headless/display split
+#     the architecture rests on.
+#
+#     ⚠ The first run of this file measured the other half of that claim FALSE. It said the
+#     remaining workspace needs no system packages, and the Linux job failed building
+#     `yeslogic-fontconfig-sys`. `sprag-rpc` -> `pinion-rpc-transport` -> `pinion-rpc` ->
+#     `pinion-text` -> `parley` -> `fontique` pulls a TEXT-SHAPING stack into every crate that
+#     speaks the wire, and on Linux `fontique` needs fontconfig's headers. Two things worth
+#     recording:
+#       - the original claim was checked with `cargo tree -i fontconfig`, which reports ABSENT
+#         because the package is named `yeslogic-fontconfig-sys`. A probe by the wrong name reports
+#         a false absence.
+#       - this developer's box has `libfontconfig-dev` installed, so nothing local could ever have
+#         caught it. That is what this file is for.
+#     The `libfontconfig-dev` step below is what makes the job pass TODAY. The real fix is upstream
+#     and is written up in `claudedocs/PINION-PR85-RPC-PULLS-TEXT-SHAPING.md`: a JSON-RPC crate
+#     should not make a headless daemon link a font stack.
 #   * Windows. It is not built because it is not claimed. See `README.md`.
 #   * The Mnemosyne gates. They need `mnemosyne-cli`, which is not published; the commit hook is
 #     their home.
@@ -37,6 +50,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Needed by `yeslogic-fontconfig-sys`, which the wire crates pull in through `pinion-rpc`
+      # (see the note at the top of this file). NOT needed on macOS, where `fontique` uses
+      # Core Text and links no fontconfig at all — which is why only this job wants it.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig-dev
 
       - name: Toolchain
         run: |
