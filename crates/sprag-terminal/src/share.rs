@@ -2595,6 +2595,11 @@ mod tests {
     /// A grant asked of a pane the daemon never placed is the pane's own absence, and a grant on a
     /// host with no subtree is the MACHINE's — the same two-level distinction `charge` makes, and
     /// for its reason: they send a person to different places.
+    ///
+    /// **Both doors, not one.** `granted` is asked by the resource reading on every sample and
+    /// `grant` by the verb; they are separate functions with separate `ok_or`s, so a gate on one
+    /// says nothing about the other. ⚠ Written when the debt question found `granted` had exactly
+    /// one caller and no test of its own.
     #[test]
     fn a_grant_with_nothing_to_write_says_which_absence_it_is() {
         let fs = FakeCgroupFs::new("grant-absences");
@@ -2609,6 +2614,17 @@ mod tests {
             Err(Unmeasured::NothingEnforced),
             "a machine that enforces nothing outranks any one pane's placement",
         );
+        // The READING door answers the same two, which is what lets one row of `sprag resources`
+        // say why it has no grant without the caller knowing which door failed.
+        assert_eq!(homes.granted(None), Err(Unmeasured::NotPlaced));
+        assert_eq!(
+            PaneHomes::none().granted(Some(address(1, 1, 7))),
+            Err(Unmeasured::NothingEnforced),
+        );
+        // And a pane that WAS placed and whose leaf is gone is the third, distinct from both — the
+        // ordinary race where a pane ends between the walk that listed it and the read.
+        let at = address(9, 9, 9);
+        assert_eq!(homes.granted(Some(at)), Err(Unmeasured::Gone));
     }
 
     #[test]

@@ -2133,6 +2133,22 @@ fn an_agent_opens_a_pane_of_its_own_and_closes_it_again() {
         refused.contains("pane 1 was opened by a person, not by you"),
         "a pane nobody claims is refused, in a sentence that says why: {refused}",
     );
+
+    // AND SO IS ITS RESOURCE GRANT. ⚠ `grant_pane` shipped WITHOUT this guard and the debt question
+    // found it: the primer promises every changing tool acts only on a pane the agent opened, and a
+    // new writing tool that skipped the rule made that sentence false. How much of a person's own
+    // machine their work may use is theirs to decide; an agent that could lower it would be taking
+    // cores from work it cannot see.
+    let ungranted = server.call_tool_error("grant_pane", json!({ "pane": 1, "share": 10 }));
+    assert!(
+        ungranted.contains("pane 1 was opened by a person, not by you"),
+        "a person's pane is not an agent's to hold back: {ungranted}",
+    );
+    assert!(
+        ungranted.contains("your OWN pane"),
+        "and the refusal says what to do instead, because the useful action still exists: \
+         {ungranted}",
+    );
     assert!(
         server
             .call_tool("list_panes", json!({}))
@@ -2402,10 +2418,18 @@ fn the_whole_roster_reaches_a_pane_one_window_over() {
         // So the assertion is total: the call SUCCEEDS, or it refuses on AUTHORSHIP (R294's gate,
         // which is about who opened the pane and not about where it is). Any other error means the
         // request did not arrive at the pane the caller named.
+        // A THIRD legitimate outcome, and it is not a loophole: `grant_pane` writes to a cgroup,
+        // and a host with no delegated subtree has none to write to. That refusal is a fact about
+        // the MACHINE — it is identical for a pane in the caller's own window — so it says nothing
+        // about whether the request reached the pane it named, which is all this ratchet measures.
+        // ⚠ Measured, not reasoned: without this the test passes on this developer's box (systemd
+        // user delegation available) and FAILS on macOS, where `with_shares` is `cfg`-ed out
+        // entirely. Reproduce with `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus`.
+        let unenforced = text.contains("no cgroup subtree");
         assert!(
-            !errored || text.contains("not by you"),
-            "{name} did not reach a pane one window over — it must succeed, or refuse on \
-             authorship, and it did neither: {text}",
+            !errored || text.contains("not by you") || unenforced,
+            "{name} did not reach a pane one window over — it must succeed, refuse on \
+             authorship, or refuse because this host enforces nothing, and it did none: {text}",
         );
         checked.push(name);
     }

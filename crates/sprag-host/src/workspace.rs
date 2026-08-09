@@ -3331,6 +3331,62 @@ mod tests {
     /// The second half is the load-bearing one, for
     /// `a_spawn_naming_a_pane_that_is_gone_is_refused_and_births_nothing`'s reason: a birth refused
     /// after forking leaves a live pane the caller was never told about.
+    /// A grant whose NUMBERS are impossible is refused, and each refusal names what was wrong.
+    ///
+    /// ⚠ Written by the post-push debt question: the two `u32::try_from` arms and `Share::new`'s
+    /// range check were reachable only from the wire and nothing drove them. They are not the same
+    /// refusal — a weight of 20000 is a person who read the wrong docs, a weight of 2^33 is a
+    /// client with a bug — and both must be refused rather than truncated, because a silently
+    /// narrowed weight is a pane granted a number nobody chose.
+    #[test]
+    fn a_grant_whose_numbers_cannot_be_honoured_is_refused_and_not_truncated() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("a pane to grant");
+        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+            panic!("the panes slot answers with a JSON array");
+        };
+        let id = panes[0]["id"].as_u64().expect("a pane id");
+
+        let mut refused = |args: Value| -> String {
+            match ext.invoke(GRANT_PANE_ACTION, IntrospectValue::Json(args)) {
+                Err(InvokeError::Rejected(why)) => format!("{why:?}"),
+                other => panic!("expected a refusal, got {other:?}"),
+            }
+        };
+        // Past the KERNEL's range but inside a u32 — `Share::new`'s own check.
+        let big = refused(json!({"pane": id, "share": 20000}));
+        assert!(
+            !big.contains("at least one of"),
+            "refused for its value, not for setting nothing: {big}",
+        );
+        // Past a u32 entirely, which `Share::new` never sees.
+        let huge = refused(json!({"pane": id, "share": 8_589_934_592_u64}));
+        assert!(
+            huge.contains("range"),
+            "the refusal says what was wrong: {huge}"
+        );
+        // A process ceiling wider than the pids controller's own counter.
+        let procs = refused(json!({"pane": id, "processes": 8_589_934_592_u64}));
+        assert!(
+            procs.contains("processes"),
+            "and names the setting it was about: {procs}",
+        );
+        // NOT a number at all is a type error rather than a refusal — a different answer on the
+        // wire, and the distinction is what lets a client tell a bad value from a bad shape.
+        assert!(
+            matches!(
+                ext.invoke(
+                    GRANT_PANE_ACTION,
+                    IntrospectValue::Json(json!({"pane": id, "memory": "lots"})),
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "a non-number is a type mismatch, not a rejection",
+        );
+    }
+
     /// A grant that sets NOTHING is refused at the ACTION, whatever client sent it.
     ///
     /// The CLI refuses it too, one crate over, with a message that names the flags — but that is

@@ -6176,6 +6176,69 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Every shape of the GRANT columns — the ceiling beside a usage, the ceiling on its own, and
+    /// the weight — because the absences are the whole reason the type has three arms.
+    ///
+    /// ⚠ Written when the debt question asked what R340 had left untested and the answer was *the
+    /// sentences a person actually reads*. The type-level distinction between `Uncapped` and
+    /// `NoController` was gated in `sprag-terminal`; **nothing gated that the two RENDER
+    /// differently**, and a renderer that collapsed them would have told somebody on a host with no
+    /// `memory` delegation that they had chosen not to set a ceiling.
+    #[test]
+    fn every_grant_column_says_which_of_its_shapes_it_is() {
+        // Beside a usage, `of` supplies the DENOMINATOR and says nothing when there is none: the
+        // usage column has already printed `(no memory controller)`, and a second sentence about
+        // the same missing controller would be this surface agreeing with itself at twice the
+        // width.
+        assert_eq!(
+            of(
+                "6 MiB".to_owned(),
+                Ceiling::At(512 * 1024 * 1024),
+                footprint_ceiling
+            ),
+            "6 MiB of 512 MiB",
+        );
+        assert_eq!(
+            of("6 MiB".to_owned(), Ceiling::Uncapped, footprint_ceiling),
+            "6 MiB"
+        );
+        assert_eq!(
+            of(
+                "(no memory controller)".to_owned(),
+                Ceiling::NoController,
+                footprint_ceiling
+            ),
+            "(no memory controller)",
+        );
+        assert_eq!(
+            of("5 processes".to_owned(), Ceiling::At(64), count_ceiling),
+            "5 processes of 64"
+        );
+
+        // ALONE, on `grant`'s own line, silence is not available: a person who ran the verb and got
+        // a blank could not tell a ceiling that was removed from one that never took.
+        assert_eq!(ceiling(Ceiling::At(64), count_ceiling), "64");
+        assert_eq!(ceiling(Ceiling::Uncapped, count_ceiling), "uncapped");
+        assert_eq!(
+            ceiling(Ceiling::NoController, count_ceiling),
+            "(no controller)"
+        );
+        assert_ne!(
+            ceiling(Ceiling::Uncapped, footprint_ceiling),
+            ceiling(Ceiling::NoController, footprint_ceiling),
+            "a pane nobody capped and a host that cannot cap read differently",
+        );
+
+        // The weight is the SETTING, never a predicted share of the machine — a nominal 10:100 was
+        // measured at 18:82, so anything shaped like a percentage here would be false.
+        assert_eq!(weight(Counted::Now(10)), "10");
+        assert_eq!(weight(Counted::NoController), "(no cpu controller)");
+        assert!(
+            !weight(Counted::Now(10)).contains('%'),
+            "a weight is not a percentage of anything",
+        );
+    }
+
     /// The four columns `resources` prints, each shape of each one.
     ///
     /// # Why the shell's renderers are gated separately from the agent's

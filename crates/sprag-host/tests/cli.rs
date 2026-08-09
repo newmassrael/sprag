@@ -157,6 +157,66 @@ fn aged_host() -> (sprag_peer::OldDaemon, HostChild, PathBuf) {
     (peer, daemon, upstream)
 }
 
+/// Every way `grant`'s argument list can be wrong is REFUSED and NAMED, never quietly taken.
+///
+/// ⚠ Written when the debt question asked what R340 had left untested. Each of these is a way a
+/// person's intent silently becomes a different command, and the duplicate is the worst of them:
+/// `--share 10 --share 1000` under a "last one wins" rule is a pane granted the opposite of what
+/// the first flag asked for, with nothing on screen to say so.
+#[test]
+fn every_malformed_grant_is_refused_and_says_which_argument() {
+    let (_host, sock) = spawn_host();
+
+    let twice = sprag(&sock, &["grant", "0", "--share", "10", "--share", "1000"]);
+    assert!(!twice.ok, "a flag given twice is refused: {}", twice.stdout);
+    assert!(
+        twice.stderr.contains("--share") && twice.stderr.contains("twice"),
+        "and the refusal names the flag: {}",
+        twice.stderr,
+    );
+
+    let wordy = sprag(&sock, &["grant", "0", "--memory", "lots"]);
+    assert!(!wordy.ok, "a non-number is refused: {}", wordy.stdout);
+    assert!(
+        wordy.stderr.contains("--memory") && wordy.stderr.contains("lots"),
+        "and the refusal quotes what was typed: {}",
+        wordy.stderr,
+    );
+
+    let dangling = sprag(&sock, &["grant", "0", "--processes"]);
+    assert!(!dangling.ok, "a flag with no value is refused");
+    assert!(
+        dangling.stderr.contains("--processes"),
+        "named: {}",
+        dangling.stderr,
+    );
+
+    let unknown = sprag(&sock, &["grant", "0", "--cores", "4"]);
+    assert!(
+        !unknown.ok,
+        "an unknown flag is refused rather than ignored"
+    );
+    assert!(
+        unknown.stderr.contains("--cores"),
+        "and it is quoted back, so a typo is visible: {}",
+        unknown.stderr,
+    );
+
+    // THE CONTROL: the same shape, spelled right, is not refused for its spelling — so the four
+    // above are about the spelling and not about `grant` refusing everything. See
+    // `enforces_or_refuses_for_the_host` for why it cannot demand success.
+    let ok = sprag(
+        &sock,
+        &["grant", "0", "--share", "100", "--processes", "64"],
+    );
+    assert!(
+        enforces_or_refuses_for_the_host(&ok),
+        "a well-formed grant is not refused for its spelling: {} / {}",
+        ok.stdout,
+        ok.stderr
+    );
+}
+
 /// `grant` refuses a request that sets NOTHING, and it refuses at both layers that could accept it.
 ///
 /// # Why this is a refusal and not a no-op
@@ -186,14 +246,29 @@ fn a_grant_that_sets_nothing_is_refused_rather_than_reported_as_done() {
         run.stderr,
     );
 
-    // A grant that DOES set something succeeds, so the two assertions above are about the emptiness
-    // and not about `grant` being broken for every input — the control this pair needs.
+    // A grant that DOES set something is not refused for THAT reason — the control this pair needs.
+    //
+    // ⚠ It cannot demand SUCCESS. A grant writes to a cgroup, and a host with no delegated subtree
+    // has none, so demanding success would make this a gate on the developer's systemd
+    // configuration — the R318/R319/R331 class, one layer out. **Measured**: it passes on this box
+    // and FAILS under `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus`, which is what macOS
+    // is permanently (`with_shares` is `cfg`-ed out there).
     let ok = sprag(&sock, &["grant", "0", "--share", "100"]);
     assert!(
-        ok.ok,
-        "a grant that sets a share is accepted: {} / {}",
-        ok.stdout, ok.stderr,
+        enforces_or_refuses_for_the_host(&ok),
+        "a grant that sets a share is not refused for setting nothing: {} / {}",
+        ok.stdout,
+        ok.stderr,
     );
+}
+
+/// Whether a `grant` run either worked or failed ONLY because this host enforces nothing.
+///
+/// The gates that use it are about the ARGUMENT LIST, and every machine can get an argument list
+/// wrong; only a machine with a delegated cgroup subtree can get the write right. Without this
+/// split they are gates on the developer's systemd configuration rather than on `grant`.
+fn enforces_or_refuses_for_the_host(run: &CliRun) -> bool {
+    run.ok || run.stderr.contains("no cgroup subtree")
 }
 
 #[test]

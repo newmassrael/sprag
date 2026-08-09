@@ -297,11 +297,12 @@ fn handle_initialize(message: &Value) -> Value {
             pane's text, and what that is COSTING with `pane_resources` — the cores each pane \
             holds and how much of the recent past it spent waiting for cores it did not get, \
             which is how to tell your own work being heavy from another pane starving you. \
-            When one pane IS starving the others, `grant_pane` is how to hold that one \
-            back — a CPU weight, a memory ceiling, a process ceiling, on one pane. Prefer \
-            holding the greedy pane back to asking the starved one to do less. A weight \
-            is not a cap: a held-back pane still takes the whole machine when nothing \
-            else wants it, so this slows nobody down on an idle box. \
+            When YOUR OWN pane is the one taking the machine, `grant_pane` gives it a \
+            CPU weight, a memory ceiling and a process ceiling, so the panes waiting on \
+            you can get on. It acts only on a pane you opened, like every other tool that \
+            changes something. A weight is not a cap: a held-back pane still takes the \
+            whole machine when nothing else wants it, so this slows nobody down on an \
+            idle box. When the greedy pane is a person's, say what you measured instead. \
             When EVERY pane is starved and none is greedy, the machine itself has less to give \
             than it should, and `machine_health` says why: a fixed set of checks on the machine, \
             each printing the value it measured beside its verdict. Most of what it finds is not \
@@ -478,8 +479,11 @@ fn tools_list() -> Value {
                 "description": "Say what ONE pane is ALLOWED of the machine — its CPU weight \
                     among its siblings, its memory ceiling and its process ceiling. \
                     `pane_resources` says what a pane TOOK; this is the other half. Reach for it \
-                    when that reading shows one pane starving the others: hold the greedy one \
-                    back rather than asking the starved one to do less. Every setting is \
+                    when that reading shows YOUR pane taking the machine while others wait: hold \
+                    your own work back rather than asking a person to. IT ACTS ONLY ON A PANE YOU \
+                    OPENED — a person's pane is refused, because how much of their own machine \
+                    their work may use is theirs to decide. When the greedy pane is theirs, \
+                    report what you measured instead. Every setting is \
                     optional and an omitted one is LEFT ALONE, so you can change a ceiling \
                     without disturbing a weight somebody set earlier; `0` on either ceiling \
                     removes it. \
@@ -490,9 +494,10 @@ fn tools_list() -> Value {
                     weight shows up in the TAIL: one measurement moved a victim's p99 from 33.3 \
                     ms to 5.4 ms while its median did not move at all. \
                     The answer is RE-READ FROM THE KERNEL, not echoed back, so a ceiling this \
-                    host cannot hold comes back saying so instead of looking applied. This \
-                    changes what a person's own work is allowed to use: it is a real change to \
-                    their machine, not a reading.",
+                    host cannot hold comes back saying so instead of looking applied. This is a \
+                    real change to the machine and not a reading: what you set stays set for as \
+                    long as the pane lives, so lower your weight while a person is waiting and \
+                    raise it back when they are not.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2494,6 +2499,22 @@ fn tool_pane_layout(args: &Value) -> Result<String, String> {
 /// host had no `memory` controller would report a fix it did not make.
 fn tool_grant_pane(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
+    // The SAME authorship rule the other four writing tools keep, and it is not a formality here:
+    // this changes what somebody's work is allowed to use. A person keeps `sprag grant`, which
+    // reaches any pane, because the machine is theirs.
+    //
+    // ⚠ It inverts the obvious reading of the feature, and the inversion is the correct one. The
+    // scenario the design document behind this describes is an AGENT running `make -j32` beside an
+    // agent doing one thing at a time — so the greedy pane is an agent's OWN, and "hold yourself
+    // back" is exactly the primitive that fixes it. "Hold your neighbour back" is a decision about
+    // somebody's machine, and an agent that could make it would be taking cores from work it
+    // cannot see.
+    require_own_pane(
+        &pane,
+        "grant_pane",
+        "Grant your OWN pane instead: holding back the pane running the heavy job is what frees \
+         the machine, and if that job is not yours, tell the person what you measured.",
+    )?;
     let mut action_args = serde_json::Map::new();
     action_args.insert("pane".to_owned(), json!(pane.id()));
     // Named one at a time rather than swept out of `args`, so an unknown key is never carried to
@@ -7050,6 +7071,76 @@ mod tests {
         assert!(
             answer.contains("a weight is not a cap and not a ratio"),
             "{answer}"
+        );
+    }
+
+    /// Every shape of the GRANT sentences an agent reads — the shell's
+    /// `every_grant_column_says_which_of_its_shapes_it_is`, in this register.
+    ///
+    /// Two registers for one fact, gated on both sides, which is the rule this pair already
+    /// follows for the resource columns. What must never differ is the MEANING, and the place it
+    /// could slip is the absences: an agent told "no ceiling" when the truth is "this host cannot
+    /// hold one" would try again with a smaller number forever.
+    #[test]
+    fn every_grant_sentence_says_which_of_its_shapes_it_is() {
+        // Beside a usage. An UNCAPPED pane says so out loud here, unlike the shell's column — an
+        // agent deciding whether a sibling can be told to use less needs to know that nothing is
+        // stopping it, and silence would read as "there is a ceiling and I did not mention it".
+        assert_eq!(
+            agent_of(
+                "6 MiB of memory".to_owned(),
+                Ceiling::At(512 * 1024 * 1024),
+                agent_bytes
+            ),
+            "6 MiB of memory, of a ceiling of 512 MiB",
+        );
+        assert_eq!(
+            agent_of("6 MiB of memory".to_owned(), Ceiling::Uncapped, agent_bytes),
+            "6 MiB of memory, with no ceiling set",
+        );
+        assert_eq!(
+            agent_of(
+                "memory unmeasured".to_owned(),
+                Ceiling::NoController,
+                agent_bytes
+            ),
+            "memory unmeasured",
+            "the usage has already named the missing controller",
+        );
+
+        // ALONE, on `grant_pane`'s answer, the missing controller names WHOSE problem it is.
+        assert_eq!(agent_ceiling(Ceiling::At(64), agent_count_ceiling), "64");
+        assert_eq!(
+            agent_ceiling(Ceiling::Uncapped, agent_count_ceiling),
+            "no ceiling"
+        );
+        let blind = agent_ceiling(Ceiling::NoController, agent_count_ceiling);
+        assert!(
+            blind.contains("delegation"),
+            "an agent is told the host cannot hold a ceiling, not that there is none: {blind}",
+        );
+        assert_ne!(
+            agent_ceiling(Ceiling::Uncapped, agent_bytes),
+            agent_ceiling(Ceiling::NoController, agent_bytes),
+        );
+
+        // THE WEIGHT, and the warning that makes it safe to act on. An agent told a weight without
+        // this would compute a share of the machine from it; a nominal 10:100 measured 18:82, and a
+        // cgroup weighted 10 took every core it was offered once its sibling went idle.
+        let weight = agent_weight(Counted::Now(10));
+        assert!(weight.contains("weight of 10"), "{weight}");
+        assert!(
+            weight.contains("not a cap and not a ratio"),
+            "the weight never travels without the sentence that stops it being read as a share: \
+             {weight}",
+        );
+        assert!(
+            !weight.contains('%'),
+            "and nothing shaped like a percentage: {weight}"
+        );
+        assert!(
+            agent_weight(Counted::NoController).contains("no cpu controller"),
+            "a host with no cpu delegation says so rather than reporting a weight of zero",
         );
     }
 
