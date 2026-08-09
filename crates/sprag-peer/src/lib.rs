@@ -322,6 +322,7 @@ impl OldDaemon {
                     // ONE THREAD PER CONNECTION: several verbs open a second connection while the
                     // first is still open, and serving them in turn would deadlock the run.
                     Ok((stream, _)) => {
+                        let stream = Served::from_accepted(stream);
                         let upstream = upstream.clone();
                         // CLONED PER CONNECTION, because the policy owns its addresses now — and a
                         // connection is where a policy is applied, so each thread holds its own.
@@ -346,12 +347,53 @@ impl OldDaemon {
     }
 }
 
+/// An accepted connection, made BLOCKING whatever the listener it arrived on was.
+///
+/// # Why this is a type and not one line in the accept loop
+///
+/// `accept()`'s treatment of the listener's `O_NONBLOCK` is **unspecified by POSIX, and the two
+/// systems this crate runs on disagree**: Linux always hands back a blocking socket, BSD — so
+/// macOS — copies the listener's flag onto it. This peer polls a NON-blocking listener so it can be
+/// stopped ([`OldDaemon::drop`]), so on macOS every connection it accepted arrived non-blocking,
+/// its first read returned `WouldBlock`, and both handlers below treat a read error as *the client
+/// hung up* and close. **Measured** on the first macOS CI run this repository ever completed: the
+/// three `sprag-client` skew tests failed on a 10 s deadline, and `sprag-host`'s `cli.rs` — whose
+/// CLI had no deadline to fail on — ran for **3 h 38 min** before the job was killed.
+///
+/// A single `set_nonblocking(false)` in the accept loop would fix today's two call sites and leave
+/// the next one to rediscover this. A handler that can only be given a `Served` cannot be given a
+/// raw accepted stream at all, so the rule holds for whatever door is added next — the wrong thing
+/// is unrepresentable rather than merely absent.
+///
+/// The other two doors in this workspace that accept on a polled listener already normalise:
+/// `pinion-rpc-transport`'s `handle_connection` (so the real daemon was never affected) and
+/// `sprag-client`'s own recording host. This crate was the odd one out.
+struct Served(UnixStream);
+
+impl Served {
+    /// Take an accepted connection and clear whatever the listener left on it.
+    ///
+    /// Infallible by design: `set_nonblocking` on a live socket fails only for a bad descriptor,
+    /// and a peer that cannot serve the connection it just accepted has nothing useful to do with
+    /// the error — the handler's own read would report it a moment later anyway.
+    fn from_accepted(stream: UnixStream) -> Self {
+        let _ = stream.set_nonblocking(false);
+        Self(stream)
+    }
+
+    /// The socket itself, for the reader/writer halves a handler splits out of it.
+    fn stream(&self) -> &UnixStream {
+        &self.0
+    }
+}
+
 /// One connection to a peer with nothing behind it: the handshake is answered, the missing methods
 /// are refused, and everything else is a null result.
 ///
 /// A null result rather than an error for the rest, because that is what an older daemon does with a
 /// method it HAS: it answers. The refusals are the only thing this peer is saying.
-fn answer(stream: &UnixStream, missing: &Missing) {
+fn answer(conn: &Served, missing: &Missing) {
+    let stream = conn.stream();
     let reader = BufReader::new(stream.try_clone().expect("split the peer's connection"));
     let mut writer = stream;
     for line in reader.lines() {
@@ -382,7 +424,8 @@ fn answer(stream: &UnixStream, missing: &Missing) {
 /// The return path is its own pump rather than a reply read after each request, because the daemon
 /// also writes UNPROMPTED (`events/subscribe` notifications) and a request/reply loop would hold
 /// those until the next question.
-fn relay(client: &UnixStream, upstream: &Path, missing: &Missing) {
+fn relay(conn: &Served, upstream: &Path, missing: &Missing) {
+    let client = conn.stream();
     let deadline = Instant::now() + UPSTREAM_DEADLINE;
     let up = loop {
         match UnixStream::connect(upstream) {
@@ -512,6 +555,107 @@ mod tests {
             answered.is_ok(),
             "a peer missing only slots must not refuse an action: {answered:?}",
         );
+    }
+
+    /// The flag [`Served`] exists for, read off the descriptor rather than inferred.
+    ///
+    /// `O_NONBLOCK` is a file-STATUS flag, so it survives `try_clone` (both descriptors share one
+    /// open file description) — which is why a handler that splits the stream into a reader and a
+    /// writer cannot escape it, and why clearing it once is enough.
+    ///
+    /// Read with `fcntl` rather than timed: a non-blocking read answers immediately and a blocking
+    /// one never answers, so every behavioural way of telling them apart is a race that goes GREEN
+    /// on a thread the scheduler happened to delay. This one cannot.
+    #[test]
+    fn an_accepted_connection_is_blocking_however_it_arrived() {
+        use std::os::fd::AsRawFd;
+
+        let (_client, accepted) = UnixStream::pair().expect("a connected pair");
+        // THIS LINE IS macOS. `accept()` copies the listener's `O_NONBLOCK` onto the connection
+        // there and does not here, so on Linux the state under test never occurs by itself and has
+        // to be built — without it this test would pass against the very defect it exists for.
+        accepted
+            .set_nonblocking(true)
+            .expect("the flag BSD's accept would have left here");
+
+        let served = Served::from_accepted(accepted);
+
+        // SAFETY: `F_GETFL` reads the flags of a descriptor this test owns and outlives the call.
+        let flags = unsafe { libc::fcntl(served.stream().as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0, "read the connection's file-status flags");
+        assert_eq!(
+            flags & libc::O_NONBLOCK,
+            0,
+            "an accepted connection must be BLOCKING before a handler reads lines off it",
+        );
+    }
+
+    /// And the sentence the flag is only a mechanism for: a connection that arrived non-blocking is
+    /// still ANSWERED.
+    ///
+    /// The request is written in TWO pieces on purpose. `BufReader::lines` needs a newline, so the
+    /// first read finds the bytes written before the peer was started and the second finds an empty
+    /// socket — the exact moment a non-blocking connection reports `WouldBlock`, which both
+    /// handlers read as *the client hung up*. Written in one piece, the peer would find the whole
+    /// line in its first read and this test would pass against the defect.
+    ///
+    /// ⚠ [`a_peer_refuses_exactly_what_it_is_missing`](tests::a_peer_refuses_exactly_what_it_is_missing)
+    /// drives the same handler over a REAL socket and stays GREEN under the same mutation on Linux,
+    /// because that is where `accept()` hands back a blocking connection. That is not a weakness in
+    /// it — it is why this defect shipped, and why the flag has to be forced rather than waited for.
+    #[test]
+    fn a_connection_that_arrived_non_blocking_is_still_answered() {
+        let (client, accepted) = UnixStream::pair().expect("a connected pair");
+        accepted
+            .set_nonblocking(true)
+            .expect("the flag BSD's accept would have left here");
+
+        let hello = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": sprag_rpc::CLIENT_HELLO_METHOD,
+            "params": { sprag_rpc::PROTOCOL_PARAM: sprag_rpc::WIRE_PROTOCOL },
+        })
+        .to_string();
+        let (head, tail) = hello.split_at(hello.len() / 2);
+
+        let mut writing = client.try_clone().expect("split the client's connection");
+        writing.write_all(head.as_bytes()).expect("the first piece");
+        writing.flush().expect("the first piece reaches the peer");
+
+        let serving = std::thread::spawn(move || {
+            answer(&Served::from_accepted(accepted), &Missing::slots());
+        });
+
+        // The peer is now reading a line it has not got all of. A blocking connection parks here; a
+        // non-blocking one has already reported `WouldBlock` and closed. The wait is generous
+        // because it only ever makes the DEFECT easier to catch — the fixed peer parks however long
+        // it takes, so no pass depends on this number.
+        std::thread::sleep(Duration::from_millis(250));
+        // A peer that has already hung up turns this into `BrokenPipe` instead of delivering it.
+        // TOLERATED rather than unwrapped: the claim belongs to the assertion below, and a gate
+        // should fail where its sentence is rather than on the plumbing that carries it there.
+        let delivered = writing
+            .write_all(format!("{tail}\n").as_bytes())
+            .and_then(|()| writing.flush())
+            .is_ok();
+
+        let mut reply = String::new();
+        let read = BufReader::new(client).read_line(&mut reply).unwrap_or(0);
+        assert!(
+            delivered && read > 0,
+            "a connection that arrived non-blocking was dropped instead of answered \
+             (the rest of the request {} delivered, and {read} bytes came back)",
+            if delivered { "was" } else { "was NOT" },
+        );
+        let reply: Value = serde_json::from_str(reply.trim()).expect("the answer is a wire frame");
+        assert_eq!(
+            reply["result"][sprag_rpc::PROTOCOL_FIELD].as_u64(),
+            Some(u64::from(sprag_rpc::WIRE_PROTOCOL)),
+            "and it is the handshake, so the peer read the whole line across two reads",
+        );
+
+        drop(serving);
     }
 
     /// The two fault strings are the ones the READER matches on, not two copies of them.

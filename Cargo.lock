@@ -3671,6 +3671,7 @@ dependencies = [
 name = "sprag-peer"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "serde_json",
  "sprag-rpc",
 ]

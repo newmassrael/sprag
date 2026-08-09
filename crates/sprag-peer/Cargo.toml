@@ -15,3 +15,11 @@ publish = false
 # stand-in that spelled its own would be testing a grammar nobody speaks.
 sprag-rpc = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# ONE call, in ONE test: `fcntl(F_GETFL)`, to read the `O_NONBLOCK` bit off an accepted
+# connection. `Served`'s whole claim is about that bit, and every way of inferring it from
+# behaviour is a race — a non-blocking read answers at once and a blocking one never answers, so
+# telling them apart without the flag means timing a thread that may simply not have been
+# scheduled. Reading the bit is the only assertion here that cannot go green under load.
+libc = { workspace = true }
