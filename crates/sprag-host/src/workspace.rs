@@ -79,13 +79,13 @@ use crate::wire::{
     DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT,
     GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
     LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANES_SLOT, PaneProcessesWire,
-    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT,
-    SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION,
-    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef,
-    ZOOM_PANE_ACTION,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANE_RESOURCES_FIELD, PANES_SLOT,
+    PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
+    SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
+    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk, TREE_SLOT,
+    WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -172,6 +172,16 @@ impl RegistryView<'_> {
                     .processes
                     .read(self.registry, Duration::from_millis(max_age));
                 encoded_answer(&PaneProcessesWire::from(reading), "pane processes")
+                    .unwrap_or(IntrospectValue::Null)
+            }));
+        }
+        if let Some(arg) = path.strip_prefix(PANE_RESOURCES_FIELD.literal_prefix()) {
+            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
+                let reading = self
+                    .samplers
+                    .resources
+                    .read(self.registry, Duration::from_millis(max_age));
+                encoded_answer(&PaneResourcesWire::from(reading), "pane resources")
                     .unwrap_or(IntrospectValue::Null)
             }));
         }
@@ -2876,7 +2886,7 @@ fn build_command(argv: &[Value]) -> Result<(CommandBuilder, String), InvokeError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{pane_processes_at, session_activity_at};
+    use crate::wire::{pane_processes_at, pane_resources_at, session_activity_at};
     use pinion_core::SceneRevision;
     use serde_json::json;
     use sprag_terminal::PaneId;
@@ -4988,6 +4998,72 @@ mod tests {
         assert!(
             rows[0]["shell_pid"].is_u64(),
             "and a live pane names the child the daemon spawned: {reading}",
+        );
+    }
+
+    /// R338's address, asserted the same way: the pane LIST carries nothing about what a pane is
+    /// TAKING, and the sampled address answers for every pane with the reason when it cannot.
+    ///
+    /// # Why the reason is the assertion and a number is not
+    ///
+    /// This suite's daemon holds no delegated cgroup subtree — a test runner is not given one, which
+    /// is the ordinary case on CI and in a container. So the honest row here is
+    /// [`Unmeasured::NothingEnforced`](sprag_terminal::Unmeasured::NothingEnforced), and asserting
+    /// THAT is what makes the test discriminate: a serving path that answered an empty row, a zero,
+    /// or an absence would pass a weaker assertion and would be exactly the silent skip this crate
+    /// refuses everywhere else. The NUMBERS are gated where numbers can be produced —
+    /// `sprag-terminal/tests/pane_share_cgroup.rs`, against a real delegated scope.
+    #[test]
+    fn the_pane_list_carries_no_resource_fact_and_the_resources_address_says_why_it_has_none() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
+
+        let Value::Array(listed) = answer_doc(ext.query(PANES_SLOT)) else {
+            panic!("the panes slot answers with a JSON array");
+        };
+        for sampled in ["taken", "cpu", "waiting"] {
+            assert!(
+                listed[0].get(sampled).is_none(),
+                "the pane list must not carry {sampled}: {}",
+                listed[0],
+            );
+        }
+
+        // ZERO tolerance, so this read samples for itself.
+        let reading = answer_doc(ext.query(&pane_resources_at(0)));
+        assert!(
+            reading["sampled_ms_ago"].is_u64(),
+            "the reading states its own age: {reading}",
+        );
+        let rows = reading["panes"]
+            .as_array()
+            .expect("the reading carries a row per pane");
+        assert_eq!(
+            rows.iter().map(|r| r["id"].as_u64()).collect::<Vec<_>>(),
+            listed.iter().map(|r| r["id"].as_u64()).collect::<Vec<_>>(),
+            "a row per pane, addressed by the same id the pane list uses: {reading}",
+        );
+        assert_eq!(
+            rows[0]["taken"]["unmeasured"]["reason"], "nothing_enforced",
+            "a host with no subtree says so, per pane, rather than answering a zero: {reading}",
+        );
+    }
+
+    /// A malformed tolerance on the RESOURCES family answers `Null` too, and the family's bare name
+    /// is not an address — the same taxonomy as its two neighbours, stated once per family because
+    /// a family added without it is a family whose malformed member 404s instead.
+    #[test]
+    fn a_malformed_resource_tolerance_is_empty_not_absent() {
+        let reg = registry();
+        let (ext, _rev) = control(&reg);
+        assert!(
+            matches!(ext.query("pane_resources.zzz"), Some(IntrospectValue::Null)),
+            "a malformed tolerance is a malformed MEMBER, not an unknown path",
+        );
+        assert!(
+            ext.query("pane_resources").is_none(),
+            "and the family's bare name is not itself an address",
         );
     }
 

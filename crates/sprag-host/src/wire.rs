@@ -296,6 +296,7 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     EVENTS_FIELD,
     SESSION_ACTIVITY_FIELD,
     PANE_PROCESSES_FIELD,
+    PANE_RESOURCES_FIELD,
 ];
 
 /// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`
@@ -1193,6 +1194,197 @@ impl From<sprag_terminal::PaneProcessReading> for PaneProcessesWire {
             sampled_ms_ago: u64::try_from(reading.age.as_millis()).unwrap_or(u64::MAX),
             panes: reading.value,
         }
+    }
+}
+
+/// The mux control external query slot: WHAT EACH PANE IS TAKING of the machine — the cores it
+/// holds, how much of the recent past it spent waiting for cores it did not get, its memory, and how
+/// many processes it has.
+///
+/// # Why the settings could not answer this and a reading has to
+///
+/// R336 gave every pane a weight and R337 gave it ceilings, and both are things a PERSON said. A
+/// weight is not a cap (a pane weighted 10 beside an idle neighbour took all 8 cores it was offered)
+/// and it is not even a ratio (a nominal 10:100 measured 18:82, because the kernel distributes
+/// weight per runqueue). So a client that rendered the setting would be rendering a prediction that
+/// is measurably wrong, and the only honest source is what the kernel CHARGED.
+///
+/// A SAMPLED fact and therefore its own address, exactly like [`PANE_PROCESSES_FIELD`] and by that
+/// field's rule: a pane deciding to spend a core is not an event this daemon performs. Its answer
+/// ([`PaneResourcesWire`]) carries the age it has, and each row's rate carries the WINDOW it covers
+/// — a rate over 40 ms and one over a minute are different claims, and a reader that cannot tell
+/// them apart reads a build's opening burst as its steady state.
+///
+/// REGISTRY-WIDE, not scoped, for [`PANE_PROCESSES_FIELD`]'s reason turned around: the question a
+/// person asks here is *which pane is eating my machine*, and a machine is not divided by session.
+/// An answer scoped to one session could not name the pane that was taking everything.
+///
+/// A QUERY, not an invoke: observing the world is not a mutation of the scene, and serving it as an
+/// action would bump the revision and wake the very `waitFor` it was answering.
+pub const PANE_RESOURCES_FIELD: SchemaField =
+    SchemaField::parametric("pane_resources.<max_age_ms>", "object", PANE_RESOURCES_ARGS);
+
+/// [`PANE_RESOURCES_FIELD`]'s argument: how stale an answer this caller will accept, in
+/// milliseconds. Open, because nothing on this surface bounds it.
+const PANE_RESOURCES_ARGS: &[SchemaArg] = &[SchemaArg::open("max_age_ms", "int")];
+
+/// [`PANE_RESOURCES_FIELD`]'s address with the tolerance filled in — `pane_resources_at(0)` is the
+/// always-fresh read.
+///
+/// Built from the declared field rather than by re-spelling the prefix, so the address a client
+/// sends and the prefix the host strips cannot drift ([`pane_processes_at`]'s discipline).
+#[must_use]
+pub fn pane_resources_at(max_age_ms: u64) -> String {
+    format!("{}{max_age_ms}", PANE_RESOURCES_FIELD.literal_prefix())
+}
+
+/// What [`PANE_RESOURCES_FIELD`] answers: every pane's
+/// [resources](sprag_terminal::PaneResources), and how long ago the reading they all came from was
+/// taken.
+///
+/// The age is in the ENVELOPE for [`PaneProcessesWire`]'s reason — one pass produces them all. The
+/// per-row `over_ms` is a DIFFERENT quantity and both are wanted: the envelope says how long ago the
+/// reading was taken, and the row says how long a window its rate covers.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PaneResourcesWire {
+    /// How long ago the [`panes`](Self::panes) below were sampled, in milliseconds. `0` for a sample
+    /// taken to answer this very request.
+    pub sampled_ms_ago: u64,
+    /// One row per pane in the registry, in the registry's own order — join on
+    /// [`id`](sprag_terminal::PaneResources::id), never on position.
+    pub panes: Vec<sprag_terminal::PaneResources>,
+}
+
+impl From<sprag_terminal::PaneResourceReading> for PaneResourcesWire {
+    /// The one conversion from the in-process reading to the wire's shape. Saturating for
+    /// [`ActivityWire`]'s reason.
+    fn from(reading: sprag_terminal::PaneResourceReading) -> Self {
+        Self {
+            sampled_ms_ago: u64::try_from(reading.age.as_millis()).unwrap_or(u64::MAX),
+            panes: reading.value,
+        }
+    }
+}
+
+impl PaneResourcesWire {
+    /// Whether any row is still [settling](sprag_terminal::Cpu::Settling) — one sample so far, so no
+    /// rate yet.
+    ///
+    /// The discriminator behind [`settled`], and a method rather than a client-side loop because
+    /// BOTH one-shot clients need it and two copies of "is this answer usable yet" is how two
+    /// surfaces come to disagree about what a settling row means.
+    #[must_use]
+    pub fn settling(&self) -> bool {
+        self.panes.iter().any(|pane| {
+            matches!(
+                pane.taken,
+                sprag_terminal::Taken::Measured {
+                    cpu: sprag_terminal::Cpu::Settling,
+                    ..
+                }
+            )
+        })
+    }
+}
+
+/// Read until the answer has a rate in it — ONE definition, for every client that asks once and
+/// leaves.
+///
+/// # Why a one-shot caller cannot just read
+///
+/// A rate needs two samples. A daemon nobody has asked yet has one sample of each pane the moment it
+/// is asked, so the first answer to `sprag resources` on a quiet daemon is all
+/// [`Settling`](sprag_terminal::Cpu::Settling) — which is honest and is not a number. A client that
+/// polls (a display) simply gets rates from its second wake onwards and needs none of this; a client
+/// that asks once and prints has to wait out one window, and
+/// [`SETTLE`](sprag_terminal::SETTLE) is that window by definition.
+///
+/// It is HERE rather than in either client because the `sprag` CLI and `sprag-mcp` both ask once —
+/// two copies would be two answers to "how long is long enough", which is the drift this crate's
+/// whole vocabulary half exists to prevent.
+///
+/// # Errors
+///
+/// Whatever `read` returns. It is attempted at most twice, so a caller sees at most one extra
+/// round trip and never a loop.
+pub fn settled<E>(
+    mut read: impl FnMut() -> Result<PaneResourcesWire, E>,
+) -> Result<PaneResourcesWire, E> {
+    let first = read()?;
+    if !first.settling() {
+        return Ok(first);
+    }
+    std::thread::sleep(sprag_terminal::SETTLE);
+    read()
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    fn wire(cpu: sprag_terminal::Cpu) -> PaneResourcesWire {
+        PaneResourcesWire {
+            sampled_ms_ago: 0,
+            panes: vec![sprag_terminal::PaneResources {
+                id: 1,
+                taken: sprag_terminal::Taken::Measured {
+                    cpu,
+                    waiting: sprag_terminal::Waiting::NotAccounted,
+                    memory: sprag_terminal::Counted::NoController,
+                    processes: sprag_terminal::Counted::NoController,
+                },
+            }],
+        }
+    }
+
+    const HELD: sprag_terminal::Cpu = sprag_terminal::Cpu::Held {
+        millicores: 1000,
+        over_ms: 500,
+    };
+
+    /// A one-shot caller reads TWICE when the first answer has no rate in it, and ONCE when it does.
+    ///
+    /// Both halves, because they fail differently: never re-reading hands `sprag resources` an
+    /// all-`Settling` answer on any daemon nobody has polled, and always re-reading makes every call
+    /// wait half a second for a rate it already had.
+    #[test]
+    fn a_one_shot_caller_reads_again_only_when_the_first_answer_has_no_rate() {
+        let mut reads = 0;
+        let answer = settled(|| {
+            reads += 1;
+            Ok::<_, ()>(wire(if reads == 1 {
+                sprag_terminal::Cpu::Settling
+            } else {
+                HELD
+            }))
+        })
+        .expect("the second read answers");
+        assert_eq!(reads, 2, "a settling answer is read again");
+        assert!(!answer.settling(), "and the second one is what comes back");
+
+        let mut reads = 0;
+        settled(|| {
+            reads += 1;
+            Ok::<_, ()>(wire(HELD))
+        })
+        .expect("one read is enough");
+        assert_eq!(reads, 1, "an answer that already has a rate is not re-read");
+    }
+
+    /// An UNMEASURED pane is not a settling one, so a host that measures nothing does not make every
+    /// caller wait half a second to be told so twice.
+    #[test]
+    fn a_pane_with_no_reading_at_all_does_not_look_like_one_that_is_still_settling() {
+        let unmeasured = PaneResourcesWire {
+            sampled_ms_ago: 0,
+            panes: vec![sprag_terminal::PaneResources {
+                id: 1,
+                taken: sprag_terminal::Taken::Unmeasured {
+                    reason: sprag_terminal::Unmeasured::NothingEnforced,
+                },
+            }],
+        };
+        assert!(!unmeasured.settling());
     }
 }
 
@@ -5109,6 +5301,12 @@ mod tests {
     /// argument is invisible to `client/hello` and only the version is not — and it is the reason
     /// R329's own two additions did NOT move it: both of those were refused by an older daemon
     /// rather than silently honoured as something else.
+    /// ⚠ **R338 added `pane_resources.<max_age_ms>` and the number STOOD, which is this rule's
+    /// first case measured rather than reasoned.** The register had priced that round as a protocol
+    /// bump — *"per-pane CPU usage onto the wire (`WIRE_PROTOCOL` 17→18), a round of its own"* —
+    /// and a new ADDRESS is additive by the rule three paragraphs up: an older daemon refuses it by
+    /// name (`UnknownIntrospectPath`, which every client renders as skew), and an older client never
+    /// asks. The pin is what turned that from an argument into a measurement.
     const PINNED_SURFACE: (u32, &[&str]) = (
         17,
         &[
@@ -5145,6 +5343,7 @@ mod tests {
             "new_session",
             "new_window",
             "pane_processes.<max_age_ms>",
+            "pane_resources.<max_age_ms>",
             "panes",
             "paste",
             "plugins",

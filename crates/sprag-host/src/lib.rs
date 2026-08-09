@@ -218,6 +218,13 @@ pub struct Samplers {
     pub activity: Arc<sprag_terminal::ActivitySampler>,
     /// What each pane is RUNNING — the job that owns its terminal (R290).
     pub processes: Arc<sprag_terminal::PaneProcessSampler>,
+    /// What each pane is TAKING of the machine — cores held, waiting, memory, processes (R338).
+    ///
+    /// Shared like its neighbours, and for one reason more than they have: it is the only sampler
+    /// here that keeps a BASELINE, so two of them would answer one pane two different rates at one
+    /// instant — each right about its own history and useless for the comparison the number exists
+    /// to serve.
+    pub resources: Arc<sprag_terminal::PaneResourceSampler>,
 }
 
 impl DaemonShared {
