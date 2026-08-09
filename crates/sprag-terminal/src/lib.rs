@@ -16,6 +16,7 @@
 pub mod activity;
 pub mod arrangement;
 pub mod command;
+pub mod doctor;
 /// Deriving a directory's current git branch — a session-sidebar display fact (crate-internal).
 mod git;
 pub mod layout;
@@ -46,6 +47,10 @@ pub mod workspace;
 
 pub use activity::{ActivityReading, ActivitySampler, SessionActivity};
 pub use command::{command_from_parts, default_shell_command, shell_command_line};
+pub use doctor::{
+    Blind, Ccache, Check, Diagnosis, Evidence, Finding, Level, Load, Measurement, NoEvidence,
+    PaneReading, PaneSite, Readings, Sibling, Sources, Subject, SubtreeReading, Verdict,
+};
 pub use layout::{
     DividerStep, LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire,
     LeafHome, MAX_LAYOUT_DEPTH, PaneDir, PaneStep, SplitDir, SplitId, SplitSide,
@@ -69,8 +74,9 @@ pub use resources::{Cpu, PaneResourceReading, PaneResourceSampler, PaneResources
 pub use sampled::{Reading, Sampled};
 pub use session_name::{SessionName, SessionNameError};
 pub use share::{
-    Charge, Counted, Enforcement, LimitSource, Limits, PaneHomes, PaneLineage, Percent, Placement,
-    PoolLineage, Share, ShareError, Tree, TreeError, Unenforceable, Unmeasured, Waiting,
+    CgroupNode, Charge, Counted, Enforcement, LimitSource, Limits, PaneHomes, PaneLineage, Percent,
+    Placement, PoolLineage, Pressure, Share, ShareError, Tree, TreeError, Unenforceable,
+    Unmeasured, Waiting, mount_point,
 };
 pub use snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneHistory, PaneRestore, PaneSnapshot, RestorePlan,
