@@ -662,12 +662,6 @@ impl PaneHomes {
         self.limits.as_ref().map_or(Limits::UNCAPPED, |ask| ask())
     }
 
-    /// The subtree these homes are in, if there is one — what a test walks to find a pane's leaf.
-    #[must_use]
-    pub fn tree(&self) -> Option<&Tree> {
-        self.tree.as_ref()
-    }
-
     /// Make `at`'s cgroup and hand back its open `cgroup.procs`, for the child to write itself into
     /// between `fork` and `exec`.
     ///
@@ -1571,7 +1565,6 @@ mod tests {
         homes.relocate(address(1, 1, 7), address(1, 2, 7));
 
         assert!(!fs.root.join("session-1").exists());
-        assert_eq!(homes.tree(), None);
     }
 
     /// Migration tries each process ONCE, however many passes it takes to see them all.

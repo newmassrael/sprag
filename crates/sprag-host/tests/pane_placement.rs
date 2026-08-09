@@ -358,6 +358,78 @@ fn a_pane_broken_into_a_new_window_takes_its_cgroup_with_it() {
     }
 }
 
+/// Two panes SWAPPED between windows end up under each other's window cgroup.
+///
+/// # ⚠ This is COMPOSITION COVER, not a discriminator, and saying so is the point
+///
+/// A swap is the only caller that drives `Workspace::adopt` TWICE, crossing, and the second
+/// relocation runs against a tree the first has torn at: relocating `b` out of window B releases
+/// its leaf, and the release walks UP removing any level it empties, so window B's own cgroup is
+/// GONE at the moment `a` has to be placed into it. That sequence is real and no single-move test
+/// reaches it.
+///
+/// What could not be found is a mutation this catches and `a_pane_broken_into_a_new_window...`
+/// does not. Measured: making `Tree::place` require its interior levels to exist — the failure this
+/// sequence would provoke — turns **all eight** tests in this file red at once. Every cross-window
+/// move goes through one `adopt`, which is the whole design, and a design with one door does not
+/// give one gate per caller something of its own to prove.
+///
+/// So its value is that the two-relocation SEQUENCE is exercised at all, and that is what it is
+/// here for — R327's lesson recorded rather than a discrimination claim it cannot support.
+///
+/// The processes are read back, not just the directories: two empty leaves in the right places
+/// would satisfy a path assertion and change nothing about who the kernel charges.
+#[test]
+fn two_panes_swapped_between_windows_end_up_under_each_others_window() {
+    let Some((_holder, tree)) = delegated() else {
+        return;
+    };
+    let host = Host::new((80, 24)).with_shares(Arc::clone(&tree));
+
+    let here = spawn_sleeper(&host, "here");
+    host.new_window();
+    let there = spawn_sleeper(&host, "there");
+
+    let (was_here, was_there) = {
+        let leaves = pane_leaves(tree.root());
+        (
+            leaf_of(&leaves, here).parent().map(Path::to_path_buf),
+            leaf_of(&leaves, there).parent().map(Path::to_path_buf),
+        )
+    };
+    assert_ne!(was_here, was_there, "the two start in two windows");
+
+    // Straight at the registry: `swap-pane` across windows has no in-process client method, and
+    // reaching for one would be testing a surface instead of the rule.
+    let swapped = {
+        let mut registry = host
+            .registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = registry.default_session().name().to_owned();
+        registry
+            .swap_panes(&session, here, there)
+            .expect("two tiled panes of one session swap")
+    };
+    assert!(swapped, "the swap happened");
+
+    let leaves = pane_leaves(tree.root());
+    let now_here = leaf_of(&leaves, here).parent().map(Path::to_path_buf);
+    let now_there = leaf_of(&leaves, there).parent().map(Path::to_path_buf);
+    assert_eq!(
+        now_here, was_there,
+        "the first pane took the other's window"
+    );
+    assert_eq!(
+        now_there, was_here,
+        "and the second took the first's — the SECOND relocation, into a level the first released"
+    );
+
+    for pane in [here, there] {
+        assert_child_in_cgroup(&tree, pane, "sleep");
+    }
+}
+
 /// A pane carries the CEILINGS a person set, all the way from `config.toml` to the kernel.
 ///
 /// The share and the ceilings are different kinds of thing and this is the gate for the second:
