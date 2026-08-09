@@ -3675,7 +3675,17 @@ mod tests {
             .project(id)
             .expect("the pane sits in a project")
             .expect("its config parses");
-        assert_eq!(project.root, root);
+        // CANONICALISED on both sides. The root here came back through the pane's own cwd, which
+        // the OS reports RESOLVED — and macOS's `TMPDIR` is `/var/folders/…`, a symlink to
+        // `/private/var/folders/…`. Comparing the path this test HANDED OVER against the one the
+        // kernel HANDED BACK is comparing two spellings of one directory, and it fails on the
+        // platform where they differ. The same rule `a_spawn_opens_in_the_directory_it_was_given`
+        // already follows.
+        assert_eq!(
+            project.root.canonicalize().ok(),
+            root.canonicalize().ok(),
+            "the project root is the directory the pane is working in",
+        );
         assert_eq!(project.actions[0].run, vec!["cargo", "test"]);
         std::fs::remove_dir_all(&root).ok();
     }

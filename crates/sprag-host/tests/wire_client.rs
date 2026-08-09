@@ -3022,9 +3022,13 @@ fn a_panes_project_commands_reach_a_wire_client() {
         )
         .expect("project query");
 
+    // CANONICALISED: the daemon derived this root from the pane's own cwd, which the OS reports
+    // RESOLVED, and macOS's `TMPDIR` is a symlink (`/var/folders/…` → `/private/var/folders/…`).
+    // Comparing the path this test handed over against the one the kernel handed back compares two
+    // spellings of one directory.
     assert_eq!(
-        answer["root"].as_str(),
-        Some(project.to_str().expect("utf-8 temp path")),
+        answer["root"].as_str().map(std::path::PathBuf::from),
+        project.canonicalize().ok(),
         "the root is the directory holding the config: {answer}"
     );
     assert_eq!(

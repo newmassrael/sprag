@@ -26,10 +26,18 @@ pub mod pane_pty;
 /// display fact (crate-internal).
 mod ports;
 pub mod processes;
-/// The one parse of a process's `/proc/<pid>/stat` line, shared by every `/proc` reader in this
-/// crate (crate-internal). The PARSE is portable and compiled everywhere; only the two functions
-/// that open `/proc` are Linux-only.
-mod procfs;
+/// A process's facts, read from whichever OS this is: its parent, its group, its terminal's
+/// foreground group, its arguments and the environment it was exec'd with.
+///
+/// `/proc` on Linux, `proc_pidinfo` / `proc_listpids` / `KERN_PROCARGS2` on macOS, and an honest
+/// absence elsewhere. Every PARSE here is portable and compiled — and tested — everywhere; only the
+/// calls that touch an OS are per-platform, which is the split that stopped a plain struct from
+/// vanishing off Linux (R340) and the one that makes a reader's absence visible (R343).
+///
+/// Mostly crate-internal. `procfs::environ` is public because the question *"what did
+/// whoever started this process hand it?"* has a consumer outside this crate — `sprag-mcp`'s
+/// ancestor walk, which read `/proc` itself and therefore answered nothing off Linux.
+pub mod procfs;
 /// The OS pseudoterminal and the child on the far side of it — the platform boundary this crate
 /// owns (R336). Unix-only; a Windows arm would be a sibling of its two entry points.
 #[cfg(unix)]

@@ -406,16 +406,30 @@ impl McpServer {
     /// walk would climb through this test binary — which is exactly the data-dependent flake this
     /// construction exists to remove.
     fn spawn_orphaned() -> Self {
-        let mut cmd = Command::new("setsid");
-        cmd.arg("--fork")
+        // ⚠ `sh` AND NOT `setsid`: **macOS has no `setsid` binary at all**, so this spawn failed
+        // there with `No such file or directory` and took three tests with it — the first macOS run
+        // of this suite is what said so. A POSIX shell backgrounding a command does the same job:
+        // the shell forks, exits at once, and its child is re-parented to `init` or the session
+        // sub-reaper. ONE path on both platforms, so the runner that has `setsid` exercises the code
+        // the runner without it will run.
+        //
+        // ⚠ The fd dance is the part that is easy to get wrong. POSIX: *"if job control is disabled,
+        // the standard input for an asynchronous list, before any explicit redirections, shall be
+        // assigned to /dev/null."* A server whose stdin is `/dev/null` reads EOF and exits, which
+        // would look exactly like the crash this test is trying to distinguish from an answer. So
+        // the real stdin is saved to fd 3 BEFORE the `&`, handed back explicitly, and closed behind
+        // it. Only stdin needs this; stdout and stderr are inherited as they are.
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(r#"exec 3<&0; "$0" <&3 3<&- &"#)
             .arg(env!("CARGO_BIN_EXE_sprag-mcp"))
             .env_remove(SOCK_ENV);
         let mut server = Self::from_command(cmd);
-        let mut shim = server.child.take().expect("the setsid shim is a child");
-        let status = shim.wait().expect("wait for the setsid shim to exit");
+        let mut shim = server.child.take().expect("the forking shim is a child");
+        let status = shim.wait().expect("wait for the forking shim to exit");
         assert!(
             status.success(),
-            "setsid --fork exited {status}; the server was never orphaned"
+            "the shim exited {status}; the server was never orphaned"
         );
         server
     }
@@ -479,16 +493,28 @@ impl McpServer {
             .as_ref()
             .expect("the shell is still a child")
             .id();
-        let children = format!("/proc/{shell}/task/{shell}/children");
+        // ⚠ `ps` AND NOT `/proc/<pid>/task/<pid>/children`: that file does not exist off Linux, and
+        // reading it took three tests down on the first macOS run of this suite. `ps -A -o
+        // pid=,ppid=` is POSIX and answers the same question — does anything call this shell its
+        // parent — on both runners, so the platform that has `/proc` exercises the code the platform
+        // without it will run.
+        let has_child = || {
+            let listed = Command::new("ps")
+                .args(["-A", "-o", "pid=,ppid="])
+                .output()
+                .expect("ps -A: the process table is how this test sees a fork");
+            String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .filter_map(|row| {
+                    let mut cols = row.split_whitespace();
+                    let _pid = cols.next()?;
+                    cols.next()?.parse::<u32>().ok()
+                })
+                .any(|ppid| ppid == shell)
+        };
         let deadline = Instant::now() + DEADLINE;
         loop {
-            let listed = std::fs::read_to_string(&children).unwrap_or_else(|error| {
-                panic!(
-                    "cannot read {children}: {error}. This test needs the kernel's process-children \
-                     list (CONFIG_PROC_CHILDREN) to check that the intermediate shell forked."
-                )
-            });
-            if !listed.trim().is_empty() {
+            if has_child() {
                 break;
             }
             assert!(
@@ -498,8 +524,10 @@ impl McpServer {
             );
             std::thread::sleep(POLL);
         }
-        let environ = std::fs::read(format!("/proc/{shell}/environ"))
-            .expect("read the intermediate shell's environ");
+        // Through the same portable door the product's own ancestor walk uses now, for the same
+        // reason: `/proc/<pid>/environ` is not there on every platform this suite runs on.
+        let environ = sprag_terminal::procfs::environ(shell)
+            .expect("read the intermediate shell's exec environment");
         let wanted = format!("{SOCK_ENV}={}", ancestor.display());
         assert!(
             environ
@@ -3538,18 +3566,35 @@ fn a_window_an_agent_opens_starts_where_it_asks() {
         json!({ "pane": far, "name": "there" }),
     );
 
+    // What `pwd` PRINTS is the resolved path, and macOS's `TMPDIR` is a symlink
+    // (`/var/folders/…` → `/private/var/folders/…`). Comparing against the path the fixture handed
+    // over compares two spellings of one directory.
+    let wanted = elsewhere
+        .canonicalize()
+        .expect("the temp dir resolves")
+        .to_str()
+        .expect("a utf-8 temp dir")
+        .to_owned();
+    // ⚠ AND THE ROW BREAKS ARE FOLDED OUT. The pane is narrow and that path is 55 characters on
+    // macOS, so what a person reads on one line arrives here across two — plus `/bin/bash` there
+    // prints Apple's *"the default interactive shell is now zsh"* banner into the same screen.
+    // Blunter than the emulator's own wrap flag (a rendered string is all this surface offers) and
+    // sound for THIS needle: an absolute path is not something two unrelated lines weld into by
+    // accident. `sprag-vt`'s `a_needle_that_straddles_the_right_edge_is_not_found_yet` is the same
+    // gap where no caller can fold around it.
+    let folded = |screen: &str| screen.lines().collect::<String>();
     server.call_tool("write_pane", json!({ "pane": "there", "text": "pwd" }));
     let mut screen = String::new();
     for _ in 0..200 {
         screen = server.call_tool("read_pane", json!({ "pane": "there" }));
-        if screen.contains(elsewhere.to_str().expect("a utf-8 temp dir")) {
+        if folded(&screen).contains(&wanted) {
             break;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
     assert!(
-        screen.contains(elsewhere.to_str().expect("a utf-8 temp dir")),
-        "the shell started where the agent asked: {screen:?}",
+        folded(&screen).contains(&wanted),
+        "the shell started where the agent asked ({wanted}): {screen:?}",
     );
     // A directory that is not one is refused BEFORE anything is created, naming the path.
     let refused = server.call_tool_error("open_window", json!({ "cwd": "/no/such/place/at/all" }));

@@ -6033,19 +6033,24 @@ fn ancestor_pids() -> Vec<u32> {
     pids
 }
 
-/// Read the parent PID of `pid` from `/proc/<pid>/status` (`PPid:` line).
+/// The parent PID of `pid`.
+///
+/// ⚠ Through [`sprag_terminal::procfs`] rather than `/proc/<pid>/status`, which is what this read
+/// and the one below it. That made the WHOLE ancestor walk — the thing that answers *"which daemon
+/// is this agent running under?"* — silently answer nothing on any platform without `/proc`, and
+/// the first macOS run of this suite is what said so. The reader lives beside the crate that
+/// already owns a process's other facts, so there is one place per platform rather than one per
+/// caller.
 fn read_ppid(pid: u32) -> Option<u32> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status
-        .lines()
-        .find_map(|l| l.strip_prefix("PPid:"))
-        .and_then(|rest| rest.trim().parse().ok())
+    sprag_terminal::procfs::parent(pid)
 }
 
-/// Read `key`'s value from `/proc/<pid>/environ` (NUL-separated `KEY=VALUE` records).
+/// Read `key`'s value from the environment `pid` was EXEC'd with.
+///
+/// See [`read_ppid`] for why this does not open `/proc` itself. The environment at exec is the
+/// right question: a process that calls `setenv` later did not change what its launcher handed it.
 fn read_proc_env(pid: u32, key: &str) -> Option<String> {
-    let bytes = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    env_from_bytes(&bytes, key)
+    env_from_bytes(&sprag_terminal::procfs::environ(pid)?, key)
 }
 
 /// Find `key`'s value in a NUL-separated `KEY=VALUE` environ buffer (the pure core of

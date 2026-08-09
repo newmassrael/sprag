@@ -1538,7 +1538,10 @@ fn the_cli_ssh_passes_local_forwards_to_exec() {
 /// scan attributes it to the ssh session — no ssh-specific code in the scan, an ssh pane is just a
 /// pane. Proves the composition end to end (`/proc` attribution itself is unit-covered in
 /// `sprag_terminal::ports`). Linux-only, like the port scan; needs python3 to hold the socket.
-#[cfg(target_os = "linux")]
+// Linux AND macOS: the restore-after-SIGKILL path stopped being Linux-shaped when `daemon_pid`
+// went through the portable process table (R343). A gate left on a test after its subject
+// became portable is a claim that the subject is not.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn the_cli_ssh_forward_surfaces_the_local_port_in_the_sidebar() {
     let has_python = Command::new("python3")
@@ -1896,23 +1899,25 @@ impl Drop for DaemonGuard {
 fn daemon_pid(sock: &Path) -> Option<u32> {
     let want = format!("SPRAG_HOST_RPC_SOCK={}", sock.display());
     let me = std::process::id();
-    std::fs::read_dir("/proc")
-        .ok()?
-        .flatten()
-        .find_map(|entry| {
-            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
-            if pid == me {
-                return None;
-            }
-            let comm = std::fs::read_to_string(entry.path().join("comm")).ok()?;
-            if comm.trim() != "sprag-term" {
-                return None;
-            }
-            let environ = std::fs::read(entry.path().join("environ")).ok()?;
-            environ
-                .split(|byte| *byte == 0)
-                .any(|value| value == want.as_bytes())
-                .then_some(pid)
+    // ⚠ THROUGH `sprag_terminal::procfs`, which walks whatever process table this OS has. This used
+    // to read `/proc` directly — the directory, each entry's `comm`, each entry's `environ` — so the
+    // three tests that need it were `#[cfg(target_os = "linux")]` and the restore-after-SIGKILL path
+    // was never once exercised off Linux. Nothing about the QUESTION is Linux-shaped: it is "which
+    // process is named sprag-term and was started beside THIS socket", and both halves are portable
+    // now (R343).
+    //
+    // The socket is matched from the ENVIRONMENT rather than the name, because a box can be running
+    // the developer's own daemon: a probe that took the first `sprag-term` it found would SIGKILL
+    // somebody's terminal (R278, and this test kills what it finds).
+    sprag_terminal::procfs::pids_named("sprag-term")
+        .into_iter()
+        .find(|&pid| {
+            pid != me
+                && sprag_terminal::procfs::environ(pid).is_some_and(|environ| {
+                    environ
+                        .split(|byte| *byte == 0)
+                        .any(|value| value == want.as_bytes())
+                })
         })
 }
 
@@ -1985,7 +1990,10 @@ fn saved_history_contains(state: &Path, needle: &str) -> bool {
 ///
 /// Linux-gated: it finds the forked daemon through `/proc`.
 #[test]
-#[cfg(target_os = "linux")]
+// Linux AND macOS: the restore-after-SIGKILL path stopped being Linux-shaped when `daemon_pid`
+// went through the portable process table (R343). A gate left on a test after its subject
+// became portable is a claim that the subject is not — and its HELPERS come with it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
     let sock = socket_path();
     let state = std::env::temp_dir().join(format!(
@@ -2076,7 +2084,10 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
 ///
 /// Linux-gated: it finds the forked daemon through `/proc`, like its two siblings above.
 #[test]
-#[cfg(target_os = "linux")]
+// Linux AND macOS: the restore-after-SIGKILL path stopped being Linux-shaped when `daemon_pid`
+// went through the portable process table (R343). A gate left on a test after its subject
+// became portable is a claim that the subject is not — and its HELPERS come with it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
     let sock = socket_path();
     let state = std::env::temp_dir().join(format!(
@@ -2229,7 +2240,10 @@ fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
 ///
 /// Linux-gated: it finds the forked daemon through `/proc`, like its text sibling.
 #[test]
-#[cfg(target_os = "linux")]
+// Linux AND macOS: the restore-after-SIGKILL path stopped being Linux-shaped when `daemon_pid`
+// went through the portable process table (R343). A gate left on a test after its subject
+// became portable is a claim that the subject is not — and its HELPERS come with it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_killed_daemon_gives_its_panes_back_with_their_inline_images() {
     let sock = socket_path();
     let state = std::env::temp_dir().join(format!(
@@ -2329,7 +2343,10 @@ fn a_killed_daemon_gives_its_panes_back_with_their_inline_images() {
 /// Every pane image summary in session `session`, flattened across its panes — `{id,width,height,
 /// anchor,seq}` as the panes slot reports it. Empty when no pane is showing one (the field is additive,
 /// so an image-less pane simply omits it).
-#[cfg(target_os = "linux")]
+// Linux AND macOS: the restore-after-SIGKILL path stopped being Linux-shaped when `daemon_pid`
+// went through the portable process table (R343). A gate left on a test after its subject
+// became portable is a claim that the subject is not — and its HELPERS come with it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn image_summaries(conn: &mut HostConn, session: &str) -> Vec<serde_json::Value> {
     let listed: serde_json::Value = match conn.call(
         "scene/query",
@@ -6870,13 +6887,18 @@ fn sprag_no_sock(args: &[&str], envs: &[(&str, &str)]) -> CliRun {
 /// `XDG_RUNTIME_DIR` at. A hard link rather than a copy: a socket is not a file whose bytes mean
 /// anything, and the link names the same inode the daemon is listening on.
 fn default_named_runtime_dir(sock: &Path) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sprag-cli-rt-{}-{}",
-        std::process::id(),
-        sock.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("x"),
-    ));
+    // ⚠ SHORT ON PURPOSE — a unix socket's path has a HARD platform ceiling (`sun_path`: 104 bytes
+    // on macOS, 108 on Linux) and what goes under this directory is a socket. This used to embed the
+    // whole socket FILE NAME for uniqueness, 44 characters of it, which is invisible under Linux's
+    // `/tmp/` and fatal under macOS's `/var/folders/<two opaque components>/T/`: **measured at 109
+    // bytes, five over.** The connect then failed and the CLI reported *"no server running"*, which
+    // is true and useless — it sends a person looking for a daemon that is running.
+    //
+    // A per-CALL counter gives the same uniqueness in three characters. The pid keeps two test
+    // BINARIES apart, the counter keeps two threads of one binary apart.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("sprag-rt-{}-{n}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let link = dir.join(sprag_rpc::HOST_SOCKET_NAME);
     let _ = std::fs::remove_file(&link);

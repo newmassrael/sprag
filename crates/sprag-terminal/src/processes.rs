@@ -325,53 +325,7 @@ fn argv(pid: u32) -> Vec<String> {
 /// delete the process from its job.
 #[cfg(target_os = "macos")]
 fn argv(pid: u32) -> Vec<String> {
-    let Ok(pid) = i32::try_from(pid) else {
-        return Vec::new();
-    };
-    // KERN_ARGMAX rather than a size probe: `KERN_PROCARGS2` does not answer a length for a null
-    // buffer, and the kernel's own ceiling is the only honest bound on how big the answer can be.
-    let mut argmax: libc::c_int = 0;
-    let mut size = std::mem::size_of::<libc::c_int>();
-    let mut ask = [libc::CTL_KERN, libc::KERN_ARGMAX];
-    // SAFETY: `ask` is a two-element MIB, and the out-buffer and its length describe one `c_int`.
-    if unsafe {
-        libc::sysctl(
-            ask.as_mut_ptr(),
-            2,
-            std::ptr::from_mut(&mut argmax).cast(),
-            &raw mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    } != 0
-    {
-        return Vec::new();
-    }
-    let Ok(argmax) = usize::try_from(argmax) else {
-        return Vec::new();
-    };
-
-    let mut buffer = vec![0u8; argmax];
-    let mut filled = argmax;
-    let mut ask = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
-    // SAFETY: `ask` is a three-element MIB and `filled` is `buffer`'s real length. Reading another
-    // user's arguments is refused by the kernel, which is a non-zero return and an empty answer —
-    // never a partial read of somebody else's memory.
-    if unsafe {
-        libc::sysctl(
-            ask.as_mut_ptr(),
-            3,
-            buffer.as_mut_ptr().cast(),
-            &raw mut filled,
-            std::ptr::null_mut(),
-            0,
-        )
-    } != 0
-    {
-        return Vec::new();
-    }
-    buffer.truncate(filled);
-    split_procargs2(&buffer)
+    crate::procfs::argv(pid)
 }
 
 /// Neither `/proc` nor `sysctl`, so no arguments — and the empty here means the same thing it means
@@ -379,37 +333,6 @@ fn argv(pid: u32) -> Vec<String> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn argv(_pid: u32) -> Vec<String> {
     Vec::new()
-}
-
-/// Split a `KERN_PROCARGS2` payload into arguments.
-///
-/// Compiled and TESTED on every platform, like [`split_cmdline`] and for the same reason: the shape
-/// of a payload is not a syscall, and a parser only one runner ever builds is a parser only one
-/// runner can catch a mistake in. See [`argv`]'s macOS body for what the layout is and why the
-/// count rather than the first empty string is what ends the vector.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn split_procargs2(raw: &[u8]) -> Vec<String> {
-    let Some((count, rest)) = raw.split_at_checked(std::mem::size_of::<u32>()) else {
-        return Vec::new();
-    };
-    let argc = u32::from_ne_bytes([count[0], count[1], count[2], count[3]]);
-    let Ok(argc) = usize::try_from(argc) else {
-        return Vec::new();
-    };
-    // Step over the executable path, then over the padding NULs the kernel aligns it with. A
-    // payload that ends inside either has no arguments to give.
-    let after_exec = match rest.iter().position(|&byte| byte == 0) {
-        Some(end) => &rest[end..],
-        None => return Vec::new(),
-    };
-    let args = match after_exec.iter().position(|&byte| byte != 0) {
-        Some(start) => &after_exec[start..],
-        None => return Vec::new(),
-    };
-    args.split(|&byte| byte == 0)
-        .take(argc)
-        .map(|arg| String::from_utf8_lossy(arg).into_owned())
-        .collect()
 }
 
 /// Split a `/proc/<pid>/cmdline` payload into arguments.
@@ -425,7 +348,8 @@ fn split_procargs2(raw: &[u8]) -> Vec<String> {
 /// ⚠ COMPILED AND TESTED EVERYWHERE, CALLED ON LINUX — the `allow` says so rather than a `cfg`
 /// hiding it. Gating the parser by platform is the mistake `procfs`'s module docs describe: a byte
 /// layout is not a syscall, and a parser only one runner builds is one only that runner can catch a
-/// mistake in. Its macOS peer is [`split_procargs2`], with the `allow` pointing the other way.
+/// mistake in. Its macOS peer lives in [`crate::procfs`], beside the sysctl that fetches what it
+/// parses — one read there answers both the arguments and the environment.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn split_cmdline(raw: &[u8]) -> Vec<String> {
     let body = raw.strip_suffix(b"\0").unwrap_or(raw);
@@ -462,59 +386,6 @@ mod tests {
             "a kernel thread or a zombie has no arguments at all",
         );
         assert_eq!(split_cmdline(b"\0"), Vec::<String>::new());
-    }
-
-    /// The macOS payload is a DIFFERENT shape, and the count is what ends the vector.
-    ///
-    /// `KERN_PROCARGS2` answers `argc`, then the executable path, then padding NULs, then the
-    /// arguments — and then **the whole environment**. A reader that split on NUL and took
-    /// everything would hand a person their own environment as a command line, secrets included,
-    /// which is why the last case here is the one that matters most.
-    ///
-    /// Driven on every platform, deliberately: this is a parse of a byte layout, not a syscall, and
-    /// a parser only one runner ever builds is one only that runner can catch a mistake in — the
-    /// exact reasoning `procfs` states for keeping `Stat::parse` portable.
-    #[test]
-    fn the_macos_payload_stops_at_argc_and_never_reaches_the_environment() {
-        let payload = |argc: u32, body: &[u8]| {
-            let mut raw = argc.to_ne_bytes().to_vec();
-            raw.extend_from_slice(body);
-            raw
-        };
-
-        assert_eq!(
-            split_procargs2(&payload(
-                2,
-                b"/usr/bin/sleep\x00\x00\x00sleep\x00600\x00SHELL=/bin/zsh\x00"
-            )),
-            vec!["sleep", "600"],
-            "two arguments, and the environment behind them is not one of them",
-        );
-        assert_eq!(
-            split_procargs2(&payload(1, b"/bin/cat\x00cat\x00AWS_SECRET=hunter2\x00")),
-            vec!["cat"],
-            "the count ends the vector even with no padding between path and args",
-        );
-        assert_eq!(
-            split_procargs2(&payload(3, b"/bin/sh\x00\x00\x00sh\x00-c\x00\x00")),
-            vec!["sh", "-c", ""],
-            "an empty argument in the middle survives, as it does on Linux",
-        );
-        assert_eq!(
-            split_procargs2(&payload(0, b"/bin/true\x00\x00true\x00")),
-            Vec::<String>::new(),
-            "argc 0 is no arguments, not all of them",
-        );
-        assert_eq!(
-            split_procargs2(b"ab"),
-            Vec::<String>::new(),
-            "a payload too short to hold the count is refused whole",
-        );
-        assert_eq!(
-            split_procargs2(&payload(2, b"/no/terminator")),
-            Vec::<String>::new(),
-            "and one that ends inside the executable path has nothing to give",
-        );
     }
 
     /// A registry with no session at all costs nothing and reports nothing — the idle daemon case,

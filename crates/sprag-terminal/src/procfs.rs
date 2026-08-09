@@ -15,7 +15,7 @@
 //!
 //! Worse, the kernel caps `comm` at 15 BYTES, which can truncate a multibyte name mid-codepoint. So
 //! the line is not necessarily valid UTF-8, and the two pre-existing readers differed exactly
-//! there: [`crate::ports`]'s worked on bytes and said why, while [`crate::pane_pty`]'s went through
+//! there: the crate's `ports` module's worked on bytes and said why, while [`crate::pane_pty`]'s went through
 //! `read_to_string` and therefore answered `None` for precisely the process the other one had been
 //! written to survive. One parse, on bytes, removes the class rather than the instance.
 //!
@@ -261,6 +261,183 @@ pub(crate) fn walk() -> Vec<(u32, Stat)> {
     Vec::new()
 }
 
+/// Every live process whose KERNEL NAME is `comm`, by pid.
+///
+/// The name is the kernel's short one — capped (15 bytes on Linux, `MAXCOMLEN` here) and settable by
+/// the process itself — so this NARROWS a search and never identifies: a caller that acts on the
+/// answer must confirm which one it found by something else. Its consumer does exactly that, matching
+/// the socket in the process's own environment before signalling anything, because a developer's box
+/// runs their own daemon of the same name (R278).
+///
+/// A narrow public door rather than exposing `Stat` and `walk`, for [`parent`]'s reason.
+#[must_use]
+pub fn pids_named(comm: &str) -> Vec<u32> {
+    walk()
+        .into_iter()
+        .filter_map(|(pid, stat)| (stat.comm == comm).then_some(pid))
+        .collect()
+}
+
+/// A process's PARENT, or `None` when it is gone or this build cannot ask.
+///
+/// A narrow public door rather than exposing `Stat`: the one consumer outside this crate walks
+/// ancestors and wants exactly this number, and a struct of four fields would make it inherit three
+/// it has no opinion about. `sprag-mcp` read `/proc/<pid>/status` for it and therefore climbed no
+/// ancestors at all off Linux.
+#[must_use]
+pub fn parent(pid: u32) -> Option<u32> {
+    stat(pid).map(|stat| stat.ppid)
+}
+
+/// A process's ENVIRONMENT as the NUL-separated `KEY=VALUE` bytes it was exec'd with.
+///
+/// **The environment at EXEC, not now** — on both platforms. A process that calls `setenv` after
+/// starting does not change this, which is exactly the property its callers want: the question they
+/// ask is *"what did whoever started this hand it?"*, and an answer that drifted with the process's
+/// own later choices could not be trusted to name the daemon an ancestor was launched beside.
+///
+/// `None` when the process is gone, or when this build cannot ask (see `stat` for the same
+/// three-way split). **An absence, never an empty environment**: every real process has at least
+/// `PATH`, so an empty answer would be a lie a caller cannot tell from a miss.
+///
+/// # ⚠ Why this is not a caller's own `read`
+///
+/// It was: `sprag-mcp` opened `/proc/<pid>/environ` directly, so the whole ancestor walk behind
+/// *"which daemon is the agent running under?"* answered nothing off Linux — and its own test said
+/// so on the first macOS run this suite ever completed. macOS keeps the environment in the SAME
+/// `KERN_PROCARGS2` payload as the arguments, right behind them, so this and the `argv` beside it are one read
+/// with two answers rather than two features.
+#[cfg(target_os = "linux")]
+pub fn environ(pid: u32) -> Option<Vec<u8>> {
+    std::fs::read(format!("/proc/{pid}/environ")).ok()
+}
+
+/// macOS: the tail of the `KERN_PROCARGS2` payload, behind the arguments the count ends.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn environ(pid: u32) -> Option<Vec<u8>> {
+    let raw = procargs2(pid)?;
+    let (_, environ) = split_procargs2(&raw);
+    (!environ.is_empty()).then_some(environ)
+}
+
+/// Neither source, so nothing to read — the honest absence `stat` and `walk` also answer with.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[must_use]
+pub fn environ(_pid: u32) -> Option<Vec<u8>> {
+    None
+}
+
+/// macOS: a process's ARGUMENTS, from the same payload [`environ`] reads.
+#[cfg(target_os = "macos")]
+pub(crate) fn argv(pid: u32) -> Vec<String> {
+    let Some(raw) = procargs2(pid) else {
+        return Vec::new();
+    };
+    split_procargs2(&raw).0
+}
+
+/// The raw `KERN_PROCARGS2` payload for `pid`.
+///
+/// `KERN_ARGMAX` rather than a size probe: this flavour does not answer a length for a null buffer,
+/// and the kernel's own ceiling is the only honest bound on how big the answer can be. Reading a
+/// process this user does not own is refused by the kernel — a non-zero return and an empty answer,
+/// never a partial read of somebody else's memory.
+#[cfg(target_os = "macos")]
+fn procargs2(pid: u32) -> Option<Vec<u8>> {
+    let pid = i32::try_from(pid).ok()?;
+    let mut argmax: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut ask = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    // SAFETY: `ask` is a two-element MIB and the out-buffer with its length describe one `c_int`.
+    if unsafe {
+        libc::sysctl(
+            ask.as_mut_ptr(),
+            2,
+            std::ptr::from_mut(&mut argmax).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return None;
+    }
+
+    let mut buffer = vec![0u8; usize::try_from(argmax).ok()?];
+    let mut filled = buffer.len();
+    let mut ask = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    // SAFETY: `ask` is a three-element MIB and `filled` is `buffer`'s real length.
+    if unsafe {
+        libc::sysctl(
+            ask.as_mut_ptr(),
+            3,
+            buffer.as_mut_ptr().cast(),
+            &raw mut filled,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return None;
+    }
+    buffer.truncate(filled);
+    Some(buffer)
+}
+
+/// Split a `KERN_PROCARGS2` payload into its ARGUMENTS and its ENVIRONMENT.
+///
+/// # The layout, which is not `/proc`'s
+///
+/// One buffer: a 4-byte `argc`, then the **executable path**, then padding NULs, then `argc`
+/// NUL-terminated arguments, then the environment as `KEY=VALUE` records. So two things have to be
+/// stepped over before the arguments begin, and **the count is what says where they end** — taking
+/// records until an empty one would hand a caller their own environment as a command line, secrets
+/// and all, which is why the count is load-bearing rather than a nicety.
+///
+/// The environment is returned as the NUL-separated BYTES behind them, in `/proc/<pid>/environ`'s
+/// own shape, so one parser serves both platforms' callers.
+///
+/// `argv[0]` is the program as the process was invoked with it, matching Linux's
+/// `/proc/<pid>/cmdline`; the executable path in front of it is the kernel's own resolution and is
+/// dropped, or a person would read the same program twice.
+///
+/// Compiled and TESTED on every platform: the shape of a payload is not a syscall, and a parser
+/// only one runner ever builds is one only that runner can catch a mistake in.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn split_procargs2(raw: &[u8]) -> (Vec<String>, Vec<u8>) {
+    let empty = (Vec::new(), Vec::new());
+    let Some((count, rest)) = raw.split_at_checked(std::mem::size_of::<u32>()) else {
+        return empty;
+    };
+    let argc = u32::from_ne_bytes([count[0], count[1], count[2], count[3]]);
+    let Ok(argc) = usize::try_from(argc) else {
+        return empty;
+    };
+    // Step over the executable path, then over the padding NULs the kernel aligns it with.
+    let Some(end) = rest.iter().position(|&byte| byte == 0) else {
+        return empty;
+    };
+    let after_exec = &rest[end..];
+    let Some(start) = after_exec.iter().position(|&byte| byte != 0) else {
+        return empty;
+    };
+    let body = &after_exec[start..];
+
+    let mut args = Vec::with_capacity(argc);
+    let mut cursor = 0usize;
+    for _ in 0..argc {
+        let Some(len) = body[cursor..].iter().position(|&byte| byte == 0) else {
+            // A payload that ends inside the arguments has no environment behind them either.
+            args.push(String::from_utf8_lossy(&body[cursor..]).into_owned());
+            return (args, Vec::new());
+        };
+        args.push(String::from_utf8_lossy(&body[cursor..cursor + len]).into_owned());
+        cursor += len + 1;
+    }
+    (args, body[cursor.min(body.len())..].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +515,89 @@ mod tests {
             Some(&mine),
             stat(me).as_ref(),
             "and the walk's row for a process is the row a single read gives",
+        );
+    }
+
+    /// The macOS payload is a DIFFERENT shape from `/proc`'s, and the count is what ends the
+    /// arguments — everything behind them is the ENVIRONMENT.
+    ///
+    /// ⚠ A reader that split on NUL and took everything would hand a caller their own environment
+    /// as a command line, secrets included. That is why the last case matters most, and why this
+    /// parse is driven on every platform: the shape of a payload is not a syscall.
+    #[test]
+    fn the_macos_payload_splits_at_argc_and_the_rest_is_the_environment() {
+        let payload = |argc: u32, body: &[u8]| {
+            let mut raw = argc.to_ne_bytes().to_vec();
+            raw.extend_from_slice(body);
+            raw
+        };
+        let env = |raw: Vec<u8>| String::from_utf8(split_procargs2(&raw).1).expect("utf-8 env");
+
+        let two = payload(
+            2,
+            b"/usr/bin/sleep\x00\x00\x00sleep\x00600\x00SHELL=/bin/zsh\x00PATH=/usr/bin\x00",
+        );
+        assert_eq!(
+            split_procargs2(&two).0,
+            vec!["sleep", "600"],
+            "two arguments, and the environment behind them is not one of them",
+        );
+        assert_eq!(
+            env(two),
+            "SHELL=/bin/zsh\u{0}PATH=/usr/bin\u{0}",
+            "and the environment comes back in `/proc/<pid>/environ`'s own NUL-separated shape",
+        );
+
+        let one = payload(1, b"/bin/cat\x00cat\x00AWS_SECRET=hunter2\x00");
+        assert_eq!(split_procargs2(&one).0, vec!["cat"]);
+        assert_eq!(
+            env(one),
+            "AWS_SECRET=hunter2\u{0}",
+            "the count ends the vector even with no padding between the path and the args",
+        );
+
+        assert_eq!(
+            split_procargs2(&payload(3, b"/bin/sh\x00\x00\x00sh\x00-c\x00\x00")).0,
+            vec!["sh", "-c", ""],
+            "an empty argument in the middle survives, as it does on Linux",
+        );
+        assert_eq!(
+            split_procargs2(&payload(0, b"/bin/true\x00\x00true\x00")).0,
+            Vec::<String>::new(),
+            "argc 0 is no arguments, not all of them",
+        );
+        assert_eq!(split_procargs2(b"ab"), (Vec::new(), Vec::new()));
+        assert_eq!(
+            split_procargs2(&payload(2, b"/no/terminator")),
+            (Vec::new(), Vec::new()),
+            "a payload that ends inside the executable path has nothing to give",
+        );
+    }
+
+    /// [`environ`] answers about a process this one already knows the answer for — ITSELF.
+    ///
+    /// `PATH` is in this binary's EXEC environment, so it is there; a name nobody exported is not.
+    /// That pair is what separates "this build can read an environment" from "this build answers
+    /// yes to everything".
+    #[test]
+    fn environ_reads_back_a_variable_this_process_was_exec_with() {
+        let read = environ(std::process::id());
+
+        if !cfg!(any(target_os = "linux", target_os = "macos")) {
+            assert_eq!(read, None, "no reader, an honest absence, never a guess");
+            return;
+        }
+
+        let read = read.expect("a platform with a reader must answer about its own process");
+        let has = |key: &str| {
+            read.split(|&byte| byte == 0)
+                .filter_map(|record| std::str::from_utf8(record).ok())
+                .any(|record| record.starts_with(&format!("{key}=")))
+        };
+        assert!(has("PATH"), "the exec environment carries PATH");
+        assert!(
+            !has("SPRAG_NOBODY_EXPORTED_THIS"),
+            "and it does not carry a name nobody exported",
         );
     }
 
