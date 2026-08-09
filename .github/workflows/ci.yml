@@ -78,8 +78,49 @@ jobs:
       # `--no-fail-fast` because a plain run stops at the FIRST failing binary, which reports one
       # failure and hides the rest. The exit code is the verdict; a summary read out of the log is
       # not (interleaved output drops lines).
+      #
+      # The XDG variables are the guard the step below checks, and they are set HERE because the
+      # suite has to run under them for that step to have anything to look at.
       - name: Test
-        run: cargo test --workspace --exclude sprag-gui --no-fail-fast
+        run: |
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+          cargo test --workspace --exclude sprag-gui --no-fail-fast
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
+          XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
+          XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
+
+      # ⚠⚠ THE SUITE MUST NOT WRITE THE HOME OF WHOEVER RAN IT.
+      #
+      # R341 measured `cargo test` creating `~/.config/sprag/config.toml` on the developer's box: a
+      # test ran `sprag set-option window-size manual` through a helper that passes no environment,
+      # so the child resolved the AMBIENT config home. A SIBLING unit test then read that file, and
+      # was green here and red on every host without it. `cargo test` silently edited the user's
+      # terminal configuration, and the suite's own green was resting on the edit.
+      #
+      # A test cannot be this guard. `XDG_CONFIG_HOME` is process-global, so a test can neither
+      # observe nor isolate what the tests running beside it do to it — the fix for any ONE call
+      # site is a seam, and nothing makes the NEXT call site take one. The guard has to stand
+      # outside the suite, which is what this step is.
+      #
+      # `if: always()` because a suite that FAILED can still have written the file, and that is
+      # exactly when a person needs to know: it is the shape that makes a failure unreproducible
+      # anywhere else.
+      #
+      # Locally: run the suite with the three variables pointed at a fresh directory and run the
+      # same `find`. That is the measurement that found the defect, so it is known to discriminate.
+      - name: The suite must not write the home of whoever ran it
+        if: always()
+        run: |
+          wrote=$(find "${{ runner.temp }}/ambient" -mindepth 1 2>/dev/null || true)
+          if [ -n "$wrote" ]; then
+            echo "::error::the test suite wrote the ambient XDG home. On a developer's machine"
+            echo "::error::that is THEIR ~/.config, and a sibling test that reads it is green"
+            echo "::error::here and red everywhere else. Give the call site below a seam."
+            echo "$wrote"
+            exit 1
+          fi
+          echo "the suite left the ambient config, data and state homes untouched"
 
   headless-macos:
     name: headless (macos)
@@ -100,5 +141,29 @@ jobs:
       - name: Build
         run: cargo build --workspace --exclude sprag-gui
 
+      # Both halves duplicated from the Linux job deliberately: the guard below is a claim about
+      # what THE SUITE does, and a claim checked on one platform is a claim about that platform. A
+      # call site that resolves the ambient home only where `cfg(unix)` splits would otherwise be
+      # caught on one runner and shipped by the other.
       - name: Test
-        run: cargo test --workspace --exclude sprag-gui --no-fail-fast
+        run: |
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+          cargo test --workspace --exclude sprag-gui --no-fail-fast
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
+          XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
+          XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
+
+      # See the Linux job for what this is and why a test cannot be it.
+      - name: The suite must not write the home of whoever ran it
+        if: always()
+        run: |
+          wrote=$(find "${{ runner.temp }}/ambient" -mindepth 1 2>/dev/null || true)
+          if [ -n "$wrote" ]; then
+            echo "::error::the test suite wrote the ambient XDG home. On a developer's machine"
+            echo "::error::that is THEIR ~/.config, and a sibling test that reads it is green"
+            echo "::error::here and red everywhere else. Give the call site below a seam."
+            echo "$wrote"
+            exit 1
+          fi
+          echo "the suite left the ambient config, data and state homes untouched"
