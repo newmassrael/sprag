@@ -2151,7 +2151,21 @@ mod tests {
         tx.send((10, 5)).unwrap();
         tx.send((20, 5)).unwrap();
         tx.send((30, 5)).unwrap();
-        sleep(Duration::from_millis(80)); // > quiet -> the trailing flush fires
+
+        // ⚠ WAITED FOR, NOT SLEPT THROUGH. This was `sleep(80ms)` against a 20 ms window — a 4x
+        // margin on another thread's scheduling, which is not a bound this test can read. R343 added
+        // two live-PTY tests to this binary and the extra contention was enough: the macOS runner
+        // reported `left: []`, the coalescer simply not having run yet.
+        //
+        // The claim is *the burst collapses to ONE size, the final one* — it says nothing about how
+        // soon. So this waits for the first application and then asserts the WHOLE vector: a broken
+        // debounce applies `(10, 5)` first, so the wait ends on a snapshot that is not `[(30, 5)]`
+        // and the assertion fails with what it saw. Lengthening the sleep would have hidden the
+        // flake and changed nothing about what the gate can discriminate.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while applied.lock().unwrap().is_empty() && Instant::now() < deadline {
+            sleep(Duration::from_millis(5));
+        }
         assert_eq!(
             *applied.lock().unwrap(),
             vec![(30, 5)],
