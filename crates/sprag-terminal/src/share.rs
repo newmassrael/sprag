@@ -337,12 +337,20 @@ const USAGE_USEC: &str = "usage_usec";
 /// file is what separates them.
 const CPU_PRESSURE: &str = "cpu.pressure";
 
-/// The line of [`CPU_PRESSURE`] this reads: time when SOME task in the cgroup was stalled.
+/// The row of a pressure file that carries the time when SOME task was stalled.
 ///
-/// Not `full`, which is the time when EVERY task was stalled and is what a whole machine going to
-/// its knees looks like. A pane is normally one job, so `some` is the reading that moves when that
-/// job waits, and `full` on a cgroup running one thread would say the same thing less often.
+/// The row a PANE is read through ([`Tree::charge`]): a pane is normally one job, so `some` is the
+/// reading that moves when that job waits, and [`PRESSURE_FULL`] on a cgroup running one thread
+/// would say the same thing less often.
 const PRESSURE_SOME: &str = "some";
+
+/// The row of a pressure file that carries the time when EVERY task was stalled — nothing in this
+/// scope made progress at all.
+///
+/// The row a MACHINE is judged on, and the reason [`Pressure`] carries both. At `/proc/pressure/io`
+/// a non-zero `full` is not a slow disk, it is every runnable task on the box parked waiting for
+/// one; the same number under a pane would only say the pane is one job wide.
+const PRESSURE_FULL: &str = "full";
 
 /// A cgroup's current memory footprint, in bytes — the memory controller's counter.
 const MEMORY_CURRENT: &str = "memory.current";
@@ -547,7 +555,7 @@ impl Tree {
         };
         Ok(Charge {
             cpu_usec: keyed_value(&stat, USAGE_USEC).unwrap_or_default(),
-            waiting: read_waiting(&leaf.join(CPU_PRESSURE)),
+            waiting: Pressure::read(&leaf.join(CPU_PRESSURE)).some,
             memory: read_counted(&leaf.join(MEMORY_CURRENT)),
             processes: read_counted(&leaf.join(PIDS_CURRENT)),
         })
@@ -739,6 +747,17 @@ impl PaneHomes {
     pub fn limited_by(mut self, source: LimitSource) -> Self {
         self.limits = Some(source);
         self
+    }
+
+    /// The delegated subtree panes are placed into, or `None` on a host that enforces nothing.
+    ///
+    /// The one way out of this type to a PATH, and it hands back a read-only borrow rather than the
+    /// [`Tree`]: a caller that wanted to place a pane has the pool's own doors for it, and a caller
+    /// that wants to walk the hierarchy above this daemon has [`CgroupNode`]. Handing out the tree
+    /// would hand out `place` and `charge` to anybody who asked where the daemon lives.
+    #[must_use]
+    pub fn tree_root(&self) -> Option<&Path> {
+        self.tree.as_ref().map(Tree::root)
     }
 
     /// What a pane born now should be capped at.
@@ -1101,6 +1120,86 @@ pub enum Waiting {
     NotAccounted,
 }
 
+impl Waiting {
+    /// The longest window the kernel keeps, when there is a reading at all.
+    ///
+    /// Five minutes is the window a DIAGNOSIS is read over: a person runs a check because something
+    /// has felt slow for a while, and `avg10` answers about the ten seconds their own command spent
+    /// starting. The minute in between is [`avg60`](Self::avg60), which is what a threshold is set
+    /// on; this is the one that says whether the minute was typical.
+    #[must_use]
+    pub const fn avg300(self) -> Option<Percent> {
+        match self {
+            Self::Measured { avg300, .. } => Some(avg300),
+            Self::NotAccounted => None,
+        }
+    }
+
+    /// The minute — the window a stall threshold is judged on.
+    ///
+    /// Long enough that one compile's burst does not trip it and short enough that a person still
+    /// recognises the machine they are sitting at.
+    #[must_use]
+    pub const fn avg60(self) -> Option<Percent> {
+        match self {
+            Self::Measured { avg60, .. } => Some(avg60),
+            Self::NotAccounted => None,
+        }
+    }
+}
+
+/// Both rows of one kernel pressure file — the stall accounting for one resource, at one scope.
+///
+/// # Why both rows, when [`Charge`] wanted only one
+///
+/// `some` and `full` answer different questions and a reader that has only one of them cannot ask
+/// the other. `some` is *something here waited*, which under a pane is the starvation signal
+/// [`Tree::charge`] exists for. `full` is *nothing here ran at all*, which under a pane is nearly
+/// the same statement and across a whole MACHINE is the difference between a busy box and a stopped
+/// one. A diagnosis of the machine is judged on `full`; a pane is judged on `some`.
+///
+/// Absence is per-row for [`Waiting`]'s reason: the kernel prints no `full` row for system-wide CPU
+/// on some versions, and a zero there would claim the machine never stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Pressure {
+    /// Time when SOME task in this scope was stalled on the resource.
+    pub some: Waiting,
+    /// Time when EVERY task in this scope was stalled — nothing in it made progress.
+    pub full: Waiting,
+}
+
+impl Pressure {
+    /// What a host that keeps no pressure accounting reads as, in both rows.
+    pub const NONE: Self = Self {
+        some: Waiting::NotAccounted,
+        full: Waiting::NotAccounted,
+    };
+
+    /// Read one pressure file — `/proc/pressure/<resource>`, or a cgroup's `<resource>.pressure`.
+    ///
+    /// One parser for both scopes, deliberately: the file format is the kernel's and it is the same
+    /// in both places, and two readers of one format is how a machine row and a pane row come to be
+    /// parsed differently. An unreadable file is [`NONE`](Self::NONE) rather than an error for
+    /// [`Tree::charge`]'s reason.
+    #[must_use]
+    pub fn read(path: &Path) -> Self {
+        let Ok(body) = std::fs::read_to_string(path) else {
+            return Self::NONE;
+        };
+        Self::parse(&body)
+    }
+
+    /// The whole decision with the bytes handed in — the seam a fixture drives, so a kernel format
+    /// this crate has never seen can be replayed instead of installed.
+    #[must_use]
+    pub fn parse(body: &str) -> Self {
+        Self {
+            some: pressure_row(body, PRESSURE_SOME),
+            full: pressure_row(body, PRESSURE_FULL),
+        }
+    }
+}
+
 /// A cgroup counter whose CONTROLLER may never have reached this level.
 ///
 /// `memory.current` and `pids.current` exist only where their controllers were enabled by the level
@@ -1179,6 +1278,17 @@ impl Percent {
     #[must_use]
     pub const fn from_hundredths(hundredths: u32) -> Self {
         Self(hundredths)
+    }
+
+    /// `88.69` — a percentage written with a decimal point, from wherever it was printed.
+    ///
+    /// Public because the kernel is not the only thing on a machine that prints this shape: a cache
+    /// reports its hit rate the same way, and a second parser for one format is how two readings of
+    /// the same two decimals come to round differently. See the type docs for why the digits are
+    /// taken as integers.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        parse_percent(text.trim())
     }
 }
 
@@ -1264,6 +1374,175 @@ impl std::error::Error for TreeError {
             | Self::Remove { source, .. } => Some(source),
         }
     }
+}
+
+/// Where cgroup v2 is mounted on this host, when it is mounted at all.
+///
+/// `None` off Linux, so a caller that wants to walk the hierarchy asks once and is TOLD there is
+/// none, instead of joining paths under a root that will never exist and reading every answer as an
+/// absence. It is fixed rather than hunted for, for the reason recorded on the constant it returns:
+/// cgroup v2's mount point is settled by systemd and by the kernel documentation alike.
+#[must_use]
+pub fn mount_point() -> Option<&'static Path> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(Path::new(UNIFIED_ROOT))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Any cgroup in the hierarchy, read-only — including ones this daemon did not make and may not
+/// write.
+///
+/// # Why the tree is not enough
+///
+/// [`Tree`] is the subtree this daemon OWNS: it creates levels, enables controllers and writes
+/// weights, and every path it touches is under its own root. That is the right bound for placing a
+/// pane and the wrong one for explaining why a pane is slow, because the competition that starves a
+/// pane usually sits ABOVE the tree — a batch workload in `system.slice` at the same weight as the
+/// whole user session. Answering that needs a reader that can look at a cgroup this daemon has no
+/// business writing.
+///
+/// So the split is by CAPABILITY and not by location: this type has no `place`, no `write`, and no
+/// constructor that takes a [`Share`]. Reaching a stranger's cgroup through it cannot modify one,
+/// and every cgroup filename in this crate still lives in this module — the single reader R338
+/// established, widened to a scope it did not have rather than duplicated somewhere else.
+///
+/// Every reader answers an absence rather than an error, because up here absence is the normal
+/// case: a level the CPU controller never reached has no `cpu.weight`, and that is a fact about the
+/// host to be reported, not a failure that should cost the caller the rest of the walk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CgroupNode {
+    /// The directory this node is.
+    at: PathBuf,
+}
+
+impl CgroupNode {
+    /// Read the cgroup at `at`. Nothing is opened until a reader is called.
+    #[must_use]
+    pub fn at(at: PathBuf) -> Self {
+        Self { at }
+    }
+
+    /// The directory this node is.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.at
+    }
+
+    /// What a person calls this level — its last path component.
+    ///
+    /// The cgroup root itself has none, and answers `/`: it is the only node with no name, and a
+    /// walk that reached it has reached the top.
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.at.file_name().map_or_else(
+            || "/".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// This cgroup's share of its own level, or `None` where the CPU controller never reached it.
+    ///
+    /// `None` is the load-bearing answer and not a default: a level with no `cpu.weight` is one
+    /// where the kernel is not arbitrating CPU between the children at all, which is a different
+    /// state from every child carrying the same number.
+    #[must_use]
+    pub fn weight(&self) -> Option<u32> {
+        std::fs::read_to_string(self.at.join(CPU_WEIGHT))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// The CPU this cgroup and everything under it has consumed since it was made, in microseconds.
+    ///
+    /// Cumulative, so it is a rate only against a second reading — which is the whole reason the
+    /// diagnosis takes two. Present in every cgroup v2 directory whatever controllers reached it
+    /// — it is part of the base stat the kernel keeps for the hierarchy itself — so a level that was
+    /// never given the CPU controller is still measurable, which is the case worth having.
+    #[must_use]
+    pub fn cpu_usec(&self) -> Option<u64> {
+        keyed_value(
+            &std::fs::read_to_string(self.at.join(CPU_STAT)).ok()?,
+            USAGE_USEC,
+        )
+    }
+
+    /// This cgroup's CPU stall accounting, both rows.
+    #[must_use]
+    pub fn pressure(&self) -> Pressure {
+        Pressure::read(&self.at.join(CPU_PRESSURE))
+    }
+
+    /// The controllers this cgroup's PARENT enabled for it — everything it could turn on for its
+    /// own children.
+    #[must_use]
+    pub fn controllers(&self) -> Vec<String> {
+        tokens_of(&self.at.join(CONTROLLERS))
+    }
+
+    /// The controllers this cgroup HAS turned on for its children.
+    ///
+    /// The pair with [`controllers`](Self::controllers) is what makes a delegation answerable: a
+    /// controller in the first list and not in the second was available and left off, and one in
+    /// neither was never delegated to this level at all. Those are different people's problems.
+    #[must_use]
+    pub fn subtree_control(&self) -> Vec<String> {
+        tokens_of(&self.at.join(SUBTREE_CONTROL))
+    }
+
+    /// The process ids this cgroup holds right now.
+    ///
+    /// A pane's own process set, exactly — which is the answer a `/proc` walk can only approximate,
+    /// because a build's children reparent and a pid tree read a moment late has lost them. The
+    /// membership is the kernel's and it is not a heuristic.
+    #[must_use]
+    pub fn procs(&self) -> Vec<u32> {
+        std::fs::read_to_string(self.at.join(PROCS))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect()
+    }
+
+    /// The child cgroups of this one, in the order the filesystem lists them.
+    ///
+    /// Directories only: every other entry in a cgroup directory is a control file.
+    #[must_use]
+    pub fn children(&self) -> Vec<Self> {
+        let Ok(entries) = std::fs::read_dir(&self.at) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                entry
+                    .file_type()
+                    .ok()?
+                    .is_dir()
+                    .then(|| Self::at(entry.path()))
+            })
+            .collect()
+    }
+}
+
+/// The whitespace-separated tokens of a one-line cgroup control file, or nothing where the file is
+/// not there.
+///
+/// Tokens and never a substring search, for the reason the controller probe records: `cpu` is a
+/// prefix of `cpuset`, and a substring test reports the CPU controller present on a host that
+/// offers only `cpuset`.
+fn tokens_of(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .split_ascii_whitespace()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// `ENOTSUP` — what the kernel answers when a cgroup's ancestor still holds a process.
@@ -1389,25 +1668,22 @@ fn keyed_value(body: &str, key: &str) -> Option<u64> {
     })
 }
 
-/// A `pressure` file's `some` row, or the honest absence.
+/// One named row of a pressure file's body, or the honest absence.
 ///
-/// An unreadable file is [`Waiting::NotAccounted`] rather than an error for the reason stated on
-/// [`Tree::charge`]: a kernel without `CONFIG_PSI` simply has no such file, and that is a fact about
-/// the machine every reader wants said rather than a fault that should cost them the rest.
-fn read_waiting(path: &Path) -> Waiting {
-    let Ok(body) = std::fs::read_to_string(path) else {
-        return Waiting::NotAccounted;
-    };
-    let Some(some) = body
+/// A row the kernel did not print is [`Waiting::NotAccounted`] and never a zero, for the reason
+/// stated on [`Tree::charge`]: a kernel without `CONFIG_PSI` has no such file, and a kernel that
+/// prints only `some` for a resource is not saying that `full` was never reached.
+fn pressure_row(body: &str, row: &str) -> Waiting {
+    let Some(fields) = body
         .lines()
-        .find(|line| line.split_ascii_whitespace().next() == Some(PRESSURE_SOME))
+        .find(|line| line.split_ascii_whitespace().next() == Some(row))
     else {
         return Waiting::NotAccounted;
     };
     Waiting::Measured {
-        avg10: pressure_average(some, "avg10"),
-        avg60: pressure_average(some, "avg60"),
-        avg300: pressure_average(some, "avg300"),
+        avg10: pressure_average(fields, "avg10"),
+        avg60: pressure_average(fields, "avg60"),
+        avg300: pressure_average(fields, "avg300"),
     }
 }
 
