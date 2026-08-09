@@ -13,6 +13,7 @@
 //! same builders, so the ABI is defined once.
 
 use std::io;
+use std::time::Duration;
 
 use pinion_core::external::{SchemaArg, SchemaField};
 use serde_json::{Map, Value};
@@ -297,6 +298,7 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SESSION_ACTIVITY_FIELD,
     PANE_PROCESSES_FIELD,
     PANE_RESOURCES_FIELD,
+    DOCTOR_FIELD,
 ];
 
 /// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`
@@ -1307,6 +1309,70 @@ impl PaneResourcesWire {
 ///
 /// Whatever `read` returns. It is attempted at most twice, so a caller sees at most one extra
 /// round trip and never a loop.
+/// The mux control external query slot: WHAT IS WRONG with the machine the panes run on.
+///
+/// # Why the terminal is the one that answers a question that is mostly not about it
+///
+/// [`PANE_RESOURCES_FIELD`] says what each pane TOOK, and a person reading it who sees every pane
+/// starved has learned that the machine is short and nothing about why. The investigation behind
+/// this design found seven causes and **one** of them belonged to the multiplexer: the rest were a
+/// compiler cache the shells walked past, kernel swap tuning, a systemd delegation policy and a CI
+/// runner competing at equal weight. So a diagnosis scoped to sprag's own state would answer a
+/// seventh of the question.
+///
+/// The daemon answers it — rather than each client reading `/proc` for itself — because the daemon
+/// is where the panes are. Half the checks need a pane's own pid, its own cgroup and the `PATH` its
+/// child was executed with, and a client attached over ssh is not even on the same machine as the
+/// thing it is asking about. The rule this crate keeps everywhere applies unchanged: the process
+/// that PERFORMS a thing is the one that says what it did.
+///
+/// # Why its argument is a WINDOW where its three neighbours take a tolerance — and why it must
+/// have one at all
+///
+/// It must be PARAMETRIC, and that is structural rather than stylistic. `scene/snapshot` with an
+/// empty path walks the whole surface and reads every bare slot; a parametric address has an
+/// argument a walk cannot fill in, so it is not walked. This read costs a window of real time and
+/// runs a program, and as a bare slot it went straight onto the snapshot path — measured, by a
+/// plugin test from four rounds ago that asserts a snapshot returns in under half a second and
+/// began failing at 518 ms the moment this address existed. R282's rule (keep the costly reads OFF
+/// the polled slot) is kept by the address SHAPE. Its three sampled siblings are parametric for the
+/// same reason, which is the pattern this arrived at the hard way.
+///
+/// The argument is a window and not a staleness tolerance because a diagnosis is never cached: it
+/// is pressed by a person who has just changed something and wants to know whether it helped, and
+/// an answer from before their change is the one answer that is certainly useless. What the caller
+/// does get to choose is how long the one un-cacheable measurement takes — a cumulative counter
+/// says a neighbour used CPU at some point since boot, and only a window says it is using it now. A
+/// caller in a hurry passes `0` and every rate comes back settling; one that wants the competition
+/// separated passes longer. Every rate states the window it covers, so neither is a number a reader
+/// has to know in advance.
+///
+/// A QUERY and not an invoke, for [`PANE_RESOURCES_FIELD`]'s reason: reading the world is not a
+/// mutation of the scene, and serving it as an action would bump the revision and wake the very
+/// `waitFor` it was answering.
+pub const DOCTOR_FIELD: SchemaField =
+    SchemaField::parametric("doctor.<window_ms>", "object", DOCTOR_ARGS);
+
+/// [`DOCTOR_FIELD`]'s argument: how long to measure the competition over, in milliseconds. Open,
+/// because nothing on this surface bounds it.
+const DOCTOR_ARGS: &[SchemaArg] = &[SchemaArg::open("window_ms", "int")];
+
+/// [`DOCTOR_FIELD`]'s address with the window filled in.
+///
+/// Built from the declared field rather than by re-spelling the prefix, so the address a client
+/// sends and the prefix the host strips cannot drift ([`pane_processes_at`]'s discipline).
+#[must_use]
+pub fn doctor_over(window_ms: u64) -> String {
+    format!("{}{window_ms}", DOCTOR_FIELD.literal_prefix())
+}
+
+/// The window [`DOCTOR_FIELD`] is asked for by every client that has no reason to want another.
+///
+/// The same window a pane's rate settles over, and one constant rather than two because they are
+/// the same window: long enough that scheduler granularity is noise, short enough that a person
+/// waiting on the command does not think it hung.
+pub const DOCTOR_WINDOW: Duration = sprag_terminal::SETTLE;
+
 pub fn settled<E>(
     mut read: impl FnMut() -> Result<PaneResourcesWire, E>,
 ) -> Result<PaneResourcesWire, E> {
@@ -5321,6 +5387,7 @@ mod tests {
             "close",
             "commands",
             "display_message",
+            "doctor.<window_ms>",
             "drop_file",
             "events.<since>",
             "find.<needle>",

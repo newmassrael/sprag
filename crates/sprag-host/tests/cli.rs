@@ -6998,7 +6998,7 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
     }
     assert_eq!(
         (ran, refused, unbuilt),
-        (50, 5, 3),
+        (51, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7162,7 +7162,7 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // them — which is the whole reason a new verb is added to the TABLE rather than to a surface.
     assert_eq!(
         counts,
-        (15, 10, 32, 1),
+        (15, 10, 33, 1),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

@@ -187,7 +187,7 @@ use sprag_host::vocabulary::{self, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
-    ENDED_KEY, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
+    DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
     KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk,
     NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
     PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire,
@@ -196,8 +196,8 @@ use sprag_host::wire::{
     ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
     SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk,
     SwapHow, TEXT_ACTION, TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION,
-    events_slot_since, find_slot_for, pane_processes_at, pane_resources_at, project_slot_for,
-    regex_slot_for, session_activity_at, settled, unknown_action, unknown_slot,
+    doctor_over, events_slot_since, find_slot_for, pane_processes_at, pane_resources_at,
+    project_slot_for, regex_slot_for, session_activity_at, settled, unknown_action, unknown_slot,
 };
 use sprag_host::{ClientSize, PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -205,8 +205,8 @@ use sprag_rpc::{
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
 use sprag_terminal::{
-    Counted, Cpu, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow, Taken, Waiting,
-    WindowPlace, arrangement,
+    Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow, Taken,
+    Verdict, Waiting, WindowPlace, arrangement,
 };
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -277,6 +277,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Layout => layout(args.collect()),
         Verb::Processes => processes(args.collect()),
         Verb::Resources => resources(args.collect()),
+        Verb::Doctor => doctor(args.collect()),
         Verb::Agent => agent(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
         Verb::ReportAgent => report_agent(args.collect()),
@@ -3543,6 +3544,90 @@ fn footprint(memory: Counted) -> String {
         // The controller never reached this pane, so there is no number — which a `0 B` would
         // report as a pane using no memory at all.
         Counted::NoController => "(no memory controller)".to_owned(),
+    }
+}
+
+/// `doctor`: what is WRONG with the machine the panes run on.
+///
+/// # Why it prints the healthy rows too, and why every row carries a number
+///
+/// A report that printed only the faults would leave a person unable to tell *this was fine* from
+/// *nobody looked*, and the design this implements makes that distinction the whole point: seven
+/// causes were found in the investigation behind it and only one belonged to the multiplexer, so
+/// most of what a person needs is confidence that the other six were checked. Each row therefore
+/// prints its verdict, what it measured, and — for anything not clean — the source it read, the
+/// criterion it was judged by and what a person could do. The command NEVER does that last thing:
+/// detection and evidence are automated, the prescription is typed by a human.
+///
+/// # Why it pauses
+///
+/// One check cannot be answered by a snapshot. A cumulative counter says a neighbour used CPU at
+/// some point since boot, and the question is whether it is taking it now — so the daemon samples
+/// the levels above its own subtree twice, half a second apart, and every rate states the window it
+/// covers.
+fn doctor(args: Vec<String>) -> io::Result<()> {
+    if let Some(extra) = args.first() {
+        return Err(bad_input(&format!(
+            "doctor: unexpected argument {extra:?} (it takes none — a machine is not divided by \
+             session)"
+        )));
+    }
+    let mut conn = connect(None)?;
+    let answer = query_slot(
+        &mut conn,
+        json!({ "path": mux_action_path(&doctor_over(DOCTOR_WINDOW_MS)) }),
+    )?;
+    let report = serde_json::from_value::<Diagnosis>(answer)
+        .map_err(|error| bad_input(&format!("doctor: the host's answer did not parse: {error}")))?;
+    let degraded = report.degraded().count();
+    let blind = report
+        .findings
+        .iter()
+        .filter(|finding| matches!(finding.verdict, Verdict::Blind(_)))
+        .count();
+    println!(
+        "{} checks: {degraded} degraded, {blind} not measurable, {} clean",
+        report.findings.len(),
+        report.findings.len() - degraded - blind,
+    );
+    for finding in &report.findings {
+        let entry = finding.check.entry();
+        println!();
+        println!("{} {}", verdict_mark(finding.verdict), entry.name);
+        for row in finding.evidence.rows() {
+            println!("    {}: {}", row.of, row.is);
+        }
+        // The source, the bar and the remedy only where they are load-bearing. On a clean row they
+        // would be four lines of advice about something that is not happening, and eleven of those
+        // is a report nobody reads to the end.
+        if finding.verdict == Verdict::Degraded {
+            println!("    asks: {}", entry.asks);
+            println!("    read: {}", entry.source);
+            println!("    flagged when: {}", entry.criterion);
+            println!("    you could: {}", entry.remedy);
+        }
+    }
+    Ok(())
+}
+
+/// How long the CLI asks the daemon to measure the competition over.
+///
+/// A constant and not a flag: the wire takes a window because it MUST be a parametric address (a
+/// bare slot is read by every whole-surface snapshot, and this is the one read that sleeps), and
+/// nobody has asked to vary it. A flag whose value no caller chooses is an answer nobody reads.
+const DOCTOR_WINDOW_MS: u64 = DOCTOR_WINDOW.as_millis() as u64;
+
+/// The one-glyph-free mark each verdict prints under.
+///
+/// Words rather than symbols: this output is read in a terminal that may be any width and piped
+/// into anything, and `grep -c DEGRADED` is a thing a person will do with it.
+fn verdict_mark(verdict: Verdict) -> String {
+    match verdict {
+        Verdict::Healthy => "  ok    ".to_owned(),
+        Verdict::Degraded => "DEGRADED".to_owned(),
+        // The reason, not a blank: "this was fine" and "nobody could look" send a reader in
+        // opposite directions, which is the distinction the whole report is built on.
+        Verdict::Blind(reason) => format!("  --      ({reason})"),
     }
 }
 

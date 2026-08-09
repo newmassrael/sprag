@@ -4512,6 +4512,7 @@ mod tests {
                 "session_activity.<max_age_ms>",
                 "pane_processes.<max_age_ms>",
                 "pane_resources.<max_age_ms>",
+                "doctor.<window_ms>",
             ],
             "these answer about the SET of sessions, or about the daemon itself, so a reader whose \
              own session has gone is still owed them",

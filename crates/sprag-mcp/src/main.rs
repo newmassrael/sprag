@@ -125,15 +125,15 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::vocabulary::{Agent, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, ENDED_KEY,
-    EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, JOIN_PANE_ACTION, JoinAsk, KEY_ACTION, KILL_WINDOW_ACTION,
-    LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, MOVE_PANE_ACTION, NEW_WINDOW_ACTION, OUTCOME_KEY,
-    PANES_SLOT, PaneProcessesWire, PaneResourcesWire, RENAME_PANE_ACTION, RENAME_WINDOW_ACTION,
-    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
-    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPAWN_ACTION,
-    SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    WINDOWS_SLOT, WindowBirthAsk, WindowPin, WindowRef, ZOOM_PANE_ACTION, find_slot_for,
-    pane_processes_at, pane_resources_at, regex_slot_for, settled,
+    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW,
+    ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, JOIN_PANE_ACTION, JoinAsk, KEY_ACTION,
+    KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, MOVE_PANE_ACTION,
+    NEW_WINDOW_ACTION, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire, PaneResourcesWire,
+    RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
+    ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
+    SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk,
+    SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, WindowPin, WindowRef, ZOOM_PANE_ACTION,
+    doctor_over, find_slot_for, pane_processes_at, pane_resources_at, regex_slot_for, settled,
 };
 use sprag_host::{ClientSize, PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -141,8 +141,8 @@ use sprag_rpc::{
     PATTERN_PARAM,
 };
 use sprag_terminal::{
-    Counted, Cpu, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, SplitDir, SplitSide, Taken,
-    Waiting, WindowInfo, arrangement,
+    Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, SplitDir,
+    SplitSide, Taken, Verdict, Waiting, WindowInfo, arrangement,
 };
 
 /// The env var the host sets on the pane shells it spawns (and thus on their
@@ -297,6 +297,12 @@ fn handle_initialize(message: &Value) -> Value {
             pane's text, and what that is COSTING with `pane_resources` — the cores each pane \
             holds and how much of the recent past it spent waiting for cores it did not get, \
             which is how to tell your own work being heavy from another pane starving you. \
+            When EVERY pane is starved and none is greedy, the machine itself has less to give \
+            than it should, and `machine_health` says why: a fixed set of checks on the machine, \
+            each printing the value it measured beside its verdict. Most of what it finds is not \
+            sprag's — a compiler cache the shells walk past, memory gone to swap, something \
+            outside this terminal taking the cores. It detects only, so tell the person what it \
+            found rather than acting on it. \
             DRIVE a pane with `write_pane` (type a command) and `send_keys` (named keys and \
             chords). \
             Instead of polling, WAIT: `wait_for_change` for the one change you name — a \
@@ -459,6 +465,30 @@ fn tools_list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg.clone() },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "machine_health",
+                "description": "Say WHAT IS WRONG with the machine every pane runs on — not with \
+                    sprag. `pane_resources` says which pane is taking the machine; this says why \
+                    the machine has less to give. It runs a fixed set of checks and reports EVERY \
+                    one of them with the value it measured: whether each pane really has a cgroup \
+                    of its own, which resources can be arbitrated between panes at all, whether \
+                    something outside this terminal is taking CPU at equal or better weight, \
+                    whether the machine is stalled on CPU, disk or memory, whether the panes' \
+                    pages have been swapped out, whether more work is runnable than there are \
+                    cores, whether a compiler cache is installed and being walked past, and \
+                    whether a fast linker is reachable. Use it when work has become slow and \
+                    `pane_resources` shows every pane starved rather than one pane greedy — that \
+                    is the shape of a machine problem rather than a neighbour problem. A check \
+                    that could not read its source says so instead of reporting healthy, so a \
+                    clean row means it was looked at. It DETECTS ONLY: each degraded row names \
+                    what a person could do and nothing is applied. It costs about half a second, \
+                    because one check has to measure a window rather than take a snapshot.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
                     "additionalProperties": false
                 }
             },
@@ -1286,6 +1316,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "pane_layout" => tool_pane_layout(&args),
         "pane_processes" => tool_pane_processes(&args),
         "pane_resources" => tool_pane_resources(&args),
+        "machine_health" => tool_machine_health(),
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
         "read_pane_links" => tool_read_pane_links(&args),
@@ -2464,6 +2495,99 @@ fn tool_pane_resources(args: &Value) -> Result<String, String> {
         &registry,
         wanted.as_ref(),
     ))
+}
+
+/// `machine_health`: WHAT IS WRONG with the machine the panes run on. Takes nothing.
+///
+/// # Why an agent gets this, re-derived
+///
+/// [`tool_pane_resources`]'s test, one level out. That tool lets an agent tell *my own work is
+/// heavy* from *a neighbour is taking the machine*; it cannot tell either of those from *this
+/// machine has less to give than it should*, and the investigation behind this feature found that
+/// the third case was six sevenths of the real ones — a compiler cache the shells walked past,
+/// kernel swap tuning, a delegation policy, a batch runner at equal weight. An agent that reads
+/// every pane starved and no pane greedy has, from every other tool, no next question. This is the
+/// next question.
+///
+/// It takes no argument at all, which is the point: a machine is not divided by session, and the
+/// thing taking it may be in no session whatsoever.
+fn tool_machine_health() -> Result<String, String> {
+    let answer = host_call(
+        "scene/query",
+        json!({ "path": mux_action_path(&doctor_over(DOCTOR_WINDOW_MS)) }),
+    )?;
+    let report = serde_json::from_value::<Diagnosis>(answer)
+        .map_err(|error| format!("the host's diagnosis did not parse: {error}"))?;
+    Ok(render_health_answer(&report))
+}
+
+/// How long the agent's read asks the daemon to measure the competition over — the shared default,
+/// so the CLI and an agent cannot come to disagree about what window a rate covers.
+const DOCTOR_WINDOW_MS: u64 = DOCTOR_WINDOW.as_millis() as u64;
+
+/// The text [`tool_machine_health`] returns, as a pure function of what was read
+/// ([`render_processes_answer`]'s discipline).
+///
+/// The degraded rows FIRST, then everything else. An agent reads top-down and acts on the first
+/// thing it understands, so a report that led with eight clean rows would bury the one fact it was
+/// called for — and the clean rows still have to be there, because *checked and fine* is the answer
+/// that stops an agent guessing at the same cause twice.
+fn render_health_answer(report: &Diagnosis) -> String {
+    let degraded: Vec<_> = report.degraded().collect();
+    let mut out = String::new();
+    if degraded.is_empty() {
+        out.push_str(
+            "Nothing is wrong with this machine that these checks can see. Every row below says \
+             what it measured; a row marked `not measurable` was not checked, so do not read it as \
+             healthy.\n\n",
+        );
+    } else {
+        out.push_str(&format!(
+            "{} of {} checks found something wrong with the MACHINE (not with sprag, and not with \
+             any one pane):\n\n",
+            degraded.len(),
+            report.findings.len(),
+        ));
+        for finding in &degraded {
+            let entry = finding.check.entry();
+            out.push_str(&format!("{} — {}\n", entry.name, entry.asks));
+            for row in finding.evidence.rows() {
+                out.push_str(&format!("  {}: {}\n", row.of, row.is));
+            }
+            out.push_str(&format!("  read: {}\n", entry.source));
+            out.push_str(&format!("  flagged when: {}\n", entry.criterion));
+            // Named as the person's to run. An agent that read this as an instruction would be
+            // applying a prescription this whole feature is bounded against applying.
+            out.push_str(&format!(
+                "  a person could: {} — tell them; do not do it yourself\n\n",
+                entry.remedy,
+            ));
+        }
+        out.push_str("The rest, with what each measured:\n\n");
+    }
+    for finding in &report.findings {
+        if finding.verdict == Verdict::Degraded {
+            continue;
+        }
+        let measured = finding
+            .evidence
+            .rows()
+            .map(|row| format!("{}: {}", row.of, row.is))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "{} — {} ({measured})\n",
+            finding.check.entry().name,
+            match finding.verdict {
+                Verdict::Healthy => "ok".to_owned(),
+                // The reason, never a blank: an agent that reads "fine" and one that reads
+                // "nobody could look" do different things next.
+                Verdict::Blind(reason) => format!("not measurable: {reason}"),
+                Verdict::Degraded => unreachable!("printed above"),
+            },
+        ));
+    }
+    out
 }
 
 /// The text [`tool_pane_resources`] returns, as a pure function of what was read — so every shape is
@@ -5908,7 +6032,7 @@ mod tests {
         );
         // THE CONTROL: this is not vacuously true over two empty lists. The count is asserted where
         // the register's estimate was, so a later round reads a measured number.
-        assert_eq!(advertised.len(), 34, "the agent surface's roster");
+        assert_eq!(advertised.len(), 35, "the agent surface's roster");
     }
 
     #[test]

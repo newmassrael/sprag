@@ -194,6 +194,8 @@ pub enum Verb {
     Version,
     /// `help` — the usage.
     Help,
+    /// `doctor` — what is WRONG with the machine the panes run on.
+    Doctor,
     /// `detach-client` — give the terminal back, leave the session running.
     ///
     /// The first of the five verbs with NO shell form: what it acts on is the client that pressed
@@ -431,7 +433,7 @@ impl NotAKeystroke {
 /// It exists because a usage text is a DOCUMENT rather than a list — the grouping is what makes the
 /// verbs readable — and a group is the one piece of that document a verb has to carry for the
 /// document to be derivable from the verbs — 50 of them print, and the three mouths together hold
-/// 58.
+/// 59.
 ///
 /// **It moved out of [`Shell`] at R335**, where it had been a property of the CLI's spelling. That
 /// was wrong twice: a verb no shell runs still has a subject ([`Verb::SwitchClient`] is about a
@@ -508,7 +510,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 59] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -562,6 +564,7 @@ impl Verb {
         Self::SetOption,
         Self::Version,
         Self::Help,
+        Self::Doctor,
         Self::DetachClient,
         Self::SendPrefix,
         Self::SwitchClient,
@@ -579,7 +582,7 @@ impl Verb {
     /// from becoming forty opinions.
     #[must_use]
     pub const fn entry(self) -> Entry {
-        // A tuple so the 58 arms below read as a TABLE rather than as 58 struct literals — five
+        // A tuple so the 59 arms below read as a TABLE rather than as 59 struct literals — five
         // columns, in the order a reader asks them: what it is called, what it is about, and then
         // the three mouths.
         let (name, group, shell, key, agent) = match self {
@@ -1049,6 +1052,22 @@ impl Verb {
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Cannot(NotAnAgents::SaidAnotherWay),
             ),
+            // Under `sprag` and not under `panes`, though it sits beside `resources` in every
+            // other way: its rows are CHECKS, not panes, and most of what it finds is not the
+            // multiplexer's at all — a compiler cache the shells walk past, a kernel's swap tuning,
+            // a batch workload competing at equal weight. The heading a person scans for it is the
+            // one for verbs whose subject is neither a session, a window, a pane nor a key.
+            //
+            // NO SCOPE and no pane argument: a machine is not divided by session, and the pane
+            // eating it may be in one the caller is not attached to. The narrowing `resources`
+            // offers would answer a question nobody asks of a diagnosis.
+            Self::Doctor => (
+                "doctor",
+                Group::Tool,
+                Shell::Runs(""),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["machine_health"]),
+            ),
             // ── the five a KEYSTROKE alone can say ──────────────────────────────────────────────
             // Each acts on THE CLIENT THAT PRESSED THE KEY, which neither of the other two mouths
             // has. That is a property of the verb and not a gap: `sprag detach-client` would need
@@ -1426,7 +1445,7 @@ mod tests {
             .count();
         assert_eq!(
             (served, not_built, refused),
-            (31, 7, 20),
+            (32, 7, 20),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1573,7 +1592,7 @@ mod tests {
             .count();
         assert_eq!(
             (runs, not_built, refused),
-            (50, 3, 5),
+            (51, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1654,7 +1673,7 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (25, 1, 32),
+            (25, 1, 33),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

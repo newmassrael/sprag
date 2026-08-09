@@ -3686,6 +3686,9 @@ fn a_tool_against_an_older_daemon_says_so() {
     let driven = |tool: &str| -> Option<Value> {
         Some(match tool {
             "list_panes" | "list_windows" | "list_sessions" | "pane_layout" => json!({}),
+            // Takes nothing at all: a machine is not divided by session. It still reaches the
+            // wire, which is the whole claim this ratchet makes about a tool.
+            "machine_health" => json!({}),
             "read_pane" | "read_last_command" | "read_pane_links" | "read_pane_images"
             | "pane_processes" | "pane_resources" | "agent_state" | "agent_explain"
             | "select_pane" | "break_pane" | "zoom_pane" | "close_pane" | "rename_pane" => {

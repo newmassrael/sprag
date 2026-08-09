@@ -76,16 +76,16 @@ use crate::scope::SessionScope;
 // ([`crate::wire`]) — the SAME consts a client addresses for pane lifecycle.
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
-    DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, EVENTS_FIELD, GLOBAL_COMMANDS_SLOT,
-    GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
-    LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEIGHBORS_FIELD,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD, PANE_RESOURCES_FIELD, PANES_SLOT,
-    PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
-    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
-    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk, TREE_SLOT,
-    WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION,
+    DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DOCTOR_FIELD, DROP_FILE_ACTION, EVENTS_FIELD,
+    GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk, KILL_SESSION_ACTION,
+    KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk,
+    NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
+    PANE_RESOURCES_FIELD, PANES_SLOT, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION,
+    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
+    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -175,6 +175,24 @@ impl RegistryView<'_> {
                     .unwrap_or(IntrospectValue::Null)
             }));
         }
+        // What is WRONG with the machine, as opposed to what each pane is taking of it. Served
+        // HERE, on the registry-subject door, because a machine is not divided by session and
+        // because half the checks need a pane's own pid — the daemon is the only process that has
+        // both. Parametric like the three above it, and for a sharper reason: it is the only read
+        // on this surface that SLEEPS, and a bare slot would be walked by every whole-surface
+        // snapshot. See `DOCTOR_FIELD`.
+        if let Some(arg) = path.strip_prefix(DOCTOR_FIELD.literal_prefix()) {
+            return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |window| {
+                let subject = sprag_terminal::doctor::Subject::of(self.registry);
+                let readings = sprag_terminal::doctor::Readings::capture(
+                    &subject,
+                    &sprag_terminal::doctor::Sources::default(),
+                    Duration::from_millis(window),
+                );
+                encoded_answer(&sprag_terminal::Diagnosis::of(&readings), "doctor")
+                    .unwrap_or(IntrospectValue::Null)
+            }));
+        }
         if let Some(arg) = path.strip_prefix(PANE_RESOURCES_FIELD.literal_prefix()) {
             return Some(arg.parse::<u64>().map_or(IntrospectValue::Null, |max_age| {
                 let reading = self
@@ -186,6 +204,11 @@ impl RegistryView<'_> {
             }));
         }
         match path {
+            // What is WRONG with the machine, as opposed to what each pane is taking of it. Served
+            // HERE, on the registry-subject door, because a machine is not divided by session and
+            // because half the checks need a pane's own pid — the daemon is the only process that
+            // has both. Fresh every time, with no tolerance argument: see `DOCTOR_SLOT` for why a
+            // cached diagnosis is the one answer nobody wants.
             // Every session, plus which one an unscoped request lands in — how a client
             // discovers what it may name in `session`. Registry-WIDE by design: this is the
             // one slot whose subject is the set of scopes, so scoping it to the caller's own
@@ -2886,7 +2909,7 @@ fn build_command(argv: &[Value]) -> Result<(CommandBuilder, String), InvokeError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{pane_processes_at, pane_resources_at, session_activity_at};
+    use crate::wire::{doctor_over, pane_processes_at, pane_resources_at, session_activity_at};
     use pinion_core::SceneRevision;
     use serde_json::json;
     use sprag_terminal::PaneId;
@@ -5047,6 +5070,91 @@ mod tests {
         assert_eq!(
             rows[0]["taken"]["unmeasured"]["reason"], "nothing_enforced",
             "a host with no subtree says so, per pane, rather than answering a zero: {reading}",
+        );
+    }
+
+    /// The doctor address answers EVERY check on this daemon, with the blind ones saying they are
+    /// blind rather than dropping out.
+    ///
+    /// # Why the blindness is the assertion and a fault is not
+    ///
+    /// This suite's daemon holds no delegated subtree, exactly as
+    /// [`the_pane_list_carries_no_resource_fact_and_the_resources_address_says_why_it_has_none`]
+    /// records — so the two cgroup checks here are honestly blind, and asserting THAT is what makes
+    /// this discriminate. A serving path that answered an empty report, or dropped the rows it
+    /// could not read, would pass a weaker assertion and would be the silent skip this crate
+    /// refuses everywhere. The verdict LOGIC is gated in `sprag-terminal` over captured machines,
+    /// which is where a swapping, oversubscribed, uncontrolled host can be replayed at all.
+    ///
+    /// A zero window, so the read does not sleep: a daemon with no subtree has no neighbours to
+    /// sample twice, and the window is the caller's to state.
+    #[test]
+    fn the_doctor_address_answers_every_check_and_says_which_it_could_not_read() {
+        let reg = registry();
+        let (mut ext, _rev) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Null).unwrap();
+
+        let report = answer_doc(ext.query(&doctor_over(0)));
+        let findings = report["findings"]
+            .as_array()
+            .expect("the report carries a finding per check");
+        assert_eq!(
+            findings.len(),
+            sprag_terminal::Check::ALL.len(),
+            "one row per check, none dropped: {report}",
+        );
+        for finding in findings {
+            assert!(
+                finding["evidence"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty()),
+                "every verdict arrives with what it measured: {finding}",
+            );
+        }
+        let blind: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding["verdict"].get("blind").is_some())
+            .map(|finding| finding["check"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            blind.contains(&"controller-delegation") && blind.contains(&"competing-weight"),
+            "a daemon with no delegated subtree says it cannot see, per check: {report}",
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding["check"] == "pane-isolation"),
+            "and the pane the spawn made is still a subject: {report}",
+        );
+    }
+
+    /// A malformed window on the DOCTOR family answers `Null`, and the family's bare name is not an
+    /// address.
+    ///
+    /// The bare name is the load-bearing half, and it is not tidiness. A bare slot is read by every
+    /// whole-surface `scene/snapshot`, and this is the one address that SLEEPS — as a bare slot it
+    /// put its whole window on the snapshot path, which
+    /// `rpc::tests::a_running_plugin_does_not_block_the_serve_loop` caught at 518 ms against its
+    /// 500 ms bound.
+    ///
+    /// ⚠ THAT test is not the gate, and the mutation pass measured why: restoring the bare slot
+    /// reddens it in a full parallel run and NOT when it is run alone, because its bound and the
+    /// sleep are both half a second and which one wins is scheduling. A gate that fails under load
+    /// the same way it passes without it cannot discriminate. This one is structural — the address
+    /// either has an argument or it does not — so it is the one that holds the claim, and the
+    /// plugin test is what FOUND it.
+    #[test]
+    fn a_malformed_doctor_window_is_empty_and_the_bare_name_is_not_an_address() {
+        let reg = registry();
+        let (ext, _rev) = control(&reg);
+        assert!(
+            matches!(ext.query("doctor.zzz"), Some(IntrospectValue::Null)),
+            "a malformed window is a malformed MEMBER, not an unknown path",
+        );
+        assert!(
+            ext.query("doctor").is_none(),
+            "and the bare name is not an address — which is what keeps a sleeping read off every \
+             whole-surface snapshot",
         );
     }
 
