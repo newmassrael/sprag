@@ -64,11 +64,32 @@
 //! | shape | one flat scope per surface | `session/window/pane`, weighted per LEVEL |
 //! | D-Bus calls | one per surface | one per DAEMON, then plain `mkdir` |
 //! | the fork/exec race | child POLLS, ≤250 ms, may time out | closed by construction |
+//! | refuse the exec if placement failed | `linux-cgroup-hard-fail` | **no such knob** |
+//! | what a person can SEE of it | nothing | [`Charge`], on all three mouths (R338) |
+//!
+//! The honest trade first: ghostty's hard-fail knob is a real thing sprag does not have, and
+//! herdr — which has no cgroup layer at all — supports Windows, which sprag cannot compile on.
 //!
 //! The race is the difference that is structural rather than a feature gap: ghostty asks systemd
 //! for a scope the child must then wait to be moved into, so there is a window and a timeout.
 //! sprag holds a DELEGATED subtree, so the pane's cgroup can be made *before the child exists* and
 //! the child joins itself with one write — nothing to wait for and no way to time out.
+//!
+//! # The measurement half, and why neither rival has it (checked at source, R338)
+//!
+//! A grant that cannot be read back is half a feature: the person who set it has no way to learn
+//! whether it did anything, and the pane being starved has no way to say so.
+//!
+//! * **ghostty** (`2602886`): `src/os/cgroup.zig` is **27 lines with one function**,
+//!   `current(buf, pid)`, which reads `/proc/<pid>/cgroup`. It WRITES `MemoryHigh`
+//!   (`src/apprt/gtk/cgroup.zig:57`) and a process cap, and reads back **nothing** — `cpu.stat`,
+//!   `cpu.pressure`, `memory.current` and `pids.current` appear nowhere in its source.
+//! * **herdr** (`9a4ce5e1`): no cgroup layer at all — no file under `src/` mentions `cgroup`,
+//!   `cpu.stat`, `CPUWeight` or `systemd-run` — so every agent it runs shares one cgroup, which is
+//!   the defect its own report describes. Driving the shipped binary, none of its **twelve**
+//!   subcommand help texts names a resource, and its API schema declares **no** resource method.
+//!
+//! Both were measured by RUNNING the rival or reading the file cited, never by assuming.
 
 use std::path::{Path, PathBuf};
 
@@ -297,6 +318,39 @@ const PROCS: &str = "cgroup.procs";
 /// A cgroup's share of its level.
 const CPU_WEIGHT: &str = "cpu.weight";
 
+/// The CPU time a cgroup and everything under it has consumed, cumulative.
+///
+/// Present in EVERY cgroup v2 directory, controller or no controller: it is part of the base stat
+/// the kernel keeps for the hierarchy itself. So a pane whose host could not give it the `cpu`
+/// controller — no weight, no ceiling — is still measurable, which is the case worth having.
+const CPU_STAT: &str = "cpu.stat";
+
+/// The key inside [`CPU_STAT`] that carries the cumulative CPU time, in microseconds.
+const USAGE_USEC: &str = "usage_usec";
+
+/// How long the tasks in a cgroup were RUNNABLE and not running — the kernel's pressure stall
+/// information, per cgroup.
+///
+/// The other half of the only question worth asking about a pane's CPU. [`CPU_STAT`] says what a
+/// pane GOT, and by itself that number cannot be read: a pane holding 0.1 cores is either a pane
+/// with nothing to do or a pane being starved, and those want opposite responses from a person. This
+/// file is what separates them.
+const CPU_PRESSURE: &str = "cpu.pressure";
+
+/// The line of [`CPU_PRESSURE`] this reads: time when SOME task in the cgroup was stalled.
+///
+/// Not `full`, which is the time when EVERY task was stalled and is what a whole machine going to
+/// its knees looks like. A pane is normally one job, so `some` is the reading that moves when that
+/// job waits, and `full` on a cgroup running one thread would say the same thing less often.
+const PRESSURE_SOME: &str = "some";
+
+/// A cgroup's current memory footprint, in bytes — the memory controller's counter.
+const MEMORY_CURRENT: &str = "memory.current";
+
+/// How many processes a cgroup holds right now — the pids controller's counter, and the number a
+/// [`Limits`] process ceiling is measured against.
+const PIDS_CURRENT: &str = "pids.current";
+
 /// A cgroup's ceiling on live processes.
 const PIDS_MAX: &str = "pids.max";
 
@@ -467,6 +521,36 @@ impl Tree {
         make_cgroup(&path)?;
         write_control(&path.join(CPU_WEIGHT), &share.weight().to_string())?;
         Ok(Placement { path, share })
+    }
+
+    /// What the kernel has charged the pane at `at` — one read of its leaf, no rate in it.
+    ///
+    /// # Why a missing counter is not a missing reading
+    ///
+    /// Only `cpu.stat` is required, because it is the one file cgroup v2 puts in every directory
+    /// whatever controllers reached it. The other three are absent exactly when their controller
+    /// never arrived, and each says so as a VALUE ([`Counted::NoController`],
+    /// [`Waiting::NotAccounted`]) instead of failing the whole reading — a host that can measure CPU
+    /// and cannot measure memory should answer the half it has, which is the same per-controller
+    /// degradation this module applies when it ENABLES them on the way in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError::Read`] when the pane has no leaf to read: it ended, or it was never
+    /// placed here. That is the ONE failure, and it is a fact about the pane rather than about the
+    /// machine, which is why it is an error and the three absences above are not.
+    pub fn charge(&self, at: PaneLineage) -> Result<Charge, TreeError> {
+        let leaf = self.root.join(at.relative());
+        let stat = {
+            let path = leaf.join(CPU_STAT);
+            std::fs::read_to_string(&path).map_err(|source| TreeError::Read { path, source })?
+        };
+        Ok(Charge {
+            cpu_usec: keyed_value(&stat, USAGE_USEC).unwrap_or_default(),
+            waiting: read_waiting(&leaf.join(CPU_PRESSURE)),
+            memory: read_counted(&leaf.join(MEMORY_CURRENT)),
+            processes: read_counted(&leaf.join(PIDS_CURRENT)),
+        })
     }
 
     /// Move every process a pane has into `into`, and report how many distinct ones made the trip.
@@ -715,6 +799,34 @@ impl PaneHomes {
         }
     }
 
+    /// What the kernel has charged the pane whose placement ANSWER is `at`, or why there is nothing
+    /// to read.
+    ///
+    /// # Why it takes the answer and not an address
+    ///
+    /// `at` is [`crate::workspace::Pane`]'s own `home`, which R337 made the ANSWER to the placement
+    /// rather than the address the placement would have used. Measuring has to follow the same rule
+    /// for a stronger reason than moving did: a reading taken at an address the pane was never put
+    /// at would either fail, or — after that address was later re-used — report SOMEBODY ELSE'S
+    /// numbers under this pane's id. So the absence is passed in rather than resolved here, and the
+    /// three ways there can be no reading are three values a caller shows a person.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Unmeasured`], which is a state and not a fault: two of its three arms are ordinary
+    /// on hosts this product supports.
+    pub fn charge(&self, at: Option<PaneLineage>) -> Result<Charge, Unmeasured> {
+        // The TREE first, then the pane: with no subtree every pane is unplaced, and answering
+        // "this pane's placement failed" for all of them would send a person hunting a fault in
+        // their pane instead of reading the one sentence that is true of their whole machine.
+        let tree = self.tree.as_ref().ok_or(Unmeasured::NothingEnforced)?;
+        let at = at.ok_or(Unmeasured::NotPlaced)?;
+        tree.charge(at).map_err(|error| {
+            tracing::debug!(%error, pane = at.pane.0, "a placed pane had no cgroup to read");
+            Unmeasured::Gone
+        })
+    }
+
     /// Move an already-running pane's processes from the cgroup `from` names into the one `to` does
     /// — what a `break-pane`, a `join-pane`, a `move-pane` or a `swap` owes the projection.
     ///
@@ -830,25 +942,6 @@ impl Placement {
         self.share
     }
 
-    /// Move an already-running process into this pane's cgroup.
-    ///
-    /// # This is the racy half, and it is racy on purpose until it is not
-    ///
-    /// A process moved AFTER it starts can have forked already, and those children stay where they
-    /// were born. For a pane's shell the window is the microseconds between `exec` and this call, so
-    /// it is small — but it is not zero, and calling it small is how it survives. The fix is
-    /// `clone3(CLONE_INTO_CGROUP)`, which makes the child be BORN here and closes the window by
-    /// construction; this method is what the tree can offer until the spawn seam owns its own
-    /// `fork`/`exec`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TreeError`] if the process cannot be moved. A process that exited between the
-    /// caller's decision and this write is NOT an error — there is nothing left to move.
-    pub fn join(&self, pid: u32) -> Result<(), TreeError> {
-        move_proc(&self.path, pid)
-    }
-
     /// Open this pane's `cgroup.procs`, for a child to write itself into before it execs.
     ///
     /// Handed to the spawn rather than used here: what makes the placement race-free is that the
@@ -940,6 +1033,158 @@ impl Limits {
     pub fn processes(self) -> String {
         self.processes
             .map_or_else(|| UNCAPPED.to_owned(), |most| most.to_string())
+    }
+}
+
+/// WHAT THE KERNEL ACTUALLY CHARGED one pane — as distinct from the [`Share`] it was granted and
+/// the [`Limits`] it may not cross, both of which are things a person SAID.
+///
+/// # Why a grant that cannot be seen is only half a grant
+///
+/// R336 gave a pane a weight and R337 gave it a ceiling, and after both a person asking *which pane
+/// is eating my machine* had exactly the instrument they had before any of it existed: none. A
+/// weight is not a promise about cores — a pane weighted 10 beside an idle neighbour takes the whole
+/// machine, and a nominal 10:100 was MEASURED at 18:82 under load, because the kernel distributes
+/// weight per runqueue and a pane with many threads under-collects. So the setting cannot be read as
+/// a prediction, and the only honest source for what a pane got is what the kernel charged it.
+///
+/// # The two numbers that have to arrive together
+///
+/// [`cpu_usec`](Self::cpu_usec) alone cannot be interpreted. A pane holding a tenth of a core is
+/// either a pane with nothing to do or a pane being starved of what it asked for, and those want
+/// opposite responses. [`waiting`](Self::waiting) is what separates them, it is per-cgroup, and the
+/// kernel keeps it for free. Serving one without the other would be serving a number whose reader
+/// must guess which of two worlds they are in.
+///
+/// # Raw on purpose
+///
+/// No rate lives here. A rate needs two of these and a clock, and the second one belongs to whoever
+/// keeps the baseline — [`crate::resources`], which therefore also owns the WINDOW a rate is stated
+/// over. What is here is everything one read of the leaf can answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Charge {
+    /// Cumulative CPU time charged to this pane and everything under it, in microseconds.
+    ///
+    /// Monotonic within one cgroup and NOT across a pane's life: a pane that moves between windows
+    /// is placed in a fresh leaf whose counter starts at zero (see [`PaneHomes::relocate`]), so a
+    /// reader differencing two samples must be prepared for the second to be smaller than the first.
+    pub cpu_usec: u64,
+    /// How much of the recent past this pane spent runnable and not running.
+    pub waiting: Waiting,
+    /// This pane's current memory footprint, in bytes.
+    pub memory: Counted,
+    /// How many processes this pane holds right now.
+    pub processes: Counted,
+}
+
+/// How much of the recent past a pane spent RUNNABLE AND NOT RUNNING — the kernel's pressure stall
+/// information for this cgroup's tasks.
+///
+/// The starvation half of [`Charge`], and the reason it is an enum rather than three numbers: a
+/// kernel built without `CONFIG_PSI`, or booted with `psi=0`, keeps no such accounting at all, and
+/// answering `0` for that host would say *this pane never waited* about a pane that may have waited
+/// for everything. Absence is a different fact from zero, so it is a different value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Waiting {
+    /// Measured, over the kernel's own three windows.
+    Measured {
+        /// The last ten seconds.
+        avg10: Percent,
+        /// The last minute.
+        avg60: Percent,
+        /// The last five minutes.
+        avg300: Percent,
+    },
+    /// This kernel keeps no pressure accounting, so there is no number to give — which is not the
+    /// same as a pane that never waited.
+    NotAccounted,
+}
+
+/// A cgroup counter whose CONTROLLER may never have reached this level.
+///
+/// `memory.current` and `pids.current` exist only where their controllers were enabled by the level
+/// above, and R337 measured why that is a live case rather than a theoretical one: a
+/// `cgroup.subtree_control` write is all-or-nothing, systemd delegates only what the parent slice
+/// had, and a host that hands down `cpu pids` and no `memory` is an ordinary host. On such a host
+/// the memory counter is not zero — it does not exist — and a zero would read as *this pane is using
+/// no memory*, which is the one answer that is certainly wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Counted {
+    /// The number the kernel has.
+    Now(u64),
+    /// The controller behind this counter never reached this pane's level, so there is nothing to
+    /// read. See the type docs for why this is not a zero.
+    NoController,
+}
+
+/// Why a pane has no reading — three states, each of which a person acts on differently.
+///
+/// Not an absence and not an error: two of the three are ordinary on hosts this product supports,
+/// and the whole point of separating them is that *nothing on this machine is measured* and *this
+/// one pane is not* send a reader in opposite directions. [`Enforcement`]'s rule, one layer out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unmeasured {
+    /// This daemon holds no delegated subtree, so NO pane on it is placed and none can be measured.
+    ///
+    /// A fact about the machine rather than about the pane — the state [`Enforcement::probe`]
+    /// describes, and the state every rival multiplexer measured so far is in permanently.
+    NothingEnforced,
+    /// The daemon does place panes, and this one is not placed: its placement failed at its birth,
+    /// and it has been running unweighted ever since.
+    ///
+    /// Distinct from the arm above precisely because it is actionable — one pane out of eight
+    /// answering this is a fault to look at, and the daemon logged it when it happened.
+    NotPlaced,
+    /// It has a cgroup and the read did not land, which in practice means the pane ended between
+    /// the walk that listed it and the read that would have measured it.
+    Gone,
+}
+
+impl std::fmt::Display for Unmeasured {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NothingEnforced => {
+                f.write_str("this daemon holds no cgroup subtree, so no pane is measured")
+            }
+            Self::NotPlaced => f.write_str("this pane was never placed in a cgroup of its own"),
+            Self::Gone => f.write_str("this pane's cgroup is gone"),
+        }
+    }
+}
+
+/// A percentage the kernel prints with two decimals, held as HUNDREDTHS so it stays exact.
+///
+/// `8869` is 88.69%. An integer rather than a float because this crosses the wire, where a float is
+/// a formatting decision every peer makes differently, and because the two decimals the kernel
+/// prints are the whole of the precision there is — nothing is lost by keeping them as they came.
+///
+/// It is READ through [`Display`](std::fmt::Display) and through [`Ord`] (`avg10 > Percent::NONE`),
+/// which is everything its callers do with it, and off the wire as a plain integer — the derive is
+/// `transparent`. There is deliberately no accessor: one was written this round, nothing called it,
+/// and an answer no caller reads is the shape this project sweeps for.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct Percent(u32);
+
+impl Percent {
+    /// Nothing at all.
+    pub const NONE: Self = Self(0);
+
+    /// From the kernel's own unit.
+    #[must_use]
+    pub const fn from_hundredths(hundredths: u32) -> Self {
+        Self(hundredths)
+    }
+}
+
+impl std::fmt::Display for Percent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{:02}%", self.0 / 100, self.0 % 100)
     }
 }
 
@@ -1132,6 +1377,80 @@ fn write_control(path: &Path, value: &str) -> Result<(), TreeError> {
         })
 }
 
+/// One `key value` line out of a cgroup stat file, as a number.
+///
+/// Matched on the whole first TOKEN, never on a prefix: `cpu.stat` carries `usage_usec`,
+/// `user_usec` and `system_usec`, and a `starts_with` test for the first would answer with whichever
+/// of the three the kernel happened to print first on some future version.
+fn keyed_value(body: &str, key: &str) -> Option<u64> {
+    body.lines().find_map(|line| {
+        let mut fields = line.split_ascii_whitespace();
+        (fields.next()? == key).then(|| fields.next()?.parse().ok())?
+    })
+}
+
+/// A `pressure` file's `some` row, or the honest absence.
+///
+/// An unreadable file is [`Waiting::NotAccounted`] rather than an error for the reason stated on
+/// [`Tree::charge`]: a kernel without `CONFIG_PSI` simply has no such file, and that is a fact about
+/// the machine every reader wants said rather than a fault that should cost them the rest.
+fn read_waiting(path: &Path) -> Waiting {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return Waiting::NotAccounted;
+    };
+    let Some(some) = body
+        .lines()
+        .find(|line| line.split_ascii_whitespace().next() == Some(PRESSURE_SOME))
+    else {
+        return Waiting::NotAccounted;
+    };
+    Waiting::Measured {
+        avg10: pressure_average(some, "avg10"),
+        avg60: pressure_average(some, "avg60"),
+        avg300: pressure_average(some, "avg300"),
+    }
+}
+
+/// One `avgN=NN.NN` field of a pressure row.
+///
+/// Missing reads as zero and NOT as an absence: the row was there, so this kernel does keep the
+/// accounting, and a field it did not print is a window it has nothing to report for.
+fn pressure_average(row: &str, window: &str) -> Percent {
+    row.split_ascii_whitespace()
+        .find_map(|field| field.strip_prefix(window)?.strip_prefix('='))
+        .and_then(parse_percent)
+        .unwrap_or(Percent::NONE)
+}
+
+/// `88.69` as hundredths of a percent.
+///
+/// Parsed as two integers rather than through a float: the kernel prints exactly two decimals, and
+/// a float round-trip would turn an exact quantity into one whose last digit depends on the
+/// rounding mode. A value with fewer decimals is padded and one with more is truncated, so a future
+/// kernel that changes its precision is read rather than refused.
+fn parse_percent(text: &str) -> Option<Percent> {
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, "0"));
+    let mut hundredths: u32 = whole.parse().ok()?;
+    hundredths = hundredths.checked_mul(100)?;
+    let mut digits = fraction.chars().filter(char::is_ascii_digit);
+    let tens = digits.next().and_then(|digit| digit.to_digit(10))?;
+    let units = digits
+        .next()
+        .and_then(|digit| digit.to_digit(10))
+        .unwrap_or(0);
+    Some(Percent::from_hundredths(
+        hundredths.checked_add(tens * 10 + units)?,
+    ))
+}
+
+/// A cgroup counter file, or the honest absence of the controller behind it.
+fn read_counted(path: &Path) -> Counted {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|body| body.trim().parse().ok())
+        .map_or(Counted::NoController, Counted::Now)
+}
+
 /// The cgroup a process is in, as a directory under the unified hierarchy.
 ///
 /// The ONE reader of `/proc/<pid>/cgroup` in this workspace, for the reason this crate keeps one
@@ -1236,6 +1555,23 @@ mod tests {
             std::fs::write(path.join(CPU_WEIGHT), "100\n").expect("fixture cpu.weight");
             std::fs::write(path.join(PIDS_MAX), "max\n").expect("fixture pids.max");
             std::fs::write(path.join(MEMORY_HIGH), "max\n").expect("fixture memory.high");
+            // The COUNTERS the kernel keeps in every cgroup it makes. They are here rather than in
+            // the one test that reads them because R337 measured what a fixture that omits a file
+            // the kernel always makes does: it pins the code to today's reads, and the next change
+            // breaks every test built on it at once.
+            std::fs::write(
+                path.join(CPU_STAT),
+                "usage_usec 0\nuser_usec 0\nsystem_usec 0\n",
+            )
+            .expect("fixture cpu.stat");
+            std::fs::write(
+                path.join(CPU_PRESSURE),
+                "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n\
+                 full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+            )
+            .expect("fixture cpu.pressure");
+            std::fs::write(path.join(MEMORY_CURRENT), "0\n").expect("fixture memory.current");
+            std::fs::write(path.join(PIDS_CURRENT), "0\n").expect("fixture pids.current");
             path
         }
 
@@ -1651,6 +1987,169 @@ mod tests {
             available_controllers(&level).expect("read the offer"),
             vec!["memory"]
         );
+    }
+
+    /// What the kernel charged a pane comes back whole, from the leaf that pane is actually in.
+    ///
+    /// The fixture writes numbers that are all different, because a reading that put the memory
+    /// figure in the process field would pass any assertion made against a fixture of zeroes.
+    #[test]
+    fn a_charge_reads_every_counter_out_of_the_panes_own_leaf() {
+        let fs = FakeCgroupFs::new("charge");
+        let at = address(1, 2, 3);
+        let leaf = fs.cgroup(&at.relative().display().to_string(), "");
+        std::fs::write(
+            leaf.join(CPU_STAT),
+            "usage_usec 8123456\nuser_usec 6000000\nsystem_usec 2123456\n",
+        )
+        .expect("fixture cpu.stat");
+        std::fs::write(
+            leaf.join(CPU_PRESSURE),
+            "some avg10=88.69 avg60=49.96 avg300=7.55 total=123456789\n\
+             full avg10=1.00 avg60=0.50 avg300=0.10 total=1234\n",
+        )
+        .expect("fixture cpu.pressure");
+        std::fs::write(leaf.join(MEMORY_CURRENT), "734003200\n").expect("fixture memory.current");
+        std::fs::write(leaf.join(PIDS_CURRENT), "42\n").expect("fixture pids.current");
+        let tree = Tree {
+            root: fs.root.clone(),
+        };
+
+        let charge = tree.charge(at).expect("a placed pane has a leaf to read");
+
+        assert_eq!(
+            charge,
+            Charge {
+                cpu_usec: 8_123_456,
+                // The `some` row, never `full`: a pane is normally one job, and `full` on one thread
+                // says the same thing far less often.
+                waiting: Waiting::Measured {
+                    avg10: Percent::from_hundredths(8869),
+                    avg60: Percent::from_hundredths(4996),
+                    avg300: Percent::from_hundredths(755),
+                },
+                memory: Counted::Now(734_003_200),
+                processes: Counted::Now(42),
+            }
+        );
+    }
+
+    /// A counter whose controller never reached this level is ABSENT, and absent is not zero.
+    ///
+    /// The host is not hypothetical: R337 measured that a `cgroup.subtree_control` write is
+    /// all-or-nothing and that systemd hands down only what the parent slice had, so a machine
+    /// offering `cpu pids` and no `memory` is ordinary. Reporting `0 B` for every pane on it would be
+    /// the one answer that is certainly wrong.
+    #[test]
+    fn a_counter_whose_controller_never_arrived_is_absent_rather_than_zero() {
+        let fs = FakeCgroupFs::new("charge-narrow");
+        let at = address(1, 1, 1);
+        let leaf = fs.cgroup(&at.relative().display().to_string(), "");
+        std::fs::remove_file(leaf.join(MEMORY_CURRENT))
+            .expect("a host without the memory controller");
+        let tree = Tree {
+            root: fs.root.clone(),
+        };
+
+        let charge = tree.charge(at).expect("the CPU half is still readable");
+
+        assert_eq!(charge.memory, Counted::NoController);
+        // ...and losing one controller costs only itself. The whole reading failing would take the
+        // CPU numbers away from a host that has them, which is the degradation this crate already
+        // refuses on the way IN.
+        assert_eq!(charge.processes, Counted::Now(0));
+    }
+
+    /// A kernel that keeps no pressure accounting says so instead of reporting a calm pane.
+    ///
+    /// `CONFIG_PSI` off, or `psi=0` on the command line, and the file simply is not there. Zero
+    /// would claim this pane never waited for a core, about a pane that may have waited for
+    /// everything.
+    #[test]
+    fn a_kernel_without_pressure_accounting_says_so_rather_than_reporting_calm() {
+        let fs = FakeCgroupFs::new("charge-nopsi");
+        let at = address(1, 1, 1);
+        let leaf = fs.cgroup(&at.relative().display().to_string(), "");
+        std::fs::remove_file(leaf.join(CPU_PRESSURE)).expect("a kernel without PSI");
+        let tree = Tree {
+            root: fs.root.clone(),
+        };
+
+        assert_eq!(
+            tree.charge(at).expect("charge").waiting,
+            Waiting::NotAccounted
+        );
+    }
+
+    /// The three ways a pane has no reading are three answers, because they are acted on
+    /// differently: a whole machine that enforces nothing, one pane that failed to be placed, and a
+    /// pane that ended while it was being read.
+    #[test]
+    fn a_pane_with_no_reading_says_which_of_the_three_reasons_it_is() {
+        let fs = FakeCgroupFs::new("charge-absent");
+        let at = address(1, 1, 1);
+
+        assert_eq!(
+            PaneHomes::none().charge(Some(at)),
+            Err(Unmeasured::NothingEnforced),
+            "a daemon with no subtree measures nothing, and that is about the machine"
+        );
+        // ⚠ THE CASE THAT ACTUALLY SHIPS, and the one the line above cannot discriminate: on a host
+        // with no subtree, nothing was ever placed, so every pane arrives here with NO home either.
+        // Both facts are true at once and only one of them is the answer a person can act on —
+        // measured, when reversing the two questions left the test above GREEN while every pane on
+        // such a host started reporting a placement fault of its own.
+        assert_eq!(
+            PaneHomes::none().charge(None),
+            Err(Unmeasured::NothingEnforced),
+            "the machine's reason outranks the pane's: a host that places nothing must not report \
+             every pane as one that failed to be placed"
+        );
+
+        let homes = PaneHomes::over(Tree {
+            root: fs.root.clone(),
+        });
+        assert_eq!(
+            homes.charge(None),
+            Err(Unmeasured::NotPlaced),
+            "a daemon that DOES place panes and did not place this one is a fault to look at"
+        );
+        assert_eq!(
+            homes.charge(Some(at)),
+            Err(Unmeasured::Gone),
+            "a pane whose leaf is not there ended between the walk and the read"
+        );
+    }
+
+    #[test]
+    fn a_pressure_percentage_keeps_the_two_decimals_the_kernel_prints() {
+        assert_eq!(parse_percent("88.69"), Some(Percent::from_hundredths(8869)));
+        assert_eq!(parse_percent("0.00"), Some(Percent::NONE));
+        assert_eq!(
+            parse_percent("100.00"),
+            Some(Percent::from_hundredths(10_000))
+        );
+        // A float round-trip is what this avoids: the exact quantity survives, and so does its
+        // rendering.
+        assert_eq!(Percent::from_hundredths(8869).to_string(), "88.69%");
+        assert_eq!(Percent::from_hundredths(705).to_string(), "7.05%");
+        assert_eq!(parse_percent("what"), None);
+    }
+
+    /// `cpu.stat` carries `usage_usec`, `user_usec` and `system_usec`, and a prefix test would
+    /// answer with whichever the kernel printed first.
+    #[test]
+    fn a_stat_key_is_matched_whole_and_never_as_a_prefix() {
+        let body = "usage_usec 900\nuser_usec 700\nsystem_usec 200\n";
+        assert_eq!(keyed_value(body, USAGE_USEC), Some(900));
+        assert_eq!(keyed_value(body, "user_usec"), Some(700));
+        assert_eq!(keyed_value(body, "nosuch"), None);
+        // ⚠ THE PREFIX ITSELF, which is the case the three lines above cannot express: no key in a
+        // `cpu.stat` is a prefix of another, so a `starts_with` match passes all of them. Asking for
+        // a prefix is what tells the two apart — measured, when swapping the comparison for
+        // `starts_with` left this test GREEN until this line existed.
+        assert_eq!(keyed_value(body, "usage"), None);
+        assert_eq!(keyed_value(body, "user"), None);
     }
 
     #[test]

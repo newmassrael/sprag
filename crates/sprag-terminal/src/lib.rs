@@ -35,6 +35,7 @@ mod procfs;
 pub mod pty;
 pub mod registry;
 pub mod remote;
+pub mod resources;
 pub mod sampled;
 pub mod session_name;
 pub mod share;
@@ -64,11 +65,12 @@ pub use registry::{
     WindowPlace, ZoomOutcome,
 };
 pub use remote::SshRemote;
+pub use resources::{Cpu, PaneResourceReading, PaneResourceSampler, PaneResources, SETTLE, Taken};
 pub use sampled::{Reading, Sampled};
 pub use session_name::{SessionName, SessionNameError};
 pub use share::{
-    Enforcement, LimitSource, Limits, PaneHomes, PaneLineage, Placement, PoolLineage, Share,
-    ShareError, Tree, TreeError, Unenforceable,
+    Charge, Counted, Enforcement, LimitSource, Limits, PaneHomes, PaneLineage, Percent, Placement,
+    PoolLineage, Share, ShareError, Tree, TreeError, Unenforceable, Unmeasured, Waiting,
 };
 pub use snapshot::{
     MIN_READABLE_SNAPSHOT_VERSION, PaneHistory, PaneRestore, PaneSnapshot, RestorePlan,

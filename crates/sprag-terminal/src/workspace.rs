@@ -177,6 +177,15 @@ impl Pane {
         self.opened_by
     }
 
+    /// Which cgroup this pane's processes ARE in, `None` for a pane that was never placed. See the
+    /// [field](Self::home) for why this is the placement's answer rather than its address — which
+    /// is what makes it the right thing to MEASURE through, since a reading taken at an address the
+    /// pane was never put at would report somebody else's numbers under this pane's id.
+    #[must_use]
+    pub fn home(&self) -> Option<PaneLineage> {
+        self.home
+    }
+
     /// The name a person gave this pane, `None` for a pane nobody named. See the
     /// [field](Self::name) for how it differs from the two name-shaped facts beside it.
     #[must_use]
@@ -599,6 +608,19 @@ impl Workspace {
     /// until something moves it, which is the same rule every other installed source keeps.
     pub fn set_pane_homes(&mut self, homes: Arc<PaneHomes>) {
         self.homes = homes;
+    }
+
+    /// Where this pool's panes live in the machine — the same homes every birth and move goes
+    /// through, handed out so a READING can be taken through the one door that placed them.
+    ///
+    /// An `Arc` clone rather than a borrow because the caller is
+    /// [`PaneResourceSampler`](crate::PaneResourceSampler), which must release this pool's lock
+    /// before it touches a filesystem: a pool lock is what a pane's own output is waiting on, and
+    /// holding one across four file reads per pane would make measuring the panes the reason they
+    /// stutter.
+    #[must_use]
+    pub fn pane_homes(&self) -> Arc<PaneHomes> {
+        Arc::clone(&self.homes)
     }
 
     /// The full lineage of a pane of this pool, if this pool has a window.
