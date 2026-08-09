@@ -24,7 +24,9 @@
 //! window has a new identity, so its processes belong under the new window's cgroup — otherwise the
 //! window a person is looking at is charged for work it does not hold.
 //!
-//! Skips, saying so, where systemd will not delegate.
+//! Skips, saying so, where systemd will not delegate — and where it will, but the kernel will not
+//! then admit THIS process's children to the subtree it gave. Those are different hosts and the
+//! second one is not hypothetical: see [`admits_our_children`].
 
 #![cfg(target_os = "linux")]
 
@@ -44,19 +46,11 @@ use sprag_terminal::{
 
 #[test]
 fn a_pane_born_under_a_host_with_a_tree_has_its_child_in_its_own_cgroup() {
-    let Some(mut holder) = Holder::spawn() else {
+    // Through the ONE door, so this test cannot outlive a precondition the others gained: it
+    // states all three (a holder, a delegation, and a host that admits our children) in one place.
+    let Some((_holder, tree)) = delegated() else {
         return;
     };
-    let delegated = match delegation::acquire(holder.pid()) {
-        Ok(delegated) => delegated,
-        Err(error) => {
-            eprintln!("SKIP: {error}");
-            return;
-        }
-    };
-    holder.owns(delegated.unit());
-
-    let tree = Arc::new(Tree::adopt(delegated.root().to_path_buf()).expect("adopt"));
     let host = Host::new((80, 24)).with_shares(Arc::clone(&tree));
 
     let mut command = CommandBuilder::new("/bin/sleep");
@@ -138,19 +132,11 @@ fn a_pane_born_under_a_host_with_a_tree_has_its_child_in_its_own_cgroup() {
 /// nothing the child forks can be born outside a cgroup the child is already in.
 #[test]
 fn a_pane_whose_program_forks_at_once_keeps_its_grandchildren() {
-    let Some(mut holder) = Holder::spawn() else {
+    // Through the ONE door, so this test cannot outlive a precondition the others gained: it
+    // states all three (a holder, a delegation, and a host that admits our children) in one place.
+    let Some((_holder, tree)) = delegated() else {
         return;
     };
-    let delegated = match delegation::acquire(holder.pid()) {
-        Ok(delegated) => delegated,
-        Err(error) => {
-            eprintln!("SKIP: {error}");
-            return;
-        }
-    };
-    holder.owns(delegated.unit());
-
-    let tree = Arc::new(Tree::adopt(delegated.root().to_path_buf()).expect("adopt"));
     let host = Host::new((80, 24)).with_shares(Arc::clone(&tree));
 
     // A shell that forks before it has done anything else — the shape of a `.bashrc` that starts
@@ -618,7 +604,66 @@ fn delegated() -> Option<(Holder, Arc<Tree>)> {
     };
     holder.owns(delegated.unit());
     let tree = Tree::adopt(delegated.root().to_path_buf()).expect("adopt");
+    if !admits_our_children(tree.root()) {
+        eprintln!(
+            "SKIP: this host will not admit this process's children to a cgroup under {} — \
+             see `admits_our_children`",
+            tree.root().display(),
+        );
+        return None;
+    }
     Some((holder, Arc::new(tree)))
+}
+
+/// Whether this host will admit a child of THIS process to a cgroup we made under `root`.
+///
+/// # Why a delegated subtree is not enough
+///
+/// cgroup v2's delegation containment rule is checked against the common ancestor of the migrating
+/// process's CURRENT cgroup and its destination, and it needs that ancestor's `cgroup.procs` to be
+/// writable by whoever is doing the writing. A real daemon always passes it: `delegation::acquire`
+/// has systemd move the DAEMON ITSELF into the scope, so its panes are born inside the subtree and
+/// the common ancestor IS the subtree. This harness cannot — a test binary that moved itself would
+/// move every other test in it — so it delegates a scope around a holder and spawns from wherever
+/// the test runner happens to live. Whether those two share a writable ancestor is then a fact
+/// about the machine.
+///
+/// On this developer's box they do (both sit under `user@1000.service`, which systemd hands to the
+/// user). On GitHub's Linux runner they do not, and the first CI run that ever reached these tests
+/// said so eleven times over: `Permission denied (os error 13)`, from the child's own write, at
+/// every door a pane can be born through.
+///
+/// So this is the third precondition of the same kind as the two above it, and it is probed by
+/// DOING it rather than by predicting it — the rule involves an ancestor this code would have to
+/// re-derive, and a re-derivation that drifts from the kernel's would skip the wrong runs. The
+/// parent writes the pid, which is the same check the child's own `"0"` gets: identical source,
+/// identical destination.
+fn admits_our_children(root: &Path) -> bool {
+    let probe = root.join("admits-probe");
+    let _ = std::fs::remove_dir(&probe);
+    if std::fs::create_dir(&probe).is_err() {
+        return false;
+    }
+    let admitted = match Command::new("/bin/sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            let admitted =
+                std::fs::write(probe.join("cgroup.procs"), child.id().to_string()).is_ok();
+            let _ = child.kill();
+            let _ = child.wait();
+            admitted
+        }
+        Err(_) => false,
+    };
+    // Removed either way, and before the tree is used: `Tree::sweep` walks the levels under the
+    // root and this would look like a session with no windows in it.
+    let _ = std::fs::remove_dir(&probe);
+    admitted
 }
 
 /// The ceilings [`hermetic_config`] writes, and what the kernel must therefore hold.

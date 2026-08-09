@@ -420,11 +420,22 @@ impl DelegatedScope {
         // The unit exists only once systemd has answered, so the path is polled rather than assumed.
         for _ in 0..50 {
             if let Some(path) = control_group(&unit) {
-                return Some(Self {
+                let scope = Self {
                     unit,
                     holder,
                     root: PathBuf::from("/sys/fs/cgroup").join(path.trim_start_matches('/')),
-                });
+                };
+                // A delegated scope is not the whole precondition. Dropping `scope` here is what
+                // stops the unit again, so a host that fails this leaves nothing behind.
+                if !admits_our_children(&scope.root) {
+                    eprintln!(
+                        "SKIP: this host will not admit this process's children to a cgroup \
+                         under {} — see `admits_our_children`",
+                        scope.root.display(),
+                    );
+                    return None;
+                }
+                return Some(scope);
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -438,6 +449,43 @@ impl DelegatedScope {
         let _ = holder.wait();
         None
     }
+}
+
+/// Whether this host will admit a child of THIS process to a cgroup we made under `root`.
+///
+/// The second precondition, and the one a delegated scope does not imply. cgroup v2 checks the
+/// migration against the common ancestor of the process's CURRENT cgroup and its destination, and
+/// a test binary spawns from wherever the runner lives rather than from inside the scope it just
+/// asked for — so on a host where those two share only a root-owned ancestor, every spinner below
+/// dies at its `pre_exec`. Measured on GitHub's Linux runner: `Permission denied`, both tests.
+///
+/// Probed by DOING it, not by re-deriving the kernel's rule. The parent's write of the pid gets the
+/// identical check the child's own `"0"` gets: same source, same destination. The full derivation
+/// is in `sprag-host/tests/pane_placement.rs`, whose copy of this is the one a reader should go to.
+fn admits_our_children(root: &Path) -> bool {
+    let probe = root.join("admits-probe");
+    let _ = std::fs::remove_dir(&probe);
+    if std::fs::create_dir(&probe).is_err() {
+        return false;
+    }
+    let admitted = match Command::new("/bin/sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            let admitted =
+                std::fs::write(probe.join("cgroup.procs"), child.id().to_string()).is_ok();
+            let _ = child.kill();
+            let _ = child.wait();
+            admitted
+        }
+        Err(_) => false,
+    };
+    let _ = std::fs::remove_dir(&probe);
+    admitted
 }
 
 impl Drop for DelegatedScope {
