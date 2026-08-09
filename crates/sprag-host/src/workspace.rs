@@ -5783,7 +5783,14 @@ mod tests {
     fn a_dropped_file_on_a_local_pane_is_pasted_as_a_quoted_local_path() {
         use std::time::{Duration, Instant};
 
-        let dir = std::env::temp_dir().join(format!("sprag-drop-unit-{}", std::process::id()));
+        // LONG ON PURPOSE, so the echo below is wider than the 80-column pane on every platform.
+        // macOS produced that by accident — its `TMPDIR` is `/private/var/folders/<two opaque
+        // components>/T/` — and a condition that only one runner meets is one this box cannot
+        // discriminate on. Forcing it makes the fold below fail here the moment it is removed.
+        let dir = std::env::temp_dir().join(format!(
+            "sprag-drop-unit-{}-with-a-deliberately-long-name-so-the-echo-wraps",
+            std::process::id(),
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create the drop dir");
         let dropped = dir.join("a file.txt");
@@ -5810,6 +5817,30 @@ mod tests {
         );
 
         // `cat` echoes what was pasted — the paste is what makes this more than a return value.
+        //
+        // ⚠ READ THROUGH THE SOFT WRAPS, and this is a fix rather than tidiness. The pane is 80
+        // columns; the quoted path is 40-odd on Linux and NINETY on macOS, where `TMPDIR` is
+        // `/private/var/folders/<two opaque components>/T/`. So the echo straddles the right edge
+        // there and `full_text` — which joins ROWS with `\n` — carries a break through the middle of
+        // it. This test was one of fourteen the first macOS run of this suite (R343) failed, and the
+        // only difference from Linux was the length of a temporary directory's name.
+        //
+        // Folded with the emulator's OWN continuation flag rather than by deleting every newline: a
+        // blind `replace` would also weld together lines that really are separate, and then a
+        // needle spanning two unrelated ones would read as present. `sprag_vt`'s
+        // `a_needle_that_straddles_the_right_edge_is_not_found_yet` pins the same gap in the SEARCH,
+        // which no caller can fold around and which needs a coordinate decision to close.
+        let folded = |screen: &sprag_vt::Screen| {
+            let mut text = String::new();
+            for row in 0..screen.rows() {
+                text.push_str(&screen.row_text(row));
+                if !screen.wrapped(row) {
+                    text.push('\n');
+                }
+            }
+            text
+        };
+
         let pool = pool(&reg);
         let pane = PaneId(u64::try_from(id).unwrap());
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -5818,7 +5849,7 @@ mod tests {
                 .pane(pane)
                 .expect("the pane is alive")
                 .pty()
-                .with_screen(sprag_vt::Screen::full_text);
+                .with_screen(folded);
             if text.contains(&quoted) {
                 break true;
             }

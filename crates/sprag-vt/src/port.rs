@@ -3387,6 +3387,53 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ A NEEDLE THAT STRADDLES THE RIGHT EDGE IS NOT FOUND. **A measured gap, pinned here so it
+    /// cannot be forgotten — not a decision, and not a property to preserve.**
+    ///
+    /// A person reading a 20-column pane sees `abcdefghijklmnopqrstuvwxyz` on it. The emulator holds
+    /// it as two rows and KNOWS they are one logical line, which the first assertion below states.
+    /// Every search this crate offers nonetheless scans one physical row at a time
+    /// ([`Screen::scan_retained`]), so the word the person is looking straight at is unfindable —
+    /// while [`Screen::full_text`] hands a caller `"abcdefghijklmnopqrst\nuvwxyz"` and a
+    /// `contains` over it is false for the same reason.
+    ///
+    /// The CONTROL is the second search: a needle inside ONE row is found, so this says something
+    /// about the wrap rather than about the search being broken.
+    ///
+    /// What it costs a user: `sprag find`, the `find_in_pane` and `regex_in_pane` tools an agent
+    /// drives, and — worst — `sprag wait-for-output`, which simply never fires for a needle that
+    /// happens to wrap. R343 found it while diagnosing a macOS failure whose only difference from
+    /// Linux was a longer `TMPDIR` (`/private/var/folders/…`), which pushed a path past 80 columns.
+    ///
+    /// FIXING IT IS A COORDINATE DECISION, which is why this round measured it instead: a match that
+    /// spans two rows cannot be described by one `{line, col, cols}`, and that triple is on the wire
+    /// as `sprag_host::PaneMatch` and drives the GUI find bar's navigation and highlight. **When it
+    /// is fixed this test fails, and that is the point** — the fix must say what it now answers.
+    #[test]
+    fn a_needle_that_straddles_the_right_edge_is_not_found_yet() {
+        let e = em(20, 4, "abcdefghijklmnopqrstuvwxyz");
+        let screen = e.screen();
+        assert!(
+            screen.wrapped(0),
+            "the emulator knows row 0's logical line continues — the information is not missing",
+        );
+        assert_eq!(
+            screen.find("abcdefghij").matches.len(),
+            1,
+            "THE CONTROL: a needle within one row is found, so what follows is about the wrap",
+        );
+        assert_eq!(
+            screen.find("abcdefghijklmnopqrstuvwxyz").matches.len(),
+            0,
+            "MEASURED GAP: the word on the screen is not findable across the wrap",
+        );
+        assert_eq!(
+            screen.full_text(),
+            "abcdefghijklmnopqrst\nuvwxyz",
+            "and the rendered view carries the row break, so `contains` misses it too",
+        );
+    }
+
     #[test]
     fn full_text_joins_scrollback_then_visible_trailing_stripped() {
         // 4 lines on a 2-row screen: "1","2" scroll off, "3","4" visible.
