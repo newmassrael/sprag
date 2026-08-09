@@ -1296,6 +1296,32 @@ impl ActivityThread {
     }
 }
 
+/// The activity thread's own connection: connected, **BOUNDED**, and shaken hands with.
+///
+/// # Why this is a function and not three lines at the call site
+///
+/// It was three lines at the call site, and the middle one was missing. [`ActivityThread::stop`]
+/// already claimed what it needed — *"this thread never parks host-side: it is either inside a
+/// BOUNDED REQUEST or asleep on the condvar, so the join is deterministic"* — while the connection
+/// it was handed carried no deadline at all. Against a daemon that accepts and then answers nothing,
+/// the refresh parks inside `query_activity`, never looks at the stop flag again, and `stop`'s join
+/// waits forever: **a display client that cannot shut down**, for the sake of a subtitle.
+///
+/// R343 found it by sweeping one front over from the `sprag` CLI's own version of the same defect.
+/// A seam rather than a fourth copy of `set_read_deadline`, so the next connection added here
+/// cannot be the one that forgets — and so the claim above has something to be true OF.
+///
+/// # Errors
+///
+/// If the endpoint refuses the connection or the handshake fails. Best-effort at the call site: what
+/// this drives is a subtitle, and the deadline is what keeps a failure that size.
+fn activity_connection(endpoint: &HostEndpoint, client_id: &str) -> io::Result<HostConn> {
+    let mut conn = HostConn::connect(endpoint.path(), CONNECT_TIMEOUT)?;
+    conn.set_read_deadline(Some(REQUEST_DEADLINE))?;
+    shake_hands(&mut conn, client_id)?;
+    Ok(conn)
+}
+
 /// Re-read the sampled activity every [`SESSION_ACTIVITY_DISPLAY_MAX_AGE`] until stopped, repainting
 /// only when it CHANGED.
 ///
@@ -1833,12 +1859,8 @@ impl WireHost {
         // Best-effort, unlike the two above: what it drives is a subtitle. A client that cannot get
         // a connection for it paints the rail without live facts rather than refusing to open a
         // terminal, which is the same call `send_attach` makes about the viewer badge.
-        match HostConn::connect(endpoint.path(), CONNECT_TIMEOUT) {
-            Ok(mut activity_conn) => {
-                if shake_hands(&mut activity_conn, &client_id).is_ok() {
-                    host.spawn_activity_for(activity_conn);
-                }
-            }
+        match activity_connection(endpoint, &client_id) {
+            Ok(activity_conn) => host.spawn_activity_for(activity_conn),
             Err(error) => tracing::debug!(
                 target: "sprag_gui::wire",
                 %error,
@@ -2169,10 +2191,11 @@ impl WireHost {
     /// than the sequence written at each of the four call sites.
     ///
     /// TRACKED BOUND (responsiveness): this runs SYNCHRONOUSLY on the UI thread (the reducer) and
-    /// does a thread join plus several blocking RPCs (connect + a read per pane), and `HostConn` has
-    /// no read timeout — so a daemon that accepts but never answers freezes the GUI for the
-    /// duration. A per-gesture path, not a per-frame one, and the daemon is local; the broader fix
-    /// (a `HostConn` read deadline) is a `WireHost`-wide concern, not this seam's.
+    /// does a thread join plus several blocking RPCs (connect + a read per pane), on a connection
+    /// carrying [`REQUEST_DEADLINE`] — so a daemon that accepts but never answers costs this gesture
+    /// that bound and not the window. ⚠ This note SAID `HostConn` had no read timeout and called the
+    /// deadline a broader concern; both request connections have carried one since, and R343 found
+    /// the sentence still here. **A tracked bound is a claim, and it expires.**
     fn switch_to(&self, to: Attaching<'_>) -> Option<String> {
         let previous = lock_session(&self.session).clone();
         let running = self.poll.borrow_mut().take();
@@ -3214,10 +3237,9 @@ impl HostClient for WireHost {
     /// client can serve no session.
     ///
     /// TRACKED BOUND (responsiveness): this runs SYNCHRONOUSLY on the UI thread (the reducer) and
-    /// does a thread join plus several blocking RPCs (connect + a read per pane), and `HostConn` has
-    /// no read timeout — so a daemon that accepts but never answers freezes the GUI for the duration.
-    /// A per-click gesture, not a per-frame path, and the daemon is local; the broader fix (a
-    /// `HostConn` read deadline) is a `WireHost`-wide concern, not this seam's.
+    /// does a thread join plus several blocking RPCs (connect + a read per pane), on a connection
+    /// carrying this crate's request deadline, so the cost of a silent daemon is that bound rather
+    /// than the window. See `switch_to` for why this note used to say otherwise.
     fn switch_session(&self, name: &str) {
         if name == lock_session(&self.session).as_str() {
             return;
@@ -5253,6 +5275,97 @@ mod tests {
         let (server, _) = listener.accept().expect("accept the client");
         drop(server);
         (conn, listener, SockGuard(path))
+    }
+
+    /// ⚠⚠ **A DAEMON THAT ACCEPTS AND SAYS NOTHING MUST NOT STOP THIS CLIENT FROM SHUTTING DOWN.**
+    ///
+    /// [`ActivityThread::stop`] flags, signals and JOINS, and its doc rests the whole thing on the
+    /// thread being *"either inside a bounded request or asleep on the condvar"*. The connection it
+    /// was handed carried no deadline at all — so against a silent daemon the refresh parked inside
+    /// its read, never looked at the flag again, and the join never returned. Found by R343's debt
+    /// sweep, one front over from the `sprag` CLI's own version of the same defect.
+    ///
+    /// Driven through [`activity_connection`], which is the seam the fix created: a test that built
+    /// its own bounded connection would prove the MECHANISM and say nothing about the call site
+    /// forgetting to use it, which is exactly what happened.
+    ///
+    /// The stand-in accepts and holds — never answering, never closing — because an EOF is an answer
+    /// of a kind and would end the read on its own. The join is awaited on a channel, since
+    /// `JoinHandle::join` has no deadline of its own: **a test that hangs when the code is wrong is a
+    /// test whose failure nobody can read.**
+    #[test]
+    fn a_silent_daemon_cannot_keep_the_activity_thread_from_being_joined() {
+        use std::io::{BufRead as _, Write as _};
+
+        let path = sock_path("activity-wedged");
+        let listener = UnixListener::bind(&path).expect("bind the wedged host socket");
+        let guard = SockGuard(path.clone());
+        let held = std::thread::spawn(move || {
+            // It answers the HANDSHAKE and nothing after it — a daemon that WEDGES once it is
+            // running, which is the only reachable shape: a client refused the handshake never
+            // starts a thread to be joined. HELD, not dropped, for the rest of the test, because an
+            // EOF is an answer of a kind and would end the read whether or not a deadline exists.
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = std::io::BufReader::new(
+                stream.try_clone().expect("split the stand-in's connection"),
+            );
+            let mut hello = String::new();
+            let _ = reader.read_line(&mut hello);
+            let id: Value = serde_json::from_str::<Value>(hello.trim())
+                .map(|frame| frame["id"].clone())
+                .unwrap_or(Value::Null);
+            let mut writer = &stream;
+            let _ = writeln!(
+                writer,
+                "{}",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { sprag_rpc::PROTOCOL_FIELD: sprag_rpc::WIRE_PROTOCOL },
+                })
+            );
+            let _ = writer.flush();
+            std::thread::sleep(Duration::from_secs(60));
+            drop(stream);
+        });
+
+        let endpoint = HostEndpoint::given("the activity gate", &path);
+        let conn = activity_connection(&endpoint, "gui-activity-gate")
+            .expect("the wedged host still accepts and shakes hands");
+
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let handle = spawn_activity_refresh(
+            conn,
+            ActivityMirror::default(),
+            Arc::new(|| {}),
+            Arc::clone(&stop),
+        )
+        .expect("the refresh thread spawns");
+        let mut thread = ActivityThread {
+            stop,
+            handle: Some(handle),
+        };
+
+        // Past one refresh interval, so the thread is INSIDE the request rather than on the condvar
+        // — the state the claim is about, and the one an immediate stop would skip.
+        std::thread::sleep(SESSION_ACTIVITY_DISPLAY_MAX_AGE * 2);
+
+        let (done, joined) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            thread.stop();
+            let _ = done.send(());
+        });
+        assert!(
+            joined
+                .recv_timeout(REQUEST_DEADLINE + Duration::from_secs(20))
+                .is_ok(),
+            "stop() must return: a request with no deadline parks this thread past every stop flag",
+        );
+
+        drop(guard);
+        drop(held);
     }
 
     /// **The client's own mirror ranks two undelivered messages**, and this drives `store_message`

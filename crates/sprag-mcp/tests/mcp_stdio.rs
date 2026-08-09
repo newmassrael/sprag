@@ -2828,7 +2828,7 @@ fn an_agent_reads_what_each_pane_is_running() {
         "the answer leads with how old it is: {all}",
     );
     assert!(
-        all.contains(&format!("pane {} (id 0) on /dev/pts/", number(0))),
+        all.contains(&format!("pane {} (id 0) on /dev/", number(0))),
         "each pane is named in this surface's numbers AND the host's ids, with its device: {all}",
     );
     assert!(

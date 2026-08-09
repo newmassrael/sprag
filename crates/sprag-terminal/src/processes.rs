@@ -576,7 +576,11 @@ mod tests {
         .map(row)
         .expect("the shell owns its own terminal at a prompt");
         assert!(
-            at_rest.tty.is_some_and(|tty| tty.starts_with("/dev/pts/")),
+            // `/dev/` and not `/dev/pts/`: the SPELLING of a pty slave is the platform's
+            // (Linux `/dev/pts/7`, macOS `/dev/ttys007`), so pinning one made this a claim
+            // about a kernel's naming while reading as a claim about the row. R343 fixed the
+            // same assertion in `cli.rs` and did NOT grep for its siblings — this is one.
+            at_rest.tty.is_some_and(|tty| tty.starts_with("/dev/")),
             "the row carries the pane's device",
         );
         assert_eq!(
