@@ -430,6 +430,23 @@ pub struct WorkspaceExternal {
     /// split was made to remove. Unlike `agents` this is not `Option`: there is no host that cannot
     /// answer where its sessions are working or what its panes are running.
     samplers: crate::Samplers,
+    /// Where this surface reads the [`window-size`](crate::options::WINDOW_SIZE) policy —
+    /// [`crate::config::window_size`] on every real host, and the ONE authority both readers of it
+    /// go through ([`size_policy`](Self::size_policy)).
+    ///
+    /// A SOURCE and not a value, so the file is still read fresh per call: a person editing their
+    /// config expects their next resize to follow it, and a policy snapshotted when this surface
+    /// was built would be a policy per JSON-RPC request instead.
+    ///
+    /// Injected for [`ClientConfig::at`](crate::config::ClientConfig::at)'s reason, which applies here with
+    /// one extra turn of the screw: the only other way in is `$XDG_CONFIG_HOME`, which is
+    /// process-global, so an in-crate test would have to mutate the environment its siblings are
+    /// concurrently reading — and the two tests that could then disagree would disagree only
+    /// sometimes. Without this seam a test of this surface asserts whatever the DEVELOPER's
+    /// `config.toml` happens to say, which is how `resize_window`'s answer came to be gated against
+    /// a file that is not in this repository (R331, found by the first Linux CI run that reached
+    /// the tests).
+    window_size: fn() -> crate::WindowSize,
 }
 
 /// A VALIDATED pane-spawn request — the command, its label, and any explicit dims. Produced by
@@ -481,7 +498,29 @@ impl WorkspaceExternal {
             attention,
             agents,
             samplers,
+            window_size: crate::config::window_size,
         }
+    }
+
+    /// Read the `window-size` policy from `source` instead of from the user's config file.
+    ///
+    /// For a test that needs a KNOWN policy. See the field for why this is a seam rather than an
+    /// `$XDG_CONFIG_HOME` a test could set.
+    #[cfg(test)]
+    #[must_use]
+    fn with_window_size(mut self, source: fn() -> crate::WindowSize) -> Self {
+        self.window_size = source;
+        self
+    }
+
+    /// The `window-size` policy in force, for the two readers of it on this surface.
+    ///
+    /// Both go through here so they cannot drift: the `window_size` SLOT arbitrates a window under
+    /// this policy and the `resize_window` ACTION both resolves and REPORTS under it, and a client
+    /// told the panes follow one rule by the slot while the action applied another would have no
+    /// way to tell which of the two its screen is showing.
+    fn size_policy(&self) -> crate::WindowSize {
+        (self.window_size)()
     }
 
     /// This surface's registry-subject half, borrowed — the reads that would still be answerable if
@@ -2060,7 +2099,7 @@ impl WorkspaceExternal {
         // ONE read of the user's file for both jobs below — the arbitration's policy and the policy
         // this answer reports — so a caller cannot be told the panes follow a rule the resize was
         // not resolved under.
-        let policy = crate::config::window_size();
+        let policy = self.size_policy();
         let current = crate::window::arbitrate(policy, &reports, pinned).or(pinned);
         let resolved = request.resolve(current, &reports).map_err(refused)?;
         lock(&self.registry)
@@ -2694,7 +2733,7 @@ impl ExternalIntrospect for WorkspaceExternal {
                         .window(self.scope.session(), self.scope.window())
                         .and_then(sprag_terminal::Window::manual_size)
                         .map(|(cols, rows)| ClientSize { cols, rows });
-                    crate::window::arbitrate(crate::config::window_size(), &sizes, pinned)
+                    crate::window::arbitrate(self.size_policy(), &sizes, pinned)
                 });
                 encoded_answer(&window, "window_size")
             }
@@ -6415,10 +6454,19 @@ mod tests {
     /// unfalsifiable — and the wire is a public surface a GUI or an agent addresses directly.
     ///
     /// Measured: replacing the exclusivity arm with a precedence order left the whole suite green.
+    ///
+    /// The policy is PINNED through the surface's own seam rather than left ambient. It was
+    /// ambient until the first Linux CI run that got as far as the tests, and what it read was
+    /// `~/.config/sprag/config.toml` on the machine this was written on: green here, red on every
+    /// host without that file. R318/R319/R331's rule — *a test that does not write its own
+    /// environment reads the developer's* — for the fourth time, and the structural fix is the
+    /// seam and not an `$XDG_CONFIG_HOME` this test could set, because that variable is
+    /// process-global and the siblings running beside it read the same one.
     #[test]
     fn resize_window_refuses_two_spellings_of_one_rectangle() {
         let reg = registry();
-        let (mut ext, _r) = control(&reg); // scope window "0"
+        let (ext, _r) = control(&reg); // scope window "0"
+        let mut ext = ext.with_window_size(|| crate::WindowSize::Manual);
 
         // The four legal spellings, so the refusals below are about MIXING rather than about any one
         // of them being unreadable. `from` folds no clients here (none are attached), so it refuses
@@ -6472,6 +6520,25 @@ mod tests {
                 "{args} must be refused",
             );
         }
+
+        // THE SAME RECTANGLE UNDER A SECOND POLICY. Every answer above names `manual`, and a
+        // handler that had the word built into it would satisfy all of them — which is what the
+        // three literals were really asserting while the policy came from a file. The rectangle is
+        // identical because an exact request resolves to itself under any policy; only the reported
+        // policy moves, so this is the one comparison that isolates it.
+        let mut elsewhere = control(&reg)
+            .0
+            .with_window_size(|| crate::WindowSize::Largest);
+        assert_eq!(
+            elsewhere.invoke(
+                RESIZE_WINDOW_ACTION,
+                IntrospectValue::Json(json!({"cols": 100, "rows": 30})),
+            ),
+            Ok(IntrospectValue::Json(
+                json!({"cols": 100, "rows": 30, "policy": "largest"})
+            )),
+            "the answer reports the policy it was RESOLVED under, not a constant",
+        );
     }
 
     /// **A kill addressed by IDENTITY destroys the window that was pointed at, over the wire** —
