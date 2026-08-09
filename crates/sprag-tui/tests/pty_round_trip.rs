@@ -50,8 +50,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sprag_host::keymap::{Keymap, PrefixMode, Routed};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    RENAME_SESSION_ACTION, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, TREE_SLOT,
+    FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANES_SLOT, RENAME_SESSION_ACTION, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, TREE_SLOT,
     WINDOWS_SLOT,
 };
 use sprag_host::{mux_action_path, pane_input_path};
@@ -7643,41 +7643,34 @@ fn rows_until_settled(tui: &Tui, sentence: &str, landing: &str) -> Vec<String> {
 /// is watching the client rather than racing the killer.
 fn client_whose_session_is_destroyed(policy: &str) -> (Daemon, ConfigHome, HostConn, String, Tui) {
     let config = ConfigHome::new(&format!("[options]\ndetach-on-destroy = \"{policy}\"\n"));
-    let (daemon, sock, conn, session, tui) = attached_client_with(
+    let (daemon, _sock, mut conn, session, tui) = attached_client_with(
         |sock, session| {
             Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", config.as_str())])
         },
         &["cat"],
     );
-    // A spare session to land in, made through the CLI so the fixture does not depend on the client
-    // under test having created it.
-    let made = Command::new(sprag_cli_bin())
-        .args(["new", "beta"])
-        .env("SPRAG_HOST_RPC_SOCK", &sock)
-        .output()
-        .expect("run sprag new");
-    assert!(made.status.success(), "the spare session must exist");
 
-    // THE CONTROL, and it runs BEFORE the kill because the kill is what moves what it measures: the
-    // row names the session this client booted into, so every reading below is the kill's doing.
+    // THE CONTROL, and it runs BEFORE the spare exists because the spare is what everything below
+    // is about: the row names the session this client booted into, so every reading later is the
+    // kill's doing.
     let where_it_was = format!("[{session}] 0:0*");
     wait_for("the row to say where the client is", || {
         settled(tui.row(STATUS_ROW), &where_it_was)
     });
 
-    // OUT OF BAND: another process destroys this client's session. Not a key, deliberately — a
-    // gesture gets its own answer (`Report::cascaded`), and this path is the one where nobody at
-    // this keyboard did anything.
-    let killed = Command::new(sprag_cli_bin())
-        .args(["kill-session", &session])
-        .env("SPRAG_HOST_RPC_SOCK", &sock)
-        .output()
-        .expect("run sprag kill-session");
-    assert!(
-        killed.status.success(),
-        "the killer must have worked: {:?}",
-        String::from_utf8_lossy(&killed.stderr),
-    );
+    // OUT OF BAND, and BACK TO BACK ON ONE CONNECTION: a spare session to land in, and then this
+    // client's own session destroyed. Not a key, deliberately — a gesture gets its own answer
+    // (`Report::cascaded`), and this path is the one where nobody at this keyboard did anything.
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(NEW_SESSION_ACTION), "args": { "name": "beta" } }),
+    )
+    .expect("the spare session must exist");
+    conn.call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(KILL_SESSION_ACTION), "args": { "name": session } }),
+    )
+    .expect("the killer must have worked");
     (daemon, config, conn, session, tui)
 }
 

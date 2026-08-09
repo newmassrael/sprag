@@ -1015,23 +1015,59 @@ enum Successor {
     },
 }
 
-/// The `list` neighbour `step` places from `killed` (wrapping), or `None` when there is no
-/// neighbour to name: `killed` is the only session, or it is not in `list` at all (already gone, so
-/// nothing to anchor on — a detach is the honest answer).
+/// The nearest session `step` places from `killed` in the order the person SAW that the daemon
+/// still serves NOW — or `None` when there is no such session to name.
+///
+/// # Two lists, because the anchor and the candidates are different questions
 ///
 /// The order is the SIDEBAR's — the registry's own creation order, a stable `Vec` — so `next` moves
 /// to the row visually below and `previous` above. tmux orders by session NAME because it has no
-/// visible list; sprag has one, so its visible order is the more intuitive, honest analog. With
-/// `len >= 2` the ±1 wrap can never land back on `killed`, so the name returned is always a
-/// DIFFERENT, live session.
-fn list_neighbour(list: &[SessionInfo], killed: &str, step: isize) -> Option<String> {
-    if list.len() < 2 {
-        return None; // only `killed` (or empty): nothing to switch to.
-    }
-    let here = list.iter().position(|session| session.name == killed)? as isize;
-    let len = list.len() as isize;
-    let neighbour = (here + step).rem_euclid(len) as usize;
-    Some(list[neighbour].name.clone())
+/// visible list; sprag has one, so its visible order is the more intuitive, honest analog. Only
+/// `seen` can supply that order, because it is the only list that still holds `killed`, the row the
+/// walk counts FROM (R326: deciding on a fresh read alone leaves `next` with no anchor at all).
+///
+/// **But a row in `seen` is not a session that exists.** The mirror is refreshed by the poll thread
+/// on a wake, and [`first_free_other`] has recorded since R327 that nothing bounds how stale it
+/// gets; the counts were moved onto a fresh read then and the MEMBERSHIP was not. So the walk takes
+/// its order from `seen` and its CANDIDATES from `now`, in both directions:
+///
+/// * a session `now` has and `seen` does not is appended to the order and can be landed on — it was
+///   created since this client last looked, and detaching a person past a live session is the worse
+///   answer by a distance (R345: measured doing exactly that, on `off`, `next` and `previous`);
+/// * a name `seen` still holds and `now` does not is SKIPPED rather than named — following it is an
+///   attach that fails, and a failed follow detaches, so a corpse in the mirror costs the person
+///   the live session behind it.
+///
+/// `None` is left for the one case that has no answer: `killed` is not in the order at all (nothing
+/// to anchor on), or the walk finds no survivor. Both are honest detaches.
+///
+/// The step loop stops one short of a full lap, so it can never name `killed` itself — which also
+/// means the same-list callers (planning a kill they are about to perform, where `now` still holds
+/// `killed`) are unaffected.
+fn list_neighbour(
+    seen: &[SessionInfo],
+    now: &[SessionInfo],
+    killed: &str,
+    step: isize,
+) -> Option<String> {
+    let alive = |name: &str| now.iter().any(|session| session.name == name);
+    // What the person saw, then whatever the daemon has gained since — one order, so the walk is a
+    // single wrapping index and the appended rows are reachable at the end of a lap.
+    let order: Vec<&str> = seen
+        .iter()
+        .map(|session| session.name.as_str())
+        .chain(
+            now.iter()
+                .map(|session| session.name.as_str())
+                .filter(|name| !seen.iter().any(|session| session.name == *name)),
+        )
+        .collect();
+    let here = order.iter().position(|name| *name == killed)? as isize;
+    let len = order.len() as isize;
+    (1..len)
+        .map(|lap| order[(here + step * lap).rem_euclid(len) as usize])
+        .find(|name| alive(name))
+        .map(str::to_owned)
 }
 
 /// The first session in list order that is NOT `killed` and that no client is viewing
@@ -1091,17 +1127,17 @@ fn destroy_successor(
         DetachOnDestroy::Detach => Successor::Detach,
         DetachOnDestroy::Off => Successor::LastViewed {
             unattached: false,
-            fallback: list_neighbour(seen, killed, 1),
+            fallback: list_neighbour(seen, now, killed, 1),
         },
         DetachOnDestroy::NoDetached => Successor::LastViewed {
             unattached: true,
             fallback: first_free_other(now, killed),
         },
         DetachOnDestroy::Next => {
-            list_neighbour(seen, killed, 1).map_or(Successor::Detach, Successor::Named)
+            list_neighbour(seen, now, killed, 1).map_or(Successor::Detach, Successor::Named)
         }
         DetachOnDestroy::Previous => {
-            list_neighbour(seen, killed, -1).map_or(Successor::Detach, Successor::Named)
+            list_neighbour(seen, now, killed, -1).map_or(Successor::Detach, Successor::Named)
         }
     }
 }
@@ -5230,6 +5266,86 @@ mod tests {
             Successor::Detach,
             "the control: asked of the fresh list alone, `next` has no anchor and detaches — \
              which is the switch-policy breakage a re-read-everything fix causes",
+        );
+    }
+
+    /// **The other half of R327's split, and the one that was throwing people out of the product**:
+    /// a switch policy must land on a session that EXISTS, and the mirror is not a list of those.
+    ///
+    /// [`first_free_other`]'s own doc has said since R327 that *"nothing bounds how stale the
+    /// mirror's counts are"*. The counts were fixed by reading `now`; the MEMBERSHIP was left on
+    /// `seen`, so a session created after this client's last sessions re-read is a session
+    /// `next` / `previous` / `off` cannot see — and with nowhere to go they DETACH. Measured end to
+    /// end at R345 (`sprag-tui`'s `every_switch_policy_moves_the_terminal_client`, with the spare
+    /// created and the kill performed back to back on one connection so no poll wake fits between
+    /// them): the client left the multiplexer while a live session sat beside it, on `off`, `next`
+    /// and `previous` alike. It had been reaching CI as an unattributable 45-second timeout since
+    /// R343 — three occurrences, two platforms, three tests.
+    ///
+    /// The converse is the same defect read the other way and is fixed by the same line: a session
+    /// the mirror still lists and the daemon has since destroyed is a name [`WireHost::follow`] will
+    /// fail to attach to, and a failed follow detaches — so a corpse in the mirror silently costs
+    /// the person the live session behind it.
+    ///
+    /// **The anchor still comes from `seen` and only from `seen`**, which is R326's finding and the
+    /// half an over-eager fix breaks; what changed is that the ROW WALKED TO must be one the daemon
+    /// says is there. The sibling test above holds the other direction — read the two together.
+    ///
+    /// REVERT-PROOF: resolve the neighbour over `seen` alone and the first two rows detach (the
+    /// measured defect); resolve it over `now` alone and the third row loses its anchor and detaches
+    /// too (R326's); drop the skip and the fourth names a session that is gone.
+    #[test]
+    fn a_switch_policy_lands_on_a_session_that_exists_now_counting_from_the_row_that_died() {
+        // The mirror holds ONLY the dying session: this client was never woken to learn about the
+        // one somebody else just made. That is the whole fixture — a `seen` shorter than `now`.
+        let seen = session_list(&["alpha"]);
+        let now = session_list(&["beta"]);
+
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Previous, &seen, &now, "alpha"),
+            Successor::Named("beta".to_owned()),
+            "`previous` must reach a live session the mirror had not heard of, not detach",
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            Successor::Named("beta".to_owned()),
+            "...and so must `next`: one walk, one candidate list",
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Off, &seen, &now, "alpha"),
+            Successor::LastViewed {
+                unattached: false,
+                fallback: Some("beta".to_owned()),
+            },
+            "`off` means do not leave if there is somewhere to go, and there is",
+        );
+
+        // THE ANCHOR IS STILL THE MIRROR'S — the fresh list cannot say what is "after alpha",
+        // because alpha is not in it. Two survivors this time, so the ORDER is the claim.
+        let seen = session_list(&["alpha", "beta", "gamma"]);
+        let now = session_list(&["gamma", "beta"]);
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            Successor::Named("beta".to_owned()),
+            "the row below alpha is beta, whatever order the daemon happens to list them in",
+        );
+
+        // A NAME THE MIRROR STILL HOLDS AND THE DAEMON NO LONGER SERVES IS SKIPPED, not followed:
+        // attaching to it fails, and a failed follow is the detach this whole test is about.
+        let seen = session_list(&["alpha", "dead", "beta"]);
+        let now = session_list(&["beta"]);
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            Successor::Named("beta".to_owned()),
+            "the neighbour is the next row that still EXISTS",
+        );
+
+        // ...and when nothing in either list is still there, a detach is the honest answer. The
+        // control for the row above: the skip must run out rather than wrap forever.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, &session_list(&[]), "alpha"),
+            Successor::Detach,
+            "no live session anywhere is the one case a switch policy has to leave on",
         );
     }
 
