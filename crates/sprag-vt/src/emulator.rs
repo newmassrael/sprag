@@ -1683,8 +1683,12 @@ impl Emulator {
                 // A line feed ends this row's logical line (a hard break) — UNLESS it
                 // is the editor's resize-redraw wrap idiom, where it CONTINUES the
                 // line (a soft wrap). See `in_resize_redraw` for why.
-                let soft_wrap = self.in_resize_redraw;
-                self.screen.set_wrapped(self.row, soft_wrap);
+                // The continuation carries WHERE it wrapped: the cursor's column, which is where
+                // the editor's reprint stopped. This break lands mid-row by construction (that is
+                // what distinguishes it from a hard newline), so the columns past it are the OLD
+                // line's leftovers and are not this line's content.
+                let soft_wrap = self.in_resize_redraw.then_some(self.col);
+                self.screen.set_wrapped_at(self.row, soft_wrap);
                 self.line_feed();
                 // LNM (ANSI mode 20): under new-line mode a line feed also returns the cursor to
                 // column 0 (a CR+LF); off (the default) it moves straight down, keeping the column.
@@ -2497,7 +2501,7 @@ impl Emulator {
                 // Erasing to the right margin truncates the line, so it no
                 // longer soft-wraps onto the next row.
                 if end >= self.cols {
-                    self.screen.set_wrapped(row, false);
+                    self.screen.set_wrapped_at(row, None);
                 }
             }
             Edit::EraseInDisplay(mode) => {
@@ -2981,7 +2985,11 @@ impl Emulator {
                 // DECAWM on (the default): this row's logical line continues onto the next,
                 // resuming at the LEFT MARGIN — under DECLRMM text poured into a narrowed region
                 // stays inside it instead of spilling across the whole screen.
-                self.screen.set_wrapped(self.row, true);
+                // `self.col` is where the grapheme WOULD have gone and did not fit, so it is
+                // exactly how many cells this row's logical line put here. Recording it is what
+                // tells a later reader that the columns beyond are the pad an early wrap left
+                // (a wide cluster at the margin) rather than spaces the child printed.
+                self.screen.set_wrapped_at(self.row, Some(self.col));
                 self.col = self.region.left;
                 self.line_feed();
             } else {
@@ -5019,6 +5027,79 @@ mod tests {
             em.screen().full_text(),
             text,
             "widen∘narrow restores the text"
+        );
+    }
+
+    /// A wide cluster that will not fit in the last column wraps EARLY, and the column it left
+    /// behind is a cell the emulator never wrote — layout, exactly like a wide cluster's trailer,
+    /// and not a space the child printed. A widen that carries it into the rejoined line INJECTS A
+    /// SPACE into the user's text.
+    ///
+    /// Measured before the fix: `"ab世\n世"` came back from a widen as `"ab世 世"`. The row's own
+    /// soft-wrap flag was a bare `bool`, so nothing recorded that the line's content on that row
+    /// ended at column 3 — the join could only guess, and it guessed "the whole row".
+    #[test]
+    fn reflow_drops_the_pad_a_wide_cluster_left_at_the_margin() {
+        let mut em = Emulator::new(5, 3);
+        em.advance("ab\u{4e16}\u{4e16}".as_bytes());
+        assert!(
+            em.screen().wrapped(0),
+            "the fixture must wrap EARLY: 世 is two columns and column 4 is the last",
+        );
+        assert_eq!(
+            em.screen().full_text(),
+            "ab世\n世",
+            "and it must leave the pad column blank before the widen",
+        );
+        em.resize(9, 3);
+        assert_eq!(
+            em.screen().full_text(),
+            "ab世世",
+            "the pad is layout the wrap created, not a space the child printed",
+        );
+    }
+
+    /// THE CONTROL for [`reflow_drops_the_pad_a_wide_cluster_left_at_the_margin`], in the other
+    /// direction: trailing blanks on a wrapped row that the child DID print are content, and a
+    /// widen must keep every one of them. A fix that trimmed a wrapped row's tail would pass the
+    /// test above and silently rewrite what this pane printed.
+    #[test]
+    fn reflow_keeps_the_blanks_a_wrapped_row_really_holds() {
+        let mut em = Emulator::new(6, 3);
+        em.advance(b"ab    cdef");
+        assert!(em.screen().wrapped(0), "the fixture must wrap");
+        assert_eq!(em.screen().full_text(), "ab\ncdef");
+        em.resize(12, 3);
+        assert_eq!(
+            em.screen().full_text(),
+            "ab    cdef",
+            "four printed spaces are content the widen must carry",
+        );
+    }
+
+    /// A line ending in spaces the child painted a BACKGROUND on is a bar the user can SEE, so it
+    /// is content and a widen must carry it. The reflow used to end a line by popping trailing
+    /// cells that were a narrow `" "` — which a coloured bar is — while the durable history
+    /// encoder ended one by full cell equality, which a coloured bar is not. Two readers of "where
+    /// does this line end", disagreeing about a case the user is looking at; [`line_cells`] is now
+    /// the only one, and it keeps the bar.
+    #[test]
+    fn reflow_keeps_a_coloured_bar_at_a_lines_end() {
+        let mut em = Emulator::new(8, 3);
+        em.advance(b"ab\x1b[41m   \x1b[m");
+        let painted = |em: &Emulator| {
+            em.screen()
+                .row_cells(0)
+                .iter()
+                .filter(|cell| cell.bg == Color::Indexed(1))
+                .count()
+        };
+        assert_eq!(painted(&em), 3, "the fixture must paint three cells red");
+        em.resize(16, 3);
+        assert_eq!(
+            painted(&em),
+            3,
+            "the bar is content: a widen carries it, it does not trim it away",
         );
     }
 

@@ -509,6 +509,7 @@ fn find_in_line(
     cells: &[Cell],
     needle: &str,
     line: usize,
+    shares: &[RowShare],
     text: &mut String,
     starts: &mut Vec<usize>,
     out: &mut Vec<FindMatch>,
@@ -524,7 +525,7 @@ fn find_in_line(
         };
         let start = from + offset;
         let end = start + needle.len();
-        out.push(match_span(cells, starts, line, start, end));
+        out.push(match_span(cells, starts, line, shares, start, end));
         if out.len() >= FIND_MATCH_CAP {
             return false;
         }
@@ -545,6 +546,7 @@ fn regex_in_line(
     cells: &[Cell],
     regex: &regex::Regex,
     line: usize,
+    shares: &[RowShare],
     text: &mut String,
     starts: &mut Vec<usize>,
     out: &mut Vec<FindMatch>,
@@ -554,7 +556,14 @@ fn regex_in_line(
         if found.start() == found.end() {
             continue;
         }
-        out.push(match_span(cells, starts, line, found.start(), found.end()));
+        out.push(match_span(
+            cells,
+            starts,
+            line,
+            shares,
+            found.start(),
+            found.end(),
+        ));
         if out.len() >= FIND_MATCH_CAP {
             return false;
         }
@@ -582,10 +591,14 @@ fn line_text(cells: &[Cell], text: &mut String, starts: &mut Vec<usize>) -> usiz
 /// answer in columns rather than in byte offsets, which is the whole reason the search lives beside
 /// the cells: a byte offset is not a column (a wide cluster is one cluster and two columns, and its
 /// trailer contributes no bytes at all).
+///
+/// `cells` is the LOGICAL line, so the span this computes is in line coordinates; `shares` puts it
+/// back on the grid ([`grid_span`]).
 fn match_span(
     cells: &[Cell],
     starts: &[usize],
     line: usize,
+    shares: &[RowShare],
     start: usize,
     end: usize,
 ) -> FindMatch {
@@ -603,11 +616,85 @@ fn match_span(
     while end_cell < cells.len() && cells[end_cell].width == Width::Trailer {
         end_cell += 1;
     }
-    FindMatch {
-        line,
-        col: u16::try_from(col).unwrap_or(u16::MAX),
-        cols: u16::try_from(end_cell - col).unwrap_or(u16::MAX),
+    grid_span(shares, line, col, end_cell)
+}
+
+/// One retained row's share of a logical line: which row it is, and how many of the line's cells
+/// sit on it. Built by [`Screen::scan_logical`] as it joins a line; read by [`grid_span`] to put a
+/// match back onto the grid.
+///
+/// The COUNT rather than a range, because a row's share always begins at its column 0 — that is
+/// what a soft wrap is. The FIRST row of a line is no exception: a logical line starts at the left
+/// margin too.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct RowShare {
+    row: usize,
+    cells: usize,
+}
+
+/// Put the joined-line cell range `first..last` back onto the grid rows it covers, as the
+/// [`FindMatch`] a client can highlight.
+///
+/// A match is contiguous in the LINE and therefore contiguous on the grid: it fills the rest of
+/// its first row, every row between, and a prefix of its last. So the first row's `(col, cols)`
+/// plus a width per following row describes it exactly, and a consumer that reads only the first
+/// three fields highlights the visible head of the match instead of nothing.
+///
+/// The widths are carried rather than derived from the pane's width because they are not always
+/// the pane's width: a wide cluster that will not fit at the margin wraps a column early, and a
+/// DECLRMM region ends before the screen does. A consumer that divided by `cols` would paint one
+/// cell too far on exactly the lines this round exists for.
+///
+/// ⚠ **THE HONEST COMPARISON FIRST: BOTH RIVALS SEARCHED ACROSS A SOFT WRAP BEFORE SPRAG DID.**
+/// ghostty joins wrapped rows into its search window (`.unwrap = true`,
+/// `src/terminal/search/sliding_window.zig:613` at `260288614`) and models the early-wrap pad as a
+/// distinct cell (`spacer_head`); herdr keeps its line open across `row.soft_wrapped` and skips
+/// `CellWide::SpacerHead` (`src/pane/terminal.rs:617` at `9a4ce5e1`). R344 catches up; it does not
+/// pull ahead on the search.
+///
+/// What this shape does buy is that the answer is complete WITHOUT THE GRID. Both rivals resolve a
+/// match's middle rows against the pane's width at paint time — ghostty's `Selection.contains` is
+/// "if between the top/bottom, always good" for any column (`src/terminal/Selection.zig:284`) and
+/// herdr's highlighter takes `end_col = inner_rect.width - 1` on every row but the last
+/// (`src/ui/panes.rs:790`) — which is sound only while a wrapped row is full. sprag's client is in
+/// ANOTHER PROCESS and never sees the cells, so deriving was never available to it; carrying the
+/// emulator's own measurement is what makes the answer self-describing. (Read from their sources at
+/// those pins, not run: what a one-cell overpaint LOOKS like in either renderer is not measured.)
+fn grid_span(shares: &[RowShare], line: usize, first: usize, last: usize) -> FindMatch {
+    let mut found: Option<FindMatch> = None;
+    let mut offset = 0usize;
+    for share in shares {
+        let end = offset + share.cells;
+        // The rows this match touches: those whose share overlaps `first..last`.
+        if first < end && last > offset {
+            let from = first.max(offset);
+            let to = last.min(end);
+            let width = u16::try_from(to - from).unwrap_or(u16::MAX);
+            match &mut found {
+                None => {
+                    found = Some(FindMatch {
+                        line,
+                        row: share.row,
+                        col: u16::try_from(from - offset).unwrap_or(u16::MAX),
+                        cols: width,
+                        wrapped: Vec::new(),
+                    });
+                }
+                Some(hit) => hit.wrapped.push(width),
+            }
+        }
+        offset = end;
     }
+    // Unreachable by construction: a match covers at least one cell (an empty needle answers
+    // early, and a zero-width regex match is skipped), so the walk always finds its first row.
+    // The fallback highlights NOTHING at the line's head rather than mis-highlighting something.
+    found.unwrap_or(FindMatch {
+        line,
+        row: line,
+        col: 0,
+        cols: 0,
+        wrapped: Vec::new(),
+    })
 }
 
 fn cells_text(cells: &[Cell]) -> String {
@@ -616,6 +703,38 @@ fn cells_text(cells: &[Cell]) -> String {
         line.push_str(&cell.cluster);
     }
     line.trim_end().to_string()
+}
+
+/// The cells of ONE retained row that belong to its logical line — the single definition of "this
+/// row's share of the line", used by all three readers of a logical line: the reflow
+/// ([`Screen::reflowed`]), the history encoder ([`crate::history::encode`]) and the search
+/// ([`Screen::scan_logical`]).
+///
+/// `continues` is the row's soft-wrap continuation ([`Screen::continues`]):
+///
+/// * `Some(n)` — the line runs on, and put `n` cells here. The columns from `n` are LAYOUT: the pad
+///   a wide cluster leaves when it will not fit at the margin, or a column outside a DECLRMM
+///   region. They are dropped, and the blanks BEFORE `n` are kept — a wrapped row's trailing space
+///   is a space the child printed, and the next row's text follows it directly.
+/// * `None` — the line ends on this row, so its run out to the margin is the grid's padding and is
+///   trimmed. "Blank" is full [`Cell`] equality, not a space cluster: a trailing run carrying a
+///   BACKGROUND colour is a coloured bar the user can see, so it is content and stays.
+///
+/// Both halves have cost a defect. Trimming a CONTINUING row deletes printed spaces (R343's
+/// drop-paste fold); keeping a continuing row's whole width injects the wide-cluster pad into the
+/// user's text (`reflow_drops_the_pad_a_wide_cluster_left_at_the_margin`). One reader, so a fix to
+/// either reaches the reflow, the durable history and the search together.
+pub(crate) fn line_cells(cells: &[Cell], continues: Option<u16>) -> &[Cell] {
+    match continues {
+        Some(upto) => &cells[..(upto as usize).min(cells.len())],
+        None => {
+            let blank = Cell::blank();
+            match cells.iter().rposition(|cell| *cell != blank) {
+                Some(last) => &cells[..=last],
+                None => &[],
+            }
+        }
+    }
 }
 
 /// Cursor shape (DECSCUSR), mirroring pinion's `CursorShape`.
@@ -1109,34 +1228,62 @@ pub struct LinkRun {
 /// One literal match of a search needle in a pane's retained output. Returned (with its siblings)
 /// by [`Screen::find`]. Serde-free like [`LastCommand`] — the host projects it to JSON.
 ///
-/// The coordinate is the pane's LOGICAL one: `line` counts from the OLDEST retained line, exactly
-/// like [`Screen::prompt_positions`], so a display client's scroll `offset_y` IS a line index and
-/// jumping the view to a match is `scroll_to(match.line)`. `col`/`cols` are CELL columns, not byte
-/// or char offsets, so a highlight can be laid straight onto the grid: a wide (double-width) cluster
-/// counts TWO columns, and a match that ends on one includes its trailer column.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// ## A LINE and a ROW are different things, and a match knows both
+///
+/// A pane holds rows; a person reads lines. A line longer than the pane is wide occupies several
+/// consecutive rows, so a match on it can START on one row and END on another — and until R344
+/// this type could not say that, which is why the search did not look for such a match at all.
+///
+/// * [`line`](Self::line) names the LOGICAL line — by the retained row it begins on, which is the
+///   axis [`Screen::prompt_positions`] reports and a display client's scroll `offset_y` speaks. It
+///   is the join key to the [`FindLine`] carrying this line's text.
+/// * [`row`](Self::row) is where the match itself starts, and [`col`](Self::col) /
+///   [`cols`](Self::cols) are its CELL columns THERE — not byte or char offsets, so a highlight
+///   lays straight onto the grid: a wide (double-width) cluster counts TWO columns, and a match
+///   ending on one includes its trailer column.
+/// * [`wrapped`](Self::wrapped) is the rest of the match, one width per row it runs on to. Empty
+///   for the ordinary match that fits on its row.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FindMatch {
-    /// Logical line index from the oldest retained line (`0`) — scrollback first, then the visible
-    /// grid, the same axis [`Screen::prompt_positions`] reports on.
+    /// The LOGICAL line this match is in, named by the retained row it begins on (`0` = the oldest
+    /// retained row; scrollback first, then the visible grid). The join key to [`FindLine::line`].
     pub line: usize,
-    /// The starting CELL column within that line.
+    /// The retained row the match's FIRST cell sits on — [`line`](Self::line) plus however many
+    /// wraps the match starts past, so equal to `line` unless it begins on a continuation row.
+    /// This is the row a view scrolls to, and the row [`col`](Self::col) is a column of.
+    pub row: usize,
+    /// The starting CELL column within [`row`](Self::row).
     pub col: u16,
-    /// The match's width in CELL columns (a wide cluster counts two).
+    /// The match's width in CELL columns ON [`row`](Self::row) (a wide cluster counts two) — the
+    /// WHOLE match only when [`wrapped`](Self::wrapped) is empty.
     pub cols: u16,
+    /// The match's width in cell columns on each row AFTER [`row`](Self::row), in order: a match
+    /// that wraps covers rows `row + 1 ..= row + wrapped.len()`, each from column 0, because that
+    /// is what a soft wrap is. Empty for a match that lies within one row.
+    ///
+    /// Carried rather than derived from the pane's width: a wide cluster that will not fit at the
+    /// margin wraps a column EARLY, so a row of a wrapped line is not always full.
+    pub wrapped: Vec<u16>,
 }
 
-/// One line that carries at least one match, with its text — the DISPLAY view of a search, beside
-/// the coordinate view [`FindResult::matches`] gives.
+/// One LOGICAL line that carries at least one match, with its text — the DISPLAY view of a search,
+/// beside the coordinate view [`FindResult::matches`] gives.
 ///
 /// Deduped: a line with three matches appears ONCE. That is the whole reason this is a second
 /// collection rather than a `text` field on every [`FindMatch`] — a grep-like consumer prints one
 /// line per matching LINE (ripgrep groups its submatches the same way), while a find bar navigates
 /// matches one at a time and needs no text at all. Each consumer reads exactly one of the two.
+///
+/// The text is the whole logical line, so a line that wrapped over three rows is ONE entry reading
+/// as the person reads it. That is what a `grep`-shaped consumer wants and what an agent quotes:
+/// printing the rows separately would hand back a word broken in half, which is the same blindness
+/// one layer up from the one the search itself had.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FindLine {
-    /// The logical line index — the join key back to [`FindMatch::line`].
+    /// The logical line, named by the retained row it begins on — the join key back to
+    /// [`FindMatch::line`].
     pub line: usize,
-    /// The line's text, trailing blanks trimmed (the same text [`Screen::row_text`] gives).
+    /// The line's text: every row it occupies, joined, with the blanks at its end trimmed.
     pub text: String,
 }
 
@@ -1205,12 +1352,12 @@ impl std::error::Error for BadPattern {}
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct ScrollbackLine {
     pub(crate) cells: Vec<Cell>,
-    /// The row's soft-wrap continuation flag ([`Screen::wrapped`]) when it scrolled off (or was
-    /// rewrapped into) history: `true` means this history line's logical line CONTINUES onto the
-    /// next. Preserved so [`Screen::reflowed`] can rebuild the scrolled-off logical lines and
-    /// rewrap them to a new width — without it a resize could only carry scrollback verbatim (the
-    /// width-stale-history bound this closes).
-    pub(crate) wrapped: bool,
+    /// The row's soft-wrap continuation ([`Screen::continues`]) when it scrolled off (or was
+    /// rewrapped into) history: `Some(n)` means this history line's logical line CONTINUES onto
+    /// the next and put `n` cells on this row. Preserved so [`Screen::reflowed`] can rebuild the
+    /// scrolled-off logical lines and rewrap them to a new width — without it a resize could only
+    /// carry scrollback verbatim (the width-stale-history bound this closes).
+    pub(crate) continues: Option<u16>,
     pub(crate) mark: Option<PromptMark>,
 }
 
@@ -1333,23 +1480,31 @@ pub struct Screen {
     /// carries any shell-integration [`PromptMark`] its row held (all bundled in [`ScrollbackLine`]
     /// so none can desync from the cells), so a prompt that scrolls into history stays a jump target.
     scrollback: VecDeque<ScrollbackLine>,
-    /// Per-row soft-wrap continuation flag (the DEC `LINE_WRAPPED` attribute):
-    /// `wrapped[r] == true` means row `r`'s logical line CONTINUES onto row
-    /// `r + 1`, so a reflow ([`Self::reflowed`]) joins them into one logical line
-    /// before re-breaking to a new width. Without it a resize cannot tell a soft
-    /// wrap from a hard newline, so it cannot rewrap (the verbatim
-    /// [`Self::resized`] fallback leaves a live shell's per-width prompt redraws
-    /// stacked up).
+    /// Per-row soft-wrap continuation (the DEC `LINE_WRAPPED` attribute, plus WHERE it wrapped):
+    /// `continues[r] == Some(n)` means row `r`'s logical line CONTINUES onto row `r + 1` and put
+    /// `n` cells on this row, so a reflow ([`Self::reflowed`]) joins `cells[..n]` to the next row
+    /// before re-breaking to a new width. Without it a resize cannot tell a soft wrap from a hard
+    /// newline, so it cannot rewrap (the verbatim [`Self::resized`] fallback leaves a live shell's
+    /// per-width prompt redraws stacked up).
     ///
-    /// Set TRUE by two producers: (1) the autowrap site (the emulator hit the right
-    /// margin); (2) the line editor's resize-redraw `CR LF` continuation
-    /// (`Emulator::in_resize_redraw` — a premature break that is semantically a soft
-    /// wrap). Cleared when a row is erased or a line feed ends the line OUTSIDE that
+    /// ⚠ **THE COLUMN IS NOT DECORATION ON THE FLAG — IT IS THE HALF A `bool` LOST.** A wrapped
+    /// row is USUALLY full, but not always: a wide cluster that will not fit at the margin wraps
+    /// EARLY, leaving a column the emulator never wrote, and under DECLRMM the line ends at the
+    /// region's right margin with somebody else's text beyond it. A reader with only the flag has
+    /// to guess that a wrapped row's content is the whole row, and that guess put a space into a
+    /// user's text on every widen (`reflow_drops_the_pad_a_wide_cluster_left_at_the_margin`).
+    /// [`line_cells`] is the one reader of this field's meaning; the three consumers of a logical
+    /// line — the reflow, the history encoder and the search — all go through it.
+    ///
+    /// Set by two producers: (1) the autowrap site (the emulator hit the right margin); (2) the
+    /// line editor's resize-redraw `CR LF` continuation (`Emulator::in_resize_redraw` — a
+    /// premature break that is semantically a soft wrap). Both know the column because both wrap
+    /// AT the cursor. Cleared when a row is erased or a line feed ends the line OUTSIDE that
     /// redraw. The second producer is deliberate, not a stray writer: a reflowing
     /// terminal must treat the editor's redraw continuation as soft for it to
     /// collapse on widen, and that `CR LF` is context-only-distinguishable from a
     /// hard newline (it lands mid-row), so the emulator owns that one decision.
-    wrapped: Vec<bool>,
+    continues: Vec<Option<u16>>,
     /// Per-row shell-integration boundary mark (OSC 133 `A`/`C`/`D`), `None` on an unmarked row.
     /// Parallel to the visible rows exactly like [`Self::generations`] / [`Self::wrapped`]: the
     /// emulator sets a row's mark when the child emits the OSC, and it moves in lockstep with the
@@ -1424,7 +1579,7 @@ impl Screen {
             kind: ScreenKind::Main,
             generations: vec![0; rows as usize],
             scrollback: VecDeque::new(),
-            wrapped: vec![false; rows as usize],
+            continues: vec![None; rows as usize],
             marks: vec![None; rows as usize],
             images: Vec::new(),
             next_image_seq: 0,
@@ -1531,9 +1686,22 @@ impl Screen {
 
     /// Whether row `row` soft-wraps onto the next row (its logical line
     /// continues). `false` out of bounds. See `Self::reflowed`.
+    ///
+    /// The QUESTION a display asks — does this row's line run on? A reader that has to know how
+    /// much of the row belongs to that line wants the crate-internal `continues`, because the
+    /// answer is not always "all of it".
     #[must_use]
     pub fn wrapped(&self, row: u16) -> bool {
-        self.wrapped.get(row as usize).copied().unwrap_or(false)
+        self.continues(row).is_some()
+    }
+
+    /// Row `row`'s soft-wrap continuation: `Some(n)` when its logical line runs onto row `row + 1`
+    /// having put `n` cells on this one, `None` when the line ends here (or the row is out of
+    /// bounds). The fact [`Self::wrapped`] answers a `bool` from; [`line_cells`] is what turns it
+    /// into the row's share of its logical line.
+    #[must_use]
+    pub(crate) fn continues(&self, row: u16) -> Option<u16> {
+        self.continues.get(row as usize).copied().flatten()
     }
 
     /// A row's cells (`0..cols`, oldest-left), cloned. The row-to-cells mapping
@@ -1705,7 +1873,7 @@ impl Screen {
             .iter()
             .map(|line| HistoryRow {
                 cells: &line.cells,
-                wrapped: line.wrapped,
+                continues: line.continues,
                 mark: line.mark,
                 // Scrollback carries no images: an image scrolled off the top is evicted, never
                 // retained (the Stage-1 lifecycle this encoder inherits).
@@ -1713,7 +1881,7 @@ impl Screen {
             })
             .chain((0..visible_end).map(|row| HistoryRow {
                 cells: &self.cells[row * cols..(row + 1) * cols],
-                wrapped: self.wrapped[row],
+                continues: self.continues[row],
                 mark: self.marks[row],
                 images: &anchored[row],
             }))
@@ -1785,11 +1953,15 @@ impl Screen {
         })
     }
 
-    /// The logical line indices (from the OLDEST retained line, `0`) of every OSC 133
-    /// prompt-start ([`PromptMark::Prompt`]) mark — oldest first, across scrollback then the
-    /// visible grid. These are the jump-to-prompt targets: a display client's scroll `offset_y`
-    /// IS the view's top logical line (rows from the oldest), so jumping the view to prompt `L`
-    /// is `scroll_to(L)`. Empty without shell integration. Bounded (scrollback cap + rows).
+    /// The RETAINED ROW (from the oldest, `0`) of every OSC 133 prompt-start
+    /// ([`PromptMark::Prompt`]) mark — oldest first, across scrollback then the visible grid.
+    /// These are the jump-to-prompt targets: a display client's scroll `offset_y` IS the view's top
+    /// retained row, so jumping the view to prompt `L` is `scroll_to(L)`. Empty without shell
+    /// integration. Bounded (scrollback cap + rows).
+    ///
+    /// A mark rides its logical line's FIRST row (which is what a reflow re-attaches it
+    /// to), so these are line STARTS on the row axis — the same values [`FindMatch::line`] reports,
+    /// and the reason a search answer and a prompt jump are interchangeable scroll targets.
     #[must_use]
     pub fn prompt_positions(&self) -> Vec<usize> {
         let sb_len = self.scrollback.len();
@@ -1841,8 +2013,8 @@ impl Screen {
         // would otherwise allocate twice per line to answer one keystroke.
         let mut text = String::new();
         let mut starts = Vec::new();
-        self.scan_retained(|cells, line, out| {
-            find_in_line(cells, &needle, line, &mut text, &mut starts, out)
+        self.scan_logical(|cells, shares, line, out| {
+            find_in_line(cells, &needle, line, shares, &mut text, &mut starts, out)
         })
     }
 
@@ -1888,52 +2060,84 @@ impl Screen {
             .map_err(|error| BadPattern(error.to_string()))?;
         let mut text = String::new();
         let mut starts = Vec::new();
-        Ok(self.scan_retained(|cells, line, out| {
-            regex_in_line(cells, &regex, line, &mut text, &mut starts, out)
+        Ok(self.scan_logical(|cells, shares, line, out| {
+            regex_in_line(cells, &regex, line, shares, &mut text, &mut starts, out)
         }))
     }
 
-    /// Run `scan` over every retained line — scrollback first, then the visible grid — collecting
-    /// its matches and, for each line that produced one, that line's ORIGINAL text.
+    /// Run `scan` over every retained LOGICAL line — scrollback first, then the visible grid, as
+    /// ONE stream — collecting its matches and, for each line that produced one, its text.
     ///
-    /// The traversal both searches share, so the LINE AXIS is defined once: `line` counts logical
-    /// lines from the oldest retained one, which is the axis `prompt_positions` uses and therefore
-    /// the one a client's `scroll_to` already speaks. `scan` returns `false` when it hit the match
-    /// cap, which ends the sweep and marks the result truncated.
+    /// ## A logical line, not a row: the traversal IS the fix
     ///
-    /// The line text is derived AFRESH from the cells rather than taken from `scan`'s scratch
-    /// buffer, which the literal search lowercases in place.
-    fn scan_retained(
+    /// A pane holds ROWS; a person reads LINES. A line that ran past the right margin occupies
+    /// several consecutive rows, and this walk joins them — through [`line_cells`], so each row
+    /// contributes exactly its own share — before the search ever sees them. Scanning row by row
+    /// (which every search here did until R344) cannot find the word a person is looking straight
+    /// at: on a 20-column pane, `abcdefghijklmnopqrstuvwxyz` is two rows and the needle is in
+    /// neither of them. It cost `sprag find`, `find_in_pane`, `regex_in_pane` and — worst —
+    /// `wait-for-output`, which simply never fired for a needle that happened to wrap.
+    ///
+    /// The join spans the scrollback→visible boundary for the same reason [`Self::reflowed`] treats
+    /// the two as one stream: a line half scrolled off is still one line. The last retained row may
+    /// carry a continuation (a line running past what is kept); it closes the line anyway, exactly
+    /// as the history encoder does — the rest is not ours to search.
+    ///
+    /// ## Two coordinates, because there are two questions
+    ///
+    /// `scan` is handed the JOINED cells plus the [`RowShare`]s that say which row each of them
+    /// came from, so a match found in line coordinates goes back onto the grid ([`grid_span`]) as
+    /// the rows it really covers. `line` — the index it reports — is the retained row the LOGICAL
+    /// line begins on, which is the axis [`Self::prompt_positions`] reports and a client's scroll
+    /// `offset_y` already speaks.
+    ///
+    /// `scan` returns `false` when it hit the match cap, which ends the sweep and marks the result
+    /// truncated. The line text is derived AFRESH from the cells rather than taken from `scan`'s
+    /// scratch buffer, which the literal search lowercases in place.
+    fn scan_logical(
         &self,
-        mut scan: impl FnMut(&[Cell], usize, &mut Vec<FindMatch>) -> bool,
+        mut scan: impl FnMut(&[Cell], &[RowShare], usize, &mut Vec<FindMatch>) -> bool,
     ) -> FindResult {
         let mut result = FindResult::default();
         let sb_len = self.scrollback.len();
-        for (line, history) in self.scrollback.iter().enumerate() {
+        let cols = self.cols as usize;
+        let retained = sb_len + self.rows as usize;
+        // The line being built: its cells, where each row's share of them starts, and the row it
+        // begins on. Reused across lines — a scrollback-deep search must not allocate per line.
+        let mut joined: Vec<Cell> = Vec::new();
+        let mut shares: Vec<RowShare> = Vec::new();
+        let mut line = 0usize;
+        for row in 0..retained {
+            let (cells, continues) = if row < sb_len {
+                let history = &self.scrollback[row];
+                (history.cells.as_slice(), history.continues)
+            } else {
+                let r = row - sb_len;
+                (&self.cells[r * cols..(r + 1) * cols], self.continues[r])
+            };
+            if shares.is_empty() {
+                line = row;
+            }
+            let mine = line_cells(cells, continues);
+            shares.push(RowShare {
+                row,
+                cells: mine.len(),
+            });
+            joined.extend_from_slice(mine);
+            // A continuation keeps the line open — unless there is no next row to continue onto.
+            if continues.is_some() && row + 1 < retained {
+                continue;
+            }
             let before = result.matches.len();
-            let within_cap = scan(&history.cells, line, &mut result.matches);
+            let within_cap = scan(&joined, &shares, line, &mut result.matches);
             if result.matches.len() > before {
                 result.lines.push(FindLine {
                     line,
-                    text: cells_text(&history.cells),
+                    text: cells_text(&joined),
                 });
             }
-            if !within_cap {
-                result.truncated = true;
-                return result;
-            }
-        }
-        for row in 0..self.rows {
-            let cells = self.row_cells(row);
-            let line = sb_len + row as usize;
-            let before = result.matches.len();
-            let within_cap = scan(&cells, line, &mut result.matches);
-            if result.matches.len() > before {
-                result.lines.push(FindLine {
-                    line,
-                    text: cells_text(&cells),
-                });
-            }
+            joined.clear();
+            shares.clear();
             if !within_cap {
                 result.truncated = true;
                 return result;
@@ -1990,12 +2194,17 @@ impl Screen {
         self.cursor = cursor;
     }
 
-    /// Mark (or clear) row `row`'s soft-wrap continuation flag. The VT backend
-    /// sets it at the autowrap site and clears it when a row is erased or a hard
-    /// line feed ends the line. Out-of-bounds rows are ignored.
-    pub(crate) fn set_wrapped(&mut self, row: u16, wrapped: bool) {
-        if let Some(slot) = self.wrapped.get_mut(row as usize) {
-            *slot = wrapped;
+    /// Record (or clear) row `row`'s soft-wrap continuation. `Some(upto)` says the row's logical
+    /// line runs onto the next row having put `upto` cells here; `None` says the line ends on this
+    /// row. The VT backend sets it AT THE WRAP, where the column is the cursor's, and clears it
+    /// when a row is erased or a hard line feed ends the line. Out-of-bounds rows are ignored.
+    ///
+    /// The column is a parameter rather than derived from `cols` because the two disagree exactly
+    /// where it matters: a wide cluster that will not fit wraps a column early, and a DECLRMM
+    /// region ends before the screen does. See the [`continues`](Self::continues) field.
+    pub(crate) fn set_wrapped_at(&mut self, row: u16, upto: Option<u16>) {
+        if let Some(slot) = self.continues.get_mut(row as usize) {
+            *slot = upto;
         }
     }
 
@@ -2043,7 +2252,7 @@ impl Screen {
             self.stamp_row(row, generation);
             // An erased row no longer continues a logical line, and its shell-integration mark
             // (if any) goes with the content that was cleared.
-            self.wrapped[row as usize] = false;
+            self.continues[row as usize] = None;
             self.marks[row as usize] = None;
             // An inline image anchored on this row goes with the cleared content (R1404 Stage 3):
             // erase-in-display (ED, which clear_row's the affected rows) drops it, no ghost left.
@@ -2078,7 +2287,7 @@ impl Screen {
             *cell = Cell::blank();
         }
         self.stamp_row(row, generation);
-        self.wrapped[row as usize] = false;
+        self.continues[row as usize] = None;
     }
 
     /// Delete `n` cells at `(col, row)`, shifting the cells from `col+n` leftward to `col` and
@@ -2104,7 +2313,7 @@ impl Screen {
             *cell = Cell::blank();
         }
         self.stamp_row(row, generation);
-        self.wrapped[row as usize] = false;
+        self.continues[row as usize] = None;
     }
 
     /// Blank `n` cells at `(col, row)` in place (ECH — ERASE CHARACTER): a bounded erase that,
@@ -2160,7 +2369,10 @@ impl Screen {
                 }
             }
             next.generations[r as usize] = self.generations[r as usize];
-            next.wrapped[r as usize] = self.wrapped[r as usize];
+            // The wrap column is CLAMPED to the new width: this fallback truncates a row's cells
+            // at `copy_cols`, so a continuation that named a column past the new margin would
+            // claim content the copy did not bring.
+            next.continues[r as usize] = self.continues(r).map(|upto| upto.min(copy_cols));
             next.marks[r as usize] = self.marks[r as usize];
         }
         next.cursor = self.cursor;
@@ -2240,23 +2452,15 @@ impl Screen {
             if cur.is_empty() {
                 cur_mark = line.mark;
             }
-            let mut glyphs: Vec<Cell> = Vec::new();
-            for cell in &line.cells {
+            // The row's share of its logical line — [`line_cells`] is what knows that a CONTINUING
+            // row keeps its printed blanks and drops the pad an early wrap left.
+            for cell in line_cells(&line.cells, line.continues) {
                 if cell.width == Width::Trailer {
                     continue; // regenerated when the wide head is re-placed
                 }
-                glyphs.push(cell.clone());
+                cur.push(cell.clone());
             }
-            if !line.wrapped {
-                while glyphs
-                    .last()
-                    .is_some_and(|c| c.width == Width::Narrow && c.cluster == " ")
-                {
-                    glyphs.pop();
-                }
-            }
-            cur.extend(glyphs);
-            if !line.wrapped {
+            if line.continues.is_none() {
                 lines.push(std::mem::take(&mut cur));
                 line_marks.push(cur_mark);
             }
@@ -2267,6 +2471,12 @@ impl Screen {
             if cur.is_empty() {
                 cur_mark = self.marks[r as usize];
             }
+            let row_cells = self.row_cells(r);
+            // This row's share of its logical line: the cells past it are the grid's padding at a
+            // hard end, or the pad / another DECLRMM column at a soft one. The column walk below
+            // still visits EVERY column, so a cursor or an image anchored past the share clamps to
+            // the share's end rather than dragging padding into the line.
+            let mine = line_cells(&row_cells, self.continues(r));
             let mut glyphs: Vec<Cell> = Vec::new();
             for c in 0..self.cols {
                 if !cursor_found && r == cur_row && c == cur_col {
@@ -2281,21 +2491,15 @@ impl Screen {
                         anchor_pos[ai] = Some((lines.len(), cur.len() + glyphs.len()));
                     }
                 }
-                let cell = self.cell(c, r).cloned().unwrap_or_else(Cell::blank);
+                let Some(cell) = mine.get(c as usize) else {
+                    continue; // past this row's share of the line
+                };
                 if cell.width == Width::Trailer {
                     continue; // regenerated when the wide head is re-placed
                 }
-                glyphs.push(cell);
+                glyphs.push(cell.clone());
             }
             let wrapped = self.wrapped(r);
-            if !wrapped {
-                while glyphs
-                    .last()
-                    .is_some_and(|c| c.width == Width::Narrow && c.cluster == " ")
-                {
-                    glyphs.pop();
-                }
-            }
             cur.extend(glyphs);
             if !wrapped {
                 if cursor_found && cursor_line == lines.len() {
@@ -2328,9 +2532,11 @@ impl Screen {
         // Pass 2 — re-flow each logical line into the new width (a wide cluster
         // moves whole), recording per-row soft-wrap flags and the cursor's new
         // (col, physical-row).
-        // Each entry: (cells, soft-wrapped, mark). The mark rides only the FIRST physical row of
-        // a logical line (its head) — where a prompt / output boundary sits.
-        let mut phys: Vec<(Vec<Cell>, bool, Option<PromptMark>)> = Vec::new();
+        // Each entry: (cells, soft-wrap continuation, mark). The continuation carries the COLUMN
+        // the re-break happened at, which is `buf.len()` and is NOT always the new width — a wide
+        // cluster that will not fit breaks a column early. The mark rides only the FIRST physical
+        // row of a logical line (its head) — where a prompt / output boundary sits.
+        let mut phys: Vec<(Vec<Cell>, Option<u16>, Option<PromptMark>)> = Vec::new();
         let mut cursor_phys: Option<(u16, usize)> = None;
         // The first physical row of the cursor's logical line — the row a line
         // editor's resize redraw rewrites from (see the cursor-anchor note below).
@@ -2348,7 +2554,10 @@ impl Screen {
                 }
                 let w: u16 = if cell.width == Width::Wide { 2 } else { 1 };
                 if col + w > cols {
-                    phys.push((std::mem::take(&mut buf), true, None)); // soft-wrap break
+                    // The break puts exactly the cells already in `buf` on this row; `col` is that
+                    // count (a wide cluster contributes its head AND its trailer to both).
+                    let upto = u16::try_from(buf.len()).unwrap_or(cols);
+                    phys.push((std::mem::take(&mut buf), Some(upto), None)); // soft-wrap break
                     col = 0;
                 }
                 buf.push(cell.clone());
@@ -2375,7 +2584,7 @@ impl Screen {
                     anchor_phys[ai] = Some((col, phys.len()));
                 }
             }
-            phys.push((buf, false, None)); // hard end of this logical line
+            phys.push((buf, None, None)); // hard end of this logical line
             // Re-attach the logical line's mark to its head physical row (always pushed above).
             phys[line_top].2 = line_marks[li];
         }
@@ -2392,27 +2601,30 @@ impl Screen {
         // The overflow above the visible window BECOMES the new scrollback. It already holds the
         // old scrollback (rewrapped as part of the unified stream), so do NOT also clone the old
         // deque — that would double the history. `Screen::new` leaves `next.scrollback` empty.
-        for (cells, wrapped, mark) in phys.iter().take(start) {
+        for (cells, continues, mark) in phys.iter().take(start) {
             // Keep the styled cells (fg/bg/attrs) — scrollback paints in color — plus the row's
-            // soft-wrap flag (so a LATER reflow can rewrap it again) and its mark (so a prompt
-            // rewrapped into overflow stays a jump target).
+            // soft-wrap continuation (so a LATER reflow can rewrap it again) and its mark (so a
+            // prompt rewrapped into overflow stays a jump target).
             next.push_scrollback(ScrollbackLine {
                 cells: cells.clone(),
-                wrapped: *wrapped,
+                continues: *continues,
                 mark: *mark,
             });
         }
         next.trim_scrollback();
         debug_assert_eq!(
             next.scrollback_logical,
-            next.scrollback.iter().filter(|l| !l.wrapped).count(),
+            next.scrollback
+                .iter()
+                .filter(|l| l.continues.is_none())
+                .count(),
             "scrollback_logical stayed in sync with the deque across the rewrap"
         );
-        for (out_r, (cells, wrapped, mark)) in phys[start..].iter().enumerate() {
+        for (out_r, (cells, continues, mark)) in phys[start..].iter().enumerate() {
             for (c, cell) in cells.iter().take(ncols).enumerate() {
                 next.cells[out_r * ncols + c] = cell.clone();
             }
-            next.wrapped[out_r] = *wrapped;
+            next.continues[out_r] = *continues;
             next.marks[out_r] = *mark;
             next.generations[out_r] = generation;
         }
@@ -2530,7 +2742,7 @@ impl Screen {
     /// scrollback GROWTH — every push routes here so the count cannot desync; a row that ENDS a
     /// logical line (not soft-wrapped) adds one logical line.
     fn push_scrollback(&mut self, line: ScrollbackLine) {
-        if !line.wrapped {
+        if line.continues.is_none() {
             self.scrollback_logical += 1;
         }
         self.scrollback.push_back(line);
@@ -2553,7 +2765,7 @@ impl Screen {
         {
             match self.scrollback.pop_front() {
                 Some(line) => {
-                    if !line.wrapped {
+                    if line.continues.is_none() {
                         self.scrollback_logical -= 1;
                     }
                     self.touch_scrollback();
@@ -2633,7 +2845,7 @@ impl Screen {
                 // Build the line first (immutable borrows) before the `&mut self` push.
                 let line = ScrollbackLine {
                     cells: self.row_cells(r),
-                    wrapped: self.wrapped[r as usize],
+                    continues: self.continues[r as usize],
                     mark: self.marks[r as usize],
                 };
                 self.push_scrollback(line);
@@ -2650,7 +2862,7 @@ impl Screen {
         let span = (top as usize * cols)..((bottom as usize + 1) * cols);
         self.cells[span].rotate_left(n as usize * cols);
         // The per-row metadata rotates in lockstep (cheap Copy scalars).
-        self.wrapped[top as usize..=bottom as usize].rotate_left(n as usize);
+        self.continues[top as usize..=bottom as usize].rotate_left(n as usize);
         self.marks[top as usize..=bottom as usize].rotate_left(n as usize);
         // The surviving rows are dirty at the new generation.
         for r in top..top + shift {
@@ -2697,7 +2909,7 @@ impl Screen {
         // The bottom `n` rows wrap to the top, to be blanked next.
         let span = (top as usize * cols)..((bottom as usize + 1) * cols);
         self.cells[span].rotate_right(n as usize * cols);
-        self.wrapped[top as usize..=bottom as usize].rotate_right(n as usize);
+        self.continues[top as usize..=bottom as usize].rotate_right(n as usize);
         self.marks[top as usize..=bottom as usize].rotate_right(n as usize);
         // The surviving rows (now at `[top + n, bottom]`) are dirty at the new generation.
         for r in (top + n)..=bottom {
@@ -2747,7 +2959,7 @@ impl Screen {
             }
         }
         for r in top..=bottom {
-            self.wrapped[r as usize] = false;
+            self.continues[r as usize] = None;
             self.stamp_row(r, generation);
         }
     }
@@ -2778,7 +2990,7 @@ impl Screen {
             }
         }
         for r in top..=bottom {
-            self.wrapped[r as usize] = false;
+            self.continues[r as usize] = None;
             self.stamp_row(r, generation);
         }
     }
@@ -2957,6 +3169,21 @@ mod tests {
         let mut e = Emulator::new(cols, rows);
         e.advance(bytes.as_bytes());
         e
+    }
+
+    /// A match that lies within ONE row of a line that occupies one row — the ordinary case, where
+    /// the logical line, the row it is on and the whole match are the same span.
+    ///
+    /// Deliberately NOT usable for a wrapping match: those are spelled out field by field, because
+    /// the row a match starts on and the widths it covers are exactly what a helper would hide.
+    fn hit(line: usize, col: u16, cols: u16) -> FindMatch {
+        FindMatch {
+            line,
+            row: line,
+            col,
+            cols,
+            wrapped: Vec::new(),
+        }
     }
 
     /// [`em`] on an emulator configured for `limit` logical lines of history — the constructor a
@@ -3175,7 +3402,7 @@ mod tests {
         for i in 0..1_500 {
             screen.push_scrollback(ScrollbackLine {
                 cells: vec![Cell::blank()],
-                wrapped: false,
+                continues: None,
                 mark: None,
             });
             let _ = i;
@@ -3387,30 +3614,23 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ A NEEDLE THAT STRADDLES THE RIGHT EDGE IS NOT FOUND. **A measured gap, pinned here so it
-    /// cannot be forgotten — not a decision, and not a property to preserve.**
+    /// ⚠⚠ A NEEDLE THAT STRADDLES THE RIGHT EDGE IS FOUND — **R344 flipped the gap R343 measured
+    /// and pinned here**, and this test kept its fixture so the two readings are comparable.
     ///
-    /// A person reading a 20-column pane sees `abcdefghijklmnopqrstuvwxyz` on it. The emulator holds
-    /// it as two rows and KNOWS they are one logical line, which the first assertion below states.
-    /// Every search this crate offers nonetheless scans one physical row at a time
-    /// ([`Screen::scan_retained`]), so the word the person is looking straight at is unfindable —
-    /// while [`Screen::full_text`] hands a caller `"abcdefghijklmnopqrst\nuvwxyz"` and a
-    /// `contains` over it is false for the same reason.
+    /// A person reading a 20-column pane sees `abcdefghijklmnopqrstuvwxyz` on it. The emulator
+    /// holds it as two rows and always knew they were one logical line; the search now walks
+    /// LOGICAL lines ([`Screen::scan_logical`]) rather than physical rows, so the word the person
+    /// is looking straight at is findable, and the answer says which rows it covers.
     ///
-    /// The CONTROL is the second search: a needle inside ONE row is found, so this says something
-    /// about the wrap rather than about the search being broken.
+    /// The CONTROL is the second search: a needle inside one row is still one match with an empty
+    /// `wrapped`, so the wrapping answer below is about the wrap and not about a search that now
+    /// reports something for everything.
     ///
-    /// What it costs a user: `sprag find`, the `find_in_pane` and `regex_in_pane` tools an agent
-    /// drives, and — worst — `sprag wait-for-output`, which simply never fires for a needle that
-    /// happens to wrap. R343 found it while diagnosing a macOS failure whose only difference from
-    /// Linux was a longer `TMPDIR` (`/private/var/folders/…`), which pushed a path past 80 columns.
-    ///
-    /// FIXING IT IS A COORDINATE DECISION, which is why this round measured it instead: a match that
-    /// spans two rows cannot be described by one `{line, col, cols}`, and that triple is on the wire
-    /// as `sprag_host::PaneMatch` and drives the GUI find bar's navigation and highlight. **When it
-    /// is fixed this test fails, and that is the point** — the fix must say what it now answers.
+    /// ⚠ [`Screen::full_text`] still carries the row break, and that is deliberate: it is the
+    /// RENDERED view — what the pane looks like — and a capture that silently rejoined lines would
+    /// no longer describe the screen. The search is the surface that answers about CONTENT.
     #[test]
-    fn a_needle_that_straddles_the_right_edge_is_not_found_yet() {
+    fn a_needle_that_straddles_the_right_edge_is_found() {
         let e = em(20, 4, "abcdefghijklmnopqrstuvwxyz");
         let screen = e.screen();
         assert!(
@@ -3418,19 +3638,225 @@ mod tests {
             "the emulator knows row 0's logical line continues — the information is not missing",
         );
         assert_eq!(
-            screen.find("abcdefghij").matches.len(),
-            1,
-            "THE CONTROL: a needle within one row is found, so what follows is about the wrap",
+            screen.find("abcdefghij").matches,
+            vec![hit(0, 0, 10)],
+            "THE CONTROL: a needle within one row is one span and wraps onto nothing",
         );
         assert_eq!(
-            screen.find("abcdefghijklmnopqrstuvwxyz").matches.len(),
-            0,
-            "MEASURED GAP: the word on the screen is not findable across the wrap",
+            screen.find("abcdefghijklmnopqrstuvwxyz").matches,
+            vec![FindMatch {
+                line: 0,
+                row: 0,
+                col: 0,
+                cols: 20,
+                wrapped: vec![6],
+            }],
+            "the word on the screen is findable, and the answer says it covers 20 cells of row 0 \
+             and the first 6 of row 1",
         );
         assert_eq!(
             screen.full_text(),
             "abcdefghijklmnopqrst\nuvwxyz",
-            "and the rendered view carries the row break, so `contains` misses it too",
+            "the RENDERED view still carries the row break — it describes the screen, not the text",
+        );
+    }
+
+    /// A needle can cross MORE than one margin, and each row it crosses is reported with the width
+    /// it really covers. Three rows of a 5-column pane: the match starts mid-row, fills the rest of
+    /// it, takes a whole row, and ends part-way through a third.
+    #[test]
+    fn a_needle_can_span_more_than_two_rows() {
+        let e = em(5, 4, "ab123456789");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find("123456789").matches,
+            vec![FindMatch {
+                line: 0,
+                row: 0,
+                col: 2,
+                cols: 3,
+                wrapped: vec![5, 1],
+            }],
+            "3 cells on row 0 from column 2, all 5 of row 1, then 1 of row 2",
+        );
+    }
+
+    /// A match that begins on a CONTINUATION row: its `row` is that row and its `line` is the row
+    /// the LINE began on, which is the join key to the text. The two are different numbers here,
+    /// and a shape that carried only one of them would have to choose between navigating to the
+    /// match and finding its text.
+    #[test]
+    fn a_match_inside_a_continuation_row_still_names_its_line() {
+        let e = em(5, 4, "abcdefghij");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find("gh").matches,
+            vec![FindMatch {
+                line: 0,
+                row: 1,
+                col: 1,
+                cols: 2,
+                wrapped: Vec::new(),
+            }],
+            "the match sits on row 1; the line it belongs to starts at row 0",
+        );
+        assert_eq!(
+            screen.find("gh").lines,
+            vec![FindLine {
+                line: 0,
+                text: "abcdefghij".to_owned(),
+            }],
+            "and the line entry is keyed on the line, carrying the WHOLE line's text",
+        );
+    }
+
+    /// The join spans the scrollback→visible boundary, because a line half scrolled off is still
+    /// one line. `reflowed` treats the two as one stream for the same reason; a search that did not
+    /// would go blind at exactly the moment a long line starts scrolling away.
+    #[test]
+    fn a_needle_is_found_across_the_scrollback_boundary() {
+        // 6 columns, 2 rows. "abcdefghij" wraps over two rows, then two more lines push the first
+        // of them into scrollback.
+        let e = em(6, 2, "abcdefghij\r\nkk\r\nll");
+        let screen = e.screen();
+        assert_eq!(
+            screen.scrollback_len(),
+            2,
+            "the wrapped line's head scrolled off"
+        );
+        assert_eq!(
+            screen.find("efgh").matches,
+            vec![FindMatch {
+                line: 0,
+                row: 0,
+                col: 4,
+                cols: 2,
+                wrapped: vec![2],
+            }],
+            "2 cells on the oldest scrollback row and 2 on the row after it",
+        );
+    }
+
+    /// A line still OPEN at the last retained row is searched anyway — the guard that closes it,
+    /// which was GREEN under mutation until this fixture existed.
+    ///
+    /// The traversal keeps a line open while its row says "continues", and the LAST retained row
+    /// can say that: `DECSTBM` reserves the top rows as a scroll region and leaves the cursor
+    /// parked on the row BELOW it (the status-line idiom), where printing past the margin sets the
+    /// wrap flag and the line feed has nowhere to scroll to. Without the guard the accumulated
+    /// line is never handed to the scan, and every match on the bottom row of such a screen
+    /// silently disappears — measured here: 1 match becomes 0.
+    ///
+    /// The continuation itself points past the retained region, so there is nothing to join it to;
+    /// the history encoder closes such a line for the same reason and says so in the same words
+    /// ("the continuation is not ours to keep").
+    #[test]
+    fn a_line_still_open_at_the_last_retained_row_is_searched() {
+        // Region = rows 1..2 (1-based), cursor parked on row 3, then 13 glyphs on a 10-column
+        // screen: the wrap sets row 2's flag and the line feed cannot scroll it away.
+        let e = em(10, 3, "\x1b[1;2r\x1b[3;1Habcdefghijklm");
+        let screen = e.screen();
+        assert!(
+            screen.wrapped(screen.rows() - 1),
+            "the fixture must leave the LAST row continuing onto a row that is not retained",
+        );
+        assert_eq!(
+            screen.find("defghij").matches,
+            vec![hit(2, 3, 7)],
+            "the open line is closed and searched rather than dropped on the floor",
+        );
+    }
+
+    /// A HARD line break is not a wrap, and the join must not cross one — the negative control for
+    /// the whole traversal. Without it "join the rows" would degrade into "search the pane as one
+    /// string", and a needle spanning two unrelated lines would match.
+    #[test]
+    fn a_needle_does_not_span_a_hard_line_break() {
+        let e = em(20, 4, "abcdefghij\r\nklmnopqrst");
+        let screen = e.screen();
+        assert!(!screen.wrapped(0), "the fixture must break HARD, not wrap");
+        assert!(
+            screen.find("abcdefghijklmnopqrst").matches.is_empty(),
+            "two lines are two lines, however they look stacked on the screen",
+        );
+        assert_eq!(
+            screen.find("klmno").matches,
+            vec![hit(1, 0, 5)],
+            "THE CONTROL: each line is searchable on its own",
+        );
+    }
+
+    /// The blanks a wrapped row really holds are CONTENT, and the join keeps them: the child
+    /// printed `"ab    cdef"` and the pane broke it at the margin, so the needle spanning the gap
+    /// is there to be found. A join that trimmed each row (R343's drop-paste fold) would answer
+    /// `"abcdef"` and miss it.
+    #[test]
+    fn the_join_keeps_the_blanks_a_wrapped_row_printed() {
+        let e = em(6, 3, "ab    cdef");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find("b    c").matches,
+            vec![FindMatch {
+                line: 0,
+                row: 0,
+                col: 1,
+                cols: 5,
+                wrapped: vec![1],
+            }],
+            "five cells of row 0 from column 1, then one of row 1",
+        );
+    }
+
+    /// ...and the pad an EARLY wrap left is NOT content, in the same join. A wide cluster that will
+    /// not fit at the margin wraps a column early, leaving a blank the emulator never wrote; a join
+    /// that took the whole row would put a space between the two clusters and the needle a person
+    /// sees would not match. The other direction of
+    /// [`the_join_keeps_the_blanks_a_wrapped_row_printed`] — one rule cannot satisfy both by
+    /// accident, which is why both are here.
+    #[test]
+    fn the_join_drops_the_pad_an_early_wrap_left() {
+        let e = em(5, 3, "ab\u{4e16}\u{4e16}");
+        let screen = e.screen();
+        assert_eq!(
+            screen.row_text(0),
+            "ab\u{4e16}",
+            "the fixture must wrap EARLY: 世 is two columns and column 4 is the last",
+        );
+        assert_eq!(
+            screen.find("\u{4e16}\u{4e16}").matches,
+            vec![FindMatch {
+                line: 0,
+                row: 0,
+                col: 2,
+                cols: 2,
+                wrapped: vec![2],
+            }],
+            "the two clusters are adjacent in the line: no pad between them, two columns each",
+        );
+        assert!(
+            screen.find("\u{4e16} \u{4e16}").matches.is_empty(),
+            "and the pad is not a space somebody could search for",
+        );
+    }
+
+    /// The regex search walks the same logical lines — it is the same traversal, so a pattern
+    /// crossing a wrap is found and reported in the same coordinate. Written because a fix applied
+    /// to one of two searches is the shape this codebase keeps catching (`find` and `find_regex`
+    /// share `scan_logical` precisely so they cannot disagree).
+    #[test]
+    fn a_pattern_spans_a_wrap_like_a_needle_does() {
+        let e = em(5, 4, "abcdefgh");
+        let screen = e.screen();
+        assert_eq!(
+            screen.find_regex("d.f").unwrap().matches,
+            vec![FindMatch {
+                line: 0,
+                row: 0,
+                col: 3,
+                cols: 2,
+                wrapped: vec![1],
+            }],
+            "`d.f` crosses the margin between 'e' and 'f'",
         );
     }
 
@@ -3468,16 +3894,8 @@ mod tests {
         assert_eq!(
             found.matches,
             vec![
-                FindMatch {
-                    line: 0,
-                    col: 0,
-                    cols: 3
-                }, // the oldest scrollback line
-                FindMatch {
-                    line: 3,
-                    col: 0,
-                    cols: 3
-                }, // visible row 1 = scrollback_len + 1
+                hit(0, 0, 3), // the oldest scrollback line
+                hit(3, 0, 3), // visible row 1 = scrollback_len + 1
             ],
             "history and the live grid are ONE line axis, oldest first",
         );
@@ -3521,20 +3939,12 @@ mod tests {
         let screen = e.screen();
         assert_eq!(
             screen.find("err").matches,
-            vec![FindMatch {
-                line: 0,
-                col: 5,
-                cols: 3
-            }],
+            vec![hit(0, 5, 3)],
             "x=0, the wide cluster=1..2, y=3, space=4 -> the match starts at column 5",
         );
         assert_eq!(
             screen.find("\u{ac00}").matches,
-            vec![FindMatch {
-                line: 0,
-                col: 1,
-                cols: 2
-            }],
+            vec![hit(0, 1, 2)],
             "a wide cluster occupies two columns, trailer included",
         );
     }
@@ -3557,11 +3967,7 @@ mod tests {
         );
         assert_eq!(
             screen.find("aa").matches,
-            vec![FindMatch {
-                line: 0,
-                col: 6,
-                cols: 2
-            }],
+            vec![hit(0, 6, 2)],
             "`aa` occurs ONCE in `aaa` — the scan resumes past a match, never inside it",
         );
     }
@@ -3574,11 +3980,7 @@ mod tests {
         let screen = e.screen();
         assert_eq!(
             screen.find("  ").matches,
-            vec![FindMatch {
-                line: 0,
-                col: 1,
-                cols: 2
-            }],
+            vec![hit(0, 1, 2)],
             "only the interior gap matches, never the padding out to `cols`",
         );
     }

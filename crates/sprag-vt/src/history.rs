@@ -61,17 +61,19 @@
 
 use std::sync::Arc;
 
-use crate::port::{Attrs, Cell, Color, Hyperlink, Image, PromptMark, UnderlineStyle, Width};
+use crate::port::{
+    Attrs, Cell, Color, Hyperlink, Image, PromptMark, UnderlineStyle, Width, line_cells,
+};
 
-/// One retained row handed to [`encode`]: its cells and whether its logical line CONTINUES onto
-/// the next row (the soft-wrap flag).
+/// One retained row handed to [`encode`]: its cells and its soft-wrap continuation — `Some(n)`
+/// when its logical line CONTINUES onto the next row having put `n` cells here.
 ///
 /// A borrowed view rather than an owned row, so assembling the retained region
 /// ([`Screen::history_bytes`](crate::port::Screen::history_bytes)) clones no cells — scrollback
 /// and the visible grid are both already `[Cell]` runs.
 pub(crate) struct HistoryRow<'a> {
     pub(crate) cells: &'a [Cell],
-    pub(crate) wrapped: bool,
+    pub(crate) continues: Option<u16>,
     /// The shell-integration mark this row carries, if any. Emitted only for a logical line's
     /// FIRST row (see [`encode`]).
     pub(crate) mark: Option<PromptMark>,
@@ -165,14 +167,11 @@ pub(crate) fn encode(rows: &[HistoryRow<'_>], limits: HistoryLimits) -> Vec<u8> 
         if let Some(mark) = rows[first].mark {
             write_mark(&mut out, mark);
         }
-        for (index, row) in rows[first..=last].iter().enumerate() {
-            // The last row of a logical line ends it, so its padding to the right margin is not
-            // content; a continuation row's full width IS content (it positions the next row).
-            let cells = if first + index == last {
-                trim_trailing_blanks(row.cells)
-            } else {
-                row.cells
-            };
+        for row in &rows[first..=last] {
+            // What this row contributes to the line, decided in ONE place for the encoder, the
+            // reflow and the search alike: a continuing row keeps the blanks it printed and drops
+            // the pad an early wrap left, an ending row drops its padding out to the margin.
+            let cells = line_cells(row.cells, row.continues);
             let mut col = 0u16;
             let mut pending = row.images;
             for cell in cells {
@@ -297,7 +296,7 @@ fn logical_lines(rows: &[HistoryRow<'_>]) -> Vec<(usize, usize)> {
     let mut lines = Vec::new();
     let mut start = 0usize;
     for (index, row) in rows.iter().enumerate() {
-        if !row.wrapped {
+        if row.continues.is_none() {
             lines.push((start, index));
             start = index + 1;
         }
@@ -306,20 +305,6 @@ fn logical_lines(rows: &[HistoryRow<'_>]) -> Vec<(usize, usize)> {
         lines.push((start, rows.len() - 1));
     }
     lines
-}
-
-/// `cells` without its trailing run of cells that are indistinguishable from a blank — the grid
-/// padding between a line's last glyph and the right margin.
-///
-/// "Blank" is full [`Cell`] equality, not a space cluster: a trailing run carrying a BACKGROUND
-/// colour is a coloured bar the user can see, so it is content and stays.
-fn trim_trailing_blanks(cells: &[Cell]) -> &[Cell] {
-    let blank = Cell::blank();
-    let end = cells.iter().rposition(|cell| *cell != blank);
-    match end {
-        Some(last) => &cells[..=last],
-        None => &[],
-    }
 }
 
 /// The style axes one SGR run carries — everything [`Cell`] renders with except its cluster,
@@ -513,10 +498,10 @@ mod tests {
     fn retained(screen: &Screen) -> Vec<Vec<Cell>> {
         let mut rows: Vec<Vec<Cell>> = screen
             .scrollback_cells()
-            .map(|cells| trim_trailing_blanks(cells).to_vec())
+            .map(|cells| line_cells(cells, None).to_vec())
             .collect();
         for row in 0..screen.rows() {
-            rows.push(trim_trailing_blanks(&screen.row_cells(row)).to_vec());
+            rows.push(line_cells(&screen.row_cells(row), None).to_vec());
         }
         while rows.last().is_some_and(Vec::is_empty) {
             rows.pop();
