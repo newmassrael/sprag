@@ -368,6 +368,14 @@ pub struct PaneBirthHooks {
     /// The child-is-asking-for-a-person signal, as [`PaneHooks::on_attention`] — but taking the
     /// [`PaneId`] too, because the caller cannot know it and the pool can.
     pub on_attention: Option<Box<dyn Fn(PaneId, Attention) + Send>>,
+    /// Opens the cgroup a pane of this pool belongs in, once the pool has minted its id (R336).
+    ///
+    /// A FUNCTION of the id rather than an open descriptor, because the cgroup is named after the
+    /// pane and the pane has no name until [`Workspace::spawn_with_dirty`] mints one. It travels
+    /// with the other birth hooks for the same reason they do: this is the one moment a pane and
+    /// its id are together, and the caller cannot be there for it.
+    #[cfg(unix)]
+    pub home: Option<Box<dyn Fn(PaneId) -> Option<std::os::fd::OwnedFd> + Send>>,
 }
 
 impl PaneBirthHooks {
@@ -380,6 +388,8 @@ impl PaneBirthHooks {
             on_attention: self.on_attention.map(|tell| {
                 Box::new(move |attention| tell(id, attention)) as Box<dyn Fn(Attention) + Send>
             }),
+            #[cfg(unix)]
+            home: self.home.and_then(|open| open(id)),
         }
     }
 }

@@ -107,6 +107,61 @@ fn a_pane_born_under_a_host_with_a_tree_has_its_child_in_its_own_cgroup() {
     }
 }
 
+/// A pane whose program forks IMMEDIATELY keeps its grandchildren too.
+///
+/// This is the gate for the thing that made sprag own its pseudoterminal. When the child was moved
+/// into its cgroup AFTER `exec`, a shell that forked in that window put its children in the
+/// DAEMON's cgroup — measured, 2 of 2 — so work a person started in their pane was charged to the
+/// daemon and escaped its window's share entirely. Joining before `exec` closes it by construction:
+/// nothing the child forks can be born outside a cgroup the child is already in.
+#[test]
+fn a_pane_whose_program_forks_at_once_keeps_its_grandchildren() {
+    let Some(mut holder) = Holder::spawn() else {
+        return;
+    };
+    let delegated = match delegation::acquire(holder.pid()) {
+        Ok(delegated) => delegated,
+        Err(error) => {
+            eprintln!("SKIP: {error}");
+            return;
+        }
+    };
+    holder.owns(delegated.unit());
+
+    let tree = Arc::new(Tree::adopt(delegated.root().to_path_buf()).expect("adopt"));
+    let host = Host::new((80, 24)).with_shares(Arc::clone(&tree));
+
+    // A shell that forks before it has done anything else — the shape of a `.bashrc` that starts
+    // something, which is how a person meets this without trying to.
+    let mut command = CommandBuilder::new("/bin/sh");
+    command.args(["-c", "sleep 60 & sleep 60"]);
+    let pane = host
+        .spawn(command, "sh".to_owned(), 80, 24, PaneBirthHooks::default())
+        .expect("spawn a forking pane");
+
+    let leaf = leaf_of(&pane_leaves(tree.root()), pane).to_path_buf();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut members = 0;
+    while std::time::Instant::now() < deadline {
+        members = std::fs::read_to_string(leaf.join("cgroup.procs"))
+            .expect("cgroup.procs")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        if members >= 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // The shell and BOTH of the things it forked. One means only the shell arrived and its children
+    // were born somewhere else, which is exactly the defect.
+    assert!(
+        members >= 3,
+        "the pane's cgroup holds {members} process(es); the shell's children were born outside it"
+    );
+}
+
 /// The cgroup named for `pane`, out of every leaf the tree holds.
 fn leaf_of(leaves: &[std::path::PathBuf], pane: sprag_terminal::PaneId) -> &std::path::Path {
     let wanted = format!("pane-{}", pane.0);

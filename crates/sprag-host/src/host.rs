@@ -1544,7 +1544,7 @@ pub struct Host {
     /// A freshly placed cgroup is EMPTY until its child is moved in, and empty is exactly what the
     /// sweep collects. Without this, one thread's birth could be swept out from under it by
     /// another's, and the pane would come up unweighted for no reason anybody could reproduce.
-    placing: Mutex<()>,
+    placing: Arc<Mutex<()>>,
 }
 
 /// The `on_dirty` FACTORY a [`Host`] wires each client-created pane with: a fresh hook per pane,
@@ -1620,7 +1620,7 @@ impl Host {
             pane_hooks: None,
             pane_env: None,
             shares: None,
-            placing: Mutex::new(()),
+            placing: Arc::new(Mutex::new(())),
         }
     }
 
@@ -1708,61 +1708,71 @@ impl Host {
         // the registry's lock is taken and released here, so the pool lock below is never held
         // under it (the ordering `LocatedWindow` names).
         let home = lock(&self.registry).window_of_pool(&workspace);
-        let id = lock(&workspace).spawn_with_dirty(command, label, cols, rows, hooks)?;
-        self.place_share(home, id, &workspace);
-        Ok(id)
+        let mut hooks = hooks;
+        #[cfg(unix)]
+        {
+            hooks.home = self.share_opener(home);
+        }
+        lock(&workspace).spawn_with_dirty(command, label, cols, rows, hooks)
     }
 
-    /// Put a newborn pane's child in the cgroup its identities name, if this host has a tree.
+    /// The hook that makes a pane's cgroup and hands back its open `cgroup.procs`, for the child to
+    /// write itself into before it execs (R336).
     ///
-    /// Never fails the birth. A pane that could not be placed is a pane running unweighted, which
-    /// is what every pane did before this existed; refusing to open it instead would trade a
-    /// missing guarantee for a missing terminal.
+    /// # Why this is a hook and not a call around the spawn
     ///
-    /// The child is moved AFTER it starts, which leaves the window `Placement::join` documents: a
-    /// process that forked in those microseconds leaves children outside the cgroup. Closing it
-    /// needs the spawn seam to own its own `fork`/`exec` (`clone3(CLONE_INTO_CGROUP)`), which is
-    /// the next step and not this one.
-    fn place_share(
+    /// The cgroup is named after the pane, and the pane has no id until the pool mints one — which
+    /// happens inside the spawn. Placing it afterwards is what this used to do, and the window that
+    /// leaves is not theoretical: a pane running `sh -c 'sleep 60 & sleep 60'` had BOTH of its
+    /// children born in the daemon's own cgroup, because the shell forked while the parent was
+    /// still creating directories. Handing the pool an opener closes the window by construction —
+    /// the cgroup exists before the child does, and the child joins itself.
+    ///
+    /// Never fails a birth. A pane that could not be placed runs unweighted, which is what every
+    /// pane did before this existed; refusing to open it would trade a missing guarantee for a
+    /// missing terminal.
+    #[cfg(unix)]
+    fn share_opener(
         &self,
         home: Option<(SessionId, WindowId)>,
-        pane: PaneId,
-        workspace: &Arc<Mutex<Workspace>>,
-    ) {
-        let (Some(tree), Some((session, window))) = (self.shares.as_ref(), home) else {
-            return;
-        };
-        let _placing = lock(&self.placing);
-        // The cgroups of panes that have ended, collected here rather than from a death signal.
-        //
-        // `rmdir` refuses a cgroup with a live process in it, so the kernel already holds the fact
-        // a pane-to-cgroup table would duplicate — and asking it is what makes this self-healing
-        // across a daemon that was killed outright, which no table could be. The honest cost is
-        // stated rather than hidden: cgroups of dead panes linger until the NEXT pane is born. They
-        // are empty directories, births and deaths alternate in a terminal, and a daemon whose last
-        // pane died is on its way out anyway.
-        tree.sweep();
-        let lineage = PaneLineage {
-            session,
-            window,
-            pane,
-        };
-        let placed = match tree.place(lineage, Share::EVEN) {
-            Ok(placed) => placed,
-            Err(error) => {
-                tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
-                return;
+    ) -> Option<Box<dyn Fn(PaneId) -> Option<std::os::fd::OwnedFd> + Send>> {
+        let (tree, (session, window)) = (self.shares.as_ref()?, home?);
+        let tree = Arc::clone(tree);
+        let placing = Arc::clone(&self.placing);
+        Some(Box::new(move |pane| {
+            let _placing = lock(&placing);
+            // The cgroups of panes that have ended, collected here rather than from a death signal.
+            //
+            // `rmdir` refuses a cgroup with a live process in it, so the kernel already holds the
+            // fact a pane-to-cgroup table would duplicate — and asking it is what makes this
+            // self-healing across a daemon that was killed outright, which no table could be. The
+            // honest cost, stated rather than hidden: a dead pane's cgroup lingers until the NEXT
+            // pane is born. They are empty directories, births and deaths alternate in a terminal,
+            // and a daemon whose last pane died is on its way out anyway.
+            //
+            // Under the same lock as the placement below, because a cgroup is EMPTY between being
+            // made and being joined, and empty is exactly what the sweep collects.
+            tree.sweep();
+            let lineage = PaneLineage {
+                session,
+                window,
+                pane,
+            };
+            let placed = match tree.place(lineage, Share::EVEN) {
+                Ok(placed) => placed,
+                Err(error) => {
+                    tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
+                    return None;
+                }
+            };
+            match placed.open_for_join() {
+                Ok(fd) => Some(fd),
+                Err(error) => {
+                    tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
+                    None
+                }
             }
-        };
-        // The pid is read back from the pool rather than returned by the spawn: `PanePty` owns the
-        // child, and a birth that hands its pid out would be handing out a way to signal it.
-        let Some(pid) = lock(workspace).pane(pane).and_then(|p| p.pty().pid()) else {
-            tracing::warn!(pane = pane.0, "a newborn pane has no pid to place");
-            return;
-        };
-        if let Err(error) = placed.join(pid) {
-            tracing::warn!(%error, pane = pane.0, "pane opened without an enforced share");
-        }
+        }))
     }
 
     /// Rebuild this host's registry from a durability [`Snapshot`] and re-spawn its panes — the
@@ -1885,6 +1895,10 @@ impl Host {
                     on_dirty: on_dirty(&pane.session),
                     on_exit: on_exit(),
                     on_attention: on_attention(),
+                    // ⚠ NOT PLACED YET, for the reason the mux door is not: the share tree hangs
+                    // off `Host::spawn`, and a restore re-spawns through the pool directly.
+                    #[cfg(unix)]
+                    home: None,
                 }
                 .bind(pane.id),
                 history: history(pane.id),

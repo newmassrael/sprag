@@ -72,6 +72,15 @@ pub struct PaneHooks {
     /// daemon reads it to end its own process when the last live pane dies. Fired after `is_eof`
     /// publishes, so a liveness scan run from it never counts the pane it announces.
     pub on_exit: Option<Box<dyn Fn() + Send>>,
+    /// The pane's own `cgroup.procs`, ALREADY OPEN, for the child to write itself into between
+    /// `fork` and `exec` (R336).
+    ///
+    /// Open rather than a path, because the child's half must not allocate: it writes one byte to a
+    /// descriptor it already has. `None` on a host with no cgroup tree — the GUI's in-process host,
+    /// every test, and any machine that cannot enforce a share — and such a pane opens exactly as
+    /// it always did.
+    #[cfg(unix)]
+    pub home: Option<std::os::fd::OwnedFd>,
     /// Invoked when a batch RAISED an [`Attention`]: a notification OSC or a bell. Distinct from
     /// [`Self::on_dirty`] because it is a different question — that one says *something changed,
     /// repaint*, and this says *the child is asking for a person* — and because a notification
@@ -342,6 +351,8 @@ impl PanePty {
             on_dirty,
             on_exit,
             on_attention,
+            #[cfg(unix)]
+            home,
         } = hooks;
         let cols = cols.max(1);
         let rows = rows.max(1);
@@ -353,7 +364,7 @@ impl PanePty {
         // fd 0 (which the child is free to redirect).
         let tty = pty.tty_name();
         let child = pty
-            .spawn(&command, None)
+            .spawn(&command, home.as_ref().map(std::os::fd::AsFd::as_fd))
             .map_err(|e| PanePtyError::new("spawn command", &e))?;
         // Split the handle before the child moves to the reader thread: the killer signals it, the
         // pid answers `/proc` questions. `clone_killer`'s own contract is this exact split ("send it

@@ -515,6 +515,25 @@ impl Placement {
         move_proc(&self.path, pid)
     }
 
+    /// Open this pane's `cgroup.procs`, for a child to write itself into before it execs.
+    ///
+    /// Handed to the spawn rather than used here: what makes the placement race-free is that the
+    /// CHILD does the write, after `fork` and before `exec`, so nothing it forks afterwards can be
+    /// born outside. See `sprag_terminal::pty::Pty::spawn`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError`] if the file cannot be opened, which means this cgroup is not there.
+    #[cfg(unix)]
+    pub fn open_for_join(&self) -> Result<std::os::fd::OwnedFd, TreeError> {
+        let path = self.path.join(PROCS);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map(std::os::fd::OwnedFd::from)
+            .map_err(|source| TreeError::Write { path, source })
+    }
+
     /// Cap the number of processes this pane may have alive at once.
     ///
     /// Left uncapped by default, deliberately: a ceiling invented without a person turns somebody's

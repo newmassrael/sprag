@@ -319,6 +319,10 @@ impl PaneLifecycle for WorkspacePaneAccess {
             // ...and its ATTENTION, on the same terms: opaque, registry-free, and minted for THIS
             // pane rather than shared with every other one.
             on_attention: self.on_attention.as_ref().map(|mint| mint()),
+            // A plugin-spawned pane is placed like any other; the host fills this in when it
+            // has a tree. See `sprag_terminal::PaneBirthHooks::home`.
+            #[cfg(unix)]
+            home: None,
         };
         lock(&self.workspace)
             .spawn_with_dirty(command, program.clone(), cols, rows, hooks)

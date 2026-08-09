@@ -673,6 +673,13 @@ impl WorkspaceExternal {
             on_dirty: Some(bump_on_dirty(&self.channels.revision(self.scope.session()))),
             on_exit: self.on_pane_exit.as_ref().map(crate::pane_exit_hook),
             on_attention: self.attention.as_ref().map(crate::pane_attention_hook),
+            // ⚠ NOT PLACED YET. This is the DAEMON's spawn door — the one a wire `split` or
+            // `new-pane` comes through — and it is a second door onto pane birth beside
+            // `Host::spawn`, which is where the share tree lives. Reaching the tree from here means
+            // carrying it on `DaemonShared`; until that is done a pane born over the wire runs
+            // unweighted, and this comment is the only place that says so.
+            #[cfg(unix)]
+            home: None,
         };
         let mut workspace = lock(pool);
         let (default_cols, default_rows) = workspace.default_size();
