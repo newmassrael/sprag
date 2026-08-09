@@ -62,10 +62,16 @@ jobs:
     timeout-minutes: 45
     # ONE declaration for both the suite and the guard that judges it. Two copies is how the guard
     # came to be pointed somewhere the suite never wrote (see the guard step).
+    #
+    # ⚠ `github.workspace` and not `runner.temp`, and the difference is not cosmetic: **the `runner`
+    # context does not exist in a job-level `env:`** — it is a step-level context, and a workflow
+    # that names it here does not fail a step, it fails to START, with no jobs and no log. R343
+    # pushed exactly that and got a run that ended in the same second it began. A YAML file that
+    # PARSES is not a workflow that RUNS; `yaml.safe_load` cannot see a context that is out of scope.
     env:
-      XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
-      XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
-      XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
+      XDG_CONFIG_HOME: ${{ github.workspace }}/../ambient/config
+      XDG_DATA_HOME: ${{ github.workspace }}/../ambient/data
+      XDG_STATE_HOME: ${{ github.workspace }}/../ambient/state
     steps:
       - uses: actions/checkout@v4
 
@@ -130,10 +136,11 @@ jobs:
     # job's log cannot be read until the job ends. Cancelling one by hand is what finally produced
     # the log that named the binary.
     timeout-minutes: 45
+    # See the Linux job for why this is `github.workspace` and not `runner.temp`.
     env:
-      XDG_CONFIG_HOME: ${{ runner.temp }}/ambient/config
-      XDG_DATA_HOME: ${{ runner.temp }}/ambient/data
-      XDG_STATE_HOME: ${{ runner.temp }}/ambient/state
+      XDG_CONFIG_HOME: ${{ github.workspace }}/../ambient/config
+      XDG_DATA_HOME: ${{ github.workspace }}/../ambient/data
+      XDG_STATE_HOME: ${{ github.workspace }}/../ambient/state
     steps:
       - uses: actions/checkout@v4
 

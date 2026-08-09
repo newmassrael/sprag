@@ -73,3 +73,28 @@ if [ -f Cargo.toml ] && git diff --cached --name-only --diff-filter=ACMR | grep 
 
     doc_gate
 fi
+
+# ⚠⚠ A WORKFLOW FILE IS THE ONE THING CI CANNOT GATE.
+#
+# Every other check here has a second chance on the runner. This one does not: a workflow whose
+# expression is invalid does not fail a step, it never STARTS — no jobs, no log, and a run that
+# ends in the same second it began. R343 shipped exactly that (`runner.temp` in a job-level `env:`,
+# where the `runner` context does not exist) and burned a push finding out.
+#
+# `yaml.safe_load` cannot see it: the file PARSES. `actionlint` knows the context-availability
+# table, and it was already installed on this box while nothing ran it. Measured on the broken
+# file: six errors naming the context and the line. Measured on the fixed one: exit 0.
+#
+# Skipped with a WORD rather than silently when the tool is absent, because a gate that vanishes
+# quietly is one people stop expecting.
+staged_workflows="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^\.github/workflows/.*\.ya?ml$' || true)"
+if [ -n "$staged_workflows" ]; then
+    if command -v actionlint >/dev/null 2>&1; then
+        echo "pre-commit: actionlint (staged workflows) ..." >&2
+        # shellcheck disable=SC2086  # intentional word-split of the file list
+        actionlint $staged_workflows
+    else
+        echo "pre-commit: actionlint NOT INSTALLED — a workflow change is going out UNCHECKED." >&2
+        echo "pre-commit: install it (https://github.com/rhysd/actionlint) before touching CI again." >&2
+    fi
+fi
