@@ -561,6 +561,72 @@ impl Tree {
         })
     }
 
+    /// Write `grant` onto the leaf a pane is ALREADY running in — a person changing their mind
+    /// about a pane that exists, as distinct from [`place`](Self::place), which grants a pane that
+    /// does not exist yet.
+    ///
+    /// # Why this is a separate door and not a re-placement
+    ///
+    /// [`place`](Self::place) creates. Re-placing a live pane to change one number would `mkdir` an
+    /// existing directory and re-enable controllers that are already on — work whose only visible
+    /// effect on a good day is nothing, and whose effect on a bad one is a failure in the interior
+    /// levels reported as a failure to grant the leaf. This writes the three files a grant IS and
+    /// touches nothing else, so what can go wrong is exactly what the person asked for.
+    ///
+    /// The weight goes first for [`PaneHomes::open`]'s reason: a ceiling that will not take must not
+    /// cost the pane the share that already took.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError`] if the leaf is not there (the pane ended, or was never placed here) or
+    /// if a control will not take, which means the controller behind it never reached this level.
+    pub fn grant(&self, at: PaneLineage, grant: Grant) -> Result<(), TreeError> {
+        let leaf = self.root.join(at.relative());
+        write_control(&leaf.join(CPU_WEIGHT), &grant.share.weight().to_string())?;
+        Placement {
+            path: leaf,
+            share: grant.share,
+        }
+        .limit(grant.limits)
+    }
+
+    /// What the kernel is HOLDING as this pane's grant — the person's words read back out of the
+    /// leaf they were written into.
+    ///
+    /// # Why a grant is READ rather than remembered
+    ///
+    /// The daemon could keep what it last wrote and serve that. It would be wrong in the one case
+    /// worth reporting: a write the kernel refused. The design document this feature comes from
+    /// makes exactly that point about its own worked example — a wrapper that was syntactically
+    /// perfect and never executed — and states the rule that follows, *근거 없는 권고는 사용자가
+    /// 검증할 수 없다*. So the answer a person gets back is the file's contents and not the request's,
+    /// and a ceiling that did not take reads as absent rather than as set.
+    ///
+    /// It is also what makes this need no per-pane table. The kernel is already keeping the fact,
+    /// exactly as it keeps *is this pane still running* for [`sweep`](Self::sweep) — and a grant
+    /// read back from the leaf survives a daemon that was killed outright, which no table could.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError::Read`] when the pane has no leaf, which is [`charge`](Self::charge)'s
+    /// one failure and means the same thing. A control the leaf HAS but a controller never reached
+    /// is a value ([`Ceiling::NoController`], [`Counted::NoController`]), not a failure — the same
+    /// per-controller degradation the rest of this module applies.
+    pub fn granted(&self, at: PaneLineage) -> Result<Granted, TreeError> {
+        let leaf = self.root.join(at.relative());
+        // The leaf's EXISTENCE is checked against a file cgroup v2 puts in every directory, for
+        // `charge`'s reason: `cpu.weight` is absent on a host whose CPU controller never arrived, and
+        // reading its absence as "this pane is gone" would answer `Gone` for every pane on a machine
+        // that simply cannot weight them.
+        let path = leaf.join(CPU_STAT);
+        std::fs::read_to_string(&path).map_err(|source| TreeError::Read { path, source })?;
+        Ok(Granted {
+            share: read_counted(&leaf.join(CPU_WEIGHT)),
+            memory: read_ceiling(&leaf.join(MEMORY_HIGH)),
+            processes: read_ceiling(&leaf.join(PIDS_MAX)),
+        })
+    }
+
     /// Move every process a pane has into `into`, and report how many distinct ones made the trip.
     ///
     /// # Why it loops, and why it stops on NEW work rather than on an empty source
@@ -765,6 +831,21 @@ impl PaneHomes {
         self.limits.as_ref().map_or(Limits::UNCAPPED, |ask| ask())
     }
 
+    /// What a pane nobody has said anything about gets: an even share, and the MACHINE's ceilings as
+    /// they read right now.
+    ///
+    /// Asked at every use rather than held, which is `limits`' rule (crate-private) and its reason: a
+    /// person who raises a ceiling in their config gets it on their next pane with nothing to
+    /// restart.
+    ///
+    /// Public because a caller EDITING one pane's grant has to start from what that pane currently
+    /// follows, and for a pane nobody has singled out that is this — see
+    /// [`Workspace::pane_grant_or_default`](crate::Workspace::pane_grant_or_default).
+    #[must_use]
+    pub fn default_grant(&self) -> Grant {
+        Grant::even(self.limits())
+    }
+
     /// Make `at`'s cgroup and hand back its open `cgroup.procs`, for the child to write itself into
     /// between `fork` and `exec`.
     ///
@@ -795,7 +876,10 @@ impl PaneHomes {
         // empty directories, births and deaths alternate in a terminal, and a daemon whose last pane
         // died is on its way out anyway.
         tree.sweep();
-        let placed = match tree.place(at, Share::EVEN) {
+        // The MACHINE's grant, always: nobody has said anything about a pane that does not exist
+        // yet, which is what makes a birth the one door with no override to consult.
+        let grant = self.default_grant();
+        let placed = match tree.place(at, grant.share) {
             Ok(placed) => placed,
             Err(error) => {
                 tracing::warn!(%error, pane = at.pane.0, "pane opened without an enforced share");
@@ -806,7 +890,7 @@ impl PaneHomes {
         // weight is already written above, and a pane weighted but uncapped is strictly better than
         // one that got neither. A person who set a ceiling the kernel refused needs to be told, so
         // this warns rather than passing silently — and then opens the pane.
-        if let Err(error) = placed.limit(self.limits()) {
+        if let Err(error) = placed.limit(grant.limits) {
             tracing::warn!(%error, pane = at.pane.0, "pane opened without the ceilings it was given");
         }
         match placed.open_for_join() {
@@ -846,6 +930,58 @@ impl PaneHomes {
         })
     }
 
+    /// Give the LIVE pane whose placement answer is `at` the grant a person just asked for, and
+    /// answer with what the kernel holds afterwards.
+    ///
+    /// # Why it answers with a reading and not with an acknowledgement
+    ///
+    /// Returning `Ok(())` would tell a person their ceiling is in force on a host that has no
+    /// `memory` controller to put it in, which is the exact failure the design document behind this
+    /// feature records: a setting that is syntactically perfect and never executes. So the write is
+    /// followed by [`granted`](Self::granted) and the ANSWER is the file's contents — a person who
+    /// asked for 512 MiB on a host without the controller reads [`Ceiling::NoController`] and knows
+    /// to go and change their delegation rather than their command line.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Unmeasured`] for the three reasons a pane has no leaf, which are the same three
+    /// [`charge`](Self::charge) answers and mean the same things. A write the kernel refused is NOT
+    /// among them: it comes back in the reading, per-control, which is finer than a failure.
+    pub fn grant(&self, at: Option<PaneLineage>, grant: Grant) -> Result<Granted, Unmeasured> {
+        let tree = self.tree.as_ref().ok_or(Unmeasured::NothingEnforced)?;
+        let at = at.ok_or(Unmeasured::NotPlaced)?;
+        // Logged and NOT propagated, for the reason above: `grant` fails per-control, and each of
+        // those failures is a value the reading below carries. Failing here would replace three
+        // specific answers with one vague one.
+        if let Err(error) = tree.grant(at, grant) {
+            tracing::debug!(%error, pane = at.pane.0, "part of a pane's grant did not take");
+        }
+        tree.granted(at).map_err(|error| {
+            tracing::debug!(%error, pane = at.pane.0, "a granted pane had no cgroup to read");
+            Unmeasured::Gone
+        })
+    }
+
+    /// What the kernel is holding as the grant of the pane whose placement answer is `at`, or why
+    /// there is nothing to read.
+    ///
+    /// [`charge`](Self::charge)'s twin, taking the placement ANSWER for the same reason and failing
+    /// in the same three ways: a grant read at an address a pane was never put at would report
+    /// somebody else's ceilings under this pane's id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Unmeasured`], which is a state and not a fault — two of its three arms are ordinary
+    /// on hosts this product supports.
+    pub fn granted(&self, at: Option<PaneLineage>) -> Result<Granted, Unmeasured> {
+        let tree = self.tree.as_ref().ok_or(Unmeasured::NothingEnforced)?;
+        let at = at.ok_or(Unmeasured::NotPlaced)?;
+        tree.granted(at).map_err(|error| {
+            tracing::debug!(%error, pane = at.pane.0, "a placed pane had no grant to read");
+            Unmeasured::Gone
+        })
+    }
+
     /// Move an already-running pane's processes from the cgroup `from` names into the one `to` does
     /// — what a `break-pane`, a `join-pane`, a `move-pane` or a `swap` owes the projection.
     ///
@@ -858,23 +994,38 @@ impl PaneHomes {
     /// enough either — an empty new leaf beside a full old one changes nothing about who the kernel
     /// charges.
     ///
+    /// # Why the pane's OWN grant has to be carried across
+    ///
+    /// `own` is what a person said about THIS pane, or `None` for a pane nobody has singled out.
+    /// The distinction cannot be recovered from the kernel: a leaf holding 512 MiB holds the same
+    /// bytes whether that came from the machine's config or from somebody typing it at this pane, so
+    /// a move that read the old leaf back would freeze the machine's setting onto every pane that
+    /// ever moved, and a move that re-asked the config would silently undo the person's override at
+    /// the moment they most expect it to hold — pulling a runaway build into its own window is when
+    /// somebody has just capped it.
+    ///
+    /// So each half follows the authority it came from: an overridden pane carries its own grant,
+    /// and an ordinary one re-asks the machine (which is what shipped, and why a person who raises a
+    /// ceiling in their config sees it on the next pane that moves).
+    ///
     /// Like [`open`](Self::open) this never fails the operation it serves. A move whose cgroup half
     /// did not work leaves a pane weighted where it used to be, which is worse accounting and not a
     /// broken terminal, so it is logged and the pane still moves.
-    pub fn relocate(&self, from: PaneLineage, to: PaneLineage) {
+    pub fn relocate(&self, from: PaneLineage, to: PaneLineage, own: Option<Grant>) {
         let Some(tree) = self.tree.as_ref() else {
             return;
         };
         if from == to {
             return;
         }
+        let grant = own.unwrap_or_else(|| self.default_grant());
         // NOT under a sweep, unlike a birth: the source leaf is occupied by the very processes about
         // to be moved, and the destination is made and filled in one breath below.
         let _placing = self
             .placing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let placed = match tree.place(to, Share::EVEN) {
+        let placed = match tree.place(to, grant.share) {
             Ok(placed) => placed,
             Err(error) => {
                 tracing::warn!(%error, pane = to.pane.0, "moved pane kept its old share");
@@ -882,10 +1033,8 @@ impl PaneHomes {
             }
         };
         // A moved pane keeps its ceilings, because they are a fact about the pane and not about the
-        // window it happens to be in. The source is asked again rather than the old leaf read back:
-        // the person may have changed the number since, and a re-read would restore what they no
-        // longer want.
-        if let Err(error) = placed.limit(self.limits()) {
+        // window it happens to be in — see the note above on which authority each half follows.
+        if let Err(error) = placed.limit(grant.limits) {
             tracing::warn!(%error, pane = to.pane.0, "moved pane lost the ceilings it was given");
         }
         match tree.migrate(from, &placed) {
@@ -1053,6 +1202,107 @@ impl Limits {
         self.processes
             .map_or_else(|| UNCAPPED.to_owned(), |most| most.to_string())
     }
+}
+
+/// EVERYTHING A PERSON SAYS about one pane's resources — the [`Share`] of its level it is granted
+/// and the [`Limits`] it may not cross.
+///
+/// # Why the two travel together
+///
+/// They are set in one breath and written to one leaf, and until this type existed they were
+/// carried separately at every door: [`Tree::place`] took a share and [`Placement::limit`] took the
+/// ceilings, so a caller that had both had to remember both and a caller that forgot one wrote a
+/// pane half of what somebody asked for. R336 shipped exactly that asymmetry one level up and R337
+/// measured what it costs — a policy carried in a caller's arguments is correct exactly where
+/// somebody remembered it.
+///
+/// # Why a person needs to say it per PANE
+///
+/// The two settings behind this ([`crate::share::Share`] and [`Limits`]) reach the kernel from the
+/// user's config file, which has one value for the whole machine. That is the right DEFAULT and a
+/// useless override: the pane a person wants to hold back is the one running the parallel build,
+/// and they know which one that is only once it is running. The design document this comes from asks
+/// for the override in `config.toml`; a pane's id is minted at runtime and no config file can name
+/// it, so the same ask lands here — the global option is what every pane is BORN with, and this is
+/// what a person says about ONE of them afterwards.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Grant {
+    /// The share of its level this pane is granted.
+    pub share: Share,
+    /// The ceilings it may not cross.
+    pub limits: Limits,
+}
+
+impl Grant {
+    /// What a pane gets when nobody has said anything about it in particular: an even share of its
+    /// level, and whatever ceilings the machine's own settings carry.
+    #[must_use]
+    pub const fn even(limits: Limits) -> Self {
+        Self {
+            share: Share::EVEN,
+            limits,
+        }
+    }
+}
+
+/// One ceiling as the kernel is HOLDING it — three states, because *no ceiling* and *nothing here
+/// can hold a ceiling* are different answers to the person who set one.
+///
+/// [`Counted`]'s argument, applied to a setting rather than a counter, and the distinction is
+/// sharper here: a person who typed a memory ceiling and reads [`Uncapped`](Self::Uncapped) learns
+/// their write was undone, while one who reads [`NoController`](Self::NoController) learns their
+/// host never delegated `memory` and no write was ever going to take. Those send a reader to two
+/// different places, and collapsing them to `None` would send them to neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ceiling {
+    /// The kernel holds this ceiling, at this value. Bytes for memory, processes for pids.
+    At(u64),
+    /// The kernel holds `max` — this pane may go as far as the machine allows.
+    Uncapped,
+    /// The controller behind this ceiling never reached this pane's level, so there is no file to
+    /// hold one. See the type docs for why this is not [`Uncapped`](Self::Uncapped).
+    NoController,
+}
+
+/// WHAT THE KERNEL IS HOLDING as one pane's grant — as distinct from the [`Grant`] a person asked
+/// for, which is a request, and from the [`Charge`] the pane ran up, which is what it then did with
+/// it.
+///
+/// # Why the answer is the file and not the request
+///
+/// A write to a control file can be refused, and the refusal is exactly the case a person needs
+/// reported: a ceiling on a host whose `memory` controller was never delegated is a number that
+/// went nowhere. Answering with what was ASKED would make this product agree with itself about a
+/// setting that is not in force — which is the failure mode the design document behind this feature
+/// records twice, once for a weight that was set and did nothing and once for a wrapper that parsed
+/// and never ran.
+///
+/// So every field here is read out of the leaf after the fact. It is also the discriminator against
+/// both rivals measured at this project's pins: ghostty's `src/os/cgroup.zig` writes a memory
+/// ceiling and a process ceiling and reads **nothing** back (27 lines, one function, `2602886`), and
+/// herdr has no cgroup layer at all (`9a4ce5e1`).
+///
+/// # Why it sits beside the usage and not on its own
+///
+/// `6 MiB` is not a fact a person can act on; `6 MiB of 512 MiB` is, and so is `6 MiB, uncapped`.
+/// R338 put the two CHARGE numbers together for this reason — cores held beside time spent waiting,
+/// because either alone has two readings — and a ceiling is the third member of that set: it is what
+/// turns a usage into a fraction. So it arrives in the same row, by construction rather than by a
+/// caller remembering to ask twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Granted {
+    /// `cpu.weight` — the share of its level this pane is holding, or no CPU controller here.
+    ///
+    /// A [`Counted`] rather than a [`Share`] precisely because it is a READING: a `Share` refuses a
+    /// weight outside the kernel's range in its constructor, which is right for a person's request
+    /// and wrong for a file. A host whose kernel one day prints something this crate's range does
+    /// not allow should report what it read, not fail to answer.
+    pub share: Counted,
+    /// `memory.high`, in bytes.
+    pub memory: Ceiling,
+    /// `pids.max`, in live processes.
+    pub processes: Ceiling,
 }
 
 /// WHAT THE KERNEL ACTUALLY CHARGED one pane — as distinct from the [`Share`] it was granted and
@@ -1727,6 +1977,24 @@ fn read_counted(path: &Path) -> Counted {
         .map_or(Counted::NoController, Counted::Now)
 }
 
+/// One ceiling file, as the three states a person acts on differently.
+///
+/// The word `max` is the kernel's own spelling of "no ceiling" and is what both limit files hold
+/// when nobody set one — so it is read as [`Ceiling::Uncapped`] and never as a missing file. An
+/// ABSENT file is the controller never arriving, which is the other answer entirely. A body that is
+/// neither a number nor `max` is a file this crate does not understand, and reporting no controller
+/// for it says the one true thing: nothing here is holding a ceiling anybody can rely on.
+fn read_ceiling(path: &Path) -> Ceiling {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return Ceiling::NoController;
+    };
+    let body = body.trim();
+    if body == UNCAPPED {
+        return Ceiling::Uncapped;
+    }
+    body.parse().map_or(Ceiling::NoController, Ceiling::At)
+}
+
 /// The cgroup a process is in, as a directory under the unified hierarchy.
 ///
 /// The ONE reader of `/proc/<pid>/cgroup` in this workspace, for the reason this crate keeps one
@@ -2032,7 +2300,7 @@ mod tests {
         fs.cgroup("session-1/window-2", "");
         fs.cgroup("session-1/window-2/pane-7", "");
 
-        homes.relocate(from, to);
+        homes.relocate(from, to, None);
 
         assert!(
             fs.root.join(to.relative()).is_dir(),
@@ -2067,7 +2335,7 @@ mod tests {
         fs.cgroup("session-1/window-2", "");
         fs.cgroup("session-1/window-2/pane-7", "");
 
-        homes.relocate(from, to);
+        homes.relocate(from, to, None);
 
         assert_eq!(
             fs.read(&format!("{}/{PIDS_MAX}", to.relative().display())),
@@ -2093,7 +2361,7 @@ mod tests {
         fs.cgroup("session-1/window-1", "");
         fs.cgroup("session-1/window-1/pane-7", "4242\n");
 
-        homes.relocate(at, at);
+        homes.relocate(at, at, None);
 
         assert_eq!(
             fs.read(&format!("{}/{PROCS}", at.relative().display())),
@@ -2169,12 +2437,186 @@ mod tests {
     /// The designed state — a GUI's in-process host, a test, a machine with no delegated subtree —
     /// and it has to be a no-op rather than a best effort: a `PaneHomes::none()` that created
     /// directories would put a pane's cgroup somewhere no daemon owns.
+    /// A grant written onto a LIVE pane reaches all three files, and the answer is READ BACK rather
+    /// than echoed — the whole argument of the feature.
+    ///
+    /// The two ceilings are asserted at the KERNEL's spelling (bytes, a bare count) rather than at
+    /// the person's (mebibytes), because the unit conversion happens above this layer and a gate
+    /// that asserted the typed number would pass against a daemon that never converted.
+    #[test]
+    fn a_grant_reaches_the_leaf_and_the_answer_is_read_back_from_it() {
+        let fs = FakeCgroupFs::new("grant-live");
+        let tree = Tree::adopt(fs.root.clone()).expect("adopt");
+        let at = address(1, 1, 7);
+        // The fixture makes the kernel's interface files; `place` only makes directories, so every
+        // level it will walk has to exist here first — the fake's standing limit.
+        for level in [
+            "session-1",
+            "session-1/window-1",
+            "session-1/window-1/pane-7",
+        ] {
+            fs.cgroup(level, "");
+        }
+        tree.place(at, Share::EVEN).expect("place the pane");
+
+        let grant = Grant {
+            share: Share::new(10).expect("a legal weight"),
+            limits: Limits::UNCAPPED
+                .with_memory(Some(512 * 1024 * 1024))
+                .with_processes(Some(64)),
+        };
+        tree.grant(at, grant).expect("grant the live pane");
+
+        let leaf = at.relative().display().to_string();
+        assert_eq!(fs.read(&format!("{leaf}/{CPU_WEIGHT}")), "10");
+        assert_eq!(fs.read(&format!("{leaf}/{MEMORY_HIGH}")), "536870912");
+        assert_eq!(fs.read(&format!("{leaf}/{PIDS_MAX}")), "64");
+
+        assert_eq!(
+            tree.granted(at).expect("read the grant back"),
+            Granted {
+                share: Counted::Now(10),
+                memory: Ceiling::At(536_870_912),
+                processes: Ceiling::At(64),
+            },
+        );
+    }
+
+    /// `max` is the kernel's own word for "no ceiling", and an ABSENT file is the controller never
+    /// arriving. Reading them the same way would tell a person who set a ceiling on a host without
+    /// the controller that they had chosen not to set one.
+    #[test]
+    fn an_uncapped_ceiling_and_a_missing_controller_are_different_answers() {
+        let fs = FakeCgroupFs::new("grant-absent");
+        let tree = Tree::adopt(fs.root.clone()).expect("adopt");
+        let at = address(1, 1, 7);
+        // The fixture makes the kernel's interface files; `place` only makes directories, so every
+        // level it will walk has to exist here first — the fake's standing limit.
+        for level in [
+            "session-1",
+            "session-1/window-1",
+            "session-1/window-1/pane-7",
+        ] {
+            fs.cgroup(level, "");
+        }
+        tree.place(at, Share::EVEN).expect("place the pane");
+        let leaf = fs.root.join(at.relative());
+
+        // As placed: both files exist and say `max`.
+        let uncapped = tree.granted(at).expect("read a fresh leaf");
+        assert_eq!(uncapped.memory, Ceiling::Uncapped);
+        assert_eq!(uncapped.processes, Ceiling::Uncapped);
+
+        // A host whose `memory` controller never reached this level has no such file at all.
+        std::fs::remove_file(leaf.join(MEMORY_HIGH)).expect("take the controller away");
+        std::fs::remove_file(leaf.join(CPU_WEIGHT)).expect("take the cpu controller away");
+        let without = tree
+            .granted(at)
+            .expect("still readable without the controller");
+        assert_eq!(
+            without.memory,
+            Ceiling::NoController,
+            "an absent file is not an uncapped pane",
+        );
+        assert_eq!(
+            without.share,
+            Counted::NoController,
+            "and a weight nothing holds is not a weight of zero",
+        );
+        assert_eq!(
+            without.processes,
+            Ceiling::Uncapped,
+            "the controller that IS there still answers — the degradation is per-control",
+        );
+    }
+
+    /// A pane whose grant a PERSON set carries it across a move; a pane nobody singled out re-asks
+    /// the machine.
+    ///
+    /// The two halves are one test because the claim is the DIFFERENCE between them: a `relocate`
+    /// that always carried the old leaf, and one that always re-asked the config, each pass half of
+    /// this and fail the other.
+    #[test]
+    fn a_moved_pane_carries_its_own_grant_and_an_ordinary_one_re_asks_the_machine() {
+        let fs = FakeCgroupFs::new("grant-move");
+        let tree = Tree::adopt(fs.root.clone()).expect("adopt");
+        // The MACHINE's ceilings, as a config would answer them.
+        let homes = PaneHomes::over(tree).limited_by(std::sync::Arc::new(|| {
+            Limits::UNCAPPED.with_processes(Some(77))
+        }));
+        let from = address(1, 1, 7);
+        let to = address(1, 2, 7);
+        for level in ["session-1", "session-1/window-1", "session-1/window-2"] {
+            fs.cgroup(level, "");
+        }
+        fs.cgroup(
+            "session-1/window-1/pane-7",
+            "4242
+",
+        );
+        fs.cgroup("session-1/window-2/pane-7", "");
+
+        // A person's own grant on THIS pane.
+        let own = Grant {
+            share: Share::new(10).expect("a legal weight"),
+            limits: Limits::UNCAPPED.with_processes(Some(5)),
+        };
+        homes.relocate(from, to, Some(own));
+        let moved = to.relative().display().to_string();
+        assert_eq!(
+            fs.read(&format!("{moved}/{CPU_WEIGHT}")),
+            "10",
+            "the weight a person set followed the pane into its new window",
+        );
+        assert_eq!(
+            fs.read(&format!("{moved}/{PIDS_MAX}")),
+            "5",
+            "and so did the ceiling — not the machine's 77",
+        );
+
+        // A pane nobody singled out, moving the other way, takes the machine's ceilings.
+        let back = address(1, 3, 7);
+        fs.cgroup("session-1/window-3", "");
+        fs.cgroup("session-1/window-3/pane-7", "");
+        homes.relocate(to, back, None);
+        let ordinary = back.relative().display().to_string();
+        assert_eq!(
+            fs.read(&format!("{ordinary}/{PIDS_MAX}")),
+            "77",
+            "an un-granted pane re-asks the machine rather than inheriting the leaf it left",
+        );
+        assert_eq!(
+            fs.read(&format!("{ordinary}/{CPU_WEIGHT}")),
+            "100",
+            "and gets an even share, not the 10 the other pane was carrying",
+        );
+    }
+
+    /// A grant asked of a pane the daemon never placed is the pane's own absence, and a grant on a
+    /// host with no subtree is the MACHINE's — the same two-level distinction `charge` makes, and
+    /// for its reason: they send a person to different places.
+    #[test]
+    fn a_grant_with_nothing_to_write_says_which_absence_it_is() {
+        let fs = FakeCgroupFs::new("grant-absences");
+        let tree = Tree::adopt(fs.root.clone()).expect("adopt");
+        let homes = PaneHomes::over(tree);
+        assert_eq!(
+            homes.grant(None, Grant::even(Limits::UNCAPPED)),
+            Err(Unmeasured::NotPlaced),
+        );
+        assert_eq!(
+            PaneHomes::none().grant(Some(address(1, 1, 7)), Grant::even(Limits::UNCAPPED)),
+            Err(Unmeasured::NothingEnforced),
+            "a machine that enforces nothing outranks any one pane's placement",
+        );
+    }
+
     #[test]
     fn a_host_with_nothing_to_enforce_places_and_moves_nothing() {
         let fs = FakeCgroupFs::new("no-homes");
         let homes = PaneHomes::none();
 
-        homes.relocate(address(1, 1, 7), address(1, 2, 7));
+        homes.relocate(address(1, 1, 7), address(1, 2, 7), None);
 
         assert!(!fs.root.join("session-1").exists());
     }

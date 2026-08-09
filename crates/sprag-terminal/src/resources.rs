@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 
 use crate::registry::SessionRegistry;
 use crate::sampled::Sampled;
-use crate::share::{Charge, Counted, Unmeasured, Waiting};
+use crate::share::{Charge, Counted, Granted, Unmeasured, Waiting};
 
 /// How old a baseline has to be before a fresher sample replaces it.
 ///
@@ -89,6 +89,15 @@ pub enum Taken {
         memory: Counted,
         /// How many processes it holds.
         processes: Counted,
+        /// What it is ALLOWED — the grant the kernel is holding for it, read back from the same
+        /// leaf the numbers above came out of.
+        ///
+        /// Beside the usage rather than at an address of its own, because a usage without its
+        /// ceiling is a number a person cannot act on: `6 MiB` is not a fact, `6 MiB of 512 MiB` and
+        /// `6 MiB, uncapped` are two different ones. It is the same argument that puts
+        /// [`waiting`](Self::Measured::waiting) beside [`cpu`](Self::Measured::cpu), and it is
+        /// enforced the same way — there is no shape of this arm with a usage and no grant.
+        granted: Granted,
     },
     /// Nothing measures this pane, for this reason.
     Unmeasured {
@@ -237,9 +246,20 @@ impl PaneResourceSampler {
             })
             .collect();
         let taken = Instant::now();
+        // Both reads of one leaf, taken together and with the pool lock released. The grant is
+        // asked for only where the charge landed: they fail for the same three reasons, so a pane
+        // with no charge has no grant either and a second `Unmeasured` would be the same sentence
+        // twice.
         let charges: Vec<_> = anchors
             .into_iter()
-            .map(|(id, homes, home)| (id, homes.charge(home)))
+            .map(|(id, homes, home)| {
+                (
+                    id,
+                    homes
+                        .charge(home)
+                        .and_then(|charge| homes.granted(home).map(|granted| (charge, granted))),
+                )
+            })
             .collect();
         let mut baselines = self
             .baselines
@@ -251,7 +271,7 @@ impl PaneResourceSampler {
             .map(|(id, charge)| PaneResources {
                 id,
                 taken: match charge {
-                    Ok(charge) => {
+                    Ok((charge, granted)) => {
                         let cpu = rate(baselines.get(&id).copied(), &charge, taken);
                         fresh.insert(id, roll(baselines.get(&id).copied(), &charge, taken));
                         Taken::Measured {
@@ -259,6 +279,7 @@ impl PaneResourceSampler {
                             waiting: charge.waiting,
                             memory: charge.memory,
                             processes: charge.processes,
+                            granted,
                         }
                     }
                     Err(reason) => Taken::Unmeasured { reason },

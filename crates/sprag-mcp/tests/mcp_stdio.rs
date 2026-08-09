@@ -2379,6 +2379,14 @@ fn the_whole_roster_reaches_a_pane_one_window_over() {
                 args.insert("needle".to_owned(), json!("zz"));
             }
         }
+        // `grant_pane` refuses a request that sets nothing — deliberately, because a grant with no
+        // settings is somebody who meant something and typed it wrong. That refusal is not about
+        // WHERE the pane is, which is what this ratchet measures, so it is given a setting to
+        // carry. The weight every pane is born with, so a host that enforces nothing and a host
+        // that does are both left exactly as they were.
+        if name == "grant_pane" {
+            args.insert("share".to_owned(), json!(100));
+        }
         let answer = server.call_tool_raw(&name, Value::Object(args));
         let errored = answer["result"]["isError"] == json!(true);
         let text = answer["result"]["content"][0]["text"]
@@ -3701,6 +3709,7 @@ fn a_tool_against_an_older_daemon_says_so() {
             "find_in_pane" => json!({ "pane": 1, "needle": "x" }),
             "regex_in_pane" => json!({ "pane": 1, "pattern": "x" }),
             "swap_pane" => json!({ "pane": 1, "with": 1 }),
+            "grant_pane" => json!({ "pane": 1, "share": 100 }),
             "resize_pane" => json!({ "pane": 1, "dir": "left" }),
             "join_pane" => json!({ "pane": 1, "window": "0" }),
             "move_pane" => json!({ "pane": 1, "target": 1, "dir": "left" }),

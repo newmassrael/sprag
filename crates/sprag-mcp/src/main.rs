@@ -126,8 +126,8 @@ use sprag_host::vocabulary::{Agent, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW,
-    ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, JOIN_PANE_ACTION, JoinAsk, KEY_ACTION,
-    KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, MOVE_PANE_ACTION,
+    ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, GRANT_PANE_ACTION, JOIN_PANE_ACTION, JoinAsk,
+    KEY_ACTION, KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, MOVE_PANE_ACTION,
     NEW_WINDOW_ACTION, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire, PaneResourcesWire,
     RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
     ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
@@ -141,7 +141,7 @@ use sprag_rpc::{
     PATTERN_PARAM,
 };
 use sprag_terminal::{
-    Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, SplitDir,
+    Ceiling, Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, SplitDir,
     SplitSide, Taken, Verdict, Waiting, WindowInfo, arrangement,
 };
 
@@ -297,6 +297,11 @@ fn handle_initialize(message: &Value) -> Value {
             pane's text, and what that is COSTING with `pane_resources` — the cores each pane \
             holds and how much of the recent past it spent waiting for cores it did not get, \
             which is how to tell your own work being heavy from another pane starving you. \
+            When one pane IS starving the others, `grant_pane` is how to hold that one \
+            back — a CPU weight, a memory ceiling, a process ceiling, on one pane. Prefer \
+            holding the greedy pane back to asking the starved one to do less. A weight \
+            is not a cap: a held-back pane still takes the whole machine when nothing \
+            else wants it, so this slows nobody down on an idle box. \
             When EVERY pane is starved and none is greedy, the machine itself has less to give \
             than it should, and `machine_health` says why: a fixed set of checks on the machine, \
             each printing the value it measured beside its verdict. Most of what it finds is not \
@@ -465,6 +470,57 @@ fn tools_list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg.clone() },
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "grant_pane",
+                "description": "Say what ONE pane is ALLOWED of the machine — its CPU weight \
+                    among its siblings, its memory ceiling and its process ceiling. \
+                    `pane_resources` says what a pane TOOK; this is the other half. Reach for it \
+                    when that reading shows one pane starving the others: hold the greedy one \
+                    back rather than asking the starved one to do less. Every setting is \
+                    optional and an omitted one is LEFT ALONE, so you can change a ceiling \
+                    without disturbing a weight somebody set earlier; `0` on either ceiling \
+                    removes it. \
+                    A SHARE IS A WEIGHT, NOT A CAP AND NOT A RATIO. A pane weighted 10 beside an \
+                    idle neighbour still takes the whole machine, and a nominal 10:100 split was \
+                    measured at 18:82 — so never predict a pane's share from this number, and \
+                    read `pane_resources` afterwards for what actually happened. Lowering a \
+                    weight shows up in the TAIL: one measurement moved a victim's p99 from 33.3 \
+                    ms to 5.4 ms while its median did not move at all. \
+                    The answer is RE-READ FROM THE KERNEL, not echoed back, so a ceiling this \
+                    host cannot hold comes back saying so instead of looking applied. This \
+                    changes what a person's own work is allowed to use: it is a real change to \
+                    their machine, not a reading.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg.clone(),
+                        "share": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10000,
+                            "description": "CPU weight among sibling panes, 1..=10000. The \
+                                default every pane is born with is 100, so 10 is 'let the \
+                                others go first' and 1000 is 'prefer this one'."
+                        },
+                        "memory": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Memory ceiling in MiB; 0 removes it. The pane is \
+                                throttled and reclaimed from at this level, never OOM-killed, so \
+                                a build that overshoots gets slow rather than dying."
+                        },
+                        "processes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Most live processes this pane may hold; 0 removes \
+                                the ceiling. Bounds one pane's fork storm from taking the pid \
+                                budget the other panes need."
+                        }
+                    },
+                    "required": ["pane"],
                     "additionalProperties": false
                 }
             },
@@ -1316,6 +1372,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "pane_layout" => tool_pane_layout(&args),
         "pane_processes" => tool_pane_processes(&args),
         "pane_resources" => tool_pane_resources(&args),
+        "grant_pane" => tool_grant_pane(&args),
         "machine_health" => tool_machine_health(),
         "read_pane" => tool_read_pane(&args),
         "read_last_command" => tool_read_last_command(&args),
@@ -2416,6 +2473,91 @@ fn tool_pane_layout(args: &Value) -> Result<String, String> {
     ))
 }
 
+/// `grant_pane`: what ONE pane is ALLOWED of the machine — the setter beside `pane_resources`'
+/// reading.
+///
+/// # Why an agent gets a SETTER here, re-derived rather than inherited
+///
+/// Most of this surface reads. This writes, and the argument that admits it is the one
+/// `pane_resources` already made: an agent working in a pane is a participant in the contention,
+/// not an observer of it. Told that a sibling pane is holding seven cores while its own work waits
+/// a third of the time, an agent that can only report has to interrupt a person to change a number
+/// — and the person's answer will be the number the agent already computed. The write is bounded
+/// to a resource grant, it starves nothing (a weight is not a cap: a held-back pane still takes an
+/// idle machine), and `memory.high` throttles rather than kills, so the worst outcome of a wrong
+/// number is slow instead of lost.
+///
+/// # Why the answer is re-read and not echoed
+///
+/// [`crate::main`]'s host does that: the action re-reads the leaf. This function does not
+/// re-implement it, and that is the point — an agent that was told its ceiling applied when the
+/// host had no `memory` controller would report a fix it did not make.
+fn tool_grant_pane(args: &Value) -> Result<String, String> {
+    let pane = resolve_pane_ref(args)?;
+    let mut action_args = serde_json::Map::new();
+    action_args.insert("pane".to_owned(), json!(pane.id()));
+    // Named one at a time rather than swept out of `args`, so an unknown key is never carried to
+    // the daemon as if it meant something. The schema already refuses extras; this is the half that
+    // does not depend on the caller having honoured it.
+    for key in ["share", "memory", "processes"] {
+        match args.get(key) {
+            None | Some(Value::Null) => {}
+            Some(value) => {
+                let number = value
+                    .as_u64()
+                    .ok_or_else(|| format!("'{key}' must be a whole number, not {value}"))?;
+                action_args.insert(key.to_owned(), json!(number));
+            }
+        }
+    }
+    if action_args.len() == 1 {
+        return Err(
+            "give at least one of 'share', 'memory' or 'processes' — a grant that sets nothing \
+             would look like it worked"
+                .to_owned(),
+        );
+    }
+    let answer = host_call(
+        "scene/invoke",
+        json!({ "path": mux_action_path(GRANT_PANE_ACTION), "args": Value::Object(action_args) }),
+    )?;
+    let granted: sprag_terminal::Granted = serde_json::from_value(answer)
+        .map_err(|error| format!("the daemon's answer was not a grant: {error}"))?;
+    Ok(render_granted(&pane.subject(), granted))
+}
+
+/// What [`tool_grant_pane`] says, as a pure function of what the kernel answered.
+///
+/// Every row states what is IN FORCE and, where a control is missing, whose problem that is. An
+/// agent reading `(this host's cgroup delegation has no memory controller)` knows not to try again
+/// with a different number.
+fn render_granted(subject: &str, granted: sprag_terminal::Granted) -> String {
+    format!(
+        "{subject} is now allowed:\n  {}\n  memory: {}\n  processes: {}\nThese are what the \
+         kernel holds after the write, not what was asked for. Read pane_resources to see what \
+         the pane actually does with them — a weight decides who waits when the machine is full, \
+         and changes the TAIL of that waiting rather than the median.\n",
+        agent_weight(granted.share),
+        agent_ceiling(granted.memory, agent_bytes),
+        agent_ceiling(granted.processes, agent_count_ceiling),
+    )
+}
+
+/// One ceiling on its own, for the surface whose whole subject is the ceiling — the CLI's `ceiling`,
+/// in the agent's words. [`agent_of`] is the version that hides behind a usage column; this one
+/// cannot, because a blank here would not say whether the ceiling was removed or never took.
+fn agent_ceiling(ceiling: Ceiling, spell: fn(u64) -> String) -> String {
+    match ceiling {
+        Ceiling::At(most) => spell(most),
+        Ceiling::Uncapped => "no ceiling".to_owned(),
+        Ceiling::NoController => {
+            "no ceiling can be held here (this host's cgroup delegation is missing the \
+             controller behind it)"
+                .to_owned()
+        }
+    }
+}
+
 /// `pane_processes`: WHAT EACH PANE IS RUNNING — the job that owns its terminal, every process in
 /// that job with its arguments, and the pane's terminal device. `pane` narrows to one pane.
 ///
@@ -2621,15 +2763,21 @@ fn render_resources_answer(
                 waiting,
                 memory,
                 processes,
+                granted,
             } => {
                 out.push_str(&format!("{name}\n"));
                 out.push_str(&format!("  holding {}\n", agent_cores(cpu)));
                 out.push_str(&format!("  waiting {}\n", agent_waiting(waiting)));
                 out.push_str(&format!(
                     "  {}, {}\n",
-                    agent_memory(memory),
-                    agent_processes(processes)
+                    agent_of(agent_memory(memory), granted.memory, agent_bytes),
+                    agent_of(
+                        agent_processes(processes),
+                        granted.processes,
+                        agent_count_ceiling
+                    )
                 ));
+                out.push_str(&format!("  allowed {}\n", agent_weight(granted.share)));
             }
             // The reason, never a blank: an agent that reads "unmeasured" and an agent that reads
             // "this whole daemon measures nothing" do different things next.
@@ -2697,6 +2845,55 @@ fn agent_processes(processes: Counted) -> String {
         Counted::Now(1) => "1 process".to_owned(),
         Counted::Now(many) => format!("{many} processes"),
         Counted::NoController => "process count unmeasured (no pids controller here)".to_owned(),
+    }
+}
+
+/// A usage joined to the ceiling it is measured against, in the agent's words.
+///
+/// The agent needs this more sharply than a person does, because an agent DECIDES on it: told a
+/// sibling pane holds 900 MiB, the useful next question is whether that is most of what it may have
+/// or a rounding error, and those lead to opposite actions. An uncapped pane says so out loud rather
+/// than going quiet, because "no ceiling" is itself the answer to *can this pane be told to use
+/// less* — nothing is stopping it, so nothing will.
+fn agent_of(usage: String, ceiling: Ceiling, spell: fn(u64) -> String) -> String {
+    match ceiling {
+        Ceiling::At(most) => format!("{usage}, of a ceiling of {}", spell(most)),
+        Ceiling::Uncapped => format!("{usage}, with no ceiling set"),
+        // Silent, because `usage` has already named the missing controller — see the CLI's `of`.
+        Ceiling::NoController => usage,
+    }
+}
+
+/// A process ceiling, bare — [`agent_of`] has already named the noun.
+fn agent_count_ceiling(most: u64) -> String {
+    most.to_string()
+}
+
+/// A ceiling in bytes, in the units [`agent_memory`] uses.
+fn agent_bytes(bytes: u64) -> String {
+    if bytes >= 1 << 20 {
+        format!("{} MiB", bytes >> 20)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// The share of its level a pane is granted, in the agent's words.
+///
+/// **Stated as a weight and never as a predicted share of the machine.** The design behind this
+/// feature measured both ways that would be wrong: a nominal 10:100 split came out at 18:82, and a
+/// cgroup weighted 10 took every core it was offered once its sibling went idle. An agent told
+/// "this pane may use 9% of the CPU" would act on a number that is false in both directions, so it
+/// is told what the setting is and pointed at the cores actually held beside it.
+fn agent_weight(share: Counted) -> String {
+    match share {
+        Counted::Now(weight) => format!(
+            "a CPU weight of {weight} among its siblings — a weight is not a cap and not a ratio, \
+             so read the cores held above for what it actually got"
+        ),
+        Counted::NoController => {
+            "no CPU weight (this host's cgroup delegation has no cpu controller)".to_owned()
+        }
     }
 }
 
@@ -6032,7 +6229,7 @@ mod tests {
         );
         // THE CONTROL: this is not vacuously true over two empty lists. The count is asserted where
         // the register's estimate was, so a later round reads a measured number.
-        assert_eq!(advertised.len(), 35, "the agent surface's roster");
+        assert_eq!(advertised.len(), 36, "the agent surface's roster");
     }
 
     #[test]
@@ -6753,6 +6950,14 @@ mod tests {
                 },
                 memory: sprag_terminal::Counted::Now(6 * 1024 * 1024),
                 processes: sprag_terminal::Counted::Now(5),
+                // A REAL grant, not an absent one: a fixture whose every ceiling is missing cannot
+                // express the row this surface exists to print, and a renderer test written over it
+                // would pass against a renderer that dropped the grant entirely.
+                granted: sprag_terminal::Granted {
+                    share: sprag_terminal::Counted::Now(100),
+                    memory: sprag_terminal::Ceiling::At(512 * 1024 * 1024),
+                    processes: sprag_terminal::Ceiling::At(64),
+                },
             },
         }
     }
@@ -6828,7 +7033,24 @@ mod tests {
             answer.contains("waiting 7.74% of the last 10 seconds"),
             "{answer}"
         );
-        assert!(answer.contains("6 MiB of memory, 5 processes"), "{answer}");
+        // The usage AND its ceiling, in one row. A usage alone is not a fact an agent can act on:
+        // `6 MiB` is only meaningful once it is `6 MiB of 512 MiB`, and asserting the bare usage
+        // would pass just as well against a renderer that dropped the grant entirely.
+        assert!(
+            answer.contains("6 MiB of memory, of a ceiling of 512 MiB"),
+            "{answer}"
+        );
+        assert!(
+            answer.contains("5 processes, of a ceiling of 64"),
+            "{answer}"
+        );
+        // And the weight, with the warning that makes it readable — a weight rendered as a share of
+        // the machine is the one thing this must never say.
+        assert!(answer.contains("a CPU weight of 100"), "{answer}");
+        assert!(
+            answer.contains("a weight is not a cap and not a ratio"),
+            "{answer}"
+        );
     }
 
     /// A pane with no reading says WHICH of the three reasons it is, never a blank or a zero.

@@ -310,7 +310,11 @@ pub fn history_limit_lines() -> usize {
 }
 
 /// One mebibyte, so the option's unit and the kernel's are converted in exactly one place.
-const MIB: u64 = 1024 * 1024;
+///
+/// `pub(crate)` because `grant_pane` converts the same unit for the same reason: a person types
+/// mebibytes at the config file and at the command line alike, and two constants would be two
+/// chances for those to stop meaning the same thing.
+pub(crate) const MIB: u64 = 1024 * 1024;
 
 /// The ceilings a pane born NOW should carry — the user's
 /// [`pane-memory-limit`](crate::options::PANE_MEMORY_LIMIT) and

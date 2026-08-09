@@ -120,6 +120,34 @@ pub struct Pane {
     /// which is exactly the stale answer a move has to correct. So the pane carries its own address,
     /// written at the two births and re-written by the one [`adopt`](Workspace::adopt) that moves it.
     home: Option<PaneLineage>,
+    /// What a person said about THIS pane's resources in particular, `None` for a pane nobody has
+    /// singled out — which is every pane until somebody says otherwise.
+    ///
+    /// # Why this is held when the kernel already holds the numbers
+    ///
+    /// It is not the same fact. The leaf holds the EFFECTIVE grant, which
+    /// [`PaneHomes::granted`](crate::share::PaneHomes::granted) reads back and which is the honest
+    /// answer to *what is in force*. What no file records is WHO SAID SO: a leaf capped at 512 MiB
+    /// looks identical whether that number came from the machine's config or from a person typing it
+    /// at this pane, and the two must behave differently the moment anything re-derives the grant.
+    ///
+    /// No accessor: the two readers of this are both in this module ([`Workspace::adopt`] and
+    /// [`Workspace::pane_grant_or_default`]), and the question a caller outside actually has is
+    /// *what is this pane following*, which is what that second one answers. A public getter
+    /// handing back the raw `Option` would be a second door onto one fact, and the one that omits
+    /// the fallback.
+    ///
+    /// [`Workspace::adopt`] is that moment. A pane that moves is re-placed, and re-placing has to
+    /// decide which authority to ask: an overridden pane must carry its own number across (somebody
+    /// capped this pane and then pulled it into its own window, which is when they most expect the
+    /// cap to hold), and an ordinary one must re-ask the config (so a person who raised a ceiling
+    /// there is not stuck with the old one). One bit of provenance is what separates them, and the
+    /// kernel keeps no such bit.
+    ///
+    /// So: `None` means *follow the machine*, and it stays `None` for the whole life of almost every
+    /// pane. This is the smallest thing that could be stored and it is stored beside
+    /// [`home`](Self::home), which is the other fact about a pane that only the daemon knows.
+    grant: Option<crate::share::Grant>,
     /// The name a PERSON gave this pane (or the agent that opened it), `None` for a pane nobody
     /// named — which is every pane until somebody says otherwise.
     ///
@@ -638,6 +666,53 @@ impl Workspace {
         self.homes.open(self.lineage(pane)?)
     }
 
+    /// The grant the pane with `id` is currently FOLLOWING — its own if a person has singled it
+    /// out, otherwise the machine's, read fresh. `None` when this pool holds no such pane.
+    ///
+    /// # Why an editor of one setting needs this
+    ///
+    /// A person changing a pane's memory ceiling has said nothing about its CPU weight, and the two
+    /// must not move together. So a caller building the NEW grant starts from the one in force and
+    /// overwrites only what was asked for, which is what makes `grant --memory 512` leave a weight
+    /// somebody set an hour ago alone. Composing that out of the pane's own grant (private) and
+    /// the machine's
+    /// default at each call site would be the same rule written twice, and the second copy is the
+    /// one that forgets the fallback.
+    #[must_use]
+    pub fn pane_grant_or_default(&self, id: PaneId) -> Option<crate::share::Grant> {
+        let own = self.panes.iter().find(|pane| pane.id == id)?.grant;
+        Some(own.unwrap_or_else(|| self.homes.default_grant()))
+    }
+
+    /// Give the pane with `id` the resources a person just asked for, and answer with what the
+    /// kernel holds afterwards.
+    ///
+    /// `None` when this pool has no such pane — the same absence every other id-taking method here
+    /// reports, and distinct from the inner [`Unmeasured`](crate::share::Unmeasured), which says the
+    /// pane exists and there is nothing measuring it.
+    ///
+    /// # Why the request is recorded even when the write did not take
+    ///
+    /// The two are different facts and the pane keeps both halves of the distinction: what a person
+    /// SAID is remembered on the pane (its private `grant` field) so a later move carries it, and
+    /// what the
+    /// kernel HOLDS is what comes back. A daemon that recorded only what took would forget an
+    /// override the moment a host could not honour it — and then honour nothing when that pane moved
+    /// to a level that could.
+    pub fn set_pane_grant(
+        &mut self,
+        id: PaneId,
+        grant: crate::share::Grant,
+    ) -> Option<Result<crate::share::Granted, crate::share::Unmeasured>> {
+        let home = self.panes.iter().find(|pane| pane.id == id)?.home;
+        let answer = self.homes.grant(home, grant);
+        // After the write, so a pane that is not in this pool has not been recorded against.
+        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.id == id) {
+            pane.grant = Some(grant);
+        }
+        Some(answer)
+    }
+
     /// Install the [`HistoryLimitSource`] this pool's births consult — the seam `sprag-host` uses to
     /// put the user's `history-limit` behind every pane without this crate learning what a config
     /// file is.
@@ -826,6 +901,7 @@ impl Workspace {
             opened_by: None,
             name: None,
             home,
+            grant: None,
         });
         Ok(id)
     }
@@ -917,6 +993,7 @@ impl Workspace {
             opened_by: None,
             name: None,
             home,
+            grant: None,
         });
         Ok(())
     }
@@ -967,7 +1044,9 @@ impl Workspace {
         // Both halves have to be known: a pane arriving from a pool that never had a window has no
         // cgroup to move out of, and a pool with no window of its own has none to move it into.
         if let (Some(from), Some(to)) = (pane.home, arriving) {
-            self.homes.relocate(from, to);
+            // The pane's OWN grant travels with it, and `None` is the answer for the pane nobody has
+            // singled out — see the field for why the kernel cannot supply this bit.
+            self.homes.relocate(from, to, pane.grant);
         }
         pane.home = arriving;
         self.panes.push(pane);

@@ -38,7 +38,9 @@ use sprag_host::notify::ChannelRegistry;
 use sprag_host::scope::SessionScope;
 use sprag_host::wire::SPAWN_ACTION;
 use sprag_host::{DaemonShared, WorkspaceExternal, delegation};
-use sprag_terminal::{CommandBuilder, PaneBirthHooks, PaneId, Tree};
+use sprag_terminal::{
+    Ceiling, CommandBuilder, Counted, Grant, Granted, Limits, PaneBirthHooks, PaneId, Share, Tree,
+};
 
 #[test]
 fn a_pane_born_under_a_host_with_a_tree_has_its_child_in_its_own_cgroup() {
@@ -469,6 +471,98 @@ fn a_pane_carries_the_ceilings_the_person_set() {
         !members_of(&leaf).is_empty(),
         "the pane was capped and never started"
     );
+}
+
+/// A person grants ONE pane, and the kernel holds it FOR THAT PANE ALONE.
+///
+/// # What this measures that the ceiling gate above cannot
+///
+/// `a_pane_carries_the_ceilings_the_person_set` proves a config number reaches the kernel. It is
+/// silent about the thing that made the setting nearly useless: one number for the whole machine
+/// says the same thing on every row, so a person who wanted to hold back the one pane running a
+/// parallel build had to hold back the pane they were reading too. So the assertion here is a
+/// DIFFERENCE — the granted pane moved and its neighbour did not — which no global setting can
+/// produce and which was unreachable before this existed.
+///
+/// It runs against a REAL delegated scope rather than the fake cgroupfs the unit tests use, because
+/// what is in question here is the kernel's own acceptance: that `cpu.weight` takes 10, that
+/// `memory.high` takes bytes, and that reading the files back yields what was written. A fake
+/// filesystem answers whatever the fixture wrote and would agree with a product that had the units
+/// wrong.
+#[test]
+fn a_person_grants_one_pane_and_its_neighbour_is_left_alone() {
+    let Some((_holder, tree)) = delegated() else {
+        return;
+    };
+    let host = Host::new((80, 24)).with_shares(Arc::clone(&tree));
+    let held = spawn_sleeper(&host, "held");
+    let free = spawn_sleeper(&host, "free");
+
+    // Numbers no other test in this binary uses, and all three different from the config's, so a
+    // product that fell back to the machine's grant cannot pass by coincidence.
+    let grant = Grant {
+        share: Share::new(10).expect("a legal weight"),
+        limits: Limits::UNCAPPED
+            .with_memory(Some(32 * 1024 * 1024))
+            .with_processes(Some(8)),
+    };
+    let granted = host
+        .workspace()
+        .lock()
+        .expect("the pool")
+        .set_pane_grant(held, grant)
+        .expect("the pool holds the pane")
+        .expect("the pane is placed and measurable");
+
+    // THE ANSWER IS THE KERNEL'S. A daemon that echoed the request would pass every assertion
+    // below and still be wrong on a host without the controllers, which is why the read-back is
+    // the thing being asserted rather than the write.
+    assert_eq!(
+        granted,
+        Granted {
+            share: Counted::Now(10),
+            memory: Ceiling::At(32 * 1024 * 1024),
+            processes: Ceiling::At(8),
+        },
+        "the kernel's own answer after the grant",
+    );
+
+    // And the files say so independently of the type that reported them.
+    let leaves = pane_leaves(tree.root());
+    let held_leaf = leaf_of(&leaves, held).to_path_buf();
+    assert_eq!(control(&held_leaf, "cpu.weight"), "10");
+    assert_eq!(
+        control(&held_leaf, "memory.high"),
+        (32 * 1024 * 1024).to_string()
+    );
+    assert_eq!(control(&held_leaf, "pids.max"), "8");
+
+    // THE DISCRIMINATOR: the pane nobody granted still carries what the machine gives every pane.
+    let free_leaf = leaf_of(&leaves, free).to_path_buf();
+    assert_eq!(
+        control(&free_leaf, "cpu.weight"),
+        "100",
+        "the neighbour kept its even share",
+    );
+    assert_eq!(
+        control(&free_leaf, "memory.high"),
+        (MEMORY_LIMIT_MIB * 1024 * 1024).to_string(),
+        "the neighbour kept the MACHINE's ceiling, not the one this test set next door",
+    );
+    assert_eq!(control(&free_leaf, "pids.max"), PROCESS_LIMIT.to_string());
+
+    // Both panes still RUN under their grants — a ceiling that stopped the pane would satisfy every
+    // assertion above and be the opposite of what a person asked for.
+    assert!(!members_of(&held_leaf).is_empty(), "the granted pane died");
+    assert!(!members_of(&free_leaf).is_empty(), "the neighbour died");
+}
+
+/// One control file of a cgroup, trimmed.
+fn control(cgroup: &Path, name: &str) -> String {
+    std::fs::read_to_string(cgroup.join(name))
+        .unwrap_or_else(|error| panic!("{}/{name}: {error}", cgroup.display()))
+        .trim()
+        .to_owned()
 }
 
 /// Spawn a long-lived, identifiable child into `host`'s current window.

@@ -261,6 +261,7 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::new(CLOSE_ACTION, "action"),
     SchemaField::new(RESIZE_ACTION, "action"),
     SchemaField::new(RENAME_PANE_ACTION, "action"),
+    SchemaField::new(GRANT_PANE_ACTION, "action"),
     SchemaField::new(SET_LAYOUT_ACTION, "action"),
     SchemaField::new(SET_FLOATING_ACTION, "action"),
     SchemaField::new(NEW_SESSION_ACTION, "action"),
@@ -1398,6 +1399,11 @@ mod settle_tests {
                     waiting: sprag_terminal::Waiting::NotAccounted,
                     memory: sprag_terminal::Counted::NoController,
                     processes: sprag_terminal::Counted::NoController,
+                    granted: sprag_terminal::Granted {
+                        share: sprag_terminal::Counted::NoController,
+                        memory: sprag_terminal::Ceiling::NoController,
+                        processes: sprag_terminal::Ceiling::NoController,
+                    },
                 },
             }],
         }
@@ -1665,6 +1671,28 @@ pub const RESIZE_ACTION: &str = "resize";
 /// [`NEW_SESSION_ACTION`]'s reason, verbatim: a name is an ADDRESS, so the assignment is refusable
 /// and a plain write would have nowhere to say so.
 pub const RENAME_PANE_ACTION: &str = "rename_pane";
+
+/// The mux control external action: give ONE pane the CPU weight and the ceilings a person just
+/// asked for, and answer with what the kernel holds afterwards.
+///
+/// `{pane, share?, memory?, processes?}` in, [`sprag_terminal::Granted`] out. Every setting is
+/// optional and an omitted one is left alone, so raising a ceiling is not a way to silently reset a
+/// weight somebody set an hour ago; `0` on either ceiling is the user's spelling of "no ceiling",
+/// which is what `pane-memory-limit` and `pane-process-limit` already mean in the config file.
+///
+/// # Why this is an ACTION and not a write to a slot
+///
+/// [`RENAME_PANE_ACTION`]'s reason, and one more. The first half is the same: the request is
+/// REFUSABLE — there may be no such pane, and a weight outside the kernel's `1..=10000` is not a
+/// grant — and a plain write would have nowhere to say so.
+///
+/// The second half is what makes this different from every other setter here: **the answer is not
+/// the request.** A ceiling on a host whose `memory` controller was never delegated goes nowhere,
+/// and a daemon that echoed the argument back would agree with itself about a setting that is not
+/// in force. So the action re-reads the pane's leaf and answers with THAT — the same discipline
+/// `rename_pane` follows for a trimmed name, applied where the disagreement is a whole missing
+/// controller rather than two spaces.
+pub const GRANT_PANE_ACTION: &str = "grant_pane";
 /// The mux control external query slot: the live pane list as JSON.
 pub const PANES_SLOT: &str = "panes";
 
@@ -5394,6 +5422,7 @@ mod tests {
             "focus",
             "frames",
             "full_text",
+            "grant_pane",
             "grid_work",
             "image_data.<id>",
             "join_pane",

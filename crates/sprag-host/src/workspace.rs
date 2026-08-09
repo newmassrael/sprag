@@ -77,9 +77,9 @@ use crate::scope::SessionScope;
 use crate::wire::{
     AGENT_MANIFESTS_SLOT, ActivityWire, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
     DETACHED_KEY, DISPLAY_MESSAGE_ACTION, DOCTOR_FIELD, DROP_FILE_ACTION, EVENTS_FIELD,
-    GLOBAL_COMMANDS_SLOT, GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk, KILL_SESSION_ACTION,
-    KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk,
-    NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
+    GLOBAL_COMMANDS_SLOT, GRANT_PANE_ACTION, GRID_WORK_SLOT, JOIN_PANE_ACTION, JoinAsk,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
+    MoveWindowAsk, NEIGHBORS_FIELD, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PROCESSES_FIELD,
     PANE_RESOURCES_FIELD, PANES_SLOT, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION,
     RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
     RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
@@ -918,6 +918,99 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(
             serde_json::json!({ "name": recorded }),
         ))
+    }
+
+    /// [`crate::wire::GRANT_PANE_ACTION`] — give one pane the weight and ceilings a person asked
+    /// for, and answer with what the kernel holds afterwards.
+    ///
+    /// # Why every setting is optional and an omission is not a reset
+    ///
+    /// The three are set by different people at different moments: somebody caps a runaway build's
+    /// memory now and drops its CPU weight ten minutes later. If an omitted field meant "back to the
+    /// default", the second command would silently undo the first, and the person would have no way
+    /// to change one number without restating the others. So an absent field reads the pane's
+    /// CURRENT grant and keeps it — which is why this starts from the existing grant rather than
+    /// from [`sprag_terminal::Grant`]'s default.
+    ///
+    /// # Errors
+    ///
+    /// [`InvokeError::Rejected`] for a pane this host does not hold, a weight outside the kernel's
+    /// range, or a request that sets nothing at all. The last one is a refusal and not a no-op
+    /// because a `grant` with no settings is a person who meant something and typed it wrong;
+    /// answering "here is what you already had" would look like it worked.
+    fn grant_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = require_pane_id(map, "pane")?;
+        let share = match map.get("share") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let weight = value.as_u64().ok_or(InvokeError::TypeMismatch)?;
+                let weight = u32::try_from(weight).map_err(|_| {
+                    refused(format!("a share of {weight} is outside the kernel's range"))
+                })?;
+                Some(sprag_terminal::Share::new(weight).map_err(refused)?)
+            }
+        };
+        // ZERO is the person's spelling of "no ceiling", which is what `pane-memory-limit` and
+        // `pane-process-limit` already mean in the config file. One spelling for one meaning, or a
+        // person would have to know that the file and the command disagree.
+        let ceiling = |key: &str| -> Result<Option<Option<u64>>, InvokeError> {
+            match map.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(value) => {
+                    let most = value.as_u64().ok_or(InvokeError::TypeMismatch)?;
+                    Ok(Some((most > 0).then_some(most)))
+                }
+            }
+        };
+        let memory = ceiling("memory")?;
+        let processes = ceiling("processes")?;
+        if share.is_none() && memory.is_none() && processes.is_none() {
+            return Err(refused(
+                "a grant must set at least one of share, memory or processes",
+            ));
+        }
+        let processes = match processes {
+            Some(Some(most)) => Some(Some(u32::try_from(most).map_err(|_| {
+                refused(format!(
+                    "a ceiling of {most} processes is not a number of processes"
+                ))
+            })?)),
+            Some(None) => Some(None),
+            None => None,
+        };
+        // ONE walk that both finds the pane's pool and writes into it, for `rename_pane`'s reason:
+        // resolving the target and then writing would leave a gap the pane could close in.
+        let answer = self.with_pool_of(id, |pool| {
+            let mut grant = pool.pane_grant_or_default(id)?;
+            if let Some(share) = share {
+                grant.share = share;
+            }
+            if let Some(memory) = memory {
+                grant.limits = grant
+                    .limits
+                    .with_memory(memory.map(|mib| mib * crate::config::MIB));
+            }
+            if let Some(processes) = processes {
+                grant.limits = grant.limits.with_processes(processes);
+            }
+            pool.set_pane_grant(id, grant)
+        });
+        let Some(Some(answer)) = answer else {
+            return Err(refused(format!("no pane {} on this host", id.0)));
+        };
+        // The kernel's answer, or the reason there is none — never the request. See the action's own
+        // documentation for why echoing the argument would be this daemon agreeing with itself
+        // about a setting the host could not honour.
+        match answer {
+            Ok(granted) => Ok(IntrospectValue::Json(
+                serde_json::to_value(granted).map_err(|_| InvokeError::TypeMismatch)?,
+            )),
+            Err(reason) => Err(refused(format!(
+                "pane {} was granted nothing the kernel could hold: {reason}",
+                id.0
+            ))),
+        }
     }
 
     /// Run `write` against the POOL that holds the pane with `id`, or answer `None` when this
@@ -2707,6 +2800,7 @@ impl WorkspaceExternal {
             CLOSE_ACTION => self.close(&args),
             RESIZE_ACTION => self.resize(&args),
             RENAME_PANE_ACTION => self.rename_pane(&args),
+            GRANT_PANE_ACTION => self.grant_pane(&args),
             SET_LAYOUT_ACTION => self.set_layout(&args),
             SET_FLOATING_ACTION => self.set_floating(&args),
             NEW_SESSION_ACTION => self.new_session(&args),
@@ -3237,6 +3331,60 @@ mod tests {
     /// The second half is the load-bearing one, for
     /// `a_spawn_naming_a_pane_that_is_gone_is_refused_and_births_nothing`'s reason: a birth refused
     /// after forking leaves a live pane the caller was never told about.
+    /// A grant that sets NOTHING is refused at the ACTION, whatever client sent it.
+    ///
+    /// The CLI refuses it too, one crate over, with a message that names the flags — but that is
+    /// one front's manners. This is the rule: `sprag-mcp` and any future client reach the same
+    /// refusal, and a daemon that answered an empty grant would print three plausible numbers that
+    /// look exactly like a change nobody made.
+    ///
+    /// The pane id is the one the boot pool holds, so the refusal cannot be the pane being absent —
+    /// which is the other way this could go red and would prove nothing.
+    #[test]
+    fn a_grant_that_sets_nothing_is_refused_at_the_action() {
+        let reg = registry();
+        let (mut ext, _revision) = control(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("a pane to grant");
+        let Some(IntrospectValue::Json(Value::Array(panes))) = ext.query(PANES_SLOT) else {
+            panic!("the panes slot answers with a JSON array");
+        };
+        let id = panes[0]["id"].as_u64().expect("a pane id");
+        // The REASON and not merely the arm. ⚠ Measured: asserting `Err(Rejected(_))` alone is
+        // vacuous here, and the mutation pass is what said so. A registry in this test has no
+        // cgroup subtree, so EVERY grant is refused — removing the emptiness check outright left
+        // this green, because "refused for setting nothing" and "refused because nothing on this
+        // host is enforced" are the same arm. Only the sentence separates them.
+        let empty = ext.invoke(
+            GRANT_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": id})),
+        );
+        let said = match &empty {
+            Err(InvokeError::Rejected(why)) => format!("{why:?}"),
+            other => panic!("a grant that sets nothing was not refused at all: {other:?}"),
+        };
+        assert!(
+            said.contains("at least one of"),
+            "the refusal is about the empty request, not about this host enforcing nothing: {said}",
+        );
+        // THE CONTROL: the same pane, with a setting, is NOT refused for being that pane. On a host
+        // with no cgroup subtree the grant cannot land, so the answer is the OTHER refusal — and
+        // telling the two apart is the point, which is why the emptiness check runs BEFORE any
+        // placement is consulted and this assertion only demands a different sentence.
+        let with_setting = ext.invoke(
+            GRANT_PANE_ACTION,
+            IntrospectValue::Json(json!({"pane": id, "share": 100})),
+        );
+        let said = match &with_setting {
+            Err(InvokeError::Rejected(why)) => format!("{why:?}"),
+            other => format!("{other:?}"),
+        };
+        assert!(
+            !said.contains("at least one of"),
+            "a grant WITH a setting is never refused for setting nothing: {said}",
+        );
+    }
+
     #[test]
     fn a_birth_naming_a_pane_something_already_taken_is_refused_and_births_nothing() {
         let reg = registry();

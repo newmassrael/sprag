@@ -134,6 +134,8 @@ pub enum Verb {
     Processes,
     /// `resources` — what each pane is TAKING of the machine.
     Resources,
+    /// `grant` — what ONE pane is ALLOWED of it.
+    Grant,
     /// `select-pane` — which pane the session is on.
     SelectPane,
     /// `swap-pane` — two panes trade places.
@@ -510,7 +512,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 60] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -536,6 +538,7 @@ impl Verb {
         Self::Layout,
         Self::Processes,
         Self::Resources,
+        Self::Grant,
         Self::SelectPane,
         Self::SwapPane,
         Self::SplitWindow,
@@ -819,6 +822,13 @@ impl Verb {
                 Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["pane_resources"]),
+            ),
+            Self::Grant => (
+                "grant",
+                Group::Pane,
+                Shell::Runs("<PANE> [--share N] [--memory MIB] [--processes N] [-t SESSION]"),
+                Keystroke::Cannot(NotAKeystroke::NeedsWords),
+                Agent::Tools(&["grant_pane"]),
             ),
             Self::SelectPane => (
                 "select-pane",
@@ -1445,7 +1455,7 @@ mod tests {
             .count();
         assert_eq!(
             (served, not_built, refused),
-            (32, 7, 20),
+            (33, 7, 20),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1592,7 +1602,7 @@ mod tests {
             .count();
         assert_eq!(
             (runs, not_built, refused),
-            (51, 3, 5),
+            (52, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1673,7 +1683,7 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (25, 1, 33),
+            (25, 1, 34),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );

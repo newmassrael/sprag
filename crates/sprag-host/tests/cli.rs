@@ -157,6 +157,45 @@ fn aged_host() -> (sprag_peer::OldDaemon, HostChild, PathBuf) {
     (peer, daemon, upstream)
 }
 
+/// `grant` refuses a request that sets NOTHING, and it refuses at both layers that could accept it.
+///
+/// # Why this is a refusal and not a no-op
+///
+/// A `grant` with no settings is somebody who meant something and typed it wrong. Answering with
+/// the grant they already had would print three plausible numbers and look exactly like success —
+/// the failure mode a person cannot detect, because the output of "I did nothing" and the output of
+/// "I set it to what it already was" are the same three numbers.
+///
+/// This drives the CLI's half, which refuses without a round trip so the message can name the
+/// flags. The ACTION refuses it too, and that is the load-bearing one — it holds for whatever
+/// client asked, `sprag-mcp` included — so it has its own gate one crate over
+/// (`sprag_host::workspace`'s `a_grant_that_sets_nothing_is_refused_at_the_action`). Two tests
+/// because a CLI-only gate would go green against a daemon that accepted an empty grant from
+/// anybody else.
+#[test]
+fn a_grant_that_sets_nothing_is_refused_rather_than_reported_as_done() {
+    let (_host, sock) = spawn_host();
+
+    // Pane 0 throughout — the boot pane, which EXISTS. A refusal about a pane that was not there
+    // would be the wrong refusal and would pass this test just as well.
+    let run = sprag(&sock, &["grant", "0"]);
+    assert!(!run.ok, "a grant with no settings failed: {}", run.stdout);
+    assert!(
+        run.stderr.contains("--share") && run.stderr.contains("--memory"),
+        "the refusal names the flags rather than saying 'invalid': {}",
+        run.stderr,
+    );
+
+    // A grant that DOES set something succeeds, so the two assertions above are about the emptiness
+    // and not about `grant` being broken for every input — the control this pair needs.
+    let ok = sprag(&sock, &["grant", "0", "--share", "100"]);
+    assert!(
+        ok.ok,
+        "a grant that sets a share is accepted: {} / {}",
+        ok.stdout, ok.stderr,
+    );
+}
+
 #[test]
 fn the_cli_lists_creates_and_kills_sessions_over_the_socket() {
     let (_host, sock) = spawn_host();
@@ -6102,6 +6141,10 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
             "rename-pane" => vec!["renamed"],
             "send-keys" => vec!["Escape"],
             "report-agent" => vec!["working"],
+            // `grant` refuses a request that sets nothing, deliberately — so it is given
+            // the weight every pane is born with. That leaves the pane exactly as it was,
+            // which matters here because this ratchet drives a LIVE pane one window over.
+            "grant" => vec!["--share", "100"],
             // `run` with NO name LISTS the pane's project commands, which resolves the pane and
             // prints — everything this ratchet needs. It entered the sweep at R323, when the usage
             // stopped being a hand-written list and started naming every verb the binary
@@ -6998,7 +7041,7 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
     }
     assert_eq!(
         (ran, refused, unbuilt),
-        (51, 5, 3),
+        (52, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7162,7 +7205,7 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // them — which is the whole reason a new verb is added to the TABLE rather than to a surface.
     assert_eq!(
         counts,
-        (15, 10, 33, 1),
+        (15, 10, 34, 1),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 

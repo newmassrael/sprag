@@ -187,17 +187,18 @@ use sprag_host::vocabulary::{self, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
-    DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION,
-    KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk,
-    NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD,
-    PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire,
-    RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
-    ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk,
-    SwapHow, TEXT_ACTION, TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION,
-    doctor_over, events_slot_since, find_slot_for, pane_processes_at, pane_resources_at,
-    project_slot_for, regex_slot_for, session_activity_at, settled, unknown_action, unknown_slot,
+    DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT, GRANT_PANE_ACTION, JOIN_PANE_ACTION, KEY_ACTION,
+    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
+    MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM,
+    PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
+    PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
+    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION,
+    RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION,
+    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
+    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, TREE_SLOT, WINDOWS_SLOT,
+    WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, doctor_over, events_slot_since, find_slot_for,
+    pane_processes_at, pane_resources_at, project_slot_for, regex_slot_for, session_activity_at,
+    settled, unknown_action, unknown_slot,
 };
 use sprag_host::{ClientSize, PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -205,8 +206,8 @@ use sprag_rpc::{
     INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
 };
 use sprag_terminal::{
-    Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow, Taken,
-    Verdict, Waiting, WindowPlace, arrangement,
+    Ceiling, Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow,
+    Taken, Verdict, Waiting, WindowPlace, arrangement,
 };
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -277,6 +278,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Layout => layout(args.collect()),
         Verb::Processes => processes(args.collect()),
         Verb::Resources => resources(args.collect()),
+        Verb::Grant => grant(args.collect()),
         Verb::Doctor => doctor(args.collect()),
         Verb::Agent => agent(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
@@ -3487,13 +3489,15 @@ fn resources(args: Vec<String>) -> io::Result<()> {
                 waiting,
                 memory,
                 processes,
+                granted,
             } => println!(
-                "{}: {}  waiting {}  {}  {}",
+                "{}: {}  waiting {}  {}  {}  weight {}",
                 row.id,
                 held(cpu),
                 waited(waiting),
-                footprint(memory),
-                count(processes),
+                of(footprint(memory), granted.memory, footprint_ceiling),
+                of(count(processes), granted.processes, count_ceiling),
+                weight(granted.share),
             ),
             // The reason, not a blank row: "nothing on this machine is measured" and "this one pane
             // is not" send a reader in opposite directions.
@@ -3501,6 +3505,124 @@ fn resources(args: Vec<String>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `grant <PANE> [--share N] [--memory MIB] [--processes N] [-t SESSION]`: what ONE pane is ALLOWED
+/// of the machine.
+///
+/// `resources` says what each pane TOOK; this is the other half — what a person says it MAY take.
+/// The machine's own `pane-memory-limit` / `pane-process-limit` are what every pane is BORN with;
+/// this is how one of them is singled out afterwards, which is the only form the override can have,
+/// because a pane's id is minted at runtime and no config file can name it in advance.
+///
+/// # Why it prints what the KERNEL holds, not what you typed
+///
+/// A ceiling on a host whose `memory` controller was never delegated is a number that goes nowhere.
+/// Echoing the request back would be sprag agreeing with itself about a setting that is not in
+/// force — so the answer is re-read out of the pane's own cgroup, and a row that says
+/// `(no memory controller)` is telling a person to go and change their delegation rather than their
+/// command line.
+///
+/// **A share is a WEIGHT, not a cap and not a ratio.** Nothing here renders it as a predicted share
+/// of the machine: a nominal 10:100 was measured at 18:82, and a cgroup weighted 10 took all eight
+/// cores it was offered once its sibling went idle. `sprag resources` is where the number that
+/// actually happened lives.
+///
+/// `0` removes a ceiling, which is the same spelling `pane-memory-limit = 0` already has in the
+/// config file.
+fn grant(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "grant")?;
+    let mut rest = rest.into_iter();
+    let asked = required_pane(rest.next(), "grant")?;
+    let mut action_args = serde_json::Map::new();
+    while let Some(flag) = rest.next() {
+        let key = match flag.as_str() {
+            "--share" => "share",
+            "--memory" => "memory",
+            "--processes" => "processes",
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("grant: unexpected argument {other:?}"),
+                ));
+            }
+        };
+        let value = rest.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("grant: {flag} needs a number"),
+            )
+        })?;
+        let number: u64 = value.parse().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("grant: {flag} takes a number, not {value:?}"),
+            )
+        })?;
+        // Refused here rather than silently taken, because the second one is the one the person
+        // meant and a command that quietly used the first would be wrong in the direction nobody
+        // checks.
+        if action_args.insert(key.to_owned(), json!(number)).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("grant: {flag} given twice"),
+            ));
+        }
+    }
+    if action_args.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "grant needs at least one of --share, --memory or --processes",
+        ));
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    let site = resolve_pane(&mut conn, session.as_deref(), &asked, "grant")?;
+    action_args.insert("pane".to_owned(), json!(site.id));
+    let answer: Value = invoke_action(
+        &mut conn,
+        site_invoke(
+            session.as_deref(),
+            &site,
+            mux_action_path(GRANT_PANE_ACTION),
+            Value::Object(action_args),
+        ),
+    )
+    // The daemon knows WHICH of these it refused and cannot say so — `InvokeError::Rejected` carries
+    // no payload (upstream PINION-PR82) — so the sentence lists the causes rather than guessing one.
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::Other {
+            io::Error::other(format!(
+                "grant: pane {} is gone, --share is outside 1..=10000, or this host enforces \
+                 nothing",
+                site.id
+            ))
+        } else {
+            error
+        }
+    })?;
+    let granted: sprag_terminal::Granted = serde_json::from_value(answer)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    println!(
+        "{}: weight {}  memory {}  processes {}",
+        site.id,
+        weight(granted.share),
+        ceiling(granted.memory, footprint_ceiling),
+        ceiling(granted.processes, count_ceiling),
+    );
+    Ok(())
+}
+
+/// A ceiling ALONE, for the one surface whose whole subject is the ceiling.
+///
+/// [`of`] prints a ceiling beside a usage and stays silent when there is none, because the usage
+/// column has already said what needed saying. Here there is no usage to hide behind: a person who
+/// ran `grant` and got a blank would not know whether the ceiling was removed or never took.
+fn ceiling(ceiling: Ceiling, spell: fn(u64) -> String) -> String {
+    match ceiling {
+        Ceiling::At(most) => spell(most),
+        Ceiling::Uncapped => "uncapped".to_owned(),
+        Ceiling::NoController => "(no controller)".to_owned(),
+    }
 }
 
 /// A pane's CPU as a person reads it — cores to two decimals, with the window it covers.
@@ -3637,6 +3759,52 @@ fn count(processes: Counted) -> String {
         Counted::Now(1) => "1 process".to_owned(),
         Counted::Now(many) => format!("{many} processes"),
         Counted::NoController => "(no pids controller)".to_owned(),
+    }
+}
+
+/// A usage joined to the ceiling it is measured against — `6 MiB of 512 MiB`, or the usage alone
+/// where there is no ceiling to measure it against.
+///
+/// # Why the ceiling is folded into the usage column rather than given one of its own
+///
+/// It is not an independent fact, it is the DENOMINATOR: `6 MiB` tells a person nothing until they
+/// know whether the pane may reach 8 MiB or 8 GiB. A separate column would let a reader see one
+/// without the other, which is the same mistake as printing cores held without time spent waiting.
+///
+/// The two absences print differently and both are silent about the ceiling on purpose: an
+/// [`Ceiling::Uncapped`] pane has a real number and no bound, and a
+/// [`Ceiling::NoController`] pane's usage column has already
+/// said `(no memory controller)` — appending a second sentence saying the same controller is missing
+/// would be this surface disagreeing with nobody at twice the width.
+fn of(usage: String, ceiling: Ceiling, spell: fn(u64) -> String) -> String {
+    match ceiling {
+        Ceiling::At(most) => format!("{usage} of {}", spell(most)),
+        Ceiling::Uncapped | Ceiling::NoController => usage,
+    }
+}
+
+/// A memory CEILING as a person reads it — the same units [`footprint`] uses, so a usage and its
+/// bound in one phrase are in one scale.
+fn footprint_ceiling(bytes: u64) -> String {
+    footprint(Counted::Now(bytes))
+}
+
+/// A process CEILING as a person reads it — bare, because [`of`] has already printed the noun.
+fn count_ceiling(most: u64) -> String {
+    most.to_string()
+}
+
+/// The share of its level a pane is granted, as the kernel is holding it.
+///
+/// **Never rendered as a predicted share of the machine**, which is the rule the design behind this
+/// feature states and measured twice: a nominal 10:100 came out at 18:82 because the kernel
+/// distributes weight per runqueue, and a cgroup weighted 10 took all 8 cores it was offered when
+/// its sibling went idle. So the number is printed as the setting it is, beside the cores actually
+/// held — which is the only honest pairing.
+fn weight(share: Counted) -> String {
+    match share {
+        Counted::Now(weight) => weight.to_string(),
+        Counted::NoController => "(no cpu controller)".to_owned(),
     }
 }
 
