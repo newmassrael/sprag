@@ -5329,6 +5329,15 @@ mod tests {
             Successor::Named("beta".to_owned()),
             "the row below alpha is beta, whatever order the daemon happens to list them in",
         );
+        // ...and the row ABOVE it is the LAST one the person saw. This is the assertion that holds
+        // the append to sessions the mirror does NOT have: `next` reads the same either way, and
+        // only a wrapping step can tell an order of three from the same three with the daemon's two
+        // stuck on the end.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Previous, &seen, &now, "alpha"),
+            Successor::Named("gamma".to_owned()),
+            "wrapping backwards lands on the last row the person saw, not on a repeat of it",
+        );
 
         // A NAME THE MIRROR STILL HOLDS AND THE DAEMON NO LONGER SERVES IS SKIPPED, not followed:
         // attaching to it fails, and a failed follow is the detach this whole test is about.
@@ -5346,6 +5355,20 @@ mod tests {
             destroy_successor(DetachOnDestroy::Next, &seen, &session_list(&[]), "alpha"),
             Successor::Detach,
             "no live session anywhere is the one case a switch policy has to leave on",
+        );
+
+        // A mirror this client never got a list into cannot say where `alpha` stood, so there is no
+        // row to count from and a detach is the honest answer — the same arm as a name already off
+        // the list, reached from the other side.
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::Next,
+                &session_list(&[]),
+                &session_list(&["beta"]),
+                "alpha",
+            ),
+            Successor::Detach,
+            "no anchor is no neighbour, however much the daemon is serving",
         );
     }
 
