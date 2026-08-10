@@ -3963,6 +3963,263 @@ fn the_sweeps_own_verdict_reaches_a_reader_as_a_typed_change() {
     );
 }
 
+/// A temp directory that removes itself, plus the pieces this file's agent-launch test needs in it.
+struct AgentBox(PathBuf);
+
+impl AgentBox {
+    /// A box holding a `claude` that is really the stand-in agent, an empty agent config home, and
+    /// an empty sprag config home.
+    ///
+    /// **The agent config home is set explicitly and points at nothing.** `claude`'s own
+    /// `CLAUDE_CONFIG_DIR` wins over `$HOME`, so a test that set only `HOME` would read the
+    /// DEVELOPER's file whenever that variable happened to be set in their shell — and this test's
+    /// whole subject is what sprag does when the user's own config does NOT report. R318/R319/R331:
+    /// write the config for every process the claim passes through.
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sprag-agent-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).expect("the box's bin dir");
+        std::fs::create_dir_all(dir.join("cfg")).expect("the box's sprag config dir");
+        let peer = PathBuf::from(env!("CARGO_BIN_EXE_sprag-term"))
+            .parent()
+            .expect("the bin dir cargo built into")
+            .join("sprag-agent-peer");
+        assert!(
+            peer.exists(),
+            "the stand-in agent was not built beside sprag-term: {}",
+            peer.display(),
+        );
+        // Named `claude` because the decision is made on the program's BASENAME — which is the rule
+        // under test, so the fixture must go through it rather than around it. A symlink rather than
+        // a `claude` binary target in the workspace: nothing named `claude` then exists in
+        // `target/debug`, where it could shadow the real one for anybody who puts that on `PATH`.
+        std::os::unix::fs::symlink(&peer, dir.join("bin").join("claude"))
+            .expect("the stand-in agent takes the name the rule reads");
+        Self(dir)
+    }
+
+    /// The daemon's environment: its `PATH` finds the stand-in, and both config homes are this box's.
+    fn env(&self) -> Vec<(String, String)> {
+        let path = format!(
+            "{}:{}",
+            self.0.join("bin").display(),
+            std::env::var("PATH").unwrap_or_default(),
+        );
+        vec![
+            ("PATH".to_owned(), path),
+            (
+                "CLAUDE_CONFIG_DIR".to_owned(),
+                self.0.join("claude-home").display().to_string(),
+            ),
+            (
+                "XDG_CONFIG_HOME".to_owned(),
+                self.0.join("cfg").display().to_string(),
+            ),
+        ]
+    }
+}
+
+impl Drop for AgentBox {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// THE WHOLE LOOP: a daemon launches an agent, the agent runs the hooks that launch handed it, and
+/// the daemon answers with a turn boundary nothing sampled.
+///
+/// This is the SCE requirement's §5, end to end and with no step faked: a real `sprag-term`, a real
+/// argv instrumented at a real pane's birth, a real program that PARSES the settings document and
+/// runs what it names, the real `sprag hook claude` binary, and the real `report_agent` door.
+///
+/// **What makes it a proof rather than a demonstration** is the pane's screen. The stand-in paints
+/// no title, no spinner and no footer — nothing any detection rule can read — so before its first
+/// event this pane has NO agent key at all. Every verdict after that came from inside the pane,
+/// because there is nothing outside it to have come from. A daemon that failed to instrument the
+/// launch does not merely miss an assertion here: the stand-in says so on the pane's own screen.
+///
+/// **And the turn is one no scrape could have caught even if the screen had said something**: both
+/// of its events are delivered in ONE write, so it begins and ends between two of this test's looks.
+/// The state at the end is `idle`, which is what it was at the start; `seq` is what carries the fact
+/// that a turn happened. That is the case `plugins::tests` measures the scrape losing.
+#[test]
+fn an_agent_this_daemon_launched_reports_the_turn_boundaries_it_alone_knows() {
+    let agent = AgentBox::new("turn");
+    // Published on sight, so the assertions below are about the report and not about a settle window.
+    std::fs::create_dir_all(agent.0.join("cfg").join("sprag")).expect("the sprag config dir");
+    std::fs::write(
+        agent
+            .0
+            .join("cfg")
+            .join("sprag")
+            .join(sprag_host::config::CONFIG_FILE),
+        "[options]\nagent-settle-time = 0\n",
+    )
+    .expect("write the config");
+
+    let env = agent.env();
+    let (_host, sock) = spawn_host_with(
+        &["claude"],
+        &env.iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    let text = |conn: &mut HostConn| {
+        conn.call(
+            "scene/query",
+            json!({ "path": pane_input_path(0, FULL_TEXT_SLOT) }),
+        )
+        .ok()
+        .and_then(|v: Value| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+    };
+
+    // The agent parsed the document it was launched with. A daemon that added nothing gets
+    // `agent-peer: no --settings on this launch` here, which is the diagnosis rather than a silence.
+    let mut screen = String::new();
+    let ready = wait_until(Duration::from_secs(10), || {
+        screen = text(&mut conn);
+        screen.contains("agent-peer ready")
+    });
+    assert!(
+        ready,
+        "the launched agent never read its settings; the pane said: {screen:?}",
+    );
+
+    // THE CONTROL: this pane's screen tells a scrape nothing, so it has no agent state at all.
+    let before = pane_entry(&mut conn, 0);
+    assert!(
+        before.get("agent").is_none(),
+        "nothing on this screen is an agent to any rule, which is what makes the rest attributable: \
+         {before}",
+    );
+
+    // A whole turn in ONE write: it begins and ends before anything looks.
+    let sent: Value = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "path": pane_input_path(0, TEXT_ACTION),
+                "args": { "text": "UserPromptSubmit\nStop\n" },
+            }),
+        )
+        .expect("the events reach the agent's stdin");
+    assert!(
+        sent.is_null() || sent.is_object(),
+        "a well-formed reply: {sent}"
+    );
+
+    let mut screen = String::new();
+    let done = wait_until(Duration::from_secs(10), || {
+        screen = text(&mut conn);
+        screen.contains("Stop done")
+    });
+    assert!(
+        done,
+        "the agent never finished the turn; the pane said: {screen:?}",
+    );
+    assert!(
+        screen.contains("UserPromptSubmit done (1)"),
+        "and the document named exactly one hook for the turn's start: {screen:?}",
+    );
+
+    // The daemon knows a turn happened, and knows it from inside the pane.
+    let after = wait_until(Duration::from_secs(5), || {
+        pane_entry(&mut conn, 0)["agent"]["state"].as_str() == Some("idle")
+    });
+    let entry = pane_entry(&mut conn, 0);
+    assert!(after, "the daemon never took the agent's report: {entry}");
+    assert_eq!(
+        entry["agent"]["name"], "claude",
+        "the report names which agent it is: {entry}",
+    );
+    assert!(
+        entry["agent"]["source"].is_string() && entry["agent"]["rule"].is_null(),
+        "a REPORTED verdict names its reporter and no rule: {entry}",
+    );
+    assert_eq!(
+        entry["agent"]["seq"], 2,
+        "both edges of the turn were published, though the state ends where it began: {entry}",
+    );
+}
+
+/// THE SAME LOOP AGAINST THE REAL `claude`, which is the only thing that can say the document sprag
+/// writes is one the agent it was written for actually honours.
+///
+/// `#[ignore]`d, for the reason `drives_real_claude` is: it needs a logged-in `claude` on `PATH` and
+/// it reaches Anthropic's API, so no CI job can run it. What it buys over the hermetic twin above is
+/// the one thing a stand-in cannot: the stand-in was written from the same understanding of
+/// `--settings` as the producer, and only the real agent can refute that understanding.
+///
+/// It runs the agent in PRINT mode with a trivial prompt — the shortest real turn available — and
+/// asserts a report arrived NAMING sprag's own hook. Which state it names is deliberately not
+/// asserted: print mode ends by exiting, so `Stop` is followed by `SessionEnd`, which RELEASES the
+/// report, and a test that waited for one particular edge would be racing the agent's own teardown.
+/// What is not racy is that a real `claude`, launched by this daemon, ran the command in the
+/// document this daemon appended to its argv. The turn's two edges are asserted in the hermetic
+/// twin, where the agent's lifetime is the test's to control.
+///
+/// **Its precondition is asserted rather than assumed.** If this machine's own `claude` config
+/// already carries sprag's hooks, sprag deliberately adds nothing to the launch
+/// ([`sprag_host::hooks::launch_args`]) and this test would be watching `install-hooks` work. Run
+/// `sprag uninstall-hooks claude` first; the assertion says so.
+#[test]
+#[ignore = "needs a logged-in `claude` on PATH and reaches Anthropic's API"]
+fn a_real_claude_this_daemon_launched_reports_its_own_turn() {
+    let status =
+        sprag_host::hooks::status(&sprag_host::hooks::CLAUDE).expect("a claude config path");
+    assert!(
+        !status.reporting(),
+        "this machine's own claude config already reports, so sprag adds nothing to a launch and \
+         this test would be watching the wrong mechanism. Run `sprag uninstall-hooks claude` \
+         first: {}",
+        status.path.display(),
+    );
+
+    // Its own sprag config home (`agent-settle-time = 0`), and the machine's own claude config —
+    // this test needs the real agent's credentials, which is exactly what the hermetic twin does not.
+    let dir = std::env::temp_dir().join(format!("sprag-real-claude-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sprag")).expect("the config dir");
+    std::fs::write(
+        dir.join("sprag").join(sprag_host::config::CONFIG_FILE),
+        "[options]\nagent-settle-time = 0\n",
+    )
+    .expect("write the config");
+
+    let (_host, sock) = spawn_host_with(
+        &["claude", "-p", "reply with the single word: ok"],
+        &[("XDG_CONFIG_HOME", &dir.display().to_string())],
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned host socket");
+
+    // A real turn takes real time; the bound is generous because what is under test is WHETHER the
+    // report arrives, not how fast.
+    let mut entry = Value::Null;
+    let reported = wait_until(Duration::from_secs(120), || {
+        entry = pane_entry(&mut conn, 0);
+        entry["agent"]["source"].is_string()
+    });
+    assert!(
+        reported,
+        "the real claude never reported through the settings sprag launched it with: {entry}",
+    );
+    assert_eq!(entry["agent"]["name"], "claude", "{entry}");
+    assert_eq!(
+        entry["agent"]["source"], "hook:claude",
+        "the reporter is the hook sprag's own document named: {entry}",
+    );
+    assert!(
+        entry["agent"]["rule"].is_null(),
+        "a reported verdict carries no rule, so nothing here was read off the screen: {entry}",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A pane born under a REAL `sprag-term` carries its own identity in its child's environment — the
 /// end of the chain `sprag_host::pane_env_source` starts, driven the only way that proves the daemon
 /// installs it at all.

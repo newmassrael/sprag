@@ -48,6 +48,10 @@ members = [
     # workflow file because the first one lived in `ci.yml`, was never tested, and failed
     # unconditionally on every run that carried it.
     "crates/sprag-gate",
+    # DEV-ONLY: an AGENT that runs the hooks it was launched with. sprag instruments an agent's own
+    # launch (`--settings`) so it reports its turn boundaries; the claim is that the document it
+    # appends is one a real agent can READ and ACT ON, and only something that parses it can say so.
+    "crates/sprag-agent-peer",
 ]
 
 [workspace.package]
