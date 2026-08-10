@@ -65,19 +65,46 @@ use std::collections::{HashMap, HashSet};
 
 use crate::workspace::PaneId;
 
-/// Which way a [`LayoutNode::Split`] divides its two children.
-///
-/// `Horizontal` lays `first` LEFT and `second` RIGHT; `Vertical` lays `first` TOP and
-/// `second` BOTTOM (pinion `DockNode::Split`'s convention, so the client's projection is
-/// a direct mapping).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SplitDir {
-    Horizontal,
-    Vertical,
+crate::closed_set! {
+    // A CLOSED SET as of R352, so its two words can be PUBLISHED. The serde attributes pass through
+    // the macro untouched — this gains an `ALL` and takes nothing away.
+    /// Which way a [`LayoutNode::Split`] divides its two children.
+    ///
+    /// `Horizontal` lays `first` LEFT and `second` RIGHT; `Vertical` lays `first` TOP and
+    /// `second` BOTTOM (pinion `DockNode::Split`'s convention, so the client's projection is
+    /// a direct mapping).
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum SplitDir {
+        /// `first` LEFT, `second` RIGHT.
+        Horizontal,
+        /// `first` TOP, `second` BOTTOM.
+        Vertical,
+    }
 }
 
 impl SplitDir {
+    /// This axis's wire word — the ONE definition of the vocabulary `split`'s `dir` argument takes.
+    ///
+    /// ⚠ It had none until R352: `WorkspaceExternal::parse_placement` matched the two strings
+    /// inline, so the words existed only inside a parser, no client could be told them, and nothing
+    /// tied them to this type at all. `PaneDir` has had `wire_str`/`from_wire` as its one definition
+    /// for rounds; this is the same shape on the axis beside it.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
+        }
+    }
+
+    /// The axis `word` names, or [`None`] — DERIVED from [`wire_str`](Self::wire_str) by walking
+    /// the closed set, never a second `match` that could disagree with it.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|dir| dir.wire_str() == word)
+    }
+
     /// The OTHER axis — what a move along this one is measured across.
     fn across(self) -> Self {
         match self {
@@ -86,6 +113,9 @@ impl SplitDir {
         }
     }
 }
+
+// The two words as data, so `split`'s `dir` argument publishes what it admits.
+crate::wire_words!(SplitDir: wire_str);
 
 /// Which side of its parent [`LayoutNode::Split`] a leaf occupies (`First` = left / top,
 /// matching [`SplitDir`]'s convention).

@@ -213,15 +213,38 @@ macro_rules! wire_words {
             };
         }
 
-        // A subset that admits NOTHING is a predicate nobody meant to write: the argument would
-        // publish an empty vocabulary, which tells a client no value is legal. Refused at the
-        // declaration, like the two mistakes the full form refuses.
+        // The same three refusals the full form makes, over the subset — a member admitted by the
+        // predicate is published, so an empty or duplicated word among THOSE is exactly as wrong.
+        // ⚠ The first version of this arm checked only that the subset was non-empty, which is the
+        // shape a spelling with an unreachable "" arm slips through: the word is legal for the
+        // members the predicate excludes and would be a hole in the vocabulary if it ever were not.
         const _: () = {
             if <$set>::$subset.is_empty() {
                 panic!(
                     "this subset's predicate admits no member of the closed set, so the argument \
                      it publishes would offer a client nothing it may send",
                 );
+            }
+            let words = <$set>::$subset;
+            let mut outer = 0;
+            while outer < words.len() {
+                if words[outer].is_empty() {
+                    panic!(
+                        "a member this subset ADMITS spells itself as the EMPTY string, so the \
+                         vocabulary it publishes has a hole no client can address",
+                    );
+                }
+                let mut inner = outer + 1;
+                while inner < words.len() {
+                    if $crate::wire_words::same_word(words[outer], words[inner]) {
+                        panic!(
+                            "TWO MEMBERS THIS SUBSET ADMITS SHARE ONE WIRE WORD, so the published \
+                             vocabulary is shorter than the set the parser accepts.",
+                        );
+                    }
+                    inner += 1;
+                }
+                outer += 1;
             }
         };
     };

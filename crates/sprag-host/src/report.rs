@@ -150,6 +150,11 @@ impl Severity {
     }
 }
 
+// The three words as data, so `display_message`'s `severity` argument can publish what it admits
+// instead of a client knowing it out of band — see `sprag_vt::wire_words`. `parse` already walks
+// `ALL` through `word`, so what this publishes is what that admits, by construction.
+sprag_vt::wire_words!(Severity: word);
+
 impl fmt::Display for Severity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.word())

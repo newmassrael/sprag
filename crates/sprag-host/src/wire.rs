@@ -416,6 +416,134 @@ impl ArgGrammar {
     }
 }
 
+/// The request grammar of the SPAWNING verbs, and of the three that carry a closed vocabulary —
+/// declared here rather than beside an ask type, because these verbs read their arguments inline
+/// out of the request map and have no ask type to be read off.
+///
+/// ⚠⚠ **A HAND-WRITTEN DECLARATION IS ONLY AS GOOD AS WHAT HOLDS IT TO THE PARSER**, and until
+/// R352's third gate there was nothing, which is why [`ActionGrammar::ALL`] began with ask-backed
+/// verbs alone. Three gates hold every one of these now, by RUNNING them against the daemon:
+/// each published word is accepted, each open string argument is genuinely open, and — the one
+/// that makes hand-writing safe — **each declared argument is refused at the wrong TYPE**, which a
+/// parser that never reads the key cannot do.
+///
+/// What none of them catches is an argument the parser reads and this omits: absent-not-wrong, a
+/// client told less rather than something false. Only an ask type closes that, and giving these
+/// verbs one is the next round's mechanical work.
+pub struct InlineGrammar;
+
+impl InlineGrammar {
+    /// The pane a spawning verb's child is named after, and where it starts — the four keys
+    /// `parse_spawn` reads, plus the two its callers read beside it.
+    ///
+    /// All optional: a bare `spawn` with no arguments at all opens the user's default shell, which
+    /// is the commonest call on this wire.
+    const BIRTH: &'static [ArgGrammar] = &[
+        ArgGrammar::open(SPAWN_CMD_KEY, "array").optional(),
+        ArgGrammar::open(SPAWN_CWD_KEY, "string").optional(),
+        ArgGrammar::open(SPAWN_COLS_KEY, "int").optional(),
+        ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
+        ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
+        ArgGrammar::open(WINDOW_OPENED_BY_KEY, "int").optional(),
+    ];
+
+    /// [`SPAWN_ACTION`] — the birth keys and nothing else.
+    pub const SPAWN: &'static [&'static [ArgGrammar]] = &[Self::BIRTH];
+
+    /// [`SPLIT_ACTION`] — a pane to divide, WHICH WAY, and the birth keys for the child that fills
+    /// the half that opens.
+    ///
+    /// `dir` is the vocabulary that had no type at all before R352: the two words were matched as
+    /// string literals inside the parser, so they could not be published. They are
+    /// [`SplitDir::WIRE_WORDS`](sprag_terminal::SplitDir::WIRE_WORDS) now, and the parser reads
+    /// through the same definition.
+    pub const SPLIT: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int").optional(),
+        ArgGrammar::one_of(
+            SPLIT_DIR_KEY,
+            "string",
+            &sprag_terminal::SplitDir::WIRE_WORDS,
+        ),
+        ArgGrammar::open(SPLIT_BEFORE_KEY, "bool").optional(),
+        ArgGrammar::open(SPAWN_CMD_KEY, "array").optional(),
+        ArgGrammar::open(SPAWN_CWD_KEY, "string").optional(),
+        ArgGrammar::open(SPAWN_COLS_KEY, "int").optional(),
+        ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
+        ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
+        ArgGrammar::open(WINDOW_OPENED_BY_KEY, "int").optional(),
+    ]];
+
+    /// [`DISPLAY_MESSAGE_ACTION`] — what to say, how loudly, and to whom.
+    ///
+    /// `severity` publishes [`Severity`](crate::report::Severity)'s three words. An absent one is
+    /// the default rather than a refusal, which is why it is optional.
+    pub const DISPLAY_MESSAGE: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(MESSAGE_TEXT_KEY, "string"),
+        ArgGrammar::one_of(
+            MESSAGE_SEVERITY_KEY,
+            "string",
+            &crate::report::Severity::WIRE_WORDS,
+        )
+        .optional(),
+        ArgGrammar::open(MESSAGE_CLIENT_KEY, "string").optional(),
+    ]];
+
+    /// [`REPORT_AGENT_ACTION`] — an agent reporting its own turn, the SCE requirement's verb.
+    ///
+    /// ⚠ This is the verb R352 found DISPATCHED AND DECLARED NOWHERE. `state` publishes the three
+    /// words a reporter may name
+    /// ([`AgentState::REPORTED_WORDS`](sprag_detect::AgentState::REPORTED_WORDS)) — `unknown` is
+    /// excluded by the same predicate the parser refuses it with, because it is a conclusion about
+    /// the rules rather than a state a reporter is in.
+    pub const REPORT_AGENT: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(AGENT_ID_KEY, "int"),
+        ArgGrammar::open(AGENT_SOURCE_KEY, "string"),
+        ArgGrammar::one_of(
+            AGENT_STATE_KEY,
+            "string",
+            &sprag_detect::AgentState::REPORTED_WORDS,
+        ),
+        ArgGrammar::open(AGENT_NAME_KEY, "string").optional(),
+        ArgGrammar::open(AGENT_SEQ_KEY, "int").optional(),
+        ArgGrammar::open(AGENT_BIND_KEY, "bool").optional(),
+    ]];
+}
+
+/// The `cmd` key every spawning verb takes: the child's argv, or absent for the user's shell.
+pub const SPAWN_CMD_KEY: &str = "cmd";
+/// The `cwd` key: where the child starts.
+pub const SPAWN_CWD_KEY: &str = "cwd";
+/// The `cols` key: the child's initial width.
+pub const SPAWN_COLS_KEY: &str = "cols";
+/// The `rows` key: the child's initial height.
+pub const SPAWN_ROWS_KEY: &str = "rows";
+/// The `name` key: what to call the pane that is born.
+pub const SPAWN_NAME_KEY: &str = "name";
+/// [`SPLIT_ACTION`]'s key naming the pane to divide.
+pub const SPLIT_PANE_KEY: &str = "pane";
+/// [`SPLIT_ACTION`]'s key naming WHICH WAY the division runs.
+pub const SPLIT_DIR_KEY: &str = "dir";
+/// [`SPLIT_ACTION`]'s key putting the new pane in the FIRST half rather than the second.
+pub const SPLIT_BEFORE_KEY: &str = "before";
+/// [`DISPLAY_MESSAGE_ACTION`]'s key carrying what to say.
+pub const MESSAGE_TEXT_KEY: &str = "text";
+/// [`DISPLAY_MESSAGE_ACTION`]'s key carrying how loudly.
+pub const MESSAGE_SEVERITY_KEY: &str = "severity";
+/// [`DISPLAY_MESSAGE_ACTION`]'s key naming which client, or every one of them.
+pub const MESSAGE_CLIENT_KEY: &str = "client";
+/// [`REPORT_AGENT_ACTION`]'s key naming the pane being reported.
+pub const AGENT_ID_KEY: &str = "id";
+/// [`REPORT_AGENT_ACTION`]'s key naming who is reporting.
+pub const AGENT_SOURCE_KEY: &str = "source";
+/// [`REPORT_AGENT_ACTION`]'s key carrying the state being claimed.
+pub const AGENT_STATE_KEY: &str = "state";
+/// [`REPORT_AGENT_ACTION`]'s key carrying the agent's own name.
+pub const AGENT_NAME_KEY: &str = "name";
+/// [`REPORT_AGENT_ACTION`]'s key carrying the reporter's turn counter.
+pub const AGENT_SEQ_KEY: &str = "seq";
+/// [`REPORT_AGENT_ACTION`]'s key asking the daemon to bind the report to the pane's process group.
+pub const AGENT_BIND_KEY: &str = "bind";
+
 /// ONE VERB'S CALL GRAMMAR — the action's address and every argument it takes.
 ///
 /// # What publishing this is for
@@ -442,6 +570,20 @@ impl ArgGrammar {
 pub struct ActionGrammar {
     /// The action's address on the multiplexer surface — one of [`MUX_SCHEMA`]'s verbs.
     pub action: &'static str,
+    /// Whether [`forms`](Self::forms) came from an ASK TYPE or was declared inline.
+    ///
+    /// Not a wire fact — it is never published — but the one thing that decides how much can be
+    /// asserted about an entry. An ask-backed grammar is held to its request type key for key by
+    /// [`the_published_grammar_is_the_ask_types_own`](self), so an argument the parser reads and
+    /// the declaration omits fails there. An inline one has no such source and is held only by what
+    /// can be driven: every published word accepted, every open string argument genuinely open, and
+    /// every declared argument refused at the wrong type.
+    ///
+    /// ⚠ **A `bool` and not a comment**, because the ask gate has to know which entries it is
+    /// responsible for. Written as a comment it would have been a list in a test — the shape this
+    /// whole feature exists to avoid — and adding an inline verb would have failed a gate that had
+    /// nothing to do with it.
+    pub from_ask: bool,
     /// The WAYS this verb may be spelled, one per arm of its ask type — each a complete list of
     /// the arguments THAT spelling takes.
     ///
@@ -475,30 +617,57 @@ impl ActionGrammar {
         Self {
             action: SELECT_PANE_ACTION,
             forms: SelectAsk::GRAMMAR,
+            from_ask: true,
         },
         Self {
             action: SWAP_PANE_ACTION,
             forms: SwapAsk::GRAMMAR,
+            from_ask: true,
         },
         Self {
             action: RESIZE_PANE_ACTION,
             forms: ResizeAsk::GRAMMAR,
+            from_ask: true,
         },
         Self {
             action: JOIN_PANE_ACTION,
             forms: JoinAsk::GRAMMAR,
+            from_ask: true,
         },
         Self {
             action: SELECT_WINDOW_ACTION,
             forms: SelectWindowAsk::GRAMMAR,
+            from_ask: true,
         },
         Self {
             action: MOVE_WINDOW_ACTION,
             forms: MoveWindowAsk::GRAMMAR,
+            from_ask: true,
         },
         Self {
             action: RESIZE_WINDOW_ACTION,
             forms: ResizeWindowAsk::GRAMMAR,
+            from_ask: true,
+        },
+        Self {
+            action: SPAWN_ACTION,
+            forms: InlineGrammar::SPAWN,
+            from_ask: false,
+        },
+        Self {
+            action: SPLIT_ACTION,
+            forms: InlineGrammar::SPLIT,
+            from_ask: false,
+        },
+        Self {
+            action: DISPLAY_MESSAGE_ACTION,
+            forms: InlineGrammar::DISPLAY_MESSAGE,
+            from_ask: false,
+        },
+        Self {
+            action: REPORT_AGENT_ACTION,
+            forms: InlineGrammar::REPORT_AGENT,
+            from_ask: false,
         },
     ];
 
@@ -5973,6 +6142,15 @@ mod tests {
     /// one compile with every test green, and the client that hard-coded four directions is the
     /// last to find out. This is the line that makes that a decision.
     ///
+    /// ⚠⚠ **THIS IS THE ONLY GATE THAT CAN SEE A CHANGED WORD, and that was measured rather than
+    /// assumed.** Renaming `SplitDir::Horizontal`'s word to `sideways` leaves
+    /// [`every_published_word_is_a_word_the_daemon_accepts`](crate::workspace) GREEN — necessarily,
+    /// because the parser reads through the same spelling the publication is projected from, so the
+    /// two move together by construction. That is the device working, and it is exactly why a pin
+    /// is still owed: agreement between publisher and parser says nothing about agreement with the
+    /// CLIENT that enumerated the vocabulary last week. This one goes RED naming
+    /// `split:dir=sideways,vertical`.
+    ///
     /// ⚠ **DERIVED FROM THE SERVED ANSWER**, never from the const table: it reads
     /// [`ACTION_GRAMMAR_SLOT`]'s own JSON, so a vocabulary that stops being published — because the
     /// verb left the table, or the slot stopped answering — fails here too. R320's rule: a ratchet
@@ -5982,12 +6160,16 @@ mod tests {
         const PINNED_WORDS: (u32, &[&str]) = (
             19,
             &[
+                "display_message:severity=note,warn,alert",
                 "join_pane:", // no vocabulary: a pane id and a window reference
                 "move_window:place=first,last,next,previous",
+                "report_agent:state=working,blocked,idle",
                 "resize_pane:dir=left,right,up,down",
                 "resize_window:from=largest,smallest,latest",
                 "select_pane:dir=left,right,up,down",
                 "select_window:relative=next,previous",
+                "spawn:", // no vocabulary: an argv, a directory and three numbers
+                "split:dir=horizontal,vertical",
                 "swap_pane:dir=left,right,up,down",
             ],
         );

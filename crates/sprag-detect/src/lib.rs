@@ -165,23 +165,29 @@ pub fn work() -> DetectWork {
     }
 }
 
-/// What an agent pane is doing, as a person would describe it.
-///
-/// The vocabulary is deliberately small. [`Blocked`](Self::Blocked) is the state this whole front
-/// exists for — the one that means "come back to me" — and [`Unknown`](Self::Unknown) is a real
-/// answer rather than a failure: "this is not an agent" and "this agent wants you" are opposite
-/// instructions to somebody reading a pane list, so they must not collapse into one another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AgentState {
-    /// No manifest claimed the pane, or one did and none of its rules matched.
-    #[default]
-    Unknown,
-    /// The agent is running: thinking, calling a tool, or printing.
-    Working,
-    /// The agent has ASKED something and cannot continue until it is answered.
-    Blocked,
-    /// The agent is at rest, waiting for input it has not asked for.
-    Idle,
+sprag_vt::closed_set! {
+    // ⚠ A CLOSED SET as of R352, so the vocabulary can be PUBLISHED. It had no `ALL`, which is why
+    // `from_wire` below was a second hand-written match of the same three words while its own doc
+    // said the vocabulary has one definition — the shape this workspace keeps paying for.
+    /// What an agent pane is doing, as a person would describe it.
+    ///
+    /// The vocabulary is deliberately small. [`Blocked`](Self::Blocked) is the state this whole
+    /// front exists for — the one that means "come back to me" — and [`Unknown`](Self::Unknown) is
+    /// a real answer rather than a failure: "this is not an agent" and "this agent wants you" are
+    /// opposite instructions to somebody reading a pane list, so they must not collapse into one
+    /// another.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum AgentState {
+        /// No manifest claimed the pane, or one did and none of its rules matched.
+        #[default]
+        Unknown,
+        /// The agent is running: thinking, calling a tool, or printing.
+        Working,
+        /// The agent has ASKED something and cannot continue until it is answered.
+        Blocked,
+        /// The agent is at rest, waiting for input it has not asked for.
+        Idle,
+    }
 }
 
 impl AgentState {
@@ -213,12 +219,36 @@ impl AgentState {
     /// screen can see perfectly well.
     #[must_use]
     pub fn from_wire(token: &str) -> Option<Self> {
-        match token {
-            "working" => Some(Self::Working),
-            "blocked" => Some(Self::Blocked),
-            "idle" => Some(Self::Idle),
-            _ => None,
+        // ⚠ DERIVED, and it used to be a second `match` on the same three words. The doc above
+        // already claimed the vocabulary has ONE definition; walking `ALL` through `wire_str` is
+        // what makes that true, and it is what lets `REPORTED_WORDS` publish the same set.
+        Self::ALL
+            .into_iter()
+            .find(|state| state.wire_str() == Some(token))
+    }
+
+    /// This state's wire token, or the empty string for [`Unknown`](Self::Unknown).
+    ///
+    /// The total spelling [`wire_words!`](sprag_vt::wire_words!) needs, projected from
+    /// [`wire_str`](Self::wire_str) so there is still one vocabulary. The empty string is never
+    /// published: [`is_reported`](Self::is_reported) excludes exactly the member that answers it,
+    /// and the macro refuses an empty word among the members it does admit.
+    #[must_use]
+    pub const fn wire_word(self) -> &'static str {
+        match self.wire_str() {
+            Some(word) => word,
+            None => "",
         }
+    }
+
+    /// Whether a REPORTER may name this state — every one that has a wire token.
+    ///
+    /// Derived from [`wire_str`](Self::wire_str) rather than listing the three, so the predicate
+    /// the wire publishes through and the spelling a reporter is parsed by cannot disagree. See
+    /// `from_wire` for why `unknown` is deliberately not among them.
+    #[must_use]
+    pub const fn is_reported(self) -> bool {
+        self.wire_str().is_some()
     }
 
     /// Whether this state is asserted by evidence PRESENT on the screen, rather than by the absence
@@ -239,6 +269,11 @@ impl AgentState {
         matches!(self, Self::Working | Self::Blocked)
     }
 }
+
+// The three words a REPORTER may name, as data the wire can publish — see `sprag_vt::wire_words`.
+// `Unknown` is excluded by the predicate, not by a list: it is a conclusion about the RULES rather
+// than a state a reporter is in, which is the asymmetry `from_wire` documents.
+sprag_vt::wire_words!(AgentState: wire_word, REPORTED_WORDS where is_reported);
 
 /// Which text a [`Test`] reads.
 ///

@@ -534,6 +534,18 @@ impl WorkspaceExternal {
         self
     }
 
+    /// Give this surface an AGENT CLOCK, which a daemon without one refuses `report_agent` for.
+    ///
+    /// A builder beside [`with_window_size`](Self::with_window_size) rather than a fourth fixture
+    /// constructor: the grammar gates need a surface that is attached AND has a detector, and every
+    /// existing fixture had exactly one of the two.
+    #[cfg(test)]
+    #[must_use]
+    fn with_agents(mut self, agents: Arc<crate::AgentClock>) -> Self {
+        self.agents = Some(agents);
+        self
+    }
+
     /// The `window-size` policy in force, for the two readers of it on this surface.
     ///
     /// Both go through here so they cannot drift: the `window_size` SLOT arbitrates a window under
@@ -1119,7 +1131,20 @@ impl WorkspaceExternal {
             .and_then(Value::as_str)
             .and_then(sprag_detect::AgentState::from_wire)
             .ok_or(InvokeError::TypeMismatch)?;
-        let name = map.get("name").and_then(Value::as_str).map(str::to_owned);
+        // ⚠ REFUSED, NOT DROPPED, and it used to be dropped: `.and_then(Value::as_str)` turned a
+        // `name` of the wrong type into `None`, so a report carrying one was answered
+        // `{accepted: true}` with the name silently gone. Its two sibling optional keys (`seq`,
+        // `bind`) both refuse a malformed value, which makes this the odd one out — R330's rule,
+        // and R352's argument-type gate is what found it.
+        //
+        // ⚠ It NARROWS what this verb accepts, so it is a wire decision and not only a tidy-up.
+        // `WIRE_PROTOCOL` stands: no WELL-FORMED request changes its answer, and the only requests
+        // that do are ones whose stated intent — *call this agent X* — was already being dropped on
+        // the floor. A client relying on that was not being served by it.
+        let name = match map.get(crate::wire::AGENT_NAME_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned()),
+        };
         // Absent is "I have no clock", which is always fresh. A malformed `seq` is a TypeMismatch
         // rather than a silent fall-back to that: a reporter whose counter arrived as a string has a
         // bug, and answering "accepted" would hide it behind a report that can never be refused.
@@ -2440,10 +2465,17 @@ impl WorkspaceExternal {
     /// `-b`: absent is the common side (right / below), and a non-bool is malformed rather than
     /// silently defaulted — the rule every other optional flag on this external follows.
     fn parse_placement(map: &Map<String, Value>) -> Result<(SplitSide, SplitDir), InvokeError> {
-        let dir = match map.get("dir").and_then(Value::as_str) {
-            Some("horizontal") => SplitDir::Horizontal,
-            Some("vertical") => SplitDir::Vertical,
-            _ => return Err(InvokeError::TypeMismatch),
+        // ⚠ THROUGH THE TYPE'S OWN VOCABULARY, and it used to be two string literals right here —
+        // so the words a client may send lived inside this parser and nothing could publish them.
+        // `SplitDir::from_wire` is the one definition now, and `SplitDir::WIRE_WORDS` is the same
+        // set as data, which is what `split` declares.
+        let dir = match map
+            .get("dir")
+            .and_then(Value::as_str)
+            .and_then(SplitDir::from_wire)
+        {
+            Some(dir) => dir,
+            None => return Err(InvokeError::TypeMismatch),
         };
         let side = match map.get("before") {
             None | Some(Value::Null) | Some(Value::Bool(false)) => SplitSide::Second,
@@ -8442,7 +8474,13 @@ mod tests {
     /// tell an argument that resolved from one the action ignored.
     fn grammar_fixture() -> (Arc<Mutex<SessionRegistry>>, WorkspaceExternal) {
         let reg = registry();
-        let mut ext = control_with_a_window(&reg, 100, 30);
+        // ⚠⚠ ATTACHMENTS **AND** AN AGENT CLOCK, and the second was learned from a red. Without a
+        // clock `report_agent` answers `Rejected("this daemon installs no agent detector")` before
+        // it reads a single key, so every probe of its arguments came back refused for a reason
+        // that has nothing to do with the argument — R337's rule in the other direction: a fixture
+        // that cannot express the claim reports about itself.
+        let mut ext = control_with_a_window(&reg, 100, 30)
+            .with_agents(Arc::new(crate::AgentClock::default()));
         for _ in 0..2 {
             ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
                 .expect("a pane the addressing arguments can name");
@@ -8545,10 +8583,11 @@ mod tests {
         // NON-VACUITY, asserted rather than assumed: a table whose vocabularies had all gone
         // missing would pass every assertion above by running none of them.
         assert_eq!(
-            driven, 21,
+            driven, 29,
             "one call per published word: four directions on each of three pane verbs (12), two \
-             steps of the window ring, four places to move a window to, and the three window-size \
-             policies that fold clients — `manual` being the fourth policy and not one of them",
+             steps of the window ring, four places to move a window to, the three window-size \
+             policies that fold clients (`manual` being the fourth and not one of them), the two \
+             axes a split may run on, three severities and the three states a reporter may name",
         );
     }
 
@@ -8598,10 +8637,74 @@ mod tests {
         }
 
         assert_eq!(
-            probed, 10,
-            "one probe per open string argument of every form: the window name appears in eight \
-             of them (three ways to move a window, three ways to size one, one to select one by \
-             name, one to join into one), plus the two anchors a move may name",
+            probed, 18,
+            "one probe per open string argument of every form: the window name in eight of them, \
+             the two anchors a move may name, a working directory and a pane name on each of the \
+             two spawning verbs, a message's text and audience, and a report's source and name",
+        );
+    }
+
+    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THE DAEMON ACTUALLY READS** — the gate that lets a grammar
+    /// be written by hand at all.
+    ///
+    /// The other two gates hold the VOCABULARIES to the parser. Neither can see a declared argument
+    /// the parser ignores completely: send it, nothing refuses, and the wire goes on advertising a
+    /// key that does nothing. That is the failure mode of any hand-written declaration, and it is
+    /// why [`ActionGrammar::ALL`] could at first only carry verbs whose grammar was already modelled
+    /// by an ask type.
+    ///
+    /// This closes it by TYPE. Send each declared argument with a value of the wrong JSON type — a
+    /// string where an int is declared, a number where a string is — and require the daemon to
+    /// refuse the request as malformed. A parser that reads the key cannot accept the wrong type
+    /// for it; a parser that never looks at the key cannot refuse anything. So:
+    ///
+    /// * refused ⇒ the declaration names a key this verb genuinely reads, at the type it claims;
+    /// * accepted ⇒ **the wire is advertising an argument the daemon does not have.**
+    ///
+    /// # What it still cannot see, said rather than implied
+    ///
+    /// An argument the parser reads and the declaration OMITS. That direction is absent-not-wrong —
+    /// a client is told less rather than something false — and the only thing that catches it is
+    /// deriving the key set from the request type, which is what
+    /// [`the_published_grammar_is_the_ask_types_own`](self) does for the verbs that have one.
+    #[test]
+    fn a_declared_argument_is_one_the_daemon_reads() {
+        let (_reg, mut ext) = grammar_fixture();
+
+        let mut probed = 0;
+        for verb in crate::wire::ActionGrammar::ALL {
+            for form in verb.forms {
+                for arg in *form {
+                    // The wrong type for what this argument says it is. A vocabulary argument is a
+                    // string, so a number is wrong for it too — and wrong in a way no vocabulary
+                    // could absorb.
+                    let wrong = match arg.ty {
+                        "int" | "bool" => Value::from("not-of-the-declared-type"),
+                        _ => Value::from(4242),
+                    };
+                    let call = call_built_from_the_grammar(form, arg, wrong);
+                    let answer = ext.invoke(verb.action, IntrospectValue::Json(call.clone()));
+                    assert!(
+                        matches!(answer, Err(InvokeError::TypeMismatch)),
+                        "`{}` ACCEPTS A {} FOR ITS DECLARED `{}`, so either the daemon does not \
+                         read that key at all or it does not read it as a {}. Sending {call} \
+                         answered {answer:?}, and a wire that advertises an argument nothing reads \
+                         is worse than one that says nothing.",
+                        verb.action,
+                        arg.ty,
+                        arg.name,
+                        arg.ty,
+                    );
+                    probed += 1;
+                }
+            }
+        }
+
+        assert_eq!(
+            probed, 55,
+            "one probe per declared argument of every FORM — the whole published grammar, counted \
+             per form rather than per verb: 31 across the seven ask-backed verbs, plus 6 + 9 + 3 + \
+             6 across the four declared inline",
         );
     }
 
@@ -8751,8 +8854,12 @@ mod tests {
 
         // EVERY published verb is covered, and nothing here describes one that is not published:
         // the two lists are compared as sets before any of them is compared in detail.
+        // ⚠ DERIVED, not listed: exactly the entries whose forms came from an ask type. A verb
+        // declared inline is not this gate's business and says so on the entry itself, so adding
+        // one cannot fail a gate about something else.
         let mut published: Vec<&str> = crate::wire::ActionGrammar::ALL
             .iter()
+            .filter(|verb| verb.from_ask)
             .map(|verb| verb.action)
             .collect();
         let mut driven: Vec<&str> = emitted.iter().map(|(action, _)| *action).collect();
@@ -8766,7 +8873,7 @@ mod tests {
         for (action, sent) in emitted {
             let verb = crate::wire::ActionGrammar::ALL
                 .iter()
-                .find(|verb| verb.action == action)
+                .find(|verb| verb.action == action && verb.from_ask)
                 .expect("compared as sets above");
             // FORM BY FORM, in declaration order against arm order — the two lists are the same
             // list seen from two sides, so comparing only their union would let a key wander from
