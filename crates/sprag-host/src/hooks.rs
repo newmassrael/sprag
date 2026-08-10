@@ -301,9 +301,20 @@ impl Target {
 
     /// The command an installed entry runs: this binary, at an absolute path, plus the subcommand
     /// that reads a payload for this target.
+    ///
+    /// The path is SHELL-QUOTED, because an entry's `command` is a command LINE the agent runs
+    /// through a shell — so an unquoted `/home/a dir/sprag` is the agent trying to run `/home/a`.
+    /// Measured rather than reasoned about: `sh -c "<path> hook claude"` exits 127 with
+    /// *"/home/a: not found"*, and nothing downstream can tell that from an agent whose user never
+    /// installed anything. The reader that has to recover the path again is
+    /// [`program_of`](Self::program_of), through the stated inverse.
     #[must_use]
     pub fn command(&self, exe: &Path) -> String {
-        format!("{} hook {}", exe.display(), self.name)
+        format!(
+            "{} hook {}",
+            crate::shellword::shell_quote(&exe.display().to_string()),
+            self.name
+        )
     }
 
     /// The program an installed command runs, when that command is one of ours.
@@ -312,12 +323,13 @@ impl Target {
     /// [`status`], which needs the path back out to tell an entry that still WORKS from one that
     /// merely still parses.
     #[must_use]
-    pub fn program_of<'a>(&self, command: &'a str) -> Option<&'a str> {
-        let program = command
-            .strip_suffix(&format!(" hook {}", self.name))?
-            .trim()
-            .trim_matches('"');
-        Path::new(program)
+    pub fn program_of(&self, command: &str) -> Option<String> {
+        let program = crate::shellword::shell_unquote(
+            command
+                .strip_suffix(&format!(" hook {}", self.name))?
+                .trim(),
+        );
+        Path::new(&program)
             .file_name()
             .is_some_and(|name| name == "sprag")
             .then_some(program)
@@ -614,7 +626,7 @@ fn status_at(target: &'static Target, path: PathBuf) -> Status {
         installed += 1;
         if missing_program.is_none() {
             missing_program = commands.iter().find_map(|command| {
-                let program = Path::new(target.program_of(command)?);
+                let program = PathBuf::from(target.program_of(command)?);
                 (program.is_absolute() && !program.exists()).then(|| program.to_path_buf())
             });
         }
@@ -2231,6 +2243,90 @@ mod tests {
             assert!(
                 !moved.reporting(),
                 "{}: but nothing it names can run, so this agent reports nothing",
+                target.name,
+            );
+        }
+    }
+
+    /// A sprag whose own path a shell would re-interpret still RUNS — measured through a shell,
+    /// because that is what an agent does with an entry's `command`.
+    ///
+    /// The defect this closes was found by asking the debt question of this round's own code, and it
+    /// was already live: `sh -c "/tmp/a dir/sprag hook claude"` exits 127 with *"/tmp/a: not
+    /// found"*, and downstream nothing can tell that from an agent whose user never installed
+    /// anything. It mattered more after per-launch instrumentation than before, because the path is
+    /// no longer one a user typed into `install-hooks` — the daemon derives it from where it was
+    /// built or installed, so nobody chose it and nobody would look at it.
+    ///
+    /// **Run rather than compared.** An assertion that the rendered string equals some expected
+    /// quoting would be this test agreeing with the renderer; only handing it to `sh` says whether a
+    /// shell reaches the program. Every one of the 35 tests here was green before the fix.
+    #[test]
+    fn a_hook_command_reaches_a_program_whose_path_a_shell_would_split() {
+        let fixture = Fixture::new(&CLAUDE, None);
+        let awkward = fixture.0.join("a dir");
+        std::fs::create_dir_all(&awkward).expect("a directory whose name has a space");
+        let program = awkward.join("sprag");
+        let marker = fixture.0.join("it-ran");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf ok > '{}'\n", marker.display()),
+        )
+        .expect("a stand-in binary");
+        std::fs::set_permissions(
+            &program,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+        )
+        .expect("make it executable");
+
+        let command = CLAUDE.command(&program);
+        let ran = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .status()
+            .expect("the shell runs");
+        assert!(
+            ran.success() && marker.exists(),
+            "a shell could not reach the program in {command:?}",
+        );
+
+        // ...and the entry it writes is still recognised as ours, which is what makes a re-install
+        // correct it in place rather than adding a second one.
+        assert_eq!(
+            CLAUDE.program_of(&command).as_deref(),
+            Some(program.display().to_string().as_str()),
+            "the path must come back out of {command:?}",
+        );
+        assert!(CLAUDE.owns(&command));
+    }
+
+    /// The same path, all the way through an install: recognised, idempotent, and reported as a
+    /// program that is really there.
+    ///
+    /// `Status::missing_program` is the reader that would go wrong the other way — a path it failed
+    /// to unquote is a path it cannot find, so every install into a directory with a space would
+    /// report itself broken.
+    #[test]
+    fn an_install_under_an_awkward_path_is_idempotent_and_reads_as_present() {
+        for target in TARGETS {
+            let fixture = Fixture::new(target, None);
+            let awkward = fixture.0.join("a dir");
+            std::fs::create_dir_all(&awkward).expect("a directory whose name has a space");
+            let program = awkward.join("sprag");
+            std::fs::write(&program, "").expect("a stand-in binary");
+
+            let first = fixture.install(&program.display().to_string());
+            let status = status_at(target, fixture.path());
+            assert!(
+                status.complete() && status.missing_program.is_none(),
+                "{}: an installed path with a space is still a path that exists: {status:?}",
+                target.name,
+            );
+
+            let second = fixture.install(&program.display().to_string());
+            assert_eq!(
+                first, second,
+                "{}: a re-install must correct in place, not add a second entry",
                 target.name,
             );
         }

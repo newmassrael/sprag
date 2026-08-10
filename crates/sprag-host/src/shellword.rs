@@ -37,6 +37,43 @@ pub fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
+/// Read one quoted word back: the inverse of [`shell_quote`], and what a reader of a stored command
+/// line needs to recover the path that was written into it.
+///
+/// It exists because a WRITER that quotes and a READER that does not are a pair that agrees only
+/// about paths needing no quoting — which is every path a developer tries and not the one a user
+/// has. [`crate::hooks::Target::program_of`] is the reader in question: it recognises sprag's own
+/// entry in an agent's config and reports whether the program it names is still on disk, and both
+/// of those are claims about a PATH rather than about the characters it was spelled with.
+///
+/// POSIX single-word rules, which is all a command line's first word can be: `'…'` is literal to
+/// the next `'`, `"…"` is literal except for a backslash escape, and a bare backslash escapes the
+/// character after it. Anything unterminated is taken as running to the end, because this reads a
+/// word somebody may have hand-edited and refusing would turn a repairable entry into an
+/// unrecognised one.
+#[must_use]
+pub fn shell_unquote(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut chars = word.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => out.extend(chars.by_ref().take_while(|c| *c != '\'')),
+            '"' => {
+                while let Some(inner) = chars.next() {
+                    match inner {
+                        '"' => break,
+                        '\\' => out.extend(chars.next()),
+                        other => out.push(other),
+                    }
+                }
+            }
+            '\\' => out.extend(chars.next()),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,6 +93,44 @@ mod tests {
             shell_quote(""),
             "''",
             "an empty word must still occupy a position on the command line"
+        );
+    }
+
+    /// Every word `shell_quote` can produce comes back as the word it was made from — including the
+    /// ones a developer's own machine never produces, which is where a writer/reader pair drifts.
+    #[test]
+    fn unquoting_is_the_inverse_of_quoting() {
+        for word in [
+            "cargo",
+            "/home/me/report.pdf",
+            "/home/a dir/sprag",
+            "it's",
+            "$(reboot)",
+            "a\nnewline",
+            "",
+            "back\\slash",
+            "\"double\"",
+        ] {
+            assert_eq!(
+                shell_unquote(&shell_quote(word)),
+                word,
+                "{word:?} did not survive the round trip",
+            );
+        }
+    }
+
+    /// A word somebody QUOTED BY HAND is read too, because an agent's config is the user's file and
+    /// nothing stops them editing it. Double quotes are the form the old reader anticipated, and a
+    /// bare backslash is the third way a shell spells the same thing.
+    #[test]
+    fn a_hand_quoted_word_is_read_the_way_a_shell_would() {
+        assert_eq!(shell_unquote("\"/home/a dir/sprag\""), "/home/a dir/sprag");
+        assert_eq!(shell_unquote("/home/a\\ dir/sprag"), "/home/a dir/sprag");
+        assert_eq!(shell_unquote("\"say \\\"hi\\\"\""), "say \"hi\"");
+        assert_eq!(
+            shell_unquote("'unterminated"),
+            "unterminated",
+            "a half-edited entry is still recognisable rather than refused",
         );
     }
 }
