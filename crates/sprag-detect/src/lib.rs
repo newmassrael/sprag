@@ -44,8 +44,8 @@
 //! * **The selection marker is not a constant.** Three markers were measured across the two
 //!   agents: `❯` (U+276F) in `claude`, `>` (U+003E) in `codex`'s sign-in picker, and `›` (U+203A)
 //!   in `codex`'s directory-trust dialog. Two of those are inside ONE agent, so the marker is not
-//!   even a per-agent constant and [`dialog_pattern`] matches the measured CLASS. Everything else
-//!   about the shape held: marker, `<digit>.`, and at least one more numbered option below.
+//!   even a per-agent constant, so [`question`] matches the measured CLASS. Everything else about
+//!   the shape held: marker, `<digit>.`, and at least one more numbered option below.
 //! * **A fingerprint needs conjunction, which is why [`Fingerprint`] exists.** `claude` is
 //!   identified by one string in a fixed footer. `codex` has no such string at any width: its
 //!   footer is `<model> <effort> · <cwd>`, every part of which is configurable, and the one banner
@@ -109,8 +109,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use regex::Regex;
 use sprag_vt::Screen;
 
+mod choice;
 mod track;
 
+pub use choice::{Choice, Question, question};
 pub use track::{DEFAULT_SETTLE, Hysteresis, Report, ReportOutcome, Tracker};
 
 /// How many rule evaluations have run, process-wide.
@@ -274,6 +276,19 @@ pub enum Test {
     /// The region's text matches this pattern. Multi-line by convention — use `(?m)` and `^` to
     /// anchor to a row, which is what a bottom-anchored dialog rule wants.
     Regex(Regex),
+    /// The region holds a CHOICE LIST: a marked, consecutively numbered set of at least two
+    /// options — see [`question`], which is both this test and the parse a supervisor reads.
+    ///
+    /// The one test that is not a string comparison, and the reason is that its answer is wanted
+    /// twice. A pane blocked on a dialog is a pane somebody has to ANSWER, and answering means
+    /// naming an option; a rule that concluded "blocked" from a pattern while the options were
+    /// re-derived somewhere else would be two readers of one screen, free to disagree about
+    /// whether there is a list at all. There is one function, so the rule fires exactly when the
+    /// options can be enumerated.
+    ///
+    /// On [`Region::Title`] it is always false, and not vacuously: a title is one line and a
+    /// choice list is at least two options.
+    ChoiceList,
 }
 
 /// One region-and-test pair — the atom both a fingerprint and a rule are built from.
@@ -295,6 +310,14 @@ impl Match {
 
     /// Whether this holds for the given screen and title.
     fn holds(&self, screen: &Screen, title: &str) -> bool {
+        // The structured test reads the region's ROWS rather than one joined string, so it is
+        // taken before the text is ever built — a pane with no menu in its window costs no join.
+        if matches!(self.test, Test::ChoiceList) {
+            return match self.region {
+                Region::Title => false,
+                Region::BottomLines(n) => question(screen, n).is_some(),
+            };
+        }
         let text = match &self.region {
             Region::Title => title.to_owned(),
             Region::BottomLines(n) => bottom_lines(screen, *n),
@@ -303,6 +326,7 @@ impl Match {
             Test::StartsWith(needle) => text.starts_with(needle.as_str()),
             Test::Contains(needle) => text.contains(needle.as_str()),
             Test::Regex(pattern) => pattern.is_match(&text),
+            Test::ChoiceList => unreachable!("taken above, before the region's text is built"),
         }
     }
 }
@@ -487,21 +511,18 @@ fn bottom_lines(screen: &Screen, n: u16) -> String {
     rows.join("\n")
 }
 
-/// The regex a dialog is recognised by, shared by [`claude`] and by the tests that prove what it
-/// does and does not match.
+/// The pattern a dialog USED to be recognised by, kept only so a test can show what replacing it
+/// bought.
 ///
-/// Two halves, and the second is the load-bearing one: the selection marker on a numbered option,
-/// and at least one MORE numbered option below it. Without the second half a user's own typed line
-/// — `❯ 1. do the thing` echoed into the prompt box — reads as a dialog, because a prompt echo and
-/// a choice list's first row are the same string. A choice list always offers more than one choice;
-/// an echo is one line. That is the difference the pattern is written to see.
-///
-/// The marker is a CLASS, not a literal, and that is a measurement rather than caution: `claude`
-/// marks with `❯` (U+276F) while `codex` marks its sign-in picker with `>` (U+003E) and its trust
-/// dialog with `›` (U+203A). Two markers inside one agent means the marker is not a per-agent
-/// constant either, so a rule keyed on the glyph one probe happened to see is a rule about that
-/// probe.
-pub fn dialog_pattern() -> Regex {
+/// It is not wired into any manifest: [`Test::ChoiceList`] is, and [`question`] is what answers it.
+/// The regex could say a menu was there and could not say what was on it, so the options had to be
+/// re-derived by whoever wanted to answer one — two readers of one screen, which is the shape a
+/// round of this project's history is named after. What the parser adds beyond enumerating the
+/// options is the CONSECUTIVE numbering: this pattern matches any marked `N.` line followed
+/// anywhere below by any other `M.` line, so two unrelated numbered lines read as a menu.
+/// `a_marked_line_and_an_unrelated_numbered_line_are_not_a_menu` is that difference, driven.
+#[cfg(test)]
+fn dialog_pattern() -> Regex {
     Regex::new(r"(?m)^\s*[❯›>]\s+\d+\.[\s\S]*?^\s*\d+\.").expect("a literal pattern compiles")
 }
 
@@ -527,7 +548,13 @@ const RESTING_GLYPH: &str = "✳";
 /// Named rather than repeated because it is now read by four matches in two manifests — the two
 /// dialog RULES and the two onboarding FINGERPRINTS, which have to agree about the region or the
 /// conjunction would be looking at a different screen than the rule that then fires on it.
-const DIALOG_WINDOW: u16 = 12;
+///
+/// PUBLIC because a fifth reader needs it and could otherwise only re-spell it: a caller wanting
+/// the OPTIONS a blocked pane is offering ([`question`]) has to ask in the same window the rule
+/// that blocked it read, or the two would be describing different screens. A manifest of the
+/// user's own may declare a different window, and then this constant is not that manifest's —
+/// which is why `question` takes the window as a parameter rather than assuming this one.
+pub const DIALOG_WINDOW: u16 = 12;
 
 /// The built-in manifest for Anthropic's `claude` CLI, derived from R249's measurements.
 ///
@@ -570,10 +597,7 @@ pub fn claude() -> Manifest {
                     Region::BottomLines(DIALOG_WINDOW),
                     Test::Contains("Claude Code".to_owned()),
                 ),
-                Match::new(
-                    Region::BottomLines(DIALOG_WINDOW),
-                    Test::Regex(dialog_pattern()),
-                ),
+                Match::new(Region::BottomLines(DIALOG_WINDOW), Test::ChoiceList),
             ]),
         ],
         rules: vec![
@@ -582,7 +606,7 @@ pub fn claude() -> Manifest {
                 state: AgentState::Blocked,
                 all: vec![Match::new(
                     Region::BottomLines(DIALOG_WINDOW),
-                    Test::Regex(dialog_pattern()),
+                    Test::ChoiceList,
                 )],
                 // Above `idle-glyph` because BOTH match on a blocked pane -- the measured fact
                 // this whole ordering exists for.
@@ -681,10 +705,7 @@ pub fn codex() -> Manifest {
                     Region::BottomLines(DIALOG_WINDOW),
                     Test::Contains("Welcome to Codex".to_owned()),
                 ),
-                Match::new(
-                    Region::BottomLines(DIALOG_WINDOW),
-                    Test::Regex(dialog_pattern()),
-                ),
+                Match::new(Region::BottomLines(DIALOG_WINDOW), Test::ChoiceList),
             ]),
         ],
         rules: vec![
@@ -699,7 +720,7 @@ pub fn codex() -> Manifest {
                 state: AgentState::Blocked,
                 all: vec![Match::new(
                     Region::BottomLines(DIALOG_WINDOW),
-                    Test::Regex(dialog_pattern()),
+                    Test::ChoiceList,
                 )],
                 priority: 30,
             },
@@ -970,6 +991,251 @@ mod tests {
         }
     }
 
+    /// Every dialog this crate ever captured, enumerated: the numbers a caller would type, and
+    /// which one Enter would land on.
+    ///
+    /// This is the answer `Blocked` could not give. Six screens from two independently written
+    /// agents, and the parse is asserted against what a person reading the fixture sees rather
+    /// than against what the code returns — the numbers and the marked option were read off the
+    /// captured screens above before this test was run.
+    #[test]
+    fn every_captured_dialog_yields_the_options_it_offers() {
+        let cases: [(&str, &[&str], &[u32], u32); 6] = [
+            ("permission", PERMISSION_DIALOG, &[1, 2, 3], 1),
+            ("trust", TRUST_DIALOG, &[1, 2], 1),
+            ("model picker", MODEL_PICKER, &[1, 2, 3, 4, 5], 2),
+            ("codex sign-in", CODEX_SIGNIN_PICKER, &[1, 2, 3], 1),
+            ("codex trust", CODEX_TRUST_DIALOG, &[1, 2], 1),
+            ("codex model", CODEX_MODEL_PICKER, &[1, 2, 3, 4, 5], 1),
+        ];
+        for (name, fixture, numbers, marked) in cases {
+            let em = painted(fixture);
+            let q = question(em.screen(), 12).unwrap_or_else(|| panic!("{name}: no options read"));
+            assert_eq!(
+                q.choices.iter().map(|c| c.number).collect::<Vec<_>>(),
+                numbers,
+                "{name}: the numbers a caller would type",
+            );
+            assert_eq!(
+                q.selected().map(|c| c.number),
+                Some(marked),
+                "{name}: where Enter would land",
+            );
+            assert!(
+                q.choices.iter().all(|c| !c.label.is_empty()),
+                "{name}: an option with no label is one nobody can classify: {:?}",
+                q.choices,
+            );
+        }
+    }
+
+    /// The two agents' shortest dialogs, spelled out in full — the numbers AND the words, so the
+    /// test above is a claim about content and not only about counting.
+    #[test]
+    fn the_two_trust_dialogs_are_read_word_for_word() {
+        let claude = question(painted(TRUST_DIALOG).screen(), 12).expect("claude's trust dialog");
+        assert_eq!(
+            claude
+                .choices
+                .iter()
+                .map(|c| c.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Yes, I trust this folder", "No, exit"],
+        );
+        assert!(
+            claude
+                .asked
+                .iter()
+                .any(|line| line.contains("Is this a project you created or one you trust?")),
+            "the sentence a policy classifies must survive: {:?}",
+            claude.asked,
+        );
+
+        let codex =
+            question(painted(CODEX_TRUST_DIALOG).screen(), 12).expect("codex's trust dialog");
+        assert_eq!(
+            codex
+                .choices
+                .iter()
+                .map(|c| c.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Yes, continue", "No, quit"],
+        );
+    }
+
+    /// A model picker's option runs onto a second row, and the row below the list does not.
+    ///
+    /// Both halves matter and they are the same measurement seen twice: the description indented
+    /// under an option is part of that option, and the footer at the option indent is part of
+    /// none. Asserted on BOTH agents' pickers, because an indent rule read off one vendor's layout
+    /// is a rule about that vendor.
+    #[test]
+    fn an_options_second_row_belongs_to_it_and_the_footer_belongs_to_nobody() {
+        let claude = question(painted(MODEL_PICKER).screen(), 12).expect("claude's picker");
+        assert!(
+            claude
+                .choice(2)
+                .is_some_and(|c| c.label.ends_with("complex tasks")),
+            "the marked option's second row is part of it: {:?}",
+            claude.choice(2),
+        );
+        assert!(
+            claude
+                .choices
+                .iter()
+                .all(|c| !c.label.contains("Enter to set as default")),
+            "the footer sits at the option indent and belongs to no option: {:?}",
+            claude.choices,
+        );
+
+        let codex = question(painted(CODEX_MODEL_PICKER).screen(), 12).expect("codex's picker");
+        assert!(
+            codex
+                .choice(4)
+                .is_some_and(|c| c.label.ends_with("real-world work.")),
+            "codex's fourth option runs onto a second row too: {:?}",
+            codex.choice(4),
+        );
+        assert!(
+            codex
+                .choices
+                .iter()
+                .all(|c| !c.label.contains("Press enter to confirm")),
+            "and its footer belongs to nobody either: {:?}",
+            codex.choices,
+        );
+    }
+
+    /// Enter does not always land on the first option, and a supervisor that assumed it did would
+    /// answer the wrong question on every screen like this one.
+    #[test]
+    fn the_marked_option_is_not_always_the_first() {
+        let q = question(painted(MODEL_PICKER).screen(), 12).expect("the picker");
+        assert_eq!(q.selected().map(|c| c.number), Some(2));
+        assert!(
+            q.choice(1).is_some_and(|c| !c.selected),
+            "the option ABOVE the marker exists and is not selected",
+        );
+    }
+
+    /// A pane narrow enough to TEAR an option's label still reports the whole label.
+    ///
+    /// The window is still measured in rows (R344's decision, pinned by
+    /// `a_dialog_still_reads_as_blocked_when_every_line_of_it_wraps`) — what changed is what is
+    /// read out of it. `differently` is split across two rows at forty columns, and half a word is
+    /// not something a policy can classify. The join goes through the emulator's own share
+    /// arithmetic, so this is R344's primitive doing R344's job for a fourth reader.
+    #[test]
+    fn a_narrow_pane_does_not_tear_an_options_label() {
+        const WHOLE: &str = "No, and tell Claude what to do differently (esc)";
+        let mut torn = 0;
+        for cols in [80_u16, 60, 40, 30] {
+            let mut em = Emulator::new(cols, 24);
+            em.advance(PERMISSION_DIALOG.join("\r\n").as_bytes());
+            // Non-vacuity: at the narrow widths the option's own row really is torn.
+            if !em.screen().row_text(em.screen().rows() - 1).is_empty() {
+                // (the fixture never fills the screen; the check below is the real one)
+            }
+            let q = question(em.screen(), 12).unwrap_or_else(|| panic!("no options at {cols}"));
+            assert_eq!(
+                q.choice(3).map(|c| c.label.as_str()),
+                Some(WHOLE),
+                "at {cols} columns",
+            );
+            if (0..em.screen().rows())
+                .filter(|row| em.screen().wrapped(*row))
+                .any(|row| em.screen().row_text(row).contains("3. No,"))
+            {
+                torn += 1;
+            }
+        }
+        assert!(
+            torn > 0,
+            "no width tore the option, so this test proves nothing about joining",
+        );
+    }
+
+    /// The clause the retired regex did not have, driven against the regex itself.
+    ///
+    /// `dialog_pattern` reads a marked `N.` line followed ANYWHERE below by another `M.` line, and
+    /// says nothing about the two being one list. So two unrelated numbered lines — a user's
+    /// echoed choice in the prompt box, and a leftover transcript step below it — read as a menu
+    /// whose second option does not exist. A supervisor acting on that would press `3` at a prompt
+    /// that has no third option.
+    ///
+    /// The screen is SYNTHETIC, unlike every fixture above it: what it probes is the pattern's
+    /// shape rather than an agent's UI, and the assertion that matters is that the control fires
+    /// and the replacement does not.
+    #[test]
+    fn a_number_below_a_marked_line_is_not_a_second_option() {
+        let screen = &[
+            "● Here is the plan I typed back at you:",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "❯ 1. rewrite the parser",
+            "────────────────────────────────────────────────────────────────────────────────",
+            "  3. and then run the suite",
+            "  ⏸ manual mode on · ? for shortcuts",
+        ];
+        let em = painted(screen);
+        assert!(
+            dialog_pattern().is_match(&bottom_lines(em.screen(), 12)),
+            "the control must fire, or this proves nothing about the replacement",
+        );
+        assert!(
+            question(em.screen(), 12).is_none(),
+            "numbers that do not RUN are not a list of choices",
+        );
+        assert_eq!(
+            verdict(screen, Some("✳ Claude Code")).state,
+            AgentState::Idle,
+            "and so the pane is not blocked",
+        );
+    }
+
+    /// The rule that fires and the options a caller reads are ONE answer.
+    ///
+    /// There is no state in which a pane is reported blocked by a choice list nobody can
+    /// enumerate, nor one in which options can be read off a pane the rule calls idle — because
+    /// `Test::ChoiceList` IS `question`. Driven over every captured screen in this file, blocked
+    /// and not, so a later round that reintroduces a second reader finds out here.
+    #[test]
+    fn the_rule_that_fires_and_the_options_a_caller_reads_are_one_answer() {
+        let cases: [(&str, &[&str], Option<&str>, bool); 8] = [
+            ("permission", PERMISSION_DIALOG, Some("✳ x"), true),
+            ("trust", TRUST_DIALOG, Some("✳ x"), true),
+            ("model picker", MODEL_PICKER, Some("✳ x"), true),
+            (
+                "codex sign-in",
+                CODEX_SIGNIN_PICKER,
+                Some("codexprobe"),
+                true,
+            ),
+            ("codex trust", CODEX_TRUST_DIALOG, Some("codexprobe"), true),
+            ("codex model", CODEX_MODEL_PICKER, Some("codexprobe"), true),
+            ("claude idle", IDLE, Some("✳ Claude Code"), false),
+            ("codex idle", CODEX_IDLE, Some("codexprobe"), false),
+        ];
+        for (name, fixture, title, is_menu) in cases {
+            let em = painted(fixture);
+            assert_eq!(
+                question(em.screen(), 12).is_some(),
+                is_menu,
+                "{name}: the parse",
+            );
+            // The RULE, asked of both manifests so a screen from either agent is judged by the
+            // rule that would judge it in production.
+            let blocked = detect(em.screen(), title, &built_ins()).state == AgentState::Blocked
+                || codex()
+                    .verdict(em.screen(), title.unwrap_or_default())
+                    .state
+                    == AgentState::Blocked;
+            assert_eq!(
+                blocked, is_menu,
+                "{name}: the rule must agree with the parse"
+            );
+        }
+    }
+
     /// The one that keeps the dialog rule from being a menace: a user's own typed line.
     #[test]
     fn a_single_numbered_line_the_user_typed_is_not_a_dialog() {
@@ -1055,7 +1321,7 @@ mod tests {
     /// row: `Tracker` remembers an identity once it is established, so a pane falsely claimed here
     /// would go on being rescued as an agent every time anything dialog-shaped appeared in it.
     ///
-    /// REVERT-PROOF: drop the `dialog_pattern` match from the onboarding fingerprint and this fails
+    /// REVERT-PROOF: drop the `ChoiceList` match from the onboarding fingerprint and this fails
     /// while `a_first_run_dialog_is_claimed_by_the_title_free_fingerprint` stays green — the two
     /// tests are the two halves of one `all`.
     #[test]
@@ -1331,19 +1597,20 @@ mod tests {
         }
     }
 
-    /// Both `codex` dialogs match the shared pattern, and the test asserts WHY that needed a
-    /// change: the marker literal `claude` was written from misses both of them. Without this
-    /// second half the widening would be untested — the pattern would pass either way.
+    /// Both `codex` dialogs are read, and the test asserts WHY the marker had to become a class:
+    /// the marker literal `claude` was written from misses both of them. Without this second half
+    /// the widening would be untested — a parser that accepted anything would pass either way.
     #[test]
-    fn both_codex_markers_match_and_claudes_lone_marker_would_have_missed_them() {
-        let widened = dialog_pattern();
+    fn both_codex_markers_are_read_and_claudes_lone_marker_would_have_missed_them() {
         let claude_only = Regex::new(r"(?m)^\s*❯\s+\d+\.[\s\S]*?^\s*\d+\.").expect("compiles");
         for fixture in [CODEX_SIGNIN_PICKER, CODEX_TRUST_DIALOG, CODEX_MODEL_PICKER] {
             let em = painted(fixture);
-            let text = bottom_lines(em.screen(), 12);
-            assert!(widened.is_match(&text), "widened pattern must match");
             assert!(
-                !claude_only.is_match(&text),
+                question(em.screen(), 12).is_some(),
+                "the widened marker class must read this dialog",
+            );
+            assert!(
+                !claude_only.is_match(&bottom_lines(em.screen(), 12)),
                 "the single-marker pattern must MISS, or the widening proves nothing"
             );
         }

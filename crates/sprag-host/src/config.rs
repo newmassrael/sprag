@@ -1507,6 +1507,15 @@ struct DeclaredMatch {
     /// reported against the file rather than never matching for the life of the daemon.
     #[serde(default)]
     regex: Option<String>,
+    /// `choice_list = true` — the region holds a numbered menu the agent is waiting on
+    /// ([`sprag_detect::Test::ChoiceList`]).
+    ///
+    /// The one test with no operand, because its operand is the shape rather than a string. Spelled
+    /// as a `bool` so it reads like the others in the table and so `choice_list = false` is
+    /// available to a user commenting one out; `false` names no test, which the total match below
+    /// reports exactly as a missing one — the same message, because it is the same mistake.
+    #[serde(default)]
+    choice_list: Option<bool>,
 }
 
 /// The `region = …` spelling: the OSC title, or the last N non-empty rows.
@@ -1575,15 +1584,19 @@ impl DeclaredMatch {
     /// so "exactly one" is the shape of the code and not a fact asserted about it — and so the two
     /// ways to get it wrong get different messages.
     fn test(&self) -> Result<sprag_detect::Test, String> {
-        match (&self.starts_with, &self.contains, &self.regex) {
-            (Some(prefix), None, None) => Ok(sprag_detect::Test::StartsWith(prefix.clone())),
-            (None, Some(needle), None) => Ok(sprag_detect::Test::Contains(needle.clone())),
-            (None, None, Some(pattern)) => regex::Regex::new(pattern)
+        // `choice_list = false` is folded to "absent" here rather than being a fourth `Some` arm:
+        // a switch turned off names no test, which is what the total match below is about.
+        let choice_list = self.choice_list.filter(|on| *on);
+        match (&self.starts_with, &self.contains, &self.regex, choice_list) {
+            (Some(prefix), None, None, None) => Ok(sprag_detect::Test::StartsWith(prefix.clone())),
+            (None, Some(needle), None, None) => Ok(sprag_detect::Test::Contains(needle.clone())),
+            (None, None, Some(pattern), None) => regex::Regex::new(pattern)
                 .map(sprag_detect::Test::Regex)
                 .map_err(|error| format!("regex {pattern:?} does not compile: {error}")),
-            (None, None, None) => Err(format!(
-                "the match on region \"{}\" names no test — give it one of starts_with, contains \
-                 or regex",
+            (None, None, None, Some(true)) => Ok(sprag_detect::Test::ChoiceList),
+            (None, None, None, None) => Err(format!(
+                "the match on region \"{}\" names no test — give it one of starts_with, contains, \
+                 regex or choice_list",
                 self.region,
             )),
             _ => Err(format!(
@@ -3314,6 +3327,58 @@ mod tests {
 
         let rows = why(&agent(r#"{ region = "bottom:0", contains = "a" }"#));
         assert!(rows.contains("no rows"), "{rows}");
+
+        // The structured test is one of the four, so it collides with the others exactly as they
+        // collide with each other — and turning it OFF names no test, which is the same mistake as
+        // writing none.
+        let two = why(&agent(
+            r#"{ region = "bottom:12", choice_list = true, contains = "a" }"#,
+        ));
+        assert!(two.contains("more than one test"), "{two}");
+        let off = why(&agent(r#"{ region = "bottom:12", choice_list = false }"#));
+        assert!(off.contains("names no test"), "{off}");
+        assert!(off.contains("choice_list"), "the message lists it: {off}");
+    }
+
+    /// A user's own agent can wait on a menu, and the rule it writes is the SAME test the built-ins
+    /// use — the structured one, not a regex they had to re-derive.
+    ///
+    /// This is what `choice_list` is for. Before it, a manifest author reaching for the blocked
+    /// shape had to re-spell a three-marker character class and a lookahead across rows, and the
+    /// list they got right would still be a second reader of the same screen.
+    #[test]
+    fn a_user_manifest_can_wait_on_a_choice_list() {
+        use sprag_vt::{Emulator, VtPort};
+
+        let manifests = manifests_from(
+            r#"
+            [[agent]]
+            name = "mine"
+            [[agent.fingerprint]]
+            all = [ { region = "title", contains = "mine" } ]
+            [[agent.rule]]
+            id = "asking"
+            state = "blocked"
+            priority = 50
+            all = [ { region = "bottom:12", choice_list = true } ]
+            "#,
+        )
+        .expect("usable");
+
+        let mut em = Emulator::new(80, 24);
+        em.advance("Shall I?\r\n\u{276f} 1. yes\r\n  2. no".as_bytes());
+        let v = sprag_detect::detect(em.screen(), Some("mine"), &manifests);
+        assert_eq!(v.state, sprag_detect::AgentState::Blocked);
+        assert_eq!(v.rule.as_deref(), Some("asking"));
+
+        // And the pane the same manifest is NOT waiting on: one option is an echo, not a menu.
+        let mut lone = Emulator::new(80, 24);
+        lone.advance("\u{276f} 1. yes".as_bytes());
+        assert_eq!(
+            sprag_detect::detect(lone.screen(), Some("mine"), &manifests).state,
+            sprag_detect::AgentState::Unknown,
+            "the rule must not fire on a single numbered line",
+        );
     }
 
     /// A pattern that cannot compile is refused HERE, with the file named — not left to never match
