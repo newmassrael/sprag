@@ -151,3 +151,82 @@ fn park() {
     let mut sink = Vec::new();
     let _ = std::io::stdin().lock().read_until(0, &mut sink);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The flag contract, which is the only thing this stand-in must be right about.**
+    ///
+    /// It exists to catch sprag emitting a document no agent can act on, and it can only do that if
+    /// it reads the flag the way an agent does. Both spellings, because sprag emits the separated
+    /// one and a stand-in that knew only that could not notice sprag switching; LAST wins, because
+    /// that is what a repeated flag means everywhere else; and a missing flag is an ERROR rather
+    /// than an empty document, so a launch that was never instrumented cannot read as one that was
+    /// instrumented with nothing.
+    #[test]
+    fn the_settings_flag_is_read_the_way_an_agent_reads_it() {
+        let inline = |args: &[&str]| {
+            settings_from(args.iter().map(|arg| (*arg).to_owned()))
+                .map(|doc| doc["mark"].as_str().unwrap_or_default().to_owned())
+        };
+        assert_eq!(
+            inline(&["--settings", r#"{"mark":"separated"}"#]).as_deref(),
+            Ok("separated"),
+        );
+        assert_eq!(
+            inline(&["--settings={\"mark\":\"joined\"}"]).as_deref(),
+            Ok("joined"),
+        );
+        assert_eq!(
+            inline(&[
+                "--settings",
+                r#"{"mark":"first"}"#,
+                "--settings",
+                r#"{"mark":"last"}"#,
+            ])
+            .as_deref(),
+            Ok("last"),
+            "a repeated flag means the last one, as it does everywhere else",
+        );
+        assert!(
+            inline(&["--model", "sonnet"]).is_err(),
+            "a launch with no settings is not a launch instrumented with nothing",
+        );
+        assert!(
+            inline(&["--settings"]).is_err(),
+            "the flag without its value is refused rather than read as absent",
+        );
+        assert!(
+            inline(&["--settings", "{not json"]).is_err(),
+            "a document that is not JSON fails HERE, which is the failure this exists to find",
+        );
+    }
+
+    /// **Where the hooks live in the document** — the other half of the same faithfulness.
+    ///
+    /// A stand-in that looked one level too high or too low would run nothing for a document that
+    /// is perfectly correct, and the end-to-end that drives it would report the producer broken.
+    /// Order is asserted because an agent runs the entries as written, and the unknown event is the
+    /// control: without it, a reader that returned every command in the file would pass.
+    #[test]
+    fn the_commands_for_an_event_are_the_ones_the_document_nests_under_it() {
+        let doc: Value = serde_json::from_str(
+            r#"{"hooks":{
+                 "Stop":[{"hooks":[{"command":"first"},{"command":"second"}]}],
+                 "Notification":[{"hooks":[{"command":"elsewhere"}]}]
+               }}"#,
+        )
+        .expect("the fixture is JSON");
+        assert_eq!(commands_for(&doc, "Stop"), vec!["first", "second"]);
+        assert_eq!(commands_for(&doc, "Notification"), vec!["elsewhere"]);
+        assert!(
+            commands_for(&doc, "PreToolUse").is_empty(),
+            "an event the document says nothing about runs nothing",
+        );
+        assert!(
+            commands_for(&Value::Null, "Stop").is_empty(),
+            "and neither does a document with no hooks at all",
+        );
+    }
+}
