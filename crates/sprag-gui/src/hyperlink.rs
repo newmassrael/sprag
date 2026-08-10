@@ -607,6 +607,10 @@ impl ExternalIntrospect for HyperlinkOracle {
                     // discover the one verb this surface exists to offer.
                     SchemaField::action("send", "string"),
                     SchemaField::action("activate", "json"),
+                    // HOW TO CALL THE TWO ABOVE — see the palette's note. `activate` takes nothing,
+                    // which is the whole reason a client has to be told: the link it opens is the one
+                    // `hover_index` names.
+                    SchemaField::new(sprag_host::wire::ACTION_GRAMMAR_SLOT, "object"),
                 ]
             },
         )
@@ -614,6 +618,9 @@ impl ExternalIntrospect for HyperlinkOracle {
 
     fn query(&self, path: &str) -> Option<IntrospectValue> {
         match path {
+            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::hyperlink()),
+            )),
             "hover_index" => Some(self.state.hovered.get().map_or(IntrospectValue::Null, |h| {
                 IntrospectValue::Int(i64::from(h.0))
             })),
@@ -666,10 +673,17 @@ impl ExternalIntrospect for HyperlinkOracle {
             // is NOT tracking (a tracking pane owns the raw multi-button stream, which suppresses
             // it): a PointerDown over a link activates it (the click). The release edge carries no
             // non-tracking semantic (a link activates on the press), so PointerUp is ignored here.
+            // ⚠⚠ **THIS ARM ANSWERED `Ok` FOR ANY `args` AT ALL**, including an int, so the payload it
+            // declares was one it did not read — while the palette's and the confirmation's `send`,
+            // which take the same composite event name, both refuse a non-string as malformed. R330's
+            // odd-one-out rule, found by `a_declared_argument_is_one_the_daemon_reads` the first time
+            // it ran on this surface (R354). The narrowing is invisible to every well-formed caller:
+            // the router sends the event NAME, which is a string.
             "send" => {
-                if let IntrospectValue::Text(payload) = &args
-                    && send_event_name(payload) == "PointerDown"
-                {
+                let IntrospectValue::Text(payload) = &args else {
+                    return Err(InvokeError::TypeMismatch);
+                };
+                if send_event_name(payload) == "PointerDown" {
                     self.on_pointer_down();
                 }
                 Ok(IntrospectValue::Null)
@@ -1266,6 +1280,64 @@ mod tests {
         Owner::new().run(|| {
             let mut surface = oracle_at(0, MouseProtocol::None);
             crate::wire_claim::a_declared_path_is_what_it_claims(&mut surface);
+        });
+    }
+
+    /// ⚠⚠ **THE PUBLISHED GRAMMAR OF THIS SURFACE, HELD TO THE SURFACE** — the claims in
+    /// [`sprag_conformance`], driven through this external's real `invoke`.
+    ///
+    /// The claims live in one crate for every surface that publishes one (six of them
+    /// now: three in the daemon's scene and three in this window's). What stays here is the fixture
+    /// and the COUNTS — a number per claim, so a table whose declarations quietly went missing fails
+    /// on a count rather than passing by driving nothing.
+    #[test]
+    fn the_published_grammar_is_this_surfaces_own() {
+        Owner::new().run(|| {
+            let mut surface = oracle_at(0, MouseProtocol::None);
+            let table = crate::wire_claim::grammar::hyperlink();
+
+            // ⚠ ZERO PUBLISHED WORDS, ASSERTED RATHER THAN SKIPPED. Not one of this window's eight
+            // verbs takes a closed vocabulary — they take an event name, a row index, or nothing —
+            // so this claim drives nothing today and the number is what says so. An argument that
+            // gains a `one_of` moves it, and the claim starts holding it.
+            assert_eq!(
+                sprag_conformance::every_published_word_is_accepted(table, &mut |action, args| {
+                    surface.invoke(action, args)
+                })
+                .count_or_panic(),
+                0,
+                "this surface publishes no closed vocabulary",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_constrained_argument_publishes_what_it_admits(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                1,
+                "one open string argument: the composite event payload `send` takes",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_declared_argument_is_one_the_daemon_reads(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                1,
+                "one probe: `send`'s payload, the whole `args` value of its scalar form",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_nullary_form_is_a_verb_that_needs_nothing(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                2,
+                "two calls for `activate`, whose subject is the link `hover_index` names",
+            );
         });
     }
 

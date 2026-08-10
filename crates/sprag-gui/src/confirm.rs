@@ -507,6 +507,8 @@ impl ExternalIntrospect for ConfirmExternal {
                     SchemaField::action("accept", "json"),
                     SchemaField::action("dismiss", "json"),
                     SchemaField::action("send", "string"),
+                    // HOW TO CALL THE THREE ABOVE — see the palette's note.
+                    SchemaField::new(sprag_host::wire::ACTION_GRAMMAR_SLOT, "object"),
                 ]
             },
         )
@@ -517,6 +519,9 @@ impl ExternalIntrospect for ConfirmExternal {
         match path {
             // Present-but-empty: the paths always resolve, and nothing armed reports Null rather
             // than an unknown-path error (no prompt is a state, not a mistake).
+            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::confirm()),
+            )),
             "prompt" => Some(text_or_null(
                 armed.map(|armed| armed.confirmation.prompt.clone()),
             )),
@@ -917,6 +922,66 @@ mod tests {
         Owner::new().run(|| {
             let mut surface = external();
             crate::wire_claim::a_declared_path_is_what_it_claims(&mut surface);
+        });
+    }
+
+    /// ⚠⚠ **THE PUBLISHED GRAMMAR OF THIS SURFACE, HELD TO THE SURFACE** — the claims in
+    /// [`sprag_conformance`], driven through this external's real `invoke`.
+    ///
+    /// The claims live in one crate for every surface that publishes one (six of them
+    /// now: three in the daemon's scene and three in this window's). What stays here is the fixture
+    /// and the COUNTS — a number per claim, so a table whose declarations quietly went missing fails
+    /// on a count rather than passing by driving nothing.
+    #[test]
+    fn the_published_grammar_is_this_surfaces_own() {
+        Owner::new().run(|| {
+            let mut surface = external();
+            let table = crate::wire_claim::grammar::confirm();
+
+            // ⚠ ZERO PUBLISHED WORDS, ASSERTED RATHER THAN SKIPPED. Not one of this window's eight
+            // verbs takes a closed vocabulary — they take an event name, a row index, or nothing —
+            // so this claim drives nothing today and the number is what says so. An argument that
+            // gains a `one_of` moves it, and the claim starts holding it.
+            assert_eq!(
+                sprag_conformance::every_published_word_is_accepted(table, &mut |action, args| {
+                    surface.invoke(action, args)
+                })
+                .count_or_panic(),
+                0,
+                "this surface publishes no closed vocabulary",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_constrained_argument_publishes_what_it_admits(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                1,
+                "one open string argument: the composite event payload `send` takes",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_declared_argument_is_one_the_daemon_reads(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                1,
+                "one probe: `send`'s payload, which is the whole `args` value of its \
+                 scalar form",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_nullary_form_is_a_verb_that_needs_nothing(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                4,
+                "two calls each for `accept` and `dismiss` — the two answers, neither of \
+                 which a caller may qualify",
+            );
         });
     }
 

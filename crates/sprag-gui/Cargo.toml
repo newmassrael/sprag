@@ -87,6 +87,9 @@ base64 = { workspace = true }
 pinion-forge = { workspace = true }
 
 [dev-dependencies]
+# The published-grammar claims, written once for every surface that publishes one. This crate serves
+# THREE of the six, and a copy of each claim per crate is what the whole feature refuses.
+sprag-conformance = { workspace = true }
 # `PointerId` for the end-to-end click-to-focus test — a test-only use; pinion-runtime is
 # also a runtime dependency now (the R1404 image store, see [dependencies]).
 pinion-runtime = { workspace = true }

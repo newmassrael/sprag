@@ -657,6 +657,11 @@ impl ExternalIntrospect for PaletteExternal {
                     SchemaField::action("select", "int"),
                     SchemaField::action("execute", "json"),
                     SchemaField::action("send", "string"),
+                    // HOW TO CALL THE FOUR ABOVE — this surface's own grammar, answered by the
+                    // surface that serves them (`sprag_host::wire::ACTION_GRAMMAR_SLOT`). Every
+                    // argument here was folklore until R354, and two of these verbs take nothing at
+                    // all, which is a fact a client could not have guessed from a name.
+                    SchemaField::new(sprag_host::wire::ACTION_GRAMMAR_SLOT, "object"),
                 ]
             },
         )
@@ -665,6 +670,9 @@ impl ExternalIntrospect for PaletteExternal {
     fn query(&self, path: &str) -> Option<IntrospectValue> {
         let rows = self.row_titles();
         match path {
+            sprag_host::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                sprag_host::wire::ActionGrammar::answer(crate::wire_claim::grammar::palette()),
+            )),
             "row_count" => Some(IntrospectValue::Int(i64::try_from(rows.len()).ok()?)),
             "cursor" => Some(IntrospectValue::Int(i64::try_from(self.cursor_now()).ok()?)),
             // Present-but-empty: the path always resolves, and an empty list reports Null rather
@@ -1237,6 +1245,66 @@ mod tests {
         Owner::new().run(|| {
             let mut surface = external();
             crate::wire_claim::a_declared_path_is_what_it_claims(&mut surface);
+        });
+    }
+
+    /// ⚠⚠ **THE PUBLISHED GRAMMAR OF THIS SURFACE, HELD TO THE SURFACE** — the claims in
+    /// [`sprag_conformance`], driven through this external's real `invoke`.
+    ///
+    /// The claims live in one crate for every surface that publishes one (six of them
+    /// now: three in the daemon's scene and three in this window's). What stays here is the fixture
+    /// and the COUNTS — a number per claim, so a table whose declarations quietly went missing fails
+    /// on a count rather than passing by driving nothing.
+    #[test]
+    fn the_published_grammar_is_this_surfaces_own() {
+        Owner::new().run(|| {
+            let mut surface = external();
+            let table = crate::wire_claim::grammar::palette();
+
+            // ⚠ ZERO PUBLISHED WORDS, ASSERTED RATHER THAN SKIPPED. Not one of this window's eight
+            // verbs takes a closed vocabulary — they take an event name, a row index, or nothing —
+            // so this claim drives nothing today and the number is what says so. An argument that
+            // gains a `one_of` moves it, and the claim starts holding it.
+            assert_eq!(
+                sprag_conformance::every_published_word_is_accepted(table, &mut |action, args| {
+                    surface.invoke(action, args)
+                })
+                .count_or_panic(),
+                0,
+                "this surface publishes no closed vocabulary",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_constrained_argument_publishes_what_it_admits(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                1,
+                "one open string argument: the composite event payload `send` takes",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_declared_argument_is_one_the_daemon_reads(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                2,
+                "one probe per declared argument: a row index and an event payload, each \
+                 the whole `args` value of its own scalar form",
+            );
+
+            assert_eq!(
+                sprag_conformance::a_nullary_form_is_a_verb_that_needs_nothing(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .count_or_panic(),
+                4,
+                "two calls each for `open` and `execute`: the bare call, and one carrying \
+                 an argument no declaration mentions",
+            );
         });
     }
 

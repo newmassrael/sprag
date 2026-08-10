@@ -3327,6 +3327,65 @@ mod tests {
     /// is proven live over RPC (R153) and by
     /// [`a_settled_reorganize_reaches_the_host_on_the_one_frame_it_arms`], which drives the
     /// shared reorganizer and asserts the host moved.
+    /// ⚠⚠ **EVERY VERB THIS WINDOW REGISTERS PUBLISHES HOW TO CALL IT** — over the externals the shell
+    /// actually reconciles, not over a list of three.
+    ///
+    /// # Why this test is in this file
+    ///
+    /// `sprag_host::wire::SURFACES` is audited against the scene the DAEMON assembles, which is how
+    /// R353's own derivation named a surface nobody had listed an hour after the list was written. That
+    /// audit structurally cannot reach this window: these surfaces hang here. So the same claim runs
+    /// again, from the one place that can enumerate what this window serves —
+    /// [`create_extra_externals`](TerminalViewer), through the real `ShellCore`.
+    ///
+    /// It answers all four directions the harness reports: a surface serving verbs that
+    /// [`crate::wire_claim::grammar::SURFACES`] does not name, a declared verb described nowhere, a
+    /// table entry for a verb the surface does not serve, and a stale exemption. **Twelve of this
+    /// window's externals serve no verb at all** (a scrollbar, a splitter, a text field), which is why
+    /// the finding for an unnamed surface is only raised for one that serves an INVOKE.
+    #[test]
+    fn every_verb_this_window_registers_publishes_how_to_call_it() {
+        let core = ShellCore::<TerminalViewer>::new();
+        core.root_owner().run(|| {
+            // The registered set, as a SCENE — so the audit walks it with the same walker it uses on
+            // the daemon's, rather than this file re-deriving "which fields are verbs".
+            let registered: Vec<pinion_core::scene::Scene> =
+                <TerminalViewer as WidgetCore>::create_extra_externals()
+                    .into_iter()
+                    .map(|extra| {
+                        pinion_core::scene::Scene::External(
+                            pinion_core::scene::ExternalNode::new(extra.handle)
+                                .with_tag(extra.tag.into_owned()),
+                        )
+                    })
+                    .collect();
+            let window = pinion_core::scene::Scene::Container(
+                pinion_core::scene::ContainerNode::new(registered),
+            );
+
+            let audit = sprag_conformance::every_verb_a_surface_declares_publishes_its_grammar(
+                &window,
+                crate::wire_claim::grammar::SURFACES,
+            );
+            // ⚠⚠ **NINETY-NINE VERB ADDRESSES, AND SPRAG WROTE NINE OF THEM.** The palette's four,
+            // the confirmation's three and a pane oracle's two are sprag's and publish their grammar;
+            // the other ninety are pinion widget instances (a button per window tab, per session tab
+            // and per kill affordance, four text fields, a checkbox, two scrollbars, the context menu,
+            // the dock reorganizer), each serving verbs of its own that upstream describes.
+            //
+            // The number is pinned because it is a fact about what a client connected to this window
+            // can address, and because a pinion bump that changes a widget's verb set should be a
+            // decision rather than a surprise.
+            assert_eq!(
+                audit.count_or_panic(),
+                99,
+                "every verb this window serves, counted per surface: sprag's nine — the palette's \
+                 four, the confirmation's three, a pane oracle's two — and ninety belonging to the \
+                 pinion widgets sprag registers",
+            );
+        });
+    }
+
     #[test]
     fn the_canonical_reorganize_surface_is_registered() {
         let core = ShellCore::<TerminalViewer>::new();

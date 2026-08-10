@@ -67,7 +67,7 @@ const MENU_CAPACITY: usize = MAX_MENU_ROWS;
 /// The [`ContextMenuExternal`] scope tag — the External handle, the painted popup
 /// panel, and the snapshot anchor share it; item rows paint as the composite
 /// `{CTXMENU_TAG}#i<i>`, routing clicks back to this one handle (pinion R51.42).
-const CTXMENU_TAG: &str = "sprag_gui.ctxmenu";
+pub(crate) const CTXMENU_TAG: &str = "sprag_gui.ctxmenu";
 
 /// The click-outside dismiss barrier tag (the composite `{CTXMENU_TAG}#barrier` routes
 /// its outside `PointerUp` to the menu handle, which closes the popup — pinion R715).
