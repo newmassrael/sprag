@@ -110,8 +110,7 @@ pub fn as_the_wire_delivers_it(value: &Value) -> IntrospectValue {
 /// ⚠ A [`FormKind::Scalar`] form has no keys at all — the probe IS the call — which is the whole reason
 /// the form kind is published. A harness that assumed an object here would have sent `{"text": …}` to
 /// a verb whose scalar form takes the bare string, and reported about the object form twice.
-#[must_use]
-pub fn call_built_from_the_grammar(
+fn call_built_from_the_grammar(
     form: &CallForm,
     vary: &ArgGrammar,
     probe: Value,
@@ -519,8 +518,7 @@ fn names(surface: &WireSurface, under: &str) -> bool {
 /// Every `(surface tag chain, verb)` the scene SERVES, walked through `External::introspect` — the same
 /// accessor `scene/invoke` resolves a path with, so a surface reachable by a client is one counted
 /// here.
-#[must_use]
-pub fn verbs_served(scene: &Scene) -> Vec<(String, String)> {
+fn verbs_served(scene: &Scene) -> Vec<(String, String)> {
     let mut found = Vec::new();
     walk(scene, "", &mut found);
     found
@@ -550,5 +548,130 @@ fn walk(scene: &Scene, under: &str, found: &mut Vec<(String, String)>) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Driven, as_the_wire_delivers_it, names};
+    use pinion_core::external::IntrospectValue;
+    use serde_json::{Value, json};
+    use sprag_rpc::grammar::{SurfaceAuthor, WireSurface};
+
+    /// A surface entry with nothing but a tag — the only field [`names`] reads.
+    const fn tagged(tag: &'static str) -> WireSurface {
+        WireSurface {
+            name: "under test",
+            author: SurfaceAuthor::Sprag,
+            tag,
+            grammar: &[],
+            undescribed: &[],
+        }
+    }
+
+    /// ⚠⚠ **THE MATCHER IS THIS HARNESS'S INSTRUMENT, AND ITS FIRST VERSION WAS WRONG** — so it is
+    /// driven directly rather than only through the audits that read it.
+    ///
+    /// It matched by bare PREFIX, which read `sprag_palette_query` (a pinion text field) as part of
+    /// `sprag_palette`: that widget's verbs were attributed to the palette, and the palette's own table
+    /// appeared to describe them. Nothing failed. R351's rule — an instrument is a claim — and the
+    /// case below named `a_neighbour_is_not_swallowed` is the one that was false.
+    #[test]
+    fn a_tag_names_its_own_surface_and_no_other() {
+        let palette = tagged("sprag_palette");
+        assert!(names(&palette, "sprag_palette"));
+        assert!(
+            !names(&palette, "sprag_palette_query"),
+            "a_neighbour_is_not_swallowed: the field beside the palette is a DIFFERENT surface",
+        );
+        // The LAST segment is the external's own tag; the chain above it is its containers'.
+        assert!(names(&palette, "sprag_workspace/window/sprag_palette"));
+
+        // A surface registered ONCE PER INSTANCE, spelled with the schema's own placeholder.
+        let oracle = tagged("sprag_gui.pane.<i>");
+        assert!(names(&oracle, "sprag_gui.pane.0"));
+        assert!(names(&oracle, "sprag_gui.pane.15"));
+        assert!(
+            !names(&oracle, "sprag_gui.pane."),
+            "the stem alone is not an instance: an index is what the placeholder stands for",
+        );
+        assert!(
+            !names(&oracle, "sprag_gui.pane.x"),
+            "the tail stands for a NUMBER, so a named suffix is a different surface",
+        );
+        assert!(
+            !names(&oracle, "sprag_gui.pane.0.grid"),
+            "and it is the whole tail, not a prefix of one",
+        );
+        assert!(!names(&oracle, "sprag_gui.scrollbar.0"));
+    }
+
+    /// ⚠⚠ **THE JSON-TO-`IntrospectValue` MIRROR IS A CLAIM ABOUT PINION'S CONVERSION**, so every arm
+    /// of it is driven here — the shapes a client's `args` can arrive as.
+    ///
+    /// The claim it supports is the one no in-crate probe could make on its own: a SCALAR form's call
+    /// is the bare value, and `text` reads `Text` while refusing `Json`. Held end to end by
+    /// `a_client_can_drive_a_pane_from_its_published_grammar`, over a real socket, where the
+    /// conversion is pinion's rather than this mirror.
+    #[test]
+    fn a_json_argument_arrives_as_the_shape_a_surface_matches() {
+        assert!(matches!(
+            as_the_wire_delivers_it(&Value::Null),
+            IntrospectValue::Null
+        ));
+        assert!(matches!(
+            as_the_wire_delivers_it(&json!(true)),
+            IntrospectValue::Bool(true)
+        ));
+        assert!(matches!(
+            as_the_wire_delivers_it(&json!(7)),
+            IntrospectValue::Int(7)
+        ));
+        assert!(
+            matches!(as_the_wire_delivers_it(&json!("한")), IntrospectValue::Text(text) if text == "한"),
+            "a STRING becomes Text, which is the whole reason a scalar form is publishable",
+        );
+        assert!(matches!(
+            as_the_wire_delivers_it(&json!({"key": "a"})),
+            IntrospectValue::Json(_)
+        ));
+        assert!(matches!(
+            as_the_wire_delivers_it(&json!([1, 2])),
+            IntrospectValue::Json(_)
+        ));
+        // ⚠ A NON-INTEGRAL NUMBER HAS NO ARM IN PINION'S MAPPING THIS HARNESS USES: it maps to `Null`
+        // rather than a float, and saying so here is what stops a future probe from believing it sent
+        // a fraction. No declared argument on this wire takes one.
+        assert!(matches!(
+            as_the_wire_delivers_it(&json!(1.5)),
+            IntrospectValue::Null
+        ));
+    }
+
+    /// A claim's answer PANICS carrying every finding, and returns the count when there are none.
+    ///
+    /// The reporting seam every caller goes through, so it is driven rather than assumed: a harness
+    /// that swallowed its findings would make each surface's test pass on its count alone.
+    #[test]
+    fn a_finding_is_carried_into_the_panic_and_a_clean_run_answers_its_count() {
+        let clean = Driven {
+            count: 3,
+            findings: Vec::new(),
+        };
+        assert_eq!(clean.count_or_panic(), 3);
+
+        let found = Driven {
+            count: 1,
+            findings: vec!["the verb refuses its own declared argument".to_owned()],
+        };
+        let panicked = std::panic::catch_unwind(move || found.count_or_panic());
+        let message = *panicked
+            .expect_err("a finding must not pass silently")
+            .downcast::<String>()
+            .expect("the panic carries a message");
+        assert!(
+            message.contains("refuses its own declared argument"),
+            "the finding's own sentence reaches the reader: {message}",
+        );
     }
 }
