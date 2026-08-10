@@ -87,6 +87,9 @@ unicode-segmentation = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]
+# The published-grammar claims, written once for every surface that publishes one (see the crate).
+# A dev-dependency CYCLE: it depends on this crate for the types. Cargo permits exactly this shape.
+sprag-conformance = { workspace = true }
 # A daemon OLDER than this build: the two skew sweeps drive one that serves no address and one
 # that knows no action. Four test files had each written their own until R324; this is DEV-ONLY.
 sprag-peer = { workspace = true }

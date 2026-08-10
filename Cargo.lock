@@ -3577,6 +3577,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sprag-conformance"
+version = "0.0.1"
+dependencies = [
+ "pinion-core",
+ "serde_json",
+ "sprag-rpc",
+]
+
+[[package]]
 name = "sprag-detect"
 version = "0.0.1"
 dependencies = [
@@ -3614,6 +3623,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sprag-client",
+ "sprag-conformance",
  "sprag-grid",
  "sprag-host",
  "sprag-input",
@@ -3637,6 +3647,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "sprag-conformance",
  "sprag-detect",
  "sprag-grid",
  "sprag-input",
@@ -3703,6 +3714,7 @@ dependencies = [
  "pinion-rpc-transport",
  "serde_json",
  "signal-hook",
+ "sprag-vt",
  "tracing",
 ]
 

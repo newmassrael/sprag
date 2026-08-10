@@ -68,8 +68,8 @@ use base64::engine::general_purpose::STANDARD;
 use crate::wire::{
     ACTION_GRAMMAR_SLOT, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
     CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD,
-    KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION,
-    PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
+    KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_GRAMMAR, PANE_SCHEMA,
+    PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -548,9 +548,7 @@ impl ExternalIntrospect for SpragPaneExternal {
             // HOW TO CALL THIS SURFACE'S SIX VERBS. Answered from the surface a client already holds
             // a path to, so the address it asked scopes the answer — see `ACTION_GRAMMAR_SLOT`. The
             // table is a `const`, so this costs one walk of it per ask and nothing per frame.
-            ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(ActionGrammar::answer(
-                ActionGrammar::PANE,
-            ))),
+            ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(ActionGrammar::answer(PANE_GRAMMAR))),
             CLIPBOARD_WRITE_SLOT => {
                 let (write, seq) = self.pty.clipboard_write();
                 Some(write.map_or(IntrospectValue::Null, |w| {
@@ -776,7 +774,7 @@ fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
 /// Absent still means `false` — a call that says nothing about `ctrl` is not holding it, and that is
 /// the shape every client sends. What is refused is a flag PRESENT at the wrong type, which no
 /// well-formed caller sends and which the wire now advertises as a `bool`
-/// ([`ActionGrammar::PANE`](crate::wire::ActionGrammar::PANE)). A declared argument the daemon
+/// ([`PANE_GRAMMAR`]). A declared argument the daemon
 /// coerces instead of reading is what `a_declared_argument_is_one_the_daemon_reads` refuses to let
 /// the grammar publish.
 fn parse_modifier_flags(
@@ -1263,35 +1261,31 @@ mod tests {
         );
     }
 
-    /// The three property gates over THIS surface's published grammar — one call each into
-    /// [`grammar_gate`](crate::wire::grammar_gate), with this surface's fixture and its own counts.
+    /// ⚠ **THE FIXTURE IS WHAT THESE SHARE, NOT A HELPER THAT TAKES THE CLAIM.** A
+    /// `fn(claim: impl Fn(table, Invoke<'_>) -> Driven)` reads well and does not compile across a
+    /// crate boundary: the `'_` in the bound desugars to a higher-ranked lifetime the plain `fn` item
+    /// cannot satisfy, and the mismatch prints two signatures that look identical. Three lines per
+    /// test is the honest form, and [`surface`](self) is already the fixture.
     ///
     /// The fixture is a LIVE pane over a real PTY, so every probe goes through the parser the daemon
     /// uses and the writes it survives reach a real child.
     ///
-    /// ⚠ Many of these calls come back `Rejected`, and that is the gates' whole design rather than a
-    /// weakness: a `cat` child enables no mouse tracking and holds no pending clipboard query, and the
-    /// generic filler for a required open string is not an encodable key name. `TypeMismatch` is the
+    /// ⚠ Many of these calls come back `Rejected`, and that is the design rather than a weakness: a
+    /// `cat` child enables no mouse tracking and holds no pending clipboard query, and the generic
+    /// filler for a required open string is not an encodable key name. `TypeMismatch` is the
     /// discriminator — the GRAMMAR's refusal — so a call the parser read and the pane declined to
-    /// perform answers this gate's question exactly as well as one that wrote bytes.
-    fn pane_gate(
-        claim: impl Fn(
-            &'static [crate::wire::ActionGrammar],
-            crate::wire::grammar_gate::Invoke<'_>,
-        ) -> usize,
-    ) -> usize {
-        let (_workspace, mut external) = surface();
-        claim(crate::wire::ActionGrammar::PANE, &mut |action, args| {
-            external.invoke(action, args)
-        })
-    }
-
+    /// perform answers the question exactly as well as one that wrote bytes.
     /// ⚠⚠ **EVERY WORD THE PANE SURFACE PUBLISHES IS A WORD IT ACCEPTS** — sixteen of them, none of
     /// which a client could discover at all before R353.
     #[test]
     fn every_published_word_is_a_word_the_pane_accepts() {
+        let (_workspace, mut external) = surface();
         assert_eq!(
-            pane_gate(crate::wire::grammar_gate::every_published_word_is_accepted),
+            sprag_conformance::every_published_word_is_accepted(
+                crate::wire::PANE_GRAMMAR,
+                &mut |action, args| external.invoke(action, args)
+            )
+            .count_or_panic(),
             16,
             "one call per published word: the two key edges, the eight mouse buttons, the four \
              pointer edges, and the two clipboard selections",
@@ -1302,8 +1296,13 @@ mod tests {
     /// `state` and `sel` when this table was first written with neither vocabulary declared.
     #[test]
     fn an_argument_the_pane_constrains_publishes_what_it_admits() {
+        let (_workspace, mut external) = surface();
         assert_eq!(
-            pane_gate(crate::wire::grammar_gate::a_constrained_argument_publishes_what_it_admits),
+            sprag_conformance::a_constrained_argument_publishes_what_it_admits(
+                crate::wire::PANE_GRAMMAR,
+                &mut |action, args| external.invoke(action, args)
+            )
+            .count_or_panic(),
             7,
             "one probe per open string argument of every form: a key name in each of `key`'s two \
              forms, the literal text in each of `text`'s and `paste`'s two, and a clipboard answer's \
@@ -1320,12 +1319,38 @@ mod tests {
     /// R352b's `report_agent` defect, in the parser a keystroke goes through.
     #[test]
     fn a_declared_argument_is_one_the_pane_reads() {
+        let (_workspace, mut external) = surface();
         assert_eq!(
-            pane_gate(crate::wire::grammar_gate::a_declared_argument_is_one_the_daemon_reads),
+            sprag_conformance::a_declared_argument_is_one_the_daemon_reads(
+                crate::wire::PANE_GRAMMAR,
+                &mut |action, args| external.invoke(action, args)
+            )
+            .count_or_panic(),
             22,
             "one probe per declared argument of every FORM: seven across `key`'s two forms, two \
              each for `text` and `paste`, seven for a mouse report, one focus edge, and three for a \
              clipboard answer",
+        );
+    }
+
+    /// ⚠ **NO VERB OF THIS SURFACE TAKES NOTHING, ASSERTED RATHER THAN ASSUMED** — the tripwire that
+    /// makes `a_nullary_form_is_a_verb_that_needs_nothing` start holding it the day one does.
+    ///
+    /// The claim exists because the GUI's five nullary verbs needed it, and R353's `FormKind` doc had
+    /// said sprag had none of them. A number here is what keeps that from being a statement about the
+    /// surfaces somebody happened to be looking at.
+    #[test]
+    fn no_verb_of_this_surface_is_nullary_yet() {
+        let (_workspace, mut external) = surface();
+        assert_eq!(
+            sprag_conformance::a_nullary_form_is_a_verb_that_needs_nothing(
+                crate::wire::PANE_GRAMMAR,
+                &mut |action, args| external.invoke(action, args)
+            )
+            .count_or_panic(),
+            0,
+            "every verb this surface serves takes arguments, so the claim drives nothing — and the \
+             number is what says so",
         );
     }
 
@@ -1370,7 +1395,7 @@ mod tests {
             let call = match kind {
                 "scalar" => {
                     assert_eq!(args.len(), 1, "a scalar form carries exactly one argument");
-                    crate::wire::grammar_gate::as_the_wire_delivers_it(&json!("한"))
+                    sprag_conformance::as_the_wire_delivers_it(&json!("한"))
                 }
                 "object" => {
                     let mut map = serde_json::Map::new();

@@ -287,7 +287,7 @@ impl RegistryView<'_> {
             // a reader whose own session has gone: how to spell a call cannot depend on having
             // somewhere to send it.
             crate::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
-                crate::wire::ActionGrammar::answer(crate::wire::ActionGrammar::MUX),
+                crate::wire::ActionGrammar::answer(crate::wire::MUX_GRAMMAR),
             )),
             _ => None,
         }
@@ -8491,7 +8491,7 @@ mod tests {
     }
 
     /// The three property gates over this surface's published grammar — one call each into
-    /// [`grammar_gate`](crate::wire::grammar_gate), which holds the claims, with this surface's
+    /// [`sprag_conformance`], which holds the claims, with this surface's
     /// fixture and this surface's non-vacuity COUNT.
     ///
     /// ⚠ The bodies used to be HERE, written against this surface alone. The pane surface came to
@@ -8502,24 +8502,24 @@ mod tests {
     fn mux_gate(
         claim: impl Fn(
             &'static [crate::wire::ActionGrammar],
-            crate::wire::grammar_gate::Invoke<'_>,
-        ) -> usize,
-    ) -> usize {
+            sprag_conformance::Invoke<'_>,
+        ) -> sprag_conformance::Driven,
+    ) -> sprag_conformance::Driven {
         let (_reg, mut ext) = grammar_fixture();
-        claim(crate::wire::ActionGrammar::MUX, &mut |action, args| {
+        claim(crate::wire::MUX_GRAMMAR, &mut |action, args| {
             ext.invoke(action, args)
         })
     }
 
     /// ⚠⚠ **EVERY WORD THE MULTIPLEXER PUBLISHES IS A WORD IT ACCEPTS** — driven, one call per word,
-    /// through the live surface. [`every_published_word_is_accepted`](crate::wire::grammar_gate) is
+    /// through the live surface. [`sprag_conformance::every_published_word_is_accepted`] is
     /// the claim; this is the count.
     #[test]
     fn every_published_word_is_a_word_the_daemon_accepts() {
         // NON-VACUITY, asserted rather than assumed: a table whose vocabularies had all gone missing
         // would pass every assertion inside the gate by running none of them.
         assert_eq!(
-            mux_gate(crate::wire::grammar_gate::every_published_word_is_accepted),
+            mux_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
             31,
             "one call per published word: four directions on each of three pane verbs (12), two \
              steps of the window ring, four places to move a window to, the three window-size \
@@ -8533,7 +8533,8 @@ mod tests {
     #[test]
     fn an_argument_the_daemon_constrains_publishes_what_it_admits() {
         assert_eq!(
-            mux_gate(crate::wire::grammar_gate::a_constrained_argument_publishes_what_it_admits),
+            mux_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
+                .count_or_panic(),
             30,
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
@@ -8546,7 +8547,8 @@ mod tests {
     #[test]
     fn a_declared_argument_is_one_the_daemon_reads() {
         assert_eq!(
-            mux_gate(crate::wire::grammar_gate::a_declared_argument_is_one_the_daemon_reads),
+            mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
+                .count_or_panic(),
             91,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
              per form rather than per verb: 31 across the seven ask-backed verbs and 55 across the \
@@ -8554,9 +8556,30 @@ mod tests {
         );
     }
 
+    /// ⚠ **NO VERB OF THIS SURFACE TAKES NOTHING, ASSERTED RATHER THAN ASSUMED** — the tripwire that
+    /// makes `a_nullary_form_is_a_verb_that_needs_nothing` start holding it the day one does.
+    ///
+    /// The claim exists because the GUI's five nullary verbs needed it, and R353's `FormKind` doc had
+    /// said sprag had none of them. A number here is what keeps that from being a statement about the
+    /// surfaces somebody happened to be looking at.
+    #[test]
+    fn no_verb_of_this_surface_is_nullary_yet() {
+        let (_reg, mut ext) = grammar_fixture();
+        assert_eq!(
+            sprag_conformance::a_nullary_form_is_a_verb_that_needs_nothing(
+                crate::wire::MUX_GRAMMAR,
+                &mut |action, args| ext.invoke(action, args)
+            )
+            .count_or_panic(),
+            0,
+            "every verb this surface serves takes arguments, so the claim drives nothing — and the \
+             number is what says so",
+        );
+    }
+
     /// The published grammar names the keys its ASK TYPE emits — no more, and no fewer.
     ///
-    /// [`ActionGrammar::MUX`] is a hand-written table, and this is what stops it drifting from the
+    /// [`MUX_GRAMMAR`] is a hand-written table, and this is what stops it drifting from the
     /// grammar it claims to describe. The ask types are the source: `to_args` on a value carrying
     /// every field emits every key the request has, so the KEY SET is derivable and is not
     /// re-typed here.
@@ -8703,7 +8726,7 @@ mod tests {
         // ⚠ DERIVED, not listed: exactly the entries whose forms came from an ask type. A verb
         // declared inline is not this gate's business and says so on the entry itself, so adding
         // one cannot fail a gate about something else.
-        let mut published: Vec<&str> = crate::wire::ActionGrammar::MUX
+        let mut published: Vec<&str> = crate::wire::MUX_GRAMMAR
             .iter()
             .filter(|verb| verb.from_ask)
             .map(|verb| verb.action)
@@ -8717,7 +8740,7 @@ mod tests {
         );
 
         for (action, sent) in emitted {
-            let verb = crate::wire::ActionGrammar::MUX
+            let verb = crate::wire::MUX_GRAMMAR
                 .iter()
                 .find(|verb| verb.action == action && verb.from_ask)
                 .expect("compared as sets above");

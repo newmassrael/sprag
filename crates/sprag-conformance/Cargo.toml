@@ -1,0 +1,19 @@
+[package]
+name = "sprag-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The property claims over a PUBLISHED CALL GRAMMAR, written once for every surface that publishes one. DEV-ONLY — no sprag binary depends on this."
+publish = false
+
+# ⚠⚠ **NOT sprag-host.** The first draft depended on it and was a dev-dependency OF it — a cycle cargo
+# permits, which compiled and then linked TWO `sprag_host` crates, so `ActionGrammar` was not
+# `ActionGrammar` ("multiple different versions of crate `sprag_host` in the dependency graph"). The
+# shapes moved into `sprag-rpc`, which every front already depends on, and the cycle went away instead
+# of being relied on. This crate is about the WIRE's vocabulary, which is exactly what it now names.
+[dependencies]
+sprag-rpc = { workspace = true }
+pinion-core = { workspace = true }
+serde_json = { workspace = true }

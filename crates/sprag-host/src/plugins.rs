@@ -424,10 +424,10 @@ impl ExternalIntrospect for PluginsExternal {
             // The same array the `run` grammar publishes as its `plugin` vocabulary —
             // one definition, two readers.
             PLUGINS_SLOT => Some(IntrospectValue::Json(json!(PluginName::WIRE_WORDS))),
-            // HOW TO CALL THIS SURFACE'S TWO VERBS — its own `ActionGrammar::PLUGINS`, answered by
+            // HOW TO CALL THIS SURFACE'S TWO VERBS — its own `PLUGINS_GRAMMAR`, answered by
             // the surface that serves them (see `ACTION_GRAMMAR_SLOT`).
             crate::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
-                crate::wire::ActionGrammar::answer(crate::wire::ActionGrammar::PLUGINS),
+                crate::wire::ActionGrammar::answer(crate::wire::PLUGINS_GRAMMAR),
             )),
             _ => None,
         }
@@ -1218,9 +1218,9 @@ mod tests {
     fn grammar_gate(
         claim: impl Fn(
             &'static [crate::wire::ActionGrammar],
-            crate::wire::grammar_gate::Invoke<'_>,
-        ) -> usize,
-    ) -> usize {
+            sprag_conformance::Invoke<'_>,
+        ) -> sprag_conformance::Driven,
+    ) -> sprag_conformance::Driven {
         let (workspace, _first) = pane_painting("");
         {
             let mut command = CommandBuilder::new("/bin/sh");
@@ -1237,7 +1237,7 @@ mod tests {
             None,
             None,
         );
-        claim(crate::wire::ActionGrammar::PLUGINS, &mut |action, args| {
+        claim(crate::wire::PLUGINS_GRAMMAR, &mut |action, args| {
             external.invoke(action, args)
         })
     }
@@ -1250,7 +1250,7 @@ mod tests {
     #[test]
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
-            grammar_gate(crate::wire::grammar_gate::every_published_word_is_accepted),
+            grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
             8,
             "one call per published word: the ONE plugin word that selects each of the four forms, \
              and the two reply formats on each of a dialogue's two endpoints",
@@ -1268,9 +1268,8 @@ mod tests {
     #[test]
     fn an_argument_the_plugin_host_constrains_publishes_what_it_admits() {
         assert_eq!(
-            grammar_gate(
-                crate::wire::grammar_gate::a_constrained_argument_publishes_what_it_admits
-            ),
+            grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
+                .count_or_panic(),
             6,
             "one probe per open string argument of every form: an orchestrator's stimulus and \
              sentinel, an agent's prompt, and a dialogue's seed and two labels",
@@ -1282,10 +1281,39 @@ mod tests {
     #[test]
     fn a_declared_argument_is_one_the_plugin_host_reads() {
         assert_eq!(
-            grammar_gate(crate::wire::grammar_gate::a_declared_argument_is_one_the_daemon_reads),
+            grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
+                .count_or_panic(),
             28,
             "one probe per declared argument of every FORM: five for an orchestrator, four for a \
              pipe, six for an agent, twelve for a dialogue, and one to cancel",
+        );
+    }
+
+    /// ⚠ **NO VERB OF THIS SURFACE TAKES NOTHING, ASSERTED RATHER THAN ASSUMED** — the tripwire that
+    /// makes `a_nullary_form_is_a_verb_that_needs_nothing` start holding it the day one does.
+    ///
+    /// The claim exists because the GUI's five nullary verbs needed it, and R353's `FormKind` doc had
+    /// said sprag had none of them. A number here is what keeps that from being a statement about the
+    /// surfaces somebody happened to be looking at.
+    #[test]
+    fn no_verb_of_this_surface_is_nullary_yet() {
+        let (workspace, _first) = pane_painting("");
+        let mut external = PluginsExternal::new(
+            workspace,
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            sprag_conformance::a_nullary_form_is_a_verb_that_needs_nothing(
+                crate::wire::PLUGINS_GRAMMAR,
+                &mut |action, args| external.invoke(action, args)
+            )
+            .count_or_panic(),
+            0,
+            "every verb this surface serves takes arguments, so the claim drives nothing — and the \
+             number is what says so",
         );
     }
 }

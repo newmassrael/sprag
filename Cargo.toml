@@ -43,6 +43,12 @@ members = [
     # three different refusal policies (R324). No binary depends on it; every front's
     # skew test does.
     "crates/sprag-peer",
+    # DEV-ONLY: the property claims over a PUBLISHED CALL GRAMMAR, written once for the five
+    # surfaces that publish one — three in sprag-host's scene, three in the GUI's. A `#[cfg(test)]`
+    # module cannot cross a crate boundary, and a fourth copy of each claim is exactly what the
+    # feature refuses (each copy passes on its own surface). Depends ON sprag-host while being a
+    # dev-dependency OF it, which cargo permits for a test-only helper.
+    "crates/sprag-conformance",
     # DEV-ONLY: the gates whose subject is what the SUITE did, so no test can be one — the
     # environment they judge is process-global (R341/R343). Written in Rust rather than in the
     # workflow file because the first one lived in `ci.yml`, was never tested, and failed
@@ -218,6 +224,7 @@ sprag-detect = { path = "crates/sprag-detect", version = "0.0.1" }
 sprag-input = { path = "crates/sprag-input", version = "0.0.1" }
 sprag-terminal = { path = "crates/sprag-terminal", version = "0.0.1" }
 sprag-host = { path = "crates/sprag-host", version = "0.0.1" }
+sprag-conformance = { path = "crates/sprag-conformance", version = "0.0.1" }
 sprag-plugin = { path = "crates/sprag-plugin", version = "0.0.1" }
 # Frontend-agnostic RPC transport policy (always-on Unix socket + SIGUSR1/2
 # control) over pinion's PR-47 seam; shared by sprag-gui and the headless host.

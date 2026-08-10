@@ -26,6 +26,7 @@ use pinion_rpc_transport::{Exposure, TransportControl, UnixSocketTransport};
 
 pub mod client;
 pub mod endpoint;
+pub mod grammar;
 pub use client::{
     ACTION_REFUSED, ATTACHED_PARAM, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD,
     CLIENT_MESSAGES_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM, CallError,
@@ -37,6 +38,7 @@ pub use client::{
     new_gui_client_id, request_label,
 };
 pub use endpoint::{CLIENT_SOCKET_ENV, CLIENT_SOCKET_ENVS, EndpointOrigin, HostEndpoint};
+pub use grammar::{ActionGrammar, ArgGrammar, CallForm, FormKind, WireSurface};
 
 /// The well-known host socket file name — the endpoint a `sprag-term` daemon binds and a
 /// `sprag-gui` client connect-or-spawns on. Defined here, in the shared transport crate, so
