@@ -248,6 +248,40 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::action(CLIPBOARD_ANSWER_ACTION, "action"),
 ];
 
+/// Whether `schema` DECLARES `path` as a verb — the guard a surface runs before it dispatches, so
+/// a verb it does not publish is a verb it does not run.
+///
+/// # The defect this is a guard for rather than a test
+///
+/// ⚠⚠ **`report_agent` and `release_agent` were dispatched by the mux surface and declared nowhere**
+/// from the round that built them until R352, and `activate` was the same on the GUI's hyperlink
+/// oracle. Nothing could catch that: every gate over a surface walks its DECLARED fields, so an
+/// omission declares nothing to audit — pinion says so of its own `IntrospectSchema` and it is true
+/// of sprag's gates word for word. The only thing that closes it is making the undeclared arm
+/// UNREACHABLE.
+///
+/// # Why sprag runs it as well as pinion
+///
+/// pinion refuses an undeclared `scene/invoke` at the RPC boundary from R1637 and its own docs name
+/// what that leaves open: *"In-process dispatch. A binding that calls `ExternalIntrospect::invoke`
+/// directly — a keybinding forwarding a verb, say — does not pass through here, and the framework
+/// has no seam that could intercept it."* **A keybinding forwarding a verb is most of how sprag is
+/// used**, and the GUI's own surfaces are driven in-process by its shell — so the check belongs at
+/// each surface's own door, where both callers pass.
+///
+/// Declared HERE, in the module that claims to be the ONE definition of the wire's grammar, because
+/// the display crate needs the same rule for its own externals and two spellings of one rule is
+/// what this module exists to prevent.
+///
+/// The cost is one linear scan of a `&'static [SchemaField]` per action — paid at keystroke
+/// cadence, not per frame.
+#[must_use]
+pub fn declares_verb(schema: &pinion_core::external::IntrospectSchema, path: &str) -> bool {
+    schema.fields.iter().any(|field| {
+        field.path == path && field.channel == pinion_core::external::SchemaChannel::Invoke
+    })
+}
+
 /// ONE ARGUMENT OF ONE VERB, as a client discovers it — the name to send it under, its JSON type,
 /// whether a well-formed call may omit it, and the CLOSED VOCABULARY it admits when it has one.
 ///

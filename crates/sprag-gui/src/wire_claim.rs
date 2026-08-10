@@ -15,25 +15,15 @@
 //! surface added later gets it by calling one function, and the reason it should is written down.
 
 #[cfg(test)]
-use pinion_core::external::{ExternalIntrospect, IntrospectValue, InvokeError};
-use pinion_core::external::{IntrospectSchema, SchemaChannel};
+use pinion_core::external::{ExternalIntrospect, IntrospectValue, InvokeError, SchemaChannel};
 
-/// Whether `schema` DECLARES `path` as a verb — the guard each of these surfaces runs before it
-/// dispatches, so a verb it does not publish is a verb it does not run.
+/// The one definition of *"is this path published as a verb?"*, re-exported so this crate's
+/// surfaces run the SAME rule the daemon's mux surface runs.
 ///
-/// ⚠⚠ **`activate` was dispatched by the hyperlink oracle and declared nowhere**, and the gate
-/// below could not see it: it walks the DECLARED fields, so an omission declares nothing to audit.
-/// That is pinion's own observation about `IntrospectSchema` and it applies here word for word. The
-/// only thing that closes it is making the undeclared arm UNREACHABLE, which is what this does —
-/// pinion refuses an undeclared `scene/invoke` at the RPC boundary from R1637 and says plainly what
-/// that leaves open (*"In-process dispatch … the framework has no seam that could intercept it"*),
-/// and every one of these surfaces is driven in-process by this binary's own shell.
-pub(crate) fn declares_verb(schema: &IntrospectSchema, path: &str) -> bool {
-    schema
-        .fields
-        .iter()
-        .any(|field| field.path == path && field.channel == SchemaChannel::Invoke)
-}
+/// It lives in `sprag_host::wire`, which claims to be the one definition of the wire's grammar; the
+/// first version of this round wrote it out a second time here, which is the two-readers-of-one-rule
+/// shape the debt sweep exists to catch — found by asking the question of this round's own code.
+pub(crate) use sprag_host::wire::declares_verb;
 
 /// Assert that every path this surface DECLARES is the kind of path it says it is.
 ///

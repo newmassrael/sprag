@@ -58,7 +58,6 @@ use std::time::{Duration, Instant};
 
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
-    SchemaChannel,
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{
@@ -2955,10 +2954,7 @@ impl WorkspaceExternal {
         path: &str,
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
-        if !crate::wire::MUX_SCHEMA
-            .iter()
-            .any(|field| field.path == path && field.channel == SchemaChannel::Invoke)
-        {
+        if !crate::wire::declares_verb(&self.schema(), path) {
             return Err(InvokeError::UnknownPath);
         }
         match path {
@@ -3235,7 +3231,7 @@ mod tests {
         // one arm quietly gaining a body.
         for action in crate::wire::MUX_SCHEMA
             .iter()
-            .filter(|f| f.channel == SchemaChannel::Invoke)
+            .filter(|f| f.channel == pinion_core::external::SchemaChannel::Invoke)
         {
             assert!(
                 matches!(
