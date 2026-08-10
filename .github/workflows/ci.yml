@@ -11,10 +11,16 @@
 #
 # WHAT IS DELIBERATELY NOT HERE YET
 #
-#   * The GUI crate. `--exclude sprag-gui` is not a cost dodge: the remaining workspace compiles no
-#     GPU or windowing crate at all (measured with `cargo tree -i`: wgpu, winit, vello, ash,
-#     wayland and x11 are each ABSENT). That makes these jobs a GATE on the headless/display split
-#     the architecture rests on.
+#   * The GUI crate, IN THE HEADLESS JOBS. `--exclude sprag-gui` is not a cost dodge: the remaining
+#     workspace compiles no GPU or windowing crate at all (measured with `cargo tree -i`: wgpu,
+#     winit, vello, ash, wayland and x11 are each ABSENT). That makes those jobs a GATE on the
+#     headless/display split the architecture rests on.
+#
+#     ⚠ IT IS NO LONGER ABSENT FROM THIS FILE. The exclusion said what those jobs must not build; it
+#     was read for a year as what CI does not build at all, and the residue was measured and
+#     registered: 324 tests in two binaries green only on their author's box, and a pixel smoke that
+#     was RED for eleven rounds with nobody looking. The `pixel (linux)` job below is where the
+#     display half runs — separately, so the exclusion above keeps meaning exactly what it says.
 #
 #     ⚠ The first run of this file measured the other half of that claim FALSE. It said the
 #     remaining workspace needs no system packages, and the Linux job failed building
@@ -192,6 +198,17 @@ jobs:
       # client — a debug build under a software rasteriser is a different machine.
       - name: Build the smoke set
         run: cargo build --release -p sprag-gui -p sprag-host -p sprag-tui
+
+      # THE OTHER HALF OF WHAT THIS JOB IS FOR, and it is bigger than the smoke: `--exclude
+      # sprag-gui` means the GUI crate's own tests — 324 of them in two binaries — were green only
+      # on the machine that wrote them. They need no display (they drive pinion's reactive owner,
+      # not a window), so they run here as an ordinary test step and the exclusion above them stops
+      # being a hole nobody had measured.
+      #
+      # `--no-fail-fast` for the reason the headless jobs use it: a plain run stops at the first
+      # failing binary and hides the rest.
+      - name: The GUI's own tests
+        run: cargo test -p sprag-gui --no-fail-fast
 
       # A fresh XDG home per run, because the smoke writes user config and a run that read the
       # runner's would be asserting about the image rather than about sprag.
