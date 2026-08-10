@@ -2498,8 +2498,8 @@ fn check_a_window_and_a_terminal_agree_on_one_pane_size(smoke: &mut Smoke, repor
     // And this window is now showing PART of a pane — the crop the policy asked for, which is only
     // honest because the other policy would have chosen this client's own area instead.
     report.check(
-        "the window paints part of every pane, which are now larger than it",
-        every_pane_is_cropped(smoke, "largest"),
+        "this window shows a whole line of every pane, re-wrapped into its width",
+        every_pane_shows_the_whole_line(smoke, &mut daemon, &session, "largest"),
     );
 
     // The detach: a client leaving moves the window as surely as one arriving, and the client that
@@ -2594,8 +2594,8 @@ fn check_a_pinned_window_overrides_what_this_window_measured(
             }),
     );
     report.check(
-        "this window paints part of every pinned pane",
-        every_pane_is_cropped(smoke, "manual"),
+        "this window shows a whole line of every pinned pane, re-wrapped",
+        every_pane_shows_the_whole_line(smoke, &mut daemon, &session, "manual"),
     );
     // ...and it STAYS. A client that re-asserted its own measurement would win here within a frame,
     // which is the defect this claim exists to catch rather than a timing nicety.
@@ -5555,29 +5555,132 @@ fn wait_for_path(path: &Path) -> io::Result<()> {
 /// The pair is the whole of the crop question, which is why it travels as one value: a grid whose
 /// painted size is smaller than its buffer is showing part of its pane, and either number alone
 /// says nothing about that.
-/// A `painted < buffer on both axes` wait that PRINTS what it last saw when it does not hold.
+/// **Every painted pane shows a WHOLE line, re-wrapped into this client's width.**
 ///
-/// The predicate is the same at both call sites and a bare `false` from either is undiagnosable:
-/// "the window paints part of every pane" failing tells a reader nothing about WHICH pane, whether
-/// the grids were empty, or which axis was equal. Observed flaking once in seventeen runs with no
-/// evidence of the cause, which is what a silent gate costs.
-fn every_pane_is_cropped(smoke: &mut Smoke, what: &str) -> bool {
+/// # Why this replaces a crop check rather than fixing one
+///
+/// Until R349 the client received the DAEMON's grid — wider than this window — and painted part of
+/// it, so `widget < buffer` held and *the window paints part of every pane* was a true sentence.
+/// R349 made a pane's frame arrive already cut to what the receiving client can show, so `widget`,
+/// `declared` and `buffer` are now the same numbers on every grid and that inequality is
+/// unreachable BY CONSTRUCTION. The crop those checks demanded is the defect R349 was written to
+/// remove: a 60-column client could read sixty columns of a 78-character line, and WHICH sixty was
+/// decided by where the cursor happened to be.
+///
+/// So the claim had to be re-stated in the vocabulary of what the product now does, not repaired.
+/// This is that claim, and it is the one the TUI side has asserted since R349 while the GUI side
+/// never did: **the whole logical line is here, wrapped across this client's rows, rather than one
+/// row's worth of it.**
+///
+/// # What it still carries from the checks it replaces
+///
+/// Those two distinguished `largest`/`manual` — where the window follows the OTHER client, so this
+/// one cannot show a pane whole — from `smallest`, where the window is this client's own area and
+/// there is nothing to cut. That distinction is not lost: this REQUIRES the daemon's pane to be
+/// wider than this client before it will claim anything, and under `smallest` it would not be.
+///
+/// # The control, in the same call
+///
+/// A marker that FITS this client's width would pass without a re-wrap ever happening, so the
+/// marker is built longer than the client's grid and the check asserts BOTH halves: no single row
+/// holds it, and the rows together do. A fixture that fits proves nothing about a wrap.
+///
+/// Every pane is driven, which is what makes the daemon's pane ids and the client's paint indices
+/// safe to leave unmapped: nothing on the wire relates them, so with the same line in all of them
+/// whichever index answers is answering about a pane that was told.
+fn every_pane_shows_the_whole_line(
+    smoke: &mut Smoke,
+    daemon: &mut HostConn,
+    session: &str,
+    what: &str,
+) -> bool {
+    let client_cols = match smoke.grid_facts().iter().map(|g| g.widget.0).min() {
+        Some(cols) if cols > 0 => cols,
+        _ => {
+            eprintln!("      {what}: this client paints no pane grid to measure");
+            return false;
+        }
+    };
+    let daemon_cols = match pane_dims(daemon, session)
+        .values()
+        .map(|(cols, _)| *cols)
+        .min()
+    {
+        Some(cols) => cols,
+        None => {
+            eprintln!("      {what}: the daemon lists no pane to drive");
+            return false;
+        }
+    };
+    // THE FIXTURE HAS TO BE ABLE TO FAIL. A pane no wider than this client cannot demonstrate a
+    // re-wrap, and a check that ran anyway would be reporting on a line that never needed one.
+    if daemon_cols <= client_cols {
+        eprintln!(
+            "      {what}: the pane is {daemon_cols} wide and this client shows {client_cols} —              nothing to re-wrap, so this claim would be vacuous"
+        );
+        return false;
+    }
+    // Longer than this client can show on one row, and short enough to be ONE line in the pane the
+    // daemon sized. Rotating letters rather than a repeated word, so a partial row cannot contain
+    // the whole of it by accident.
+    let len = usize::try_from(daemon_cols.min(client_cols + 6)).unwrap_or(0);
+    let marker: String = std::iter::successors(Some(0u32), |n| Some(n + 1))
+        .map(|n| char::from(b'a' + u8::try_from(n % 26).unwrap_or(0)))
+        .take(len)
+        .collect();
+
+    for id in daemon_panes(daemon, session) {
+        if let Err(error) = daemon.call(
+            "scene/invoke",
+            json!({
+                "path": format!("/pane_{id}/sprag_input/external/text"),
+                "args": { "text": format!("echo {marker}\n") },
+                "session": session,
+            }),
+        ) {
+            eprintln!("      {what}: could not drive pane {id}: {error}");
+            return false;
+        }
+    }
+
     let mut last = Vec::new();
     let held = smoke
         .wait_for(|smoke| {
-            let grids = smoke.grid_facts();
-            let cropped = !grids.is_empty()
-                && grids
-                    .iter()
-                    .all(|g| g.widget.0 < g.buffer.0 && g.widget.1 < g.buffer.1);
-            last = grids;
-            cropped.then_some(())
+            let painted = smoke.docked_panes().ok()?;
+            let mut rows_per_pane = Vec::new();
+            for index in painted {
+                rows_per_pane.push(smoke.pane_rows(index).ok()?);
+            }
+            let whole = !rows_per_pane.is_empty()
+                && rows_per_pane.iter().all(|rows| {
+                    // Trailing blanks are the row's padding, not the line's text: a wrapped row is
+                    // full and only the last one is padded, so trimming each is what puts the two
+                    // halves of one logical line back beside each other (R344 — a row is not a line).
+                    let joined: String = rows.iter().map(|row| row.trim_end()).collect();
+                    joined.contains(&marker)
+                });
+            last = rows_per_pane;
+            whole.then_some(())
         })
         .is_ok();
     if !held {
-        eprintln!("      {what}: last grids (painted, buffer) = {last:?}");
+        eprintln!("      {what}: last painted rows = {last:?}");
+        return false;
     }
-    held
+    // THE CONTROL, asserted on the same rows the claim just passed on: if any single row held the
+    // whole marker, this client was wide enough all along and the wrap above never happened.
+    let one_row_held_it = last
+        .iter()
+        .flatten()
+        .any(|row| row.trim_end().contains(&marker));
+    if one_row_held_it {
+        eprintln!(
+            "      {what}: a single {client_cols}-wide row held all {len} characters, so nothing \
+             was re-wrapped and this check proved nothing"
+        );
+        return false;
+    }
+    true
 }
 
 /// The three sizes a pane grid carries, which used to be two.
