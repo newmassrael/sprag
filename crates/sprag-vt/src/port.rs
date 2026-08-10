@@ -1767,6 +1767,28 @@ impl Screen {
         cells_text(&self.row_cells(row))
     }
 
+    /// A row's share of its LOGICAL line, as text — [`Self::row_text`] for a row a line ends on,
+    /// and only the cells that belong to the line for a row it soft-wraps out of.
+    ///
+    /// The reader for anything that wants a wrapped line's CONTENT rather than its position: join
+    /// consecutive shares with nothing between them and what comes back is what the child printed.
+    /// [`Self::row_text`] cannot be joined that way — it trims a continuing row's trailing blanks,
+    /// which are interior to the line, and it keeps the pad a wide cluster left at the margin,
+    /// which is not in the line at all. Both halves have cost this project a defect; `line_cells`
+    /// is the one place either is decided, and this is its public spelling for a caller outside
+    /// the search.
+    ///
+    /// Empty for a row out of bounds, as [`Self::row_text`] is.
+    #[must_use]
+    pub fn row_share_text(&self, row: u16) -> String {
+        let cells = self.row_cells(row);
+        let mut text = String::new();
+        for cell in line_cells(&cells, self.continues(row)) {
+            text.push_str(&cell.cluster);
+        }
+        text
+    }
+
     /// The scrolled-off lines as TEXT (oldest first) — the MAIN screen's history
     /// beyond the visible grid, for full-output capture. Derived from the stored
     /// styled cells via `cells_text` (the capture path keeps one notion of text).
