@@ -280,10 +280,14 @@ mod tests {
 
     /// The MECHANISM's tests. What the mechanism is a mechanism FOR — six captured dialogs from two
     /// real agents — is asserted beside those fixtures, in the crate root's tests.
-    fn asked(lines: &[&str]) -> Option<Question> {
+    fn asked_screen(lines: &[&str]) -> Emulator {
         let mut em = Emulator::new(80, 24);
         em.advance(lines.join("\r\n").as_bytes());
-        question(em.screen(), 12)
+        em
+    }
+
+    fn asked(lines: &[&str]) -> Option<Question> {
+        question(asked_screen(lines).screen(), 12)
     }
 
     #[test]
@@ -359,6 +363,58 @@ mod tests {
             q.choice(2).map(|c| c.label.as_str()),
             Some("second"),
             "the footer sits at the option indent, so it belongs to nobody",
+        );
+    }
+
+    /// A line the WINDOW cut in half is closed where the window ends, not joined to a row nobody
+    /// asked about.
+    ///
+    /// The window is a claim about how far up the screen to look, so a caller who asked for three
+    /// rows must not be answered from a fourth. A twenty-column pane tears the marked option across
+    /// two rows; a window that reaches only the second of them holds a fragment and no marker, and
+    /// the reply is that there is no menu — rather than a menu assembled out of a row outside the
+    /// window.
+    #[test]
+    fn a_line_the_window_cut_in_half_is_not_joined_to_a_row_outside_it() {
+        let mut em = Emulator::new(20, 24);
+        em.advance(
+            "\u{276f} 1. the first option is long enough to wrap\r\n  2. second\r\n  3. third"
+                .as_bytes(),
+        );
+        assert!(
+            (0..em.screen().rows()).any(|row| em.screen().wrapped(row)),
+            "the fixture must wrap or it says nothing",
+        );
+        let whole = question(em.screen(), 12).expect("the whole list");
+        assert_eq!(whole.choices.len(), 3);
+        assert!(
+            whole
+                .choice(1)
+                .is_some_and(|c| c.label.ends_with("to wrap")),
+            "joined across the wrap: {:?}",
+            whole.choice(1),
+        );
+        assert!(
+            question(em.screen(), 3).is_none(),
+            "a window that reaches the marked option's SECOND row holds no marker",
+        );
+    }
+
+    /// A title is one line, so it can never be a choice list — and the combination says so rather
+    /// than passing vacuously.
+    #[test]
+    fn a_title_is_never_a_choice_list() {
+        use crate::{Match, Region, Test};
+        let em = asked_screen(&["\u{276f} 1. first", "  2. second"]);
+        let title = "\u{276f} 1. first  2. second";
+        assert!(
+            !Match::new(Region::Title, Test::ChoiceList).holds_for_test(em.screen(), title),
+            "a title that spells a whole menu is still one line",
+        );
+        assert!(
+            Match::new(Region::BottomLines(12), Test::ChoiceList)
+                .holds_for_test(em.screen(), title),
+            "and the same screen's rows are a menu, so this is about the REGION",
         );
     }
 

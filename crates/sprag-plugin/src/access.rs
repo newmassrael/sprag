@@ -183,8 +183,13 @@ pub enum Authority {
     Reported { source: String },
     /// A rule read it off the pane's screen and title. Approximate by construction: the working
     /// signal is an ANIMATION, so a sample can land in its gap, and a state that flips twice
-    /// between two looks is a state neither look saw. The string is which rule fired, `None` when
-    /// a manifest claimed the pane and no rule matched.
+    /// between two looks is a state neither look saw. The string is which rule fired.
+    ///
+    /// `rule` is an `Option` because the field it is built from is one, and it is not reachable
+    /// today: a pane whose manifest claims it but whose rules all miss reads `Unknown`, and an
+    /// observation is never produced for a pane with no state. Stated rather than made
+    /// unrepresentable because the alternative — a second shape for "scraped, and I cannot say
+    /// which rule" — would be a state a future publisher could reach with nowhere to put it.
     Scraped { rule: Option<String> },
 }
 

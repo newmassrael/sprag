@@ -746,6 +746,52 @@ mod tests {
         );
     }
 
+    /// A pane the AGENT ITSELF reported blocked still carries the question off its screen.
+    ///
+    /// The branch the exact path most needs and the one a design could easily lose: a report is the
+    /// authority on the STATE and says nothing about the menu, because the hook fires on an event
+    /// and the options are pixels. If the question were tied to the verdict's provenance, the
+    /// accurate path would be the blind one — the supervisor would know a person is needed and not
+    /// what for, exactly when it has the best information it will ever have.
+    #[test]
+    fn a_pane_its_own_agent_reported_blocked_still_carries_the_question() {
+        let (workspace, id) = pane_painting(PERMISSION_SCREEN);
+        let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        let read = source(&workspace, &agents);
+        settle(&read, id, |o| o.state == AgentState::Blocked);
+
+        let (outcome, _) = agents.report(
+            id,
+            Report {
+                state: AgentState::Blocked,
+                agent: Some("claude".to_owned()),
+                source: "claude-hook".to_owned(),
+                seq: Some(1),
+                owner: None,
+            },
+            instant_window,
+        );
+        assert!(outcome.accepted);
+
+        let seen = read(id).expect("an agent");
+        assert!(
+            seen.authority.is_exact(),
+            "the state came from inside the pane",
+        );
+        let asking = seen
+            .asking
+            .as_ref()
+            .expect("...and the question still came from the screen");
+        assert_eq!(asking.choices.len(), 3);
+        assert_eq!(asking.selected().map(|c| c.number), Some(1));
+
+        let closed = lock(&workspace).close(id);
+        assert!(
+            closed.is_some(),
+            "the pane this test opened was there to close"
+        );
+    }
+
     /// A turn that begins and ends BETWEEN two pulls is still visible — which is the whole reason
     /// this surface is a level and not an event stream.
     ///

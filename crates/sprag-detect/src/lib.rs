@@ -308,6 +308,13 @@ impl Match {
         Self { region, test }
     }
 
+    /// [`holds`](Self::holds) for a test in a sibling module — the arbitration is private, and a
+    /// test of one MATCH should not have to go through a whole manifest to reach it.
+    #[cfg(test)]
+    pub(crate) fn holds_for_test(&self, screen: &Screen, title: &str) -> bool {
+        self.holds(screen, title)
+    }
+
     /// Whether this holds for the given screen and title.
     fn holds(&self, screen: &Screen, title: &str) -> bool {
         // The structured test reads the region's ROWS rather than one joined string, so it is

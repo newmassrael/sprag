@@ -477,6 +477,20 @@ mod tests {
         text: String,
         hidden_reads: Mutex<u32>,
         injected: Mutex<Vec<Vec<String>>>,
+        /// Raised on the first read-back, so a cancel lands INSIDE the wait rather than before it.
+        cancel_on_read: Option<Arc<std::sync::atomic::AtomicBool>>,
+    }
+
+    impl Recorder {
+        /// One delivery against this double, with a short grace and no retries.
+        fn deliver_once(self, text: &str, confirm: Option<&str>) -> Delivered {
+            let spec = Delivery {
+                echo_timeout: Duration::from_millis(1),
+                attempts: 1,
+                ..confirm.map_or_else(Delivery::new, Delivery::confirmed_on)
+            };
+            deliver(&self, &RunContext::uncancellable(), PaneId(1), text, &spec).expect("no error")
+        }
     }
 
     impl PaneAccess for Recorder {
@@ -484,6 +498,9 @@ mod tests {
             vec![PaneId(1)]
         }
         fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            if let Some(cancel) = &self.cancel_on_read {
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+            }
             let mut left = self.hidden_reads.lock().expect("the counter");
             if *left > 0 {
                 *left -= 1;
@@ -523,6 +540,7 @@ mod tests {
             // second injection is made — the retry path, with the submit still pending.
             hidden_reads: Mutex::new(2),
             injected: Mutex::new(Vec::new()),
+            cancel_on_read: None,
         };
         let outcome = deliver(
             &panes,
@@ -553,6 +571,76 @@ mod tests {
         assert!(log.len() >= 2, "the retry really happened: {log:?}");
     }
 
+    /// A run cancelled while WAITING for the echo stops there, having paid for what it wrote.
+    ///
+    /// The other cancel arm, and the one a real supervisor hits: the wait is where a delivery spends
+    /// its time, so a run told to stop is nearly always inside it. Forced rather than raced — the
+    /// double raises the flag on the read-back that follows the injection.
+    #[test]
+    fn a_run_cancelled_while_waiting_for_the_echo_stops_there() {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let panes = Recorder {
+            text: String::new(), // never shows the text, so only the cancel can end the wait
+            hidden_reads: Mutex::new(0),
+            injected: Mutex::new(Vec::new()),
+            cancel_on_read: Some(Arc::clone(&cancel)),
+        };
+        let outcome = deliver(
+            &panes,
+            &RunContext::new(cancel),
+            PaneId(1),
+            "hello",
+            &Delivery::new(),
+        )
+        .expect("no error");
+        assert_eq!(
+            outcome,
+            Delivered::Cancelled {
+                attempts: 1,
+                written: Written::of(5),
+            },
+            "the injection it had already made is still charged",
+        );
+        assert_eq!(
+            outcome.written(),
+            Written::of(5),
+            "and the accessor a plugin charges its Cost from agrees",
+        );
+        assert_eq!(
+            panes.injected.lock().expect("the log").len(),
+            1,
+            "no submit and no retry after the cancel",
+        );
+    }
+
+    /// A prompt box that BREAKS the text across its border is still confirmable — on a fragment.
+    ///
+    /// The case `Delivery::confirm` exists for. An agent's composer draws a frame, so a long line
+    /// wrapped inside it reaches the screen with border characters between the halves and the whole
+    /// text is nowhere to be found as one run. Confirming on a leading fragment is what a caller
+    /// does instead, and the default (the whole text) would have waited out every attempt.
+    #[test]
+    fn text_a_prompt_box_broke_in_half_is_confirmed_on_a_fragment() {
+        let bordered = |confirm: Option<&str>| {
+            Recorder {
+                text: "> the quick brown \u{2502}\u{2502} fox jumps".to_owned(),
+                hidden_reads: Mutex::new(0),
+                injected: Mutex::new(Vec::new()),
+                cancel_on_read: None,
+            }
+            .deliver_once("the quick brown fox jumps", confirm)
+        };
+
+        assert!(
+            !bordered(None).is_confirmed(),
+            "the whole text is not on that screen, and saying it is would be a lie",
+        );
+        assert!(
+            bordered(Some("the quick brown")).is_confirmed(),
+            "a fragment the box did not break is what a caller confirms on",
+        );
+    }
+
     /// A cancelled run stops delivering and claims nothing about what the pane holds.
     #[test]
     fn a_cancelled_run_stops_and_claims_nothing() {
@@ -561,6 +649,7 @@ mod tests {
             text: "hello".to_owned(),
             hidden_reads: Mutex::new(0),
             injected: Mutex::new(Vec::new()),
+            cancel_on_read: None,
         };
         let outcome = deliver(
             &panes,
