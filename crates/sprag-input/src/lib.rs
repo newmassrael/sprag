@@ -409,50 +409,178 @@ fn ss3_function(key: &str) -> Option<u8> {
 // responsibility (the same R2.6 boundary as keys), so the report bytes are built here rather than in
 // any display client — the client supplies only a semantic [`MouseInput`] (a cell + a button edge).
 
-/// A pointer button in a mouse report. Wheel steps are reported as pseudo-buttons (xterm's model);
-/// [`MouseButton::None`] is the "no button" used for a bare motion event under any-event tracking.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MouseButton {
-    /// The primary (left) button — report button 0.
-    Left,
-    /// The middle button — report button 1.
-    Middle,
-    /// The secondary (right) button — report button 2.
-    Right,
-    /// Wheel scrolled up / away — xterm pseudo-button 64.
-    WheelUp,
-    /// Wheel scrolled down / toward — xterm pseudo-button 65.
-    WheelDown,
-    /// Horizontal wheel, xterm pseudo-button 66 (its button 6).
+sprag_vt::closed_set! {
+    /// A pointer button in a mouse report. Wheel steps are reported as pseudo-buttons (xterm's
+    /// model); [`MouseButton::None`] is the "no button" used for a bare motion event under
+    /// any-event tracking.
     ///
-    /// # The NAME is a reading; the report is not
-    ///
-    /// xterm's ctlseqs define buttons 6 and 7 as pseudo-buttons and leave which way each points to
-    /// convention, and these names follow the common one. **Nothing in sprag depends on the reading
-    /// being right**: a display client observes its own terminal's direction flag and this encoder
-    /// reproduces the same button number, so a swapped name would be a wrong LABEL in this file and
-    /// never a wrong report at a child. The place it would matter is a client that SYNTHESISED a
-    /// horizontal scroll from something other than a horizontal wheel, and none does.
-    WheelLeft,
-    /// Horizontal wheel the other way — xterm pseudo-button 67 (its button 7). See
-    /// [`MouseButton::WheelLeft`] for why the name is a reading and the report is not.
-    WheelRight,
-    /// No button held — the "button" of a bare motion event (any-event tracking).
-    None,
+    /// A [`closed_set!`](sprag_vt::closed_set!) because its WIRE VOCABULARY is published
+    /// ([`WIRE_WORDS`](Self::WIRE_WORDS)) — see [`wire_str`](Self::wire_str) for the two readers
+    /// that used to spell it separately.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum MouseButton {
+        /// The primary (left) button — report button 0.
+        Left,
+        /// The middle button — report button 1.
+        Middle,
+        /// The secondary (right) button — report button 2.
+        Right,
+        /// Wheel scrolled up / away — xterm pseudo-button 64.
+        WheelUp,
+        /// Wheel scrolled down / toward — xterm pseudo-button 65.
+        WheelDown,
+        /// Horizontal wheel, xterm pseudo-button 66 (its button 6).
+        ///
+        /// # The NAME is a reading; the report is not
+        ///
+        /// xterm's ctlseqs define buttons 6 and 7 as pseudo-buttons and leave which way each points
+        /// to convention, and these names follow the common one. **Nothing in sprag depends on the
+        /// reading being right**: a display client observes its own terminal's direction flag and
+        /// this encoder reproduces the same button number, so a swapped name would be a wrong LABEL
+        /// in this file and never a wrong report at a child. The place it would matter is a client
+        /// that SYNTHESISED a horizontal scroll from something other than a horizontal wheel, and
+        /// none does.
+        WheelLeft,
+        /// Horizontal wheel the other way — xterm pseudo-button 67 (its button 7). See
+        /// [`MouseButton::WheelLeft`] for why the name is a reading and the report is not.
+        WheelRight,
+        /// No button held — the "button" of a bare motion event (any-event tracking).
+        None,
+    }
 }
 
-/// The kind of pointer edge a report describes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MouseEventKind {
-    /// A button went down.
-    Press,
-    /// A button came up.
-    Release,
-    /// The pointer moved while a button is held (button-event or any-event tracking).
-    Drag,
-    /// The pointer moved with no button held (any-event tracking only).
-    Motion,
+impl MouseButton {
+    /// This button's word on the pane-input `mouse` action.
+    ///
+    /// # ⚠⚠ This vocabulary was spelled TWICE, in two crates
+    ///
+    /// The display client encoded it (`sprag_client`'s `mouse_button_wire`) and the host decoded it
+    /// (`parse_mouse_args`), as two independent hand-written matches over one set of eight words —
+    /// each documented as the other's "twin", with nothing holding them together but a unit test
+    /// that named four of the eight. A word renamed on either side would have made that button
+    /// unsendable, and both crates' suites would have stayed green.
+    ///
+    /// So the spelling lives HERE, on the type both sides already share, and both read through it.
+    /// The publication does too ([`WIRE_WORDS`](Self::WIRE_WORDS)), which is what lets the pane
+    /// surface tell a client what a `button` may be — a client that had to know these words out of
+    /// band before.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Middle => "middle",
+            Self::Right => "right",
+            Self::WheelUp => "wheelup",
+            Self::WheelDown => "wheeldown",
+            Self::WheelLeft => "wheelleft",
+            Self::WheelRight => "wheelright",
+            Self::None => "none",
+        }
+    }
+
+    /// The button a `mouse` action's `button` word names, or [`None`] for a word no button spells.
+    ///
+    /// Walks `ALL` through [`wire_str`](Self::wire_str) rather than re-listing the words, so this
+    /// admits exactly what the type spells and what the wire publishes — the defect
+    /// `AgentState::from_wire` was carrying at R352b, avoided here at birth.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
 }
+
+sprag_vt::wire_words!(MouseButton: wire_str);
+
+sprag_vt::closed_set! {
+    /// The kind of pointer edge a report describes.
+    ///
+    /// A [`closed_set!`](sprag_vt::closed_set!) for [`MouseButton`]'s reason: the `mouse` action
+    /// publishes this vocabulary, and it too was spelled once per side of the wire.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum MouseEventKind {
+        /// A button went down.
+        Press,
+        /// A button came up.
+        Release,
+        /// The pointer moved while a button is held (button-event or any-event tracking).
+        Drag,
+        /// The pointer moved with no button held (any-event tracking only).
+        Motion,
+    }
+}
+
+impl MouseEventKind {
+    /// This edge's word on the pane-input `mouse` action — the one spelling, for the reason
+    /// [`MouseButton::wire_str`] gives.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Press => "press",
+            Self::Release => "release",
+            Self::Drag => "drag",
+            Self::Motion => "motion",
+        }
+    }
+
+    /// The edge a `mouse` action's `kind` word names, or [`None`] for a word no edge spells.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
+}
+
+sprag_vt::wire_words!(MouseEventKind: wire_str);
+
+sprag_vt::closed_set! {
+    /// WHICH EDGE of a key a `key` action reports — the `state` argument's two words.
+    ///
+    /// # Why the type exists at all
+    ///
+    /// The words lived inside the host's `parse_key_args` as two string literals, so the vocabulary
+    /// had no definition anything could read: a client could not be told that `state` takes `down`
+    /// or `up` and nothing else, and the pane surface published no grammar for `key` at all. That is
+    /// exactly where `SplitDir` was before R352b, and the answer is the same one — a closed set, so
+    /// the parser and the publication read one array.
+    ///
+    /// [`Up`](Self::Up) is a REPORTED edge that injects nothing: in the mode sprag drives, terminals
+    /// emit no release, so the host accepts the edge and suppresses it rather than refusing a client
+    /// that faithfully reports both halves of a keystroke.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum KeyEdge {
+        /// The key went down — the edge that injects bytes, and the one a call means when it says
+        /// nothing.
+        Down,
+        /// The key came up — accepted and suppressed (no terminal encoding exists for it).
+        Up,
+    }
+}
+
+impl KeyEdge {
+    /// This edge's word in a `key` action's `state`.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Down => "down",
+            Self::Up => "up",
+        }
+    }
+
+    /// The edge a `state` word names, or [`None`] for a word no edge spells (which the host reports
+    /// as a malformed request rather than guessing at a press).
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
+
+    /// Whether this edge INJECTS anything — the question `inject_key` asks, on the type rather than
+    /// at the call site, so a third edge would have to answer it.
+    #[must_use]
+    pub const fn injects(self) -> bool {
+        matches!(self, Self::Down)
+    }
+}
+
+sprag_vt::wire_words!(KeyEdge: wire_str);
 
 /// A semantic pointer event addressed to a cell, before mode-gating and wire-encoding. A display
 /// client converts a pixel position to a 0-based cell and fills this in; [`encode_mouse`] decides
@@ -1136,5 +1264,52 @@ mod tests {
         for key in ["Up", "BSpace", "DC", "IC", "NPage", "PgDn"] {
             assert!(!is_key_name(key), "{key:?} is tmux's spelling, not sprag's");
         }
+    }
+    /// ⚠⚠ **ONE SPELLING, AND `from_wire` IS ITS INVERSE OVER THE WHOLE TYPE** — the property that
+    /// replaces two hand-written matches in two crates.
+    ///
+    /// # Why this is worth a test when `wire_words!` already projects the array
+    ///
+    /// The macro guarantees the PUBLISHED list is the type's own words. It says nothing about the
+    /// PARSER: `from_wire` could have been written as a second match — which is exactly the defect
+    /// `AgentState` was carrying at R352b, a `from_wire` re-listing the words while its own doc
+    /// claimed one definition. So the claim here is the round trip over `ALL`, plus the refusal of a
+    /// word no member spells, plus the length coming from the type rather than from a number.
+    #[test]
+    fn every_wire_vocabulary_round_trips_through_one_spelling() {
+        for button in MouseButton::ALL {
+            assert_eq!(MouseButton::from_wire(button.wire_str()), Some(button));
+        }
+        for kind in MouseEventKind::ALL {
+            assert_eq!(MouseEventKind::from_wire(kind.wire_str()), Some(kind));
+        }
+        for edge in KeyEdge::ALL {
+            assert_eq!(KeyEdge::from_wire(edge.wire_str()), Some(edge));
+        }
+        assert_eq!(MouseButton::WIRE_WORDS.len(), MouseButton::ALL.len());
+        assert_eq!(MouseEventKind::WIRE_WORDS.len(), MouseEventKind::ALL.len());
+        assert_eq!(KeyEdge::WIRE_WORDS.len(), KeyEdge::ALL.len());
+
+        // A word outside the vocabulary is refused rather than folded onto a default — which is what
+        // makes the published list a CONSTRAINT and not documentation beside the parser.
+        for stranger in ["", "LEFT", "wheel", "sideways", "pressed", "downwards"] {
+            assert_eq!(MouseButton::from_wire(stranger), None, "{stranger:?}");
+            assert_eq!(MouseEventKind::from_wire(stranger), None, "{stranger:?}");
+            assert_eq!(KeyEdge::from_wire(stranger), None, "{stranger:?}");
+        }
+    }
+
+    /// The edge that INJECTS is a property of the type, and exactly one edge has it.
+    ///
+    /// ⚠ `up` is accepted and writes nothing — terminals emit no release in the mode sprag drives —
+    /// so "which edge does something" is a question the type answers rather than a `match` at the
+    /// call site. A third edge would have to answer it too, which is the point.
+    #[test]
+    fn exactly_one_key_edge_injects() {
+        let injecting: Vec<KeyEdge> = KeyEdge::ALL
+            .into_iter()
+            .filter(|edge| edge.injects())
+            .collect();
+        assert_eq!(injecting, [KeyEdge::Down]);
     }
 }

@@ -18,13 +18,13 @@ use serde_json::{Value, json};
 use sprag_host::agent::SWEEP_INTERVAL;
 use sprag_host::wire::events_slot_since;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
-    DROP_FILE_ACTION, FULL_TEXT_SLOT, JOIN_PANE_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT,
-    LINKS_SLOT, MOVE_WINDOW_ACTION, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT,
-    PASTE_ACTION, RELEASE_AGENT_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION,
-    REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at,
-    project_slot_for,
+    ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
+    CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DROP_FILE_ACTION, FULL_TEXT_SLOT,
+    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, LAYOUT_SLOT, LINKS_SLOT, MOVE_WINDOW_ACTION,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, PASTE_ACTION, RELEASE_AGENT_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, SELECT_WINDOW_ACTION,
+    SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION, SET_LAYOUT_ACTION, SPAWN_ACTION,
+    SPLIT_ACTION, TEXT_ACTION, WINDOWS_SLOT, cells_slot_at, project_slot_for,
 };
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -5171,5 +5171,148 @@ fn the_display_message_grammar_is_enforced_by_the_daemon_itself() {
         collected[sprag_rpc::MESSAGE_FIELD],
         Value::Null,
         "a connection with no client has nothing waiting: {collected}",
+    );
+}
+
+/// ⚠⚠ **A CLIENT CAN DRIVE A PANE FROM THE PUBLISHED GRAMMAR AND NOTHING ELSE** — the whole feature,
+/// end to end, over a real socket against a real daemon.
+///
+/// # Why this test exists when four in-crate gates already drive the same table
+///
+/// Those gates call `invoke` on the surface directly, which means they choose the `IntrospectValue`
+/// themselves. **A published form says which SHAPE the `args` value is, and the mapping from JSON to
+/// that shape is pinion's, not sprag's** — so a gate that builds `IntrospectValue::Text` by hand is
+/// asserting about a conversion it performed. R351's rule: an instrument is a claim. Here the JSON
+/// goes down a socket and pinion's `json_to_introspect_value` does the converting, so a scalar form
+/// that is only reachable by a shape no client can send would fail HERE and nowhere else.
+///
+/// The test is written the way an agent would work: read `action_grammar` off the pane's own address,
+/// pick a form, fill it from the declaration, send it, and read the pane to see the keystroke arrive.
+/// Nothing in it names an argument that did not come out of the answer.
+#[test]
+fn a_client_can_drive_a_pane_from_its_published_grammar() {
+    let (_host, sock) = spawn_host();
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5))
+        .expect("connect to the spawned sprag-term host");
+
+    let panes: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers");
+    let pane = panes[0]["id"].as_u64().expect("the boot pane has an id");
+
+    // THE ONE READ AN AGENT STARTS FROM — on the PANE's surface, which is the address whose verbs it
+    // describes. The multiplexer's own answer is a different table (its twenty-five verbs), and
+    // asking the wrong surface for the other's grammar is the confusion a single global table would
+    // have invited.
+    let grammar: Value = conn
+        .call(
+            "scene/query",
+            json!({ "path": pane_input_path(pane, ACTION_GRAMMAR_SLOT) }),
+        )
+        .expect("a pane publishes how to call its own verbs");
+    let verbs = grammar.as_object().expect("the slot answers an object");
+    let mut published: Vec<&str> = verbs.keys().map(String::as_str).collect();
+    published.sort_unstable();
+    assert_eq!(
+        published,
+        ["clipboard_answer", "focus", "key", "mouse", "paste", "text"],
+        "the six verbs a pane's input surface serves, over the real wire: {grammar}",
+    );
+
+    // ── The SCALAR form, which is the half no in-crate gate can prove ────────────────────────────
+    let text_forms = verbs["text"].as_array().expect("text answers its forms");
+    let scalar = text_forms
+        .iter()
+        .find(|form| form[CallForm::FORM_KEY] == json!("scalar"))
+        .expect("`text` publishes a scalar form");
+    assert_eq!(
+        scalar[CallForm::ARGS_KEY]
+            .as_array()
+            .expect("a form answers its arguments")
+            .len(),
+        1,
+        "a scalar form's one argument IS the whole args value",
+    );
+    conn.call(
+        "scene/invoke",
+        // The `args` is the BARE VALUE, exactly as the published form says. pinion turns this JSON
+        // string into the shape the surface reads; if that mapping were anything else this call would
+        // be refused and the assertion below would never see the text.
+        json!({ "path": pane_input_path(pane, TEXT_ACTION), "args": "from-the-scalar-form" }),
+    )
+    .expect("the scalar form is a call this daemon reads");
+
+    // ── The OBJECT form of `key`, with a word taken from its published vocabulary ────────────────
+    let key_object = verbs["key"]
+        .as_array()
+        .expect("key answers its forms")
+        .iter()
+        .find(|form| form[CallForm::FORM_KEY] == json!("object"))
+        .expect("`key` publishes an object form")
+        .clone();
+    let args = key_object[CallForm::ARGS_KEY]
+        .as_array()
+        .expect("a form answers its arguments");
+    let edge = args
+        .iter()
+        .find(|arg| arg[ArgGrammar::NAME_KEY] == json!("state"))
+        .expect("`key`'s object form declares the edge")[ArgGrammar::ONE_OF_KEY][0]
+        .as_str()
+        .expect("the edge publishes its vocabulary")
+        .to_owned();
+    assert_eq!(
+        edge, "down",
+        "the FIRST published edge is the one that injects — a client filling a form takes it",
+    );
+    // Built from the answer: the key name argument by its published NAME, the edge by its published
+    // WORD. Nothing here is a string this test knew in advance except the keystroke itself.
+    let name_of_key = args[0][ArgGrammar::NAME_KEY]
+        .as_str()
+        .expect("the first argument is named")
+        .to_owned();
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": pane_input_path(pane, KEY_ACTION),
+            "args": { name_of_key: "!", "state": edge },
+        }),
+    )
+    .expect("the object form is a call this daemon reads");
+
+    // The pane is a `cat`, so what reached the child echoes back — the proof that a grammar-built
+    // call did not merely parse but ARRIVED.
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            conn.call(
+                "scene/query",
+                json!({ "path": pane_input_path(pane, FULL_TEXT_SLOT) }),
+            )
+            .ok()
+            .and_then(|value| {
+                value
+                    .as_str()
+                    .map(|text| text.contains("from-the-scalar-form!"))
+            })
+            .unwrap_or(false)
+        }),
+        "a call built from the published grammar never reached the child",
+    );
+
+    // ⚠ THE CONTROL: a word the vocabulary does NOT hold is refused, so the published list is a
+    // constraint the daemon enforces rather than documentation beside it. Without this the test would
+    // pass against a daemon that accepted any `state` at all, and the vocabulary would be decoration.
+    assert!(
+        conn.call(
+            "scene/invoke",
+            json!({
+                "path": pane_input_path(pane, KEY_ACTION),
+                "args": { "key": "!", "state": "sideways" },
+            }),
+        )
+        .is_err(),
+        "a `state` outside the published vocabulary must be refused",
     );
 }

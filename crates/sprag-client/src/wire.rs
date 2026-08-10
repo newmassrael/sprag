@@ -108,7 +108,7 @@ use sprag_host::{
     CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneFrame,
     PaneNotification, PaneScrollFacts, Project, UserConfig, mux_action_path, pane_input_path,
 };
-use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
+use sprag_input::{Modifiers, MouseInput};
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_MESSAGES_METHOD, CLIENT_SIZE_METHOD, COLS_PARAM, HostConn,
     HostEndpoint, MESSAGE_FIELD, ROWS_PARAM, new_gui_client_id,
@@ -4122,41 +4122,18 @@ fn parse_child_exit(value: &Value) -> Option<PaneExit> {
 /// to `false`).
 fn mouse_wire_args(event: MouseInput) -> Value {
     json!({
-        "button": mouse_button_wire(event.button),
-        "kind": mouse_kind_wire(event.kind),
+        // ⚠ THE TYPE'S OWN SPELLING, not this crate's. Both words used to be emitted by a local
+        // match here — documented as the "producer twin" of the host's parser — so one vocabulary
+        // had two hand-written definitions in two crates and a rename on either side would have made
+        // a button unsendable with both suites green. `MouseButton::wire_str` says the rest.
+        "button": event.button.wire_str(),
+        "kind": event.kind.wire_str(),
         "col": event.col,
         "row": event.row,
         "ctrl": event.mods.ctrl,
         "alt": event.mods.alt,
         "shift": event.mods.shift,
     })
-}
-
-/// The `button` wire token for a [`MouseButton`] — the vocabulary the host's `parse_mouse_args`
-/// decodes back. The producer twin of that parser, kept beside [`WireHost::mouse`] so the wire
-/// grammar has one emitter.
-fn mouse_button_wire(button: MouseButton) -> &'static str {
-    match button {
-        MouseButton::Left => "left",
-        MouseButton::Middle => "middle",
-        MouseButton::Right => "right",
-        MouseButton::WheelUp => "wheelup",
-        MouseButton::WheelDown => "wheeldown",
-        MouseButton::WheelLeft => "wheelleft",
-        MouseButton::WheelRight => "wheelright",
-        MouseButton::None => "none",
-    }
-}
-
-/// The `kind` wire token for a [`MouseEventKind`] — the edge vocabulary the host's
-/// `parse_mouse_args` decodes back.
-fn mouse_kind_wire(kind: MouseEventKind) -> &'static str {
-    match kind {
-        MouseEventKind::Press => "press",
-        MouseEventKind::Release => "release",
-        MouseEventKind::Drag => "drag",
-        MouseEventKind::Motion => "motion",
-    }
 }
 
 /// Parse a pane's `notification` wire value (`{title, body, seq}`, or absent/`null`) into a
@@ -4946,6 +4923,9 @@ fn request_detach(quit: &Arc<dyn QuitSink>, stopped: bool, reason: &str, error: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The two mouse vocabularies are the TYPE's now, so nothing outside these tests names the enums
+    // in this crate — the args builder goes through `MouseInput`'s own members.
+    use sprag_input::{MouseButton, MouseEventKind};
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::AtomicUsize;
@@ -4973,8 +4953,15 @@ mod tests {
     }
 
     /// [`WireHost::mouse`] serializes a semantic event into the exact object shape the host's
-    /// `parse_mouse_args` decodes (`{button, kind, col, row, ctrl, alt, shift}`) — a token typo here
-    /// would make the host silently drop the report. Pins the vocabulary + the 0-based coordinates.
+    /// `parse_mouse_args` decodes (`{button, kind, col, row, ctrl, alt, shift}`) — a missing KEY here
+    /// would make the host refuse the report. Pins the key set + the 0-based coordinates.
+    ///
+    /// ⚠ **The WORDS are no longer this test's business, and that is the point.** It used to assert
+    /// four of the twelve tokens a local match in this crate emitted, which is what let one
+    /// vocabulary live in two crates: nothing here could see the host's copy. The words come from
+    /// [`MouseButton::wire_str`] now, so the only claim left to make is about the SHAPE — and the
+    /// vocabulary is held to the daemon by the pane surface's own acceptance gate, which drives every
+    /// published word through a live `invoke`.
     #[test]
     fn mouse_wire_args_matches_the_host_parse_shape() {
         let event = MouseInput {
@@ -5001,11 +4988,27 @@ mod tests {
                 "shift": true,
             }),
         );
-        // The release edge + the other buttons/edges use the tokens the parser matches.
-        assert_eq!(mouse_button_wire(MouseButton::Right), "right");
-        assert_eq!(mouse_button_wire(MouseButton::WheelUp), "wheelup");
-        assert_eq!(mouse_kind_wire(MouseEventKind::Release), "release");
-        assert_eq!(mouse_kind_wire(MouseEventKind::Motion), "motion");
+        // A DIFFERENT event fills the same key set: the shape does not depend on which button or
+        // edge it carries, which is the claim a single sample cannot make.
+        let wheel = MouseInput {
+            button: MouseButton::WheelUp,
+            kind: MouseEventKind::Motion,
+            col: 0,
+            row: 0,
+            mods: Modifiers::default(),
+        };
+        let sent = mouse_wire_args(wheel);
+        let mut keys: Vec<&String> = sent
+            .as_object()
+            .expect("the args are an object")
+            .keys()
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["alt", "button", "col", "ctrl", "kind", "row", "shift"],
+            "every well-formed report carries the same keys",
+        );
     }
 
     /// [`destroy_successor`] over ONE world: the mirror and the fresh read AGREEING.

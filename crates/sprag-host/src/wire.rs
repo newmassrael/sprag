@@ -231,8 +231,8 @@ pub const REGEX_FIELD: SchemaField =
 pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::action(KEY_ACTION, "action"),
     SchemaField::action(MOUSE_ACTION, "action"),
-    SchemaField::action(FOCUS_ACTION, "action"),
     SchemaField::action(TEXT_ACTION, "action"),
+    SchemaField::action(FOCUS_ACTION, "action"),
     SchemaField::action(PASTE_ACTION, "action"),
     CELLS_FIELD,
     SchemaField::new(FRAMES_SLOT, "int"),
@@ -246,6 +246,10 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     IMAGE_DATA_FIELD,
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
     SchemaField::action(CLIPBOARD_ANSWER_ACTION, "action"),
+    // HOW TO CALL THE SIX VERBS ABOVE — this surface's own [`ActionGrammar::PANE`]. A client that
+    // holds a pane's path can ask that pane what its input verbs take, which is the read that made
+    // every argument on this surface folklore until R353.
+    SchemaField::new(ACTION_GRAMMAR_SLOT, "object"),
 ];
 
 /// Whether `schema` DECLARES `path` as a verb — the guard a surface runs before it dispatches, so
@@ -416,12 +420,127 @@ impl ArgGrammar {
     }
 }
 
+sprag_vt::closed_set! {
+    /// WHERE A CALL'S ARGUMENTS LIVE — the shape of the `args` value itself, before any key is read.
+    ///
+    /// # The defect this exists for
+    ///
+    /// Every verb the multiplexer serves takes an OBJECT, so the first version of this table had no
+    /// need to say so. The pane's input verbs do not: `key`, `text` and `paste` each accept a bare
+    /// string as well (`invoke("text", "한")`), which is the seam an IME commit and a paste reach,
+    /// and there is no key in that call at all. Publishing those as objects would have been an
+    /// affirmative false statement about half of what the daemon accepts, and publishing nothing
+    /// would have left the pane surface — the surface an agent uses most — undiscoverable for another
+    /// round.
+    ///
+    /// # Why these two words and not pinion's six
+    ///
+    /// pinion HEAD's [`ArgForm`](pinion_core::external::SchemaField) is the same concept with a
+    /// wider vocabulary (`Undeclared`, `Path`, `Nullary`, `Scalar`, `Object`, `Delimited(char)`), and
+    /// it is the right long-term home for exactly the reason [`ArgGrammar`] gives about `SchemaArg`:
+    /// **none of it exists at the rev sprag pins.** So this is deliberately a SUBSET of the
+    /// upstream's, spelled with the upstream's words, and it publishes only the two shapes sprag
+    /// genuinely serves — a verb that took no arguments at all would be `Nullary` and sprag has none.
+    /// The day the pin moves, this maps onto the upstream arm of the same name.
+    ///
+    /// ⚠ It is per FORM rather than per verb, which the upstream's is not, because `key` is BOTH: a
+    /// bare string or an object. A verb-level form could not describe it without calling one of the
+    /// two shapes a lie.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum FormKind {
+        /// The arguments are the members of a JSON OBJECT, keyed by [`ArgGrammar::name`].
+        Object,
+        /// The single declared argument IS the whole `args` value — `invoke("text", "한")`. A form
+        /// this shape carries exactly one argument, which
+        /// [`a_scalar_form_declares_exactly_one_argument`](self) holds it to.
+        Scalar,
+    }
+}
+
+impl FormKind {
+    /// This shape's word in a published form's [`FORM_KEY`](CallForm::FORM_KEY).
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Object => "object",
+            Self::Scalar => "scalar",
+        }
+    }
+}
+
+sprag_vt::wire_words!(FormKind: wire_str);
+
+/// ONE WAY A VERB MAY BE CALLED — the shape of its `args` and the arguments that shape carries.
+///
+/// A verb publishes a LIST of these ([`ActionGrammar::forms`]), one per arm of its request grammar,
+/// and a client picks one and fills it. The alternation is the part pinion's `SchemaArg` cannot
+/// express and the part a flat argument list gets wrong: see [`ActionGrammar::forms`] for the
+/// `move_window` call that a flat list said was well-formed and the daemon refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CallForm {
+    /// Where this form's arguments live — an object's members, or the whole `args` value.
+    pub form: FormKind,
+    /// The arguments, in declared order. A [`FormKind::Scalar`] form has exactly one.
+    pub args: &'static [ArgGrammar],
+}
+
+impl CallForm {
+    /// The answer key naming the form's shape.
+    pub const FORM_KEY: &'static str = "form";
+    /// The answer key carrying the form's arguments.
+    pub const ARGS_KEY: &'static str = "args";
+
+    /// A form whose arguments are the members of a JSON object — every mux verb, and half the pane's.
+    #[must_use]
+    pub const fn object(args: &'static [ArgGrammar]) -> Self {
+        Self {
+            form: FormKind::Object,
+            args,
+        }
+    }
+
+    /// A form whose ONE argument is the whole `args` value.
+    ///
+    /// Takes the argument by value rather than as a slice so the "exactly one" is in the TYPE at the
+    /// declaration, not only in the gate that checks it.
+    #[must_use]
+    pub const fn scalar(arg: &'static ArgGrammar) -> Self {
+        Self {
+            form: FormKind::Scalar,
+            args: std::slice::from_ref(arg),
+        }
+    }
+
+    /// This form as the client reads it: its shape, and its arguments in declared order.
+    ///
+    /// ⚠ An OBJECT, where the first version of this surface published a bare array of arguments.
+    /// That array could not say which shape it described, and the day a verb with a scalar form was
+    /// published it would have had to — so the shape moved into the answer and
+    /// [`sprag_rpc::WIRE_PROTOCOL`] rose with it. An added key is additive; a value that was an
+    /// ARRAY and is now an OBJECT is not, and the number exists to say so (R342).
+    #[must_use]
+    pub fn to_answer(&self) -> Value {
+        let mut map = Map::new();
+        map.insert(Self::FORM_KEY.to_owned(), Value::from(self.form.wire_str()));
+        map.insert(
+            Self::ARGS_KEY.to_owned(),
+            Value::from(
+                self.args
+                    .iter()
+                    .map(ArgGrammar::to_answer)
+                    .collect::<Vec<_>>(),
+            ),
+        );
+        Value::Object(map)
+    }
+}
+
 /// The request grammar of the SPAWNING verbs, and of the three that carry a closed vocabulary —
 /// declared here rather than beside an ask type, because these verbs read their arguments inline
 /// out of the request map and have no ask type to be read off.
 ///
 /// ⚠⚠ **A HAND-WRITTEN DECLARATION IS ONLY AS GOOD AS WHAT HOLDS IT TO THE PARSER**, and until
-/// R352's third gate there was nothing, which is why [`ActionGrammar::ALL`] began with ask-backed
+/// R352's third gate there was nothing, which is why [`ActionGrammar::MUX`] began with ask-backed
 /// verbs alone. Three gates hold every one of these now, by RUNNING them against the daemon:
 /// each published word is accepted, each open string argument is genuinely open, and — the one
 /// that makes hand-writing safe — **each declared argument is refused at the wrong TYPE**, which a
@@ -448,7 +567,7 @@ impl InlineGrammar {
     ];
 
     /// [`SPAWN_ACTION`] — the birth keys and nothing else.
-    pub const SPAWN: &'static [&'static [ArgGrammar]] = &[Self::BIRTH];
+    pub const SPAWN: &'static [CallForm] = &[CallForm::object(Self::BIRTH)];
 
     /// [`SPLIT_ACTION`] — a pane to divide, WHICH WAY, and the birth keys for the child that fills
     /// the half that opens.
@@ -457,7 +576,7 @@ impl InlineGrammar {
     /// string literals inside the parser, so they could not be published. They are
     /// [`SplitDir::WIRE_WORDS`](sprag_terminal::SplitDir::WIRE_WORDS) now, and the parser reads
     /// through the same definition.
-    pub const SPLIT: &'static [&'static [ArgGrammar]] = &[&[
+    pub const SPLIT: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int").optional(),
         ArgGrammar::one_of(
             SPLIT_DIR_KEY,
@@ -471,13 +590,13 @@ impl InlineGrammar {
         ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
         ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
         ArgGrammar::open(WINDOW_OPENED_BY_KEY, "int").optional(),
-    ]];
+    ])];
 
     /// [`DISPLAY_MESSAGE_ACTION`] — what to say, how loudly, and to whom.
     ///
     /// `severity` publishes [`Severity`](crate::report::Severity)'s three words. An absent one is
     /// the default rather than a refusal, which is why it is optional.
-    pub const DISPLAY_MESSAGE: &'static [&'static [ArgGrammar]] = &[&[
+    pub const DISPLAY_MESSAGE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(MESSAGE_TEXT_KEY, "string"),
         ArgGrammar::one_of(
             MESSAGE_SEVERITY_KEY,
@@ -486,7 +605,7 @@ impl InlineGrammar {
         )
         .optional(),
         ArgGrammar::open(MESSAGE_CLIENT_KEY, "string").optional(),
-    ]];
+    ])];
 
     /// The key that leaves the session where it is, on the two verbs that create a window.
     ///
@@ -498,62 +617,70 @@ impl InlineGrammar {
     const OPENED_BY_ARG: ArgGrammar = ArgGrammar::open(WINDOW_OPENED_BY_KEY, "int").optional();
 
     /// [`CLOSE_ACTION`] — the pane to end. Absent means the session's active one.
-    pub const CLOSE: &'static [&'static [ArgGrammar]] =
-        &[&[ArgGrammar::open("id", "int").optional()]];
+    pub const CLOSE: &'static [CallForm] =
+        &[CallForm::object(
+            &[ArgGrammar::open("id", "int").optional()],
+        )];
 
     /// [`ZOOM_PANE_ACTION`] — a pane, and whether to zoom it. Absent `on` TOGGLES.
-    pub const ZOOM_PANE: &'static [&'static [ArgGrammar]] = &[&[
+    pub const ZOOM_PANE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int").optional(),
         ArgGrammar::open("on", "bool").optional(),
-    ]];
+    ])];
 
     /// [`SET_FLOATING_ACTION`] — a pane, and which way to move it across the tiling's edge.
-    pub const SET_FLOATING: &'static [&'static [ArgGrammar]] = &[&[
+    pub const SET_FLOATING: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open("id", "int"),
         ArgGrammar::open("floating", "bool"),
-    ]];
+    ])];
 
     /// [`DROP_FILE_ACTION`] — a pane, and the path a display client dropped on it.
-    pub const DROP_FILE: &'static [&'static [ArgGrammar]] = &[&[
+    pub const DROP_FILE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int"),
         ArgGrammar::open("path", "string"),
-    ]];
+    ])];
 
     /// [`RELEASE_AGENT_ACTION`] — the pane whose agent claim is given up.
     ///
     /// [`REPORT_AGENT`](Self::REPORT_AGENT)'s other half, and the second verb R352 found declared
     /// nowhere at all.
-    pub const RELEASE_AGENT: &'static [&'static [ArgGrammar]] =
-        &[&[ArgGrammar::open(AGENT_ID_KEY, "int")]];
+    pub const RELEASE_AGENT: &'static [CallForm] =
+        &[CallForm::object(&[ArgGrammar::open(AGENT_ID_KEY, "int")])];
 
     /// [`RENAME_PANE_ACTION`] — a pane, and what to call it. An absent name CLEARS.
-    pub const RENAME_PANE: &'static [&'static [ArgGrammar]] = &[&[
+    pub const RENAME_PANE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int"),
         ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
-    ]];
+    ])];
 
     /// [`RENAME_SESSION_ACTION`] — what to call the request's own session.
-    pub const RENAME_SESSION: &'static [&'static [ArgGrammar]] =
-        &[&[ArgGrammar::open(SPAWN_NAME_KEY, "string")]];
+    pub const RENAME_SESSION: &'static [CallForm] = &[CallForm::object(&[ArgGrammar::open(
+        SPAWN_NAME_KEY,
+        "string",
+    )])];
 
     /// [`KILL_SESSION_ACTION`] — which session to end. Named, never scoped: ending the one you are
     /// attached to by omission is not a thing this verb lets a caller do by accident.
-    pub const KILL_SESSION: &'static [&'static [ArgGrammar]] =
-        &[&[ArgGrammar::open(SPAWN_NAME_KEY, "string")]];
+    pub const KILL_SESSION: &'static [CallForm] = &[CallForm::object(&[ArgGrammar::open(
+        SPAWN_NAME_KEY,
+        "string",
+    )])];
 
     /// [`RENAME_WINDOW_ACTION`] — which window, and what to call it.
-    pub const RENAME_WINDOW: &'static [&'static [ArgGrammar]] = &[&[
+    pub const RENAME_WINDOW: &'static [CallForm] = &[CallForm::object(&[
         WindowRef::NAMED_ARG,
         ArgGrammar::open(SPAWN_NAME_KEY, "string"),
-    ]];
+    ])];
 
     /// [`KILL_WINDOW_ACTION`] — which window to end, by either spelling, or the scoped one.
-    pub const KILL_WINDOW: &'static [&'static [ArgGrammar]] =
-        &[&[WindowRef::NAMED_ARG], &[WindowRef::PICKED_ARG]];
+    pub const KILL_WINDOW: &'static [CallForm] = &[
+        CallForm::object(&[WindowRef::NAMED_ARG]),
+        CallForm::object(&[WindowRef::PICKED_ARG]),
+    ];
 
     /// [`NEW_WINDOW_ACTION`] — a name for the window, how it is born, and the birth keys for the
     /// pane that fills it.
-    pub const NEW_WINDOW: &'static [&'static [ArgGrammar]] = &[&[
+    pub const NEW_WINDOW: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
         Self::DETACHED_ARG,
         Self::OPENED_BY_ARG,
@@ -561,16 +688,16 @@ impl InlineGrammar {
         ArgGrammar::open(SPAWN_CWD_KEY, "string").optional(),
         ArgGrammar::open(SPAWN_COLS_KEY, "int").optional(),
         ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
-    ]];
+    ])];
 
     /// [`NEW_SESSION_ACTION`] — a name for the session, and the birth keys for its first pane.
-    pub const NEW_SESSION: &'static [&'static [ArgGrammar]] = &[&[
+    pub const NEW_SESSION: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
         ArgGrammar::open(SPAWN_CMD_KEY, "array").optional(),
         ArgGrammar::open(SPAWN_CWD_KEY, "string").optional(),
         ArgGrammar::open(SPAWN_COLS_KEY, "int").optional(),
         ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
-    ]];
+    ])];
 
     // ⚠ THE FOUR VERBS THAT PUBLISH NOTHING, AND WHY — a stated boundary rather than an oversight.
     //
@@ -585,18 +712,18 @@ impl InlineGrammar {
     // only the birth, so the verb's grammar is declared here where its other half can be said too.
 
     /// [`BREAK_PANE_ACTION`] — the pane to take out of its window, and the window it becomes.
-    pub const BREAK_PANE: &'static [&'static [ArgGrammar]] = &[&[
+    pub const BREAK_PANE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int"),
         ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
         Self::DETACHED_ARG,
         Self::OPENED_BY_ARG,
-    ]];
+    ])];
 
     /// [`MOVE_PANE_ACTION`] — a pane, the pane it lands beside, and which side of it.
     ///
     /// The third verb carrying [`SplitDir`](sprag_terminal::SplitDir)'s two words, after
     /// [`SPLIT`](Self::SPLIT).
-    pub const MOVE_PANE: &'static [&'static [ArgGrammar]] = &[&[
+    pub const MOVE_PANE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int").optional(),
         ArgGrammar::open("target", "int"),
         ArgGrammar::one_of(
@@ -605,7 +732,7 @@ impl InlineGrammar {
             &sprag_terminal::SplitDir::WIRE_WORDS,
         ),
         ArgGrammar::open(SPLIT_BEFORE_KEY, "bool").optional(),
-    ]];
+    ])];
 
     /// [`REPORT_AGENT_ACTION`] — an agent reporting its own turn, the SCE requirement's verb.
     ///
@@ -614,7 +741,7 @@ impl InlineGrammar {
     /// ([`AgentState::REPORTED_WORDS`](sprag_detect::AgentState::REPORTED_WORDS)) — `unknown` is
     /// excluded by the same predicate the parser refuses it with, because it is a conclusion about
     /// the rules rather than a state a reporter is in.
-    pub const REPORT_AGENT: &'static [&'static [ArgGrammar]] = &[&[
+    pub const REPORT_AGENT: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(AGENT_ID_KEY, "int"),
         ArgGrammar::open(AGENT_SOURCE_KEY, "string"),
         ArgGrammar::one_of(
@@ -625,7 +752,115 @@ impl InlineGrammar {
         ArgGrammar::open(AGENT_NAME_KEY, "string").optional(),
         ArgGrammar::open(AGENT_SEQ_KEY, "int").optional(),
         ArgGrammar::open(AGENT_BIND_KEY, "bool").optional(),
-    ]];
+    ])];
+}
+
+/// The request grammar of the PANE-INPUT verbs — the six ways a client drives what is inside a pane.
+///
+/// # Every one of these was folklore, and four vocabularies had no definition
+///
+/// `key`, `mouse`, `focus`, `text`, `paste` and `clipboard_answer` read their arguments inline like
+/// [`InlineGrammar`]'s verbs, and until this table they published nothing at all: `$schema` named the
+/// six addresses and said not one word about what to send them. A client that wanted to type a
+/// Ctrl-C had to know the modifier key names, the object shape, and — for a mouse report — twelve
+/// words that existed only inside the host's own `match`.
+///
+/// Those words have types now, in the crates that own the concepts:
+/// [`MouseButton`](sprag_input::MouseButton), [`MouseEventKind`](sprag_input::MouseEventKind),
+/// [`KeyEdge`](sprag_input::KeyEdge) and [`ClipboardTarget`](sprag_vt::ClipboardTarget). Two of them
+/// were spelled TWICE — the display client encoded the vocabulary and the host decoded it, in two
+/// crates, with nothing comparing the two lists.
+///
+/// The same three gates hold this table that hold [`InlineGrammar`]'s, driven through a LIVE pane
+/// surface over a real PTY: every published word accepted, every open string argument genuinely open,
+/// and every declared argument refused at the wrong type.
+///
+/// ⚠ The KEY NAMES are literals here where [`InlineGrammar`]'s come from shared consts, because the
+/// pane parsers read literals too — and inventing a const one side of the wire reads would be a
+/// second definition dressed as a first. What ties these names to the parser is not a shared token
+/// but execution: `a_declared_argument_is_one_the_daemon_reads` sends each one at the wrong type and
+/// requires a refusal, which a key the daemon does not read cannot produce.
+pub struct PaneGrammar;
+
+impl PaneGrammar {
+    /// The key a `key` action reports, in its object form — a W3C `KeyboardEvent.key` string, which
+    /// is the caller's own value and has no vocabulary to publish (a printable character, or one of
+    /// [`NAMED_KEYS`](sprag_input::NAMED_KEYS)).
+    const KEY_ARG: ArgGrammar = ArgGrammar::open("key", "string");
+
+    /// [`KEY_ACTION`] — a keystroke, either spelling.
+    ///
+    /// ⚠ The SCALAR form first, because it is the shorter answer to *"how do I press `a`"*, and a
+    /// client reading forms in order meets the cheap one before the complete one. The object form is
+    /// strictly more expressive: a bare string cannot carry a modifier or an edge.
+    pub const KEY: &'static [CallForm] = &[
+        CallForm::scalar(&Self::KEY_ARG),
+        CallForm::object(&[
+            Self::KEY_ARG,
+            // The two words that lived as string literals inside `parse_key_args`. An absent `state`
+            // means `down`, which is why it is optional — and `up` is ACCEPTED and injects nothing,
+            // so a client that faithfully reports both halves of a keystroke is not refused.
+            ArgGrammar::one_of("state", "string", &sprag_input::KeyEdge::WIRE_WORDS).optional(),
+            ArgGrammar::open("ctrl", "bool").optional(),
+            ArgGrammar::open("alt", "bool").optional(),
+            ArgGrammar::open("shift", "bool").optional(),
+            // The logo key. Named `super` on the wire (the W3C spelling) and `sup` on
+            // [`Modifiers`](sprag_input::Modifiers), which is why the key is written here rather than
+            // derived from the field.
+            ArgGrammar::open("super", "bool").optional(),
+        ]),
+    ];
+
+    /// The literal UTF-8 a `text` or `paste` action writes.
+    const TEXT_ARG: ArgGrammar = ArgGrammar::open("text", "string");
+
+    /// [`TEXT_ACTION`] — literal UTF-8, not key-encoded. The scalar form is what an IME commit
+    /// sends; both forms accept the EMPTY string, which writes nothing (the composition-cancel
+    /// shape).
+    pub const TEXT: &'static [CallForm] = &[
+        CallForm::scalar(&Self::TEXT_ARG),
+        CallForm::object(&[Self::TEXT_ARG]),
+    ];
+
+    /// [`PASTE_ACTION`] — [`TEXT`](Self::TEXT)'s grammar exactly, and deliberately the same
+    /// declaration rather than a copy of it: the two verbs differ in what the HOST does with the text
+    /// (bracketing it when the child enabled DEC 2004), never in what a client sends.
+    pub const PASTE: &'static [CallForm] = Self::TEXT;
+
+    /// [`MOUSE_ACTION`] — a button edge at a cell.
+    ///
+    /// ⚠⚠ **`button` and `kind` are the two vocabularies that were spelled once per side of the
+    /// wire** — see [`MouseButton::wire_str`](sprag_input::MouseButton::wire_str). Publishing them is
+    /// what makes a mouse report writable by a client that has read the grammar and nothing else.
+    ///
+    /// No `super`: a mouse report has no encoding for the logo key, so the parser does not read one,
+    /// and a surface that does not read a key does not declare it.
+    pub const MOUSE: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::one_of("button", "string", &sprag_input::MouseButton::WIRE_WORDS),
+        ArgGrammar::one_of("kind", "string", &sprag_input::MouseEventKind::WIRE_WORDS),
+        ArgGrammar::open("col", "int"),
+        ArgGrammar::open("row", "int"),
+        ArgGrammar::open("ctrl", "bool").optional(),
+        ArgGrammar::open("alt", "bool").optional(),
+        ArgGrammar::open("shift", "bool").optional(),
+    ])];
+
+    /// [`FOCUS_ACTION`] — which way the focus edge went. REQUIRED: there is no sensible default for
+    /// "did this pane gain or lose focus", and the parser refuses a call without it.
+    pub const FOCUS: &'static [CallForm] =
+        &[CallForm::object(&[ArgGrammar::open("focused", "bool")])];
+
+    /// [`CLIPBOARD_ANSWER_ACTION`] — the answer to a pending OSC 52 read.
+    ///
+    /// `sel` publishes [`ClipboardTarget`](sprag_vt::ClipboardTarget)'s two words, which the host
+    /// matched as bare literals before. All three arguments are required: the `seq` says WHICH query
+    /// is being answered (the exactly-once arbiter's whole instrument), and an EMPTY `text` is a
+    /// legitimate answer — an empty selection — so it cannot be spelled by omitting the key.
+    pub const CLIPBOARD_ANSWER: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::open("seq", "int"),
+        ArgGrammar::one_of("sel", "string", &sprag_vt::ClipboardTarget::WIRE_WORDS),
+        ArgGrammar::open("text", "string"),
+    ])];
 }
 
 /// The `cmd` key every spawning verb takes: the child's argv, or absent for the user's shell.
@@ -670,7 +905,8 @@ pub const AGENT_BIND_KEY: &str = "bind";
 /// An agent that can read the pane grid, the layout tree and the session list still could not work
 /// out how to CALL anything: `$schema` published 34 verb names and not one argument, so every
 /// client on this wire has had to carry sprag's request grammar as folklore. This is the table that
-/// stops that, and [`ALL`](Self::ALL) is what [`ACTION_GRAMMAR_SLOT`] serves.
+/// stops that, and each surface's table ([`MUX`](Self::MUX), [`PANE`](Self::PANE)) is what that
+/// surface's [`ACTION_GRAMMAR_SLOT`] serves.
 ///
 /// # Which verbs are here, and why the others are not
 ///
@@ -722,17 +958,20 @@ pub struct ActionGrammar {
     /// The forms are not invented here: there is one per arm of the ask, so an arm added to one of
     /// those enums is a form the round that adds it has to decide about, and
     /// [`the_published_grammar_is_the_ask_types_own`](self) compares the two lists arm by arm.
-    pub forms: &'static [&'static [ArgGrammar]],
+    pub forms: &'static [CallForm],
 }
 
 impl ActionGrammar {
-    /// Every verb that publishes its grammar.
+    /// Every MULTIPLEXER verb that publishes its grammar — what [`MUX_SCHEMA`]'s surface serves.
     ///
     /// ⚠ A LIST, and the one place in this feature that is. What holds it honest is not review:
     /// each entry's args come from the ask type named beside it, every published word is driven
     /// through the daemon's own parser, and a declared string argument the parser CONSTRAINS must
     /// publish a vocabulary — so an entry that drifts, and an argument left out of one, both fail.
-    pub const ALL: &'static [Self] = &[
+    /// A verb this LEAVES OUT is caught too: [`SURFACES`] pairs each schema with its table, and
+    /// `every_verb_a_surface_declares_publishes_its_grammar` requires an omission to be a NAMED
+    /// exemption rather than a silence.
+    pub const MUX: &'static [Self] = &[
         Self {
             action: SELECT_PANE_ACTION,
             forms: SelectAsk::GRAMMAR,
@@ -860,25 +1099,78 @@ impl ActionGrammar {
         },
     ];
 
-    /// The whole table as [`ACTION_GRAMMAR_SLOT`] serves it: an object keyed by the action's
-    /// address, each holding its arguments in declared order.
+    /// Every PANE-INPUT verb, all six of them — what [`PANE_SCHEMA`]'s surface serves.
+    ///
+    /// # The surface an agent uses most was the one that said nothing
+    ///
+    /// R352 published the multiplexer's twenty-five verbs and left these out, because
+    /// [`ActionGrammar`] was keyed by a mux action and had no surface dimension. So a client could
+    /// learn how to split a window and nothing about how to TYPE INTO ONE — and typing into a pane is
+    /// what a terminal is for. Every argument here was folklore until now, and four of the
+    /// vocabularies below had no definition at all outside the parser's own `match`.
+    ///
+    /// ⚠ **Three of these verbs accept a bare SCALAR as well as an object**, which is why
+    /// [`FormKind`] exists: `invoke("text", "한")` is the seam an IME commit reaches, and describing
+    /// it as an object would have been false about half of what the daemon takes.
+    pub const PANE: &'static [Self] = &[
+        Self {
+            action: KEY_ACTION,
+            forms: PaneGrammar::KEY,
+            from_ask: false,
+        },
+        Self {
+            action: TEXT_ACTION,
+            forms: PaneGrammar::TEXT,
+            from_ask: false,
+        },
+        Self {
+            action: PASTE_ACTION,
+            forms: PaneGrammar::PASTE,
+            from_ask: false,
+        },
+        Self {
+            action: MOUSE_ACTION,
+            forms: PaneGrammar::MOUSE,
+            from_ask: false,
+        },
+        Self {
+            action: FOCUS_ACTION,
+            forms: PaneGrammar::FOCUS,
+            from_ask: false,
+        },
+        Self {
+            action: CLIPBOARD_ANSWER_ACTION,
+            forms: PaneGrammar::CLIPBOARD_ANSWER,
+            from_ask: false,
+        },
+    ];
+
+    /// ONE SURFACE'S table as its [`ACTION_GRAMMAR_SLOT`] serves it: an object keyed by the action's
+    /// address on that surface, each holding its forms in declared order.
     ///
     /// Keyed by address rather than sent as a list because the client's question is always *"how do
     /// I call THIS one"*, and an object answers it without a scan. Each value is a list of FORMS —
     /// a client picks one and fills it, which is the shape that makes an enumerated call correct
     /// rather than merely well-typed.
+    ///
+    /// # Why the table is a PARAMETER and not `Self::MUX`
+    ///
+    /// ⚠ **Each surface publishes the verbs IT serves, on its own copy of the slot.** The addresses
+    /// are per surface — the multiplexer's `key`-less verbs hang off `/sprag_mux/external/…` while a
+    /// pane's hang off `/pane_<id>/sprag_input/external/…` — so one flat table would have had to
+    /// carry a surface dimension in every key, and two verbs of the same name on different surfaces
+    /// could not both be described. Answering on the surface the client already holds a path to needs
+    /// no such encoding: the address it asked is the address it invokes.
     #[must_use]
-    pub fn answer() -> Value {
+    pub fn answer(table: &'static [Self]) -> Value {
         let mut map = Map::new();
-        for verb in Self::ALL {
+        for verb in table {
             map.insert(
                 verb.action.to_owned(),
                 Value::from(
                     verb.forms
                         .iter()
-                        .map(|form| {
-                            Value::from(form.iter().map(ArgGrammar::to_answer).collect::<Vec<_>>())
-                        })
+                        .map(CallForm::to_answer)
                         .collect::<Vec<_>>(),
                 ),
             );
@@ -887,7 +1179,8 @@ impl ActionGrammar {
     }
 }
 
-/// HOW TO CALL THE VERBS THIS SURFACE PUBLISHES — [`ActionGrammar::ALL`], as a slot.
+/// HOW TO CALL THE VERBS **THIS** SURFACE SERVES — the asking surface's own [`ActionGrammar`] table,
+/// as a slot.
 ///
 /// The read half of the wire has always been discoverable: `$schema` names every address, and a
 /// client walks it. The WRITE half was not — a name and nothing else — so this is the address that
@@ -896,7 +1189,73 @@ impl ActionGrammar {
 /// A SLOT rather than an addition to each verb's declaration because the declaration cannot hold it
 /// at the pinned pinion ([`ArgGrammar`] says why), and a slot is the shape that survives the day it
 /// can: this answer becomes a projection of the same table, and the table moves into `$schema`.
+///
+/// ⚠ **ONE NAME, ONE PER SURFACE.** The multiplexer answers [`ActionGrammar::MUX`] here and a pane
+/// answers [`ActionGrammar::PANE`], which is why the const is a bare slot name and not a path: the
+/// answer is scoped by the surface a client asked, so `/pane_7/sprag_input/external/action_grammar`
+/// describes exactly the verbs `/pane_7/sprag_input/external/…` accepts. A single global table would
+/// have needed a surface dimension inside every key to say the same thing, and could not have
+/// described two same-named verbs on different surfaces at all.
 pub const ACTION_GRAMMAR_SLOT: &str = "action_grammar";
+
+/// EVERY SURFACE THIS CRATE SERVES, paired with the grammar table it publishes and the verbs it
+/// deliberately does not describe.
+///
+/// # What this pairing is for
+///
+/// A verb can be left out of a grammar table with nothing to notice — the same shape as R352's
+/// `report_agent`, one level up: a gate that walks a TABLE cannot see a verb missing from it. So the
+/// table is paired with the SCHEMA here, and `every_verb_a_surface_declares_publishes_its_grammar`
+/// requires each declared verb to be in the table or in the named exemption beside it. An omission
+/// becomes a decision somebody wrote down.
+///
+/// ⚠ The GUI's three surfaces are not here: they live in another crate and declare their own schemas,
+/// so this list is honest about the surfaces THIS crate's wire owns. That is the residue, stated —
+/// their grammar is [`crate::wire`]'s next front, not a silence this list is pretending about.
+pub const SURFACES: &[WireSurface] = &[
+    WireSurface {
+        name: "the multiplexer",
+        schema: MUX_SCHEMA,
+        grammar: ActionGrammar::MUX,
+        // ⚠ THE THREE VERBS THAT TAKE NESTED VALUES, and the reason they say nothing is that
+        // `ArgGrammar` describes a FLAT key: `set_layout` takes an arrangement tree, `resize` a
+        // client's cell metrics, `grant_pane` a share object. `{"tree": "object"}` would be true and
+        // useless — the affirmative-noise cousin of the affirmative false statement this whole
+        // surface exists to avoid. pinion's `SchemaArg` cannot express a nested grammar either, so
+        // this is a shape neither side has met and one to design rather than bolt on.
+        undescribed: &[SET_LAYOUT_ACTION, RESIZE_ACTION, GRANT_PANE_ACTION],
+    },
+    WireSurface {
+        name: "a pane's input",
+        schema: PANE_SCHEMA,
+        grammar: ActionGrammar::PANE,
+        // Nothing. Every verb this surface serves publishes how to call it.
+        undescribed: &[],
+    },
+];
+
+/// ONE SURFACE OF THIS CRATE'S WIRE — what it is called, what it declares, what it publishes about
+/// calling those verbs, and which of them it deliberately does not describe.
+///
+/// A named struct rather than the four-tuple this was first written as: the fourth column is an
+/// EXEMPTION LIST and a reader has no way to know that from its position. (Clippy's
+/// `type_complexity` said the same thing about the tuple, which is the cheap version of the same
+/// argument.)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WireSurface {
+    /// What a gate's failure message calls this surface, in a reader's terms.
+    pub name: &'static str,
+    /// Every address it declares — its verbs and its slots.
+    pub schema: &'static [SchemaField],
+    /// How to call the verbs it serves.
+    pub grammar: &'static [ActionGrammar],
+    /// The verbs it serves and publishes NOTHING about, each a decision with a reason beside it here.
+    ///
+    /// An omission that is not on this list fails
+    /// `every_verb_a_surface_declares_publishes_its_grammar`, and an entry that has since been
+    /// described fails it too — a list nothing prunes is how a stale decision survives.
+    pub undescribed: &'static [&'static str],
+}
 
 /// Every address the MULTIPLEXER surface serves — the actions a client invokes and the slots it
 /// queries, in the order a reader of `show-options`-style output would want them: the verbs, then
@@ -2765,17 +3124,17 @@ impl SelectWindowAsk {
     ///
     /// `relative` publishes the whole of [`OrderStep`], projected from
     /// the type, so the two words a client may step by are discoverable rather than folklore.
-    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+    pub const GRAMMAR: &'static [CallForm] = &[
         // `At`, by NAME — whatever window carries it when the request arrives.
-        &[WindowRef::NAMED_ARG.required()],
+        CallForm::object(&[WindowRef::NAMED_ARG.required()]),
         // `At`, by IDENTITY — that window, or none.
-        &[WindowRef::PICKED_ARG.required()],
+        CallForm::object(&[WindowRef::PICKED_ARG.required()]),
         // `Step` — one place along the ring, which has no ends to a walk.
-        &[ArgGrammar::one_of(
+        CallForm::object(&[ArgGrammar::one_of(
             Self::RELATIVE_KEY,
             "string",
             &sprag_terminal::OrderStep::WIRE_WORDS,
-        )],
+        )]),
     ];
 
     /// The `args` object a client sends for this ask.
@@ -2934,22 +3293,22 @@ impl MoveWindowAsk {
     ///
     /// Three of the four are alternatives ([`SwapAsk::GRAMMAR`]'s note), and only `place`
     /// draws from a vocabulary: an anchor is another window's NAME, which is the person's string.
-    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+    pub const GRAMMAR: &'static [CallForm] = &[
         // `First` / `Last` / `Step` — an end of the order, or one place along it.
-        &[
+        CallForm::object(&[
             WindowRef::NAMED_ARG,
             ArgGrammar::one_of(Self::PLACE_KEY, "string", &Self::PLACE_WORDS),
-        ],
+        ]),
         // `Before` — immediately ahead of the window this names.
-        &[
+        CallForm::object(&[
             WindowRef::NAMED_ARG,
             ArgGrammar::open(Self::BEFORE_KEY, "string"),
-        ],
+        ]),
         // `After` — immediately behind it.
-        &[
+        CallForm::object(&[
             WindowRef::NAMED_ARG,
             ArgGrammar::open(Self::AFTER_KEY, "string"),
-        ],
+        ]),
     ];
 
     /// The `args` object a client sends for this ask.
@@ -3139,18 +3498,18 @@ impl SelectAsk {
     /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — what [`SELECT_PANE_ACTION`]'s
     /// declaration publishes; see [`ResizeAsk::GRAMMAR`] for why it lives beside the keys, and
     /// [`SwapAsk::GRAMMAR`] for why an alternation publishes as three optional arguments.
-    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+    pub const GRAMMAR: &'static [CallForm] = &[
         // `Pane` — select the one named.
-        &[ArgGrammar::open(Self::PANE_KEY, "int")],
+        CallForm::object(&[ArgGrammar::open(Self::PANE_KEY, "int")]),
         // `Toward` — step that way, from the active pane unless an origin says otherwise.
-        &[
+        CallForm::object(&[
             ArgGrammar::one_of(
                 Self::DIR_KEY,
                 "string",
                 &sprag_terminal::PaneDir::WIRE_WORDS,
             ),
             ArgGrammar::open(Self::FROM_KEY, "int").optional(),
-        ],
+        ]),
     ];
 
     /// The `args` object a client sends for this ask.
@@ -3674,30 +4033,30 @@ impl ResizeWindowAsk {
     /// `from` publishes the whole of [`WindowSize`](crate::WindowSize) — the same four names the
     /// user's `window-size` option takes, which is the point: one vocabulary, whether a person
     /// writes it in a file or a client sends it here.
-    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+    pub const GRAMMAR: &'static [CallForm] = &[
         // `Exact` — pin this rectangle. Both edges, because half a rectangle is refused.
-        &[
+        CallForm::object(&[
             WindowRef::NAMED_ARG,
             ArgGrammar::open(Self::COLS_KEY, "int"),
             ArgGrammar::open(Self::ROWS_KEY, "int"),
-        ],
+        ]),
         // `Adjust` — move the edges that are named, leave the rest. ⚠ And with NEITHER named this
         // is also `Clear`, the un-pin: the request naming no rectangle at all is the one that
         // throws the pin away, which is why the un-pin is not a fourth form with a key of its own.
-        &[
+        CallForm::object(&[
             WindowRef::NAMED_ARG,
             ArgGrammar::open(Self::ADJUST_COLS_KEY, "int").optional(),
             ArgGrammar::open(Self::ADJUST_ROWS_KEY, "int").optional(),
-        ],
+        ]),
         // `Clients` — fold the attached clients under a policy.
-        &[
+        CallForm::object(&[
             WindowRef::NAMED_ARG,
             ArgGrammar::one_of(
                 Self::FROM_KEY,
                 "string",
                 &crate::WindowSize::CLIENT_FOLD_WORDS,
             ),
-        ],
+        ]),
     ];
 
     /// The `args` object a caller sends for this ask.
@@ -3999,18 +4358,18 @@ impl JoinAsk {
     /// The pane is the one REQUIRED argument on this verb: a join with no pane names nothing to
     /// move. No argument here draws from a vocabulary — a pane is an id and a window is a name or
     /// an id, all three of them values the caller reads off another slot.
-    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+    pub const GRAMMAR: &'static [CallForm] = &[
         // The destination by NAME. Required on this verb, unlike everywhere else the reference
         // appears: a join with no window names nowhere to put the pane.
-        &[
+        CallForm::object(&[
             ArgGrammar::open(Self::PANE_KEY, "int"),
             WindowRef::NAMED_ARG.required(),
-        ],
+        ]),
         // ...and by IDENTITY.
-        &[
+        CallForm::object(&[
             ArgGrammar::open(Self::PANE_KEY, "int"),
             WindowRef::PICKED_ARG.required(),
-        ],
+        ]),
     ];
 
     /// The `args` object a client sends for this ask.
@@ -4174,21 +4533,21 @@ impl SwapAsk {
     /// these two"*. Marking both optional is the true half of that; the alternation is stated in
     /// [`SWAP_PANE_ACTION`]'s prose and enforced by [`parse`](Self::parse). Publishing them as
     /// REQUIRED would be the affirmative false statement — it would tell an agent to send both.
-    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+    pub const GRAMMAR: &'static [CallForm] = &[
         // `With` — trade with a pane named outright.
-        &[
+        CallForm::object(&[
             ArgGrammar::open(Self::PANE_KEY, "int").optional(),
             ArgGrammar::open(Self::WITH_KEY, "int"),
-        ],
+        ]),
         // `Toward` — trade with whatever lies that way.
-        &[
+        CallForm::object(&[
             ArgGrammar::open(Self::PANE_KEY, "int").optional(),
             ArgGrammar::one_of(
                 Self::DIR_KEY,
                 "string",
                 &sprag_terminal::PaneDir::WIRE_WORDS,
             ),
-        ],
+        ]),
     ];
 
     /// The `args` object a client sends for this ask.
@@ -4473,7 +4832,7 @@ impl ResizeAsk {
     /// [`parse`](Self::parse) refuses a request without one. The other two are omittable, and both
     /// have a meaning when omitted rather than a default that happens to work — the scoped window's
     /// active pane, and [`CELLS_DEFAULT`](Self::CELLS_DEFAULT).
-    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[&[
+    pub const GRAMMAR: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::one_of(
             Self::DIR_KEY,
             "string",
@@ -4481,7 +4840,7 @@ impl ResizeAsk {
         ),
         ArgGrammar::open(Self::PANE_KEY, "int").optional(),
         ArgGrammar::open(Self::CELLS_KEY, "int").optional(),
-    ]];
+    ])];
 
     /// How far a request that names no distance means — tmux's own `resize-pane` default, and the
     /// only amount a bare key can sensibly carry.
@@ -4750,6 +5109,259 @@ pub fn find_slot_for(needle: &str) -> String {
 pub fn regex_slot_for(pattern: &str) -> String {
     format!("{}{pattern}", REGEX_FIELD.literal_prefix())
 }
+
+/// THE THREE PROPERTY GATES OVER A PUBLISHED GRAMMAR, written ONCE for every surface that publishes
+/// one.
+///
+/// # Why these live here and not beside a fixture
+///
+/// R352 wrote them against the multiplexer, in that surface's own test module, driving
+/// `WorkspaceExternal` directly. When the pane surface came to publish its six verbs the whole set
+/// was needed a second time — and R347's rule is to ask *which other reader builds the same thing*
+/// BEFORE writing the second one. A copy would have been three more gates to keep in step, and the
+/// first divergence would have been invisible: each copy passes on its own surface.
+///
+/// So each claim is one function here, taking the TABLE and a way to INVOKE, and each surface's test
+/// module supplies its own fixture and asserts its own non-vacuity COUNT. The claims are the module's;
+/// the fixtures and the numbers stay with the surface they are about.
+///
+/// Every one of them drives the real `invoke`, so a grammar describing a parser nothing calls fails.
+#[cfg(test)]
+pub(crate) mod grammar_gate {
+    use super::{ActionGrammar, ArgGrammar, CallForm, FormKind};
+    use pinion_core::external::{IntrospectValue, InvokeError};
+    use serde_json::{Map, Value};
+
+    /// A way to call one surface's verbs — the surface's own `invoke`, closed over its fixture.
+    pub(crate) type Invoke<'a> =
+        &'a mut dyn FnMut(&str, IntrospectValue) -> Result<IntrospectValue, InvokeError>;
+
+    /// A JSON value AS THE WIRE DELIVERS IT to a surface.
+    ///
+    /// ⚠⚠ **AN INSTRUMENT IS A CLAIM** (R351). pinion's `json_to_introspect_value` maps a JSON string
+    /// to [`IntrospectValue::Text`], a number to `Int`, a bool to `Bool`, and an object or array to
+    /// `Json` — so a gate that wrapped everything in `Json` would be probing a shape no client can
+    /// send, and would report nothing about the SCALAR forms the pane surface publishes (`text`
+    /// matches `Text` and refuses `Json`). This mirrors that mapping, and the mirror is not taken on
+    /// trust: `a_client_can_call_a_pane_from_its_published_grammar` builds both forms of a call from
+    /// the served answer and sends them over a REAL socket, where the conversion is pinion's own.
+    pub(crate) fn as_the_wire_delivers_it(value: &Value) -> IntrospectValue {
+        match value {
+            Value::Null => IntrospectValue::Null,
+            Value::Bool(held) => IntrospectValue::Bool(*held),
+            Value::Number(number) => number
+                .as_i64()
+                .map_or_else(|| IntrospectValue::Null, IntrospectValue::Int),
+            Value::String(text) => IntrospectValue::Text(text.clone()),
+            Value::Array(_) | Value::Object(_) => IntrospectValue::Json(value.clone()),
+        }
+    }
+
+    /// The `args` value the PUBLISHED GRAMMAR alone says is well-formed, with one argument set to
+    /// `probe` — what an agent that has read the grammar slot and nothing else would send.
+    ///
+    /// Every REQUIRED argument is filled, because a call missing one is malformed by the declaration's
+    /// own account and its refusal would say nothing about the value under test. Every OPTIONAL one is
+    /// left out, so exactly one argument is being varied. The filler for a required argument comes
+    /// from the declaration too: a vocabulary's first word, or `1` for the only other required shape
+    /// these tables have (an id or a count, which the fixtures hold).
+    ///
+    /// ⚠ A [`FormKind::Scalar`] form has no keys at all — the probe IS the call — which is the whole
+    /// reason the form kind is published. A gate that assumed an object here would have sent
+    /// `{"text": …}` to a verb whose scalar form takes the bare string, and reported about the object
+    /// form twice.
+    pub(crate) fn call_built_from_the_grammar(
+        form: &CallForm,
+        vary: &ArgGrammar,
+        probe: Value,
+    ) -> IntrospectValue {
+        if form.form == FormKind::Scalar {
+            return as_the_wire_delivers_it(&probe);
+        }
+        let mut map = Map::new();
+        for arg in form.args {
+            if arg.name == vary.name {
+                map.insert(arg.name.to_owned(), probe.clone());
+            } else if !arg.optional {
+                map.insert(
+                    arg.name.to_owned(),
+                    match (arg.words, arg.ty) {
+                        // A vocabulary supplies its own filler. The FIRST word, arbitrarily: this
+                        // argument is not the one under test, and every word of it is driven by its
+                        // own turn through the loop.
+                        (Some(words), _) => Value::from(words[0]),
+                        // ⚠ ONE, NOT ZERO, AND THE FILLER IS A CLAIM TOO. Zero is a legal pane id
+                        // and an ILLEGAL dimension — `resize_window` refuses a zero-column rectangle
+                        // as malformed — so a zero filler made this gate report `resize_window`'s
+                        // `window` as constrained when what the daemon had rejected was the filler
+                        // beside it. One is admissible in every int argument these verbs take.
+                        (None, "int") => Value::from(1),
+                        (None, "bool") => Value::from(false),
+                        // A window NAME the fixture does not hold: it parses, which is all this
+                        // filler has to do, and it cannot collide with a real window.
+                        (None, _) => Value::from("filler-not-a-window"),
+                    },
+                );
+            }
+        }
+        IntrospectValue::Json(Value::Object(map))
+    }
+
+    /// ⚠⚠ **EVERY WORD THE WIRE PUBLISHES IS A WORD THE DAEMON ACCEPTS** — the write half of the
+    /// discovery pair, and the claim that makes the grammar slot worth reading. Answers the number of
+    /// words driven, which each caller asserts.
+    ///
+    /// A schema that publishes a vocabulary is making a promise about somebody else's code: it says an
+    /// agent may enumerate these words and send any of them. Nothing about a `const` array enforces
+    /// that — the words could be yesterday's spelling, or a set the parser narrowed — so the promise
+    /// is driven, one call per word, through the real `invoke`.
+    ///
+    /// # Why `TypeMismatch` is the discriminator and the other refusals are not
+    ///
+    /// These verbs answer `TypeMismatch` for exactly one thing: a request their GRAMMAR does not
+    /// admit. A `Rejected` means the grammar was read and the request could not be honoured — no pane
+    /// that way, no window by that name, no pending clipboard query — which is the action's business
+    /// and not this gate's. So a word that gets anything other than `TypeMismatch` was ACCEPTED as a
+    /// word, which is the whole claim.
+    pub(crate) fn every_published_word_is_accepted(
+        table: &'static [ActionGrammar],
+        invoke: Invoke<'_>,
+    ) -> usize {
+        let mut driven = 0;
+        for verb in table {
+            for form in verb.forms {
+                for arg in form.args {
+                    let Some(words) = arg.words else { continue };
+                    for word in words {
+                        let call = call_built_from_the_grammar(form, arg, Value::from(*word));
+                        let answer = invoke(verb.action, call.clone());
+                        assert!(
+                            !matches!(answer, Err(InvokeError::TypeMismatch)),
+                            "THE WIRE PUBLISHES A WORD THE DAEMON REFUSES. `{}` says its `{}` may be \
+                             {:?}, and sending {call:?} came back TypeMismatch — an agent that \
+                             enumerated the published vocabulary would have built a call this daemon \
+                             cannot read.",
+                            verb.action,
+                            arg.name,
+                            word,
+                        );
+                        driven += 1;
+                    }
+                }
+            }
+        }
+        driven
+    }
+
+    /// ⚠⚠ **AN ARGUMENT THE PARSER CONSTRAINS MUST PUBLISH WHAT IT ADMITS** — the completeness half,
+    /// and the one that cannot be satisfied by remembering. Answers the number of arguments probed.
+    ///
+    /// The gate above is soundness: nothing published is refused. It says nothing about an argument
+    /// whose vocabulary was simply left out — which is the failure this project keeps meeting, because
+    /// a hand-written list is the one a new thing is missing from. There is no way to DERIVE "this
+    /// string argument is closed" from the declaration, so it is derived from the PRODUCT instead:
+    /// send a word nobody could have declared, and see whether the parser takes it.
+    ///
+    /// * it takes the nonsense ⇒ the argument really is open, and publishing no vocabulary is true;
+    /// * it refuses ⇒ the argument is drawn from some set, and the wire is keeping it a secret.
+    ///
+    /// So an argument added tomorrow with a closed vocabulary and no `one_of` fails here, with nobody
+    /// having had to notice. **It is what found `clipboard_answer`'s `sel` and `key`'s `state`**, two
+    /// vocabularies that had lived as string literals inside the pane's parsers.
+    pub(crate) fn a_constrained_argument_publishes_what_it_admits(
+        table: &'static [ActionGrammar],
+        invoke: Invoke<'_>,
+    ) -> usize {
+        // A value no vocabulary in this workspace can contain, and no window or pane is named.
+        const NONSENSE: &str = "not-a-word-any-vocabulary-holds";
+
+        let mut probed = 0;
+        for verb in table {
+            for form in verb.forms {
+                for arg in form.args {
+                    if arg.ty != "string" || arg.words.is_some() {
+                        continue;
+                    }
+                    let call = call_built_from_the_grammar(form, arg, Value::from(NONSENSE));
+                    let answer = invoke(verb.action, call.clone());
+                    assert!(
+                        !matches!(answer, Err(InvokeError::TypeMismatch)),
+                        "`{}` REFUSES ITS OWN DECLARED `{}` AS MALFORMED, so that argument is drawn \
+                         from a set the wire does not publish. Send {call:?} and the daemon answers \
+                         TypeMismatch — declare the vocabulary with `ArgGrammar::one_of`, projected \
+                         from the closed set the parser reads through.",
+                        verb.action,
+                        arg.name,
+                    );
+                    probed += 1;
+                }
+            }
+        }
+        probed
+    }
+
+    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THE DAEMON ACTUALLY READS** — the gate that lets a grammar be
+    /// written by hand at all. Answers the number of arguments probed.
+    ///
+    /// The other two gates hold the VOCABULARIES to the parser. Neither can see a declared argument
+    /// the parser ignores completely: send it, nothing refuses, and the wire goes on advertising a key
+    /// that does nothing.
+    ///
+    /// This closes it by TYPE. Send each declared argument with a value of the wrong JSON type — a
+    /// string where an int is declared, a number where a string is — and require the daemon to refuse
+    /// the request as malformed. A parser that reads the key cannot accept the wrong type for it; a
+    /// parser that never looks at the key cannot refuse anything. So:
+    ///
+    /// * refused ⇒ the declaration names a key this verb genuinely reads, at the type it claims;
+    /// * accepted ⇒ **the wire is advertising an argument the daemon does not have.**
+    ///
+    /// ⚠⚠ **IT FOUND FOUR MORE COERCIONS ON THE PANE SURFACE**: `ctrl`, `alt`, `shift` and `super`
+    /// were read with `and_then(Value::as_bool).unwrap_or(false)`, so `{"key":"a","ctrl":1}` was
+    /// injected as an unmodified `a` and answered success — R352b's `report_agent` defect, in a parser
+    /// whose own `col` and `row` refuse a malformed value two lines away.
+    ///
+    /// # What it still cannot see, said rather than implied
+    ///
+    /// An argument the parser reads and the declaration OMITS. That direction is absent-not-wrong — a
+    /// client is told less rather than something false — and the only thing that catches it is
+    /// deriving the key set from the request type, which
+    /// `the_published_grammar_is_the_ask_types_own` does for the verbs that have one.
+    pub(crate) fn a_declared_argument_is_one_the_daemon_reads(
+        table: &'static [ActionGrammar],
+        invoke: Invoke<'_>,
+    ) -> usize {
+        let mut probed = 0;
+        for verb in table {
+            for form in verb.forms {
+                for arg in form.args {
+                    // The wrong type for what this argument says it is. A vocabulary argument is a
+                    // string, so a number is wrong for it too — and wrong in a way no vocabulary
+                    // could absorb.
+                    let wrong = match arg.ty {
+                        "int" | "bool" => Value::from("not-of-the-declared-type"),
+                        _ => Value::from(4242),
+                    };
+                    let call = call_built_from_the_grammar(form, arg, wrong);
+                    let answer = invoke(verb.action, call.clone());
+                    assert!(
+                        matches!(answer, Err(InvokeError::TypeMismatch)),
+                        "`{}` ACCEPTS A {} FOR ITS DECLARED `{}`, so either the daemon does not read \
+                         that key at all or it does not read it as a {}. Sending {call:?} answered \
+                         {answer:?}, and a wire that advertises an argument nothing reads is worse \
+                         than one that says nothing.",
+                        verb.action,
+                        arg.ty,
+                        arg.name,
+                        arg.ty,
+                    );
+                    probed += 1;
+                }
+            }
+        }
+        probed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// **THE ROW SENTENCE SURVIVES AN ADDRESS NO ROW COULD HOLD** — the fallback, driven.
@@ -6246,7 +6858,10 @@ mod tests {
         const PINNED_VALUES: (u32, &[&str]) = (
             // R344: the number moved for a MEANING under an unchanged name (`PaneMatch::line`),
             // not for a widened value space — every word below is the word it was at 18.
-            19,
+            // R353: and again, for a published FORM's SHAPE (`action_grammar`'s `{form, args}`).
+            // Neither of the two enums a peer decodes whole gained or lost a word, which is exactly
+            // what this re-stamp says.
+            20,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -6347,37 +6962,52 @@ mod tests {
     #[test]
     fn a_published_value_space_cannot_widen_under_the_protocol_number() {
         const PINNED_WORDS: (u32, &[&str]) = (
-            19,
+            20,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
             // and a list of only the verbs that already have one could not notice.
+            //
+            // ⚠ EACH ENTRY IS PREFIXED BY ITS SURFACE, because two surfaces publish grammars now
+            // and a bare verb name could not say which. The pane's six were added at R353, and FOUR of
+            // their vocabularies had never been published anywhere: a mouse button, a mouse edge, a
+            // key edge, and a clipboard selection.
             &[
-                "break_pane:",
-                "close:",
-                "display_message:severity=note,warn,alert",
-                "drop_file:",
-                "join_pane:",
-                "kill_session:",
-                "kill_window:",
-                "move_pane:dir=horizontal,vertical",
-                "move_window:place=first,last,next,previous",
-                "new_session:",
-                "new_window:",
-                "release_agent:",
-                "rename_pane:",
-                "rename_session:",
-                "rename_window:",
-                "report_agent:state=working,blocked,idle",
-                "resize_pane:dir=left,right,up,down",
-                "resize_window:from=largest,smallest,latest",
-                "select_pane:dir=left,right,up,down",
-                "select_window:relative=next,previous",
-                "set_floating:",
-                "spawn:",
-                "split:dir=horizontal,vertical",
-                "swap_pane:dir=left,right,up,down",
-                "zoom_pane:",
+                "sprag_workspace/sprag_mux/break_pane:",
+                "sprag_workspace/sprag_mux/close:",
+                "sprag_workspace/sprag_mux/display_message:severity=note,warn,alert",
+                "sprag_workspace/sprag_mux/drop_file:",
+                "sprag_workspace/sprag_mux/join_pane:",
+                "sprag_workspace/sprag_mux/kill_session:",
+                "sprag_workspace/sprag_mux/kill_window:",
+                "sprag_workspace/sprag_mux/move_pane:dir=horizontal,vertical",
+                "sprag_workspace/sprag_mux/move_window:place=first,last,next,previous",
+                "sprag_workspace/sprag_mux/new_session:",
+                "sprag_workspace/sprag_mux/new_window:",
+                "sprag_workspace/sprag_mux/release_agent:",
+                "sprag_workspace/sprag_mux/rename_pane:",
+                "sprag_workspace/sprag_mux/rename_session:",
+                "sprag_workspace/sprag_mux/rename_window:",
+                "sprag_workspace/sprag_mux/report_agent:state=working,blocked,idle",
+                "sprag_workspace/sprag_mux/resize_pane:dir=left,right,up,down",
+                "sprag_workspace/sprag_mux/resize_window:from=largest,smallest,latest",
+                "sprag_workspace/sprag_mux/select_pane:dir=left,right,up,down",
+                "sprag_workspace/sprag_mux/select_window:relative=next,previous",
+                "sprag_workspace/sprag_mux/set_floating:",
+                "sprag_workspace/sprag_mux/spawn:",
+                "sprag_workspace/sprag_mux/split:dir=horizontal,vertical",
+                "sprag_workspace/sprag_mux/swap_pane:dir=left,right,up,down",
+                "sprag_workspace/sprag_mux/zoom_pane:",
+                // A PANE'S INPUT, all six verbs. `key`'s `state` and `clipboard_answer`'s `sel` were
+                // string literals inside the parsers; `mouse`'s two were spelled once per SIDE of the
+                // wire, in two crates, with nothing comparing the lists.
+                "sprag_workspace/pane_<id>/sprag_input/clipboard_answer:sel=c,p",
+                "sprag_workspace/pane_<id>/sprag_input/focus:",
+                "sprag_workspace/pane_<id>/sprag_input/key:state=down,up",
+                "sprag_workspace/pane_<id>/sprag_input/mouse:button=left,middle,right,wheelup,\
+                 wheeldown,wheelleft,wheelright,none kind=press,release,drag,motion",
+                "sprag_workspace/pane_<id>/sprag_input/paste:",
+                "sprag_workspace/pane_<id>/sprag_input/text:",
             ],
         );
 
@@ -6386,23 +7016,36 @@ mod tests {
         // served answer — the exact defect R320 records, one level down: deleting the slot's arm
         // from `RegistryView::query` left it GREEN, because the table it was reading is not the
         // thing a client can reach.
-        let served = served_fields();
+        // ⚠ EVERY SURFACE THAT SERVES THE SLOT, derived from the walk rather than from a list of
+        // two: a THIRD surface publishing a grammar joins this pin in the compile that adds it, and
+        // one that stops serving the slot drops out of it. That is the difference between a pin over
+        // the product and a pin over the two names somebody remembered.
+        let serving: Vec<String> = served_fields()
+            .into_iter()
+            .filter(|field| field.path == ACTION_GRAMMAR_SLOT && field.answers)
+            .map(|field| field.under)
+            .collect();
         assert!(
-            served
-                .iter()
-                .any(|field| field.path == ACTION_GRAMMAR_SLOT && field.answers),
+            !serving.is_empty(),
             "the grammar slot is SERVED, or everything below is about a table nobody can read",
         );
-        let published = query_served(ACTION_GRAMMAR_SLOT).expect("the slot answers");
-        let verbs = published.as_object().expect("the slot answers an object");
-        let mut served: Vec<String> = verbs
-            .iter()
-            .map(|(action, forms)| {
+        let mut served: Vec<String> = Vec::new();
+        for under in &serving {
+            let published = query_served_on(under, ACTION_GRAMMAR_SLOT).expect("the slot answers");
+            let verbs = published.as_object().expect("the slot answers an object");
+            served.extend(verbs.iter().map(|(action, forms)| {
                 let mut spaces: Vec<String> = forms
                     .as_array()
                     .expect("a verb answers its forms")
                     .iter()
-                    .flat_map(|form| form.as_array().expect("a form answers its arguments"))
+                    .flat_map(|form| {
+                        // A FORM IS AN OBJECT now — `{form, args}` — because a form that carries its
+                        // shape can describe a scalar call, which an array of arguments could not.
+                        // That is the value change this pin's number rose for.
+                        form.get(CallForm::ARGS_KEY)
+                            .and_then(Value::as_array)
+                            .expect("a form answers its arguments")
+                    })
                     .filter_map(|arg| {
                         let words = arg.get(ArgGrammar::ONE_OF_KEY)?.as_array()?;
                         Some(format!(
@@ -6421,9 +7064,18 @@ mod tests {
                 // on two would otherwise read here as a widening that never happened.
                 spaces.sort_unstable();
                 spaces.dedup();
-                format!("{action}:{}", spaces.join(" "))
-            })
-            .collect();
+                // ⚠ THE SURFACE'S TAG, with a pane's ID FOLDED to the placeholder the schema
+                // itself uses for a parametric address (`cells.<offset>`). Otherwise this pin would
+                // be about the FIXTURE's pane numbering — a second pane in the fixture would read
+                // here as new vocabulary, which is a pin measuring the wrong thing.
+                let surface = under.replace(&pane_container_tag(0), "pane_<id>");
+                format!("{surface}/{action}:{}", spaces.join(" "))
+            }));
+        }
+        // ⚠ A PANE'S SURFACE IS SERVED ONCE PER PANE, so a two-pane fixture would publish the pane
+        // grammar twice — identical, and this pin is about the WORDS. Deduped rather than counted.
+        served.sort_unstable();
+        served.dedup();
         let mut pinned: Vec<String> = PINNED_WORDS.1.iter().map(|n| (*n).to_owned()).collect();
         served.sort_unstable();
         pinned.sort_unstable();
@@ -6766,9 +7418,20 @@ mod tests {
     /// begins on" — same address, same key, same JSON type, different answer. No pin over
     /// ADDRESSES can see that, which is exactly why the version exists and why this constant
     /// carries the number beside the list rather than only the list.
+    /// ⚠ **R353 moved the number AND the list, which is both cases at once.** The pane surface gained
+    /// an `action_grammar` of its own — additive, an older client never asks — and in the same edit a
+    /// published FORM stopped being an array of arguments and became `{form, args}`, so the mux
+    /// slot's answer changed shape under a name that did not move. The added name would not have
+    /// justified the bump; the changed value did.
     const PINNED_SURFACE: (u32, &[&str]) = (
-        19,
+        20,
         &[
+            // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
+            // across every surface, and both the multiplexer and each pane's input surface answer a
+            // slot of this name — each describing the verbs IT serves. A name appearing on two
+            // surfaces appears twice here, which is what makes the count a count of addresses rather
+            // than of words.
+            "action_grammar",
             "action_grammar",
             "agent_manifests",
             "application_cursor_keys",
@@ -6844,6 +7507,14 @@ mod tests {
     /// gives when the address is QUERIED — the declaration and the behaviour, read in one pass so
     /// no test can compare a claim against a fixture built separately from it.
     struct ServedField {
+        /// WHICH SURFACE served it — the tag chain of the containers it hangs under, joined with
+        /// `/` (`sprag_mux`, `pane_1/sprag_input`).
+        ///
+        /// ⚠ Added at R353, when a name came to live on TWO surfaces: both the multiplexer and each
+        /// pane's input surface serve an `action_grammar`, describing different verbs. Without this
+        /// a ratchet reading "the" answer at that path would have silently read whichever one the
+        /// walk reached first — the shape of a pin that pins the wrong thing and passes.
+        under: String,
         /// The declared path, verbatim — a parametric family spells its placeholders.
         path: String,
         /// Which channel the declaration puts this path on: read, or invoke.
@@ -6900,7 +7571,7 @@ mod tests {
             crate::PaneCells::Omitted,
         );
         let mut found = Vec::new();
-        walk(&scene, &mut found);
+        walk(&scene, "", &mut found);
         found
     }
 
@@ -6910,14 +7581,21 @@ mod tests {
     /// Each field is QUERIED as it is collected, through the same handle that declared it, so the
     /// pair this returns is one surface answering about itself rather than two readings a fixture
     /// could have taken from different states.
-    fn walk(scene: &pinion_core::scene::Scene, found: &mut Vec<ServedField>) {
+    fn walk(scene: &pinion_core::scene::Scene, under: &str, found: &mut Vec<ServedField>) {
         use pinion_core::scene::Scene;
+        let tagged = |tag: &Option<std::borrow::Cow<'static, str>>| match tag {
+            Some(tag) if under.is_empty() => tag.to_string(),
+            Some(tag) => format!("{under}/{tag}"),
+            None => under.to_owned(),
+        };
         match scene {
             Scene::External(node) => {
                 if let Some(introspect) = node.handle.introspect() {
+                    let under = tagged(&node.tag);
                     for field in introspect.schema().fields {
                         let answered = introspect.query(field.path);
                         found.push(ServedField {
+                            under: under.clone(),
                             path: field.path.to_owned(),
                             channel: field.channel,
                             args: field.args,
@@ -6934,24 +7612,39 @@ mod tests {
                 }
             }
             Scene::Container(node) => {
+                let under = tagged(&node.tag);
                 for child in &node.children {
-                    walk(child, found);
+                    walk(child, &under, found);
                 }
             }
             _ => {}
         }
     }
 
-    /// What the daemon ANSWERS at `path`, off the scene it assembles for a request.
+    /// What the daemon ANSWERS at `path` on the surface hanging under `under`, off the scene it
+    /// assembles for a request.
     ///
     /// The peer of [`served_fields`], and separate from it because a ratchet over an answer wants
     /// the answer rather than the declaration. Both go through `External::introspect`, which is
     /// what `scene/query` resolves with, so this is the value a client gets.
-    fn query_served(path: &str) -> Option<serde_json::Value> {
-        served_fields()
+    ///
+    /// ⚠⚠ **THE SURFACE IS A PARAMETER AND THE MATCH MUST BE UNIQUE.** This took a bare path until
+    /// R353 and answered with the FIRST field that had it, which was safe only while every name was
+    /// served once. Two surfaces publish `action_grammar` now, so a bare-path reader would have
+    /// pinned one of them and reported nothing about the other — a ratchet whose subject is decided
+    /// by scene order. An ambiguous ask panics rather than choosing.
+    fn query_served_on(under: &str, path: &str) -> Option<serde_json::Value> {
+        let mut found: Vec<ServedField> = served_fields()
             .into_iter()
-            .find(|field| field.path == path)
-            .and_then(|field| field.answer)
+            .filter(|field| field.path == path && field.under == under)
+            .collect();
+        assert!(
+            found.len() <= 1,
+            "{under} serves {} fields at `{path}`, so an answer read from it would be whichever one \
+             the walk reached first",
+            found.len(),
+        );
+        found.pop().and_then(|field| field.answer)
     }
 
     /// ⚠⚠ **A DECLARED PATH IS A CLAIM THAT A CLIENT CAN READ IT** — and the channel is where that
@@ -7066,11 +7759,147 @@ mod tests {
              MEANING changed under a name that did not — re-stamp PINNED_SURFACE's version to say \
              so — and it is a mistake when the number was edited by hand.",
         );
-        // ...and no address is served TWICE, which the two schemas being separate makes possible:
-        // a client addressing a duplicated name reaches whichever surface the dispatcher tries
-        // first, which is a decision nothing here would have made deliberately.
-        let mut unique = served.clone();
-        unique.dedup();
-        assert_eq!(served, unique, "one address, one surface");
+        // ...and no surface serves one address TWICE.
+        //
+        // ⚠⚠ **THIS CLAIM WAS STATED OVER THE FLAT LIST AND ITS PREMISE WAS FALSE.** It read "one
+        // address, one surface" across the whole wire, defended as *"a client addressing a duplicated
+        // name reaches whichever surface the dispatcher tries first"* — which is not how this wire is
+        // addressed. A client sends a PATH: `/sprag_mux/external/action_grammar` and
+        // `/pane_0/sprag_input/external/action_grammar` are two addresses that share a last segment,
+        // and pinion resolves each to exactly one surface. R353 made the two real, so the false
+        // premise had to be paid.
+        //
+        // RE-STATED rather than deleted (R351b's rule — deleting a gate whose product moved writes
+        // the gate off): the ambiguity it was reaching for is real WITHIN a surface, where two fields
+        // of one schema sharing a path would make `query` answer whichever the walk reached first.
+        // That is now checkable, because the walk records which surface each field came from.
+        for surface in SURFACES {
+            let under = surface.name;
+            let mut names: Vec<String> = served_fields()
+                .into_iter()
+                .filter(|field| field.under.ends_with(under_tag(under)))
+                .map(|field| field.path)
+                .collect();
+            names.sort_unstable();
+            let mut unique = names.clone();
+            unique.dedup();
+            assert_eq!(names, unique, "one address, one field, on {under}");
+            assert!(
+                !names.is_empty(),
+                "{under} is a surface the walk reaches, or this loop is about nothing",
+            );
+        }
+    }
+
+    /// ⚠⚠ **EVERY VERB A SURFACE DECLARES PUBLISHES ITS GRAMMAR, OR IS A NAMED EXEMPTION** — the
+    /// omission direction, one level up from the arguments.
+    ///
+    /// # What no other gate here can see
+    ///
+    /// The three property gates walk a TABLE and drive what is in it. A verb the table LEAVES OUT
+    /// declares nothing for them to audit — the same blindness R352 paid for at the schema level,
+    /// where `report_agent` was dispatched and declared nowhere and the round's own new gate stayed
+    /// green. Twenty-five verbs published their grammar after R352 and three did not; nothing in the
+    /// suite knew, and nothing would have known about a twenty-ninth.
+    ///
+    /// So the SCHEMA is the source and the table is checked against it. A verb that publishes nothing
+    /// must be named in its surface's exemption list in [`SURFACES`], with the reason beside it — an
+    /// omission becomes a line somebody wrote, which is the most a gate can ask of a decision.
+    ///
+    /// ⚠ **DERIVED FROM THE SERVED SCENE**, not from the schema consts: a surface that stopped being
+    /// mounted, or one whose declaration and service disagree, fails here rather than passing on a
+    /// table nobody can reach (R320).
+    #[test]
+    fn every_verb_a_surface_declares_publishes_its_grammar() {
+        let served = served_fields();
+        let mut checked = 0;
+        for WireSurface {
+            name: surface,
+            grammar: table,
+            undescribed: exempt,
+            ..
+        } in SURFACES
+        {
+            let tag = under_tag(surface);
+            let mut declared: Vec<&str> = served
+                .iter()
+                .filter(|field| {
+                    field.under.ends_with(tag)
+                        && field.channel == pinion_core::external::SchemaChannel::Invoke
+                })
+                .map(|field| field.path.as_str())
+                .collect();
+            declared.sort_unstable();
+            declared.dedup();
+            assert!(
+                !declared.is_empty(),
+                "{surface} serves verbs, or this loop is about nothing",
+            );
+
+            let missing: Vec<&str> = declared
+                .iter()
+                .copied()
+                .filter(|verb| {
+                    !table.iter().any(|entry| entry.action == *verb) && !exempt.contains(verb)
+                })
+                .collect();
+            assert_eq!(
+                missing,
+                Vec::<&str>::new(),
+                "{surface} DECLARES THESE VERBS AND PUBLISHES NOTHING ABOUT CALLING THEM. An agent \
+                 that walks `$schema` learns the address and cannot learn one argument, so it has to \
+                 know the request grammar out of band — which for an AI client means guessing. Add \
+                 the verb to its `ActionGrammar` table, or name it in this surface's exemption list \
+                 in `SURFACES` with the reason it cannot be described.",
+            );
+
+            // BOTH WAYS. A table entry for a verb the surface does not declare is a grammar for a
+            // call nobody can make — the mirror of the above, and the shape a renamed action leaves
+            // behind.
+            let orphaned: Vec<&str> = table
+                .iter()
+                .map(|entry| entry.action)
+                .filter(|action| !declared.contains(action))
+                .collect();
+            assert_eq!(
+                orphaned,
+                Vec::<&str>::new(),
+                "{surface} publishes a grammar for verbs it does not serve",
+            );
+
+            // An exemption for a verb that has since been described, or one that no longer exists, is
+            // a stale decision — and a list nothing prunes is how a stale one survives.
+            let stale: Vec<&str> = exempt
+                .iter()
+                .copied()
+                .filter(|verb| {
+                    !declared.contains(verb) || table.iter().any(|entry| entry.action == *verb)
+                })
+                .collect();
+            assert_eq!(
+                stale,
+                Vec::<&str>::new(),
+                "{surface} exempts a verb it no longer serves, or one that now publishes anyway",
+            );
+            checked += declared.len();
+        }
+        assert_eq!(
+            checked, 34,
+            "the whole write half of this crate's wire: twenty-eight multiplexer verbs and a pane's \
+             six",
+        );
+    }
+
+    /// The scene TAG a [`SURFACES`] entry's prose name belongs to.
+    ///
+    /// The prose is what a gate's failure message says; the tag is what the scene calls the container.
+    /// Kept as a translation here rather than as a fifth column in [`SURFACES`], because a tag is a
+    /// fact about the scene assembly and the pane's carries an id the surface list cannot name.
+    fn under_tag(surface: &str) -> &'static str {
+        match surface {
+            "the multiplexer" => MUX_TAG,
+            "a pane's input" => INPUT_TAG,
+            other => panic!("{other} is in SURFACES with no tag translation"),
+        }
     }
 }

@@ -44,7 +44,7 @@ use pinion_core::external::{
     read_only_or_unknown,
 };
 use serde_json::{Value, json};
-use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
+use sprag_input::{KeyEdge, Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_terminal::PanePtyHandle;
 use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
@@ -66,10 +66,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::wire::{
-    CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CURSOR_KEYS_SLOT, FIND_FIELD,
-    FOCUS_ACTION, FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT,
-    LINKS_SLOT, MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD,
-    TEXT_ACTION,
+    ACTION_GRAMMAR_SLOT, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
+    CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD,
+    KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_SCHEMA, PASTE_ACTION,
+    PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -545,6 +545,12 @@ impl ExternalIntrospect for SpragPaneExternal {
             // in the pane list grows (the payload can be a whole paste, so it is not carried per
             // poll). `Null` (present-but-empty) when the child has written no clipboard — the
             // client then has nothing to apply, exactly as a malformed `cells.<off>` is `Null`.
+            // HOW TO CALL THIS SURFACE'S SIX VERBS. Answered from the surface a client already holds
+            // a path to, so the address it asked scopes the answer — see `ACTION_GRAMMAR_SLOT`. The
+            // table is a `const`, so this costs one walk of it per ask and nothing per frame.
+            ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(ActionGrammar::answer(
+                ActionGrammar::PANE,
+            ))),
             CLIPBOARD_WRITE_SLOT => {
                 let (write, seq) = self.pty.clipboard_write();
                 Some(write.map_or(IntrospectValue::Null, |w| {
@@ -574,11 +580,26 @@ impl ExternalIntrospect for SpragPaneExternal {
         Err(read_only_or_unknown(&self.schema(), path))
     }
 
+    /// # A verb this surface does not DECLARE is a verb it does not run
+    ///
+    /// ⚠⚠ **This surface was the ODD ONE OUT.** R352 put [`declares_verb`](crate::wire::declares_verb)
+    /// at the door of the mux surface and of the GUI's three, and left the pane's input surface
+    /// dispatching six verbs without ever consulting [`PANE_SCHEMA`] — five surfaces guarding and one
+    /// not, which is R330's rule pointing straight at it. Nothing was unreachable-but-dispatched here
+    /// TODAY; what was missing is the property that it cannot become so, on the surface a keybinding
+    /// drives in-process most often of all.
+    ///
+    /// The cost is one linear scan of a `&'static [SchemaField]` per action — paid per keystroke, not
+    /// per frame, and the same scan is what makes a declared verb reachable at all, so an arm added
+    /// here without a declaration is dead in the same edit.
     fn invoke(
         &mut self,
         path: &str,
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
+        if !crate::wire::declares_verb(&self.schema(), path) {
+            return Err(InvokeError::UnknownPath);
+        }
         match path {
             KEY_ACTION => self.inject_key(&args),
             MOUSE_ACTION => self.inject_mouse(&args),
@@ -606,11 +627,13 @@ fn parse_clipboard_answer_args(
         .get("seq")
         .and_then(Value::as_u64)
         .ok_or(InvokeError::TypeMismatch)?;
-    let target = match map.get("sel").and_then(Value::as_str) {
-        Some("c") => ClipboardTarget::Clipboard,
-        Some("p") => ClipboardTarget::Primary,
-        _ => return Err(InvokeError::TypeMismatch),
-    };
+    // The selection's two words come from the type that owns them, which is what lets the pane
+    // surface publish `sel`'s vocabulary instead of leaving a client to discover it from a reply.
+    let target = map
+        .get("sel")
+        .and_then(Value::as_str)
+        .and_then(ClipboardTarget::from_wire)
+        .ok_or(InvokeError::TypeMismatch)?;
     let text = map
         .get("text")
         .and_then(Value::as_str)
@@ -680,19 +703,22 @@ fn parse_key_args(args: &IntrospectValue) -> Result<Option<(String, Modifiers)>,
                 .and_then(Value::as_str)
                 .filter(|k| !k.is_empty())
                 .ok_or(InvokeError::TypeMismatch)?;
-            match map.get("state").and_then(Value::as_str) {
-                Some("up") => return Ok(None),
-                Some("down") | None => {}
+            // THE EDGE IS A CLOSED SET, and it used to be two string literals here — the same place
+            // `SplitDir`'s two words lived before R352b, with the same consequence: the vocabulary
+            // had no definition the pane surface could publish. ⚠ A `state` PRESENT at the wrong
+            // JSON type is refused rather than read as a press: `and_then(Value::as_str)` folded
+            // `{"state": 4}` into the `None` arm, so a malformed edge was injected as a keystroke.
+            let edge = match map.get("state") {
+                None => KeyEdge::Down,
+                Some(Value::String(word)) => {
+                    KeyEdge::from_wire(word).ok_or(InvokeError::TypeMismatch)?
+                }
                 Some(_) => return Err(InvokeError::TypeMismatch),
-            }
-            let flag = |name: &str| map.get(name).and_then(Value::as_bool).unwrap_or(false);
-            let mods = Modifiers {
-                ctrl: flag("ctrl"),
-                alt: flag("alt"),
-                shift: flag("shift"),
-                sup: flag("super"),
             };
-            Ok(Some((key.to_string(), mods)))
+            if !edge.injects() {
+                return Ok(None);
+            }
+            Ok(Some((key.to_string(), parse_modifier_flags(map, true)?)))
         }
         _ => Err(InvokeError::TypeMismatch),
     }
@@ -708,42 +734,71 @@ fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
     let IntrospectValue::Json(Value::Object(map)) = args else {
         return Err(InvokeError::TypeMismatch);
     };
-    let button = match map.get("button").and_then(Value::as_str) {
-        Some("left") => MouseButton::Left,
-        Some("middle") => MouseButton::Middle,
-        Some("right") => MouseButton::Right,
-        Some("wheelup") => MouseButton::WheelUp,
-        Some("wheeldown") => MouseButton::WheelDown,
-        Some("wheelleft") => MouseButton::WheelLeft,
-        Some("wheelright") => MouseButton::WheelRight,
-        Some("none") => MouseButton::None,
-        _ => return Err(InvokeError::TypeMismatch),
-    };
-    let kind = match map.get("kind").and_then(Value::as_str) {
-        Some("press") => MouseEventKind::Press,
-        Some("release") => MouseEventKind::Release,
-        Some("drag") => MouseEventKind::Drag,
-        Some("motion") => MouseEventKind::Motion,
-        _ => return Err(InvokeError::TypeMismatch),
-    };
+    // THROUGH THE TYPE'S OWN VOCABULARY, both of them. These two matches used to be spelled out
+    // here, opposite an identical pair in `sprag_client` — one vocabulary, two definitions, two
+    // crates. `MouseButton::wire_str` records what that cost; what matters here is that the words
+    // this admits are now the same array the pane surface PUBLISHES, so a client that reads the
+    // grammar cannot be told a word this refuses.
+    let word = |name: &str| map.get(name).and_then(Value::as_str);
+    let button = word("button")
+        .and_then(MouseButton::from_wire)
+        .ok_or(InvokeError::TypeMismatch)?;
+    let kind = word("kind")
+        .and_then(MouseEventKind::from_wire)
+        .ok_or(InvokeError::TypeMismatch)?;
     let coord = |name: &str| -> Result<u16, InvokeError> {
         map.get(name)
             .and_then(Value::as_u64)
             .and_then(|n| u16::try_from(n).ok())
             .ok_or(InvokeError::TypeMismatch)
     };
-    let flag = |name: &str| map.get(name).and_then(Value::as_bool).unwrap_or(false);
     Ok(MouseInput {
         button,
         kind,
         col: coord("col")?,
         row: coord("row")?,
-        mods: Modifiers {
-            ctrl: flag("ctrl"),
-            alt: flag("alt"),
-            shift: flag("shift"),
-            sup: false,
-        },
+        mods: parse_modifier_flags(map, false)?,
+    })
+}
+
+/// The modifier flags of an input action's object form — `ctrl`, `alt`, `shift`, and `super` when
+/// the action carries one — each ABSENT-or-`bool`.
+///
+/// # ⚠⚠ A MALFORMED FLAG USED TO BE READ AS `false`
+///
+/// Both parsers did `map.get(name).and_then(Value::as_bool).unwrap_or(false)`, which cannot tell a
+/// key that is missing from one holding `"true"`, `1`, or `null` — so `{"key": "a", "ctrl": 1}` was
+/// silently injected as an UNMODIFIED `a` and answered success. That is R352b's `report_agent`
+/// defect exactly (a `name` dropped by `and_then(as_str)` where its siblings refused one), and
+/// R330's odd-one-out rule catches it here too: `col` and `row` in the very same parser refuse a
+/// malformed value.
+///
+/// Absent still means `false` — a call that says nothing about `ctrl` is not holding it, and that is
+/// the shape every client sends. What is refused is a flag PRESENT at the wrong type, which no
+/// well-formed caller sends and which the wire now advertises as a `bool`
+/// ([`ActionGrammar::PANE`](crate::wire::ActionGrammar::PANE)). A declared argument the daemon
+/// coerces instead of reading is what `a_declared_argument_is_one_the_daemon_reads` refuses to let
+/// the grammar publish.
+fn parse_modifier_flags(
+    map: &serde_json::Map<String, Value>,
+    with_super: bool,
+) -> Result<Modifiers, InvokeError> {
+    let flag = |name: &str| -> Result<bool, InvokeError> {
+        match map.get(name) {
+            None => Ok(false),
+            Some(Value::Bool(held)) => Ok(*held),
+            Some(_) => Err(InvokeError::TypeMismatch),
+        }
+    };
+    Ok(Modifiers {
+        ctrl: flag("ctrl")?,
+        alt: flag("alt")?,
+        shift: flag("shift")?,
+        // A mouse report has no encoding for the logo key, so that action does not read the key at
+        // all — and a surface that does not read a key does not publish one either. Spelled as an
+        // `if` rather than `with_super && flag(..)?` so it is visible that the flag is not READ
+        // there, instead of being read and discarded.
+        sup: if with_super { flag("super")? } else { false },
     })
 }
 
@@ -1205,6 +1260,264 @@ mod tests {
         assert!(
             !contains(&pty.raw_output().bytes, b"\x1b[<"),
             "a pane with no tracking mode must receive NO mouse report",
+        );
+    }
+
+    /// The three property gates over THIS surface's published grammar — one call each into
+    /// [`grammar_gate`](crate::wire::grammar_gate), with this surface's fixture and its own counts.
+    ///
+    /// The fixture is a LIVE pane over a real PTY, so every probe goes through the parser the daemon
+    /// uses and the writes it survives reach a real child.
+    ///
+    /// ⚠ Many of these calls come back `Rejected`, and that is the gates' whole design rather than a
+    /// weakness: a `cat` child enables no mouse tracking and holds no pending clipboard query, and the
+    /// generic filler for a required open string is not an encodable key name. `TypeMismatch` is the
+    /// discriminator — the GRAMMAR's refusal — so a call the parser read and the pane declined to
+    /// perform answers this gate's question exactly as well as one that wrote bytes.
+    fn pane_gate(
+        claim: impl Fn(
+            &'static [crate::wire::ActionGrammar],
+            crate::wire::grammar_gate::Invoke<'_>,
+        ) -> usize,
+    ) -> usize {
+        let (_workspace, mut external) = surface();
+        claim(crate::wire::ActionGrammar::PANE, &mut |action, args| {
+            external.invoke(action, args)
+        })
+    }
+
+    /// ⚠⚠ **EVERY WORD THE PANE SURFACE PUBLISHES IS A WORD IT ACCEPTS** — sixteen of them, none of
+    /// which a client could discover at all before R353.
+    #[test]
+    fn every_published_word_is_a_word_the_pane_accepts() {
+        assert_eq!(
+            pane_gate(crate::wire::grammar_gate::every_published_word_is_accepted),
+            16,
+            "one call per published word: the two key edges, the eight mouse buttons, the four \
+             pointer edges, and the two clipboard selections",
+        );
+    }
+
+    /// ⚠⚠ **AN ARGUMENT THIS SURFACE CONSTRAINS PUBLISHES WHAT IT ADMITS** — the gate that named
+    /// `state` and `sel` when this table was first written with neither vocabulary declared.
+    #[test]
+    fn an_argument_the_pane_constrains_publishes_what_it_admits() {
+        assert_eq!(
+            pane_gate(crate::wire::grammar_gate::a_constrained_argument_publishes_what_it_admits),
+            7,
+            "one probe per open string argument of every form: a key name in each of `key`'s two \
+             forms, the literal text in each of `text`'s and `paste`'s two, and a clipboard answer's \
+             text — every one of them a value the caller invents",
+        );
+    }
+
+    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THE PANE ACTUALLY READS** — and it found four coercions the
+    /// first time it ran.
+    ///
+    /// `ctrl`, `alt`, `shift` and `super` were read with `and_then(Value::as_bool).unwrap_or(false)`,
+    /// so `{"key": "a", "ctrl": 1}` injected an UNMODIFIED `a` and answered success — while `col` and
+    /// `row`, two lines away in the same file, refused a malformed value. R330's odd-one-out rule and
+    /// R352b's `report_agent` defect, in the parser a keystroke goes through.
+    #[test]
+    fn a_declared_argument_is_one_the_pane_reads() {
+        assert_eq!(
+            pane_gate(crate::wire::grammar_gate::a_declared_argument_is_one_the_daemon_reads),
+            22,
+            "one probe per declared argument of every FORM: seven across `key`'s two forms, two \
+             each for `text` and `paste`, seven for a mouse report, one focus edge, and three for a \
+             clipboard answer",
+        );
+    }
+
+    /// ⚠⚠ **A VERB THAT TAKES TWO SHAPES PUBLISHES TWO SHAPES** — built from the SERVED ANSWER, one
+    /// call per published form.
+    ///
+    /// # The first version of this test was the defect it exists to catch
+    ///
+    /// It sent a bare string and an object straight to `invoke` and asserted both were read, and its
+    /// own doc claimed that dropping the scalar declaration would redden it. **Measured: it stayed
+    /// GREEN.** Of course it did — the daemon accepts the bare string whether or not the wire mentions
+    /// it, so the test was about the PARSER while claiming to be about the PUBLICATION. R320's rule,
+    /// which R352 paid once already at the ratchet level and this repeats one level down.
+    ///
+    /// So the shapes come off the served slot now. `text` must publish BOTH kinds, and each published
+    /// form is filled and driven — a form the wire stops mentioning is a form this cannot drive, and
+    /// the count says so.
+    #[test]
+    fn a_verb_that_takes_two_shapes_publishes_both_of_them() {
+        let (_workspace, mut external) = surface();
+        let published = external
+            .query(crate::wire::ACTION_GRAMMAR_SLOT)
+            .expect("the surface owns the address");
+        let IntrospectValue::Json(Value::Object(verbs)) = published else {
+            panic!("the grammar slot answers an object");
+        };
+        let forms = verbs[TEXT_ACTION]
+            .as_array()
+            .expect("text answers its forms")
+            .clone();
+
+        let mut drove: Vec<&str> = Vec::new();
+        for form in &forms {
+            let kind = form[crate::wire::CallForm::FORM_KEY]
+                .as_str()
+                .expect("a form says which shape it is");
+            let args = form[crate::wire::CallForm::ARGS_KEY]
+                .as_array()
+                .expect("a form answers its arguments");
+            // FILLED FROM THE DECLARATION ALONE, the way an agent that has read this and nothing else
+            // would: a scalar form's one argument IS the value, an object form's are its members.
+            let call = match kind {
+                "scalar" => {
+                    assert_eq!(args.len(), 1, "a scalar form carries exactly one argument");
+                    crate::wire::grammar_gate::as_the_wire_delivers_it(&json!("한"))
+                }
+                "object" => {
+                    let mut map = serde_json::Map::new();
+                    for arg in args {
+                        map.insert(
+                            arg[crate::wire::ArgGrammar::NAME_KEY]
+                                .as_str()
+                                .expect("an argument is named")
+                                .to_owned(),
+                            json!("한"),
+                        );
+                    }
+                    json_args(Value::Object(map))
+                }
+                other => panic!("`{other}` is not a shape this surface publishes"),
+            };
+            assert!(
+                external.invoke(TEXT_ACTION, call).is_ok(),
+                "the {kind} form is published, so it is a call this surface reads",
+            );
+            drove.push(match kind {
+                "scalar" => "scalar",
+                _ => "object",
+            });
+        }
+        assert_eq!(
+            drove,
+            ["scalar", "object"],
+            "BOTH shapes are published — the bare value an IME commit sends, and the object form. A \
+             verb that takes two and publishes one tells a client less than it could, and this is the \
+             only gate that can see which one went missing.",
+        );
+
+        // THE CONTROL, both ways: neither form is the other's shape wearing a hat, so a client that
+        // picked a published form and filled it as published cannot have picked wrong.
+        assert_eq!(
+            external.invoke(TEXT_ACTION, IntrospectValue::Json(json!(4242))),
+            Err(InvokeError::TypeMismatch),
+            "a bare NUMBER is not this verb's scalar form",
+        );
+        assert_eq!(
+            external.invoke(TEXT_ACTION, json_args(json!({"content": "한"}))),
+            Err(InvokeError::TypeMismatch),
+            "and an object keyed by anything else is not its object form",
+        );
+    }
+
+    /// ⚠⚠ **A VERB THIS SURFACE DOES NOT DECLARE IS A VERB IT DOES NOT RUN** — the guard this surface
+    /// was the odd one out for lacking.
+    ///
+    /// Five surfaces ran [`declares_verb`](crate::wire::declares_verb) at their door from R352 and
+    /// this one did not, so a verb added to the `match` below without a line in
+    /// [`PANE_SCHEMA`](crate::wire::PANE_SCHEMA) would have been dispatched and discoverable by
+    /// nobody — R352's own defect, on the surface a keybinding drives in-process most often.
+    ///
+    /// ⚠ **WHAT THIS TEST CAN AND CANNOT SHOW.** The guard reads a `const` schema, so no fixture can
+    /// hand it a schema with a verb missing; what a test can do is show the guard is REACHED, and the
+    /// MUTATION PAIR is what shows it is load-bearing. Both halves were run:
+    ///
+    /// * deleting `SchemaField::action(FOCUS_ACTION, "action")` from `PANE_SCHEMA` **with the guard in
+    ///   place** reddens [`a_declared_argument_is_one_the_pane_reads`](self) — the verb became
+    ///   unreachable, so its arguments answer `UnknownPath` where the grammar promises `TypeMismatch`,
+    ///   and the gate that drives the published grammar is what reports it;
+    /// * the same deletion **with the guard removed** leaves that gate GREEN: the verb is dispatched
+    ///   while `$schema` never mentions it, which is R352's defect exactly and the state this surface
+    ///   was in until R353.
+    ///
+    /// So the guard is what makes an undeclared arm unreachable, and the count below is a second,
+    /// independent instrument — it noticed the undeclaration in BOTH halves, because it reads the
+    /// schema rather than the dispatch.
+    #[test]
+    fn a_verb_this_surface_does_not_declare_is_a_verb_it_does_not_run() {
+        let (_workspace, mut external) = surface();
+
+        // Every declared verb is reachable — the half that makes the guard's cost visible rather
+        // than theoretical, and derived from the SCHEMA so a verb added there joins this loop.
+        let declared: Vec<&str> = crate::wire::PANE_SCHEMA
+            .iter()
+            .filter(|field| field.channel == pinion_core::external::SchemaChannel::Invoke)
+            .map(|field| field.path)
+            .collect();
+        assert_eq!(declared.len(), 6, "this surface declares six verbs");
+        for verb in declared {
+            assert_ne!(
+                external.invoke(verb, IntrospectValue::Null),
+                Err(InvokeError::UnknownPath),
+                "`{verb}` is declared, so the guard lets it through to its own parser",
+            );
+        }
+
+        // And a name this surface does not declare is refused as UNKNOWN rather than reaching a
+        // parser — the same answer a daemon too old to know it would give.
+        assert_eq!(
+            external.invoke("type_this_for_me", IntrospectValue::Null),
+            Err(InvokeError::UnknownPath),
+        );
+    }
+
+    /// The pane surface ANSWERS its own grammar, and the answer describes the verbs IT serves.
+    ///
+    /// ⚠ Read off the surface, not off the table: a slot that stopped answering — or one answering
+    /// the multiplexer's table by a copy-paste — fails here, which is R320's rule applied to the
+    /// second surface that publishes one.
+    #[test]
+    fn the_pane_surface_answers_how_to_call_its_own_verbs() {
+        let (_workspace, external) = surface();
+        let answer = external
+            .query(crate::wire::ACTION_GRAMMAR_SLOT)
+            .expect("the surface owns the address");
+        let IntrospectValue::Json(Value::Object(verbs)) = answer else {
+            panic!("the grammar slot answers an object");
+        };
+
+        let mut published: Vec<&String> = verbs.keys().collect();
+        published.sort_unstable();
+        assert_eq!(
+            published,
+            [
+                CLIPBOARD_ANSWER_ACTION,
+                FOCUS_ACTION,
+                KEY_ACTION,
+                MOUSE_ACTION,
+                PASTE_ACTION,
+                TEXT_ACTION
+            ],
+            "the six verbs this surface serves, and not the multiplexer's",
+        );
+
+        // `key`'s two forms, with the shapes that make them two — the fact no array of arguments
+        // could have carried.
+        let forms = verbs[KEY_ACTION].as_array().expect("key answers its forms");
+        let shapes: Vec<&str> = forms
+            .iter()
+            .map(|form| {
+                form[crate::wire::CallForm::FORM_KEY]
+                    .as_str()
+                    .unwrap_or("?")
+            })
+            .collect();
+        assert_eq!(shapes, ["scalar", "object"]);
+        assert_eq!(
+            forms[0][crate::wire::CallForm::ARGS_KEY]
+                .as_array()
+                .expect("a form answers its arguments")
+                .len(),
+            1,
+            "a scalar form carries exactly one argument: the whole value",
         );
     }
 }

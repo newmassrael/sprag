@@ -286,9 +286,9 @@ impl RegistryView<'_> {
             // anything the daemon is holding. That is also why it is served from HERE and reaches
             // a reader whose own session has gone: how to spell a call cannot depend on having
             // somewhere to send it.
-            crate::wire::ACTION_GRAMMAR_SLOT => {
-                Some(IntrospectValue::Json(crate::wire::ActionGrammar::answer()))
-            }
+            crate::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                crate::wire::ActionGrammar::answer(crate::wire::ActionGrammar::MUX),
+            )),
             _ => None,
         }
     }
@@ -8490,100 +8490,37 @@ mod tests {
         (reg, ext)
     }
 
-    /// The `args` object the PUBLISHED GRAMMAR alone says is well-formed, with one argument set to
-    /// `probe` — what an agent that has read [`ACTION_GRAMMAR_SLOT`] and nothing else would send.
+    /// The three property gates over this surface's published grammar — one call each into
+    /// [`grammar_gate`](crate::wire::grammar_gate), which holds the claims, with this surface's
+    /// fixture and this surface's non-vacuity COUNT.
     ///
-    /// Every REQUIRED argument is filled, because a call missing one is malformed by the
-    /// declaration's own account and its refusal would say nothing about the word under test.
-    /// Every OPTIONAL one is left out, so exactly one argument is being varied. The filler for a
-    /// required argument comes from the declaration too: a vocabulary's first word, or `0` for the
-    /// only other required shape this table has (a pane id, which the fixture holds).
-    fn call_built_from_the_grammar(
-        form: &[crate::wire::ArgGrammar],
-        vary: &crate::wire::ArgGrammar,
-        probe: Value,
-    ) -> Value {
-        let mut map = Map::new();
-        for arg in form {
-            if arg.name == vary.name {
-                map.insert(arg.name.to_owned(), probe.clone());
-            } else if !arg.optional {
-                map.insert(
-                    arg.name.to_owned(),
-                    match (arg.words, arg.ty) {
-                        // A vocabulary supplies its own filler. The FIRST word, arbitrarily: this
-                        // argument is not the one under test, and every word of it is driven by
-                        // its own turn through the loop.
-                        (Some(words), _) => Value::from(words[0]),
-                        // ⚠ ONE, NOT ZERO, AND THE FILLER IS A CLAIM TOO. Zero is a legal pane id
-                        // and an ILLEGAL dimension — `resize_window` refuses a zero-column
-                        // rectangle as malformed — so a zero filler made this gate report
-                        // `resize_window`'s `window` as constrained when what the daemon had
-                        // rejected was the filler beside it. One is admissible in every int
-                        // argument these verbs take, and the fixture holds pane 1 and a second
-                        // window, so it RESOLVES as well as parses.
-                        (None, "int") => Value::from(1),
-                        (None, "bool") => Value::from(false),
-                        // A window NAME the fixture does not hold: it parses, which is all this
-                        // filler has to do, and it cannot collide with a real window.
-                        (None, _) => Value::from("filler-not-a-window"),
-                    },
-                );
-            }
-        }
-        Value::Object(map)
+    /// ⚠ The bodies used to be HERE, written against this surface alone. The pane surface came to
+    /// publish six verbs of its own and needed all three; R347's rule is to ask which other reader
+    /// builds the same thing before writing the second one, and a copy would have been three more
+    /// gates whose first divergence nothing could see. What stays here is what is genuinely about
+    /// the multiplexer: the live surface, and the numbers.
+    fn mux_gate(
+        claim: impl Fn(
+            &'static [crate::wire::ActionGrammar],
+            crate::wire::grammar_gate::Invoke<'_>,
+        ) -> usize,
+    ) -> usize {
+        let (_reg, mut ext) = grammar_fixture();
+        claim(crate::wire::ActionGrammar::MUX, &mut |action, args| {
+            ext.invoke(action, args)
+        })
     }
 
-    /// ⚠⚠ **EVERY WORD THE WIRE PUBLISHES IS A WORD THE DAEMON ACCEPTS** — the write half of the
-    /// discovery pair, and the claim that makes [`ACTION_GRAMMAR_SLOT`] worth reading.
-    ///
-    /// A schema that publishes a vocabulary is making a promise about somebody else's code: it says
-    /// an agent may enumerate these words and send any of them. Nothing about a `const` array
-    /// enforces that — the words could be yesterday's spelling, or a set the parser narrowed — so
-    /// the promise is driven, one call per word, through `invoke`.
-    ///
-    /// # Why `TypeMismatch` is the discriminator and the other refusals are not
-    ///
-    /// Every one of these verbs answers `TypeMismatch` for exactly one thing: a request its
-    /// GRAMMAR does not admit (`Ask::parse` answering `None`). A `Rejected` means the grammar was
-    /// read and the request could not be honoured — no pane that way, no window by that name —
-    /// which is the action's business and not this gate's. So a word that gets anything other than
-    /// `TypeMismatch` was ACCEPTED as a word, which is the whole claim.
-    ///
-    /// ⚠ This also proves the parser under test is the one the daemon USES: it goes through
-    /// `dispatch`, so a published grammar belonging to an ask type nothing calls would fail here.
+    /// ⚠⚠ **EVERY WORD THE MULTIPLEXER PUBLISHES IS A WORD IT ACCEPTS** — driven, one call per word,
+    /// through the live surface. [`every_published_word_is_accepted`](crate::wire::grammar_gate) is
+    /// the claim; this is the count.
     #[test]
     fn every_published_word_is_a_word_the_daemon_accepts() {
-        let (_reg, mut ext) = grammar_fixture();
-
-        let mut driven = 0;
-        for verb in crate::wire::ActionGrammar::ALL {
-            for form in verb.forms {
-                for arg in *form {
-                    let Some(words) = arg.words else { continue };
-                    for word in words {
-                        let call = call_built_from_the_grammar(form, arg, Value::from(*word));
-                        let answer = ext.invoke(verb.action, IntrospectValue::Json(call.clone()));
-                        assert!(
-                            !matches!(answer, Err(InvokeError::TypeMismatch)),
-                            "THE WIRE PUBLISHES A WORD THE DAEMON REFUSES. `{}` says its `{}` may \
-                             be {:?}, and sending {call} came back TypeMismatch — an agent that \
-                             enumerated the published vocabulary would have built a call this \
-                             daemon cannot read.",
-                            verb.action,
-                            arg.name,
-                            word,
-                        );
-                        driven += 1;
-                    }
-                }
-            }
-        }
-
-        // NON-VACUITY, asserted rather than assumed: a table whose vocabularies had all gone
-        // missing would pass every assertion above by running none of them.
+        // NON-VACUITY, asserted rather than assumed: a table whose vocabularies had all gone missing
+        // would pass every assertion inside the gate by running none of them.
         assert_eq!(
-            driven, 31,
+            mux_gate(crate::wire::grammar_gate::every_published_word_is_accepted),
+            31,
             "one call per published word: four directions on each of three pane verbs (12), two \
              steps of the window ring, four places to move a window to, the three window-size \
              policies that fold clients (`manual` being the fourth and not one of them), the two \
@@ -8592,117 +8529,25 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **AN ARGUMENT THE PARSER CONSTRAINS MUST PUBLISH WHAT IT ADMITS** — the completeness
-    /// half, and the one that cannot be satisfied by remembering.
-    ///
-    /// The gate above is soundness: nothing published is refused. It says nothing about an argument
-    /// whose vocabulary was simply left out — which is the failure this project keeps meeting,
-    /// because a hand-written list is the one a new thing is missing from. There is no way to
-    /// DERIVE "this string argument is closed" from the declaration, so it is derived from the
-    /// PRODUCT instead: send a word nobody could have declared, and see whether the parser takes
-    /// it.
-    ///
-    /// * it takes the nonsense ⇒ the argument really is open, and publishing no vocabulary is true;
-    /// * it refuses ⇒ the argument is drawn from some set, and the wire is keeping it a secret.
-    ///
-    /// So an argument added tomorrow with a closed vocabulary and no `one_of` fails here, with
-    /// nobody having had to notice.
+    /// ⚠⚠ **AN ARGUMENT THIS SURFACE CONSTRAINS PUBLISHES WHAT IT ADMITS** — the completeness half.
     #[test]
     fn an_argument_the_daemon_constrains_publishes_what_it_admits() {
-        let (_reg, mut ext) = grammar_fixture();
-
-        // A value no vocabulary in this workspace can contain, and no window or pane is named.
-        const NONSENSE: &str = "not-a-word-any-vocabulary-holds";
-
-        let mut probed = 0;
-        for verb in crate::wire::ActionGrammar::ALL {
-            for form in verb.forms {
-                for arg in *form {
-                    if arg.ty != "string" || arg.words.is_some() {
-                        continue;
-                    }
-                    let call = call_built_from_the_grammar(form, arg, Value::from(NONSENSE));
-                    let answer = ext.invoke(verb.action, IntrospectValue::Json(call.clone()));
-                    assert!(
-                        !matches!(answer, Err(InvokeError::TypeMismatch)),
-                        "`{}` REFUSES ITS OWN DECLARED `{}` AS MALFORMED, so that argument is \
-                         drawn from a set the wire does not publish. Send {call} and the daemon \
-                         answers TypeMismatch — declare the vocabulary with `ArgGrammar::one_of`, \
-                         projected from the closed set the parser reads through.",
-                        verb.action,
-                        arg.name,
-                    );
-                    probed += 1;
-                }
-            }
-        }
-
         assert_eq!(
-            probed, 30,
+            mux_gate(crate::wire::grammar_gate::a_constrained_argument_publishes_what_it_admits),
+            30,
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
              verb, a message's text and audience, a report's source and name, and a dropped path",
         );
     }
 
-    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THE DAEMON ACTUALLY READS** — the gate that lets a grammar
-    /// be written by hand at all.
-    ///
-    /// The other two gates hold the VOCABULARIES to the parser. Neither can see a declared argument
-    /// the parser ignores completely: send it, nothing refuses, and the wire goes on advertising a
-    /// key that does nothing. That is the failure mode of any hand-written declaration, and it is
-    /// why [`ActionGrammar::ALL`] could at first only carry verbs whose grammar was already modelled
-    /// by an ask type.
-    ///
-    /// This closes it by TYPE. Send each declared argument with a value of the wrong JSON type — a
-    /// string where an int is declared, a number where a string is — and require the daemon to
-    /// refuse the request as malformed. A parser that reads the key cannot accept the wrong type
-    /// for it; a parser that never looks at the key cannot refuse anything. So:
-    ///
-    /// * refused ⇒ the declaration names a key this verb genuinely reads, at the type it claims;
-    /// * accepted ⇒ **the wire is advertising an argument the daemon does not have.**
-    ///
-    /// # What it still cannot see, said rather than implied
-    ///
-    /// An argument the parser reads and the declaration OMITS. That direction is absent-not-wrong —
-    /// a client is told less rather than something false — and the only thing that catches it is
-    /// deriving the key set from the request type, which is what
-    /// [`the_published_grammar_is_the_ask_types_own`](self) does for the verbs that have one.
+    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THE DAEMON ACTUALLY READS** — the gate that lets this
+    /// surface's eighteen inline grammars be written by hand at all.
     #[test]
     fn a_declared_argument_is_one_the_daemon_reads() {
-        let (_reg, mut ext) = grammar_fixture();
-
-        let mut probed = 0;
-        for verb in crate::wire::ActionGrammar::ALL {
-            for form in verb.forms {
-                for arg in *form {
-                    // The wrong type for what this argument says it is. A vocabulary argument is a
-                    // string, so a number is wrong for it too — and wrong in a way no vocabulary
-                    // could absorb.
-                    let wrong = match arg.ty {
-                        "int" | "bool" => Value::from("not-of-the-declared-type"),
-                        _ => Value::from(4242),
-                    };
-                    let call = call_built_from_the_grammar(form, arg, wrong);
-                    let answer = ext.invoke(verb.action, IntrospectValue::Json(call.clone()));
-                    assert!(
-                        matches!(answer, Err(InvokeError::TypeMismatch)),
-                        "`{}` ACCEPTS A {} FOR ITS DECLARED `{}`, so either the daemon does not \
-                         read that key at all or it does not read it as a {}. Sending {call} \
-                         answered {answer:?}, and a wire that advertises an argument nothing reads \
-                         is worse than one that says nothing.",
-                        verb.action,
-                        arg.ty,
-                        arg.name,
-                        arg.ty,
-                    );
-                    probed += 1;
-                }
-            }
-        }
-
         assert_eq!(
-            probed, 91,
+            mux_gate(crate::wire::grammar_gate::a_declared_argument_is_one_the_daemon_reads),
+            91,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
              per form rather than per verb: 31 across the seven ask-backed verbs and 55 across the \
              eighteen declared inline",
@@ -8711,7 +8556,7 @@ mod tests {
 
     /// The published grammar names the keys its ASK TYPE emits — no more, and no fewer.
     ///
-    /// [`ActionGrammar::ALL`] is a hand-written table, and this is what stops it drifting from the
+    /// [`ActionGrammar::MUX`] is a hand-written table, and this is what stops it drifting from the
     /// grammar it claims to describe. The ask types are the source: `to_args` on a value carrying
     /// every field emits every key the request has, so the KEY SET is derivable and is not
     /// re-typed here.
@@ -8858,7 +8703,7 @@ mod tests {
         // ⚠ DERIVED, not listed: exactly the entries whose forms came from an ask type. A verb
         // declared inline is not this gate's business and says so on the entry itself, so adding
         // one cannot fail a gate about something else.
-        let mut published: Vec<&str> = crate::wire::ActionGrammar::ALL
+        let mut published: Vec<&str> = crate::wire::ActionGrammar::MUX
             .iter()
             .filter(|verb| verb.from_ask)
             .map(|verb| verb.action)
@@ -8872,7 +8717,7 @@ mod tests {
         );
 
         for (action, sent) in emitted {
-            let verb = crate::wire::ActionGrammar::ALL
+            let verb = crate::wire::ActionGrammar::MUX
                 .iter()
                 .find(|verb| verb.action == action && verb.from_ask)
                 .expect("compared as sets above");
@@ -8885,8 +8730,17 @@ mod tests {
                 "{action}: one published form per arm of its ask",
             );
             for (form, arm) in verb.forms.iter().zip(sent) {
+                // ⚠ AN ASK IS ALWAYS AN OBJECT: `to_args` renders a map, so a scalar form on one of
+                // these verbs would be a form no arm can emit. Asserted rather than assumed, because
+                // the key comparison below would silently compare an arm against a one-argument
+                // scalar and pass.
+                assert_eq!(
+                    form.form,
+                    crate::wire::FormKind::Object,
+                    "{action}: an ask type's request is an object, so every form of it is one",
+                );
                 let mut declared: Vec<String> =
-                    form.iter().map(|arg| arg.name.to_owned()).collect();
+                    form.args.iter().map(|arg| arg.name.to_owned()).collect();
                 let mut emitted = arm;
                 declared.sort_unstable();
                 emitted.sort_unstable();

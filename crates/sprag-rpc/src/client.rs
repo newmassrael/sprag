@@ -472,7 +472,28 @@ impl ScopeAsk {
 ///   could see the meaning move.
 ///   `wrapped` is absent-not-wrong on its own (an old reader would paint the head of a match and
 ///   miss its tail); the version is owed by `line` and `text`, not by it.
-pub const WIRE_PROTOCOL: u32 = 19;
+/// * **20** — a published call FORM says which SHAPE it is. `action_grammar` answers each verb a list
+///   of `{form, args}` objects where it answered a list of argument ARRAYS, and every pane input verb
+///   publishes its grammar for the first time (R353).
+///
+///   ⚠ **THE THIRD BUMP FROM AN ANSWER, AND THE FIRST FROM A VALUE THAT CHANGED SHAPE.** Version 18
+///   added words to a value space and 19 changed what a key SAID; this one changes what a value IS,
+///   from an array to an object. A client that walked `answer[verb][0]` as a list of arguments now
+///   meets a map, so its very first index is the wrong kind — the failure is immediate rather than
+///   subtle, which is the one mercy in it.
+///
+///   The shape had to move because a form could not say that its arguments are NOT an object.
+///   `invoke("text", "한")` is how an IME commit reaches a pane, and three of that surface's six
+///   verbs take a bare scalar — describing them as objects would have been an affirmative false
+///   statement, and leaving them out would have kept the surface an agent uses most undiscoverable.
+///   The added *addresses* (a per-pane `action_grammar`) are additive on their own and would not have
+///   earned a bump; the changed value did.
+///
+///   ⚠ Two of the vocabularies this version publishes were spelled TWICE before it — the display
+///   client encoded a mouse button and the host decoded it, in two crates, with nothing comparing
+///   the lists. They read one array now, which is also why an OLD client is refused rather than
+///   quietly mismatched: the handshake is at the daemon's door.
+pub const WIRE_PROTOCOL: u32 = 20;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

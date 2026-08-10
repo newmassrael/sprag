@@ -1097,31 +1097,65 @@ impl Urgency {
     }
 }
 
-/// Which system selection an OSC 52 clipboard operation addresses. A windowing system
-/// distinguishes two, and sprag models both: the CLIPBOARD (the explicit Ctrl-C / Ctrl-V
-/// buffer, OSC 52 `c`) and the PRIMARY selection (X11 select-to-copy / middle-click paste,
-/// OSC 52 `p`). The OSC 52 X cut buffers (`0`-`9`) have no windowing-system analog and are
-/// not modeled; the "configured selection" `s` and the empty-`Pc` default fold onto the
-/// clipboard (the common intent — see [`crate::emulator`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ClipboardTarget {
-    /// The system clipboard (OSC 52 `c`).
-    Clipboard,
-    /// The PRIMARY selection (OSC 52 `p`).
-    Primary,
+crate::closed_set! {
+    /// Which system selection an OSC 52 clipboard operation addresses. A windowing system
+    /// distinguishes two, and sprag models both: the CLIPBOARD (the explicit Ctrl-C / Ctrl-V
+    /// buffer, OSC 52 `c`) and the PRIMARY selection (X11 select-to-copy / middle-click paste,
+    /// OSC 52 `p`). The OSC 52 X cut buffers (`0`-`9`) have no windowing-system analog and are
+    /// not modeled; the "configured selection" `s` and the empty-`Pc` default fold onto the
+    /// clipboard (the common intent — see [`crate::emulator`]).
+    ///
+    /// A [`closed_set!`](crate::closed_set!) because the pane surface's `clipboard_answer` action
+    /// takes this as its `sel` argument and now PUBLISHES the two words
+    /// ([`WIRE_WORDS`](Self::WIRE_WORDS)) — which the host used to match as bare literals, so a
+    /// client had to know them out of band.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum ClipboardTarget {
+        /// The system clipboard (OSC 52 `c`).
+        Clipboard,
+        /// The PRIMARY selection (OSC 52 `p`).
+        Primary,
+    }
 }
 
 impl ClipboardTarget {
-    /// The OSC 52 selection character (`c` / `p`). A read reply echoes the requested selection
-    /// so the asking app matches the response to its query.
+    /// The OSC 52 selection character as a WORD — `"c"` / `"p"` — the spelling a `clipboard_answer`
+    /// action's `sel` carries, and the one definition of both.
+    ///
+    /// A `&'static str` rather than a `char` because a published vocabulary is an array of words,
+    /// and [`osc_char`](Self::osc_char) is derived from this rather than matching a second time.
     #[must_use]
-    pub fn osc_char(self) -> char {
+    pub const fn wire_str(self) -> &'static str {
         match self {
-            ClipboardTarget::Clipboard => 'c',
-            ClipboardTarget::Primary => 'p',
+            Self::Clipboard => "c",
+            Self::Primary => "p",
         }
     }
+
+    /// The selection a `sel` word names, or [`None`] for a word neither selection spells.
+    ///
+    /// ⚠ This is the WIRE argument's vocabulary, exactly two words. It is deliberately NOT the OSC 52
+    /// `Pc` parse, which is richer: an `s` or an empty `Pc` from a CHILD folds onto the clipboard
+    /// (see [`crate::emulator`]), because a terminal is lenient with what a program sends it. A
+    /// client of sprag's own wire is not a program sprag has to tolerate, and the grammar it reads
+    /// says two words.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
+
+    /// The OSC 52 selection character (`c` / `p`). A read reply echoes the requested selection
+    /// so the asking app matches the response to its query.
+    ///
+    /// DERIVED from [`wire_str`](Self::wire_str) rather than matched again — one spelling, two
+    /// shapes, so a selection cannot be one character on the reply and another on the wire.
+    #[must_use]
+    pub fn osc_char(self) -> char {
+        char::from(self.wire_str().as_bytes()[0])
+    }
 }
+
+crate::wire_words!(ClipboardTarget: wire_str);
 
 /// The set of selections a single OSC 52 WRITE addresses. One `OSC 52 ; cp ; …` sets BOTH the
 /// clipboard and the primary selection, so a write is not reducible to one [`ClipboardTarget`];
@@ -4392,5 +4426,40 @@ mod tests {
             1,
             "`$` sits after the last glyph, not after the padding",
         );
+    }
+    /// ⚠ **A SELECTION SPELLS ITSELF ONCE, and the OSC character is DERIVED from that spelling.**
+    ///
+    /// [`ClipboardTarget::osc_char`] used to be its own `match`, which was harmless while nothing else
+    /// spelled the words — and stopped being harmless when the pane surface came to PUBLISH them (the
+    /// `clipboard_answer` action's `sel`, and the pending query's `sel` in the pane list, which are
+    /// the same vocabulary read in two directions). Two matches over two words is how a reply comes to
+    /// echo one character while the wire admits another.
+    ///
+    /// So the claim is the derivation: over the whole type, the OSC character IS the wire word's one
+    /// character, and the word is exactly one character long — the property that makes deriving it
+    /// possible at all.
+    #[test]
+    fn a_selections_osc_character_is_its_wire_word() {
+        for target in ClipboardTarget::ALL {
+            let word = target.wire_str();
+            assert_eq!(
+                word.chars().count(),
+                1,
+                "{word:?} is an OSC 52 selection character, so it is one character",
+            );
+            assert_eq!(
+                target.osc_char(),
+                word.chars().next().expect("one character")
+            );
+            assert_eq!(ClipboardTarget::from_wire(word), Some(target));
+        }
+        assert_eq!(ClipboardTarget::WIRE_WORDS, ["c", "p"]);
+        // The OSC 52 `Pc` parse is DELIBERATELY more lenient than this vocabulary (an `s` or an empty
+        // field from a CHILD folds onto the clipboard), and that leniency is about programs a terminal
+        // must tolerate — not about a client of sprag's own wire, which is told two words and held to
+        // them.
+        for stranger in ["s", "", "0", "C", "cp"] {
+            assert_eq!(ClipboardTarget::from_wire(stranger), None, "{stranger:?}");
+        }
     }
 }

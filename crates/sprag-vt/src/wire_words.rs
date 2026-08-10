@@ -254,10 +254,14 @@ macro_rules! wire_words {
             /// Every variant's WIRE WORD, in declaration order — the vocabulary a client may send
             /// or must be able to read, as data a schema can publish.
             ///
-            /// Projected from `ALL` through this type's own spelling
-            /// ([`wire_words!`](sprag_vt::wire_words!)), so it holds one word per variant by
-            /// construction: a variant added to the enum lands here in the same compile, and the
-            /// length is `ALL.len()` rather than a number anybody typed.
+            /// Projected from `ALL` through this type's own spelling by `sprag_vt::wire_words!`, so
+            /// it holds one word per variant by construction: a variant added to the enum lands here
+            /// in the same compile, and the length is `ALL.len()` rather than a number anybody typed.
+            ///
+            /// ⚠ The macro's name is a CODE SPAN and not a link, because this doc is generated into
+            /// whichever crate expands the macro: `sprag_vt::wire_words!` does not resolve inside
+            /// `sprag_vt` itself, and `crate::wire_words!` does not resolve outside it. The first
+            /// in-crate expansion (`ClipboardTarget`) is what found that, on the doc gate.
             pub const WIRE_WORDS: [&'static str; <$set>::ALL.len()] = {
                 let mut words = [""; <$set>::ALL.len()];
                 let mut at = 0;
