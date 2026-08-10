@@ -55,7 +55,7 @@ use std::sync::{Arc, Mutex};
 
 use pinion_rpc::Request;
 use sprag_rpc::{ScopeAsk, ScopeFault, WINDOW_PARAM};
-use sprag_terminal::{Session, SessionId, SessionRegistry, Workspace};
+use sprag_terminal::{Session, SessionId, SessionRegistry, WindowId, Workspace};
 
 use crate::external::lock;
 use crate::wire::{ATTACHED_PARAM, SESSION_PARAM};
@@ -216,6 +216,25 @@ pub struct SessionScope {
     /// and like [`SessionId`] itself it never reaches the wire.
     id: SessionId,
     window: String,
+    /// The scoped WINDOW's identity, pinned beside its name off the same
+    /// [`Window`](sprag_terminal::Window) — the session id's twin, one level down, and here for the
+    /// same kind of caller.
+    ///
+    /// A window's NAME is what a request carries and what a person types, and `rename-window` moves
+    /// it. This is what a fact about the window is KEYED by once the request has resolved: which
+    /// clients are watching it ([`AttachmentRegistry::sizes_for`](crate::attach::AttachmentRegistry::sizes_for)),
+    /// so an arbitration cannot come to fold in a client that is looking at a different window
+    /// which happens to have taken this one's name.
+    window_id: WindowId,
+    /// The CONNECTION this request arrived on, when it had one — who is asking.
+    ///
+    /// A scope answers "what is this request about"; this is the other half, and it is here because
+    /// since R346 one verb writes it back. `select-window` moves the SESSION's landing window and
+    /// the ACTING CLIENT's own view, and the acting client is only knowable from the request. Every
+    /// scope minted for a caller with no connection — the CLI's string entry, the in-process host,
+    /// the daemon's own retile — carries [`None`] and moves nobody's view, which is the whole of
+    /// the rule the owner chose: a caller with no seat sets where the next client LANDS.
+    conn: Option<pinion_rpc::ConnId>,
     workspace: Arc<Mutex<Workspace>>,
 }
 
@@ -276,23 +295,30 @@ impl SessionScope {
         registry: &Arc<Mutex<SessionRegistry>>,
         request: &Request,
         attached: impl FnOnce() -> Option<String>,
+        viewing: impl FnOnce() -> Option<WindowId>,
     ) -> Result<Self, ScopeError> {
         // BOTH questions parsed BEFORE any lock: a malformed scope is refused without touching
         // either registry, and the attached lookup below happens with nothing held. The window is
         // read first so a request wrong in both ways is told about the key it is likelier to have
         // got wrong — the session key predates this grammar and every caller already sends it.
         let window = ScopeAsk::window(request.params.as_ref())?;
+        // WHICH WINDOW THIS CLIENT IS ON, asked here and not in `narrowed`, because `narrowed` runs
+        // under the registry lock and this reads the ATTACHMENT map: the order this daemon keeps is
+        // attachments THEN registry, and calling it there would invert it on every request. Skipped
+        // entirely when the request named a window, which is the only case where the answer cannot
+        // be used.
+        let seat = if window.is_some() { None } else { viewing() };
         let named = match ScopeAsk::parse(request.params.as_ref())? {
             ScopeAsk::Default => {
                 let registry = lock(registry);
-                return Self::narrowed(registry.default_session(), window.as_deref());
+                return Self::narrowed(registry.default_session(), window.as_deref(), seat);
             }
             ScopeAsk::Named(name) => name,
             ScopeAsk::Attached => attached().ok_or(ScopeError::NotAttached)?,
         };
         let registry = lock(registry);
         let session = registry.session(&named).ok_or(ScopeError::Unknown(named))?;
-        Self::narrowed(session, window.as_deref())
+        Self::narrowed(session, window.as_deref(), seat)
     }
 
     /// `session`'s scope, narrowed to the window it NAMES — or to its current one for [`None`].
@@ -301,9 +327,27 @@ impl SessionScope {
     /// disagree about what narrowing means. It reads the name and the pool off the SAME
     /// [`Window`](sprag_terminal::Window), which is [`of_session`](Self::of_session)'s whole
     /// discipline applied to a window the request chose instead of the one the session is showing.
-    fn narrowed(session: &Session, window: Option<&str>) -> Result<Self, ScopeError> {
+    fn narrowed(
+        session: &Session,
+        window: Option<&str>,
+        seat: Option<WindowId>,
+    ) -> Result<Self, ScopeError> {
         let Some(name) = window else {
-            return Ok(Self::of_session(session));
+            // NO WINDOW NAMED, so this request is about wherever its client is sitting — which
+            // since R346 is a fact about the CLIENT and only falls back to the session's current
+            // window for a caller that has no seat (the CLI, an agent, the in-process host).
+            //
+            // The id is checked against THIS session's windows rather than trusted: a client that
+            // has just switched sessions carries the window it was last on, and a window of a
+            // session this request is not about is not a narrowing, it is a wrong target.
+            let held = seat.and_then(|id| {
+                session
+                    .windows()
+                    .iter()
+                    .find(|window| window.id() == id)
+                    .map(|window| Self::at(session, window))
+            });
+            return Ok(held.unwrap_or_else(|| Self::of_session(session)));
         };
         let window = session
             .windows()
@@ -313,12 +357,7 @@ impl SessionScope {
                 session: session.name().to_owned(),
                 window: name.to_owned(),
             })?;
-        Ok(Self {
-            session: session.name().to_owned(),
-            id: session.id(),
-            window: window.name().to_owned(),
-            workspace: Arc::clone(window.workspace()),
-        })
+        Ok(Self::at(session, window))
     }
 
     /// The default session's scope, for a caller with no request to name one: the in-process
@@ -339,6 +378,17 @@ impl SessionScope {
         Self::of_session(registry.default_session())
     }
 
+    /// The scope of one NAMED window of `session`, or `None` for a name it holds no window under.
+    ///
+    /// For a caller walking a session's windows rather than resolving a request — the daemon's own
+    /// re-tiling, which owes every window of a session a re-derivation when a client's lifecycle
+    /// moved what any of them arbitrate from. Goes through the same window/pool pairing as every
+    /// other scope, so it cannot describe a window it did not read.
+    #[must_use]
+    pub fn of_window(session: &Session, window: &str) -> Option<Self> {
+        Self::narrowed(session, Some(window), None).ok()
+    }
+
     /// The scope of the session NAMED, or `None` for a name this registry does not hold.
     ///
     /// For a caller that has a session name but no request to resolve one from — the daemon's own
@@ -356,13 +406,37 @@ impl SessionScope {
     /// come apart. Both [`resolve`](Self::resolve) (a named session) and
     /// [`of_default`](Self::of_default) go through it.
     fn of_session(session: &Session) -> Self {
-        let window = session.current_window();
+        Self::at(session, session.current_window())
+    }
+
+    /// `session` scoped to one of ITS OWN windows — the single construction, so a scope's name, its
+    /// identity and its pool always come off the same [`Window`](sprag_terminal::Window).
+    ///
+    /// The caller owes the pairing: `window` must be a window of `session`. Every caller reads it
+    /// out of that session's own list one line above.
+    fn at(session: &Session, window: &sprag_terminal::Window) -> Self {
         Self {
             session: session.name().to_owned(),
             id: session.id(),
             window: window.name().to_owned(),
+            window_id: window.id(),
+            conn: None,
             workspace: Arc::clone(window.workspace()),
         }
+    }
+
+    /// This scope, stamped with the connection the request came in on — the ONE writer of
+    /// [`conn`](Self::conn).
+    #[must_use]
+    pub fn from_conn(mut self, conn: pinion_rpc::ConnId) -> Self {
+        self.conn = Some(conn);
+        self
+    }
+
+    /// The connection this request arrived on, or [`None`] for a caller that has no seat.
+    #[must_use]
+    pub const fn conn(&self) -> Option<pinion_rpc::ConnId> {
+        self.conn
     }
 
     /// The scoped session's name — how the control external addresses its window
@@ -378,6 +452,19 @@ impl SessionScope {
     #[must_use]
     pub const fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// The IDENTITY of the window this request resolved to — what a fact ABOUT that window is
+    /// keyed by, where [`window`](Self::window) is what a request addresses it with.
+    ///
+    /// The one reader that matters is the arbitration: "how big is this window" folds the areas of
+    /// the clients WATCHING it, and a client's view is recorded as an id for the reason every other
+    /// identity in this tree is — a name can be retired and re-issued, and folding in a client that
+    /// is looking at a different window which has since taken this one's name would size a window
+    /// from somebody who cannot see it.
+    #[must_use]
+    pub const fn window_id(&self) -> WindowId {
+        self.window_id
     }
 
     /// The NAME of the window the scoped session was showing when this request resolved — how
@@ -431,7 +518,7 @@ mod tests {
         reg: &Arc<Mutex<SessionRegistry>>,
         params: &str,
     ) -> Result<SessionScope, ScopeError> {
-        SessionScope::resolve(reg, &request(params), || None)
+        SessionScope::resolve(reg, &request(params), || None, || None)
     }
 
     /// Resolve `params` for a caller whose client IS attached to `viewing`.
@@ -440,7 +527,7 @@ mod tests {
         params: &str,
         viewing: &str,
     ) -> Result<SessionScope, ScopeError> {
-        SessionScope::resolve(reg, &request(params), || Some(viewing.to_owned()))
+        SessionScope::resolve(reg, &request(params), || Some(viewing.to_owned()), || None)
     }
 
     #[test]

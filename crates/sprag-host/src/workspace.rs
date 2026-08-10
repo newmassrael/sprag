@@ -62,8 +62,8 @@ use pinion_core::external::{
 use serde_json::{Map, Value};
 use sprag_terminal::{
     CommandBuilder, KillOutcome, LayoutSnapshot, LayoutWire, Pane, PaneId, PaneKillOutcome,
-    SessionInfo, SessionRegistry, SplitDir, SplitSide, SshRemote, WindowBirth, WindowKillOutcome,
-    Workspace,
+    SessionInfo, SessionRegistry, SplitDir, SplitSide, SshRemote, WindowBirth, WindowId,
+    WindowKillOutcome, Workspace,
 };
 
 use crate::attach::ClientSize;
@@ -1819,6 +1819,59 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(Value::String(landed)))
     }
 
+    /// The session's landing window, and every window it still holds — the two facts
+    /// [`reconcile_views`](Self::reconcile_views) is decided from, read under one registry lock.
+    fn seating(&self) -> Option<(WindowId, Vec<WindowId>)> {
+        let registry = lock(&self.registry);
+        let session = registry.session(self.scope.session())?;
+        Some((
+            session.current_window().id(),
+            session
+                .windows()
+                .iter()
+                .map(sprag_terminal::Window::id)
+                .collect(),
+        ))
+    }
+
+    /// Put every client's view back where an action has left it — the second subject of every mux
+    /// action, now that a view is a fact about a CLIENT and not about a session.
+    ///
+    /// # Two rules, and both are DERIVED rather than listed
+    ///
+    /// * **A window that is gone is not somewhere anybody is looking.** `kill-window`, the last
+    ///   pane of a window exiting, a `join-pane` that emptied one — every way a window dies would
+    ///   otherwise leave its viewers seated on an id nothing serves, and a seat like that is not
+    ///   merely stale: [`sizes_for`](crate::attach::AttachmentRegistry::sizes_for) folds a client
+    ///   into the window it is WATCHING, so those clients would stop sizing anything and the
+    ///   survivor would arbitrate from nobody. Measured as four red pty gates the hour this landed.
+    ///   Rather than find every death site, this asks the registry which windows still exist.
+    /// * **Whoever moved the session's landing window goes there.** `select-window` is the verb
+    ///   that exists for it, but `new-window`, `break-pane` and the chooser picks all select what
+    ///   they made, and enumerating them is the hand-written list a new action gets left out of
+    ///   (R335). So the landing window is read BEFORE the action and compared with it after: an
+    ///   action that moved it moves the caller, one that did not moves nobody.
+    ///
+    /// **A caller with no connection moves nobody**, which is the rule this design was chosen on: a
+    /// session has no eyes, so `sprag select-window` from a script or an agent says where the next
+    /// client ARRIVES and leaves the people already looking where they are.
+    fn reconcile_views(&self, before: Option<WindowId>) -> bool {
+        let Some(attachments) = self.attachments.as_ref() else {
+            return false;
+        };
+        let Some((landing, live)) = self.seating() else {
+            return false;
+        };
+        let mut attachments = lock(attachments);
+        let stranded = attachments.reseat(self.scope.session(), &live, landing);
+        let followed = before != Some(landing)
+            && self
+                .scope
+                .conn()
+                .is_some_and(|conn| attachments.watch(conn, landing));
+        stranded || followed
+    }
+
     /// `move_window {window?, place|before|after}` action: move a window's PLACE in THIS request's
     /// session's order — tmux `move-window`. See [`crate::wire::MOVE_WINDOW_ACTION`].
     ///
@@ -2129,13 +2182,18 @@ impl WorkspaceExternal {
         ))
     }
 
-    /// The cell areas this request's session's clients have reported — the arbitration's inputs, or
-    /// empty for a host that tracks no wire clients (the in-process one, which has a single surface
-    /// and never needed arbitrating).
+    /// The cell areas reported by the clients WATCHING this request's window — the arbitration's
+    /// inputs, or empty for a host that tracks no wire clients (the in-process one, which has a
+    /// single surface and never needed arbitrating).
+    ///
+    /// The window and not the session, since R346: a client looking at another window of the same
+    /// session can neither see this one nor be squeezed by it.
     fn client_areas(&self) -> Vec<ClientSize> {
         self.attachments
             .as_ref()
-            .map(|attachments| lock(attachments).sizes(self.scope.session()))
+            .map(|attachments| {
+                lock(attachments).sizes_for(self.scope.session(), self.scope.window_id())
+            })
             .unwrap_or_default()
     }
 
@@ -2726,7 +2784,8 @@ impl ExternalIntrospect for WorkspaceExternal {
             // exactly one surface, so it never needed arbitrating in the first place.
             WINDOW_SIZE_SLOT => {
                 let window = self.attachments.as_ref().and_then(|attachments| {
-                    let sizes = lock(attachments).sizes(self.scope.session());
+                    let sizes =
+                        lock(attachments).sizes_for(self.scope.session(), self.scope.window_id());
                     // The PINNED size of the window this request was assembled for — a decision an
                     // operator stored, where the areas above are reports clients made.
                     let pinned = lock(&self.registry)
@@ -2744,7 +2803,12 @@ impl ExternalIntrospect for WorkspaceExternal {
             // which within a single request is unreachable.
             WINDOWS_SLOT => {
                 let registry = lock(&self.registry);
-                let infos = registry.session(self.scope.session())?.window_infos();
+                // MARKED FOR THE READER, not for the session: `current` is "the window I am on",
+                // and since R346 that is the scope's window — this client's own view — where it used
+                // to be the session's landing window and therefore everybody's.
+                let infos = registry
+                    .session(self.scope.session())?
+                    .window_infos_marking(self.scope.window_id());
                 // One `WindowInfo` shape, shared with a client's mirror and the in-process arm —
                 // serialised here the way the `layout` slot serialises its snapshot.
                 encoded_answer(&infos, "windows")
@@ -2815,11 +2879,26 @@ impl ExternalIntrospect for WorkspaceExternal {
         path: &str,
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
+        // WHERE THE SESSION WAS LANDING before the action, so `reconcile_views` can tell an action
+        // that moved it from one that did not without a list of which actions those are.
+        let before = self.seating().map(|(landing, _)| landing);
         let answer = self.dispatch(path, args);
-        if answer.is_ok()
-            && let Some(attachments) = self.attachments.as_ref()
-        {
-            crate::window::retile(&self.registry, attachments, self.scope.session());
+        if answer.is_ok() {
+            // A VIEW THAT MOVED CHANGES TWO WINDOWS, not one: the one it left lost a client from
+            // its arbitration and the one it arrived at gained one. Only then is the whole session
+            // re-derived; an ordinary action still costs one window, which is what it always cost.
+            let moved = self.reconcile_views(before);
+            if let Some(attachments) = self.attachments.as_ref() {
+                if moved {
+                    crate::window::retile_every_window(
+                        &self.registry,
+                        attachments,
+                        self.scope.session(),
+                    );
+                } else {
+                    crate::window::retile(&self.registry, attachments, self.scope.session());
+                }
+            }
         }
         answer
     }
@@ -3144,7 +3223,7 @@ mod tests {
             r#"{{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{{"session":"{session}"}}}}"#
         ))
         .expect("a well-formed request");
-        SessionScope::resolve(reg, &request, || None).expect("a session that exists")
+        SessionScope::resolve(reg, &request, || None, || None).expect("a session that exists")
     }
 
     /// A control surface over `reg` scoped to the DEFAULT session (what an unscoped request
@@ -5513,8 +5592,12 @@ mod tests {
             let mut a = lock(&attachments);
             let conn = pinion_rpc::ConnId::allocate();
             a.hello(conn, "gui".to_owned());
-            let id = lock(&reg).default_session().id();
-            a.attach(conn, "0".to_owned(), id); // a client is viewing the empty anchor
+            let (id, landing) = {
+                let reg = lock(&reg);
+                let session = reg.default_session();
+                (session.id(), session.current_window().id())
+            };
+            a.attach(conn, "0".to_owned(), id, landing); // a client is viewing the empty anchor
         }
         let ext = WorkspaceExternal::new(
             Arc::clone(&reg),
@@ -6116,11 +6199,12 @@ mod tests {
             for (client, session) in [("gui", "work"), ("tui", "work"), ("other", "keeper")] {
                 let conn = pinion_rpc::ConnId::allocate();
                 a.hello(conn, client.to_owned());
-                let id = lock(&reg)
-                    .session(session)
-                    .expect("the fixture session")
-                    .id();
-                a.attach(conn, session.to_owned(), id);
+                let (id, landing) = {
+                    let reg = lock(&reg);
+                    let held = reg.session(session).expect("the fixture session");
+                    (held.id(), held.current_window().id())
+                };
+                a.attach(conn, session.to_owned(), id, landing);
             }
         }
         let mut ext = WorkspaceExternal::new(
@@ -6256,9 +6340,14 @@ mod tests {
         );
         assert!(rev.current() > before, "a window creation wakes waiters");
 
-        // The windows slot (read fresh) shows two, the new one current.
+        // The windows slot shows two, the new one current — read through a FRESH SCOPE, because
+        // `current` is now the READER's own window (R346) and a scope is resolved once per REQUEST.
+        // This `ext` was built before the window existed and is pinned on the one it was made for,
+        // where a client's next request resolves against the seat the creation just moved. Reusing
+        // the stale scope here would assert about the fixture rather than about the product.
+        let (fresh, _) = control(&reg);
         assert_eq!(
-            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(fresh.query(WINDOWS_SLOT))),
             json!([
                 {"name": "0", "current": false},
                 {"name": "1", "current": true},
@@ -6474,10 +6563,12 @@ mod tests {
                 IntrospectValue::Json(json!({"window": "logs", "name": "main"})),
             ),
         );
-        // The rename took and "logs" kept its name; the slot reads the session fresh, so "current"
-        // reflects reality ("logs", which new_window selected).
+        // The rename took and "logs" kept its name. Read through a FRESH SCOPE for the reason the
+        // `new_window` gate states: `current` is the reader's own window since R346, and this `ext`
+        // is pinned on the scope it was built with.
+        let (fresh, _) = control(&reg);
         assert_eq!(
-            without_ids(answer_doc(ext.query(WINDOWS_SLOT))),
+            without_ids(answer_doc(fresh.query(WINDOWS_SLOT))),
             json!([
                 {"name": "main", "current": false},
                 {"name": "logs", "current": true},
@@ -7308,8 +7399,12 @@ mod tests {
             let mut a = lock(&attachments);
             let conn = pinion_rpc::ConnId::allocate();
             a.hello(conn, "gui".to_owned());
-            let id = lock(reg).default_session().id();
-            a.attach(conn, "0".to_owned(), id);
+            let (id, landing) = {
+                let reg = lock(reg);
+                let session = reg.default_session();
+                (session.id(), session.current_window().id())
+            };
+            a.attach(conn, "0".to_owned(), id, landing);
             a.size(conn, crate::ClientSize { cols, rows });
         }
         WorkspaceExternal::new(

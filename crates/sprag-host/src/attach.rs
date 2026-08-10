@@ -32,7 +32,7 @@
 
 use pinion_rpc::ConnId;
 use serde::{Deserialize, Serialize};
-use sprag_terminal::SessionId;
+use sprag_terminal::{SessionId, WindowId};
 use std::collections::HashMap;
 
 use crate::report::Announcement;
@@ -167,6 +167,29 @@ pub struct AttachmentRegistry {
     /// entry per session), and shrunk further by [`last_viewed`](Self::last_viewed), which drops
     /// entries that no longer resolve as it walks.
     client_history: HashMap<ClientId, Vec<SessionId>>,
+    /// Which WINDOW of its attached session each client is LOOKING AT.
+    ///
+    /// # The half a session used to hold for everybody
+    ///
+    /// `Session::current_window` was the one answer to "what is on screen", so two clients of one
+    /// session could not look at different things — and, because the size arbitration folds every
+    /// client attached to the SESSION, a phone attaching beside a desktop resized the desktop's
+    /// panes to the phone. R346 split the question: a session's current window is now where a client
+    /// LANDS when it attaches, and this is where each client went afterwards.
+    ///
+    /// # Keyed by IDENTITY, like the history and unlike the attachment
+    ///
+    /// A window NAME is an address a person types and `rename-window` moves. What this answers is
+    /// *which clients does this window's size come from*, and a retired-then-reissued name would
+    /// fold in a client that is looking at something else — the same capture
+    /// [`client_history`](Self::client_history) records in full, one level down. A [`WindowId`] is
+    /// minted once per window per run and never reissued, so it cannot.
+    ///
+    /// Every entry is a present, ATTACHED client: written by [`attach`](Self::attach) (which lands
+    /// it on the session's current window) and by [`watch`](Self::watch) (which is that client's own
+    /// `select-window`), and dropped with the client in [`disconnect`](Self::disconnect) and with
+    /// its session in [`session_ended`](Self::session_ended).
+    client_window: HashMap<ClientId, WindowId>,
     /// Each present client's reported area (from `client/size`), stamped with its recency.
     ///
     /// Keyed by CLIENT rather than by connection because a client's several connections describe
@@ -210,7 +233,17 @@ impl AttachmentRegistry {
     /// The visit is recorded even when the attachment does not move: re-declaring the session you
     /// are already on is idempotent for the attachment (nothing to announce) and for the history
     /// too (the dedup lifts the entry it already holds back to the front, where it already was).
-    pub fn attach(&mut self, conn: ConnId, session: String, id: SessionId) -> AttachOutcome {
+    /// `landing` is the window this client arrives on — the session's CURRENT window, which is what
+    /// that field means now that each client carries a view of its own.
+    /// Recorded only on a real change, for the same reason the restamp below is: an idempotent
+    /// re-send of `client/attach` must not drag a client back off the window it has since selected.
+    pub fn attach(
+        &mut self,
+        conn: ConnId,
+        session: String,
+        id: SessionId,
+        landing: WindowId,
+    ) -> AttachOutcome {
         let Some(client) = self.conn_client.get(&conn) else {
             return AttachOutcome::NoClient;
         };
@@ -226,10 +259,62 @@ impl AttachmentRegistry {
                 // reordering on it would let a client that merely re-declared its session take the
                 // window from one the user had just resized.
                 self.restamp(&client);
+                self.client_window.insert(client.clone(), landing);
                 let previous = self.client_session.insert(client, session);
                 AttachOutcome::Changed { previous }
             }
         }
+    }
+
+    /// Record that the client owning `conn` is now looking at `window` — its own `select-window`.
+    ///
+    /// Answers whether that MOVED it, so the caller can skip a scene bump for a client re-selecting
+    /// the window it is already on. A connection that never said hello, or a client that has not
+    /// attached, is not watching anything and is left alone.
+    pub fn watch(&mut self, conn: ConnId, window: WindowId) -> bool {
+        let Some(client) = self.conn_client.get(&conn) else {
+            return false;
+        };
+        let client = client.clone();
+        if !self.client_session.contains_key(&client) {
+            return false;
+        }
+        self.client_window.insert(client, window) != Some(window)
+    }
+
+    /// Put every client of `session` whose view names a window that is no longer in `live` back on
+    /// `landing` — what a window's DEATH owes its viewers.
+    ///
+    /// A seat naming a window that is gone is not just stale: the arbitration folds a client into
+    /// the window it is watching ([`sizes_for`](Self::sizes_for)), so those clients would size
+    /// nothing at all and the window that survived them would arbitrate from an empty list. Driven
+    /// off the registry's own live list rather than from each of the several places a window can
+    /// die, so a new way to end one cannot be forgotten here.
+    pub fn reseat(&mut self, session: &str, live: &[WindowId], landing: WindowId) -> bool {
+        let stranded: Vec<ClientId> = self
+            .client_session
+            .iter()
+            .filter(|(client, viewing)| {
+                viewing.as_str() == session
+                    && !self
+                        .client_window
+                        .get(*client)
+                        .is_some_and(|window| live.contains(window))
+            })
+            .map(|(client, _)| client.clone())
+            .collect();
+        for client in &stranded {
+            self.client_window.insert(client.clone(), landing);
+        }
+        !stranded.is_empty()
+    }
+
+    /// The window the client owning `conn` is looking at — how a request resolves its scope to the
+    /// window THIS client is on rather than to the one its session last landed somebody on.
+    #[must_use]
+    pub fn window_of(&self, conn: ConnId) -> Option<WindowId> {
+        let client = self.conn_client.get(&conn)?;
+        self.client_window.get(client).copied()
     }
 
     /// The session the client owning `conn` was viewing BEFORE its current one and is still there
@@ -344,10 +429,39 @@ impl AttachmentRegistry {
     /// taking the smallest attached client must not be handed a size nobody has.
     #[must_use]
     pub fn sizes(&self, session: &str) -> Vec<ClientSize> {
+        self.reported(|client, viewing| {
+            viewing == session && self.client_window.contains_key(client)
+        })
+    }
+
+    /// Every area reported by a client attached to `session` AND LOOKING AT `window`, oldest first
+    /// — the arbitration's real input.
+    ///
+    /// # Why the window and not just the session
+    ///
+    /// "How big is this window" is a question about the people who can SEE it. Folding every client
+    /// of the session in was right only while they all saw the same thing, and R346 made them not:
+    /// a phone on window 1 has nothing to say about window 0's size, and saying it anyway is the
+    /// defect this whole arc is about — a small client attaching and shrinking a big client's panes.
+    ///
+    /// A client that has not reported an area is absent rather than present with a zero, exactly as
+    /// in [`sizes`](Self::sizes): a policy taking the smallest client must not be handed a size
+    /// nobody has.
+    #[must_use]
+    pub fn sizes_for(&self, session: &str, window: WindowId) -> Vec<ClientSize> {
+        self.reported(|client, viewing| {
+            viewing == session && self.client_window.get(client) == Some(&window)
+        })
+    }
+
+    /// The shared walk behind [`sizes`](Self::sizes) and [`sizes_for`](Self::sizes_for): every
+    /// reported area whose client `keep` admits, OLDEST FIRST — so the last element is the most
+    /// recent report, which is what `window-size latest` names.
+    fn reported(&self, keep: impl Fn(&ClientId, &str) -> bool) -> Vec<ClientSize> {
         let mut reported: Vec<Reported> = self
             .client_session
             .iter()
-            .filter(|(_, viewing)| viewing.as_str() == session)
+            .filter(|(client, viewing)| keep(client, viewing.as_str()))
             .filter_map(|(client, _)| self.client_size.get(client).copied())
             .collect();
         reported.sort_by_key(|held| held.ordinal);
@@ -369,6 +483,9 @@ impl AttachmentRegistry {
         // arbitrating a window nobody is looking at — the smallest attached client would stay
         // smallest forever after it closed.
         self.client_size.remove(&client);
+        // ...and the window it was looking at, for the same reason: a departed client's view would
+        // keep arbitrating a window nobody is watching.
+        self.client_window.remove(&client);
         // ...and so does where it had been. A visit history belongs to the client that made it, and
         // a client id is a lifecycle token: the next client to hold one is a different client, and
         // inheriting somebody else's "go back" is the same capture in a different key.
@@ -427,6 +544,14 @@ impl AttachmentRegistry {
     /// somebody was watching from one nobody was.
     pub fn session_ended(&mut self, session: &str) -> usize {
         let before = self.client_session.len();
+        // The views go with the attachments: a window of a destroyed session is not somewhere a
+        // client can still be looking, and an entry left behind would arbitrate for a window that
+        // no longer exists (and, once ids are re-read, for whatever the caller asks about).
+        self.client_window.retain(|client, _| {
+            self.client_session
+                .get(client)
+                .is_some_and(|v| v != session)
+        });
         self.client_session.retain(|_, viewing| viewing != session);
         before - self.client_session.len()
     }
@@ -646,6 +771,12 @@ mod tests {
     /// must NOT use this: it says the opposite of what that test is about. Those call
     /// [`AttachmentRegistry::attach`] with an explicit fresh id, which is the whole point of there
     /// being an id at all.
+    /// A deterministic [`WindowId`] for a fixture's window, the way [`sid`] mints a session's — so
+    /// a test can say "the window of session X" without building a registry to hold one.
+    fn wid(name: &str) -> WindowId {
+        WindowId(sid(name).0 ^ 0x5555_5555_5555_5555)
+    }
+
     fn sid(name: &str) -> SessionId {
         // A tiny FNV-1a over the name — deterministic, order-independent, and no dependency.
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -673,9 +804,9 @@ mod tests {
         registry.hello(watching, "one".into());
         registry.hello(also, "two".into());
         registry.hello(elsewhere, "three".into());
-        registry.attach(watching, "build".into(), sid("build"));
-        registry.attach(also, "build".into(), sid("build"));
-        registry.attach(elsewhere, "notes".into(), sid("notes"));
+        registry.attach(watching, "build".into(), sid("build"), wid("build"));
+        registry.attach(also, "build".into(), sid("build"), wid("build"));
+        registry.attach(elsewhere, "notes".into(), sid("notes"), wid("notes"));
 
         let delivery = registry.deliver(
             &Audience::Session("build".into()),
@@ -699,8 +830,8 @@ mod tests {
         let (named, neighbour) = (conn(1), conn(2));
         registry.hello(named, "one".into());
         registry.hello(neighbour, "two".into());
-        registry.attach(named, "build".into(), sid("build"));
-        registry.attach(neighbour, "build".into(), sid("build"));
+        registry.attach(named, "build".into(), sid("build"), wid("build"));
+        registry.attach(neighbour, "build".into(), sid("build"), wid("build"));
 
         let delivery = registry.deliver(
             &Audience::Client("one".into()),
@@ -742,7 +873,7 @@ mod tests {
         let mut registry = AttachmentRegistry::default();
         let client = conn(1);
         registry.hello(client, "one".into());
-        registry.attach(client, "build".into(), sid("build"));
+        registry.attach(client, "build".into(), sid("build"), wid("build"));
 
         let _ = registry.deliver(
             &Audience::Session("build".into()),
@@ -763,7 +894,7 @@ mod tests {
         let mut registry = AttachmentRegistry::default();
         let client = conn(1);
         registry.hello(client, "one".into());
-        registry.attach(client, "build".into(), sid("build"));
+        registry.attach(client, "build".into(), sid("build"), wid("build"));
         let audience = Audience::Session("build".into());
 
         let _ = registry.deliver(&audience, &say("your turn", crate::report::Severity::Alert));
@@ -790,7 +921,7 @@ mod tests {
         let mut registry = AttachmentRegistry::default();
         let gone = conn(1);
         registry.hello(gone, "one".into());
-        registry.attach(gone, "build".into(), sid("build"));
+        registry.attach(gone, "build".into(), sid("build"), wid("build"));
         let _ = registry.deliver(
             &Audience::Session("build".into()),
             &say("never read", crate::report::Severity::Alert),
@@ -799,7 +930,7 @@ mod tests {
 
         let reborn = conn(2);
         registry.hello(reborn, "one".into());
-        registry.attach(reborn, "build".into(), sid("build"));
+        registry.attach(reborn, "build".into(), sid("build"), wid("build"));
         assert!(
             registry.collect(reborn).is_none(),
             "the new client wearing the same id inherits nothing",
@@ -814,7 +945,7 @@ mod tests {
         let (requests, poll) = (conn(1), conn(2));
         registry.hello(requests, "one".into());
         registry.hello(poll, "one".into());
-        registry.attach(requests, "build".into(), sid("build"));
+        registry.attach(requests, "build".into(), sid("build"), wid("build"));
 
         let delivery = registry.deliver(
             &Audience::Session("build".into()),
@@ -837,7 +968,7 @@ mod tests {
         let (one, two) = (conn(1), conn(2));
         registry.hello(one, "gui-1".into());
         registry.hello(two, "gui-2".into());
-        registry.attach(one, "build".into(), sid("build"));
+        registry.attach(one, "build".into(), sid("build"), wid("build"));
         let audience = Audience::Session("build".into());
 
         assert_eq!(
@@ -846,7 +977,7 @@ mod tests {
                 .to_string(),
             "shown to gui-1 on session \"build\"",
         );
-        registry.attach(two, "build".into(), sid("build"));
+        registry.attach(two, "build".into(), sid("build"), wid("build"));
         assert_eq!(
             registry
                 .deliver(&audience, &say("x", crate::report::Severity::Note))
@@ -866,7 +997,7 @@ mod tests {
             !registry.is_attached("one"),
             "hello alone is not an attachment",
         );
-        registry.attach(client, "build".into(), sid("build"));
+        registry.attach(client, "build".into(), sid("build"), wid("build"));
         assert!(registry.is_attached("one"));
         assert!(!registry.is_attached("two"));
         registry.disconnect(client);
@@ -879,7 +1010,7 @@ mod tests {
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
         assert_eq!(
-            reg.attach(c, "work".to_owned(), sid("work")),
+            reg.attach(c, "work".to_owned(), sid("work"), wid("work")),
             AttachOutcome::Changed { previous: None },
             "a FIRST attach left no session behind",
         );
@@ -896,7 +1027,7 @@ mod tests {
         let request = conn(2);
         reg.hello(poll, "gui".to_owned());
         reg.hello(request, "gui".to_owned());
-        reg.attach(request, "work".to_owned(), sid("work"));
+        reg.attach(request, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
             reg.attached_count("work"),
             1,
@@ -910,11 +1041,11 @@ mod tests {
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
         assert_eq!(
-            reg.attach(c, "work".to_owned(), sid("work")),
+            reg.attach(c, "work".to_owned(), sid("work"), wid("work")),
             AttachOutcome::Changed { previous: None }
         );
         assert_eq!(
-            reg.attach(c, "work".to_owned(), sid("work")),
+            reg.attach(c, "work".to_owned(), sid("work"), wid("work")),
             AttachOutcome::Unchanged,
             "an idempotent re-send moves no count"
         );
@@ -925,9 +1056,9 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
-        reg.attach(c, "one".to_owned(), sid("one"));
+        reg.attach(c, "one".to_owned(), sid("one"), wid("one"));
         assert_eq!(
-            reg.attach(c, "two".to_owned(), sid("two")),
+            reg.attach(c, "two".to_owned(), sid("two"), wid("two")),
             AttachOutcome::Changed {
                 previous: Some("one".to_owned())
             },
@@ -941,7 +1072,7 @@ mod tests {
     fn attach_without_hello_is_refused() {
         let mut reg = AttachmentRegistry::default();
         assert_eq!(
-            reg.attach(conn(1), "work".to_owned(), sid("work")),
+            reg.attach(conn(1), "work".to_owned(), sid("work"), wid("work")),
             AttachOutcome::NoClient
         );
         assert_eq!(reg.attached_count("work"), 0);
@@ -952,7 +1083,7 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
         reg.hello(c, "client-a".to_owned());
-        reg.attach(c, "work".to_owned(), sid("work"));
+        reg.attach(c, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
             reg.disconnect(c).as_deref(),
             Some("work"),
@@ -968,7 +1099,7 @@ mod tests {
         let request = conn(2);
         reg.hello(poll, "gui".to_owned());
         reg.hello(request, "gui".to_owned());
-        reg.attach(request, "work".to_owned(), sid("work"));
+        reg.attach(request, "work".to_owned(), sid("work"), wid("work"));
         assert!(
             reg.disconnect(poll).is_none(),
             "the client still has its request connection"
@@ -989,8 +1120,8 @@ mod tests {
         let b = conn(2);
         reg.hello(a, "client-a".to_owned());
         reg.hello(b, "client-b".to_owned());
-        reg.attach(a, "work".to_owned(), sid("work"));
-        reg.attach(b, "work".to_owned(), sid("work"));
+        reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(reg.attached_count("work"), 2, "two windows, two viewers");
         reg.disconnect(a);
         assert_eq!(reg.attached_count("work"), 1, "one left, one remains");
@@ -1016,8 +1147,8 @@ mod tests {
         reg.hello(a, "client-b".to_owned());
         reg.hello(b, "client-a".to_owned());
         reg.hello(hello_only, "client-c".to_owned());
-        reg.attach(a, "work".to_owned(), sid("work"));
-        reg.attach(b, "home".to_owned(), sid("home"));
+        reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(b, "home".to_owned(), sid("home"), wid("home"));
         // Only ONE of them reports an area, so the listing is asserted in both states: a size that
         // was reported, and the honest absence of one that was not.
         reg.size(
@@ -1047,6 +1178,84 @@ mod tests {
                 },
             ],
             "attached clients only, sorted by client id"
+        );
+    }
+
+    /// **A window's size comes from the clients WATCHING it, not from the session's.**
+    ///
+    /// The decision layer of R346, on the fixture the whole arc is about: a big client on one window
+    /// and a small one on another, in one session. Before the split there was one list and the small
+    /// client squeezed the big one's panes; here each window sees only its own viewers.
+    ///
+    /// REVERT-PROOF: fold on the session alone and both windows answer both areas; drop the
+    /// [`watch`](AttachmentRegistry::watch) write and the small client stays on the landing window,
+    /// so the second window answers nothing at all.
+    #[test]
+    fn a_windows_sizes_are_the_clients_looking_at_that_window() {
+        let mut reg = AttachmentRegistry::default();
+        let (zero, one) = (WindowId(10), WindowId(11));
+        let (desk, phone) = (conn(1), conn(2));
+        let (big, small) = (
+            ClientSize {
+                cols: 100,
+                rows: 30,
+            },
+            ClientSize { cols: 60, rows: 20 },
+        );
+
+        reg.hello(desk, "desk".to_owned());
+        reg.hello(phone, "phone".to_owned());
+        reg.attach(desk, "work".to_owned(), sid("work"), zero);
+        reg.attach(phone, "work".to_owned(), sid("work"), zero);
+        reg.size(desk, big);
+        reg.size(phone, small);
+
+        // THE STATE THE COMPLAINT IS ABOUT: both clients landed on the same window, so both areas
+        // arbitrate it and the smallest policy would collapse it onto the phone.
+        assert_eq!(
+            reg.sizes_for("work", zero),
+            vec![big, small],
+            "two clients on one window are two inputs to it",
+        );
+        assert_eq!(
+            reg.sizes_for("work", one),
+            Vec::new(),
+            "and a window nobody is watching has no size to take",
+        );
+
+        // ...and now the phone goes to its own window.
+        assert!(reg.watch(phone, one), "the phone moved");
+        assert!(
+            !reg.watch(phone, one),
+            "re-selecting where it already is moves nothing"
+        );
+        assert_eq!(
+            reg.sizes_for("work", zero),
+            vec![big],
+            "the window the phone LEFT is the desk's alone again — the whole point",
+        );
+        assert_eq!(
+            reg.sizes_for("work", one),
+            vec![small],
+            "...and the one it went to is the phone's",
+        );
+        assert_eq!(
+            reg.sizes("work"),
+            vec![big, small],
+            "the session-wide list still answers about the SESSION, which is a different question",
+        );
+
+        // A WINDOW THAT DIES TAKES NOBODY'S SEAT WITH IT: the phone is put back on the landing
+        // window rather than left sizing something that is gone.
+        assert!(reg.reseat("work", &[zero], zero), "the phone was stranded");
+        assert_eq!(
+            reg.sizes_for("work", zero),
+            vec![big, small],
+            "a stranded client sizes the window it was moved to, not nothing",
+        );
+        assert!(
+            !reg.reseat("work", &[zero], zero),
+            "and a second pass over live seats moves nobody",
         );
     }
 
@@ -1086,10 +1295,10 @@ mod tests {
         ] {
             reg.hello(c, name.to_owned());
         }
-        reg.attach(big, "work".to_owned(), sid("work"));
-        reg.attach(small, "work".to_owned(), sid("work"));
-        reg.attach(elsewhere, "home".to_owned(), sid("home"));
-        reg.attach(silent, "work".to_owned(), sid("work"));
+        reg.attach(big, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(small, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(elsewhere, "home".to_owned(), sid("home"), wid("home"));
+        reg.attach(silent, "work".to_owned(), sid("work"), wid("work"));
         reg.size(
             big,
             ClientSize {
@@ -1129,8 +1338,8 @@ mod tests {
         let (a, b) = (conn(1), conn(2));
         reg.hello(a, "a".to_owned());
         reg.hello(b, "b".to_owned());
-        reg.attach(a, "work".to_owned(), sid("work"));
-        reg.attach(b, "work".to_owned(), sid("work"));
+        reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         reg.size(
             a,
             ClientSize {
@@ -1157,7 +1366,7 @@ mod tests {
         // An IDEMPOTENT re-attach must not reorder: a client re-declaring the session it is already
         // on has not moved, and letting it take the window would make a harmless re-send steal the
         // size from the client the user just resized.
-        reg.attach(b, "work".to_owned(), sid("work"));
+        reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
             reg.sizes("work").last(),
             Some(&ClientSize { cols: 90, rows: 30 }),
@@ -1165,8 +1374,8 @@ mod tests {
         );
 
         // A real SWITCH does reorder: the client just arrived at this session.
-        reg.attach(b, "home".to_owned(), sid("home"));
-        reg.attach(b, "work".to_owned(), sid("work"));
+        reg.attach(b, "home".to_owned(), sid("home"), wid("home"));
+        reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
             reg.sizes("work").last(),
             Some(&ClientSize { cols: 80, rows: 24 }),
@@ -1180,8 +1389,8 @@ mod tests {
         let (stays, leaves) = (conn(1), conn(2));
         reg.hello(stays, "stays".to_owned());
         reg.hello(leaves, "leaves".to_owned());
-        reg.attach(stays, "work".to_owned(), sid("work"));
-        reg.attach(leaves, "work".to_owned(), sid("work"));
+        reg.attach(stays, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(leaves, "work".to_owned(), sid("work"), wid("work"));
         reg.size(
             stays,
             ClientSize {
@@ -1206,7 +1415,7 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let c = conn(1);
         reg.hello(c, "gui".to_owned());
-        reg.attach(c, "work".to_owned(), sid("work"));
+        reg.attach(c, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(reg.clients().len(), 1, "the attached client is listed");
         reg.disconnect(c);
         assert!(
@@ -1225,9 +1434,9 @@ mod tests {
         reg.hello(a, "client-a".to_owned());
         reg.hello(b, "client-b".to_owned());
         reg.hello(elsewhere, "client-c".to_owned());
-        reg.attach(a, "work".to_owned(), sid("work"));
-        reg.attach(b, "work".to_owned(), sid("work"));
-        reg.attach(elsewhere, "play".to_owned(), sid("play"));
+        reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(elsewhere, "play".to_owned(), sid("play"), wid("play"));
 
         assert_eq!(reg.rename_session("work", "prod"), 2, "both viewers moved");
 
@@ -1259,9 +1468,9 @@ mod tests {
         for (conn, client) in [(a, "client-a"), (b, "client-b"), (elsewhere, "client-c")] {
             reg.hello(conn, client.to_owned());
         }
-        reg.attach(a, "work".to_owned(), sid("work"));
-        reg.attach(b, "work".to_owned(), sid("work"));
-        reg.attach(elsewhere, "play".to_owned(), sid("play"));
+        reg.attach(a, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
+        reg.attach(elsewhere, "play".to_owned(), sid("play"), wid("play"));
         reg.size(
             a,
             ClientSize {
@@ -1293,7 +1502,7 @@ mod tests {
         // The client's SIZE stays — it describes that client's surface, not the dead session — so a
         // switch to another session arbitrates with it at once. Asserted through the public reading
         // rather than the field: re-attaching `a` elsewhere must bring its area with it.
-        reg.attach(a, "play".to_owned(), sid("play"));
+        reg.attach(a, "play".to_owned(), sid("play"), wid("play"));
         assert!(
             reg.sizes("play").contains(&ClientSize {
                 cols: 120,
@@ -1364,8 +1573,8 @@ mod tests {
         let conn = conn(1);
         reg.hello(conn, "gui".to_owned());
         for _ in 0..8 {
-            reg.attach(conn, "alpha".to_owned(), a);
-            reg.attach(conn, "beta".to_owned(), b);
+            reg.attach(conn, "alpha".to_owned(), a, wid("alpha"));
+            reg.attach(conn, "beta".to_owned(), b, wid("beta"));
         }
 
         let walked = std::cell::RefCell::new(Vec::new());
@@ -1397,9 +1606,9 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
         reg.hello(conn, "gui".to_owned());
-        reg.attach(conn, "alpha".to_owned(), a);
-        reg.attach(conn, "beta".to_owned(), b);
-        reg.attach(conn, "gamma".to_owned(), c);
+        reg.attach(conn, "alpha".to_owned(), a, wid("alpha"));
+        reg.attach(conn, "beta".to_owned(), b, wid("beta"));
+        reg.attach(conn, "gamma".to_owned(), c, wid("gamma"));
 
         assert_eq!(
             reg.last_viewed(conn, sessions.name_of(), false),
@@ -1409,7 +1618,7 @@ mod tests {
 
         // Going back is itself a visit, so the answer moves with it — tmux's `switch-client -l`
         // toggles, and this is why.
-        reg.attach(conn, "beta".to_owned(), b);
+        reg.attach(conn, "beta".to_owned(), b, wid("beta"));
         assert_eq!(
             reg.last_viewed(conn, sessions.name_of(), false),
             Some((c, "gamma".to_owned())),
@@ -1426,7 +1635,7 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
         reg.hello(conn, "gui".to_owned());
-        reg.attach(conn, "alpha".to_owned(), a);
+        reg.attach(conn, "alpha".to_owned(), a, wid("alpha"));
         assert_eq!(
             reg.last_viewed(conn, sessions.name_of(), false),
             None,
@@ -1435,8 +1644,8 @@ mod tests {
 
         // The CONTROL: with a second visit it does have one, so the `None` above is about the
         // history and not about a resolver that answers nothing.
-        reg.attach(conn, "beta".to_owned(), b);
-        reg.attach(conn, "alpha".to_owned(), a);
+        reg.attach(conn, "beta".to_owned(), b, wid("beta"));
+        reg.attach(conn, "alpha".to_owned(), a, wid("alpha"));
         assert_eq!(
             reg.last_viewed(conn, sessions.name_of(), false),
             Some((b, "beta".to_owned())),
@@ -1464,8 +1673,8 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let conn = conn(1);
         reg.hello(conn, "gui".to_owned());
-        reg.attach(conn, "work".to_owned(), work);
-        reg.attach(conn, "here".to_owned(), here);
+        reg.attach(conn, "work".to_owned(), work, wid("work"));
+        reg.attach(conn, "here".to_owned(), here, wid("here"));
 
         sessions.renamed(work, "renamed");
         let impostor = sessions.born(3, "work");
@@ -1495,12 +1704,12 @@ mod tests {
         let mine = conn(1);
         reg.hello(mine, "gui".to_owned());
         for (name, id) in [("alpha", a), ("beta", b), ("gamma", c)] {
-            reg.attach(mine, name.to_owned(), id);
+            reg.attach(mine, name.to_owned(), id, wid(name));
         }
         // Somebody else joins `beta`, the one I would otherwise go back to.
         let theirs = conn(2);
         reg.hello(theirs, "tui".to_owned());
-        reg.attach(theirs, "beta".to_owned(), b);
+        reg.attach(theirs, "beta".to_owned(), b, wid("beta"));
 
         assert_eq!(
             reg.last_viewed(mine, sessions.name_of(), false),
@@ -1531,7 +1740,7 @@ mod tests {
         let conn = conn(1);
         reg.hello(conn, "gui".to_owned());
         for (name, id) in [("alpha", a), ("beta", b), ("gamma", c)] {
-            reg.attach(conn, name.to_owned(), id);
+            reg.attach(conn, name.to_owned(), id, wid(name));
         }
         sessions.killed(a);
         sessions.killed(b);
@@ -1571,8 +1780,8 @@ mod tests {
         let mut reg = AttachmentRegistry::default();
         let first = conn(1);
         reg.hello(first, "gui".to_owned());
-        reg.attach(first, "alpha".to_owned(), a);
-        reg.attach(first, "beta".to_owned(), b);
+        reg.attach(first, "alpha".to_owned(), a, wid("alpha"));
+        reg.attach(first, "beta".to_owned(), b, wid("beta"));
         assert_eq!(
             reg.last_viewed(first, sessions.name_of(), false),
             Some((a, "alpha".to_owned())),
@@ -1582,7 +1791,7 @@ mod tests {
 
         let second = conn(2);
         reg.hello(second, "gui".to_owned()); // the SAME token, a new client
-        reg.attach(second, "beta".to_owned(), b);
+        reg.attach(second, "beta".to_owned(), b, wid("beta"));
         assert_eq!(
             reg.last_viewed(second, sessions.name_of(), false),
             None,

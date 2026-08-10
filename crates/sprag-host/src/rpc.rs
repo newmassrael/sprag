@@ -590,7 +590,7 @@ pub fn handle_parsed(state: &HostState, request: Request) -> Option<String> {
     // neither of which has a peer that ever sent `client/hello`. An attached ask over it is refused
     // as `NotAttached`, which is the truth rather than a limitation — inventing an attachment for a
     // caller that has none is exactly the silent-wrong-target this whole module refuses.
-    match SessionScope::resolve(state.registry(), &request, || None) {
+    match SessionScope::resolve(state.registry(), &request, || None, || None) {
         Ok(scope) => handle_scoped(state, &scope, request),
         Err(error) => scope_unresolved(state, &request, &error),
     }
@@ -1125,7 +1125,7 @@ fn refuse_wait(request: &Request, why: String, reply: RpcReply) {
 /// client woken by it should read a scene whose panes are already the size the new window gives
 /// them, rather than the previous one and then a second wake later.
 fn window_moved(state: &HostState, session: &str) {
-    crate::window::retile(state.registry(), state.attachments(), session);
+    crate::window::retile_every_window(state.registry(), state.attachments(), session);
     state.channels().bump(session);
 }
 
@@ -1403,7 +1403,17 @@ fn handle_attach(
     // for the whole match, and an arm below re-derives the window — which reads this same map. It
     // deadlocked the daemon's dispatch thread outright, and that is the honest failure mode: a
     // re-entrant lock is not a race that shows up occasionally, it is every attach, forever.
-    let outcome = lock(state.attachments()).attach(conn, session.clone(), id);
+    // WHERE THIS CLIENT LANDS: the session's current window, which since R346 is what that field
+    // means — the arriving view, not everybody's. Read at the moment of use and in its own
+    // statement, so the registry lock is released before the attachment lock below is taken (the
+    // order this whole path keeps: attachments never nest inside the registry).
+    let Some(landing) = lock(state.registry())
+        .session(&session)
+        .map(|session| session.current_window().id())
+    else {
+        return lifecycle_answer(request, Value::Null);
+    };
+    let outcome = lock(state.attachments()).attach(conn, session.clone(), id, landing);
     // The answer is the session the client is now attached to — the name it LANDED on, never the
     // one it asked with. For the history arm the caller cannot know it; for the scoped arm it is
     // what makes both arms one path in the client.
@@ -1807,8 +1817,14 @@ fn dispatch_one(state: &HostState, frame: RpcFrame) {
                     .session_of(conn)
                     .map(str::to_owned)
             };
-            let scope = match SessionScope::resolve(state.registry(), &parsed, attached) {
-                Ok(scope) => scope,
+            // The WINDOW half of the same question, and the same lazy shape for the same two
+            // reasons: it reads the attachment map, so it must not be asked under the registry
+            // lock, and a request that named a window never needs it.
+            let seat = || lock(state.attachments()).window_of(conn);
+            let scope = match SessionScope::resolve(state.registry(), &parsed, attached, seat) {
+                // STAMPED with the connection, which is what lets `select-window` move the view of
+                // the client that asked for it and nobody else's.
+                Ok(scope) => scope.from_conn(conn),
                 Err(error) => {
                     // The SAME door the string entry uses: a read about the registry is served
                     // even though this connection's own session has gone, and everything else is
@@ -2475,7 +2491,7 @@ mod tests {
     ) -> (serde_json::Value, serde_json::Value) {
         let once = |cells| {
             let request = parse_request(request_json).expect("a well-formed request");
-            let scope = SessionScope::resolve(state.registry(), &request, || None)
+            let scope = SessionScope::resolve(state.registry(), &request, || None, || None)
                 .expect("a resolvable scope");
             let response =
                 handle_scoped_with_cells(state, &scope, request, cells).expect("a response");

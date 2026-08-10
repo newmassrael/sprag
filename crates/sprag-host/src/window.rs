@@ -375,9 +375,6 @@ pub(crate) fn retile(
     attachments: &Arc<Mutex<AttachmentRegistry>>,
     session: &str,
 ) {
-    // Each lock is taken and released in turn — attachments, then registry, then the pool — so this
-    // never holds two at once and cannot invert an order some other path takes.
-    let sizes = lock(attachments).sizes(session);
     // The scope FIRST, because the pinned size is a property of the window this is about to tile,
     // and both come out of the one registry lock: reading them under two would let a window switch
     // land between, laying one window's tree out over another window's pinned rectangle.
@@ -392,10 +389,61 @@ pub(crate) fn retile(
             .map(|(cols, rows)| ClientSize { cols, rows });
         (scope, pinned)
     };
+    retile_scope(registry, attachments, &scope, pinned);
+}
+
+/// [`retile`] for EVERY window of `session` — what a client LIFECYCLE event owes.
+///
+/// A client attaching, leaving or reporting a new area changes the arbitration of the window it is
+/// (or was) watching, and since R346 that is not necessarily the session's current one. Which
+/// window it was is not always knowable — a client that has just disconnected is gone, and its view
+/// with it — so this re-derives them all rather than guess. It runs on lifecycle events, never per
+/// keystroke, and every window whose inputs did not move is a no-op by
+/// [`retile_scope`]'s own idempotence guard.
+pub(crate) fn retile_every_window(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    attachments: &Arc<Mutex<AttachmentRegistry>>,
+    session: &str,
+) {
+    // Resolved under ONE registry lock and then released, so the tiling below takes its locks in
+    // the order every other path here does.
+    let windows: Vec<(SessionScope, Option<ClientSize>)> = {
+        let registry = lock(registry);
+        let Some(held) = registry.session(session) else {
+            return;
+        };
+        held.windows()
+            .iter()
+            .filter_map(|window| {
+                let scope = SessionScope::of_window(held, window.name())?;
+                let pinned = window
+                    .manual_size()
+                    .map(|(cols, rows)| ClientSize { cols, rows });
+                Some((scope, pinned))
+            })
+            .collect()
+    };
+    for (scope, pinned) in &windows {
+        retile_scope(registry, attachments, scope, *pinned);
+    }
+}
+
+/// [`retile`] for a scope already resolved — the window this is about is the scope's, and the sizes
+/// folded are the ones reported by the clients WATCHING it.
+///
+/// Each lock is taken and released in turn — attachments, then registry, then the pool — so this
+/// never holds two at once and cannot invert an order some other path takes.
+fn retile_scope(
+    registry: &Arc<Mutex<SessionRegistry>>,
+    attachments: &Arc<Mutex<AttachmentRegistry>>,
+    scope: &SessionScope,
+    pinned: Option<ClientSize>,
+) {
+    let sizes = lock(attachments).sizes_for(scope.session(), scope.window_id());
     let Some(window) = arbitrate(crate::config::window_size(), &sizes, pinned) else {
         return;
     };
-    let Some(layout) = crate::host::reconciled_layout(registry, &scope) else {
+    let Some(layout) = crate::host::reconciled_layout(registry, scope) else {
         return;
     };
     // The PROJECTION, not the arrangement: a zoomed pane is sized to the WHOLE window, here, by the
@@ -760,11 +808,12 @@ mod tests {
         let attachments = Arc::new(Mutex::new(crate::attach::AttachmentRegistry::default()));
         let conn = pinion_rpc::ConnId::allocate();
         lock(&attachments).hello(conn, "client-under-test".to_owned());
-        let id = lock(&registry)
-            .session(&session)
-            .expect("the fixture session")
-            .id();
-        lock(&attachments).attach(conn, session.clone(), id);
+        let (id, landing) = {
+            let registry = lock(&registry);
+            let held = registry.session(&session).expect("the fixture session");
+            (held.id(), held.current_window().id())
+        };
+        lock(&attachments).attach(conn, session.clone(), id, landing);
         lock(&attachments).size(conn, ClientSize { cols: 90, rows: 30 });
         assert_eq!(
             lock(&attachments).sizes(&session),

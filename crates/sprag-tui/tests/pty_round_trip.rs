@@ -50,9 +50,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sprag_host::keymap::{Keymap, PrefixMode, Routed};
 use sprag_host::wire::{
-    FULL_TEXT_SLOT, KILL_SESSION_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
-    PANES_SLOT, RENAME_SESSION_ACTION, SELECT_PANE_ACTION, SESSIONS_SLOT, SPLIT_ACTION, TREE_SLOT,
-    WINDOWS_SLOT,
+    FULL_TEXT_SLOT, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANES_SLOT, RENAME_SESSION_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
+    SESSIONS_SLOT, SPLIT_ACTION, TREE_SLOT, WINDOWS_SLOT,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -274,6 +274,28 @@ fn pane_size(conn: &mut HostConn, session: &str) -> Option<(u16, u16)> {
         .call(
             "scene/query",
             json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+        )
+        .ok()?;
+    let pane = panes.as_array()?.first()?.clone();
+    let dim = |key: &str| u16::try_from(pane[key].as_u64()?).ok();
+    Some((dim("cols")?, dim("rows")?))
+}
+
+/// [`pane_size`] for a NAMED window of `session`, rather than for the one it happens to be landing
+/// clients on.
+///
+/// The `window` param is the wire's own narrowing, so this asks the daemon the same question about
+/// a window nobody is scoped to — which is the only way to say "these two windows are different
+/// sizes AT THE SAME TIME", the claim R346 exists for.
+fn pane_size_of(conn: &mut HostConn, session: &str, window: &str) -> Option<(u16, u16)> {
+    let panes = conn
+        .call(
+            "scene/query",
+            json!({
+                "session": session,
+                "window": window,
+                "path": mux_action_path(PANES_SLOT),
+            }),
         )
         .ok()?;
     let pane = panes.as_array()?.first()?.clone();
@@ -3553,6 +3575,169 @@ fn window_size_latest_takes_the_client_that_reported_last() {
     window_size_policy_case("latest", panes_of(SECOND_CLIENT));
 }
 
+/// **THE GATE FOR R346: two clients on two windows of one session size those windows separately.**
+///
+/// This is the whole of the multi-monitor / mobile complaint, reduced to what a person does. A big
+/// client and a small one attach to the same session; the small one goes to its own window; and the
+/// big one's panes must not move. Before this round they did: `Session::current_window` was what
+/// everybody saw, so the two clients could not be on different windows at all, and the arbitration
+/// folded EVERY client attached to the SESSION — so a phone attaching beside a desktop resized the
+/// desktop's panes to the phone, under every policy, and no option could stop it.
+///
+/// # What each assertion is for
+///
+/// * **The narrow client's `select-window` moves the narrow client.** Nothing else in this file can
+///   say that, because until now there was nothing else it could have moved.
+/// * **The wide client stays where it was** — the half that makes the first one worth having. A
+///   build that moved both would satisfy a test that only watched the one that pressed the key.
+/// * **The windows arbitrate SEPARATELY**, which is the defect: window 1 becomes the narrow
+///   client's area and window 0 keeps the wide client's, at the same time, under `smallest` —
+///   chosen because it is the policy that would collapse both onto the phone if the session were
+///   still the unit.
+///
+/// `smallest` and not `largest` on purpose: under `largest` a build that had regressed to
+/// session-wide arbitration would give window 0 the wide client's area anyway, by accident, and the
+/// gate would pass over the defect it exists for.
+#[test]
+fn two_clients_on_two_windows_of_one_session_size_them_separately() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"smallest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    // Same HEIGHT, different WIDTH: `STATUS_ROW` is the last row of a 24-row terminal, so a
+    // shorter client would put its own row somewhere this file's readers do not look — a fixture
+    // fault that reads exactly like a client painting nothing, and did for one run.
+    let (wide_pty, narrow_pty) = ((100u16, BOOT_PTY.1), (60u16, BOOT_PTY.1));
+    let (wide_area, narrow_area) = (panes_of(wide_pty), panes_of(narrow_pty));
+
+    let mut wide = Tui::attach(&sock, &session);
+    wait_for("the wide client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    wide.resize(wide_pty.0, wide_pty.1);
+    wait_for("the wide client's area to become the window", || {
+        settled(pane_size(&mut conn, &session), &Some(wide_area))
+    });
+
+    // A SECOND WINDOW for the small client to go to, made out of band so the fixture does not
+    // depend on either client having created it. `-d`: born WITHOUT selecting, so the session's
+    // landing window is untouched and every move below is one a client made.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_WINDOW_ACTION),
+            "args": { "session": session, "detached": true },
+        }),
+    )
+    .expect("new_window answers");
+
+    let mut narrow = Tui::attach(&sock, &session);
+    wait_for(
+        "the daemon to count two attached clients",
+        || match attached(&mut conn, &session) {
+            2 => Ok(()),
+            n => Err(format!("{n} attached")),
+        },
+    );
+    narrow.resize(narrow_pty.0, narrow_pty.1);
+    // BOTH clients are on window 0 here, so `smallest` collapses it to the narrow one — which is
+    // the state the round is about, and the CONTROL that says the two are genuinely sharing before
+    // anybody moves.
+    wait_for(
+        "the shared window to collapse onto the narrow client",
+        || settled(pane_size(&mut conn, &session), &Some(narrow_area)),
+    );
+
+    // ...and now the narrow client leaves for its own window.
+    narrow.type_bytes(PREFIX);
+    narrow.type_bytes(b"n");
+    narrow.wait_for("the narrow client's row to name the second window", || {
+        settled(narrow.row(STATUS_ROW), &format!("[{session}] 0:0 1:1*"))
+    });
+
+    // 1. THE WIDE CLIENT DID NOT FOLLOW. Its row still marks window 0 as the one it is on.
+    let wides_row = wide.row(STATUS_ROW);
+    assert_eq!(
+        wides_row,
+        format!("[{session}] 0:0* 1:1"),
+        "the client that pressed nothing must stay where it was ({})",
+        wide.picture(),
+    );
+
+    // 2. AND WINDOW 0 IS THE WIDE CLIENT'S AGAIN — the narrow client stopped squeezing a window it
+    //    can no longer see. This is the assertion the whole round exists for.
+    wait_for(
+        "window 0 to go back to the client still watching it",
+        || {
+            // NAMED, not session-scoped: this observer connection is attached to nothing, so a
+            // scoped read falls back to the session's LANDING window — which the narrow client's
+            // select just moved to window 1. Reading it that way asks about the wrong window.
+            settled(pane_size_of(&mut conn, &session, "0"), &Some(wide_area))
+                .map_err(|got| format!("{got}; wanted the wide client's {wide_area:?}"))
+        },
+    );
+
+    // 3. ...while window 1 is the NARROW client's, at the same time. Two windows, two sizes, one
+    //    session — which is the thing that could not be expressed at all before this round.
+    wait_for("window 1 to take the narrow client's area", || {
+        settled(pane_size_of(&mut conn, &session, "1"), &Some(narrow_area))
+            .map_err(|got| format!("{got}; wanted the narrow client's {narrow_area:?}"))
+    });
+
+    // 4. THE VERB THAT FOLDS THE CLIENTS BY HAND READS THE SAME SET. `resize-window -A` means "the
+    //    LARGEST attached client", and the only honest reading of that once views can differ is
+    //    the largest client watching THIS window. A build folding the session would answer the wide
+    //    client's area for a window the wide client cannot see — measured as a mutation this gate
+    //    was GREEN for until it existed, because the pane sizes above come from the daemon's own
+    //    retile and never travel through this verb.
+    let pinned = conn
+        .call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "window": "1",
+                "path": mux_action_path(RESIZE_WINDOW_ACTION),
+                "args": { "from": "largest" },
+            }),
+        )
+        .expect("resize_window answers");
+    assert_eq!(
+        (pinned["cols"].as_u64(), pinned["rows"].as_u64()),
+        (
+            Some(u64::from(narrow_area.0)),
+            Some(u64::from(narrow_area.1))
+        ),
+        "`-A` on window 1 is the largest client WATCHING window 1: {pinned}",
+    );
+
+    // 5. A WINDOW THAT DIES PUTS ITS VIEWERS BACK, and they start sizing where they land. Killing
+    //    window 1 out of band leaves the narrow client seated on a window nothing serves; unless it
+    //    is re-seated it arbitrates NOTHING, and window 0 would stay the wide client's alone. Under
+    //    `smallest` a correctly re-seated pair collapses window 0 onto the narrow client again,
+    //    which is the reading that separates the two.
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "window": "1",
+            "path": mux_action_path(KILL_WINDOW_ACTION),
+            "args": {},
+        }),
+    )
+    .expect("kill_window answers");
+    wait_for(
+        "the stranded client to size the window it landed on",
+        || {
+            settled(pane_size_of(&mut conn, &session, "0"), &Some(narrow_area))
+                .map_err(|got| format!("{got}; wanted the narrow client's {narrow_area:?} again"))
+        },
+    );
+}
+
 /// **WHAT THE SMALLER CLIENT ACTUALLY SEES when the window is bigger than its terminal.**
 ///
 /// Every other gate above asks the DAEMON what size it arbitrated. None of them asks what the
@@ -5775,8 +5960,21 @@ fn the_message_goes_away_on_its_own_and_the_row_comes_back() {
 /// key that draws it.
 ///
 /// Two moves, each of which a hand-maintained row would get wrong in a different way: a window is
-/// CREATED (the list grows and the marker moves), and the session is RENAMED from another
-/// connection (the name follows, which a client remembering its own would not).
+/// CREATED (the list grows) and the session is RENAMED from another connection (the name follows,
+/// which a client remembering its own would not).
+///
+/// # ⚠ THE MARKER DOES NOT MOVE, AND THAT IS R346'S RULE RATHER THAN AN OVERSIGHT
+///
+/// It used to. `Session::current_window` was what every client painted, so a window created on
+/// ANOTHER connection moved this client's marker onto it — and the same coupling is what let a
+/// phone attaching beside a desktop resize the desktop's panes. The owner's decision when the two
+/// were split: a caller with no seat says where the next client LANDS and moves nobody who is
+/// already looking. So the list grows here and the marker stays on `0`, which is where this client
+/// is; the CLI that made the window is not sitting anywhere and has nothing to move.
+///
+/// What that costs the gate is nothing, because the claim was never about the marker: it is that a
+/// change made SOMEWHERE ELSE reaches this row at all, and a row that had grown a window it was
+/// never told about is exactly as impossible as before.
 #[test]
 fn the_status_row_follows_the_session_and_its_windows() {
     let (_daemon, _sock, mut conn, session, tui) = attached_client();
@@ -5793,9 +5991,10 @@ fn the_status_row_follows_the_session_and_its_windows() {
         json!({ "path": mux_action_path(NEW_WINDOW_ACTION), "args": { "session": session } }),
     )
     .expect("new_window answers");
-    wait_for("the row to grow a window and move the marker", || {
-        says(&tui, &format!("[{session}] 0:0 1:1*"))
-    });
+    wait_for(
+        "the row to grow a window and leave the marker alone",
+        || says(&tui, &format!("[{session}] 0:0* 1:1")),
+    );
 
     // ...and the NAME follows a rename this client did not make. A row holding the name it attached
     // with would still read the old one — R303's impostor, one surface up.
@@ -5808,7 +6007,7 @@ fn the_status_row_follows_the_session_and_its_windows() {
     )
     .expect("rename_session answers");
     wait_for("the row to follow the rename", || {
-        says(&tui, "[renamed] 0:0 1:1*")
+        says(&tui, "[renamed] 0:0* 1:1")
     });
 }
 

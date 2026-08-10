@@ -1801,13 +1801,31 @@ impl Session {
     /// list the mux `windows` slot serves and a tabbed client draws.
     #[must_use]
     pub fn window_infos(&self) -> Vec<WindowInfo> {
-        let current = self.current_window().name();
+        self.window_infos_marking(self.current_window().id())
+    }
+
+    /// [`window_infos`](Self::window_infos) with `current` marking the window a PARTICULAR VIEWER is
+    /// on, rather than the one this session lands new clients on.
+    ///
+    /// # Why the mark is not a property of the session
+    ///
+    /// It was, and that is exactly what a per-client view had to take back: a status row asks *which
+    /// tab am I on*, and once two clients of one session can be on different windows (R346) the
+    /// session has no answer to that. Measured the hour the split landed — a second client selecting
+    /// window 1 moved the FIRST client's marker, because both painted a list marked from
+    /// `current_window`. The list is the same for everybody; the mark is the reader's own.
+    ///
+    /// By IDENTITY, like every other cross-request reference to a window here: a name is an address
+    /// `rename-window` moves, and marking by one would put the highlight on whatever holds the name
+    /// at paint time.
+    #[must_use]
+    pub fn window_infos_marking(&self, current: WindowId) -> Vec<WindowInfo> {
         self.windows
             .iter()
             .map(|window| WindowInfo {
                 name: window.name.clone(),
                 id: Some(window.id),
-                current: window.name == current,
+                current: window.id == current,
                 opened_by: window.opened_by,
             })
             .collect()

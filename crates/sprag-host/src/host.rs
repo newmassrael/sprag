@@ -2532,7 +2532,7 @@ pub(crate) fn resize_pane(
         .iter()
         .map(Pane::id)
         .collect();
-    let sizes = lock(attachments).sizes(scope.session());
+    let sizes = lock(attachments).sizes_for(scope.session(), scope.window_id());
     let mut registry = lock(registry);
     let window = registry
         .window_mut(scope.session(), scope.window())
