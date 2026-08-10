@@ -66,23 +66,47 @@ use crate::reply::parse_claude_json;
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
 use crate::session::Session;
 
-/// How a turn's reply text and cost are decoded. Dialogue is token-denominated,
-/// so every variant's cost is [`Cost::Tokens`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ReplyFormat {
-    /// The endpoint prints human text: the whole rendered pane output is the
-    /// reply, and the cost is `Tokens(0)` — a print-mode tool has no token
-    /// accounting. The default — back-compatible with print-mode tools and the
-    /// deterministic test fakes.
-    #[default]
-    Text,
-    /// The endpoint prints a `claude -p --output-format json` envelope: the
-    /// reply is its `result` and the cost is its real billed tokens
-    /// (input + output). Read from the pane's RAW output, because the grid
-    /// would corrupt the wrapped single-line JSON; on any parse failure it
-    /// degrades to the raw text and `Tokens(0)` (never breaks the run).
-    ClaudeJson,
+sprag_vt::closed_set! {
+    /// How a turn's reply text and cost are decoded. Dialogue is token-denominated,
+    /// so every variant's cost is [`Cost::Tokens`].
+    ///
+    /// A closed set because the host PUBLISHES this vocabulary on the `run` verb's `format_a` /
+    /// `format_b` arguments, where it used to be two string literals inside the host's own parser.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum ReplyFormat {
+        /// The endpoint prints human text: the whole rendered pane output is the
+        /// reply, and the cost is `Tokens(0)` — a print-mode tool has no token
+        /// accounting. The default — back-compatible with print-mode tools and the
+        /// deterministic test fakes.
+        #[default]
+        Text,
+        /// The endpoint prints a `claude -p --output-format json` envelope: the
+        /// reply is its `result` and the cost is its real billed tokens
+        /// (input + output). Read from the pane's RAW output, because the grid
+        /// would corrupt the wrapped single-line JSON; on any parse failure it
+        /// degrades to the raw text and `Tokens(0)` (never breaks the run).
+        ClaudeJson,
+    }
 }
+
+impl ReplyFormat {
+    /// This format's word in a `run` request's `format_a` / `format_b`.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::ClaudeJson => "claude_json",
+        }
+    }
+
+    /// The format a word names, or [`None`] for a word no format spells.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
+}
+
+sprag_vt::wire_words!(ReplyFormat: wire_str);
 
 /// One side of the dialogue: how to launch it, what to call it in the
 /// transcript, and how to decode its reply. Collapsing argv + label + format

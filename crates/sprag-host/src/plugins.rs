@@ -38,13 +38,61 @@ use crate::external::{
 };
 use crate::runs::{RunId, RunRegistry, RunState};
 
-const RUN_ACTION: &str = "run";
-const CANCEL_ACTION: &str = "cancel";
+/// The plugin-host external's action that STARTS a run.
+pub const RUN_ACTION: &str = "run";
+/// The plugin-host external's action that raises a run's cancel flag.
+pub const CANCEL_ACTION: &str = "cancel";
 const RUNS_SLOT: &str = "runs";
 const PLUGINS_SLOT: &str = "plugins";
 
-/// The bundled plugins a `run` can name.
-const PLUGINS: &[&str] = &["orchestrator", "pipe", "agent", "dialogue"];
+sprag_vt::closed_set! {
+    /// WHICH BUNDLED PLUGIN a `run` names — the `plugin` discriminator's whole vocabulary.
+    ///
+    /// # Why the discriminator is a type
+    ///
+    /// It was a hand-written `const PLUGINS: &[&str]` beside a `match` over the same four string
+    /// literals, so the list a client reads out of the `plugins` slot and the words `build_plugin`
+    /// admits were two definitions of one vocabulary — the shape a fifth plugin is left out of, and
+    /// the shape [`sprag_input::MouseButton`] was in until R353 (there in two crates, here in one
+    /// file). They are one array now, and adding a variant reaches the wire in the compile that adds
+    /// it.
+    ///
+    /// ⚠ Distinct from `PluginKind`, which CARRIES a built plugin: this is the NAME a request sends,
+    /// and it exists on its own because a name is what a schema can publish and a built `Dialogue`
+    /// is not.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum PluginName {
+        /// Drive one pane with a stimulus until a sentinel appears.
+        Orchestrator,
+        /// Relay one pane's output into another's input.
+        Pipe,
+        /// Prompt an agent in a pane and collect its reply.
+        Agent,
+        /// Run two endpoints against each other, turn by turn.
+        Dialogue,
+    }
+}
+
+impl PluginName {
+    /// This plugin's word in a `run` request's `plugin`.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Orchestrator => "orchestrator",
+            Self::Pipe => "pipe",
+            Self::Agent => "agent",
+            Self::Dialogue => "dialogue",
+        }
+    }
+
+    /// The plugin a `plugin` word names, or [`None`] for a word no plugin spells.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|it| it.wire_str() == word)
+    }
+}
+
+sprag_vt::wire_words!(PluginName: wire_str);
 
 /// The default iteration ceiling for a `run` that omits guardrails — never
 /// unbounded (the README makes loop safety first-class), and the floor that
@@ -140,8 +188,17 @@ impl PluginsExternal {
     /// Parse the plugin discriminator + its args, validating target panes
     /// exist (fail fast → synchronous `Rejected`).
     fn build_plugin(&self, map: &Map<String, Value>) -> Result<(PluginKind, String), InvokeError> {
-        match require_str(map, "plugin")? {
-            "orchestrator" => {
+        // THROUGH THE TYPE, so a word this refuses is a word the wire does not publish. ⚠ A word no
+        // plugin spells is a MALFORMED request (`TypeMismatch`), not a rejected one: that is this
+        // wire's taxonomy for every other closed vocabulary it reads, and it was the odd one out here
+        // — `refused("this daemon has no plugin called …")` carried a friendlier message and put a
+        // grammar refusal in the class reserved for "read, and could not be honoured". The message's
+        // job belongs to the published vocabulary now, and the completeness gate can only SEE a
+        // vocabulary that refuses as malformed.
+        let named =
+            PluginName::from_wire(require_str(map, "plugin")?).ok_or(InvokeError::TypeMismatch)?;
+        match named {
+            PluginName::Orchestrator => {
                 let pane = require_pane_id(map, "pane")?;
                 self.require_pane(pane)?;
                 let stimulus = require_str(map, "stimulus")?.to_string();
@@ -153,7 +210,7 @@ impl PluginsExternal {
                     label,
                 ))
             }
-            "pipe" => {
+            PluginName::Pipe => {
                 let src = require_pane_id(map, "src")?;
                 let dst = require_pane_id(map, "dst")?;
                 self.require_pane(src)?;
@@ -163,7 +220,7 @@ impl PluginsExternal {
                     format!("pipe {}->{}", src.0, dst.0),
                 ))
             }
-            "agent" => {
+            PluginName::Agent => {
                 let pane = require_pane_id(map, "pane")?;
                 self.require_pane(pane)?;
                 let prompt = require_str(map, "prompt")?.to_string();
@@ -178,7 +235,7 @@ impl PluginsExternal {
                 let label = format!("agent pane={}", pane.0);
                 Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
             }
-            "dialogue" => {
+            PluginName::Dialogue => {
                 // Dialogue creates its own per-turn panes, so there is no target
                 // pane to validate; the endpoints are argv templates.
                 let endpoint_a = require_string_array(map, "endpoint_a")?;
@@ -214,9 +271,6 @@ impl PluginsExternal {
                 );
                 Ok((PluginKind::Dialogue(Box::new(Dialogue::new(spec))), label))
             }
-            other => Err(refused(format!(
-                "this daemon has no plugin called {other:?}"
-            ))),
         }
     }
 
@@ -353,6 +407,7 @@ impl ExternalIntrospect for PluginsExternal {
                     SchemaField::action(CANCEL_ACTION, "action"),
                     SchemaField::new(RUNS_SLOT, "list"),
                     SchemaField::new(PLUGINS_SLOT, "list"),
+                    SchemaField::new(crate::wire::ACTION_GRAMMAR_SLOT, "object"),
                 ]
             },
         )
@@ -366,7 +421,14 @@ impl ExternalIntrospect for PluginsExternal {
                 let entries = registry.snapshot().iter().map(run_to_json).collect();
                 Some(IntrospectValue::Json(Value::Array(entries)))
             }
-            PLUGINS_SLOT => Some(IntrospectValue::Json(json!(PLUGINS))),
+            // The same array the `run` grammar publishes as its `plugin` vocabulary —
+            // one definition, two readers.
+            PLUGINS_SLOT => Some(IntrospectValue::Json(json!(PluginName::WIRE_WORDS))),
+            // HOW TO CALL THIS SURFACE'S TWO VERBS — its own `ActionGrammar::PLUGINS`, answered by
+            // the surface that serves them (see `ACTION_GRAMMAR_SLOT`).
+            crate::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
+                crate::wire::ActionGrammar::answer(crate::wire::ActionGrammar::PLUGINS),
+            )),
             _ => None,
         }
     }
@@ -454,13 +516,17 @@ fn parse_reply_format(
     map: &Map<String, Value>,
     key: &str,
 ) -> Result<Option<ReplyFormat>, InvokeError> {
+    // THROUGH THE TYPE, whose `WIRE_WORDS` this verb publishes. ⚠ A word outside the vocabulary is
+    // `TypeMismatch` — a malformed request — where this answered `Rejected` with a sentence naming the
+    // two words. That sentence was the only place the vocabulary was written down; it is in the
+    // published grammar now, and the class matters twice over: it is what every other closed
+    // vocabulary on this wire answers, and a `Rejected` is invisible to the completeness gate, which
+    // can only see an argument the daemon refuses AS MALFORMED.
     match opt_str(map, key)? {
         None => Ok(None),
-        Some("text") => Ok(Some(ReplyFormat::Text)),
-        Some("claude_json") => Ok(Some(ReplyFormat::ClaudeJson)),
-        Some(other) => Err(refused(format!(
-            "{key:?} is {other:?}: it must be \"text\" or \"claude_json\""
-        ))),
+        Some(word) => ReplyFormat::from_wire(word)
+            .map(Some)
+            .ok_or(InvokeError::TypeMismatch),
     }
 }
 
@@ -1141,6 +1207,85 @@ mod tests {
         assert!(
             closed.is_some(),
             "the pane this test opened was there to close"
+        );
+    }
+    /// A live plugin host over a workspace holding two panes — the fixture the three grammar gates
+    /// drive, plus its own non-vacuity counts.
+    ///
+    /// TWO panes because `pipe` names a `src` and a `dst`, and a fixture holding one of a thing cannot
+    /// tell an argument that resolved from one the verb ignored (the mux fixture's rule, one surface
+    /// along).
+    fn grammar_gate(
+        claim: impl Fn(
+            &'static [crate::wire::ActionGrammar],
+            crate::wire::grammar_gate::Invoke<'_>,
+        ) -> usize,
+    ) -> usize {
+        let (workspace, _first) = pane_painting("");
+        {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            lock(&workspace)
+                .spawn(command, "second".to_string(), 80, 24)
+                .expect("a second pane the addressing arguments can name");
+        }
+        let mut external = PluginsExternal::new(
+            workspace,
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+        );
+        claim(crate::wire::ActionGrammar::PLUGINS, &mut |action, args| {
+            external.invoke(action, args)
+        })
+    }
+
+    /// ⚠⚠ **EVERY WORD THIS SURFACE PUBLISHES IS A WORD IT ACCEPTS.**
+    ///
+    /// ⚠ Some of these calls START A RUN, which is what makes the claim real: the run is spawned on a
+    /// background thread against a pane the fixture holds, and the registry goes out of scope with the
+    /// test. A `plugin` word that got as far as spawning is a word the parser read.
+    #[test]
+    fn every_published_word_is_a_word_the_plugin_host_accepts() {
+        assert_eq!(
+            grammar_gate(crate::wire::grammar_gate::every_published_word_is_accepted),
+            8,
+            "one call per published word: the ONE plugin word that selects each of the four forms, \
+             and the two reply formats on each of a dialogue's two endpoints",
+        );
+    }
+
+    /// ⚠⚠ **AN ARGUMENT THIS SURFACE CONSTRAINS PUBLISHES WHAT IT ADMITS** — and it is why the two
+    /// bad-word arms answer `TypeMismatch` now.
+    ///
+    /// A vocabulary the daemon refuses as `Rejected` is INVISIBLE to this gate: the probe comes back
+    /// refused for a reason the gate cannot read as a grammar refusal, so a closed argument would look
+    /// open and pass. Both of this surface's vocabularies were in that state — `plugin` and
+    /// `format_a`/`format_b` each answered a friendly sentence — so the gate could not have held them
+    /// even after they were published.
+    #[test]
+    fn an_argument_the_plugin_host_constrains_publishes_what_it_admits() {
+        assert_eq!(
+            grammar_gate(
+                crate::wire::grammar_gate::a_constrained_argument_publishes_what_it_admits
+            ),
+            6,
+            "one probe per open string argument of every form: an orchestrator's stimulus and \
+             sentinel, an agent's prompt, and a dialogue's seed and two labels",
+        );
+    }
+
+    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THIS SURFACE ACTUALLY READS** — the gate that lets this table
+    /// be hand-written, over a verb whose four forms were transcribed from a parser by eye.
+    #[test]
+    fn a_declared_argument_is_one_the_plugin_host_reads() {
+        assert_eq!(
+            grammar_gate(crate::wire::grammar_gate::a_declared_argument_is_one_the_daemon_reads),
+            28,
+            "one probe per declared argument of every FORM: five for an orchestrator, four for a \
+             pipe, six for an agent, twelve for a dialogue, and one to cancel",
         );
     }
 }

@@ -755,6 +755,116 @@ impl InlineGrammar {
     ])];
 }
 
+/// The request grammar of the PLUGIN-HOST verbs — how a client starts and cancels a plugin run.
+///
+/// # The surface a gate found, not a person
+///
+/// R353's own new coverage gate derived the list of surfaces serving verbs from the SERVED SCENE and
+/// immediately named a third one that [`SURFACES`] did not: `sprag_plugins`, whose two verbs had
+/// published nothing since they existed. That is the hand-written-list rule catching the round's own
+/// hand-written list, one hour old, which is the strongest argument for deriving a list there is.
+///
+/// # `run` is FOUR forms, one per bundled plugin
+///
+/// The `plugin` word chooses which arguments the rest of the call carries, so a flat list would have
+/// said every one of them was optional — the same defect R352's first draft shipped for `move_window`.
+/// The vocabulary is [`PluginName`](crate::plugins::PluginName)'s own, which the `plugins` slot
+/// publishes as its list too: one definition, two readers.
+///
+/// ⚠ **`guardrails` is declared as an OBJECT and its inner keys are not described.** It is a nested
+/// value, which [`ArgGrammar`] cannot express (see [`SURFACES`] on the three mux verbs that publish
+/// nothing at all for that reason) — but unlike those, `guardrails` is ONE optional key among many, so
+/// naming it and its JSON type is informative rather than noise: a client learns the key exists, that
+/// it takes an object, and that omitting it is well-formed. Its `max_iterations` / `max_bytes` /
+/// `max_tokens` are the nested-grammar question, and that question is a design one.
+pub struct PluginGrammar;
+
+impl PluginGrammar {
+    /// The guardrail bound every form of `run` accepts — an object, whose inner keys are the nested
+    /// grammar nobody has designed yet.
+    const GUARDRAILS: ArgGrammar = ArgGrammar::open("guardrails", "object").optional();
+
+    /// ⚠⚠ **EACH FORM'S `plugin` PUBLISHES ONLY THE WORD THAT SELECTS IT**, and that is what makes an
+    /// alternation over a VALUE readable at all.
+    ///
+    /// Every other alternation on this wire is told apart by which KEYS a form carries — `select_pane`
+    /// takes a `pane` or a `dir`. These four forms all carry `plugin`, and differ by its value, so
+    /// publishing the whole vocabulary on every one of them would have left a client four key sets and
+    /// no way to know that `src`/`dst` is the `pipe` one. A one-word vocabulary per form says it
+    /// exactly, and the UNION over the forms is still the whole set — nothing is hidden, and
+    /// `an_argument_the_daemon_constrains_publishes_what_it_admits` drives each word inside the form
+    /// that admits it.
+    ///
+    /// The words are not re-spelled here: each const names the VARIANT and reads its own
+    /// [`wire_str`](crate::plugins::PluginName::wire_str).
+    const ORCHESTRATOR: &'static [&'static str] =
+        &[crate::plugins::PluginName::Orchestrator.wire_str()];
+    /// `pipe`'s own word — see [`ORCHESTRATOR`](Self::ORCHESTRATOR).
+    const PIPE: &'static [&'static str] = &[crate::plugins::PluginName::Pipe.wire_str()];
+    /// `agent`'s own word — see [`ORCHESTRATOR`](Self::ORCHESTRATOR).
+    const AGENT: &'static [&'static str] = &[crate::plugins::PluginName::Agent.wire_str()];
+    /// `dialogue`'s own word — see [`ORCHESTRATOR`](Self::ORCHESTRATOR).
+    const DIALOGUE: &'static [&'static str] = &[crate::plugins::PluginName::Dialogue.wire_str()];
+
+    /// The `plugin` discriminator at the one word that selects this form.
+    const fn selected_by(word: &'static [&'static str]) -> ArgGrammar {
+        ArgGrammar::one_of("plugin", "string", word)
+    }
+
+    /// [`RUN_ACTION`](crate::plugins::RUN_ACTION) — one form per bundled plugin, in
+    /// [`PluginName::ALL`](crate::plugins::PluginName) order so a form added to the type is a form
+    /// this table has to decide about.
+    pub const RUN: &'static [CallForm] = &[
+        // `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
+        CallForm::object(&[
+            Self::selected_by(Self::ORCHESTRATOR),
+            ArgGrammar::open("pane", "int"),
+            ArgGrammar::open("stimulus", "string"),
+            ArgGrammar::open("sentinel", "string").optional(),
+            Self::GUARDRAILS,
+        ]),
+        // `pipe` — relay one pane's output into another's input.
+        CallForm::object(&[
+            Self::selected_by(Self::PIPE),
+            ArgGrammar::open("src", "int"),
+            ArgGrammar::open("dst", "int"),
+            Self::GUARDRAILS,
+        ]),
+        // `agent` — prompt the agent in a pane and collect its reply.
+        CallForm::object(&[
+            Self::selected_by(Self::AGENT),
+            ArgGrammar::open("pane", "int"),
+            ArgGrammar::open("prompt", "string"),
+            ArgGrammar::open("eof", "bool").optional(),
+            ArgGrammar::open("timeout_ms", "int").optional(),
+            Self::GUARDRAILS,
+        ]),
+        // `dialogue` — two endpoints against each other, turn by turn. It spawns its OWN panes, which
+        // is why it names argv templates instead of a pane.
+        CallForm::object(&[
+            Self::selected_by(Self::DIALOGUE),
+            ArgGrammar::open("endpoint_a", "array"),
+            ArgGrammar::open("endpoint_b", "array"),
+            ArgGrammar::open("seed", "string"),
+            ArgGrammar::open("label_a", "string").optional(),
+            ArgGrammar::open("label_b", "string").optional(),
+            // The two reply formats, published from `ReplyFormat`'s own words — two string literals
+            // inside the host's parser until R353.
+            ArgGrammar::one_of("format_a", "string", &sprag_plugin::ReplyFormat::WIRE_WORDS)
+                .optional(),
+            ArgGrammar::one_of("format_b", "string", &sprag_plugin::ReplyFormat::WIRE_WORDS)
+                .optional(),
+            ArgGrammar::open("cols", "int").optional(),
+            ArgGrammar::open("rows", "int").optional(),
+            ArgGrammar::open("timeout_ms", "int").optional(),
+            Self::GUARDRAILS,
+        ]),
+    ];
+
+    /// [`CANCEL_ACTION`](crate::plugins::CANCEL_ACTION) — the run to stop.
+    pub const CANCEL: &'static [CallForm] = &[CallForm::object(&[ArgGrammar::open("id", "int")])];
+}
+
 /// The request grammar of the PANE-INPUT verbs — the six ways a client drives what is inside a pane.
 ///
 /// # Every one of these was folklore, and four vocabularies had no definition
@@ -1145,6 +1255,24 @@ impl ActionGrammar {
         },
     ];
 
+    /// Both PLUGIN-HOST verbs — what the surface under `sprag_plugins` serves.
+    ///
+    /// ⚠ Found by [`SURFACES`]'s own derivation, not by a person: these two had published nothing
+    /// since they were built. [`PluginGrammar`] says what `run`'s four forms are and why `guardrails`
+    /// is named without its inner keys.
+    pub const PLUGINS: &'static [Self] = &[
+        Self {
+            action: crate::plugins::RUN_ACTION,
+            forms: PluginGrammar::RUN,
+            from_ask: false,
+        },
+        Self {
+            action: crate::plugins::CANCEL_ACTION,
+            forms: PluginGrammar::CANCEL,
+            from_ask: false,
+        },
+    ];
+
     /// ONE SURFACE'S table as its [`ACTION_GRAMMAR_SLOT`] serves it: an object keyed by the action's
     /// address on that surface, each holding its forms in declared order.
     ///
@@ -1215,7 +1343,7 @@ pub const ACTION_GRAMMAR_SLOT: &str = "action_grammar";
 pub const SURFACES: &[WireSurface] = &[
     WireSurface {
         name: "the multiplexer",
-        schema: MUX_SCHEMA,
+        tag: MUX_TAG,
         grammar: ActionGrammar::MUX,
         // ⚠ THE THREE VERBS THAT TAKE NESTED VALUES, and the reason they say nothing is that
         // `ArgGrammar` describes a FLAT key: `set_layout` takes an arrangement tree, `resize` a
@@ -1227,9 +1355,18 @@ pub const SURFACES: &[WireSurface] = &[
     },
     WireSurface {
         name: "a pane's input",
-        schema: PANE_SCHEMA,
+        tag: INPUT_TAG,
         grammar: ActionGrammar::PANE,
         // Nothing. Every verb this surface serves publishes how to call it.
+        undescribed: &[],
+    },
+    WireSurface {
+        name: "the plugin host",
+        tag: crate::PLUGINS_TAG,
+        grammar: ActionGrammar::PLUGINS,
+        // Nothing — and this surface is the reason the list above is checked against the SERVED scene
+        // rather than trusted: it served two verbs and published nothing about either, and no person
+        // noticed in the rounds since they were built.
         undescribed: &[],
     },
 ];
@@ -1245,8 +1382,14 @@ pub const SURFACES: &[WireSurface] = &[
 pub struct WireSurface {
     /// What a gate's failure message calls this surface, in a reader's terms.
     pub name: &'static str,
-    /// Every address it declares — its verbs and its slots.
-    pub schema: &'static [SchemaField],
+    /// The scene TAG its external hangs under — what a walk of the served scene finds it by.
+    ///
+    /// ⚠ This was the surface's declared SCHEMA for one afternoon, and **nothing read it**: the gates
+    /// walk the SERVED scene rather than the consts (R320), so the field was a claim with no reader —
+    /// shape (1) of the debt sweep, in the round's own new code. The tag is what a gate genuinely
+    /// needs, and carrying it here deleted a hand-written prose-name-to-tag `match` whose default arm
+    /// was a panic.
+    pub tag: &'static str,
     /// How to call the verbs it serves.
     pub grammar: &'static [ActionGrammar],
     /// The verbs it serves and publishes NOTHING about, each a decision with a reason beside it here.
@@ -5197,6 +5340,20 @@ pub(crate) mod grammar_gate {
                         // beside it. One is admissible in every int argument these verbs take.
                         (None, "int") => Value::from(1),
                         (None, "bool") => Value::from(false),
+                        // ⚠ AN ARGV, and the program is chosen rather than invented: `/bin/echo` is
+                        // on both platforms this project ships to (R352b swept them after a doctest
+                        // spawned a `/bin/true` macOS does not have) and it exits at once. The first
+                        // REQUIRED array on this wire is a dialogue's endpoint, and the filler table
+                        // had no arm for one — the plugin surface's gates found that on their first
+                        // run, with a string where an array was declared.
+                        (None, "array") => Value::from(vec![Value::from("/bin/echo")]),
+                        // An OBJECT argument the call must carry: empty, because a required object
+                        // whose inner keys this cannot know is one whose defaults must be enough. The
+                        // only one today is `guardrails`, which is optional — so this arm exists for
+                        // the declaration that comes next, and its emptiness is a claim the
+                        // wrong-type gate holds (a parser that reads no key still refuses a
+                        // non-object).
+                        (None, "object") => Value::Object(Map::new()),
                         // A window NAME the fixture does not hold: it parses, which is all this
                         // filler has to do, and it cannot collide with a real window.
                         (None, _) => Value::from("filler-not-a-window"),
@@ -7008,6 +7165,13 @@ mod tests {
                  wheeldown,wheelleft,wheelright,none kind=press,release,drag,motion",
                 "sprag_workspace/pane_<id>/sprag_input/paste:",
                 "sprag_workspace/pane_<id>/sprag_input/text:",
+                // THE PLUGIN HOST, whose two verbs published nothing until R353. ⚠ `plugin` appears
+                // FOUR TIMES because each form publishes only the word that SELECTS it — the union is
+                // the whole vocabulary, and a client can tell which key set goes with which plugin.
+                "sprag_workspace/sprag_plugins/cancel:",
+                "sprag_workspace/sprag_plugins/run:format_a=text,claude_json \
+                 format_b=text,claude_json plugin=agent plugin=dialogue plugin=orchestrator \
+                 plugin=pipe",
             ],
         );
 
@@ -7433,6 +7597,9 @@ mod tests {
             // than of words.
             "action_grammar",
             "action_grammar",
+            // ⚠ AND A THIRD, the plugin host's — which this pin is how anybody would ever have
+            // learned about, if the coverage gate had not named the surface first.
+            "action_grammar",
             "agent_manifests",
             "application_cursor_keys",
             "break_pane",
@@ -7777,7 +7944,7 @@ mod tests {
             let under = surface.name;
             let mut names: Vec<String> = served_fields()
                 .into_iter()
-                .filter(|field| field.under.ends_with(under_tag(under)))
+                .filter(|field| field.under.ends_with(surface.tag))
                 .map(|field| field.path)
                 .collect();
             names.sort_unstable();
@@ -7812,15 +7979,40 @@ mod tests {
     #[test]
     fn every_verb_a_surface_declares_publishes_its_grammar() {
         let served = served_fields();
+
+        // ⚠⚠ **[`SURFACES`] IS A HAND-WRITTEN LIST, so the first thing asserted is that it is not
+        // MISSING one.** A surface added to this daemon's scene with verbs of its own and no entry
+        // here would slip past every loop below, which is this project's oldest rule pointing at the
+        // round's own new list. Derived from the served scene: a surface that serves an INVOKE field
+        // is a surface with verbs, and it is named here or this fails.
+        let mut serving_verbs: Vec<&str> = served
+            .iter()
+            .filter(|field| field.channel == pinion_core::external::SchemaChannel::Invoke)
+            .map(|field| field.under.as_str())
+            .collect();
+        serving_verbs.sort_unstable();
+        serving_verbs.dedup();
+        let unlisted: Vec<&&str> = serving_verbs
+            .iter()
+            .filter(|under| !SURFACES.iter().any(|surface| under.ends_with(surface.tag)))
+            .collect();
+        assert_eq!(
+            unlisted,
+            Vec::<&&str>::new(),
+            "THIS DAEMON SERVES VERBS ON A SURFACE `SURFACES` DOES NOT NAME, so nothing below is \
+             about them: no gate asks whether they publish a call grammar, and a client walking \
+             `$schema` finds addresses it cannot learn to call. Add the surface, with its tag, its \
+             grammar table and the verbs it deliberately does not describe.",
+        );
+
         let mut checked = 0;
         for WireSurface {
             name: surface,
+            tag,
             grammar: table,
             undescribed: exempt,
-            ..
         } in SURFACES
         {
-            let tag = under_tag(surface);
             let mut declared: Vec<&str> = served
                 .iter()
                 .filter(|field| {
@@ -7884,22 +8076,9 @@ mod tests {
             checked += declared.len();
         }
         assert_eq!(
-            checked, 34,
-            "the whole write half of this crate's wire: twenty-eight multiplexer verbs and a pane's \
-             six",
+            checked, 36,
+            "the whole write half of this crate's wire: twenty-eight multiplexer verbs, a pane's six, \
+             and the plugin host's two",
         );
-    }
-
-    /// The scene TAG a [`SURFACES`] entry's prose name belongs to.
-    ///
-    /// The prose is what a gate's failure message says; the tag is what the scene calls the container.
-    /// Kept as a translation here rather than as a fifth column in [`SURFACES`], because a tag is a
-    /// fact about the scene assembly and the pane's carries an id the surface list cannot name.
-    fn under_tag(surface: &str) -> &'static str {
-        match surface {
-            "the multiplexer" => MUX_TAG,
-            "a pane's input" => INPUT_TAG,
-            other => panic!("{other} is in SURFACES with no tag translation"),
-        }
     }
 }
