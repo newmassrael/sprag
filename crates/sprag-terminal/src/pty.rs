@@ -275,8 +275,15 @@ impl Pty {
     ///         let _ = std::io::copy(&mut terminal, &mut std::io::sink());
     ///     })
     ///     .expect("a fresh pty takes a reader");
+    /// // ⚠ `/bin/sh`, not `/bin/true`: macOS keeps `true` at `/usr/bin/true` and has no
+    /// // `/bin/true` at all, so the first version of this example failed the macOS job with
+    /// // `NotFound` while every Linux run passed. A doctest is a test, and it runs where the
+    /// // suite runs. `/bin/sh` is the portable child this workspace's pty fixtures already use.
+    /// let mut trivial = CommandBuilder::new("/bin/sh");
+    /// trivial.arg("-c");
+    /// trivial.arg("exit 0");
     /// let (mut child, _joined) = pane
-    ///     .spawn(&CommandBuilder::new("/bin/true"), None)
+    ///     .spawn(&trivial, None)
     ///     .expect("spawn onto the pty");
     /// child.wait().expect("the child is reapable");
     /// ```
@@ -290,7 +297,7 @@ impl Pty {
     ///
     /// let mut pty = Pty::open(80, 24).expect("open a pty");
     /// // no method named `spawn` found for struct `Pty` — a child is born onto an `AttachedPty`.
-    /// let _ = pty.spawn(&CommandBuilder::new("/bin/true"), None);
+    /// let _ = pty.spawn(&CommandBuilder::new("/bin/sh"), None);
     /// ```
     ///
     /// # Errors
@@ -642,6 +649,51 @@ mod tests {
             .expect("write into the device");
     }
 
+    /// What the device is holding RIGHT NOW, read without waiting for the child's side to go.
+    ///
+    /// ⚠⚠ **THE CONTROL USED TO OBSERVE BY DROPPING THE SLAVE, AND THAT IS A PLATFORM CLAIM.** It
+    /// asserted that a device nobody flushed *still holds* what was written to it — true on Linux,
+    /// and false on macOS for exactly the mechanism this test exists to document, so the macOS job
+    /// failed on the control rather than on the subject (`left: []`, `right: b"recorded"`). A
+    /// control that encodes one kernel's behaviour cannot vouch for a test about the difference
+    /// between two.
+    ///
+    /// So this reads NON-BLOCKING with the slave still open: bytes mean the device accepted them,
+    /// and nothing means it has not yet — which is a state worth waiting out rather than concluding
+    /// from, because a write from the child's side reaches the line discipline through a work queue
+    /// (R351 measured `FIONREAD` answering 0 immediately after an 8-byte write and 8 a millisecond
+    /// later). Hence the poll: it is an OBSERVATION with a deadline, not a sleep sized to a margin.
+    ///
+    /// The flag is set on a clone, which `dup` makes share the file description — so the master is
+    /// non-blocking afterwards too. That is fine and deliberate: this pty belongs to the test.
+    fn holding_now(pty: &Pty) -> Vec<u8> {
+        let mut reader = pty.reader().expect("clone the reader");
+        // SAFETY: the cloned descriptor is open; both calls only read and set its status flags.
+        unsafe {
+            let fd = reader.as_raw_fd();
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            assert_ne!(flags, -1, "F_GETFL: {}", io::Error::last_os_error());
+            assert_ne!(
+                libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK),
+                -1,
+                "F_SETFL: {}",
+                io::Error::last_os_error(),
+            );
+        }
+        until(
+            || {
+                let mut buf = [0u8; 256];
+                match reader.read(&mut buf) {
+                    Ok(n) => buf[..n].to_vec(),
+                    // Nothing in the queue yet — the only other answer a non-blocking read gives
+                    // here, and the one the poll exists for.
+                    Err(_) => Vec::new(),
+                }
+            },
+            |seen| !seen.is_empty(),
+        )
+    }
+
     /// Everything left in the device, read to the end.
     fn drain_to_end(pty: &Pty) -> Vec<u8> {
         let mut reader = pty.reader().expect("clone the reader");
@@ -677,20 +729,29 @@ mod tests {
     /// survive a fully reaped child and a 100 ms wait, so Linux can only be made to say this by
     /// emptying the queue deliberately.
     ///
-    /// The CONTROL is the same write with no flush, in the same test: without it this would pass
-    /// against a device that had never accepted the bytes at all.
+    /// The CONTROL is the same write read back with no flush, in the same test: without it this
+    /// would pass against a device that had never accepted the bytes at all.
+    ///
+    /// ⚠⚠ **WHICH PLATFORM JUDGES WHICH HALF, because the CI red was the control and not the
+    /// subject.** The CONTROL is now kernel-independent — it never drops the child's side, so it
+    /// asks only *did the device take the bytes*, which both answer the same way. The SUBJECT is
+    /// judged on **Linux**: there the flush is the only thing that can empty the queue, so an
+    /// assertion of emptiness is an assertion about `tcflush`. On macOS the drop that follows would
+    /// have emptied it anyway, so the subject passes there for a second reason and proves less —
+    /// said here rather than left for a later round to read this as covering both.
     #[test]
     fn output_no_one_has_collected_is_lost_when_the_device_drops_it() {
         let kept = {
-            let mut pty = Pty::open(80, 24).expect("open a pty");
+            let pty = Pty::open(80, 24).expect("open a pty");
             write_from_the_childs_side(&pty, b"recorded");
-            // The child's side goes, which is what a child exiting does.
-            drop(pty.slave.take());
-            drain_to_end(&pty)
+            // ⚠ THE SLAVE STAYS OPEN. Dropping it is what the SUBJECT does, and on macOS dropping
+            // it discards the queue — so a control that dropped it was asserting Linux's behaviour
+            // in a test about the difference between two kernels. See `holding_now`.
+            holding_now(&pty)
         };
         assert_eq!(
             kept, b"recorded",
-            "the control: a device nobody flushed still holds what was written to it",
+            "the control: a device nobody flushed hands over what was written to it",
         );
 
         let mut pty = Pty::open(80, 24).expect("open a pty");
