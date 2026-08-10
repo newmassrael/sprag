@@ -178,6 +178,9 @@ fn main() -> ExitCode {
             // on a DIFFERENT session than it found it on, which the check below discovers rather
             // than assumes.
             check_a_destroyed_session_moves_the_windowed_client(&mut smoke, &mut report);
+            // As late as a live client allows, because what it judges is everything the run has
+            // addressed by then — it reads a record that has been accumulating since the boot.
+            check_this_client_addresses_methods_as_published(&mut smoke, &mut report);
             // LAST over the WIRE, and it must stay last: it destroys the session this client is
             // attached to, so the client leaves and every check after it would be asserting against
             // a dead socket.
@@ -4680,6 +4683,67 @@ fn collect_tags(node: &Value, out: &mut Vec<String>) {
 /// only ([`check_the_frames_report_their_settle_work`] asks it); the diagnostic is the only witness
 /// to every OTHER frame, including the ones painted while nothing was polling. A run's worth of
 /// frames and the most recent frame are different claims, so both are made.
+/// **This client addresses pinion's methods the way pinion says they may be addressed.**
+///
+/// `rpc/methods` publishes, per method, how a window can be named TO IT: `"scope"` is only
+/// `params.window`, which every method accepts; `"path"` is that AND a `/window[<id>]/` prefix on
+/// the method's own path argument. So the sound direction — and the only one — is that everything
+/// this run addressed WITH such a prefix must be a `path` method. A `path` method called without one
+/// is ordinary and says nothing.
+///
+/// # Why a client wants this gate and a census cannot be it
+///
+/// sprag pins its OWN wire (`sprag_host::wire`'s protocol number and value-space pin), and neither
+/// of those pins can see anything about pinion's: an address this client hard-codes and pinion
+/// reclassifies is a break both of them read as green. This asks the surface instead of assuming
+/// it, and it is the shape the recipe for driving this client had been carrying as tribal knowledge
+/// — which method needs a path was learned by guessing, one iteration at a time.
+///
+/// NON-VACUITY FIRST: a run that addressed nothing by window path would pass this while checking
+/// nothing, so the count is asserted before the agreement is.
+fn check_this_client_addresses_methods_as_published(smoke: &mut Smoke, report: &mut Report) {
+    let addressed: Vec<String> = smoke.window_addressed.iter().cloned().collect();
+    report.check(
+        &format!(
+            "this run addressed methods by window path, so the agreement below is about something ({addressed:?})"
+        ),
+        !addressed.is_empty(),
+    );
+
+    let published = match smoke.call("rpc/methods", json!({})) {
+        Ok(answer) => answer,
+        Err(error) => {
+            report.check(&format!("rpc/methods answers ({error})"), false);
+            return;
+        }
+    };
+    let by_path: std::collections::BTreeSet<String> = published["methods"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|method| method["window"].as_str() == Some("path"))
+        .filter_map(|method| method["name"].as_str().map(str::to_owned))
+        .collect();
+    report.check(
+        &format!(
+            "rpc/methods publishes a window class per method ({} take a path)",
+            by_path.len()
+        ),
+        !by_path.is_empty(),
+    );
+
+    let disagreed: Vec<&String> = addressed
+        .iter()
+        .filter(|method| !by_path.contains(*method))
+        .collect();
+    report.check(
+        &format!(
+            "every method this client named a window to by path is one that takes it ({disagreed:?})"
+        ),
+        disagreed.is_empty(),
+    );
+}
+
 fn check_every_painted_frame_settled(smoke: &Smoke, report: &mut Report) {
     let log = smoke.gui_log();
     // Non-vacuity, and it comes FIRST: an absent warning is evidence only if a present one would
@@ -4771,6 +4835,13 @@ struct Smoke {
     gui_log: PathBuf,
     /// The logs of the clients this run has ALREADY replaced — see [`Smoke::gui_log`].
     prior_gui_logs: Vec<PathBuf>,
+    /// Every method this run addressed with a `/window[<id>]/` prefix on its path argument.
+    ///
+    /// RECORDED rather than listed. `rpc/methods` publishes which methods a window can be named to
+    /// that way (`window: "path"`, as against `"scope"`, which is only `params.window`), and the
+    /// question worth asking of a CLIENT is whether the way it addresses them agrees. A written list
+    /// of call sites would be the one a new call is left out of; this grows by being used.
+    window_addressed: std::collections::BTreeSet<String>,
 }
 
 impl Smoke {
@@ -4820,6 +4891,7 @@ impl Smoke {
             target,
             gui_log,
             prior_gui_logs: Vec::new(),
+            window_addressed: std::collections::BTreeSet::new(),
         };
         // The OS-focus gate: without this `os_focused_window` is null under Xvfb and anything that
         // reads it describes an unfocused window.
@@ -4837,6 +4909,14 @@ impl Smoke {
     /// swallowed — a wrong param shape answers `Invalid params` and looks exactly like "the call did
     /// nothing" to a caller that drops the result.
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        // The one place every scene call passes through, which is why the record is taken here and
+        // not at the call sites — see `Smoke::window_addressed`.
+        if params["path"]
+            .as_str()
+            .is_some_and(|path| path.starts_with("/window["))
+        {
+            self.window_addressed.insert(method.to_owned());
+        }
         self.conn
             .call(method, params)
             .map_err(|error| format!("{method}: {error}"))
