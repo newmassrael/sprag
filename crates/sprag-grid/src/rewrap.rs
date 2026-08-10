@@ -8,7 +8,64 @@
 use pinion_core::{CellWidth, GridBuffer, Hyperlink, HyperlinkId, ScreenKind, TermCell};
 use sprag_vt::Screen;
 
-use crate::projected_rows;
+use crate::{meter_rewrap, projected_rows};
+
+/// Which row of a RE-WRAPPED pane the top of this client's `on_screen` rows shows.
+///
+/// A pane re-wrapped into a narrower width ([`rewrap`]) is TALLER than the rectangle
+/// the tiling gave it — that is what re-wrapping means — so a client shows part of it, and this is
+/// which part. `sprag-tui`'s `Viewport` answers the same question about the WINDOW; this answers it about one
+/// pane's own content, and the two are separate because a window's rows are a layout while these
+/// are a person's lines.
+///
+/// **The pane's own first row, moved down by the LEAST that keeps the cursor on screen** — the
+/// rule a terminal editor scrolls by, applied to one pane's re-wrapped lines.
+///
+/// **Public, and in THIS crate rather than in a frontend, because both frontends owe the same
+/// answer.** R348 put the viewport in `sprag-tui` alone and R349 registered that a third client
+/// would re-invent the translation; the rule that decides which rows a re-wrapped pane shows is the
+/// half that is not display-specific, so it lives beside the re-wrap it is about.
+///
+/// Bottom-anchoring was written first and MEASURED WRONG. A 100-column pane holding one wrapped
+/// line and twenty-two blank rows re-wraps to twenty-four rows on a twenty-three-row client, and
+/// anchoring at the bottom drops the row that is over the limit — which is the first HALF of the
+/// only line on the screen, to make room for a blank one. The pane's trailing blanks are as real
+/// as its text and there are usually more of them, so "the end of the content" is not where the
+/// bottom is.
+///
+/// `cursor` is `None` for a frame that has none — a scrolled-back history window, whose last row
+/// IS its newest — and that arm alone anchors at the bottom.
+#[must_use]
+pub const fn first_row(tall: u16, on_screen: u16, cursor: Option<u16>) -> u16 {
+    let deepest = tall.saturating_sub(on_screen);
+    let top = match cursor {
+        Some(at) => at.saturating_sub(on_screen.saturating_sub(1)),
+        None => deepest,
+    };
+    if top > deepest { deepest } else { top }
+}
+
+/// A pane re-wrapped for ONE client: the rows it shows, and which of the re-wrapped rows those are.
+///
+/// The two travel together for [`PaneView`](sprag-tui)'s reason one level down. `cells` is already
+/// cut to the client's rectangle, so it is read from its own origin — and that is exactly why
+/// `top` has to come with it: the content under a fixed rectangle changes when the anchor moves,
+/// and a caller keying a paint cache on the rectangle alone would skip every row of a frame that
+/// had scrolled.
+#[derive(Debug, Clone)]
+pub struct Rewrapped {
+    /// The rows this client shows, `cols` wide.
+    ///
+    /// Its per-row damage generations are FOLDED from the pane's: each row carries the maximum
+    /// over the pane rows its logical line occupies, so a client's paint cache can compare them
+    /// exactly as it compares a projection's. Equal folded stamp implies equal source stamps
+    /// implies equal cells — the one direction a skip may rely on, and the same direction
+    /// [`ProjectionToken`](crate::ProjectionToken) promises.
+    pub cells: GridBuffer,
+    /// Which re-wrapped row [`cells`](Self::cells)'s first row is. `0` while the whole re-wrapped
+    /// content fits.
+    pub top: u16,
+}
 
 /// Where each projected row's share of its logical line ENDS, and which rows run on — the fact a
 /// re-wrap needs and a rectangle of cells cannot carry.
@@ -153,26 +210,34 @@ pub fn shares(screen: &Screen, offset_lines: usize) -> RowShares {
 ///   ends is not a fallback, it is a different picture: blank padding becomes text and the pane
 ///   comes back twice as tall.
 ///
-/// The result is a buffer of `cols` columns and as many rows as the content needs — usually MORE
-/// than the pane has, which is the point: a caller shows the part of it the cursor is in, exactly
-/// as a terminal shows the bottom of its own scrollback. The cursor is carried across to where its
-/// cell ended up, so a client painting from this puts it under the character the person is typing.
+/// The result is `cols` columns by AT MOST `rows` rows: the part of the re-wrapped content this
+/// client can show, chosen by [`first_row`] so the cursor is on it. Cutting the window HERE rather
+/// than handing back the whole tall buffer is what keeps the two frontends honest — a cell client
+/// scrolls by an offset and a pixel client cannot, so a caller-side slice would be two answers to
+/// "which rows am I showing" and the round that adds the second is the one that finds them
+/// disagreeing. The cursor is carried across to where its cell ended up, so a client painting from
+/// this puts it under the character the person is typing.
 ///
 /// A wide cluster is never split across the cut: it moves to the next row whole and the row it
 /// left is padded, which is what a terminal does at its own margin. The one exception is a view
 /// one column wide, where a wide cluster cannot be kept whole by any cut — there the head is
 /// emitted alone rather than the loop failing to advance.
 #[must_use]
-pub fn rewrap(buffer: &GridBuffer, shares: &RowShares, cols: u16) -> Option<GridBuffer> {
+pub fn rewrap(buffer: &GridBuffer, shares: &RowShares, cols: u16, rows: u16) -> Option<Rewrapped> {
     if buffer.screen() == ScreenKind::Alternate
         || cols == 0
+        || rows == 0
         || buffer.cols() <= cols
         || !shares.describes(buffer.rows())
     {
         return None;
     }
+    meter_rewrap(cols, rows);
     let cursor = buffer.cursor();
-    let mut rows: Vec<Vec<TermCell>> = Vec::new();
+    let mut built: Vec<Vec<TermCell>> = Vec::new();
+    // Each built row's DAMAGE, folded from every pane row its logical line occupies — see
+    // `Rewrapped::cells`. Kept beside the rows so a row and its stamp cannot come apart.
+    let mut stamps: Vec<u64> = Vec::new();
     let mut cursor_at = (cursor.col, cursor.row);
     // ONE join buffer for the whole pass, reserved to each line's exact length before it is
     // filled. Measured: growing a fresh vector per line costs one extra reallocation per line for
@@ -206,33 +271,60 @@ pub fn rewrap(buffer: &GridBuffer, shares: &RowShares, cols: u16) -> Option<Grid
                 );
             }
         }
-        let first = rows.len();
-        cut(&line, cols, &mut rows);
+        let first = built.len();
+        cut(&line, cols, &mut built);
+        // The MAX over the line's source rows: a re-wrapped row is unchanged exactly when every
+        // pane row its line occupies is, so the fold is sound in the one direction a paint cache
+        // may rely on. A source row the buffer cannot vouch for reads 0, which is the same answer
+        // a fresh projection gives and costs a redundant rebuild rather than a stale row.
+        let damage = span
+            .clone()
+            .map(|at| buffer.row_generation(at).unwrap_or_default())
+            .max()
+            .unwrap_or_default();
+        stamps.resize(built.len(), damage);
         if let Some(at) = at {
-            cursor_at = landing(&rows[first..], first, at, cols);
+            cursor_at = landing(&built[first..], first, at, cols);
         }
         row = *span.end() + 1;
     }
 
-    let mut out = GridBuffer::new(cols, u16::try_from(rows.len()).unwrap_or(u16::MAX));
-    for (row, cells) in rows.into_iter().enumerate() {
+    // The window this client shows, chosen so the cursor is on it. `cursor.visible` is what tells
+    // a live frame from a scrolled-back one, which has no cursor and is anchored at its bottom.
+    let tall = u16::try_from(built.len()).unwrap_or(u16::MAX);
+    let top = first_row(tall, rows, cursor.visible.then_some(cursor_at.1));
+    let shown = rows.min(tall.saturating_sub(top));
+    let mut out = GridBuffer::new(cols, shown);
+    for row in 0..shown {
+        let at = usize::from(top) + usize::from(row);
+        out = out.with_row_generation(row, stamps.get(at).copied().unwrap_or_default());
+    }
+    // MOVED, not cloned: the rows outside the window are dropped rather than copied. The
+    // allocation gate caught the first version doing the latter, which put one allocation per
+    // shown row on top of the one that built it.
+    for (row, cells) in built
+        .into_iter()
+        .skip(usize::from(top))
+        .take(usize::from(shown))
+        .enumerate()
+    {
         let Ok(row) = u16::try_from(row) else { break };
-        if row >= out.rows() {
-            break;
-        }
         out = out.with_row(row, cells);
     }
+    let cursor_at = (cursor_at.0, cursor_at.1.saturating_sub(top));
     // `GridCursor` is `#[non_exhaustive]`, so the carried cursor is the ORIGINAL with its two
     // coordinates moved — which is what a caller wants anyway: shape, visibility and OSC-12 colour
     // are the producer's and have nothing to do with where the cell ended up.
     let mut moved = cursor;
     moved.col = cursor_at.0;
     moved.row = cursor_at.1;
-    Some(
-        out.with_screen(buffer.screen())
+    Some(Rewrapped {
+        cells: out
+            .with_screen(buffer.screen())
             .with_hyperlinks(link_table(buffer))
             .with_cursor(moved),
-    )
+        top,
+    })
 }
 
 /// The rows one logical line occupies, starting at `row` — the ONE decision about where a line
@@ -363,6 +455,46 @@ mod tests {
             .collect()
     }
 
+    /// **A RE-WRAPPED PANE STARTS AT ITS OWN FIRST ROW AND MOVES DOWN BY THE LEAST THAT KEEPS THE
+    /// CURSOR ON SCREEN** — and the measured case is the first one.
+    ///
+    /// A 100-column pane holding one wrapped line and twenty-two blank rows re-wraps to
+    /// twenty-four rows for a twenty-three-row client. Bottom-anchoring was written first and
+    /// driven through the shipped binary, where it dropped the row over the limit: the first HALF
+    /// of the only line on the screen, to make room for a blank one.
+    ///
+    /// REVERT-PROOF: anchor at the bottom (`tall - on_screen`) and the first case answers 1.
+    #[test]
+    fn a_re_wrapped_pane_shows_its_first_row_until_the_cursor_needs_it_not_to() {
+        assert_eq!(
+            first_row(24, 23, Some(1)),
+            0,
+            "the measured case: one wrapped line and a blank row over the limit",
+        );
+        assert_eq!(first_row(23, 23, Some(22)), 0, "content that exactly fits");
+        assert_eq!(
+            first_row(10, 23, Some(3)),
+            0,
+            "content shorter than the view"
+        );
+        assert_eq!(
+            first_row(46, 23, Some(44)),
+            22,
+            "a cursor past the bottom scrolls by the LEAST that puts it on the last row",
+        );
+        assert_eq!(
+            first_row(46, 23, Some(45)),
+            23,
+            "...and never past what the content can fill",
+        );
+        assert_eq!(
+            first_row(46, 23, None),
+            23,
+            "a frame with NO cursor — a scrolled-back window — is anchored at its bottom",
+        );
+        assert_eq!(first_row(0, 0, None), 0, "and nothing divides by nothing");
+    }
+
     /// **THE MEASURED CASE.** A 78-character line on a 100-column pane, re-wrapped for a
     /// 60-column client: both ends are on screen at once, which is exactly what the driven probe
     /// said no view of the un-wrapped pane can do.
@@ -373,7 +505,9 @@ mod tests {
     fn a_long_line_comes_back_as_the_rows_a_narrow_client_can_show() {
         let line = format!("START{}END", "-".repeat(70));
         let (buffer, shares) = frame_of(line.as_bytes(), 100, 5);
-        let narrow = rewrap(&buffer, &shares, 60).expect("a 100-column pane re-wraps into 60");
+        let narrow = rewrap(&buffer, &shares, 60, 24)
+            .expect("a 100-column pane re-wraps into 60")
+            .cells;
 
         assert_eq!(narrow.cols(), 60);
         let rows = rows_of(&narrow);
@@ -413,7 +547,7 @@ mod tests {
             "the pane wrapped row 0 onto row 1"
         );
 
-        let narrow = rewrap(&buffer, &shares, 60).expect("re-wraps");
+        let narrow = rewrap(&buffer, &shares, 60, 24).expect("re-wraps").cells;
         let rows = rows_of(&narrow);
         assert_eq!(
             &rows[..3],
@@ -441,7 +575,7 @@ mod tests {
         let (buffer, shares) = frame_of(&bytes, 100, 5);
         assert_eq!(buffer.screen(), ScreenKind::Alternate);
         assert!(
-            rewrap(&buffer, &shares, 60).is_none(),
+            rewrap(&buffer, &shares, 60, 24).is_none(),
             "a fullscreen program's layout is not a set of lines",
         );
     }
@@ -451,13 +585,16 @@ mod tests {
     #[test]
     fn a_pane_that_already_fits_and_a_view_of_no_width_are_both_left_alone() {
         let (buffer, shares) = frame_of(b"hello", 60, 5);
-        assert!(rewrap(&buffer, &shares, 60).is_none(), "already this wide");
         assert!(
-            rewrap(&buffer, &shares, 80).is_none(),
+            rewrap(&buffer, &shares, 60, 24).is_none(),
+            "already this wide"
+        );
+        assert!(
+            rewrap(&buffer, &shares, 80, 24).is_none(),
             "wider than the pane"
         );
         assert!(
-            rewrap(&buffer, &shares, 0).is_none(),
+            rewrap(&buffer, &shares, 0, 24).is_none(),
             "no width to wrap into"
         );
     }
@@ -470,7 +607,7 @@ mod tests {
     #[test]
     fn an_empty_line_keeps_its_own_row() {
         let (buffer, shares) = frame_of(b"one\r\n\r\nthree", 100, 5);
-        let narrow = rewrap(&buffer, &shares, 60).expect("re-wraps");
+        let narrow = rewrap(&buffer, &shares, 60, 24).expect("re-wraps").cells;
         let rows = rows_of(&narrow);
         assert_eq!(&rows[..3], &["one", "", "three"], "the blank row survives");
         assert_eq!(
@@ -495,7 +632,7 @@ mod tests {
             "the pane has it one past the line's last cell",
         );
 
-        let narrow = rewrap(&buffer, &shares, 60).expect("re-wraps");
+        let narrow = rewrap(&buffer, &shares, 60, 24).expect("re-wraps").cells;
         let moved = narrow.cursor();
         assert_eq!(
             (moved.col, moved.row),
@@ -521,7 +658,7 @@ mod tests {
         bytes.extend("\u{d55c}".as_bytes());
         bytes.extend(b"jkl");
         let (buffer, shares) = frame_of(&bytes, 20, 3);
-        let narrow = rewrap(&buffer, &shares, 10).expect("re-wraps");
+        let narrow = rewrap(&buffer, &shares, 10, 24).expect("re-wraps").cells;
         let rows = rows_of(&narrow);
         assert_eq!(rows[0], "abcdefghi", "the ninth column is left blank");
         assert!(
@@ -536,7 +673,7 @@ mod tests {
     #[test]
     fn a_view_one_column_wide_terminates_on_a_wide_cluster() {
         let (buffer, shares) = frame_of("\u{d55c}\u{ae00}".as_bytes(), 20, 2);
-        let narrow = rewrap(&buffer, &shares, 1).expect("re-wraps");
+        let narrow = rewrap(&buffer, &shares, 1, 24).expect("re-wraps").cells;
         assert!(narrow.rows() >= 4, "one row per column: {}", narrow.rows());
     }
 
@@ -562,7 +699,7 @@ mod tests {
         let bar = buffer.cell(20, 0).expect("a cell inside the run").bg;
         assert_ne!(bar, TermColor::Default, "the run must be visibly coloured");
 
-        let narrow = rewrap(&buffer, &shares, 20).expect("re-wraps");
+        let narrow = rewrap(&buffer, &shares, 20, 24).expect("re-wraps").cells;
         assert_eq!(
             narrow.cell(0, 1).map(|cell| cell.bg),
             Some(bar),
@@ -597,7 +734,7 @@ mod tests {
     fn a_buffer_whose_shares_are_missing_or_the_wrong_shape_is_left_alone() {
         let (buffer, shares) = frame_of(b"hello", 100, 23);
         assert!(
-            rewrap(&buffer, &RowShares::default(), 60).is_none(),
+            rewrap(&buffer, &RowShares::default(), 60, 24).is_none(),
             "a host that said nothing must not have its rows cut at the grid's width",
         );
 
@@ -609,13 +746,104 @@ mod tests {
             continues: Vec::new(),
         };
         assert!(
-            rewrap(&buffer, &stale, 60).is_none(),
+            rewrap(&buffer, &stale, 60, 24).is_none(),
             "shares that do not describe these rows describe nothing about them",
         );
 
         // ...and the control: the real pair still re-wraps, so this is about the shares and not
         // about the fixture.
-        assert!(rewrap(&buffer, &shares, 60).is_some());
+        assert!(rewrap(&buffer, &shares, 60, 24).is_some());
+    }
+
+    /// **THE RESULT IS THE ROWS THIS CLIENT SHOWS, NOT THE WHOLE TALL BUFFER** — and which rows
+    /// those are is [`first_row`]'s answer, applied here so both frontends get one.
+    ///
+    /// Ten wrapped lines on a 100-column pane are twenty re-wrapped rows at fifty columns, against
+    /// a client with room for eight. The fixture is what makes this discriminate: with content that
+    /// FITS, showing the top and showing the end are the same answer, which is how a gate for this
+    /// passed while the code returned a constant zero.
+    ///
+    /// REVERT-PROOF: anchor at 0 and the window holds the OLDEST lines while the cursor — the
+    /// thing the person is typing at — is off the bottom.
+    #[test]
+    fn the_window_is_the_rows_the_cursor_is_on_and_not_the_first_ones() {
+        let mut em = Emulator::new(100, 12);
+        for n in 1..=10 {
+            if n > 1 {
+                em.advance(b"\r\n");
+            }
+            em.advance(format!("L{n:02}{}E{n:02}", "-".repeat(85)).as_bytes());
+        }
+        let screen = em.screen().clone();
+        let cut = rewrap(
+            &crate::project(&screen, &Palette::xterm_default()),
+            &shares(&screen, 0),
+            50,
+            8,
+        )
+        .expect("re-wraps");
+
+        assert_eq!(cut.cells.rows(), 8, "exactly the rows this client can show");
+        assert_eq!(cut.top, 12, "twenty rows of content, eight of screen");
+        let rows = rows_of(&cut.cells);
+        assert!(
+            rows.iter().any(|row| row.starts_with("L10")),
+            "the newest line, which the cursor is on: {rows:?}",
+        );
+        assert!(
+            !rows.iter().any(|row| row.starts_with("L01")),
+            "and not the oldest, which is what anchoring at zero would show: {rows:?}",
+        );
+    }
+
+    /// **A RE-WRAPPED ROW CARRIES ITS LINE'S DAMAGE, FOLDED** — what makes a client's paint cache
+    /// able to skip it, and the reason a re-wrapped pane costs ~94% less per frame than one the
+    /// cache cannot vouch for (`sprag-tui`'s `tests/rewrap_frame_cost.rs`).
+    ///
+    /// The fold is the MAX over the pane rows the logical line occupies, repeated across the rows
+    /// it produced: a re-wrapped row is unchanged exactly when every source row of its line is.
+    /// Two lines with DIFFERENT stamps is what makes this discriminate — a fixture whose rows all
+    /// carried one stamp would pass for a fold that returned a constant.
+    ///
+    /// REVERT-PROOF: fold to a constant and every output row reports the same stamp, so a client's
+    /// cache skips a pane whose lines have changed.
+    #[test]
+    fn a_re_wrapped_row_carries_the_damage_of_every_pane_row_its_line_came_from() {
+        // Two lines, each wide enough to wrap once on a 40-column pane, written one after the
+        // other so the emulator stamps their rows differently.
+        let mut em = Emulator::new(40, 6);
+        em.advance(&[b'a'; 60]);
+        em.advance(b"\r\n");
+        em.advance(&[b'b'; 60]);
+        let screen = em.screen().clone();
+        let source: Vec<u64> = (0..4)
+            .map(|row| screen.row_generation(row).unwrap_or_default())
+            .collect();
+        // Rows 0-1 are the first line, 2-3 the second; the two lines' stamps must differ or this
+        // proves nothing about the fold.
+        let first = source[0].max(source[1]);
+        let second = source[2].max(source[3]);
+        assert_ne!(
+            first, second,
+            "the fixture's two lines must be distinguishable"
+        );
+
+        let palette = Palette::xterm_default();
+        let cut = rewrap(
+            &crate::project(&screen, &palette),
+            &shares(&screen, 0),
+            20,
+            12,
+        )
+        .expect("re-wraps");
+        let folded: Vec<u64> = (0..cut.cells.rows())
+            .map(|row| cut.cells.row_generation(row).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            &folded[..6],
+            &[first, first, first, second, second, second],
+            "each of a line's three re-wrapped rows carries that line's own folded damage",
+        );
     }
 
     /// **AN OSC-8 LINK STILL RESOLVES AFTER THE CUT, AND THE HALVES STAY ONE LINK.**
@@ -640,7 +868,7 @@ mod tests {
             "the fixture must carry a link or this proves nothing",
         );
 
-        let narrow = rewrap(&buffer, &shares, 20).expect("re-wraps");
+        let narrow = rewrap(&buffer, &shares, 20, 24).expect("re-wraps").cells;
         let first = narrow.cell_hyperlink(0, 0).expect("the link's first half");
         let second = narrow.cell_hyperlink(0, 1).expect("its second half");
         assert_eq!(first.uri, "https://example.test");

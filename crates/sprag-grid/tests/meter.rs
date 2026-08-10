@@ -16,7 +16,7 @@
 
 use std::sync::Mutex;
 
-use sprag_grid::{project, project_scrolled, work};
+use sprag_grid::{project, project_scrolled, rewrap, shares, work};
 use sprag_vt::{Emulator, Palette, Screen, VtPort};
 
 /// Serialises the tests in this binary, so each one's delta is its own.
@@ -77,4 +77,41 @@ fn the_live_view_is_not_metered_twice_through_the_delegation() {
         "an offset past an empty scrollback is the live view, and costs the same"
     );
     assert_eq!(stale.cells_total - live.cells_total, 40);
+}
+
+/// **A RE-WRAP IS METERED, AND APART FROM A PROJECTION.** The two answer different questions — a
+/// projection runs for every pane on every frame, a re-wrap only for a pane a client cannot fit —
+/// so folding them into one counter would hide exactly the fact worth reading.
+///
+/// R349 built the re-wrap without a counter and registered the gap; this is the counter, and the
+/// point of the equality below is that a re-wrap must not quietly inflate the PROJECTION count
+/// either, which would make every reading of `projections_total` since it landed a lie.
+#[test]
+fn a_re_wrap_is_metered_apart_from_a_projection() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let screen = screen_from(b"a line long enough to need cutting in two", 40, 4);
+    let palette = Palette::xterm_default();
+    let cells = project(&screen, &palette);
+    let cuts = shares(&screen, 0);
+
+    let before = work();
+    let _ = rewrap(&cells, &cuts, 20, 4).expect("40 columns cut to 20");
+    let after = work();
+
+    assert_eq!(
+        after.rewraps_total - before.rewraps_total,
+        1,
+        "one call, one re-wrap",
+    );
+    assert_eq!(
+        after.projections_total, before.projections_total,
+        "and it is NOT a projection — a reader of that counter must still be reading screens",
+    );
+    assert_eq!(
+        after.cells_total - before.cells_total,
+        80,
+        "the volume it produced: 20 columns by the 4 rows this client shows",
+    );
 }

@@ -91,16 +91,16 @@ fn a_re_wrap_allocates_per_row_and_not_per_cell() {
 
     // Both are re-wrapped once first, so a lazily-initialised anything is warm and cannot be
     // charged to whichever went first.
-    let _ = rewrap(&narrow_cells, &narrow_shares, 50).expect("100 cols cut to 50");
-    let _ = rewrap(&wide_cells, &wide_shares, 100).expect("200 cols cut to 100");
+    let _ = rewrap(&narrow_cells, &narrow_shares, 50, ROWS * 2).expect("100 cols cut to 50");
+    let _ = rewrap(&wide_cells, &wide_shares, 100, ROWS * 2).expect("200 cols cut to 100");
 
     let narrow_allocations = allocations(|| {
-        let cut = rewrap(&narrow_cells, &narrow_shares, 50).expect("re-wraps");
-        assert_eq!(cut.rows(), ROWS * 2, "24 rows of 100 become 48 of 50");
+        let cut = rewrap(&narrow_cells, &narrow_shares, 50, ROWS * 2).expect("re-wraps");
+        assert_eq!(cut.cells.rows(), ROWS * 2, "24 rows of 100 become 48 of 50");
     });
     let wide_allocations = allocations(|| {
-        let cut = rewrap(&wide_cells, &wide_shares, 100).expect("re-wraps");
-        assert_eq!(cut.rows(), ROWS * 2, "and 24 of 200 become 48 of 100");
+        let cut = rewrap(&wide_cells, &wide_shares, 100, ROWS * 2).expect("re-wraps");
+        assert_eq!(cut.cells.rows(), ROWS * 2, "and 24 of 200 become 48 of 100");
     });
 
     assert_eq!(

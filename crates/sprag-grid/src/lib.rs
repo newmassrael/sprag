@@ -35,7 +35,7 @@ pub mod wire;
 // cells came from would be R344's defect with a longer reach.
 mod rewrap;
 
-pub use rewrap::{RowShares, rewrap, shares};
+pub use rewrap::{Rewrapped, RowShares, first_row, rewrap, shares};
 
 /// Which of a screen's rows one row of a projection comes from.
 ///
@@ -96,6 +96,8 @@ pub(crate) fn projected_rows(
 static PROJECTIONS: AtomicU64 = AtomicU64::new(0);
 /// How many CELLS those projections came to, process-wide.
 static CELLS: AtomicU64 = AtomicU64::new(0);
+/// How many whole-buffer re-wraps have run, process-wide.
+static REWRAPS: AtomicU64 = AtomicU64::new(0);
 
 /// What this crate has cost the process so far — the meter for the one thing it does.
 ///
@@ -115,6 +117,17 @@ pub struct GridWork {
     /// Cells those projections produced — the VOLUME, `cols * rows` per projection. This is the
     /// number that grows with the size of the screen rather than with the size of the change.
     pub cells_total: u64,
+    /// Whole-buffer RE-WRAPS run ([`fn@rewrap`]) — the other thing this crate builds a buffer for.
+    ///
+    /// Counted apart from the projections rather than folded into them, because they answer
+    /// different questions: a projection is once per pane per frame and a re-wrap is once per pane
+    /// per frame ONLY on a client too narrow for it. A reader comparing the two learns how much of
+    /// a session is being watched from a terminal that cannot fit it.
+    ///
+    /// It exists because the meter's name is "what this crate has cost the process" and the
+    /// re-wrap was not in it — R349 registered that as a hole in an instrument and then filled it,
+    /// which is the shorter of the two things it could have done.
+    pub rewraps_total: u64,
 }
 
 /// Read the meter. See [`GridWork`] for why the answer is only meaningful as a delta.
@@ -123,6 +136,7 @@ pub fn work() -> GridWork {
     GridWork {
         projections_total: PROJECTIONS.load(Ordering::Relaxed),
         cells_total: CELLS.load(Ordering::Relaxed),
+        rewraps_total: REWRAPS.load(Ordering::Relaxed),
     }
 }
 
@@ -133,6 +147,15 @@ pub fn work() -> GridWork {
 /// callers that remembered.
 fn meter(cols: u16, rows: u16) {
     PROJECTIONS.fetch_add(1, Ordering::Relaxed);
+    CELLS.fetch_add(u64::from(cols) * u64::from(rows), Ordering::Relaxed);
+}
+
+/// Account one whole-buffer re-wrap and the cells it produced.
+///
+/// Called from [`fn@rewrap`] itself, for [`meter`]'s reason: a cost a caller has to remember to
+/// report is a measurement of the callers that remembered.
+pub(crate) fn meter_rewrap(cols: u16, rows: u16) {
+    REWRAPS.fetch_add(1, Ordering::Relaxed);
     CELLS.fetch_add(u64::from(cols) * u64::from(rows), Ordering::Relaxed);
 }
 
