@@ -70,22 +70,41 @@ pub struct Viewport {
 impl Viewport {
     /// A viewport onto `window` from a terminal whose panes occupy `screen`, showing the window's
     /// top-left corner.
-    ///
-    /// The offset starts at the origin rather than at any remembered value, because the thing that
-    /// would be remembered is a position in a window whose size the arbitration can have changed —
-    /// and a stale offset is an off-by-a-scroll, which is exactly the failure that is hardest to
-    /// read on screen. [`follow`](Self::follow) puts it where the person is looking, every frame.
     #[must_use]
     pub const fn of(window: Rect, screen: Rect) -> Self {
-        Self {
+        Self::at(window, screen, (0, 0))
+    }
+
+    /// A viewport showing `offset` — a position a caller is CARRYING from the last frame, clamped
+    /// into what this window and this screen can actually hold.
+    ///
+    /// The clamp is why a caller may carry it at all. What is remembered is a position in a window
+    /// whose size the arbitration can move under it, and an offset past the end of a window that
+    /// shrank would leave blank space where the session is; clamping on construction means the
+    /// carried value is never a lie, only sometimes older than the person's attention. The
+    /// alternative — rebuilding at the origin every frame — is worse and was shipped first: it
+    /// throws away the view of any client whose [`follow`](Self::follow) has nothing to follow,
+    /// which is a client whose focused pane is FLOATING.
+    #[must_use]
+    pub const fn at(window: Rect, screen: Rect, offset: (u16, u16)) -> Self {
+        let mut view = Self {
             window,
             screen,
-            offset: (0, 0),
+            offset,
+        };
+        let (max_col, max_row) = view.slack();
+        if view.offset.0 > max_col {
+            view.offset.0 = max_col;
         }
+        if view.offset.1 > max_row {
+            view.offset.1 = max_row;
+        }
+        view
     }
 
     /// How far the viewport can travel on each axis before it runs out of window — what
-    /// [`follow`](Self::follow) clamps to and what [`is_whole`](Self::is_whole) reads.
+    /// [`at`](Self::at) and [`follow`](Self::follow) clamp to, and what [`note`](Self::note) reads
+    /// to decide there is nothing to say.
     #[must_use]
     const fn slack(&self) -> (u16, u16) {
         (
@@ -94,14 +113,19 @@ impl Viewport {
         )
     }
 
-    /// Whether this terminal is showing the WHOLE window — which is every ordinary client, and the
-    /// case in which everything here is the identity.
+    /// Whether this terminal is showing the WHOLE window — every ordinary client, and the case in
+    /// which everything here is the identity.
+    ///
+    /// Private, and that is the point rather than an accident: [`note`](Self::note) is the public
+    /// answer to this question, and a second public spelling of it would be a second thing a caller
+    /// could read and disagree with.
     #[must_use]
-    pub const fn is_whole(&self) -> bool {
+    const fn is_whole(&self) -> bool {
         matches!(self.slack(), (0, 0))
     }
 
-    /// The window cell this terminal's top-left pane cell shows.
+    /// The window cell this terminal's top-left pane cell shows — what a caller CARRIES to the next
+    /// frame and hands back to [`at`](Self::at).
     #[must_use]
     pub const fn offset(&self) -> (u16, u16) {
         self.offset
@@ -261,6 +285,60 @@ mod tests {
             }),
             "a pane bigger than the view is shown as far as the view goes",
         );
+    }
+
+    /// A rectangle the view has scrolled ENTIRELY past — left of it, or above it — is not shown.
+    ///
+    /// The other two arms of `show`'s refusal, and they are not symmetrical with the two below: a
+    /// rectangle off the FAR edge is refused by its screen position, and one off the NEAR edge by
+    /// having no cells of its own left. Neither had a test until the debt sweep asked which
+    /// branches nothing builds.
+    #[test]
+    fn a_rectangle_the_view_has_scrolled_entirely_past_is_not_shown() {
+        let mut view = narrow();
+        view.follow((0, 22));
+        assert_eq!(view.offset(), (0, 14));
+        assert_eq!(
+            view.show(Rect::new(0, 0, 80, 11)),
+            None,
+            "a pane whose last row is four rows above the view",
+        );
+
+        let mut sideways = Viewport::of(Rect::screen(200, 9), Rect::screen(60, 9));
+        sideways.follow((199, 0));
+        assert_eq!(sideways.offset(), (140, 0));
+        assert_eq!(
+            sideways.show(Rect::new(0, 0, 100, 9)),
+            None,
+            "and a pane whose last column is forty columns left of it",
+        );
+    }
+
+    /// A carried offset is CLAMPED into the window it is handed, never taken on trust.
+    ///
+    /// What makes an offset safe to keep across frames: the arbitration can shrink the window under
+    /// a client that is not looking, and an offset past its edge would leave blank space where the
+    /// session is. The alternative — rebuilding at the origin every frame — was shipped first and
+    /// throws away the view of any client whose follow has nothing to follow.
+    #[test]
+    fn a_carried_offset_is_clamped_into_the_window_it_is_handed() {
+        let kept = Viewport::at(Rect::screen(80, 23), Rect::screen(60, 9), (12, 6));
+        assert_eq!(kept.offset(), (12, 6), "inside the slack, kept exactly");
+
+        let shrunk = Viewport::at(Rect::screen(64, 12), Rect::screen(60, 9), (12, 6));
+        assert_eq!(
+            shrunk.offset(),
+            (4, 3),
+            "the window shrank under it, so the offset comes back to its edge",
+        );
+
+        let gone = Viewport::at(Rect::screen(60, 9), Rect::screen(60, 9), (12, 6));
+        assert_eq!(
+            gone.offset(),
+            (0, 0),
+            "a window this terminal now fits has no offset to have",
+        );
+        assert_eq!(gone.note(), None);
     }
 
     /// Following a cell moves the view the LEAST it can, and never past the window's edge.
