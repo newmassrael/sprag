@@ -851,7 +851,7 @@ impl Tui {
 
     /// Put `command` on a fresh pseudoterminal and start reading what it paints.
     fn start(mut command: CommandBuilder) -> Self {
-        let mut pair = Pty::open(BOOT_PTY.0, BOOT_PTY.1).expect("open a pseudoterminal");
+        let pair = Pty::open(BOOT_PTY.0, BOOT_PTY.1).expect("open a pseudoterminal");
 
         // Hermetic: if the connect ever failed, the client would spawn a daemon of its own, and it
         // must be THIS build's rather than whatever is on the tester's PATH.
@@ -860,68 +860,78 @@ impl Tui {
         // independent of the terminal the test suite happens to be running in.
         command.env("TERM", "xterm-256color");
 
+        let screen = Arc::new(Mutex::new(Emulator::new(BOOT_PTY.0, BOOT_PTY.1)));
+        let written = Arc::new(AtomicUsize::new(0));
+        let writer = pair.writer().expect("take the pty writer");
+        let status_trail = Arc::new(Mutex::new(Vec::new()));
+        let transcript = Arc::new(Mutex::new(Vec::new()));
+        // THE READER IS ATTACHED BEFORE THE CLIENT EXISTS, and this harness is one of the two
+        // places that had it the other way round. What a client paints in its first instants is
+        // exactly what these gates read, and a client that painted and died before this thread
+        // reached its first `read` would leave nothing behind on a kernel that discards what no
+        // one has collected — see `Pty::attach_reader`.
+        let mut pair = pair
+            .attach_reader("tui-pty-reader", {
+                let (screen, written) = (Arc::clone(&screen), Arc::clone(&written));
+                let status_trail = Arc::clone(&status_trail);
+                let transcript = Arc::clone(&transcript);
+                move |mut reader| {
+                    let mut buf = [0u8; 8192];
+                    let mut splitter = FrameSplitter::new();
+                    while let Ok(n) = reader.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        transcript
+                            .lock()
+                            .expect("the transcript mutex")
+                            .extend_from_slice(&buf[..n]);
+                        {
+                            let mut emulator = screen.lock().expect("the screen mutex");
+                            let mut from = 0;
+                            for end in splitter.closes_in(&buf[..n]) {
+                                // The frame's own bytes, terminator included: what the client presented.
+                                emulator.advance(&buf[from..end]);
+                                from = end;
+                                // Read INSIDE the same lock the frame was applied under, so the trail
+                                // cannot record a row from a state no frame produced. See `status_trail`
+                                // for why this is here and not in a polling loop.
+                                let row = VtPort::screen(&*emulator)
+                                    .row_text(STATUS_ROW)
+                                    .trim_end()
+                                    .to_owned();
+                                let mut trail =
+                                    status_trail.lock().expect("the status trail mutex");
+                                if trail.last() != Some(&row) {
+                                    trail.push(row);
+                                }
+                            }
+                            // Whatever follows the last close is a frame the client has NOT presented
+                            // yet, or output that belongs to no frame at all (a mode sequence, a
+                            // forwarded notification). Applied, so a poll still sees the newest state;
+                            // not recorded, because the trail counts frames.
+                            emulator.advance(&buf[from..n]);
+                        }
+                        // AFTER the emulator, so a reader that sees the count move can also see
+                        // everything that moved it.
+                        written.fetch_add(n, Ordering::Release);
+                    }
+                }
+            })
+            .expect("attach a reader to the pty before the client is born");
+
         // `spawn` takes the slave and drops it, so the master reads EOF when the child exits.
         // The second answer is the child's cgroup join, which is `NotAsked` here and everywhere
         // else that offers no cgroup — this test drives a CLIENT, not a pane of the daemon's.
         let (child, _joined) = pair
             .spawn(&command, None)
             .expect("spawn sprag-tui on the pty");
-
-        let screen = Arc::new(Mutex::new(Emulator::new(BOOT_PTY.0, BOOT_PTY.1)));
-        let written = Arc::new(AtomicUsize::new(0));
-        let mut reader = pair.reader().expect("clone the pty reader");
-        let writer = pair.writer().expect("take the pty writer");
-        let status_trail = Arc::new(Mutex::new(Vec::new()));
-        let transcript = Arc::new(Mutex::new(Vec::new()));
-        std::thread::spawn({
-            let (screen, written) = (Arc::clone(&screen), Arc::clone(&written));
-            let status_trail = Arc::clone(&status_trail);
-            let transcript = Arc::clone(&transcript);
-            move || {
-                let mut buf = [0u8; 8192];
-                let mut splitter = FrameSplitter::new();
-                while let Ok(n) = reader.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    transcript
-                        .lock()
-                        .expect("the transcript mutex")
-                        .extend_from_slice(&buf[..n]);
-                    {
-                        let mut emulator = screen.lock().expect("the screen mutex");
-                        let mut from = 0;
-                        for end in splitter.closes_in(&buf[..n]) {
-                            // The frame's own bytes, terminator included: what the client presented.
-                            emulator.advance(&buf[from..end]);
-                            from = end;
-                            // Read INSIDE the same lock the frame was applied under, so the trail
-                            // cannot record a row from a state no frame produced. See `status_trail`
-                            // for why this is here and not in a polling loop.
-                            let row = VtPort::screen(&*emulator)
-                                .row_text(STATUS_ROW)
-                                .trim_end()
-                                .to_owned();
-                            let mut trail = status_trail.lock().expect("the status trail mutex");
-                            if trail.last() != Some(&row) {
-                                trail.push(row);
-                            }
-                        }
-                        // Whatever follows the last close is a frame the client has NOT presented
-                        // yet, or output that belongs to no frame at all (a mode sequence, a
-                        // forwarded notification). Applied, so a poll still sees the newest state;
-                        // not recorded, because the trail counts frames.
-                        emulator.advance(&buf[from..n]);
-                    }
-                    // AFTER the emulator, so a reader that sees the count move can also see
-                    // everything that moved it.
-                    written.fetch_add(n, Ordering::Release);
-                }
-            }
-        });
+        // The reader runs to EOF on its own; what this harness still needs is the device, to resize
+        // it out from under a live client.
+        let (master, _reader) = pair.into_parts();
 
         Self {
-            master: pair,
+            master,
             writer,
             child: Mutex::new(child),
             screen,

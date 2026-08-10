@@ -366,30 +366,13 @@ impl PanePty {
         } = hooks;
         let cols = cols.max(1);
         let rows = rows.max(1);
-        let mut pty = Pty::open(cols, rows).map_err(|e| PanePtyError::new("open pty", &e))?;
+        let pty = Pty::open(cols, rows).map_err(|e| PanePtyError::new("open pty", &e))?;
         // The pane's terminal DEVICE, taken here because this is the only moment it is reachable:
         // the master moves to the resize coalescer thread below and the slave is dropped before
         // that. It is `ttyname_r` on the slave fd, resolved by the PTY backend at `openpty` — so
         // this daemon does not have to DISCOVER what a caller could only guess at from the child's
         // fd 0 (which the child is free to redirect).
         let tty = pty.tty_name();
-        // The cgroup join's outcome comes back BESIDE the child, never instead of it: a kernel that
-        // refuses the migration costs this pane its share and not its existence.
-        let (child, joined) = pty
-            .spawn(&command, home.as_ref().map(std::os::fd::AsFd::as_fd))
-            .map_err(|e| PanePtyError::new("spawn command", &e))?;
-        if let crate::pty::Joined::Refused(error) = &joined {
-            // Once, at the moment it is known, and in the same words `PaneHomes::open` uses for the
-            // failures it can see — this is the one it cannot, because it happens after the fork.
-            tracing::warn!(%error, "pane opened without an enforced share");
-        }
-        // Split the handle before the child moves to the reader thread: the killer signals it, the
-        // pid answers `/proc` questions. `clone_killer`'s own contract is this exact split ("send it
-        // signals independently from a thread that may be blocked in `.wait`").
-        let pid = child.id();
-        let mut reader = pty
-            .reader()
-            .map_err(|e| PanePtyError::new("clone reader", &e))?;
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(
             pty.writer()
                 .map_err(|e| PanePtyError::new("take writer", &e))?,
@@ -429,11 +412,15 @@ impl PanePty {
         // causes is the signal, so it fires however the closure ends — normal return or panic — and
         // cannot be forgotten on a future early-exit path.
         let (reader_done_tx, reader_done) = mpsc::channel::<()>();
-        let reader_thread = std::thread::Builder::new()
-            .name("sprag-pty-reader".to_string())
-            .spawn(move || {
+        // The child arrives AFTER the thread that reaps it, because the reader is attached before
+        // any child exists — see `Pty::attach_reader` for the platform difference that ordering is
+        // there to remove. This channel is how the one handle reaches its one reaper: `wait` is
+        // still called on this thread and nowhere else, so the pid cannot be recycled under another
+        // thread that still believes it owns it.
+        let (child_tx, child_rx) = mpsc::channel::<std::process::Child>();
+        let mut attached = pty
+            .attach_reader("sprag-pty-reader", move |mut reader| {
                 let _reader_done_tx = reader_done_tx;
-                let mut child = child;
                 let mut buf = [0u8; 8192];
                 loop {
                     match reader.read(&mut buf) {
@@ -521,7 +508,13 @@ impl PanePty {
                 // * This thread is the ONLY reaper, so the pid cannot be recycled while another
                 //   thread still believes it owns it. `Drop` signals through the killer and joins
                 //   here rather than waiting itself.
-                if let Ok(status) = child.wait() {
+                //
+                // The handle is RECEIVED rather than owned from the start: this thread was reading
+                // the terminal before the child was created, which is the whole point of the
+                // ordering. A `recv` that fails means the spawn failed and there is nothing to reap.
+                if let Ok(mut child) = child_rx.recv()
+                    && let Ok(status) = child.wait()
+                {
                     let (code, signal) = crate::pty::exit_facts(status);
                     *lock(&reader_exit) = Some(PaneExit { code, signal });
                     // A second wake, because the status arrived after the one above: the title that
@@ -533,7 +526,27 @@ impl PanePty {
                     }
                 }
             })
-            .map_err(|e| PanePtyError::new("spawn reader thread", &e))?;
+            .map_err(|e| PanePtyError::new("attach reader", &e))?;
+
+        // The cgroup join's outcome comes back BESIDE the child, never instead of it: a kernel that
+        // refuses the migration costs this pane its share and not its existence.
+        let (child, joined) = attached
+            .spawn(&command, home.as_ref().map(std::os::fd::AsFd::as_fd))
+            .map_err(|e| PanePtyError::new("spawn command", &e))?;
+        if let crate::pty::Joined::Refused(error) = &joined {
+            // Once, at the moment it is known, and in the same words `PaneHomes::open` uses for the
+            // failures it can see — this is the one it cannot, because it happens after the fork.
+            tracing::warn!(%error, "pane opened without an enforced share");
+        }
+        // Split the handle before it goes to its reaper: the killer signals it, the pid answers
+        // `/proc` questions. `clone_killer`'s own contract is this exact split ("send it signals
+        // independently from a thread that may be blocked in `.wait`").
+        let pid = child.id();
+        // The send cannot fail while the reader lives, and if it has already died the child is
+        // reaped by the drop of the handle instead — either way there is nothing for a caller here
+        // to decide.
+        let _ = child_tx.send(child);
+        let (master, reader_thread) = attached.into_parts();
 
         // `TIOCSWINSZ` coalescer: own thread, owns the PTY master (its only
         // user). The caller's reflow (a continuous drag) resizes the emulator
@@ -541,7 +554,6 @@ impl PanePty {
         // debounces the PTY ioctl to the final one — so the live shell gets one
         // `SIGWINCH` per settle, not one per cell-width boundary.
         let (resize_tx, resize_rx) = mpsc::channel::<(u16, u16, u16, u16)>();
-        let master = pty;
         let resize_thread = std::thread::Builder::new()
             .name("sprag-pty-resize".to_string())
             .spawn(move || {
@@ -1997,6 +2009,62 @@ mod tests {
             "EOF is observable once the exit wake has landed (a sanity check, not an \
              ordering guard — see the fn doc)",
         );
+    }
+
+    /// **A pane whose program does not exist fails, and strands nothing behind it.**
+    ///
+    /// R351 put the reader on the terminal BEFORE the child, so a failed birth is now a state with
+    /// two things already waiting on a child that will never arrive: a reader blocked on the device,
+    /// and, behind it, the reap blocked on the handle. Neither ends by being asked to. The device's
+    /// last slave goes with the failed spawn, which is the reader's EOF; the handle's sender is a
+    /// local dropped with the error, which is what turns the reap's wait into an answer.
+    ///
+    /// What is asserted is the WHOLE thread ending, not the exit hook — the hook fires on the way
+    /// out, before the reap, so a gate built on it would pass over a reaper that waits forever. The
+    /// hook's own captures are dropped when the reader's body returns, so a value that signals from
+    /// its `Drop` reports the one moment that matters. With a deadline, because the failure being
+    /// tested for is a hang, and a hang has no output.
+    ///
+    /// REVERT-PROOF: keep any second sender alive past the error return and the reap never wakes,
+    /// the body never returns, and this deadline expires. Measured that way, not argued.
+    #[test]
+    fn a_pane_whose_program_does_not_exist_fails_without_stranding_its_reader() {
+        /// Sends when it is dropped — captured by the exit hook, so it reports the reader's body
+        /// RETURNING rather than the hook being called.
+        struct SignalOnDrop(mpsc::Sender<()>);
+        impl Drop for SignalOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let (tell, reader_finished) = mpsc::channel::<()>();
+        let guard = SignalOnDrop(tell);
+        let mut command = CommandBuilder::new("/nonexistent/sprag-has-no-program-here");
+        command.env("TERM", "dumb");
+        let birth = PanePty::spawn_with_dirty(
+            command,
+            20,
+            4,
+            PaneHooks {
+                on_exit: Some(Box::new(move || {
+                    let _ = &guard;
+                })),
+                ..PaneHooks::default()
+            },
+            &[],
+            sprag_vt::DEFAULT_SCROLLBACK_LINES,
+        );
+        let error = birth
+            .err()
+            .expect("a program that is not there cannot be a pane");
+        assert!(
+            error.to_string().contains("spawn command"),
+            "the birth names the step that failed: {error}",
+        );
+        reader_finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the reader attached before the child runs to the end when the birth fails");
     }
 
     /// `on_exit` fires exactly once, at the child's exit, and `is_eof` holds by then — the

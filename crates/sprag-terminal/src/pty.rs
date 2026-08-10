@@ -26,7 +26,7 @@
 //! # Where a second platform goes
 //!
 //! Unix only, and honestly so — `README.md` says the same. A Windows arm belongs beside
-//! `Pty::open` and `Pty::spawn` as a `#[cfg(windows)]` sibling built on ConPTY; nothing above
+//! `Pty::open` and `AttachedPty::spawn` as a `#[cfg(windows)]` sibling built on ConPTY; nothing above
 //! this module names a file descriptor, so it would not have to change. What still blocks Windows
 //! is not here: the wire is a Unix domain socket in three other crates.
 
@@ -35,16 +35,17 @@
 use std::ffi::{CStr, OsStr};
 use std::fs::File;
 use std::io;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 
 use crate::command::CommandBuilder;
 
-/// Whether a pane's child reached the cgroup that was opened for it — [`Pty::spawn`]'s second
+/// Whether a pane's child reached the cgroup that was opened for it — [`AttachedPty::spawn`]'s second
 /// answer.
 ///
 /// # Why the birth answers this instead of failing
@@ -88,7 +89,7 @@ pub enum Joined {
 pub struct Pty {
     /// The controlling side. Cloned for the reader and the writer; resized through.
     master: OwnedFd,
-    /// The child's side, taken by [`Pty::spawn`] and dropped there.
+    /// The child's side, taken by [`AttachedPty::spawn`] and dropped there.
     slave: Option<OwnedFd>,
 }
 
@@ -230,6 +231,153 @@ impl Pty {
         Ok(File::from(self.master.try_clone()?))
     }
 
+    /// Put `body` on its own thread reading this terminal, and answer only once it IS reading it.
+    ///
+    /// This is the only way to reach [`AttachedPty::spawn`], and that is the point: **a child must
+    /// never be able to write to a terminal nobody is draining.**
+    ///
+    /// # The defect this shape exists to make unspellable
+    ///
+    /// A pane used to be built the other way round — spawn the child, then create the reader
+    /// thread — which leaves a window where the child is running and nothing is reading. What is in
+    /// that window is not the same on every kernel:
+    ///
+    /// * Linux keeps the bytes. Measured: a child that writes 25 bytes and is fully reaped, read
+    ///   100 ms later, still hands over all 25.
+    /// * macOS does not. The same shape — a restored pane re-running `echo`, which writes once and
+    ///   exits — came back with an EMPTY screen on the macOS runner while passing 30 of 30 times on
+    ///   Linux, and that is the difference this call removes.
+    ///
+    /// So the old ordering was not slow, it was *right only on one of the two platforms this
+    /// product builds for*, and it read as correct on the one its author ran.
+    ///
+    /// # Why an answer, and not just a thread
+    ///
+    /// Creating a thread proves nothing: it may not be scheduled for milliseconds, and under load
+    /// that is exactly when it will not be. So a single byte is written into the device and this
+    /// call blocks until the reader has READ it — after which the reader is running, hot, and one
+    /// loop back-edge away from its next `read`. The byte is consumed here and never reaches
+    /// `body`, so nothing downstream can see it.
+    ///
+    /// It is honest about what remains: a reader that has read is not provably a reader that is
+    /// blocked in `read`. What is gone is the part that was unbounded — thread creation and first
+    /// scheduling, both of which now happen before the child exists rather than in a race with it.
+    ///
+    /// # The order, as something the compiler holds
+    ///
+    /// ```
+    /// use sprag_terminal::CommandBuilder;
+    /// use sprag_terminal::pty::Pty;
+    ///
+    /// let mut pane = Pty::open(80, 24)
+    ///     .expect("open a pty")
+    ///     .attach_reader("doc", |mut terminal| {
+    ///         let _ = std::io::copy(&mut terminal, &mut std::io::sink());
+    ///     })
+    ///     .expect("a fresh pty takes a reader");
+    /// let (mut child, _joined) = pane
+    ///     .spawn(&CommandBuilder::new("/bin/true"), None)
+    ///     .expect("spawn onto the pty");
+    /// child.wait().expect("the child is reapable");
+    /// ```
+    ///
+    /// The ordering this replaced is not a bug that can be reintroduced by editing a line: there is
+    /// no `spawn` to call before attaching, so it does not build.
+    ///
+    /// ```compile_fail
+    /// use sprag_terminal::CommandBuilder;
+    /// use sprag_terminal::pty::Pty;
+    ///
+    /// let mut pty = Pty::open(80, 24).expect("open a pty");
+    /// // no method named `spawn` found for struct `Pty` — a child is born onto an `AttachedPty`.
+    /// let _ = pty.spawn(&CommandBuilder::new("/bin/true"), None);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the reader could not be cloned, the thread could not be created, or
+    /// the probe could not be written — and [`io::ErrorKind::BrokenPipe`] if the reader reached the
+    /// end of the terminal instead of the probe, which means it is not there to read anything.
+    pub fn attach_reader<F>(self, name: &str, body: F) -> io::Result<AttachedPty>
+    where
+        F: FnOnce(File) + Send + 'static,
+    {
+        let mut reader = self.reader()?;
+        let (ready, reading) = mpsc::channel::<()>();
+        let thread = std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                // `read_exact` of exactly the probe, and it cannot read anything else: no child
+                // exists yet, and this is the last instant that is true.
+                let mut probe = [0u8; 1];
+                if reader.read_exact(&mut probe).is_err() {
+                    return;
+                }
+                if ready.send(()).is_err() {
+                    return;
+                }
+                body(reader);
+            })?;
+        // Written after the thread exists so that, in the ordinary case, it is already blocked in
+        // `read` and the byte wakes it rather than sitting in a queue.
+        self.write_probe()?;
+        reading.recv().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "the reader reached the end of the terminal before it could read from it",
+            )
+        })?;
+        Ok(AttachedPty {
+            pty: self,
+            reader: thread,
+        })
+    }
+
+    /// Put [`ATTACH_PROBE`] into the device, from the child's side, so a reader on the master has
+    /// something to read before any child can write.
+    ///
+    /// ⚠ THE MISSING-DEVICE ARM IS UNREACHABLE FROM THE ONE CALLER, and is here rather than as an
+    /// `expect` so that it stays unreachable. Only [`AttachedPty::spawn`] takes the device and it
+    /// cannot run first — reaching it means going through [`Pty::attach_reader`], which consumes the
+    /// `Pty`. A second caller added later would not have that guarantee, and a library that panicked
+    /// on it would answer a programming mistake with a dead daemon.
+    fn write_probe(&self) -> io::Result<()> {
+        let slave = self.slave.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "this pty has already given its device away",
+            )
+        })?;
+        // A CLONE, so the write closing its handle leaves the device itself open for the child.
+        File::from(slave.try_clone()?).write_all(&[ATTACH_PROBE])
+    }
+}
+
+/// One byte, written into a fresh device by [`Pty::attach_reader`] and consumed by the reader it
+/// attaches — the difference between *a thread was created* and *a thread is reading*.
+///
+/// NUL because it is the one byte that survives the line discipline unaltered and means nothing to
+/// the emulator downstream if it ever did arrive.
+const ATTACH_PROBE: u8 = 0;
+
+/// A pseudoterminal that is already being read — the only thing a child can be born onto.
+///
+/// Reachable only through [`Pty::attach_reader`], which is what makes *spawn a child, then start
+/// reading* a program that does not compile rather than a bug that reproduces on one platform.
+#[derive(Debug)]
+pub struct AttachedPty {
+    pty: Pty,
+    reader: std::thread::JoinHandle<()>,
+}
+
+impl AttachedPty {
+    /// The device and the reader's handle, for a caller that owns them separately from here on —
+    /// the pane hands the device to its resize thread and joins the reader on drop.
+    #[must_use]
+    pub fn into_parts(self) -> (Pty, std::thread::JoinHandle<()>) {
+        (self.pty, self.reader)
+    }
+
     /// Start `command` on this pseudoterminal, in `cgroup` if one is given.
     ///
     /// `cgroup` is an open `cgroup.procs` file. The child writes `"0"` to it — which the kernel
@@ -252,7 +400,7 @@ impl Pty {
         command: &CommandBuilder,
         cgroup: Option<BorrowedFd<'_>>,
     ) -> io::Result<(Child, Joined)> {
-        let slave = self.slave.take().ok_or_else(|| {
+        let slave = self.pty.slave.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::AlreadyExists, "this pty already has a child")
         })?;
         let (program, args) = command.parts().ok_or_else(|| {
@@ -467,5 +615,185 @@ pub fn signal_child(pid: u32, signal: libc::c_int) {
     // here because a child that has already exited needs no signal.
     unsafe {
         libc::kill(pid as libc::pid_t, signal);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// Throw away everything the device is holding that nobody has read — what a kernel discarding
+    /// a dead child's output does on its own, done deliberately so it can be OBSERVED on a kernel
+    /// that does not.
+    fn discard_unread(pty: &Pty) {
+        // SAFETY: the master is open; `TCIFLUSH` names the queue holding what the child's side
+        // wrote and this side has not read.
+        let flushed = unsafe { libc::tcflush(pty.master.as_raw_fd(), libc::TCIFLUSH) };
+        assert_eq!(flushed, 0, "tcflush: {}", io::Error::last_os_error());
+    }
+
+    /// Put `bytes` into the device from the child's side, without a child.
+    fn write_from_the_childs_side(pty: &Pty, bytes: &[u8]) {
+        let slave = pty.slave.as_ref().expect("a fresh pty holds its device");
+        File::from(slave.try_clone().expect("clone the device"))
+            .write_all(bytes)
+            .expect("write into the device");
+    }
+
+    /// Everything left in the device, read to the end.
+    fn drain_to_end(pty: &Pty) -> Vec<u8> {
+        let mut reader = pty.reader().expect("clone the reader");
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        got
+    }
+
+    /// Wait for `settled` to hold, then answer what it saw — never a bare sleep, and the value
+    /// comes back so the assertion is made on what the deadline actually found.
+    fn until<T>(mut look: impl FnMut() -> T, settled: impl Fn(&T) -> bool) -> T {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let seen = look();
+            if settled(&seen) || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// **THE MECHANISM, FORCED.** Output nobody has collected is gone the moment the device drops
+    /// it — so *who is reading, and since when* is not a performance question about this module.
+    ///
+    /// This is R351's macOS half made reproducible here. On that platform a pane's child that wrote
+    /// once and exited lost what it wrote, because nothing had read it yet; on Linux the same bytes
+    /// survive a fully reaped child and a 100 ms wait, so Linux can only be made to say this by
+    /// emptying the queue deliberately.
+    ///
+    /// The CONTROL is the same write with no flush, in the same test: without it this would pass
+    /// against a device that had never accepted the bytes at all.
+    #[test]
+    fn output_no_one_has_collected_is_lost_when_the_device_drops_it() {
+        let kept = {
+            let mut pty = Pty::open(80, 24).expect("open a pty");
+            write_from_the_childs_side(&pty, b"recorded");
+            // The child's side goes, which is what a child exiting does.
+            drop(pty.slave.take());
+            drain_to_end(&pty)
+        };
+        assert_eq!(
+            kept, b"recorded",
+            "the control: a device nobody flushed still holds what was written to it",
+        );
+
+        let mut pty = Pty::open(80, 24).expect("open a pty");
+        write_from_the_childs_side(&pty, b"recorded");
+        discard_unread(&pty);
+        drop(pty.slave.take());
+        assert!(
+            drain_to_end(&pty).is_empty(),
+            "what nobody had read is not there to be read afterwards",
+        );
+    }
+
+    /// **What the reader is handed starts at the pane's first byte.** The attach probe is the
+    /// ATTACH's business and reaches nothing downstream — a leaked one would land in a real pane's
+    /// emulator, at the top of the screen, on every pane this daemon opens.
+    ///
+    /// REVERT-PROOF: stop consuming the probe in `attach_reader` and the body's first byte is a NUL.
+    ///
+    /// ⚠ THE OTHER HALF OF THE CONTRACT — *the reader has read before this call answers* — HAS NO
+    /// INSTRUMENT HERE, and it is worth saying why rather than leaving a gap that looks like an
+    /// oversight. `FIONREAD` on the master looks like the one and is not: measured on this box, it
+    /// answers 0 immediately after a write of 8 bytes and 8 a millisecond later, because the bytes
+    /// reach the line discipline's buffer through a work queue. An instrument that cannot tell
+    /// *already consumed* from *not yet arrived* cannot carry this claim, and a gate built on it
+    /// would have passed either way. What holds the ordering instead is that
+    /// [`AttachedPty::spawn`] is unreachable without this call, and macOS is where the behaviour
+    /// is judged.
+    #[test]
+    fn the_attach_probe_reaches_the_reader_it_attaches_and_nothing_after_it() {
+        let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let attached = Pty::open(80, 24)
+            .expect("open a pty")
+            .attach_reader("attach-gate", {
+                let seen = Arc::clone(&seen);
+                move |mut terminal| {
+                    let mut buf = [0u8; 256];
+                    while let Ok(n) = terminal.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        seen.lock()
+                            .expect("the seen mutex")
+                            .extend_from_slice(&buf[..n]);
+                    }
+                }
+            })
+            .expect("a fresh pty takes a reader");
+
+        write_from_the_childs_side(&attached.pty, b"hi");
+        let got = until(
+            || seen.lock().expect("the seen mutex").clone(),
+            |seen| !seen.is_empty(),
+        );
+        assert_eq!(
+            got, b"hi",
+            "the body reads from the pane's first byte, with the probe already spent",
+        );
+    }
+
+    /// **A child is born onto a terminal something is already reading.**
+    ///
+    /// `/bin/echo` and not a shell on purpose: a shell takes milliseconds to start, which is long
+    /// enough to hide the window this is about. This child writes once and is gone.
+    ///
+    /// ⚠ SAY WHICH HALF THIS RUNS. On Linux it passes with the reader attached late as well —
+    /// measured, 30 runs of the pane-level twin and a C probe that reads a fully reaped child's
+    /// output 100 ms afterwards. It discriminates on a kernel that discards, which is macOS, and CI
+    /// runs it there. What it is here is the regression gate that keeps `/bin/echo` — the shape
+    /// that found this — driven at all.
+    #[test]
+    fn a_child_is_born_onto_a_terminal_something_is_already_reading() {
+        let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut attached = Pty::open(80, 24)
+            .expect("open a pty")
+            .attach_reader("born-gate", {
+                let seen = Arc::clone(&seen);
+                move |mut terminal| {
+                    let mut buf = [0u8; 256];
+                    while let Ok(n) = terminal.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        seen.lock()
+                            .expect("the seen mutex")
+                            .extend_from_slice(&buf[..n]);
+                    }
+                }
+            })
+            .expect("a fresh pty takes a reader");
+
+        let mut command = CommandBuilder::new("/bin/echo");
+        command.arg("recorded");
+        let (mut child, _joined) = attached.spawn(&command, None).expect("spawn onto the pty");
+        child.wait().expect("the child is reapable");
+
+        let got = until(
+            || seen.lock().expect("the seen mutex").clone(),
+            |seen| seen.starts_with(b"recorded"),
+        );
+        assert!(
+            got.starts_with(b"recorded"),
+            "a child that writes once and exits is still read: {:?}",
+            String::from_utf8_lossy(&got),
+        );
     }
 }

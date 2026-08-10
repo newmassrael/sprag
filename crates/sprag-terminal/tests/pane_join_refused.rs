@@ -1,6 +1,7 @@
 //! **A pane the kernel will not confine is still a pane.**
 //!
-//! [`Pty::spawn`](sprag_terminal::pty::Pty::spawn) hands the child an open `cgroup.procs` and the
+//! [`AttachedPty::spawn`](sprag_terminal::pty::AttachedPty::spawn) hands the child an open
+//! `cgroup.procs` and the
 //! child writes itself into it between `fork` and `exec` (R336). That write can be REFUSED by a
 //! kernel that let the file be opened, and the two events are not the same check: opening tests the
 //! permissions on one file, while the write runs cgroup v2's delegation containment rule, which
@@ -35,7 +36,21 @@
 use std::os::fd::AsFd;
 
 use sprag_terminal::CommandBuilder;
-use sprag_terminal::pty::{Joined, Pty};
+use sprag_terminal::pty::{AttachedPty, Joined, Pty};
+
+/// A pty with a reader on it that drains and discards.
+///
+/// These gates are about the cgroup ANSWER and never read a byte of output — but a child is still
+/// only born onto a terminal something is reading, because that ordering is the one thing standing
+/// between a fast child and a kernel that discards what nobody has collected
+/// (`Pty::attach_reader`). Saying so with a sink is honest; there is no spelling that says "nobody
+/// reads this", and there should not be.
+fn read_and_discarded(pty: Pty) -> AttachedPty {
+    pty.attach_reader("join-refused-drain", |mut terminal| {
+        let _ = std::io::copy(&mut terminal, &mut std::io::sink());
+    })
+    .expect("a fresh pty takes a reader")
+}
 
 /// A descriptor that opens for writing and refuses every write — what a `cgroup.procs` the kernel
 /// will not migrate into looks like from the child's side.
@@ -49,7 +64,7 @@ fn a_write_that_will_be_refused() -> std::fs::File {
 /// THE GATE: a refused join costs the pane its cgroup and NOT its existence.
 #[test]
 fn a_pane_whose_cgroup_the_kernel_refuses_is_still_born() {
-    let mut pty = Pty::open(80, 24).expect("open a pty");
+    let mut pty = read_and_discarded(Pty::open(80, 24).expect("open a pty"));
     let refusing = a_write_that_will_be_refused();
 
     let mut command = CommandBuilder::new("/bin/sleep");
@@ -88,7 +103,7 @@ fn a_pane_whose_cgroup_the_kernel_refuses_is_still_born() {
 /// `/dev/null` accepts the write the same way a `cgroup.procs` does.
 #[test]
 fn a_pane_whose_cgroup_accepts_it_reports_that_it_joined() {
-    let mut pty = Pty::open(80, 24).expect("open a pty");
+    let mut pty = read_and_discarded(Pty::open(80, 24).expect("open a pty"));
     let accepting = std::fs::OpenOptions::new()
         .write(true)
         .open("/dev/null")
@@ -111,7 +126,7 @@ fn a_pane_whose_cgroup_accepts_it_reports_that_it_joined() {
 /// one every macOS pane and every unplaced pane has.
 #[test]
 fn a_pane_offered_no_cgroup_says_it_was_never_asked() {
-    let mut pty = Pty::open(80, 24).expect("open a pty");
+    let mut pty = read_and_discarded(Pty::open(80, 24).expect("open a pty"));
     let mut command = CommandBuilder::new("/bin/sleep");
     command.arg("30");
     let (mut child, joined) = pty.spawn(&command, None).expect("spawn");
