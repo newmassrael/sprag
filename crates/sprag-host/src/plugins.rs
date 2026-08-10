@@ -604,6 +604,78 @@ mod tests {
          \\r\\n   2. Yes, and don'\\''t ask again for example.com\
          \\r\\n   3. No, and tell Claude what to do differently (esc)";
 
+    /// A `claude` at rest, and the same pane a moment later with the braille spinner in its title —
+    /// the two screens a turn passes between, in the bytes a child prints.
+    ///
+    /// The MARKER on each is what a test waits for without observing: the title is not on the
+    /// screen, so a fixture that waited for the title would have to ask the detector, and asking the
+    /// detector is the sampling these tests are about.
+    const CLAUDE_AT_REST: &str =
+        "\\033]2;\\342\\234\\263 Claude Code\\007\\033[2J\\033[Hat rest %s\\r\\n";
+    const CLAUDE_WORKING: &str =
+        "\\033]2;\\342\\240\\213 Claude Code\\007\\033[2J\\033[Hworking\\r\\n";
+
+    /// A pane that paints ON COMMAND: it announces `GO`, then paints the next of `screens` for each
+    /// Enter it is sent.
+    ///
+    /// **It says when its terminal is ready** (R347): a `sh -c` peer takes milliseconds to reach its
+    /// `stty`, and a test that injected before then would have its Enter echoed back into the pane.
+    ///
+    /// **Its line discipline stays CANONICAL**, unlike R347's peer, and that is deliberate: `read`
+    /// wants a line, every act here is an Enter, and canonical mode is what turns the carriage
+    /// return a keystroke encodes into the newline the shell is waiting for. Echo is off, so the
+    /// keystroke itself paints nothing and the screen holds only what the script printed.
+    ///
+    /// The point of a pane that paints on command rather than on a timer: a turn's boundaries become
+    /// the TEST's to place, so "a turn that began and ended between two looks" is an assertion and
+    /// not a race.
+    fn pane_painting_in_turn(screens: &[String]) -> (Arc<Mutex<Workspace>>, PaneId) {
+        let mut script = String::from("stty -echo; printf 'GO\\r\\n'");
+        for screen in screens {
+            script.push_str(&format!("; read -r _; printf '%b' '{screen}'"));
+        }
+        script.push_str("; exec cat");
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "xterm-256color");
+        let id = lock(&workspace)
+            .spawn(command, "agent".to_string(), 80, 24)
+            .expect("spawn the pane");
+        (workspace, id)
+    }
+
+    /// Wait for `needle` on the pane's screen WITHOUT asking the detector anything.
+    ///
+    /// The distinction this whole pair of tests rests on: [`settle`] polls the supervision source,
+    /// and every such poll is a look at the screen. A test about what a look MISSES cannot wait by
+    /// looking.
+    fn wait_for_screen(access: &WorkspacePaneAccess, id: PaneId, needle: &str) {
+        let start = Instant::now();
+        let mut last = String::new();
+        while start.elapsed() < Duration::from_secs(10) {
+            last = access.pane_collapsed(id).unwrap_or_default();
+            if last.contains(needle) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the pane never painted {needle:?}; its screen was {last:?}");
+    }
+
+    /// Send one Enter to the pane — the act that advances [`pane_painting_in_turn`] to its next
+    /// screen.
+    fn advance(access: &WorkspacePaneAccess, id: PaneId) {
+        let written = access
+            .inject(id, &[sprag_plugin::KeyStroke::named("Enter")])
+            .expect("the pane takes a keystroke");
+        assert!(
+            written.bytes() > 0,
+            "an Enter that wrote nothing would advance nothing",
+        );
+    }
+
     /// Poll the source until `ready`, or give up — the pane's child has to run and its bytes have to
     /// reach the emulator, and neither is synchronous.
     fn settle(
@@ -833,6 +905,138 @@ mod tests {
             "a turn happened between the pulls and the level must carry that: {} -> {}",
             before.seq,
             after.seq,
+        );
+
+        let closed = lock(&workspace).close(id);
+        assert!(
+            closed.is_some(),
+            "the pane this test opened was there to close"
+        );
+    }
+
+    /// THE PREMISE, MEASURED: a turn the pane really performed, between two looks, leaves the scrape
+    /// with nothing to report — the same answer it gives for a pane that never worked at all.
+    ///
+    /// This is the control the SCE requirement's §5 rests on, and it is here because the requirement
+    /// arrived as a claim about somebody else's observer (*"a one-second turn produced no observable
+    /// working state at all"*) and a project rule says a handed-over premise is measured before it is
+    /// built for. Measured here against sprag's own detector, driving the screens a real `claude`
+    /// paints, it reproduces — and the mechanism is sharper than "the sample rate is too low":
+    ///
+    /// **A scrape's evidence is DESTROYED by the next paint.** The working state lives in the pane's
+    /// TITLE, a terminal holds one, and the agent overwrites it the instant the turn ends. So it is
+    /// not that a look is unlikely to land inside a short turn; it is that after the turn there is
+    /// nothing left for any number of looks to find. No poll interval closes this, which is why the
+    /// answer is the agent reporting rather than sprag sampling harder — see the twin below.
+    ///
+    /// The turn here is not even short: it lasts as long as this test takes to paint it. What makes
+    /// it invisible is only that nobody looked DURING it, which is the case a supervisor cannot
+    /// prevent and cannot detect.
+    #[test]
+    fn a_turn_the_scrape_did_not_look_during_leaves_no_trace_of_having_happened() {
+        let (workspace, id) = pane_painting_in_turn(&[
+            CLAUDE_AT_REST.replace("%s", "one"),
+            CLAUDE_WORKING.to_owned(),
+            CLAUDE_AT_REST.replace("%s", "two"),
+        ]);
+        let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        let read = source(&workspace, &agents);
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        wait_for_screen(&access, id, "GO");
+        advance(&access, id);
+        wait_for_screen(&access, id, "at rest one");
+
+        // The pull a supervisor takes before the turn.
+        let before = settle(&read, id, |o| o.state == AgentState::Idle);
+        assert!(!before.authority.is_exact(), "this pane reports nothing");
+
+        // The whole turn, and nobody looks: the agent starts working...
+        advance(&access, id);
+        wait_for_screen(&access, id, "working");
+        // ...and finishes.
+        advance(&access, id);
+        wait_for_screen(&access, id, "at rest two");
+
+        // The pull a supervisor takes after it.
+        let after = read(id).expect("the pane is still an agent's");
+        assert_eq!(
+            after.state,
+            AgentState::Idle,
+            "the pane is at rest, which is true and is not the question",
+        );
+        assert_eq!(
+            after.seq, before.seq,
+            "the turn happened and the scrape can say nothing about it: {} -> {}",
+            before.seq, after.seq,
+        );
+
+        let closed = lock(&workspace).close(id);
+        assert!(
+            closed.is_some(),
+            "the pane this test opened was there to close"
+        );
+    }
+
+    /// THE ANSWER, on the same pane painting the same turn: the agent's own hook reports each
+    /// boundary, and the turn is there to be read afterwards.
+    ///
+    /// The twin of the test above, differing in exactly one thing — whether the agent said anything —
+    /// so what it proves is attributable. Both pulls read `idle`, exactly as before; the difference
+    /// is entirely in `seq`, which moved by the two changes the turn is made of.
+    ///
+    /// This is what `--settings` buys ([`crate::pane_args_source`]): the report is made AT the
+    /// boundary by the process that alone knows where the boundary is, so it does not depend on
+    /// anybody looking, and it survives the next paint.
+    #[test]
+    fn the_same_turn_reported_by_the_agent_is_still_there_to_be_read() {
+        let (workspace, id) = pane_painting_in_turn(&[
+            CLAUDE_AT_REST.replace("%s", "one"),
+            CLAUDE_WORKING.to_owned(),
+            CLAUDE_AT_REST.replace("%s", "two"),
+        ]);
+        let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        let read = source(&workspace, &agents);
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let hook = |state: AgentState, seq: u64| Report {
+            state,
+            agent: Some("claude".to_owned()),
+            source: "claude-hook".to_owned(),
+            seq: Some(seq),
+            owner: None,
+        };
+
+        wait_for_screen(&access, id, "GO");
+        advance(&access, id);
+        wait_for_screen(&access, id, "at rest one");
+        agents.report(id, hook(AgentState::Idle, 1), instant_window);
+        let before = read(id).expect("an agent");
+        assert_eq!(before.state, AgentState::Idle);
+
+        // The same turn, with nobody looking — and the agent saying so at each edge.
+        advance(&access, id);
+        agents.report(id, hook(AgentState::Working, 2), instant_window);
+        wait_for_screen(&access, id, "working");
+        advance(&access, id);
+        agents.report(id, hook(AgentState::Idle, 3), instant_window);
+        wait_for_screen(&access, id, "at rest two");
+
+        let after = read(id).expect("an agent");
+        assert_eq!(
+            after.state, before.state,
+            "the STATE is the same at both pulls, exactly as in the scraped twin",
+        );
+        assert_eq!(
+            after.seq,
+            before.seq + 2,
+            "and the two edges of the turn are still there: {} -> {}",
+            before.seq,
+            after.seq,
+        );
+        assert!(
+            after.authority.is_exact(),
+            "an answer that came from inside the pane: {:?}",
+            after.authority,
         );
 
         let closed = lock(&workspace).close(id);
