@@ -177,8 +177,11 @@ impl PaneDir {
 
     /// This direction's wire word — the inverse of [`from_wire`](Self::from_wire), and the key a
     /// neighbourhood is published under.
+    ///
+    /// `const` so [`WIRE_WORDS`](Self::WIRE_WORDS) can project the whole set through it at compile
+    /// time: a schema declaration is a `const`, so a vocabulary a schema publishes has to be one.
     #[must_use]
-    pub fn wire_str(self) -> &'static str {
+    pub const fn wire_str(self) -> &'static str {
         match self {
             Self::Left => "left",
             Self::Right => "right",
@@ -187,6 +190,11 @@ impl PaneDir {
         }
     }
 }
+
+// The four words as DATA, so the wire can publish the vocabulary rather than leaving every client
+// to know it out of band — see `sprag_vt::wire_words`. Projected through `wire_str` above, which
+// stays the one definition: `from_wire` reads what this publishes, by construction.
+crate::wire_words!(PaneDir: wire_str);
 
 /// A leaf's place in the tiling, stated relative to a SIBLING: which pane it sits beside,
 /// on which side, on which axis, at which share.

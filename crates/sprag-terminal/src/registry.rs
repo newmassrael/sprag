@@ -185,6 +185,10 @@ impl OrderStep {
     }
 }
 
+// The two words as DATA, so a `relative` argument can publish what it admits instead of every
+// client knowing it out of band — see `sprag_vt::wire_words`.
+crate::wire_words!(OrderStep: wire_str);
+
 /// WHERE a window should sit in its session's order — tmux `move-window`, and the request half of
 /// [`Session::move_window`].
 ///

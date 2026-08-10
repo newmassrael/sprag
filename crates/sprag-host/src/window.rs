@@ -132,6 +132,34 @@ impl WindowSize {
     }
 }
 
+impl WindowSize {
+    /// Whether this policy DERIVES a rectangle from the attached clients — which is what
+    /// `resize-window`'s `from` argument asks a daemon to do.
+    ///
+    /// [`Manual`](Self::Manual) is the one that does not, and it is not an omission: manual means
+    /// *"the size is whatever was pinned"*, so folding the clients under it asks the daemon to
+    /// compute a rectangle from a rule that says there is nothing to compute. A caller that wants
+    /// that rectangle sends `cols`/`rows`, which is the pin itself.
+    ///
+    /// ⚠ **This exists so ONE rule has one reader.** The refusal was written into
+    /// [`ResizeWindowAsk::parse`](crate::wire::ResizeWindowAsk::parse) as a match arm, and when the
+    /// wire came to publish what that argument admits it published the whole type — three words the
+    /// daemon takes and a fourth it refuses. The gate that drives every published word through the
+    /// daemon found it immediately. A predicate the PARSER gates on and the PUBLICATION is
+    /// projected through cannot come apart that way.
+    #[must_use]
+    pub const fn folds_clients(self) -> bool {
+        !matches!(self, Self::Manual)
+    }
+}
+
+// The four policy names as DATA, and the three that `resize-window`'s `from` admits. This
+// vocabulary reaches the WIRE as well as the config file, so the daemon publishes it rather than
+// leaving a client to know it out of band; see `sprag_vt::wire_words`. `parse` already walks `ALL`
+// through `name`, so what this publishes is what that admits, by construction.
+sprag_terminal::wire_words!(WindowSize: name);
+sprag_terminal::wire_words!(WindowSize: name, CLIENT_FOLD_WORDS where folds_clients);
+
 /// How a caller NAMES the rectangle `resize-window` is to pin — tmux's `resize-window` flags, as a
 /// type.
 ///
