@@ -428,7 +428,7 @@ fn decode_claude_json(panes: &dyn PaneAccess, id: PaneId) -> DecodedTurn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{KeyStroke, PaneRow, WorkspacePaneAccess};
+    use crate::access::{KeyStroke, PaneRow, WorkspacePaneAccess, Written};
     use crate::driver::{Driver, Guardrails, Outcome, OutcomeState};
     use sprag_terminal::Workspace;
     use std::sync::{Arc, Mutex};
@@ -882,7 +882,7 @@ mod tests {
             fn pane_full_text(&self, _id: PaneId) -> Option<String> {
                 None
             }
-            fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, PaneError> {
+            fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<Written, PaneError> {
                 Err(PaneError::UnknownPane(PaneId(0)))
             }
         }

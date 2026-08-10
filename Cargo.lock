@@ -3687,6 +3687,7 @@ dependencies = [
  "sce-build",
  "sce-rust-runtime",
  "serde_json",
+ "sprag-detect",
  "sprag-input",
  "sprag-terminal",
  "sprag-vt",

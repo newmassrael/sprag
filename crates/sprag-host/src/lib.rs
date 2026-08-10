@@ -559,6 +559,9 @@ pub fn workspace_scene(
     // layer ever learning what either hook does — the ISP boundary intact.
     let plugin_exit = daemon.on_pane_exit.clone();
     let plugin_attention = daemon.attention.clone();
+    // ...and the third: the detector, so a plugin SUPERVISING an agent reads the same verdict the
+    // pane list shows a person. Opaque at the boundary for the other two's reason.
+    let plugin_agents = daemon.agents.clone();
     // The scoped session's pool, resolved when the scope was (never re-derived here — one
     // question, one answer). The registry lock is not held, so taking the workspace lock
     // below cannot nest inside it.
@@ -594,6 +597,7 @@ pub fn workspace_scene(
             Arc::clone(runs),
             plugin_exit,
             plugin_attention,
+            plugin_agents,
         )))
         .with_tag(PLUGINS_TAG),
     ));

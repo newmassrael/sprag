@@ -12,6 +12,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
     Attention, CommandBuilder, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput, Workspace,
@@ -56,6 +57,38 @@ impl KeyStroke {
     }
 }
 
+/// What [`PaneAccess::inject`] returns: bytes WRITTEN to the pane's pseudoterminal.
+///
+/// A count with a name, and the name is the contract. Writing to a pty succeeds the moment the
+/// kernel takes the bytes, which says nothing about the program on the other end having taken
+/// them — a TUI that has not finished starting reads its input and throws it away, and the write
+/// that vanished reports exactly the same success as the one that landed. Measured against a rival
+/// while supervising a real agent session: text injected the instant the agent reported itself idle
+/// disappeared with no error, leaving an empty prompt and a supervisor waiting forever for work it
+/// had never actually asked for.
+///
+/// So this type is the API saying what it knows. A caller that wants *the pane took it* wants
+/// [`deliver`](crate::deliver::deliver), which returns a [`Delivered`](crate::deliver::Delivered)
+/// and cannot be reached from here — the distinction is in the types rather than in a doc comment
+/// somebody has to have read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[must_use]
+pub struct Written(u64);
+
+impl Written {
+    /// A receipt for `bytes` handed to a pty. Public so a test double can implement
+    /// [`PaneAccess`]; nothing about constructing one makes it a delivery.
+    pub const fn of(bytes: u64) -> Self {
+        Self(bytes)
+    }
+
+    /// How many bytes reached the pseudoterminal.
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.0
+    }
+}
+
 /// Why [`PaneAccess::inject`] failed — a typed cause, not a discarded error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneError {
@@ -96,13 +129,17 @@ pub trait PaneAccess {
     /// only), this captures output longer than the grid — a scrolled AI reply.
     fn pane_full_text(&self, id: PaneId) -> Option<String>;
 
-    /// Inject `keys` into the pane, returning the number of PTY bytes written.
+    /// Inject `keys` into the pane, returning what was WRITTEN to its pseudoterminal.
+    ///
+    /// **Success is not delivery.** [`Written`] says so in its name and its docs say why; a caller
+    /// that needs the pane to have taken the input wants [`deliver`](crate::deliver::deliver),
+    /// which is this call plus the read-back that confirms it.
     ///
     /// # Errors
     ///
     /// [`PaneError`] when the pane is unknown, a key cannot be encoded, or
     /// the write fails.
-    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, PaneError>;
+    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError>;
 
     /// The pane *lifecycle* surface (spawn/close), if this implementation
     /// supports it. `None` by default — read/inject plugins never need it, so
@@ -124,6 +161,101 @@ pub trait PaneAccess {
     fn raw_capture(&self) -> Option<&dyn PaneRawCapture> {
         None
     }
+
+    /// The pane *supervision* surface — what the AGENT in a pane is doing — if this host has a
+    /// detector. `None` by default, and the absence is an answer: see [`PaneSupervision`].
+    fn supervision(&self) -> Option<&dyn PaneSupervision> {
+        None
+    }
+}
+
+/// Which authority a pane's [`AgentState`] came from, and so how much it is worth.
+///
+/// A supervisor that cannot tell these apart is using an approximation as if it were exact. The
+/// two are not degrees of the same evidence — they are different KINDS, reached by different
+/// machinery, and a consumer choosing a poll interval or deciding whether to trust a turn boundary
+/// needs to know which it has.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Authority {
+    /// A process INSIDE the pane said so — the agent's own hook, reporting the turn boundary it
+    /// alone knows. Exact: nothing was sampled and nothing can have been missed between samples.
+    /// The string is who said it.
+    Reported { source: String },
+    /// A rule read it off the pane's screen and title. Approximate by construction: the working
+    /// signal is an ANIMATION, so a sample can land in its gap, and a state that flips twice
+    /// between two looks is a state neither look saw. The string is which rule fired, `None` when
+    /// a manifest claimed the pane and no rule matched.
+    Scraped { rule: Option<String> },
+}
+
+impl Authority {
+    /// Whether this answer came from the pane itself, and so has no sampling gap in it.
+    ///
+    /// The one question a supervisor must ask before treating a state as a turn BOUNDARY rather
+    /// than as a description of right now.
+    #[must_use]
+    pub const fn is_exact(&self) -> bool {
+        matches!(self, Self::Reported { .. })
+    }
+}
+
+/// What the agent in one pane is doing, read as a LEVEL.
+///
+/// Everything here is answered by a pull, deliberately. A supervisor driven by state-change EVENTS
+/// loses any turn shorter than the gap between two of them — measured against a rival, where a
+/// one-second agent turn produced no event at all and the supervising machine waited forever for a
+/// turn that had already finished. A level cannot be lost that way: whatever the pane is doing when
+/// you ask is what you are told.
+///
+/// [`seq`](Self::seq) is what recovers the part of an edge stream that is worth having. It counts
+/// PUBLISHED CHANGES, so two pulls that both read `Idle` while the number moved by two say a turn
+/// began and ended in between — the transition a poll could not see, carried as a level and
+/// therefore not lost.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentObservation {
+    /// What the pane is doing now.
+    pub state: AgentState,
+    /// Which agent it is, `None` when a rule fired without one being identified.
+    pub agent: Option<String>,
+    /// Where the answer came from, and so whether it is exact — see [`Authority`].
+    pub authority: Authority,
+    /// How many published CHANGES this pane's state has been through. Never decreases while the
+    /// pane lives; compare it across two pulls to learn that something happened between them.
+    pub seq: u64,
+    /// What the pane is blocked ON, when it is blocked and the question is on its screen.
+    ///
+    /// Populated only for [`AgentState::Blocked`], because that is the only state in which the
+    /// menu on the screen is the thing the pane is waiting on — a menu still painted behind a
+    /// working agent is scenery, and reporting it would invite a supervisor to answer a question
+    /// nobody is asking.
+    ///
+    /// `None` on a blocked pane is a real case and not a defect: an agent can block on something
+    /// that is not a numbered list, and a report can say `blocked` about a pane whose screen shows
+    /// no menu at all. A supervisor that finds `None` here has to hand the pane to a person, which
+    /// is the correct answer to a question it cannot read.
+    pub asking: Option<Question>,
+}
+
+/// Pane *supervision*: what the AGENT in a pane is doing. Reached via
+/// [`PaneAccess::supervision`], on the same terms as [`PaneLifecycle`] and [`PaneRawCapture`] —
+/// only a plugin that supervises asks for it, so nothing else carries the dependency.
+///
+/// # Why the absence of the whole surface is an answer
+///
+/// [`PaneAccess::supervision`] returns `None` for a host with no detector at all, and
+/// [`pane_agent_state`](Self::pane_agent_state) returns `None` for a pane no manifest claims. Those
+/// are opposite instructions: the first says *ask a person, this build cannot supervise anything*,
+/// and the second says *this pane is not an agent*. Collapsing them into one `None` would let a
+/// supervisor conclude "no agents here" from a host that simply never looked.
+pub trait PaneSupervision {
+    /// What the agent in `id` is doing right now, or `None` for a pane no manifest claims (and for
+    /// a pane id nobody knows).
+    ///
+    /// A LEVEL: safe to call as often as a plugin steps, and each answer stands on its own. The
+    /// read is arbitrated by the host's one detector, so two plugins watching one pane can never
+    /// disagree about it, and the host's quiescence gate means a pane whose screen has not moved
+    /// costs no rule evaluation.
+    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation>;
 }
 
 /// Pane *lifecycle* control: spawn and close panes. The capability a plugin
@@ -175,6 +307,17 @@ pub trait PaneRawCapture {
 /// discipline the pane-exit death signal follows.
 pub type AttentionMinter = Arc<dyn Fn() -> Box<dyn Fn(PaneId, Attention) + Send> + Send + Sync>;
 
+/// A reader for one pane's agent state — the daemon's detector, handed in as an opaque `Fn`.
+///
+/// The same discipline [`AttentionMinter`] and the pane-exit signal follow, and here it carries one
+/// more argument. The memory a verdict comes out of is per-DAEMON and lives beside the session
+/// tree; this layer is session-tree-free by decision (R144). An `Fn(PaneId) -> Option<_>` lets a
+/// plugin read the daemon's ONE arbitration without this crate learning that a registry, a settle
+/// window or a manifest file exists — and it keeps the alternative unavailable, which matters: a
+/// plugin holding its own detector would be a second authority answering the same question about
+/// the same pane, free to disagree with the pane list a person is looking at.
+pub type AgentStateSource = Arc<dyn Fn(PaneId) -> Option<AgentObservation> + Send + Sync>;
+
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
 pub struct WorkspacePaneAccess {
     workspace: Arc<Mutex<Workspace>>,
@@ -201,6 +344,13 @@ pub struct WorkspacePaneAccess {
     /// them is exactly the shape the notification path was in: every layer carrying the fact and one
     /// surface obliged to read it.
     on_attention: Option<AttentionMinter>,
+    /// The daemon's agent-state reader ([`AgentStateSource`]), or `None` for a host with no
+    /// detector — a GUI's in-process host, a test double. Opaque exactly as its two neighbours
+    /// are.
+    ///
+    /// Its absence is what [`PaneAccess::supervision`] reports, so "this build cannot supervise"
+    /// and "this pane is not an agent" stay different answers all the way out to the plugin.
+    agent_state: Option<AgentStateSource>,
 }
 
 impl WorkspacePaneAccess {
@@ -212,6 +362,7 @@ impl WorkspacePaneAccess {
             workspace,
             on_pane_exit: None,
             on_attention: None,
+            agent_state: None,
         }
     }
 
@@ -229,6 +380,15 @@ impl WorkspacePaneAccess {
     #[must_use]
     pub fn with_attention(mut self, mint: Option<AttentionMinter>) -> Self {
         self.on_attention = mint;
+        self
+    }
+
+    /// Attach the daemon's agent-state reader, so a plugin can supervise what the agents in its
+    /// panes are doing. A builder for [`with_pane_exit`](Self::with_pane_exit)'s reason, and
+    /// passing `None` leaves [`PaneAccess::supervision`] answering that this host cannot.
+    #[must_use]
+    pub fn with_agent_state(mut self, source: Option<AgentStateSource>) -> Self {
+        self.agent_state = source;
         self
     }
 
@@ -265,7 +425,7 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self.handle(id)?.with_screen(Screen::full_text))
     }
 
-    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<u64, PaneError> {
+    fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
         let handle = self.handle(id).ok_or(PaneError::UnknownPane(id))?;
         let modes = handle.input_modes();
         let mut bytes = Vec::new();
@@ -277,7 +437,7 @@ impl PaneAccess for WorkspacePaneAccess {
         handle
             .write(&bytes)
             .map_err(|e| PaneError::Write(e.to_string()))?;
-        Ok(bytes.len() as u64)
+        Ok(Written::of(bytes.len() as u64))
     }
 
     fn lifecycle(&self) -> Option<&dyn PaneLifecycle> {
@@ -286,6 +446,20 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn raw_capture(&self) -> Option<&dyn PaneRawCapture> {
         Some(self)
+    }
+
+    fn supervision(&self) -> Option<&dyn PaneSupervision> {
+        // Gated on the reader rather than answered unconditionally: a surface with no detector
+        // behind it must say so, or every pane on a host that never looked reads as "not an agent".
+        self.agent_state
+            .is_some()
+            .then_some(self as &dyn PaneSupervision)
+    }
+}
+
+impl PaneSupervision for WorkspacePaneAccess {
+    fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
+        (self.agent_state.as_ref()?)(id)
     }
 }
 
@@ -452,7 +626,7 @@ mod tests {
         let mut keys = KeyStroke::text("hi");
         keys.push(KeyStroke::named("Enter"));
         let written = access.inject(pane, &keys).expect("inject");
-        assert!(written >= 3, "wrote {written} bytes");
+        assert!(written.bytes() >= 3, "wrote {} bytes", written.bytes());
 
         // The echo is async; poll the collapsed text until it lands.
         let start = Instant::now();

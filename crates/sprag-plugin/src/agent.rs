@@ -125,7 +125,7 @@ impl Plugin for Agent {
             .map(|rows| rows.iter().map(|row| row.generation).collect())
             .unwrap_or_default();
 
-        let cost = panes.inject(self.pane, &self.prompt_keys())?;
+        let cost = panes.inject(self.pane, &self.prompt_keys())?.bytes();
 
         // If cancelled mid-wait, don't converge or record a partial reply —
         // return Continue so the Driver's loop-top ends the run Cancelled.

@@ -162,7 +162,7 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{KeyStroke, PaneRow};
+    use crate::access::{KeyStroke, PaneRow, Written};
     use crate::plugin::Step;
     use sprag_terminal::PaneId;
     use std::sync::Arc;
@@ -195,7 +195,7 @@ mod tests {
         fn pane_full_text(&self, _id: PaneId) -> Option<String> {
             None
         }
-        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<u64, PaneError> {
+        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<Written, PaneError> {
             Err(PaneError::UnknownPane(PaneId(0)))
         }
     }

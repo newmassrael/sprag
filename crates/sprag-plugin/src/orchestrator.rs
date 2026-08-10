@@ -75,7 +75,7 @@ impl Plugin for Orchestrator {
         // Act: inject the stimulus + Enter.
         let mut keys = KeyStroke::text(&self.spec.stimulus);
         keys.push(KeyStroke::named("Enter"));
-        let cost = panes.inject(self.pane, &keys)?;
+        let cost = panes.inject(self.pane, &keys)?.bytes();
 
         // Perceive, then judge against the collapsed (wrap-safe) screen text.
         // If cancelled mid-observe, don't judge — return Continue so the

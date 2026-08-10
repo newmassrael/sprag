@@ -13,6 +13,11 @@ publish = false
 sprag-terminal = { workspace = true }
 sprag-vt = { workspace = true }
 sprag-input = { workspace = true }
+# The agent-state VOCABULARY, so the extension API speaks the words a client already reads
+# (`AgentState`, and the `Question` a blocked pane is blocked on) rather than re-spelling them at
+# one more boundary. Pure — no lock, no wire, no clock — so depending on it costs the substrate
+# nothing it did not already have.
+sprag-detect = { workspace = true }
 # The generated state machine's runtime (Engine + StatePolicy).
 sce-rust-runtime = { workspace = true }
 # Parse a foreign AI tool's structured stdout (a `claude -p --output-format

@@ -57,7 +57,7 @@ impl Plugin for Pipe {
         let cost = if relayed.is_empty() {
             0
         } else {
-            panes.inject(self.dst, &KeyStroke::text(&relayed))?
+            panes.inject(self.dst, &KeyStroke::text(&relayed))?.bytes()
         };
         // The pipe never self-terminates; the Driver's guardrails bind it.
         Ok(Step {
@@ -117,7 +117,7 @@ mod tests {
         // first step has real output to relay.
         let mut seed = KeyStroke::text("relayme");
         seed.push(KeyStroke::named("Enter"));
-        access.inject(src, &seed).expect("seed src");
+        let _seeded = access.inject(src, &seed).expect("seed src");
         assert!(
             wait_until(&access, src, "relayme"),
             "source never echoed the seed"

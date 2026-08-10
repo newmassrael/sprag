@@ -37,6 +37,7 @@ pub(crate) mod sm {
 
 pub mod access;
 pub mod agent;
+pub mod deliver;
 pub mod dialogue;
 pub mod driver;
 pub mod orchestrator;
@@ -47,9 +48,11 @@ pub mod run;
 pub(crate) mod session;
 
 pub use access::{
-    KeyStroke, PaneAccess, PaneError, PaneLifecycle, PaneRawCapture, PaneRow, WorkspacePaneAccess,
+    AgentObservation, AgentStateSource, Authority, KeyStroke, PaneAccess, PaneError, PaneLifecycle,
+    PaneRawCapture, PaneRow, PaneSupervision, WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
+pub use deliver::{Delivered, Delivery, deliver, has_painted};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use driver::{Driver, Guardrails, Outcome, OutcomeState};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
