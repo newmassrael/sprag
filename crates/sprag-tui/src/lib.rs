@@ -60,4 +60,4 @@ pub use paint::{
     status_changes, title_change,
 };
 pub use sprag_terminal::{Divider, PaneRect, Rect, Tiling, tile, with_ratio};
-pub use viewport::{PaneView, Viewport};
+pub use viewport::{PaneView, Viewport, first_row};

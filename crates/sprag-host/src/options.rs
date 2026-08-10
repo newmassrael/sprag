@@ -297,6 +297,33 @@ pub const REPEAT_TIME: &str = "repeat-time";
 /// The default is [`sprag_detect::DEFAULT_SETTLE`] rather than a number spelled here, held to it by
 /// `the_agent_settle_default_is_the_detectors_own` — the treatment [`HISTORY_LIMIT`] gets against the
 /// emulator and [`REPEAT_TIME`] against the keymap.
+/// Whether a client TOO NARROW for a pane re-wraps that pane's lines into the width it can show,
+/// instead of showing a slice of them — `on` / `off`.
+///
+/// A CLIENT-side option like [`PREFIX`] and [`REPEAT_TIME`], and here the reason is not merely that
+/// two clients may disagree: the pane is not involved at all. A pty has ONE winsize, so a shared
+/// pane can never be re-laid-out for one watcher (R346); what a client owns is its own PICTURE of
+/// it, and this says how that picture is drawn. Nothing crosses the wire, no other client can see
+/// it, and the child is never told.
+///
+/// **The default is `on`, and that is a change of behaviour ONLY where the old one was measured
+/// broken.** It engages when a pane is wider than the whole of a client's screen, which for a solo
+/// user never happens — their client IS the window. For the case it does cover, R349 drove what
+/// `off` gives: a 60-column client watching a 100-column window could read sixty columns of a
+/// 78-character line, and WHICH sixty was decided by where the cursor happened to be — the line's
+/// first nineteen columns while typing it, its last twenty-two once Enter moved the cursor away.
+/// There is no key that reaches the rest, because the view is pinned to the cursor.
+///
+/// `off` is what a person asks for when they want the pane's true geometry — column-aligned output
+/// keeps its columns, and the part that does not fit is simply not shown. It is a real preference
+/// and it is the one this option exists for; it is not the safe default, because the thing it is
+/// safe from is a reshape and the thing it costs is text nobody can reach.
+///
+/// It never applies to the ALTERNATE screen: a program there owns absolute cell positions at the
+/// width it was told, and that refusal is [`sprag_grid::rewrap`]'s own rather than a setting
+/// anybody can turn off.
+pub const REWRAP: &str = "rewrap";
+
 pub const AGENT_SETTLE_TIME: &str = "agent-settle-time";
 
 /// [`DETACH_ON_DESTROY`]'s values, in tmux's documented order.
@@ -511,6 +538,13 @@ pub const OPTIONS: &[OptionSpec] = &[
         // `the_repeat_time_default_is_the_keymaps_own` holds the two together, the treatment
         // `history-limit` gets against the emulator.
         default: "500",
+    },
+    OptionSpec {
+        name: REWRAP,
+        kind: OptionKind::Choice(ON_OFF),
+        // ON, because the case it covers is one this project MEASURED as text a person cannot
+        // reach — see the name's own doc for the numbers and for why `off` is still a real want.
+        default: "on",
     },
     OptionSpec {
         name: WINDOW_SIZE,

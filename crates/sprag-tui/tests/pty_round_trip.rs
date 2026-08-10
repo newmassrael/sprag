@@ -3765,65 +3765,52 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
     );
 }
 
-/// **WHAT THE SMALLER CLIENT ACTUALLY SEES when the window is bigger than its terminal.**
+/// **WHAT THE SMALLER CLIENT SEES WITH `rewrap = "off"`** — the pane's true geometry, clipped.
 ///
-/// Every other gate above asks the DAEMON what size it arbitrated. None of them asks what the
-/// client that lost the arbitration is looking at, and that is the half a person notices: under
-/// `largest`, a phone attached beside a desktop is holding a terminal narrower than the window it
+/// Every `window-size` gate above asks the DAEMON what size it arbitrated. None of them asks what
+/// the client that lost the arbitration is looking at, and that is the half a person notices:
+/// under `largest`, a phone attached beside a desktop holds a terminal narrower than the window it
 /// has been given, and the cells past its right edge have to go somewhere.
 ///
-/// There are only two honest answers and they are very different products. Either the client CLIPS
-/// — the columns it cannot show are simply not drawn, and its own last row is still its status line
-/// — or it writes them anyway, the small terminal WRAPS them onto the next row, and every row below
-/// is displaced: the arrangement tears, the status line is pushed off, and what the person sees is
-/// not the session. This pins the first.
+/// There are only two honest answers to THAT and they are very different products. Either the
+/// client CLIPS — the columns it cannot show are simply not drawn, and its own last row is still
+/// its status line — or it writes them anyway, the small terminal WRAPS them onto the next row,
+/// and every row below is displaced: the arrangement tears, the status line is pushed off, and
+/// what the person sees is not the session. This pins the first.
 ///
 /// The needle is deliberately longer than the narrow client and shorter than the window, so it is
 /// text the wide client can show in full and the narrow one cannot show at all.
 ///
-/// ⚠ **R348 CHANGED WHICH COLUMNS IT SHOWS, and this gate is where that was found.** It used to
-/// assert the narrow client held the FIRST sixty columns — the window's left edge, forever, with no
-/// way to reach the rest. A viewport follows the cursor of the pane being typed into, so as the
-/// line grows past the narrow terminal the view slides right and what is on screen is the LIVE END
-/// of the line. The claim the test was written for is untouched (a clip is still a clip, and the
-/// client's last row is still its own); what moved is the half that was never a claim, only the
-/// consequence of a view that could not move.
+/// ⚠ **R348 CHANGED WHICH COLUMNS IT SHOWS.** It used to assert the narrow client held the FIRST
+/// sixty columns — the window's left edge, forever, with no way to reach the rest. A viewport
+/// follows the cursor of the pane being typed into, so as the line grows past the narrow terminal
+/// the view slides right and what is on screen is the LIVE END of the line.
+///
+/// ⚠⚠ **R349 MADE THIS THE OPTION'S OTHER ARM, and gave it a config home of its own.** Re-wrapping
+/// is now the default, because R349 measured what this behaviour costs a person: sixty columns of
+/// a hundred-column line are readable and WHICH sixty is decided by where the cursor is, so a
+/// committed line has twenty-two characters nobody can reach. The claim here is untouched and is
+/// still worth pinning — a clip is a clip, the client's last row is its own — it is simply what
+/// `off` now means. Two things follow. The config goes to the CLIENTS as well as the daemon, which
+/// this gate should always have done (R318/R319/R331: a client with no `XDG_CONFIG_HOME` reads the
+/// developer's file); and the OFFSET is asserted exactly, because "the view panned" is the half of
+/// `off` that `on` replaces rather than keeps.
 #[test]
 fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
-    let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\nrewrap = \"off\"\n");
     let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
     let mut conn = observe(&sock);
     let session = boot_session(&mut conn);
 
     let (wide_pty, narrow_pty) = ((100u16, 24u16), (60u16, 24u16));
     let window = panes_of(wide_pty);
-
-    let mut wide = Tui::attach(&sock, &session);
-    wait_for("the wide client to attach", || {
-        match attached(&mut conn, &session) {
-            0 => Err("nobody attached".to_owned()),
-            _ => Ok(()),
-        }
-    });
-    wide.resize(wide_pty.0, wide_pty.1);
-    wait_for("the wide client's area to become the window", || {
-        settled(pane_size(&mut conn, &session), &Some(window))
-    });
-
-    let mut narrow = Tui::attach(&sock, &session);
-    wait_for(
-        "the daemon to count two attached clients",
-        || match attached(&mut conn, &session) {
-            2 => Ok(()),
-            n => Err(format!("{n} attached")),
-        },
-    );
-    // The narrow client is DEFAULT-sized until it reports; give it its own small terminal and hold
-    // the window at the wide one's area, which is what `largest` is for.
-    narrow.resize(narrow_pty.0, narrow_pty.1);
-    wait_for(
-        "the window to stay the wider client's under `largest`",
-        || settled(pane_size(&mut conn, &session), &Some(window)),
+    let (mut wide, narrow) = two_clients(
+        &sock,
+        &session,
+        &mut conn,
+        wide_pty,
+        narrow_pty,
+        Some(config.as_str()),
     );
 
     // Text that fits the WINDOW and not the narrow terminal: 80 columns of it, against 60.
@@ -3840,30 +3827,46 @@ fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
     //    Its top row is FULL of the needle and one cell short of its own width — the cursor's cell,
     //    left blank and trimmed by `row`. That is the tell that the view followed: a client frozen
     //    at the window's left edge would hold sixty of them and never move again.
+    //    ⚠ THE WAIT IS ON THE OFFSET AND NOT ON THE ROW, because the row cannot tell them apart:
+    //    a line of eighty identical characters reads as fifty-nine of them at EVERY offset the
+    //    view passes through on its way, so a wait on the text stops at whichever one the sampler
+    //    happened to see — this gate settled at `+7` and asserted a claim about `+21`.
+    let showing = format!(
+        "<{}x{} of {}x{} +21+0>",
+        narrow_pty.0,
+        narrow_pty.1 - 1,
+        window.0,
+        window.1
+    );
+    narrow.wait_for(
+        "the narrow client's view to reach the cursor's column",
+        || {
+            let status = narrow.row(STATUS_ROW);
+            if status.starts_with(&showing) {
+                Ok(())
+            } else {
+                Err(format!("status {status:?} row0 {:?}", narrow.row(0)))
+            }
+        },
+    );
     let seen = usize::from(narrow_pty.0) - 1;
-    narrow.wait_for("the narrow client to paint the end of the line", || {
-        settled(narrow.row(0), &"A".repeat(seen))
-    });
-    let status = narrow.row(STATUS_ROW);
-    assert!(
-        status.starts_with(&format!(
-            "<{}x{} of {}x{} +",
-            narrow_pty.0,
-            narrow_pty.1 - 1,
-            window.0,
-            window.1
-        )),
-        "the narrow client's last row is still its OWN, and now says what it is showing of the \
-         window and where: {status:?} ({})",
+    assert_eq!(
+        narrow.row(0),
+        "A".repeat(seen),
+        "the top row is full of the needle and one cell short of its own width — the cursor's \
+         cell, left blank: {}",
         narrow.picture(),
     );
+    let status = narrow.row(STATUS_ROW);
     assert!(
         status.contains(&format!("[{session}]")),
         "...without having given up the session it was always there to name: {status:?}",
     );
 
     // 2. AND NOTHING WRAPPED ONTO THE ROW BELOW — the tell a clip is a clip. A wrap would put the
-    //    twenty columns the terminal could not hold at the start of row 1.
+    //    twenty columns the terminal could not hold at the start of row 1, and so, deliberately,
+    //    would `rewrap = "on"`; the difference is that one of them is displacement and the other
+    //    is the line continuing, which is what the gate above measures.
     assert_eq!(
         narrow.row(1),
         "",
@@ -3882,6 +3885,75 @@ fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
         wide.row(0),
         needle,
         "...and the client that CAN show the whole line still does",
+    );
+}
+
+/// **A RE-WRAPPED PANE IS TALLER THAN THE CLIENT, so the client shows the end of it.**
+///
+/// The gate above re-wraps a pane whose lines all still fit; this one fills the pane until they do
+/// not. Ten wrapped lines on a 100-column pane are forty rows once cut to sixty, against a
+/// twenty-three-row client — so something has to be off screen, and WHICH something is the claim:
+/// the newest output, the rows the person is typing under.
+///
+/// Written because nothing built that branch. `first_row` had a unit gate and the composition that
+/// calls it did not, and a client that ignored it entirely would pass every other gate in this
+/// file — it would simply show the TOP of the pane forever, which is what a person notices and no
+/// assertion did.
+///
+/// REVERT-PROOF: return 0 from `first_row` and the first line is on screen and the last is not,
+/// which fails both halves.
+#[test]
+fn a_re_wrapped_pane_taller_than_the_client_shows_its_newest_rows() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let (wide_pty, narrow_pty) = ((100u16, 24u16), (60u16, 24u16));
+    let (mut wide, narrow) = two_clients(&sock, &session, &mut conn, wide_pty, narrow_pty, None);
+
+    // Ten lines of eighty characters, each named at BOTH ends so a half-row is not mistaken for a
+    // whole one. `cat` echoes each twice (the line discipline, then the child), so the pane fills
+    // faster than the count suggests — which is the point.
+    let line = |n: usize| format!("L{n:02}{}E{n:02}", "-".repeat(73));
+    for n in 1..=10 {
+        wide.type_bytes(format!("{}\r", line(n)).as_bytes());
+    }
+    wide.wait_for("the wide client to paint the last line", || {
+        let last = line(10);
+        if wide.rows().iter().any(|row| row == &last) {
+            Ok(())
+        } else {
+            Err(format!("{:?}", wide.rows()))
+        }
+    });
+
+    // THE NEWEST LINE IS ON SCREEN, as the two rows it takes at sixty columns.
+    let last = line(10);
+    let (head, tail) = (last[..60].to_owned(), last[60..].to_owned());
+    narrow.wait_for(
+        "the narrow client to show the newest line, re-wrapped",
+        || {
+            let rows = narrow.rows();
+            let at = rows.iter().position(|row| row == &head);
+            match at {
+                Some(at) if rows.get(at + 1) == Some(&tail) => Ok(()),
+                _ => Err(format!("{rows:?}")),
+            }
+        },
+    );
+
+    // AND THE OLDEST IS NOT — which is what makes the assertion above about the END of the pane
+    // rather than about a pane that happened to fit.
+    let rows = narrow.rows();
+    assert!(
+        !rows.iter().any(|row| row.starts_with("L01")),
+        "the first line must have scrolled off this client's view of a pane too tall for it: \
+         {rows:?}",
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with("L10")),
+        "...and the last must be on it: {rows:?}",
     );
 }
 
@@ -8631,5 +8703,161 @@ fn a_client_too_small_for_its_window_follows_the_pane_it_is_typing_into() {
         pane_sizes(&mut conn, &session),
         vec![(window.0, top), (window.0, bottom)],
         "a client too small for the window must not have cost it a row",
+    );
+}
+
+/// A WIDE client and a NARROW one on one session, both settled, with the window held at the wide
+/// one's area — the fixture every "a client too small for its window" claim is made on.
+///
+/// `client_config` is the config home BOTH CLIENTS are given, and `None` is not the same as an
+/// empty one: a client with no `XDG_CONFIG_HOME` of its own reads the developer's file, which is
+/// the defect R318/R319/R331 met three times. It is `None` only where the claim is about a
+/// DEFAULT — and there the point is precisely that no file says anything.
+///
+/// The daemon's own config is the caller's, because `window-size` is a daemon option and the
+/// clients' copy of it decides nothing. See [`attached_client_under`] for the same split.
+fn two_clients(
+    sock: &Path,
+    session: &str,
+    conn: &mut HostConn,
+    wide_pty: (u16, u16),
+    narrow_pty: (u16, u16),
+    client_config: Option<&str>,
+) -> (Tui, Tui) {
+    let window = panes_of(wide_pty);
+    let launch = |sock: &Path, session: &str| match client_config {
+        Some(home) => Tui::attach_with_env(sock, session, &[("XDG_CONFIG_HOME", home)]),
+        None => Tui::attach(sock, session),
+    };
+
+    let mut wide = launch(sock, session);
+    wait_for("the wide client to attach", || {
+        match attached(conn, session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    wide.resize(wide_pty.0, wide_pty.1);
+    wait_for("the wide client's area to become the window", || {
+        settled(pane_size(conn, session), &Some(window))
+    });
+
+    let mut narrow = launch(sock, session);
+    wait_for(
+        "the daemon to count two attached clients",
+        || match attached(conn, session) {
+            2 => Ok(()),
+            n => Err(format!("{n} attached")),
+        },
+    );
+    // The narrow client is DEFAULT-sized until it reports; give it its own small terminal and hold
+    // the window at the wide one's area, which is what `largest` is for.
+    narrow.resize(narrow_pty.0, narrow_pty.1);
+    wait_for(
+        "the window to stay the wider client's under `largest`",
+        || settled(pane_size(conn, session), &Some(window)),
+    );
+    (wide, narrow)
+}
+
+/// **WHAT A CLIENT TOO NARROW FOR A PANE CAN READ OF A LINE** — R349's arc step 3, driven end to
+/// end through the shipped binary.
+///
+/// # What was measured before this existed
+///
+/// The same fixture, with the viewport R348 built and nothing else. A 60-column client watching a
+/// 100-column window, one 78-character line on it:
+///
+/// * **while typing**, the view followed the cursor to `+19` and the screen read `----…----END` —
+///   `START`, the first nineteen columns of the person's own line, was not on it;
+/// * **after Enter**, the cursor returned to column 0, the view snapped back to `+0`, and the same
+///   line read `START----…` — now the END was the part that could not be reached.
+///
+/// So sixty columns of a hundred-column line were readable, and WHICH sixty was decided by where
+/// the cursor happened to be. No key reaches the rest: the view is pinned to the cursor, and the
+/// person is already focused on the pane.
+///
+/// # What this asserts
+///
+/// That the WHOLE line is on the narrow client at once, as the two rows it takes at sixty columns
+/// — and that the wide client beside it is untouched, which is the half that makes this a client's
+/// picture rather than a change to the pane.
+#[test]
+fn a_client_too_narrow_for_a_pane_reads_the_whole_line_re_wrapped() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let (wide_pty, narrow_pty) = ((100u16, 24u16), (60u16, 24u16));
+    let window = panes_of(wide_pty);
+    let (mut wide, narrow) = two_clients(&sock, &session, &mut conn, wide_pty, narrow_pty, None);
+
+    // A line that fits the WINDOW and not the narrow terminal, with BOTH ends named so the test
+    // can say which of them is missing.
+    let line = format!("START{}END", "-".repeat(70));
+    assert_eq!(
+        line.len(),
+        78,
+        "wider than the client, narrower than the pane"
+    );
+    wide.type_bytes(line.as_bytes());
+    wide.wait_for("the wide client to paint the whole line", || {
+        settled(wide.row(0), &line)
+    });
+
+    // 1. THE WHOLE LINE, ON TWO ROWS. Sixty columns then the remaining eighteen — which is the
+    //    claim: nothing about this line is unreachable on this client any more.
+    narrow.wait_for(
+        "the narrow client to re-wrap the line onto two rows",
+        || {
+            let (first, second) = (narrow.row(0), narrow.row(1));
+            if first == line[..60] && second == line[60..] {
+                Ok(())
+            } else {
+                Err(format!("row0 {first:?} row1 {second:?}"))
+            }
+        },
+    );
+    assert!(
+        narrow.row(0).starts_with("START") && narrow.row(1).ends_with("END"),
+        "both ends of the line are on screen at once: {}",
+        narrow.picture(),
+    );
+
+    // 2. AND THE VIEW NEVER PANNED. The status row's offset is the tell: a client following the
+    //    cursor into column 78 would say `+19`, and one showing the pane's own first column says
+    //    nothing after the size. This is what makes the re-wrap a replacement for the pan rather
+    //    than a thing layered over it.
+    let status = narrow.row(STATUS_ROW);
+    assert!(
+        status.starts_with(&format!(
+            "<{}x{} of {}x{}> ",
+            narrow_pty.0,
+            narrow_pty.1 - 1,
+            window.0,
+            window.1
+        )),
+        "the view is at the pane's own left edge, with no offset to report: {status:?} ({})",
+        narrow.picture(),
+    );
+
+    // 3. THE PANE IS UNTOUCHED, which is the whole architecture: a pty has ONE winsize, so this is
+    //    one client's picture and never a re-layout. The wide client still reads the line on one
+    //    row, and the daemon still says the window is a hundred columns.
+    assert_eq!(
+        pane_size(&mut conn, &session),
+        Some(window),
+        "a client re-wrapping for itself must not have cost the pane a column",
+    );
+    assert_eq!(
+        wide.row(0),
+        line,
+        "...and the client that CAN show the whole line on one row still does",
+    );
+    assert_eq!(
+        wide.row(1),
+        "",
+        "...with nothing wrapped onto the row below it",
     );
 }

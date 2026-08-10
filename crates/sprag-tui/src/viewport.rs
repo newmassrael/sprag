@@ -7,6 +7,14 @@
 //! let the small terminal wrap them, which displaces every row below and pushes the status line off
 //! the screen. sprag clips, and has since R345 pinned it.
 //!
+//! ⚠ **R349 ADDED A THIRD ANSWER FOR THE PANE THAT DOES NOT FIT**, and it is neither of those two:
+//! [`sprag_grid::rewrap`] rebuilds the pane's logical LINES and cuts them to the width this client
+//! can show, so the row below holds the rest of the same line rather than the displaced start of
+//! the next one. The status row survives, the arrangement does not move, and nothing about the
+//! pane changes. It is per-pane, off on the alternate screen, and off entirely under
+//! `rewrap = "off"`; everything below still describes what happens to a pane that is NOT re-wrapped
+//! — and to the window, always, since a window is a layout and only a pane has lines.
+//!
 //! ## What clipping alone left, measured
 //!
 //! An 80x10 client watching an 80x23 window, two panes stacked:
@@ -36,6 +44,36 @@
 //! whole argument. Nothing here resizes anything.
 
 use sprag_terminal::Rect;
+
+/// Which row of a RE-WRAPPED pane the top of this client's `on_screen` rows shows.
+///
+/// A pane re-wrapped into a narrower width ([`sprag_grid::rewrap`]) is TALLER than the rectangle
+/// the tiling gave it — that is what re-wrapping means — so a client shows part of it, and this is
+/// which part. The [`Viewport`] above answers the same question about the WINDOW; this answers it
+/// about one pane's own content, and the two are separate because a window's rows are a layout
+/// while these are a person's lines.
+///
+/// **The pane's own first row, moved down by the LEAST that keeps the cursor on screen** — the
+/// rule [`Viewport::follow`] scrolls the window by, applied to one pane's re-wrapped lines.
+///
+/// Bottom-anchoring was written first and MEASURED WRONG. A 100-column pane holding one wrapped
+/// line and twenty-two blank rows re-wraps to twenty-four rows on a twenty-three-row client, and
+/// anchoring at the bottom drops the row that is over the limit — which is the first HALF of the
+/// only line on the screen, to make room for a blank one. The pane's trailing blanks are as real
+/// as its text and there are usually more of them, so "the end of the content" is not where the
+/// bottom is.
+///
+/// `cursor` is `None` for a frame that has none — a scrolled-back history window, whose last row
+/// IS its newest — and that arm alone anchors at the bottom.
+#[must_use]
+pub const fn first_row(tall: u16, on_screen: u16, cursor: Option<u16>) -> u16 {
+    let deepest = tall.saturating_sub(on_screen);
+    let top = match cursor {
+        Some(at) => at.saturating_sub(on_screen.saturating_sub(1)),
+        None => deepest,
+    };
+    if top > deepest { deepest } else { top }
+}
 
 /// Where a pane's rectangle sits on THIS terminal, and which of the pane's own cells that is.
 ///
@@ -158,6 +196,27 @@ impl Viewport {
         if self.offset.1 > max_row {
             self.offset.1 = max_row;
         }
+    }
+
+    /// Move the view the LEAST it can to show as much of `rect` as fits, PREFERRING its start.
+    ///
+    /// [`follow`](Self::follow) for a rectangle rather than a cell, and the two are not the same
+    /// request. Following a cell is right when the person's attention is AT that cell — a cursor
+    /// in a pane drawn at its own width. It is wrong for a pane this client is RE-WRAPPING, where
+    /// the cursor's column in the pane's coordinates is not where the character is drawn: the view
+    /// would chase a column the person is not looking at and slide the pane's own left edge off
+    /// the screen, which is the one column a re-wrapped pane always starts from.
+    ///
+    /// "As much as fits, preferring the start" is the far edge followed first and the near edge
+    /// second, so the near one wins whenever both cannot be had. For a pane wider than the screen
+    /// that pins its first column; for one that fits, it pulls the whole pane on rather than
+    /// leaving a tail off the far side.
+    pub const fn follow_rect(&mut self, rect: Rect) {
+        self.follow((
+            rect.col + rect.cols.saturating_sub(1),
+            rect.row + rect.rows.saturating_sub(1),
+        ));
+        self.follow((rect.col, rect.row));
     }
 
     /// Where a WINDOW rectangle goes on this terminal, or `None` when none of it is on screen.
@@ -419,6 +478,80 @@ mod tests {
         assert_eq!(view.note().as_deref(), Some("<60x9 of 80x23>"));
         view.follow((0, 12));
         assert_eq!(view.note().as_deref(), Some("<60x9 of 80x23 +0+4>"));
+    }
+
+    /// **Following a RECTANGLE shows as much of it as fits and prefers its START** — the target a
+    /// re-wrapped pane is followed by, where a cursor's column would be meaningless.
+    ///
+    /// Both arms matter and they are not the same: a pane WIDER than the screen pins its first
+    /// column (there is no offset that shows all of it, so the one that shows its beginning wins),
+    /// and one that FITS is pulled on whole rather than left with a tail off the far side.
+    ///
+    /// REVERT-PROOF: follow only the near edge and the second case never moves — a pane at column
+    /// 50 keeps ten of its fifty columns forever.
+    #[test]
+    fn following_a_rectangle_shows_as_much_of_it_as_fits_and_prefers_its_start() {
+        let mut whole = Viewport::of(Rect::screen(100, 23), Rect::screen(60, 23));
+        whole.follow_rect(Rect::new(0, 0, 100, 23));
+        assert_eq!(
+            whole.offset(),
+            (0, 0),
+            "a pane wider than the screen is shown from its own first column",
+        );
+
+        let mut right = Viewport::of(Rect::screen(100, 23), Rect::screen(60, 23));
+        right.follow_rect(Rect::new(50, 0, 50, 23));
+        assert_eq!(
+            right.offset(),
+            (40, 0),
+            "and a pane that FITS is pulled on whole — all fifty of its columns, not ten",
+        );
+
+        // Which is the case that needs the far edge first: following the near one alone leaves the
+        // view where it was, because column 50 is already on a screen showing 0..60.
+        let mut near_only = Viewport::of(Rect::screen(100, 23), Rect::screen(60, 23));
+        near_only.follow((50, 0));
+        assert_eq!(near_only.offset(), (0, 0), "the control for the line above");
+    }
+
+    /// **A RE-WRAPPED PANE STARTS AT ITS OWN FIRST ROW AND MOVES DOWN BY THE LEAST THAT KEEPS THE
+    /// CURSOR ON SCREEN** — and the measured case is the first one.
+    ///
+    /// A 100-column pane holding one wrapped line and twenty-two blank rows re-wraps to
+    /// twenty-four rows for a twenty-three-row client. Bottom-anchoring was written first and
+    /// driven through the shipped binary, where it dropped the row over the limit: the first HALF
+    /// of the only line on the screen, to make room for a blank one.
+    ///
+    /// REVERT-PROOF: anchor at the bottom (`tall - on_screen`) and the first case answers 1.
+    #[test]
+    fn a_re_wrapped_pane_shows_its_first_row_until_the_cursor_needs_it_not_to() {
+        assert_eq!(
+            first_row(24, 23, Some(1)),
+            0,
+            "the measured case: one wrapped line and a blank row over the limit",
+        );
+        assert_eq!(first_row(23, 23, Some(22)), 0, "content that exactly fits");
+        assert_eq!(
+            first_row(10, 23, Some(3)),
+            0,
+            "content shorter than the view"
+        );
+        assert_eq!(
+            first_row(46, 23, Some(44)),
+            22,
+            "a cursor past the bottom scrolls by the LEAST that puts it on the last row",
+        );
+        assert_eq!(
+            first_row(46, 23, Some(45)),
+            23,
+            "...and never past what the content can fill",
+        );
+        assert_eq!(
+            first_row(46, 23, None),
+            23,
+            "a frame with NO cursor — a scrolled-back window — is anchored at its bottom",
+        );
+        assert_eq!(first_row(0, 0, None), 0, "and nothing divides by nothing");
     }
 
     /// A screen with no room at all cannot be divided by zero.

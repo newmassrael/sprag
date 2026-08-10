@@ -125,8 +125,8 @@ use sprag_terminal::{Ended, PaneId, PlaceHow, SplitId};
 use sprag_tui::focus::{self, Person};
 use sprag_tui::outward::Outward;
 use sprag_tui::{
-    Divider, MouseEdges, PaintCache, PanePaint, Rect, Split, Tiling, Viewport, WireKey,
-    agent_window_title, chooser_changes, cursor_changes, divider_changes, help_changes,
+    Divider, MouseEdges, PaintCache, PanePaint, PaneView, Rect, Split, Tiling, Viewport, WireKey,
+    agent_window_title, chooser_changes, cursor_changes, divider_changes, first_row, help_changes,
     help_viewport, prompt_changes, status_changes, tile, title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
@@ -311,6 +311,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // Nothing has been pressed yet, so the row says where this client is — which is the
             // first thing a person attaching over ssh wants to know anyway.
             message: None,
+            rewrap: rewrapping(&keymap),
         },
         &mut held,
     )?;
@@ -433,6 +434,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     overlay: &overlay,
                                     status: split.status,
                                     message: showing(&message).as_deref(),
+                                    rewrap: rewrapping(&keymap),
                                 },
                                 &mut held,
                             )?;
@@ -453,6 +455,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     overlay: &overlay,
                                     status: split.status,
                                     message: showing(&message).as_deref(),
+                                    rewrap: rewrapping(&keymap),
                                 },
                                 &mut held,
                             )?;
@@ -479,6 +482,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                     overlay: &overlay,
                                     status: split.status,
                                     message: showing(&message).as_deref(),
+                                    rewrap: rewrapping(&keymap),
                                 },
                                 &mut held,
                             )?;
@@ -568,6 +572,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -609,6 +614,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -811,6 +817,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -848,6 +855,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -879,6 +887,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -917,6 +926,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -956,6 +966,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -1001,6 +1012,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -1157,6 +1169,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                             overlay: &overlay,
                                             status: split.status,
                                             message: showing(&message).as_deref(),
+                                            rewrap: rewrapping(&keymap),
                                         },
                                         &mut held,
                                     )?;
@@ -1187,6 +1200,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 overlay: &overlay,
                                 status: split.status,
                                 message: showing(&message).as_deref(),
+                                rewrap: rewrapping(&keymap),
                             },
                             &mut held,
                         )?;
@@ -1226,6 +1240,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         overlay: &overlay,
                         status: split.status,
                         message: showing(&message).as_deref(),
+                        rewrap: rewrapping(&keymap),
                     },
                     &mut held,
                 )?;
@@ -1339,6 +1354,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     overlay: &overlay,
                     status: split.status,
                     message: showing(&message).as_deref(),
+                    rewrap: rewrapping(&keymap),
                 },
                 &mut held,
             )?;
@@ -1646,6 +1662,7 @@ fn paint(
         overlay,
         status,
         message,
+        rewrap,
     } = frame;
     // The outer terminal's title, refreshed HERE because this is the one function that writes the
     // terminal at all — so every path that repaints also re-titles, and no future caller can add a
@@ -1693,15 +1710,23 @@ fn paint(
     // back on the input path. The loop below takes it rather than asking again.
     let mut focused = focus.and_then(|pane| {
         let area = tiling.area_of(pane)?;
-        let (cells, token) = host.pane_cells_and_token(pane, 0);
-        Some((pane, area, cells, token))
+        Some((pane, area, host.pane_frame(pane, 0)))
     });
-    if let Some((_, area, cells, _)) = &focused {
-        // WHERE THE PERSON IS TYPING, in the window's coordinates. A client too small for the
-        // window would otherwise be following the session's active pane into cells it does not
-        // draw — typing into a pane that is not on its screen, which is what this measured before
-        // there was a viewport at all.
-        viewport.follow(typing_at(cells, *area));
+    if let Some((_, area, read)) = &focused {
+        if rewrapped(rewrap, *area, screen_area, &read.cells) {
+            // A RE-WRAPPED pane is followed by its RECTANGLE and not by its cursor. The cursor's
+            // column in the pane's coordinates is not where the character is drawn once the lines
+            // are re-cut, so following it would chase a column the person is not looking at and
+            // slide the pane's own left edge — the one column a re-wrapped pane always starts
+            // from — off the screen.
+            viewport.follow_rect(*area);
+        } else {
+            // WHERE THE PERSON IS TYPING, in the window's coordinates. A client too small for the
+            // window would otherwise be following the session's active pane into cells it does not
+            // draw — typing into a pane that is not on its screen, which is what this measured
+            // before there was a viewport at all.
+            viewport.follow(typing_at(&read.cells, *area));
+        }
     }
     let mut drawn = Vec::with_capacity(tiling.panes.len());
     for held in &tiling.panes {
@@ -1712,17 +1737,18 @@ fn paint(
         let Some(view) = viewport.show(held.area) else {
             continue;
         };
-        let (cells, token) = match focused.take_if(|(pane, ..)| *pane == held.pane) {
-            Some((_, _, cells, token)) => (cells, token),
-            None => host.pane_cells_and_token(held.pane, 0),
+        let read = match focused.take_if(|(pane, ..)| *pane == held.pane) {
+            Some((_, _, read)) => read,
+            None => host.pane_frame(held.pane, 0),
         };
-        drawn.push(PanePaint {
-            pane: held.pane,
-            area: view.area,
-            from: view.from,
-            cells,
-            token,
-        });
+        drawn.push(rewrap_or_slice(
+            held.pane,
+            view,
+            read,
+            rewrap,
+            held.area,
+            screen_area,
+        ));
     }
     // The cursor is read from the SAME buffers the changes were built from, and before them in the
     // source only because the cache consumes the list: a second fetch could land a frame apart and
@@ -2040,6 +2066,79 @@ fn typing_at(cells: &GridBuffer, area: Rect) -> (u16, u16) {
     }
 }
 
+/// Whether pane `area` will be RE-WRAPPED on this client — the one predicate, asked before the
+/// view moves and again for each pane drawn.
+///
+/// It is deliberately independent of where the viewport currently sits, and that is what makes the
+/// two questions answerable in that order: a pane no WIDER than the whole of this terminal's pane
+/// area is one [`Viewport::follow_rect`] can bring on screen entire, so it never needs re-wrapping
+/// however the view has moved; a pane wider than the screen can never be shown whole, whatever the
+/// offset. Asking about the pane's SLICE instead would need the offset the follow has not chosen
+/// yet, and the two calls would answer differently within one frame.
+///
+/// The alternate screen is not checked here — [`sprag_grid::rewrap`] refuses it itself, which is
+/// where that rule belongs: a pane crosses that line whenever somebody opens `vim`, and a caller
+/// that had to remember is a caller that forgets. What this can say is only "the person asked for
+/// it and the pane does not fit".
+fn rewrapped(rewrap: bool, area: Rect, screen: Rect, cells: &GridBuffer) -> bool {
+    rewrap && area.cols > screen.cols && cells.screen() == pinion_core::ScreenKind::Main
+}
+
+/// One pane's contribution to the frame: its cells cut to this client's width when it is being
+/// re-wrapped, and the viewport's own slice of them when it is not.
+///
+/// The re-wrapped arm answers NO TOKEN, and that is a correctness bound rather than a cost
+/// decision. [`PaintCache`]'s skip rests on the producer's per-row damage stamps, and those are
+/// numbered in the PANE's rows; a re-wrapped row is a piece of a logical line that can come from
+/// two of them, so no stamp describes it. `None` is the answer the cache already has for "cannot
+/// say", and it means this pane is rebuilt every frame — which is what every client did for every
+/// pane before the cache existed.
+///
+/// `from.1` carries which re-wrapped row is on top, so the cache's arrangement key notices the
+/// content scrolling even though the rectangle has not moved — the same reason
+/// [`PaneView::from`](sprag_tui::PaneView::from) is part of that key at all.
+fn rewrap_or_slice(
+    pane: PaneId,
+    view: PaneView,
+    read: sprag_host::PaneFrame,
+    rewrap: bool,
+    area: Rect,
+    screen: Rect,
+) -> PanePaint {
+    let sprag_host::PaneFrame {
+        cells,
+        shares,
+        token,
+    } = read;
+    let cut = rewrapped(rewrap, area, screen, &cells)
+        .then(|| sprag_grid::rewrap(&cells, &shares, view.area.cols))
+        .flatten();
+    match cut {
+        Some(tall) => {
+            let cursor = tall.cursor();
+            let top = first_row(
+                tall.rows(),
+                view.area.rows,
+                cursor.visible.then_some(cursor.row),
+            );
+            PanePaint {
+                pane,
+                area: view.area,
+                from: (0, top),
+                cells: tall,
+                token: None,
+            }
+        }
+        None => PanePaint {
+            pane,
+            area: view.area,
+            from: view.from,
+            cells,
+            token,
+        },
+    }
+}
+
 fn window_area(host: &WireHost, screen: Rect) -> Rect {
     match host.window_size() {
         Some((cols, rows)) => Rect::screen(cols, rows),
@@ -2137,6 +2236,24 @@ fn refreshed(keymap: &mut sprag_host::config::ClientConfig) -> &Keymap {
         tracing::warn!(target: "sprag_tui::keys", %error, "the edited config was not usable; keeping the loaded keymap");
     }
     keymap.keymap()
+}
+
+/// Whether this client re-wraps a pane too WIDE for its terminal — [`options::REWRAP`], read from
+/// the user's live table.
+///
+/// The ONE reader of that option in this binary, and it is a function rather than a value held
+/// somewhere because [`Frame::rewrap`] is filled at sixteen call sites: sixteen copies of one
+/// expression is a repetition, and sixteen places that each decided for themselves would be a
+/// client that re-wraps on some repaints and not others.
+///
+/// Defaults to the table's own default when the file says nothing, which is what
+/// [`Options::get`](sprag_host::options::Options::get) already guarantees; the `is_some_and` is
+/// only for the shape, not for a fallback this makes up.
+fn rewrapping(config: &sprag_host::config::ClientConfig) -> bool {
+    config
+        .options()
+        .get(sprag_host::options::REWRAP)
+        .is_some_and(|value| value == "on")
 }
 
 /// What this client has put over the panes, and therefore what owns the keyboard.
@@ -2471,6 +2588,15 @@ struct Frame<'a> {
     /// clock than the loop that set it — and the row would clear one frame late, on a client that
     /// only repaints when something else happens.
     message: Option<&'a str>,
+    /// Whether a pane too WIDE for this terminal is re-wrapped into what it can show, rather than
+    /// shown as a slice of itself — [`options::REWRAP`](sprag_host::options::REWRAP).
+    ///
+    /// Carried here rather than read inside [`paint`] for the reason the message above is, one
+    /// step milder: this client re-reads its config per keystroke, so a paint that read it would
+    /// read a file at a different instant than the loop around it. It is also the option's own
+    /// rule ([`ClientConfig`](sprag_host::config::ClientConfig)) that nothing be frozen out of that
+    /// table, and a frame is the shortest thing this client holds.
+    rewrap: bool,
 }
 
 /// What the loop should do with a key.
