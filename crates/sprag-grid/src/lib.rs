@@ -29,6 +29,69 @@ use sprag_vt::{
 // into THIS scope, so every `[`decode`]` inside wire.rs would break.
 pub mod wire;
 
+// The client-side re-wrap: a pane's logical lines cut to the width one client can show, plus the
+// per-row fact it needs from the producer. Beside the projection because it consumes the same
+// [`projected_rows`] enumerator — a re-wrap that read a row's share off a different row than its
+// cells came from would be R344's defect with a longer reach.
+mod rewrap;
+
+pub use rewrap::{RowShares, rewrap, shares};
+
+/// Which of a screen's rows one row of a projection comes from.
+///
+/// **The ONE place a display row is turned into a screen row**, and it exists because there is now
+/// a second reader of that mapping: [`project_scrolled`] builds the cells and
+/// [`shares`] builds the per-row fact that says where each of those rows' lines end. Two
+/// walks that each did their own arithmetic would be two things to keep in step, and the failure
+/// would be silent — a row's share read off its neighbour cuts the line in the wrong place and
+/// paints text nobody printed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Projected {
+    /// A scrolled-off line, by its index from the OLDEST retained one.
+    History(usize),
+    /// A row still on the live grid, by its own row number.
+    Live(u16),
+}
+
+impl Projected {
+    /// How many of this row's cells belong to its logical line, and whether that line runs on —
+    /// [`sprag_vt::Screen::continues`] for the half of the projection this row came from.
+    ///
+    /// A row with no continuation ends its line, and its share is everything up to its last cell
+    /// that is not blank; the emulator decides both, through the one `line_cells` every other
+    /// reader of a logical line already goes through.
+    pub(crate) fn share(self, screen: &Screen) -> (u16, bool) {
+        match self {
+            Self::History(index) => (
+                screen.scrollback_share_len(index),
+                screen.scrollback_continues(index).is_some(),
+            ),
+            Self::Live(row) => (screen.row_share_len(row), screen.continues(row).is_some()),
+        }
+    }
+}
+
+/// The screen rows [`project_scrolled`] would project at `offset_lines`, in display order.
+///
+/// `offset_lines == 0` is every live row in order, which is exactly what [`project`] walks.
+pub(crate) fn projected_rows(
+    screen: &Screen,
+    offset_lines: usize,
+) -> impl Iterator<Item = Projected> + use<> {
+    let rows = screen.rows();
+    let scrollback_len = screen.scrollback_len();
+    // The window of `rows` rows ends `offset` above the live bottom; a stale offset past the
+    // retained depth is the top of it, which is what `project_scrolled` clamps to.
+    let top = scrollback_len - offset_lines.min(scrollback_len);
+    (0..rows).map(move |display| {
+        let logical = top + usize::from(display);
+        match logical.checked_sub(scrollback_len) {
+            Some(live) => Projected::Live(u16::try_from(live).unwrap_or(u16::MAX)),
+            None => Projected::History(logical),
+        }
+    })
+}
+
 /// How many whole-screen projections have run, process-wide.
 static PROJECTIONS: AtomicU64 = AtomicU64::new(0);
 /// How many CELLS those projections came to, process-wide.
@@ -194,28 +257,23 @@ pub fn project_scrolled(screen: &Screen, offset_lines: usize, palette: &Palette)
         // view — return it with the cursor, not a cursor-less window.
         return project(screen, palette);
     }
-    // First displayed row's index into the logical [scrollback .. visible]
-    // sequence: the window of `rows` rows ends `offset` above the live bottom
-    // (offset <= scrollback_len, so this never underflows).
-    let top = scrollback_len - offset;
-
     // Metered HERE and not at the top of the function: both early returns delegate to `project`,
     // which meters itself, so an unconditional count at entry would double every live-view call.
     meter(cols, rows);
     let mut buffer = GridBuffer::new(cols, rows);
     let mut interner = HyperlinkInterner::default();
-    for display in 0..rows {
-        let logical = top + display as usize;
-        let cells = if logical < scrollback_len {
-            project_glyph_row(scrollback[logical], cols, &mut interner, palette)
-        } else {
-            project_row(
-                screen,
-                (logical - scrollback_len) as u16,
-                cols,
-                &mut interner,
-                palette,
-            )
+    // Through the shared enumerator, which is the ONE place a display row becomes a screen row —
+    // `rewrap::shares` walks the same one to say where each of these rows' lines end, and the two
+    // reading the mapping differently is a defect neither could see.
+    for (display, at) in projected_rows(screen, offset_lines).enumerate() {
+        let Ok(display) = u16::try_from(display) else {
+            break;
+        };
+        let cells = match at {
+            Projected::History(index) => {
+                project_glyph_row(scrollback[index], cols, &mut interner, palette)
+            }
+            Projected::Live(row) => project_row(screen, row, cols, &mut interner, palette),
         };
         buffer = buffer.with_row(display, cells);
     }
