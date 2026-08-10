@@ -151,10 +151,14 @@ pub struct Target {
     /// ITSELF, leaving every other copy on the machine untouched: see [`Target::session_args`].
     ///
     /// `None` says this agent has no such door and its users go through `install-hooks`. That is
-    /// codex's answer TODAY rather than forever: its own per-run overrides are dotted `key=value`
-    /// pairs over a TOML document, and whether a whole hooks table can be spelled that way is a
-    /// claim nobody here has run. An unverified `Some` would be worse than an honest `None` — it
-    /// would append a flag to somebody's editor session and find out at their expense.
+    /// codex's answer TODAY rather than forever, and the reason is a MEASUREMENT that came back
+    /// unable to discriminate rather than an assumption. Its per-run override is `-c key=value` with
+    /// the value parsed as TOML, so the shape is spellable; what nobody has established is whether
+    /// codex HONOURS a hook it was handed that way, and `--strict-config` cannot answer it —
+    /// `codex doctor` accepts a deliberately bogus `-c this_key_does_not_exist=42` with output
+    /// identical to the control, so it does not validate overrides at all. Settling it needs a real
+    /// codex session. An unverified `Some` would be worse than an honest `None`: it would append a
+    /// flag to somebody's editor session and find out at their expense.
     session_flag: Option<&'static str>,
     /// What the user must still do after the file is written, when writing it is not enough.
     ///
