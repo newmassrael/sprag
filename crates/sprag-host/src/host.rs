@@ -3904,9 +3904,32 @@ mod tests {
         }
         assert!(
             host.pane_full_text(PaneId(0)).contains(wanted),
-            "the restored pane's screen: {:?}",
+            "the restored pane's screen: {:?}, and {}",
             host.pane_full_text(PaneId(0)),
+            // R351: THE FACTS AT THE DEADLINE, because an empty screen alone cannot say which of
+            // two very different things happened. This test failed on the macOS runner with `""`
+            // and nothing else, and the two candidates — *the child never ran* and *the child ran
+            // and what it wrote was lost* — are told apart by exactly these: a child that never
+            // started leaves no exit status and a pane that is not at EOF, while a child that ran
+            // and was reaped leaves code 0 with an empty capture.
+            pane_liveness(&host, PaneId(0)),
         );
+    }
+
+    /// What a pane can say about its own child when its screen says nothing — see the one caller.
+    fn pane_liveness(host: &Host, id: PaneId) -> String {
+        let workspace = host.workspace();
+        let guard = lock(&workspace);
+        let Some(pane) = guard.pane(id) else {
+            return "there is no such pane".to_owned();
+        };
+        let pty = pane.pty();
+        format!(
+            "the child: eof={}, exit={:?}, and it wrote {} raw bytes",
+            pty.is_eof(),
+            pty.exit_status(),
+            pty.raw_output().bytes.len(),
+        )
     }
 
     /// A pane's command that prints [`PANE_ENV_VAR`] and exits, so a test can read what the CHILD
