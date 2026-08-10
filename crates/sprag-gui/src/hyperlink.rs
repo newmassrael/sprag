@@ -480,7 +480,7 @@ impl HyperlinkOracle {
 /// so falling back to the whole string decodes both without the caller knowing which arrived. This
 /// is why an earlier exact `== "PointerDown"` match missed native clicks.
 fn send_event_name(payload: &str) -> &str {
-    split_send_payload(payload).map_or(payload, |(_, event, _)| event)
+    split_send_payload(payload).map_or(payload, |split| split.event)
 }
 
 /// The button a DRAG should report given the set still held after a raw edge: the PRIMARY of the
