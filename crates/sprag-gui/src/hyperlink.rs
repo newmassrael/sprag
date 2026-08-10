@@ -601,7 +601,12 @@ impl ExternalIntrospect for HyperlinkOracle {
                 &[
                     SchemaField::new("hover_index", "int"),
                     SchemaField::new("activated_uri", "string"),
-                    SchemaField::new("send", "string"),
+                    // ⚠ VERBS, DECLARED AS SUCH — and `activate` was DISPATCHED AND DECLARED
+                    // NOWHERE, the same defect `report_agent` carried on the mux surface: the
+                    // oracle answered it and `$schema` never mentioned it, so no client could
+                    // discover the one verb this surface exists to offer.
+                    SchemaField::action("send", "string"),
+                    SchemaField::action("activate", "json"),
                 ]
             },
         )
@@ -648,6 +653,12 @@ impl ExternalIntrospect for HyperlinkOracle {
         path: &str,
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
+        // A verb this surface does not PUBLISH is a verb it does not run — see
+        // [`crate::wire_claim::declares_verb`] for the defect that makes this a guard rather than
+        // a test.
+        if !crate::wire_claim::declares_verb(&self.schema(), path) {
+            return Err(InvokeError::UnknownPath);
+        }
         match path {
             // The legacy router press channel (R1401). A native grid press arrives COMPOSITE
             // (`"grid:PointerDown"`, the `{pane}#grid` sub-index), the RPC / test path sends the
@@ -1225,6 +1236,39 @@ mod tests {
     /// Feed a plain 8x3 grid to a pane oracle at a given tracking level, returning the oracle over
     /// its shared state (helper for the drag / motion tests).
     #[cfg(test)]
+    /// ⚠⚠ **THE AI-FIRST CLICK, DRIVEN** — `activate` had no test at all until R352, which is
+    /// half of why nobody noticed it was undeclared.
+    ///
+    /// It is also what makes the declaration load-bearing rather than decorative: the dispatch is
+    /// guarded on the schema ([`crate::wire_claim::declares_verb`]), so deleting this verb's line
+    /// from the surface's own declaration makes this call answer `UnknownPath` and reddens here.
+    /// **Measured, both ways** — the gate below cannot see an omission and this one can.
+    #[test]
+    fn the_declared_activate_verb_activates_the_hovered_link() {
+        Owner::new().run(|| {
+            let mut oracle = oracle_at(0, MouseProtocol::None);
+            assert!(
+                !matches!(
+                    oracle.invoke("activate", IntrospectValue::Null),
+                    Err(InvokeError::UnknownPath)
+                ),
+                "the verb this surface publishes is the verb it dispatches",
+            );
+        });
+    }
+
+    /// ⚠⚠ **THIS SURFACE'S DECLARATION SAYS WHAT ITS PATHS ARE**, and it was wrong in BOTH
+    /// directions until R352: `send` sat on the read channel, and `activate` — the AI-first,
+    /// no-pixel click this oracle exists to offer — was dispatched and declared NOWHERE, so the one
+    /// verb a client would come here for could not be discovered. See [`crate::wire_claim`].
+    #[test]
+    fn a_declared_path_is_what_it_claims() {
+        Owner::new().run(|| {
+            let mut surface = oracle_at(0, MouseProtocol::None);
+            crate::wire_claim::a_declared_path_is_what_it_claims(&mut surface);
+        });
+    }
+
     fn oracle_at(slot: usize, proto: MouseProtocol) -> HyperlinkOracle {
         let mut screen = sprag_vt::Emulator::new(8, 3);
         sprag_vt::VtPort::advance(&mut screen, b"........");

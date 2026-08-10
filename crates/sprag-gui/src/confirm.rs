@@ -502,9 +502,11 @@ impl ExternalIntrospect for ConfirmExternal {
                     SchemaField::new("consequence", "string"),
                     SchemaField::new("verb", "string"),
                     SchemaField::new("choice", "string"),
-                    SchemaField::new("accept", "json"),
-                    SchemaField::new("dismiss", "json"),
-                    SchemaField::new("send", "string"),
+                    // ⚠ VERBS, DECLARED AS SUCH — see `palette`'s note for what the read
+                    // channel was claiming and what refuses it upstream.
+                    SchemaField::action("accept", "json"),
+                    SchemaField::action("dismiss", "json"),
+                    SchemaField::action("send", "string"),
                 ]
             },
         )
@@ -562,6 +564,12 @@ impl ExternalIntrospect for ConfirmExternal {
         path: &str,
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
+        // A verb this surface does not PUBLISH is a verb it does not run — see
+        // [`crate::wire_claim::declares_verb`] for the defect that makes this a guard rather than
+        // a test.
+        if !crate::wire_claim::declares_verb(&self.schema(), path) {
+            return Err(InvokeError::UnknownPath);
+        }
         match path {
             // The two answers, each its own verb: an RPC caller (or the headless smoke) says which
             // one it means rather than moving a cursor and pressing a key.
@@ -899,6 +907,17 @@ mod tests {
         )
         .unwrap();
         seed_terminal(host);
+    }
+
+    /// ⚠⚠ **THIS SURFACE'S DECLARATION SAYS WHAT ITS PATHS ARE.** Three verbs here were declared
+    /// on the READ channel until R352 — see [`crate::wire_claim`] for what that claimed, what it
+    /// costs a client, and why the daemon's own version of this gate cannot reach this crate.
+    #[test]
+    fn a_declared_path_is_what_it_claims() {
+        Owner::new().run(|| {
+            let mut surface = external();
+            crate::wire_claim::a_declared_path_is_what_it_claims(&mut surface);
+        });
     }
 
     /// The External as [`create_confirm_externals`] builds it — same captured handles, so a test

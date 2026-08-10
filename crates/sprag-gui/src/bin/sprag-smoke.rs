@@ -2094,6 +2094,35 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     });
     report.check("the client settles after the splits", quiet.is_ok());
 
+    // ⚠⚠ ...AND THEN SETTLE ON THE QUANTITY THIS ASSERTION NAMES. The wait above is the CLIENT's
+    // revision, and the counter the claim is about is the HOST's — two different quiets. Measured
+    // R352: one run in eight came back `1 projections, 72 cells`, exactly one small pane's worth,
+    // and the run that did it was sharing the machine with a release build. That is a straggler
+    // from the split's own resize churn landing inside the measurement window, not a read paying
+    // for a grid.
+    //
+    // Fixed by waiting on `grid_work` itself rather than by lengthening anything: a settle is only
+    // a precondition if it is about the same number as the claim. A longer sleep would have hidden
+    // this at the next load spike instead of removing it.
+    //
+    // ⚠ WHAT THIS DOES NOT CLAIM. The one failure was not reproduced: three runs of each binary
+    // under 2x CPU oversubscription came back `0 projections, 0 cells` on BOTH, so the condition
+    // needs whatever the concurrent release build was doing (I/O and memory, not spinners) and no
+    // rig here forces it. So this is a precondition corrected on its own terms — it now watches the
+    // number the claim reads — and NOT a fix demonstrated against a failing case. Said here rather
+    // than left for a later round to assume the opposite.
+    let mut last_work = None;
+    let host_quiet = smoke.wait_for(|_| {
+        let now = grid_work(&mut daemon, &session)?;
+        let still = last_work == Some(now);
+        last_work = Some(now);
+        still.then_some(())
+    });
+    report.check(
+        "the host's grid meter settles before it is read",
+        host_quiet.is_ok(),
+    );
+
     // ── The window: nothing but reads. No keystroke, no output, no resize.
     let Some(before) = grid_work(&mut daemon, &session) else {
         report.check("the host reports what it has projected", false);

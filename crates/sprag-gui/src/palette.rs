@@ -646,10 +646,17 @@ impl ExternalIntrospect for PaletteExternal {
                     ),
                     SchemaField::new("cursor", "int"),
                     SchemaField::new("cursor_command", "string"),
-                    SchemaField::new("open", "bool"),
-                    SchemaField::new("select", "int"),
-                    SchemaField::new("execute", "json"),
-                    SchemaField::new("send", "string"),
+                    // ⚠ VERBS, DECLARED AS SUCH (R352). All four were `SchemaField::new`,
+                    // which puts a path on the READ channel — so this surface told a client it
+                    // could `scene/query` four names that answer nothing, and `open` additionally
+                    // claimed to be a `bool` somebody could read. pinion refuses an undeclared
+                    // invoke from R1637 and reads the channel to do it, so the mis-declaration is
+                    // not only a false claim on the read surface: it is what the next pin bump
+                    // would refuse.
+                    SchemaField::action("open", "json"),
+                    SchemaField::action("select", "int"),
+                    SchemaField::action("execute", "json"),
+                    SchemaField::action("send", "string"),
                 ]
             },
         )
@@ -700,6 +707,12 @@ impl ExternalIntrospect for PaletteExternal {
         path: &str,
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
+        // A verb this surface does not PUBLISH is a verb it does not run — see
+        // [`crate::wire_claim::declares_verb`] for the defect that makes this a guard rather than
+        // a test.
+        if !crate::wire_claim::declares_verb(&self.schema(), path) {
+            return Err(InvokeError::UnknownPath);
+        }
         match path {
             // ARMS an open (the reducer performs it, and may refuse it — see [`open_on_request`]),
             // answering only that the request was taken. Whether the palette is now UP is a separate
@@ -1214,6 +1227,17 @@ mod tests {
         c.arg("cat");
         c.env("TERM", "dumb");
         c
+    }
+
+    /// ⚠⚠ **THIS SURFACE'S DECLARATION SAYS WHAT ITS PATHS ARE.** All four of its verbs were
+    /// declared on the READ channel until R352 — and `open` additionally claimed to be a readable
+    /// `bool`, which is the shape a client would have believed. See [`crate::wire_claim`].
+    #[test]
+    fn a_declared_path_is_what_it_claims() {
+        Owner::new().run(|| {
+            let mut surface = external();
+            crate::wire_claim::a_declared_path_is_what_it_claims(&mut surface);
+        });
     }
 
     /// The External as [`create_palette_externals`] builds it — same captured handles, so a test

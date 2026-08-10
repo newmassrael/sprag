@@ -266,6 +266,9 @@ mod split;
 mod stabs;
 mod terminal;
 mod view;
+/// What a display surface's declaration claims, held against what it does: the guard that makes an
+/// undeclared verb unreachable, and the property each surface's tests apply to itself.
+mod wire_claim;
 mod wtabs;
 
 use pinion_a11y::AccessNode;
