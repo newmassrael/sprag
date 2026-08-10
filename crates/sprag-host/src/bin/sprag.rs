@@ -186,19 +186,19 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::vocabulary::{self, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
-    AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION,
-    DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT, GRANT_PANE_ACTION, JOIN_PANE_ACTION, KEY_ACTION,
-    KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION,
-    MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM,
-    PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire,
-    PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION, RENAME_SESSION_ACTION,
-    RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION, RESIZE_PANE_ACTION,
-    RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION,
-    SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectAsk,
-    SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, TREE_SLOT, WINDOWS_SLOT,
-    WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, doctor_over, events_slot_since, find_slot_for,
-    pane_processes_at, pane_resources_at, project_slot_for, regex_slot_for, session_activity_at,
-    settled, unknown_action, unknown_slot,
+    ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
+    CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT,
+    GRANT_PANE_ACTION, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
+    LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM,
+    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT,
+    PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION,
+    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
+    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
+    SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
+    SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
+    TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, doctor_over,
+    events_slot_since, find_slot_for, pane_processes_at, pane_resources_at, project_slot_for,
+    regex_slot_for, session_activity_at, settled, unknown_action, unknown_slot,
 };
 use sprag_host::{ClientSize, PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -293,6 +293,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Resources => resources(args.collect()),
         Verb::Grant => grant(args.collect()),
         Verb::Doctor => doctor(args.collect()),
+        Verb::ShowGrammar => show_grammar(args.collect()),
         Verb::Agent => agent(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
         Verb::ReportAgent => report_agent(args.collect()),
@@ -3769,6 +3770,149 @@ fn doctor(args: Vec<String>) -> io::Result<()> {
             println!("    read: {}", entry.source);
             println!("    flagged when: {}", entry.criterion);
             println!("    you could: {}", entry.remedy);
+        }
+    }
+    Ok(())
+}
+
+/// HOW TO CALL THE DAEMON'S VERBS, asked of the daemon — `sprag show-grammar [VERB] [--pane]`.
+///
+/// # Why this is a verb and not a document
+///
+/// The wire has published its call grammar since R352 and the only way to read it was to write a raw
+/// JSON-RPC probe. That is a surface working and a feature nobody can use, so this is the door: one
+/// `scene/query` at `action_grammar`, printed.
+///
+/// ⚠ **IT ASKS THE DAEMON, and that is the whole discriminator against the closest rival.** herdr
+/// ships `herdr api schema`, which prints a JSON Schema a test wrote into `docs/` and the binary
+/// `include_str!`'d at build time (`src/cli/api.rs:1` at `9a4ce5e1`) — so it describes the build the
+/// CLI came from, and none of its ninety-one methods returns it, which means a client speaking the
+/// socket cannot ask the daemon it is connected to. This prints what the RUNNING daemon answered: an
+/// operator debugging a version-skewed daemon sees ITS grammar, not this binary's idea of it.
+///
+/// # What it prints
+///
+/// One line per argument, grouped by verb and by FORM, because a verb with two forms is a choice a
+/// caller makes and not a union of keys:
+///
+/// ```text
+/// key
+///   form scalar
+///     key            string   required
+///   form object
+///     key            string   required
+///     state          string   optional  one of: down, up
+/// ```
+///
+/// `--pane` reads a PANE's surface instead of the multiplexer's — the six input verbs, which hang off
+/// a per-pane address and are therefore a different table (see `ACTION_GRAMMAR_SLOT`). Any pane will
+/// do because every pane's input surface serves the same grammar, so it takes the caller's active one
+/// rather than making them name one.
+fn show_grammar(args: Vec<String>) -> io::Result<()> {
+    let (mut only, mut pane_surface, mut session) = (None, false, None);
+    let mut rest = args.into_iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--pane" => pane_surface = true,
+            "-t" | "--session" => {
+                session = Some(
+                    rest.next()
+                        .ok_or_else(|| bad_input("show-grammar: -t takes a session name"))?,
+                );
+            }
+            other if other.starts_with('-') => {
+                return Err(bad_input(&format!(
+                    "show-grammar: unknown option {other:?} (it takes [VERB] and --pane)"
+                )));
+            }
+            verb if only.is_none() => only = Some(verb.to_owned()),
+            extra => {
+                return Err(bad_input(&format!(
+                    "show-grammar: unexpected argument {extra:?} (one verb at a time)"
+                )));
+            }
+        }
+    }
+
+    let mut conn = connect()?;
+    // THE ADDRESS THE ANSWER DESCRIBES. A pane's grammar is served by the pane, so asking the
+    // multiplexer for it would be asking the wrong surface — which is exactly the confusion a single
+    // global table would have created.
+    let path =
+        if pane_surface {
+            // ANY pane: every pane's input surface serves the same six verbs, so the first one this
+            // session holds answers the question, and making the caller name one would suggest the answer
+            // differs per pane. A session with no panes cannot answer it at all, and says so.
+            let pane = *pane_ids(&mut conn, session.as_deref())?.first().ok_or_else(|| {
+            bad_input(
+                "show-grammar --pane: this session has no pane, and a pane's input grammar is \
+                 served by a pane",
+            )
+        })?;
+            pane_input_path(pane, ACTION_GRAMMAR_SLOT)
+        } else {
+            mux_action_path(ACTION_GRAMMAR_SLOT)
+        };
+    let answer = query_slot(&mut conn, scoped_params(session.as_deref(), path))?;
+    let verbs = answer
+        .as_object()
+        .ok_or_else(|| bad_input("show-grammar: the host's answer was not an object of verbs"))?;
+
+    if let Some(wanted) = &only
+        && !verbs.contains_key(wanted)
+    {
+        {
+            // NAMES WHAT THERE IS, because the commonest reason to be here is not knowing the verb's
+            // spelling — and a bare "unknown" would send the reader back to ask the same question.
+            let mut known: Vec<&str> = verbs.keys().map(String::as_str).collect();
+            known.sort_unstable();
+            return Err(bad_input(&format!(
+                "show-grammar: this daemon publishes no grammar for {wanted:?}. It publishes: {}",
+                known.join(", "),
+            )));
+        }
+    }
+
+    let mut names: Vec<&String> = verbs.keys().collect();
+    names.sort_unstable();
+    for name in names {
+        if only.as_ref().is_some_and(|wanted| wanted != name) {
+            continue;
+        }
+        println!("{name}");
+        let forms = verbs[name].as_array().map_or(&[][..], Vec::as_slice);
+        for form in forms {
+            // A form that does not say its shape is an OLDER DAEMON's answer, and saying so is more
+            // use than printing nothing: the two are told apart by the key's absence, which is why
+            // `one_of` and this are both omitted rather than sent as null.
+            let shape = form[CallForm::FORM_KEY].as_str().unwrap_or("object");
+            println!("  form {shape}");
+            let args = form[CallForm::ARGS_KEY]
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            for arg in args {
+                let name = arg[ArgGrammar::NAME_KEY].as_str().unwrap_or("?");
+                let ty = arg[ArgGrammar::TYPE_KEY].as_str().unwrap_or("?");
+                let need = if arg[ArgGrammar::OPTIONAL_KEY].as_bool().unwrap_or(false) {
+                    "optional"
+                } else {
+                    "required"
+                };
+                let words = arg[ArgGrammar::ONE_OF_KEY]
+                    .as_array()
+                    .map(|words| {
+                        words
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .map_or_else(String::new, |list| format!("  one of: {list}"));
+                println!("    {name:<14} {ty:<8} {need}{words}");
+            }
+            if args.is_empty() {
+                println!("    (no arguments)");
+            }
         }
     }
     Ok(())

@@ -15,7 +15,8 @@ use sprag_host::wire::{
     NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANES_SLOT, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
     RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION,
-    SPAWN_ACTION, SWAP_PANE_ACTION, WINDOWS_SLOT, ZOOM_PANE_ACTION, pane_input_path,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, WINDOWS_SLOT,
+    ZOOM_PANE_ACTION, pane_input_path,
 };
 use sprag_rpc::{CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD, CLIENT_PARAM, HOST_SILENT, HostConn};
 
@@ -7268,7 +7269,8 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
     }
     assert_eq!(
         (ran, refused, unbuilt),
-        (52, 5, 3),
+        // R353: `show-grammar` is the 53rd — the CLI door onto the wire's own call grammar.
+        (53, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7432,7 +7434,8 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     // them — which is the whole reason a new verb is added to the TABLE rather than to a surface.
     assert_eq!(
         counts,
-        (15, 10, 34, 1),
+        // R353: `show-grammar` ANSWERS something, so it is refused with a rule like `doctor`.
+        (15, 10, 35, 1),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 
@@ -7584,6 +7587,113 @@ fn a_refusal_that_states_nothing_is_reported_as_an_old_daemon() {
     assert!(
         run.stderr.contains("did not say why") && run.stderr.contains("Restart"),
         "it is told as the skew it is, with the remedy: {}",
+        run.stderr,
+    );
+}
+
+/// ⚠⚠ **THE DOOR ONTO THE WIRE'S GRAMMAR ASKS THE DAEMON** — `sprag show-grammar`, against a real one.
+///
+/// # What is worth asserting here, and what is not
+///
+/// The TABLE's honesty is held by four property gates in the crate and by an end-to-end drive in
+/// `wire_client`. This is about the DOOR: that the verb reaches the daemon, that it prints the two
+/// surfaces separately, and that it names what it publishes when asked for something it does not.
+///
+/// ⚠ The last one is the difference between this and the closest rival's `herdr api schema`, which
+/// prints a JSON Schema a test wrote into its docs and the binary `include_str!`'d — a document about
+/// the build the CLI came from, with no method among its ninety-one returning it. The proof that this
+/// one asks the DAEMON is [`the_cli_reports_a_stale_daemons_grammar_as_skew`](self) below: point it at
+/// a daemon that serves nothing and it fails, where a compiled-in document could not have noticed.
+#[test]
+fn the_cli_prints_how_to_call_the_verbs_the_daemon_publishes() {
+    let (_host, sock) = spawn_host();
+
+    // THE MULTIPLEXER's surface, narrowed to one verb — the question a person actually has.
+    let run = sprag(&sock, &["show-grammar", SELECT_PANE_ACTION]);
+    assert!(run.ok, "show-grammar failed: {}", run.stderr);
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(lines[0], SELECT_PANE_ACTION);
+    assert!(
+        lines
+            .iter()
+            .filter(|line| line.trim() == "form object")
+            .count()
+            == 2,
+        "`select_pane` takes a pane OR a direction, and the two forms print as two: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stdout.contains("dir") && run.stdout.contains("one of: left, right, up, down"),
+        "an argument with a closed vocabulary prints the words a caller may send: {}",
+        run.stdout,
+    );
+
+    // THE PANE's surface — a different table at a different address, which is the whole reason the
+    // flag exists rather than one merged answer.
+    let pane = sprag(&sock, &["show-grammar", KEY_ACTION, "--pane"]);
+    assert!(pane.ok, "show-grammar --pane failed: {}", pane.stderr);
+    assert!(
+        pane.stdout.contains("form scalar") && pane.stdout.contains("form object"),
+        "`key` takes a bare string or an object, and the shapes print: {}",
+        pane.stdout,
+    );
+    assert!(
+        pane.stdout.contains("one of: down, up"),
+        "the key edge's vocabulary is published: {}",
+        pane.stdout,
+    );
+    // ...and the two surfaces are NOT each other: the multiplexer knows nothing about `key`.
+    let wrong_surface = sprag(&sock, &["show-grammar", KEY_ACTION]);
+    assert!(
+        !wrong_surface.ok && wrong_surface.stderr.contains("publishes no grammar"),
+        "a pane verb is not on the multiplexer's surface, and the refusal says what is: {}",
+        wrong_surface.stderr,
+    );
+
+    // A verb the daemon serves and deliberately does not describe — `set_layout` takes an arrangement
+    // TREE, which a flat argument grammar cannot state. The refusal NAMES what is published, because
+    // the commonest reason to be here is not knowing the spelling.
+    let nested = sprag(&sock, &["show-grammar", SET_LAYOUT_ACTION]);
+    assert!(!nested.ok);
+    assert!(
+        nested.stderr.contains("publishes no grammar") && nested.stderr.contains(SPLIT_ACTION),
+        "the refusal lists the verbs that DO publish: {}",
+        nested.stderr,
+    );
+
+    // The whole surface, unnarrowed: every verb the daemon publishes, and nothing else.
+    let all = sprag(&sock, &["show-grammar"]);
+    assert!(all.ok, "show-grammar failed: {}", all.stderr);
+    let verbs: Vec<&str> = all
+        .stdout
+        .lines()
+        .filter(|line| !line.starts_with(' '))
+        .collect();
+    assert_eq!(
+        verbs.len(),
+        25,
+        "the multiplexer publishes twenty-five of its twenty-eight verbs: {verbs:?}",
+    );
+}
+
+/// ⚠ **A DAEMON THAT DOES NOT PUBLISH ITS GRAMMAR IS REPORTED AS SKEW, NOT ANSWERED FROM THIS BUILD.**
+///
+/// This is the claim that makes `show-grammar` a wire verb rather than a document: the answer comes
+/// from the daemon on the other end of the socket, so a daemon too old to serve the slot cannot be
+/// papered over by the CLI's own copy of the table. A compiled-in schema — the rival's shape — would
+/// print happily here and be wrong about the thing the operator is debugging.
+#[test]
+fn the_cli_reports_a_stale_daemons_grammar_as_skew() {
+    let stale = stale_host();
+    let run = sprag(stale.sock(), &["show-grammar"]);
+    assert!(
+        !run.ok,
+        "a daemon serving no grammar must not be answered out of this binary: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stderr.contains("action_grammar") || run.stderr.contains("older"),
+        "the refusal names the address or the skew: {}",
         run.stderr,
     );
 }

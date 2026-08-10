@@ -198,6 +198,8 @@ pub enum Verb {
     Help,
     /// `doctor` — what is WRONG with the machine the panes run on.
     Doctor,
+    /// `show-grammar` — HOW TO CALL the daemon's own verbs, asked of the daemon.
+    ShowGrammar,
     /// `detach-client` — give the terminal back, leave the session running.
     ///
     /// The first of the five verbs with NO shell form: what it acts on is the client that pressed
@@ -512,7 +514,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 60] = [
+    pub const ALL: [Self; 61] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -568,6 +570,7 @@ impl Verb {
         Self::Version,
         Self::Help,
         Self::Doctor,
+        Self::ShowGrammar,
         Self::DetachClient,
         Self::SendPrefix,
         Self::SwitchClient,
@@ -1078,6 +1081,32 @@ impl Verb {
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["machine_health"]),
             ),
+            // THE DOOR ONTO THE WIRE'S OWN GRAMMAR, and the reason it is a verb rather than a
+            // document: it ASKS THE DAEMON. herdr's equivalent (`herdr api schema`) prints a JSON
+            // Schema a test wrote into its docs and the binary `include_str!`'d — so it describes
+            // whatever build the CLI came from, and no method among its ninety-one returns it, which
+            // means a client speaking the socket cannot ask the daemon it is connected to. This
+            // queries `action_grammar` on the live daemon and prints what came back, so an operator
+            // and an agent read the same answer as each other and as the daemon they are talking to,
+            // version skew included.
+            //
+            // NO SCOPE, like `doctor` beside it: a request grammar is the same on every session, and
+            // narrowing it by one would answer a question nobody asks. The optional argument narrows
+            // by VERB instead, which is the question a person actually has.
+            Self::ShowGrammar => (
+                "show-grammar",
+                Group::Tool,
+                Shell::Runs(" [VERB] [--pane]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                // ⚠ NO TOOL, and this is the one verb where that needs saying out loud, because an
+                // AI client is exactly who the grammar is for. An MCP client learns how to call
+                // ITS OWN mouth from `tools/list`, which every one of them reads before calling
+                // anything — a tool here would be a second authority on the same question, and a
+                // wronger one: it describes the RAW WIRE's verbs, not the tools the agent has. The
+                // client that needs this is the one speaking JSON-RPC to the socket, and that client
+                // reads the slot itself.
+                Agent::Cannot(NotAnAgents::SaidAnotherWay),
+            ),
             // ── the five a KEYSTROKE alone can say ──────────────────────────────────────────────
             // Each acts on THE CLIENT THAT PRESSED THE KEY, which neither of the other two mouths
             // has. That is a property of the verb and not a gap: `sprag detach-client` would need
@@ -1455,7 +1484,10 @@ mod tests {
             .count();
         assert_eq!(
             (served, not_built, refused),
-            (33, 7, 20),
+            // R353: `show-grammar` is the 21st refusal — an MCP client learns how to call ITS
+            // OWN mouth from `tools/list`, so a tool here would be a second authority on one
+            // question and a wronger one (it describes the raw wire's verbs, not the agent's tools).
+            (33, 7, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1602,7 +1634,8 @@ mod tests {
             .count();
         assert_eq!(
             (runs, not_built, refused),
-            (52, 3, 5),
+            // R353: `show-grammar` is the 53rd shell verb — the door onto the wire's own grammar.
+            (53, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1683,7 +1716,8 @@ mod tests {
             .count();
         assert_eq!(
             (bindable, not_built, refused),
-            (25, 1, 34),
+            // R353: `show-grammar` ANSWERS something, so it joins the verbs a keystroke cannot mean.
+            (25, 1, 35),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
