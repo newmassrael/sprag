@@ -72,6 +72,20 @@ pub struct ClientInfo {
     /// The cell area it reported, or `None` if it has not reported one yet.
     #[serde(default)]
     pub size: Option<ClientSize>,
+    /// The NAME of the window this client is looking at, or `None` off a listing that could not
+    /// resolve one (a client whose window has just gone).
+    ///
+    /// # Why a listing of clients owes this
+    ///
+    /// It did not, while every client of a session saw the same window: the session answered it and
+    /// the row would have repeated itself. R346 made a view a fact about the CLIENT, and the first
+    /// question a person asks when their panes are the wrong size is *who else is on this window* —
+    /// which this listing was the natural place to answer and could not.
+    ///
+    /// A NAME and not an id, because this is a surface a person reads and an id appears on none of
+    /// them; resolved by the caller, which is the only side that holds the registry.
+    #[serde(default)]
+    pub window: Option<String>,
 }
 
 /// What an [`attach`](AttachmentRegistry::attach) did, so the caller knows whether the per-session
@@ -422,18 +436,6 @@ impl AttachmentRegistry {
         self.next_ordinal
     }
 
-    /// Every area reported by a client attached to `session`, OLDEST FIRST — so the last element is
-    /// the most recent report, which is what `window-size latest` names.
-    ///
-    /// Clients that never reported an area are absent rather than present with a zero: a policy
-    /// taking the smallest attached client must not be handed a size nobody has.
-    #[must_use]
-    pub fn sizes(&self, session: &str) -> Vec<ClientSize> {
-        self.reported(|client, viewing| {
-            viewing == session && self.client_window.contains_key(client)
-        })
-    }
-
     /// Every area reported by a client attached to `session` AND LOOKING AT `window`, oldest first
     /// — the arbitration's real input.
     ///
@@ -444,9 +446,8 @@ impl AttachmentRegistry {
     /// a phone on window 1 has nothing to say about window 0's size, and saying it anyway is the
     /// defect this whole arc is about — a small client attaching and shrinking a big client's panes.
     ///
-    /// A client that has not reported an area is absent rather than present with a zero, exactly as
-    /// in [`sizes`](Self::sizes): a policy taking the smallest client must not be handed a size
-    /// nobody has.
+    /// A client that has not reported an area is absent rather than present with a zero: a policy
+    /// taking the smallest client must not be handed a size nobody has.
     #[must_use]
     pub fn sizes_for(&self, session: &str, window: WindowId) -> Vec<ClientSize> {
         self.reported(|client, viewing| {
@@ -454,9 +455,9 @@ impl AttachmentRegistry {
         })
     }
 
-    /// The shared walk behind [`sizes`](Self::sizes) and [`sizes_for`](Self::sizes_for): every
-    /// reported area whose client `keep` admits, OLDEST FIRST — so the last element is the most
-    /// recent report, which is what `window-size latest` names.
+    /// The walk behind [`sizes_for`](Self::sizes_for): every reported area whose client `keep`
+    /// admits, OLDEST FIRST — so the last element is the most recent report, which is what
+    /// `window-size latest` names.
     fn reported(&self, keep: impl Fn(&ClientId, &str) -> bool) -> Vec<ClientSize> {
         let mut reported: Vec<Reported> = self
             .client_session
@@ -573,7 +574,7 @@ impl AttachmentRegistry {
     /// order is deterministic — a `HashMap`'s iteration order is not, and a CLI listing that
     /// reshuffles between reads would be noise.
     #[must_use]
-    pub fn clients(&self) -> Vec<ClientInfo> {
+    pub fn clients(&self, name_of: impl Fn(&str, WindowId) -> Option<String>) -> Vec<ClientInfo> {
         let mut clients: Vec<ClientInfo> = self
             .client_session
             .iter()
@@ -581,6 +582,12 @@ impl AttachmentRegistry {
                 client: client.clone(),
                 session: session.clone(),
                 size: self.client_size.get(client).map(|held| held.size),
+                // Resolved by the CALLER, for the reason `last_viewed` takes its resolver: this
+                // registry holds no session tree, and the lock order is attachments THEN registry.
+                window: self
+                    .client_window
+                    .get(client)
+                    .and_then(|window| name_of(session, *window)),
             })
             .collect();
         clients.sort_by(|a, b| {
@@ -602,8 +609,12 @@ impl AttachmentRegistry {
     /// Each client keeps ONE waiting message, resolved by [`Announcement::over`] — see there for why
     /// a slot rather than a queue.
     pub fn deliver(&mut self, audience: &Audience, announcement: &Announcement) -> Delivery {
+        // NO WINDOW RESOLVER, and that is not a gap: `Delivery` exposes ids and sessions only
+        // ([`Delivery::clients`], [`Delivery::sessions`]), so the field never reaches a surface from
+        // here — and resolving one would mean taking the registry lock inside the attachment lock,
+        // which is the order this whole module refuses.
         let mut to: Vec<ClientInfo> = self
-            .clients()
+            .clients(|_, _| None)
             .into_iter()
             .filter(|client| audience.reaches(client))
             .collect();
@@ -1159,7 +1170,7 @@ mod tests {
             },
         );
         // client-c said hello but never attached: it views nothing, so it is NOT listed.
-        let clients = reg.clients();
+        let clients = reg.clients(|_, window| Some(format!("w{}", window.0)));
         assert_eq!(
             clients,
             vec![
@@ -1170,11 +1181,13 @@ mod tests {
                         cols: 120,
                         rows: 40
                     }),
+                    window: Some(format!("w{}", wid("home").0)),
                 },
                 ClientInfo {
                     client: "client-b".to_owned(),
                     session: "work".to_owned(),
                     size: None,
+                    window: Some(format!("w{}", wid("work").0)),
                 },
             ],
             "attached clients only, sorted by client id"
@@ -1239,10 +1252,17 @@ mod tests {
             vec![small],
             "...and the one it went to is the phone's",
         );
+        // AN IDEMPOTENT RE-ATTACH MUST NOT DRAG A CLIENT BACK. A display client re-sends
+        // `client/attach` on a reconnect, and a landing that overwrote the seat every time would
+        // take the phone off the window it chose the moment its poll thread re-declared itself.
         assert_eq!(
-            reg.sizes("work"),
-            vec![big, small],
-            "the session-wide list still answers about the SESSION, which is a different question",
+            reg.attach(phone, "work".to_owned(), sid("work"), zero),
+            AttachOutcome::Unchanged,
+        );
+        assert_eq!(
+            reg.sizes_for("work", one),
+            vec![small],
+            "re-declaring the session it is already on moves nobody's view",
         );
 
         // A WINDOW THAT DIES TAKES NOBODY'S SEAT WITH IT: the phone is put back on the landing
@@ -1319,7 +1339,7 @@ mod tests {
         );
 
         assert_eq!(
-            reg.sizes("work"),
+            reg.sizes_for("work", wid("work")),
             vec![
                 ClientSize {
                     cols: 120,
@@ -1329,7 +1349,11 @@ mod tests {
             ],
             "this session's reporters only, in report order"
         );
-        assert_eq!(reg.sizes("nobody"), Vec::new(), "an unviewed session");
+        assert_eq!(
+            reg.sizes_for("nobody", wid("nobody")),
+            Vec::new(),
+            "an unviewed session"
+        );
     }
 
     #[test]
@@ -1349,7 +1373,7 @@ mod tests {
         );
         reg.size(b, ClientSize { cols: 80, rows: 24 });
         assert_eq!(
-            reg.sizes("work").last(),
+            reg.sizes_for("work", wid("work")).last(),
             Some(&ClientSize { cols: 80, rows: 24 }),
             "b reported last"
         );
@@ -1358,7 +1382,7 @@ mod tests {
         // their terminal means by "latest".
         reg.size(a, ClientSize { cols: 90, rows: 30 });
         assert_eq!(
-            reg.sizes("work").last(),
+            reg.sizes_for("work", wid("work")).last(),
             Some(&ClientSize { cols: 90, rows: 30 }),
             "a moved last"
         );
@@ -1368,7 +1392,7 @@ mod tests {
         // size from the client the user just resized.
         reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
-            reg.sizes("work").last(),
+            reg.sizes_for("work", wid("work")).last(),
             Some(&ClientSize { cols: 90, rows: 30 }),
             "an unchanged attach leaves the order alone"
         );
@@ -1377,7 +1401,7 @@ mod tests {
         reg.attach(b, "home".to_owned(), sid("home"), wid("home"));
         reg.attach(b, "work".to_owned(), sid("work"), wid("work"));
         assert_eq!(
-            reg.sizes("work").last(),
+            reg.sizes_for("work", wid("work")).last(),
             Some(&ClientSize { cols: 80, rows: 24 }),
             "b attached most recently"
         );
@@ -1401,7 +1425,7 @@ mod tests {
         reg.size(leaves, ClientSize { cols: 80, rows: 24 });
         reg.disconnect(leaves);
         assert_eq!(
-            reg.sizes("work"),
+            reg.sizes_for("work", wid("work")),
             vec![ClientSize {
                 cols: 120,
                 rows: 40
@@ -1416,10 +1440,14 @@ mod tests {
         let c = conn(1);
         reg.hello(c, "gui".to_owned());
         reg.attach(c, "work".to_owned(), sid("work"), wid("work"));
-        assert_eq!(reg.clients().len(), 1, "the attached client is listed");
+        assert_eq!(
+            reg.clients(|_, _| None).len(),
+            1,
+            "the attached client is listed"
+        );
         reg.disconnect(c);
         assert!(
-            reg.clients().is_empty(),
+            reg.clients(|_, _| None).is_empty(),
             "the released client leaves the listing"
         );
     }
@@ -1487,7 +1515,9 @@ mod tests {
             "control: another session's viewer is untouched",
         );
         assert!(
-            reg.clients().iter().all(|info| info.session == "play"),
+            reg.clients(|_, _| None)
+                .iter()
+                .all(|info| info.session == "play"),
             "and `list-clients` stops naming a session the registry no longer holds",
         );
 
@@ -1504,7 +1534,7 @@ mod tests {
         // rather than the field: re-attaching `a` elsewhere must bring its area with it.
         reg.attach(a, "play".to_owned(), sid("play"), wid("play"));
         assert!(
-            reg.sizes("play").contains(&ClientSize {
+            reg.sizes_for("play", wid("play")).contains(&ClientSize {
                 cols: 120,
                 rows: 40
             }),

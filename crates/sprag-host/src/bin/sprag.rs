@@ -1107,11 +1107,20 @@ fn ls() -> io::Result<()> {
     Ok(())
 }
 
-/// `list-clients [-t SESSION]`: one line per ATTACHED client — its opaque id and the session it
-/// is viewing — tmux `list-clients`. With `-t SESSION`, only clients attached to that session (the
-/// session is pre-flighted so a typo is a clean error, like the window commands). The client id is
-/// what a `sprag-gui` window mints (`gui-{pid}-{nanos}`); the daemon has no tty/size to report, so
-/// the line is `client -> session`, the honest subset tmux's `struct client` row reduces to here.
+/// `list-clients [-t SESSION]`: one line per ATTACHED client — its opaque id, the session it is
+/// viewing and the WINDOW of that session it is on — tmux `list-clients`. With `-t SESSION`, only
+/// clients attached to that session (the session is pre-flighted so a typo is a clean error, like
+/// the window commands). The client id is what a `sprag-gui` window mints (`gui-{pid}-{nanos}`); the
+/// daemon has no tty to report, so the row is the honest subset of tmux's `struct client`.
+///
+/// # Why the window is on the row
+///
+/// It was not, and did not need to be: every client of a session saw the same one, so the column
+/// would have repeated the session's own answer. R346 made a view a fact about the CLIENT, and the
+/// first question a person asks when their panes are the wrong size is *who else is on this window*
+/// — which the size arbitration now folds per window and this listing is the place to answer.
+/// Omitted rather than faked for a client whose window has gone, the same rule as the area beside
+/// it.
 fn list_clients(args: Vec<String>) -> io::Result<()> {
     let filter = optional_target(args, "list-clients")?;
     let mut conn = connect()?;
@@ -1128,12 +1137,16 @@ fn list_clients(args: Vec<String>) -> io::Result<()> {
         // The area the client reported, in tmux's own `[COLSxROWS]` shape. Omitted rather than
         // faked when it has not reported one: this is what `window-size` arbitrates over, so a
         // client that is not in the arbitration must not read as though it were.
+        let where_it_is = match client["window"].as_str() {
+            Some(window) => format!("{session}:{window}"),
+            None => session.to_owned(),
+        };
         match (
             client["size"]["cols"].as_u64(),
             client["size"]["rows"].as_u64(),
         ) {
-            (Some(cols), Some(rows)) => println!("{id}: {session} [{cols}x{rows}]"),
-            _ => println!("{id}: {session}"),
+            (Some(cols), Some(rows)) => println!("{id}: {where_it_is} [{cols}x{rows}]"),
+            _ => println!("{id}: {where_it_is}"),
         }
     }
     Ok(())

@@ -3688,7 +3688,34 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
             .map_err(|got| format!("{got}; wanted the narrow client's {narrow_area:?}"))
     });
 
-    // 4. THE VERB THAT FOLDS THE CLIENTS BY HAND READS THE SAME SET. `resize-window -A` means "the
+    // 4. AND A PERSON CAN SEE IT. `list-clients` is where somebody asks *who else is on this
+    //    window* when their panes are the wrong size, and until the view became a per-client fact
+    //    the column could only have repeated the session. Driven through the shipped CLI, so the
+    //    slot, the resolver and the row are one claim rather than three.
+    let listed = Command::new(sprag_cli_bin())
+        .args(["list-clients"])
+        .env("SPRAG_HOST_RPC_SOCK", &sock)
+        .output()
+        .expect("run sprag list-clients");
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let mut rows: Vec<&str> = listed.lines().collect();
+    rows.sort_unstable();
+    assert_eq!(
+        rows.len(),
+        2,
+        "two attached clients, one row each: {listed:?}",
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.ends_with(&format!("{session}:0 [{}x{}]", wide_area.0, wide_area.1)))
+            && rows.iter().any(|row| row.ends_with(&format!(
+                "{session}:1 [{}x{}]",
+                narrow_area.0, narrow_area.1
+            ))),
+        "each row names the WINDOW its client is on, and its own area: {listed:?}",
+    );
+
+    // 5. THE VERB THAT FOLDS THE CLIENTS BY HAND READS THE SAME SET. `resize-window -A` means "the
     //    LARGEST attached client", and the only honest reading of that once views can differ is
     //    the largest client watching THIS window. A build folding the session would answer the wide
     //    client's area for a window the wide client cannot see — measured as a mutation this gate
@@ -3714,7 +3741,7 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
         "`-A` on window 1 is the largest client WATCHING window 1: {pinned}",
     );
 
-    // 5. A WINDOW THAT DIES PUTS ITS VIEWERS BACK, and they start sizing where they land. Killing
+    // 6. A WINDOW THAT DIES PUTS ITS VIEWERS BACK, and they start sizing where they land. Killing
     //    window 1 out of band leaves the narrow client seated on a window nothing serves; unless it
     //    is re-seated it arbitrates NOTHING, and window 0 would stay the wide client's alone. Under
     //    `smallest` a correctly re-seated pair collapses window 0 onto the narrow client again,

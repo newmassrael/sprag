@@ -816,9 +816,9 @@ mod tests {
         lock(&attachments).attach(conn, session.clone(), id, landing);
         lock(&attachments).size(conn, ClientSize { cols: 90, rows: 30 });
         assert_eq!(
-            lock(&attachments).sizes(&session),
+            lock(&attachments).sizes_for(&session, landing),
             vec![ClientSize { cols: 90, rows: 30 }],
-            "the fixture's client is the one this session's window is arbitrated from",
+            "the fixture's client is the one this WINDOW is arbitrated from",
         );
 
         retile(&registry, &attachments, &session);

@@ -243,7 +243,19 @@ impl RegistryView<'_> {
             // clients", the same additive story as an unattached session's absent `attached`.
             CLIENTS_SLOT => {
                 let clients = match self.attachments {
-                    Some(attachments) => lock(attachments).clients(),
+                    // The window each client is WATCHING is resolved here, where the registry is,
+                    // and INSIDE the attachment lock — attachments then registry, the order this
+                    // daemon keeps and the same shape `last_viewed`'s resolver takes. The registry
+                    // has no window-by-id lookup that spans sessions, so the session is named too.
+                    Some(attachments) => lock(attachments).clients(|session, window| {
+                        let registry = lock(self.registry);
+                        registry
+                            .session(session)?
+                            .windows()
+                            .iter()
+                            .find(|held| held.id() == window)
+                            .map(|held| held.name().to_owned())
+                    }),
                     None => Vec::new(),
                 };
                 encoded_answer(&clients, "clients")
@@ -1229,7 +1241,8 @@ impl WorkspaceExternal {
                 // nothing else to offer; this end already holds the answer that verb would print,
                 // and a client id is minted per process — nobody types one from memory.
                 let attached: Vec<String> = attachments
-                    .clients()
+                    // Only the ids are read, so no window has to be resolved for this sentence.
+                    .clients(|_, _| None)
                     .into_iter()
                     .map(|info| info.client)
                     .collect();
@@ -6249,7 +6262,7 @@ mod tests {
         );
         assert!(
             lock(&attachments)
-                .clients()
+                .clients(|_, _| None)
                 .iter()
                 .all(|info| info.session == "keeper"),
             "and list-clients names only sessions that exist",
