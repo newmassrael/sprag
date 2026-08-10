@@ -53,7 +53,7 @@ use crate::snapshot::{
     SnapshotError,
 };
 use crate::window_name::{WindowName, WindowNameError};
-use crate::workspace::{HistoryLimitSource, Pane, PaneEnvSource, Workspace};
+use crate::workspace::{HistoryLimitSource, Pane, PaneArgsSource, PaneEnvSource, Workspace};
 
 /// A session's IDENTITY — what stays put when its NAME moves.
 ///
@@ -2885,6 +2885,25 @@ impl SessionRegistry {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .set_pane_env_source(Arc::clone(&source));
+            }
+        }
+    }
+
+    /// Install `source` as the [`PaneArgsSource`] every pane born from here on consults, across every
+    /// window this registry currently holds — the registry-wide counterpart of
+    /// [`Workspace::set_pane_args_source`].
+    ///
+    /// Whole-registry and `&self` for [`set_pane_env_source`](Self::set_pane_env_source)'s reasons,
+    /// and a REPLACED registry (a restore) needs its own call for the same reason: an agent brought
+    /// back by a restore would otherwise be the one agent in the daemon that cannot report.
+    pub fn set_pane_args_source(&self, source: PaneArgsSource) {
+        for session in self.sessions() {
+            for window in session.windows() {
+                window
+                    .workspace()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .set_pane_args_source(Arc::clone(&source));
             }
         }
     }

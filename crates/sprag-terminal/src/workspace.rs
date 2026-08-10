@@ -507,6 +507,12 @@ pub struct Workspace {
     default_size: (u16, u16),
     history_limit: HistoryLimitSource,
     pane_env: PaneEnvSource,
+    /// What each birth adds to its launch's argv — see [`PaneArgsSource`].
+    ///
+    /// Inherited by a [`sibling`](Self::sibling) on [`pane_env`](Self::pane_env)'s argument: a
+    /// window opened later must instrument its agents exactly as the first one does, or which
+    /// window a person happened to open an agent in would decide whether it can report.
+    pane_args: PaneArgsSource,
     /// Which window this pool IS, and whose session — the two thirds of a
     /// [`PaneLineage`] that are the same for every pane here.
     ///
@@ -592,6 +598,42 @@ fn default_pane_env_source() -> PaneEnvSource {
     Arc::new(|_| Vec::new())
 }
 
+/// Asked, at each pane's BIRTH, what further arguments this pane's launch should carry — how sprag
+/// instruments an AGENT it starts so the agent reports its own turn boundaries instead of being
+/// guessed at from its screen.
+///
+/// [`PaneEnvSource`] gave a pane's child somewhere to report to; a child still has to be CONFIGURED
+/// to report, and for an agent that configuration is command-line. `sprag-host` installs a source
+/// that recognises an agent in the argv it is shown and answers the flag that carries sprag's hooks
+/// for that one launch — so an agent started in a sprag pane is exact, and every `claude` elsewhere
+/// on the machine is left alone.
+///
+/// **It ANSWERS ARGUMENTS rather than editing the [`CommandBuilder`], and they are APPENDED.**
+/// [`PaneEnvSource`] draws the same line for the same reason: a closure handed the builder could
+/// change the program, the cwd, or the arguments its caller meant, and the authority an
+/// instrumenter needs is strictly *also pass these*. A source that cannot reach `argv[0]` cannot turn
+/// somebody's shell into something else, which is what makes it safe to consult on every birth
+/// rather than only on the ones a host believes are agents.
+///
+/// **It is shown the argv and nothing else.** What to add is decided by what is being launched, and
+/// a source that also knew the pane, the window or the session would invite an instrumentation that
+/// differed between two panes running the same program — which is a per-pane document to build,
+/// version and clean up. There is one document per daemon because there is one daemon to report to.
+///
+/// A source rather than a `spawn` parameter for [`HistoryLimitSource`]'s reason: this crate owns the
+/// only two places a pane is born, and a caller that had to pass the instrumentation is one that
+/// could forget to.
+pub type PaneArgsSource = Arc<dyn Fn(&[String]) -> Vec<String> + Send + Sync>;
+
+/// The [`PaneArgsSource`] a workspace uses when nobody installs one: nothing added, ever.
+///
+/// A standalone pool, a GUI's in-process host and every unit test get this, so a pane that is not
+/// part of a daemon runs exactly the argv its caller wrote.
+#[must_use]
+fn default_pane_args_source() -> PaneArgsSource {
+    Arc::new(|_| Vec::new())
+}
+
 impl Workspace {
     /// A new, empty workspace with its OWN private id counter, whose dimension-less
     /// spawns adopt `default_size`. For a standalone pane pool (and unit tests); a
@@ -615,6 +657,7 @@ impl Workspace {
             default_size,
             history_limit: default_history_limit_source(),
             pane_env: default_pane_env_source(),
+            pane_args: default_pane_args_source(),
             home: None,
             homes: Arc::new(PaneHomes::none()),
         }
@@ -747,6 +790,16 @@ impl Workspace {
         self.pane_env = source;
     }
 
+    /// Install the [`PaneArgsSource`] this pool's births consult — the seam `sprag-host` uses to
+    /// instrument an agent's own launch without this crate learning what an agent is.
+    ///
+    /// Affects FUTURE births only, for [`set_pane_env_source`](Self::set_pane_env_source)'s reason
+    /// and more absolutely: an argv is fixed at `exec` and there is not even a later moment to
+    /// correct it in.
+    pub fn set_pane_args_source(&mut self, source: PaneArgsSource) {
+        self.pane_args = source;
+    }
+
     /// The default `(cols, rows)` a dimension-less spawn adopts.
     #[must_use]
     pub fn default_size(&self) -> (u16, u16) {
@@ -804,6 +857,10 @@ impl Workspace {
             // of the DEFAULT session's, so a source that closed over a session name would publish the
             // wrong one to every pane of every session created after boot.
             pane_env: Arc::clone(&self.pane_env),
+            // Inherited on exactly that argument: a source shown nothing but an argv cannot carry a
+            // fact about the window it was cloned from, and an agent must be instrumented the same
+            // way in every window or which one it was opened in decides whether it can report.
+            pane_args: Arc::clone(&self.pane_args),
             // NOT inherited: a sibling is a DIFFERENT window, and this pair names one window.
             //
             // Belt-and-braces rather than load-bearing, and MEASURED as such: mutating this to
@@ -873,6 +930,11 @@ impl Workspace {
         // Capture the launch argv BEFORE the builder is moved into the spawn, so a snapshot can
         // later re-run it (an allowlisted program) or fall back to a shell.
         let argv = argv_of(&command);
+        // Instrumentation is added AFTER that capture and is deliberately not part of it: what a
+        // snapshot records is what the USER asked to run, and the flag added here names THIS
+        // daemon's endpoint. A restore re-derives it from the daemon doing the restoring — the
+        // reason `PaneEnvSource` is re-read there rather than stored, one layer out.
+        instrument(&mut command, &(self.pane_args)(&argv));
         // Asked HERE rather than cached on the pool, so a user who edits `history-limit` gets it on
         // their next pane rather than on their next daemon.
         let history_limit = (self.history_limit)();
@@ -1009,6 +1071,11 @@ impl Workspace {
             history,
         } = pane;
         let argv = argv_of(&command);
+        // Re-derived from THIS daemon rather than restored, exactly as the environment below is and
+        // for a sharper version of its reason: the recorded argv names what the pane ran, and the
+        // flag this adds names an endpoint that did not survive the reboot. A restore that replayed
+        // a stored instrumentation would point a fresh agent at a dead socket.
+        instrument(&mut command, &(self.pane_args)(&argv));
         // A RESTORED pane reads the setting live too, rather than inheriting whatever it had before
         // the reboot: the snapshot records what a pane WAS, and its retention is a current setting,
         // not a property of the pane the user is getting back. Replaying more history than the
@@ -1259,6 +1326,19 @@ impl Workspace {
 /// path; the program name and ASCII flags — the common case — are exact. A faithful `OsString`
 /// argv does not round-trip cleanly through the JSON snapshot, so the lossy `String` is the
 /// deliberate trade-off.
+/// Append `extra` to `command`'s argv — the whole of what a [`PaneArgsSource`] is allowed to do.
+///
+/// It is a function rather than two inline loops so the two birth doors cannot come to differ about
+/// what "instrument" means, and it appends through [`CommandBuilder::arg`] rather than reaching for
+/// the argv so that even this cannot touch `argv[0]`: the program a person asked for is not
+/// something a source is allowed to change, and here that is enforced by the API rather than
+/// promised by a comment.
+fn instrument(command: &mut CommandBuilder, extra: &[String]) {
+    for arg in extra {
+        command.arg(arg);
+    }
+}
+
 fn argv_of(command: &CommandBuilder) -> Vec<String> {
     command
         .get_argv()
@@ -1795,6 +1875,126 @@ mod tests {
         })
         .unwrap();
         assert_eq!(printed(&ws, PaneId(41)), "re41");
+    }
+
+    /// A child that prints the arguments it was launched with, beyond the ones this fixture wrote.
+    ///
+    /// `sh -c <script> <a> <b>` puts `a` in `$0` and `b` in `$1`, so an APPENDED argument is exactly
+    /// what this reads back — proven from inside the process rather than from the builder, which is
+    /// what makes it a claim about the launch and not about a struct. With nothing appended `$0` is
+    /// the shell's own name and `$1` is unset, which is why an un-instrumented launch reads
+    /// `/bin/sh/none` rather than anything symmetrical.
+    fn echoes_extra_args() -> CommandBuilder {
+        let mut c = CommandBuilder::new("/bin/sh");
+        c.arg("-c");
+        c.arg("printf %s \"${0-none}/${1-none}\"");
+        c.env("TERM", "dumb");
+        c
+    }
+
+    /// The instrumentation source, answering only for the argv it recognises — the shape
+    /// `sprag-host`'s own installs, in miniature.
+    fn instruments(program: &'static str) -> PaneArgsSource {
+        Arc::new(move |argv: &[String]| {
+            if argv.first().is_some_and(|first| first.ends_with(program)) {
+                vec!["--settings".to_owned(), "DOC".to_owned()]
+            } else {
+                Vec::new()
+            }
+        })
+    }
+
+    #[test]
+    fn a_pane_s_child_is_launched_with_what_the_source_added() {
+        // The whole seam, proven from the CHILD's side: the pool is asked at each birth with the
+        // argv it is about to run, and what it answers reaches the process as arguments.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_args_source(instruments("sh"));
+        let id = ws
+            .spawn(echoes_extra_args(), "sh".to_string(), 40, 4)
+            .unwrap();
+        assert_eq!(printed(&ws, id), "--settings/DOC");
+    }
+
+    #[test]
+    fn a_pool_with_no_args_source_launches_the_argv_as_written() {
+        // The default is ABSENCE, so every pane in a GUI's in-process host and every unit test above
+        // runs exactly the command its caller wrote.
+        let mut ws = Workspace::new((80, 24));
+        let id = ws
+            .spawn(echoes_extra_args(), "sh".to_string(), 40, 4)
+            .unwrap();
+        assert_eq!(printed(&ws, id), "/bin/sh/none");
+    }
+
+    #[test]
+    fn a_source_that_does_not_recognise_the_program_adds_nothing() {
+        // The answer for nearly every pane ever opened. Read twice with the input changed against
+        // the test above: the same pool, the same child, and a source looking for something else.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_args_source(instruments("claude"));
+        let id = ws
+            .spawn(echoes_extra_args(), "sh".to_string(), 40, 4)
+            .unwrap();
+        assert_eq!(printed(&ws, id), "/bin/sh/none");
+    }
+
+    #[test]
+    fn a_sibling_pool_inherits_the_pane_args_source() {
+        // A new WINDOW is not a new configuration: without this, which window a person happened to
+        // open an agent in would decide whether that agent can report.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_args_source(instruments("sh"));
+        let mut next = ws.sibling();
+        let id = next
+            .spawn(echoes_extra_args(), "sh".to_string(), 40, 4)
+            .unwrap();
+        assert_eq!(printed(&next, id), "--settings/DOC");
+    }
+
+    #[test]
+    fn a_restored_pane_is_instrumented_by_the_daemon_restoring_it() {
+        // The other birth site. An agent brought back after a reboot would otherwise be the one
+        // agent in the daemon that cannot report — a gap visible only after a reboot, which is the
+        // shape `PaneEnvSource` met at exactly this door.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_args_source(instruments("sh"));
+        ws.spawn_restored(PaneRebirth {
+            id: PaneId(41),
+            command: echoes_extra_args(),
+            label: "sh".to_owned(),
+            size: (40, 4),
+            hooks: PaneBirthHooks::default(),
+            history: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(printed(&ws, PaneId(41)), "--settings/DOC");
+    }
+
+    #[test]
+    fn what_a_snapshot_records_is_the_argv_its_caller_wrote() {
+        // THE ORDERING THAT MATTERS, and the one a later edit could quietly lose. The recorded argv
+        // is what a restore re-runs, and the instrumentation names the daemon that added it: a
+        // snapshot that stored the instrumented argv would bring an agent back pointed at the
+        // endpoint of a daemon that no longer exists. So the capture happens BEFORE the source is
+        // asked, and the restore door above re-derives instead.
+        let mut ws = Workspace::new((80, 24));
+        ws.set_pane_args_source(instruments("sh"));
+        let id = ws
+            .spawn(echoes_extra_args(), "sh".to_string(), 40, 4)
+            .unwrap();
+        let argv = ws.pane(id).expect("the pane").argv().to_vec();
+        assert_eq!(
+            argv.len(),
+            3,
+            "the recorded argv is `/bin/sh -c <script>` and nothing sprag added: {argv:?}",
+        );
+        assert!(
+            !argv.iter().any(|arg| arg == "--settings"),
+            "a restore must not replay a dead daemon's instrumentation: {argv:?}",
+        );
+        // ...and the child really did get it, so this is not passing because the source was inert.
+        assert_eq!(printed(&ws, id), "--settings/DOC");
     }
 
     #[test]

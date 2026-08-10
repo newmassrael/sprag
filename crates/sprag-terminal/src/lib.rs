@@ -102,6 +102,6 @@ pub use sprag_vt::closed_set;
 pub use tiling::{Divider, PaneRect, Projection, Rect, Tiling, fit_window, tile, with_ratio};
 pub use window_name::{WindowName, WindowNameError};
 pub use workspace::{
-    HistoryLimitSource, Pane, PaneBirthHooks, PaneEnvSource, PaneId, PaneInfo, PaneRebirth,
-    Workspace,
+    HistoryLimitSource, Pane, PaneArgsSource, PaneBirthHooks, PaneEnvSource, PaneId, PaneInfo,
+    PaneRebirth, Workspace,
 };
