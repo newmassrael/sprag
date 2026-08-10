@@ -31,6 +31,17 @@
 //! nothing about matchers. Each of those belongs to a claim this stand-in is not used for, and a
 //! stand-in that pretended to have them would be a second, worse implementation of an agent nobody
 //! can consult.
+//!
+//! # Why it is a binary of THIS crate and not a workspace member of its own
+//!
+//! Because that is the only spelling cargo makes a PROMISE about. `tests/wire_client.rs` needs this
+//! program to exist as a file on disk, and cargo sets `CARGO_BIN_EXE_<name>` — and builds the
+//! binary — for every binary of the package an integration test belongs to, under any target
+//! filter. It was a member crate first, and the test found it by taking `CARGO_BIN_EXE_sprag-term`'s
+//! directory and joining a guessed name onto it. That guess is not a dependency cargo can see:
+//! `cargo test -p sprag-host --test wire_client` builds no other package's binaries, so the file was
+//! there only for whoever had run `cargo build` earlier. CI had not, and the test failed on the one
+//! machine that was honest about it. Living here, the dependency is declared by construction.
 
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};

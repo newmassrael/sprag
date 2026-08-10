@@ -3980,15 +3980,12 @@ impl AgentBox {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).expect("the box's bin dir");
         std::fs::create_dir_all(dir.join("cfg")).expect("the box's sprag config dir");
-        let peer = PathBuf::from(env!("CARGO_BIN_EXE_sprag-term"))
-            .parent()
-            .expect("the bin dir cargo built into")
-            .join("sprag-agent-peer");
-        assert!(
-            peer.exists(),
-            "the stand-in agent was not built beside sprag-term: {}",
-            peer.display(),
-        );
+        // Cargo's own answer to *where is that binary*, and the reason the stand-in is a binary of
+        // THIS package. The first spelling took `CARGO_BIN_EXE_sprag-term`'s directory and joined
+        // the name on, which reads the same and promises nothing: cargo builds no other package's
+        // binaries for this test, so that path held a file only for whoever had run `cargo build`
+        // earlier. CI had not, and this line is what it failed on.
+        let peer = PathBuf::from(env!("CARGO_BIN_EXE_sprag-agent-peer"));
         // Named `claude` because the decision is made on the program's BASENAME — which is the rule
         // under test, so the fixture must go through it rather than around it. A symlink rather than
         // a `claude` binary target in the workspace: nothing named `claude` then exists in
