@@ -465,6 +465,34 @@ fn paired(
 }
 
 /// A screen of `COLS` x `ROWS` filled with `fill`, built outside every measured window.
+/// A screen showing what a BLOCKED agent shows: a question and a numbered run under it, in the
+/// bottom rows where [`sprag_detect::DIALOG_WINDOW`] looks.
+///
+/// The rest of the screen is ordinary output, because a real one is — a dialog arrives under
+/// whatever the agent had already printed, and a fixture that was blank above it would measure a
+/// window walk over nothing.
+fn dialog_screen() -> Screen {
+    let mut emulator = Emulator::new(COLS, ROWS);
+    for row in 0..ROWS {
+        let line = if row + 4 == ROWS {
+            "Do you want to make this edit to lib.rs?".to_owned()
+        } else if row + 3 == ROWS {
+            "\u{276f} 1. Yes".to_owned()
+        } else if row + 2 == ROWS {
+            "  2. Yes, and do not ask again this session".to_owned()
+        } else if row + 1 == ROWS {
+            "  3. No, and tell Claude what to do differently".to_owned()
+        } else {
+            "cargo build --release finished in 12.4s".to_owned()
+        };
+        emulator.advance(line.as_bytes());
+        if row + 1 < ROWS {
+            emulator.advance(b"\r\n");
+        }
+    }
+    VtPort::screen(&emulator).clone()
+}
+
 fn filled(fill: &str) -> Screen {
     let mut emulator = Emulator::new(COLS, ROWS);
     let mut line = String::new();
@@ -1927,6 +1955,56 @@ fn main() -> ExitCode {
         },
     );
     let evaluations_after = sprag_detect::work();
+
+    // WHAT `asking` COSTS PER PULL — R347's A13, which said in its own words *"believed cheap, and
+    // believed is the word"*.
+    //
+    // A BLOCKED pane parses its choice list on EVERY pull. The rule evaluation behind it is skipped
+    // by the quiescence gate; this parse is not, because a pane waiting for a person is by
+    // definition not repainting and the answer still has to be current. So it is the one read whose
+    // cost does not fall away when the screen stops moving.
+    //
+    // BOTH ARMS, because they are different code paths and only one of them is the worry: the
+    // dialog arm walks the window, finds a numbered run and BUILDS a `Question` (allocating the
+    // asked lines and the choices); the plain arm is what every non-blocked pane pays, and its own
+    // docs claim it reaches `None` without allocating a line. A measurement of one of them would
+    // have priced the wrong thing.
+    let dialog = dialog_screen();
+    let plain = filled("abc 123 xyz ");
+    // ⚠ A FIXTURE THAT DOES NOT PARSE WOULD TIME THE OTHER ARM AND SAY NOTHING ABOUT IT. Both
+    // subjects would walk the window and answer `None`, the two rows would agree, and the agreement
+    // would read as *the parse is cheap* rather than as *neither of them parsed*.
+    assert!(
+        sprag_detect::question(&dialog, sprag_detect::DIALOG_WINDOW).is_some(),
+        "the dialog fixture must READ as a menu, or the row below prices the wrong arm",
+    );
+    assert!(
+        sprag_detect::question(&plain, sprag_detect::DIALOG_WINDOW).is_none(),
+        "and the control must not, or there is no control",
+    );
+    let asking_blocked = paired(
+        "question (a pane showing a menu)",
+        &mut controls,
+        None,
+        || {
+            black_box(sprag_detect::question(
+                black_box(&dialog),
+                sprag_detect::DIALOG_WINDOW,
+            ));
+        },
+    );
+    let asking_plain = paired(
+        "question (a pane showing none)",
+        &mut controls,
+        None,
+        || {
+            black_box(sprag_detect::question(
+                black_box(&plain),
+                sprag_detect::DIALOG_WINDOW,
+            ));
+        },
+    );
+    let _ = (asking_blocked, asking_plain);
 
     // THE SOCKET (R262). Every row above is served IN-PROCESS through `handle_request`, the same
     // entry point the transport calls — a bound this tool has stated since it was written and never
