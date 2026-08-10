@@ -109,6 +109,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use pinion_core::GridBuffer;
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
 use sprag_host::HostClient;
@@ -124,9 +125,9 @@ use sprag_terminal::{Ended, PaneId, PlaceHow, SplitId};
 use sprag_tui::focus::{self, Person};
 use sprag_tui::outward::Outward;
 use sprag_tui::{
-    Divider, MouseEdges, PaintCache, PanePaint, Rect, Split, Tiling, WireKey, agent_window_title,
-    chooser_changes, cursor_changes, divider_changes, help_changes, help_viewport, prompt_changes,
-    status_changes, tile, title_change, wire_key, with_ratio,
+    Divider, MouseEdges, PaintCache, PanePaint, Rect, Split, Tiling, Viewport, WireKey,
+    agent_window_title, chooser_changes, cursor_changes, divider_changes, help_changes,
+    help_viewport, prompt_changes, status_changes, tile, title_change, wire_key, with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -271,6 +272,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     // reporting after it would tile the first frame over a window this terminal was not counted in.
     report_size(&host, split.panes);
     let mut tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+    // WHAT PART OF THE WINDOW THIS CLIENT IS LOOKING AT. Derived from the same two facts the tiling
+    // is — the arbitrated window and this terminal's pane rectangle — and re-derived beside it, so
+    // there is no offset held against a window whose size has moved under it. `paint` is what pans
+    // it, because panning follows the cursor of the pane being typed into and that pane's cells are
+    // in hand exactly there; the loop holds it so the POINTER can be translated by the same view
+    // the person is looking at.
+    let mut viewport = look(&host, split.panes);
     mouse.follow(&host, &tiling);
     // The pointer's state, kept across events because the wire wants EDGES and this terminal
     // reports a state (see [`MouseEdges`]).
@@ -292,6 +300,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         &host,
         &tiling,
         split.panes,
+        &mut viewport,
         Frame {
             focus,
             clear: Clear::Yes,
@@ -346,7 +355,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                     .is_some_and(|said| said.showing(now()).is_none()) =>
             {
                 message = None;
-                paint_status(&mut screen, &host, split.status, None)?;
+                paint_status(
+                    &mut screen,
+                    &host,
+                    split.status,
+                    None,
+                    viewport.note().as_deref(),
+                )?;
             }
             // The person left this terminal, or came back to it. Nothing to route and nothing to
             // repaint: what it changes is where the NEXT message goes, and it deliberately does not
@@ -373,7 +388,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                     .is_some_and(Message::waits_to_be_acknowledged)
                 {
                     message = None;
-                    paint_status(&mut screen, &host, split.status, None)?;
+                    paint_status(
+                        &mut screen,
+                        &host,
+                        split.status,
+                        None,
+                        viewport.note().as_deref(),
+                    )?;
                 }
                 // AN OVERLAY OWNS THE KEYBOARD while it is up, and this is checked before the key
                 // is looked at rather than after: a user answering a question — or reading the key
@@ -401,6 +422,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &host,
                                 &tiling,
                                 split.panes,
+                                &mut viewport,
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
@@ -420,6 +442,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &host,
                                 &tiling,
                                 split.panes,
+                                &mut viewport,
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
@@ -445,6 +468,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &host,
                                 &tiling,
                                 split.panes,
+                                &mut viewport,
                                 Frame {
                                     focus,
                                     clear: Clear::Yes,
@@ -527,12 +551,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                         // says which — this arm's own repaint is the answer.
                         let report = Report::on_screen();
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        viewport = look(&host, split.panes);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::No,
@@ -567,12 +593,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Some(Some(_)) | None => Report::on_screen(),
                         };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        viewport = look(&host, split.panes);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::No,
@@ -768,12 +796,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             _ => unreachable!("the match above admits only the nine arms here"),
                         };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        viewport = look(&host, split.panes);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::Yes,
@@ -804,12 +834,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Report::nowhere(&BoundAction::SelectPaneToward { dir })
                         };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        viewport = look(&host, split.panes);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::No,
@@ -834,12 +866,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Report::nowhere(&BoundAction::SwapPaneToward { dir })
                         };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        viewport = look(&host, split.panes);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::No,
@@ -871,12 +905,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             Report::nowhere(&BoundAction::ResizePaneToward { dir, cells })
                         };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        viewport = look(&host, split.panes);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::No,
@@ -909,12 +945,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             None => Report::nowhere(&action),
                         };
                         tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                        viewport = look(&host, split.panes);
                         mouse.follow(&host, &tiling);
                         paint(
                             &mut screen,
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::Yes,
@@ -959,6 +997,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::No,
@@ -999,6 +1038,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         &host,
                         split.status,
                         showing(&message).as_deref(),
+                        viewport.note().as_deref(),
                     )?;
                 }
             }
@@ -1071,13 +1111,19 @@ fn run() -> Result<(), Box<dyn Error>> {
                 ) =>
             {
                 for edge in pointer.edges(&event) {
+                    // THE POINTER ARRIVES IN THIS TERMINAL'S COORDINATES and every question below is
+                    // asked of a tiling laid out in the WINDOW's. With the view at the origin the two
+                    // are the same, which is why nothing needed this until a client could be smaller
+                    // than the window it watches — and why translating here, once, is the whole of
+                    // it: `pane_at`, `divider_at` and `ratio_at` all speak the window.
+                    let (at_col, at_row) = viewport.window_cell(edge.col, edge.row);
                     // A divider DRAG outranks everything below, and it is claimed on the PRESS
                     // rather than recognised on each move: once a drag is under way the pointer
                     // leaves the divider immediately (that is what moving it means), so a client
                     // that asked "is this cell a divider" every event would resize once and then
                     // start clicking into whichever pane the pointer had entered.
                     if edge.kind == MouseEventKind::Press
-                        && let Some(divider) = tiling.divider_at(edge.col, edge.row)
+                        && let Some(divider) = tiling.divider_at(at_col, at_row)
                     {
                         dragging = divider.id.map(|id| (id, divider));
                         continue;
@@ -1086,7 +1132,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         match edge.kind {
                             MouseEventKind::Release => dragging = None,
                             MouseEventKind::Drag => {
-                                if let Some(ratio) = divider.ratio_at(edge.col, edge.row) {
+                                if let Some(ratio) = divider.ratio_at(at_col, at_row) {
                                     tiling = drag_divider(
                                         &host,
                                         split.panes,
@@ -1103,6 +1149,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         &host,
                                         &tiling,
                                         split.panes,
+                                        &mut viewport,
                                         Frame {
                                             focus,
                                             clear: Clear::Yes,
@@ -1120,7 +1167,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                         }
                         continue;
                     }
-                    let Some((pane, col, row)) = tiling.pane_at(edge.col, edge.row) else {
+                    let Some((pane, col, row)) = tiling.pane_at(at_col, at_row) else {
                         // A divider column nobody is dragging by, or a cell outside every
                         // rectangle. Not forwarded anywhere: there is no child whose grid holds it.
                         continue;
@@ -1132,6 +1179,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &host,
                             &tiling,
                             split.panes,
+                            &mut viewport,
                             Frame {
                                 focus,
                                 clear: Clear::No,
@@ -1164,12 +1212,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                 // default `latest` policy this report IS the new window.
                 report_size(&host, split.panes);
                 tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+                viewport = look(&host, split.panes);
                 mouse.follow(&host, &tiling);
                 paint(
                     &mut screen,
                     &host,
                     &tiling,
                     split.panes,
+                    &mut viewport,
                     Frame {
                         focus,
                         clear: Clear::Yes,
@@ -1274,6 +1324,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             // exited and was closed — changes which rectangles exist. Painting the old tiling would
             // put the new pane nowhere and leave the closed one's cells on screen.
             tiling = reconcile(&host, split.panes, &mut focus, &mut seen_active);
+            viewport = look(&host, split.panes);
             // A child that just enabled tracking woke this client the same way its output would,
             // so the mirror is re-read here and not on a timer.
             mouse.follow(&host, &tiling);
@@ -1282,6 +1333,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 &host,
                 &tiling,
                 split.panes,
+                &mut viewport,
                 Frame {
                     focus,
                     clear: Clear::No,
@@ -1585,6 +1637,7 @@ fn paint(
     host: &WireHost,
     tiling: &Tiling,
     screen_area: Rect,
+    viewport: &mut Viewport,
     frame: Frame<'_>,
     held: &mut Painted,
 ) -> Result<(), Box<dyn Error>> {
@@ -1610,7 +1663,12 @@ fn paint(
         // THE STATUS ROW IS STILL DRAWN, before the return: a client whose last pane just closed is
         // still attached to a session and can still be pressed at, so the one surface able to say
         // so must not be the thing that disappears with the panes.
-        screen.add_changes(status_changes(status, &Status::of(host), message));
+        screen.add_changes(status_changes(
+            status,
+            &Status::of(host),
+            message,
+            viewport.note().as_deref(),
+        ));
         screen.present()?;
         return Ok(());
     }
@@ -1619,19 +1677,41 @@ fn paint(
         // The surface no longer holds anything the cache could let a row skip.
         held.cache.forget();
     }
+    // THE FOCUSED PANE FIRST, because the view follows its cursor and every other pane's visibility
+    // depends on where the view ends up.
+    //
+    // Fetched here rather than in the loop so it is fetched ONCE: `pane_cells_and_token` is the
+    // damage-driven read R218/R220 built, and asking for one pane twice a frame would put the cost
+    // back on the input path. The loop below takes it rather than asking again.
+    let mut focused = focus.and_then(|pane| {
+        let area = tiling.area_of(pane)?;
+        let (cells, token) = host.pane_cells_and_token(pane, 0);
+        Some((pane, area, cells, token))
+    });
+    if let Some((_, area, cells, _)) = &focused {
+        // WHERE THE PERSON IS TYPING, in the window's coordinates. A client too small for the
+        // window would otherwise be following the session's active pane into cells it does not
+        // draw — typing into a pane that is not on its screen, which is what this measured before
+        // there was a viewport at all.
+        viewport.follow(typing_at(cells, *area));
+    }
     let mut drawn = Vec::with_capacity(tiling.panes.len());
     for held in &tiling.panes {
-        // The tiling is in WINDOW coordinates, which this terminal need not be big enough to hold:
-        // a rectangle past the edge is painted as far as the screen goes and no further. Skipped
-        // entirely when it does not reach the screen at all — a pane of a window larger than this
-        // terminal, which is visible on the clients that do have room for it.
-        let Some(area) = held.area.intersect(screen_area) else {
+        // The tiling is in WINDOW coordinates, which this terminal need not be big enough to hold.
+        // The viewport is the whole of the translation: it says where a window rectangle lands here
+        // and which of the pane's OWN cells that is, and answers `None` for a pane this client is
+        // not looking at — which is a pane the clients with room for it can still see.
+        let Some(view) = viewport.show(held.area) else {
             continue;
         };
-        let (cells, token) = host.pane_cells_and_token(held.pane, 0);
+        let (cells, token) = match focused.take_if(|(pane, ..)| *pane == held.pane) {
+            Some((_, _, cells, token)) => (cells, token),
+            None => host.pane_cells_and_token(held.pane, 0),
+        };
         drawn.push(PanePaint {
             pane: held.pane,
-            area,
+            area: view.area,
+            from: view.from,
             cells,
             token,
         });
@@ -1642,13 +1722,21 @@ fn paint(
     let cursor = drawn
         .iter()
         .find(|held| focus == Some(held.pane))
-        .map_or_else(Vec::new, |held| cursor_changes(&held.cells, held.area));
+        .map_or_else(Vec::new, |held| {
+            cursor_changes(&held.cells, held.area, held.from)
+        });
     screen.add_changes(held.cache.changes(&drawn));
     for divider in &tiling.dividers {
-        let Some(area) = divider.area.intersect(screen_area) else {
+        // Through the viewport for the panes' reason. A divider has no content to read, so only its
+        // rectangle moves — but it moves, and a divider left in window coordinates would be drawn
+        // across a pane on any client whose view has scrolled.
+        let Some(view) = viewport.show(divider.area) else {
             continue;
         };
-        screen.add_changes(divider_changes(&Divider { area, ..*divider }));
+        screen.add_changes(divider_changes(&Divider {
+            area: view.area,
+            ..*divider
+        }));
     }
     // THE STATUS ROW, after the panes and BEFORE the cursor. It is outside the tiling's rectangle
     // by construction ([`Split`]), so nothing above can have painted over it — and it is drawn HERE
@@ -1660,7 +1748,12 @@ fn paint(
     // in the terminal's own bottom-left corner, so drawing it after the cursor would leave the
     // terminal's one cursor sitting on the status line instead of in the pane the user is typing
     // into. The overlays below can follow the cursor because each of them HIDES it.
-    screen.add_changes(status_changes(status, &Status::of(host), message));
+    screen.add_changes(status_changes(
+        status,
+        &Status::of(host),
+        message,
+        viewport.note().as_deref(),
+    ));
     screen.add_changes(cursor);
     // THE PROMPT LAST, and inside this function rather than at the call sites, for the reason the
     // retitle above is here: this is the one place that writes the terminal, so every path that
@@ -1919,6 +2012,32 @@ const CELL_PX_UNKNOWN: (u16, u16) = (0, 0);
 /// window (an older daemon, or one no client has reported an area to) is saying nothing about what
 /// the panes should be, and this client's own screen is then the only fact available — which is
 /// exactly what it used before `window-size` existed.
+/// Where the person is typing, in the WINDOW's coordinates — the cell this client's view follows.
+///
+/// The focused pane's cursor when it has one that is inside the pane, and the pane's top-left
+/// corner otherwise. The fallback is the point: a cursor the producer has hidden, or one briefly
+/// outside its own grid during an in-flight resize (pinion's `GridCursor` documents both), is not a
+/// position to scroll to — but the PANE is still where the keystrokes are going, so its first cell
+/// is what the view owes the person.
+fn typing_at(cells: &GridBuffer, area: Rect) -> (u16, u16) {
+    let cursor = cells.cursor();
+    let inside = cursor.visible && cursor.col < cells.cols() && cursor.row < cells.rows();
+    if inside {
+        (area.col + cursor.col, area.row + cursor.row)
+    } else {
+        (area.col, area.row)
+    }
+}
+
+/// This client's view onto the window it is watching — the whole window whenever this terminal is
+/// big enough for it, which is every client that is not sharing a window with a bigger one.
+///
+/// Derived, never remembered: [`window_area`] is the arbitration's answer as of now, and an offset
+/// carried across a change to it would be a position in a window that no longer exists.
+fn look(host: &WireHost, screen: Rect) -> Viewport {
+    Viewport::of(window_area(host, screen), screen)
+}
+
 fn window_area(host: &WireHost, screen: Rect) -> Rect {
     match host.window_size() {
         Some((cols, rows)) => Rect::screen(cols, rows),
@@ -1962,8 +2081,9 @@ fn paint_status(
     host: &WireHost,
     area: Rect,
     message: Option<&str>,
+    view: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
-    screen.add_changes(status_changes(area, &Status::of(host), message));
+    screen.add_changes(status_changes(area, &Status::of(host), message, view));
     screen.present()?;
     Ok(())
 }

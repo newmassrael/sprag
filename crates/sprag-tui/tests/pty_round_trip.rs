@@ -3780,6 +3780,14 @@ fn two_clients_on_two_windows_of_one_session_size_them_separately() {
 ///
 /// The needle is deliberately longer than the narrow client and shorter than the window, so it is
 /// text the wide client can show in full and the narrow one cannot show at all.
+///
+/// ⚠ **R348 CHANGED WHICH COLUMNS IT SHOWS, and this gate is where that was found.** It used to
+/// assert the narrow client held the FIRST sixty columns — the window's left edge, forever, with no
+/// way to reach the rest. A viewport follows the cursor of the pane being typed into, so as the
+/// line grows past the narrow terminal the view slides right and what is on screen is the LIVE END
+/// of the line. The claim the test was written for is untouched (a clip is still a clip, and the
+/// client's last row is still its own); what moved is the half that was never a claim, only the
+/// consequence of a view that could not move.
 #[test]
 fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
     let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
@@ -3828,15 +3836,30 @@ fn a_client_narrower_than_the_window_clips_it_and_keeps_its_own_status_row() {
     // 1. THE NARROW CLIENT KEEPS ITS OWN LAST ROW. This is the assertion that separates a clip from
     //    a wrap: 80 columns written into a 60-column terminal is one extra row of displacement, and
     //    it lands on the row the client reserved for itself.
-    narrow.wait_for("the narrow client to paint the line it can hold", || {
-        settled(narrow.row(0), &"A".repeat(usize::from(narrow_pty.0)))
+    //
+    //    Its top row is FULL of the needle and one cell short of its own width — the cursor's cell,
+    //    left blank and trimmed by `row`. That is the tell that the view followed: a client frozen
+    //    at the window's left edge would hold sixty of them and never move again.
+    let seen = usize::from(narrow_pty.0) - 1;
+    narrow.wait_for("the narrow client to paint the end of the line", || {
+        settled(narrow.row(0), &"A".repeat(seen))
     });
     let status = narrow.row(STATUS_ROW);
     assert!(
-        status.starts_with(&format!("[{session}]")),
-        "the narrow client's last row is still its OWN, not the pane spilling over it: \
-         {status:?} ({})",
+        status.starts_with(&format!(
+            "<{}x{} of {}x{} +",
+            narrow_pty.0,
+            narrow_pty.1 - 1,
+            window.0,
+            window.1
+        )),
+        "the narrow client's last row is still its OWN, and now says what it is showing of the \
+         window and where: {status:?} ({})",
         narrow.picture(),
+    );
+    assert!(
+        status.contains(&format!("[{session}]")),
+        "...without having given up the session it was always there to name: {status:?}",
     );
 
     // 2. AND NOTHING WRAPPED ONTO THE ROW BELOW — the tell a clip is a clip. A wrap would put the
@@ -8428,5 +8451,185 @@ fn no_detached_leaves_rather_than_join_an_occupied_session() {
         1,
         "beta held one client before the kill and must hold exactly one after it — a build that \
          joined and then left would pass the reading above and is a different defect",
+    );
+}
+
+/// **THE GATE for R348: a client too small for its window follows the pane it is TYPING INTO, and
+/// says it is not showing all of it.**
+///
+/// Measured before a line of it was written, on this exact fixture: an 80x10 client watching an
+/// 80x23 window, two panes stacked. Its screen was BLANK — the pane it could show was empty and the
+/// pane with the content began twelve rows below its last row — its keystrokes went into that
+/// invisible pane anyway, because the session's active pane is session state and a client follows
+/// it, and its status row came back byte-identical to the row on the client that could see
+/// everything. The person typed and nothing happened, on either half of the screen they had.
+///
+/// Three claims, and the second is the one the round exists for:
+///
+/// 1. the narrow client SAYS it is showing part of a bigger window, and the wide one does not;
+/// 2. selecting a pane the narrow client cannot show MOVES ITS VIEW to that pane, so what it types
+///    lands where it can see it;
+/// 3. the wide client is untouched by any of it — a view is one client's own business and must not
+///    have cost the session a row.
+#[test]
+fn a_client_too_small_for_its_window_follows_the_pane_it_is_typing_into() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let (tall_pty, short_pty) = ((80u16, 24u16), (80u16, 10u16));
+    let window = panes_of(tall_pty);
+
+    let mut tall = Tui::attach(&sock, &session);
+    wait_for("the tall client to attach", || {
+        match attached(&mut conn, &session) {
+            0 => Err("nobody attached".to_owned()),
+            _ => Ok(()),
+        }
+    });
+    tall.resize(tall_pty.0, tall_pty.1);
+    wait_for("the tall client's area to become the window", || {
+        settled(pane_size(&mut conn, &session), &Some(window))
+    });
+
+    let mut short = Tui::attach(&sock, &session);
+    wait_for(
+        "the daemon to count two attached clients",
+        || match attached(&mut conn, &session) {
+            2 => Ok(()),
+            n => Err(format!("{n} attached")),
+        },
+    );
+    short.resize(short_pty.0, short_pty.1);
+    wait_for(
+        "the window to stay the taller client's under `largest`",
+        || settled(pane_size(&mut conn, &session), &Some(window)),
+    );
+
+    // 1. THE NARROW CLIENT SAYS SO, and it leads the row — the note is first precisely because the
+    //    client that owes it is the one whose row is shortest.
+    let short_status = short_pty.1 - 1;
+    short.wait_for("the short client to say what it is showing", || {
+        let row = short.row(short_status);
+        if row.starts_with(&format!(
+            "<{}x{} of {}x{}>",
+            short_pty.0,
+            short_pty.1 - 1,
+            window.0,
+            window.1
+        )) {
+            Ok(())
+        } else {
+            Err(format!("{row:?}"))
+        }
+    });
+    assert!(
+        !tall.row(tall_pty.1 - 1).starts_with('<'),
+        "a client showing the whole window says nothing about a view: {:?}",
+        tall.row(tall_pty.1 - 1),
+    );
+
+    // Stack two panes, so the second one lives below the short client's last row.
+    let first = pane_ids(&mut conn, &session);
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": mux_action_path(SPLIT_ACTION),
+            "args": { "pane": first[0], "dir": "vertical", "cmd": ["cat"] },
+        }),
+    )
+    .expect("the split answers");
+    wait_for("both panes to exist", || {
+        match pane_sizes(&mut conn, &session).len() {
+            2 => Ok(()),
+            n => Err(format!("{n} panes")),
+        }
+    });
+
+    // 2. THE VIEW MOVES TO THE PANE THIS CLIENT IS TYPING INTO. The split made the lower pane
+    //    active, and that pane begins below this client's last row — the measured case exactly. The
+    //    note reporting an OFFSET is what separates "it followed" from "the pane happened to be on
+    //    screen", and it is waited for rather than assumed: a key typed before the split has
+    //    reached this client goes to the pane it still thinks is active, which is a race in the
+    //    fixture and not a claim about the product. (It was one, first time round.)
+    let panned = format!(
+        "<{}x{} of {}x{} +",
+        short_pty.0,
+        short_pty.1 - 1,
+        window.0,
+        window.1
+    );
+    short.wait_for("the short client's view to follow the new pane", || {
+        let row = short.row(short_status);
+        if row.starts_with(&panned) {
+            Ok(())
+        } else {
+            Err(format!("{row:?}"))
+        }
+    });
+
+    //    ...and now what it types lands where it can see it.
+    short.type_bytes(b"SEENBYME");
+    short.wait_for("the short client to show what it just typed", || {
+        let picture = short.picture();
+        if (0..short_pty.1 - 1).any(|row| short.row(row).contains("SEENBYME")) {
+            Ok(())
+        } else {
+            Err(format!("nowhere on its screen: {picture}"))
+        }
+    });
+
+    // 3. The tall client shows the same text where the WINDOW puts it, untouched — its own view
+    //    never moved, and the session kept every row.
+    tall.wait_for(
+        "the tall client to show it in the window's own rows",
+        || {
+            if (0..tall_pty.1 - 1).any(|row| tall.row(row).contains("SEENBYME")) {
+                Ok(())
+            } else {
+                Err(tall.picture())
+            }
+        },
+    );
+    // 2b. THE DIVIDER MOVED WITH THE VIEW. It lives on the window's row 11 and this view starts at
+    //     row 4, so it belongs on the seventh row of this terminal — where a divider left in window
+    //     coordinates would be off the bottom of a nine-row screen entirely, and the arrangement
+    //     would read as one pane with a gap in it.
+    let divider_row = 11 - 4;
+    short.wait_for("the divider to be drawn where this view puts it", || {
+        let row = short.row(divider_row);
+        if row.starts_with('\u{2500}') {
+            Ok(())
+        } else {
+            Err(format!("row {divider_row} is {row:?}: {}", short.picture()))
+        }
+    });
+    assert_eq!(
+        short.row(divider_row - 1),
+        "",
+        "and only where this view puts it: {}",
+        short.picture(),
+    );
+
+    // 2c. A POINTER REACHES THE PANE THE PERSON IS POINTING AT. The press is on the TOP pane's
+    //     visible part, which is a pane this client is NOT focused on — so focus MOVING is the
+    //     observable, and a press that never arrived would leave it where it was.
+    let top = *pane_ids(&mut conn, &session).first().expect("two panes");
+    short.type_bytes(b"\x1b[<0;1;1M");
+    short.type_bytes(b"\x1b[<0;1;1m");
+    wait_for("the press to select the pane it landed in", || {
+        settled(active_pane(&mut conn, &session), &Some(top))
+    });
+
+    // The window is still the tall client's: two stacked panes with a divider row between them,
+    // which is what 23 rows divides into. Asserted through the halves rather than through one
+    // pane's size, because after the split no single pane IS the window any more.
+    let (top, bottom) = halves(window.1);
+    assert_eq!(
+        pane_sizes(&mut conn, &session),
+        vec![(window.0, top), (window.0, bottom)],
+        "a client too small for the window must not have cost it a row",
     );
 }

@@ -96,17 +96,23 @@ const BLANK: &str = " ";
 /// garbage from one character. Closing the run and re-anchoring at an absolute column confines the
 /// disagreement to the single cell that caused it: the corrective write comes AFTER the wide
 /// cluster that clobbered its neighbour, so the surface ends up right either way.
+/// `from` is the pane's own `(col, row)` that `area`'s top-left corner shows — `(0, 0)` unless this
+/// client's [`Viewport`](crate::Viewport) has scrolled past part of the pane. It is a parameter
+/// rather than folded into `area` because the two are different coordinate spaces: `area` says
+/// where on the TERMINAL to write, `from` says where in the PANE to read, and a single rectangle
+/// carrying both would be right only while they agree.
 #[must_use]
-pub fn pane_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
-    pane_rows_changes(grid, area, 0..area.rows)
+pub fn pane_changes(grid: &GridBuffer, area: Rect, from: (u16, u16)) -> Vec<Change> {
+    pane_rows_changes(grid, area, from, 0..area.rows)
 }
 
 /// [`pane_changes`] for a chosen subset of the rectangle's rows, the others left to whatever the
 /// surface already holds.
 ///
-/// Row indices are the RECTANGLE's, not the screen's — the same coordinates the loop below counts
-/// in — because the caller choosing them ([`PaintCache`]) is comparing a pane's own damage stamps,
-/// which are numbered from the pane's first row.
+/// Row indices are the RECTANGLE's, not the screen's and not the PANE's — the same coordinates the
+/// loop below counts in. The pane's own row is `from.1 + row`, which is what the caller choosing
+/// them ([`PaintCache`]) has to add before indexing damage stamps: those are numbered from the
+/// pane's first row, and a viewport that has scrolled past some of them makes the two differ.
 ///
 /// Skipping a row is only ever correct against something that moves whenever the row's cells would
 /// differ, and it is not this function's place to decide that: it writes what it is told and
@@ -115,6 +121,7 @@ pub fn pane_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
 fn pane_rows_changes(
     grid: &GridBuffer,
     area: Rect,
+    from: (u16, u16),
     rows: impl Iterator<Item = u16>,
 ) -> Vec<Change> {
     if area.is_empty() {
@@ -142,7 +149,7 @@ fn pane_rows_changes(
             // How many columns of the rectangle are left, which is what decides whether a wide
             // cluster can be drawn here at all.
             let room = usize::from(area.cols - col);
-            let (text, columns, attrs) = match grid.cell(col, row) {
+            let (text, columns, attrs) = match grid.cell(from.0 + col, from.1 + row) {
                 Some(cell) => {
                     let Some((text, columns)) = printed(cell, follows_wide) else {
                         // A trailer behind its own head: the head's cluster already occupies this
@@ -476,8 +483,17 @@ impl Split {
 /// the honest reading of a single row: half a location beside half a refusal is two truncated
 /// facts. The location comes back when the message expires, and nothing has to remember it —
 /// [`Status`] is derived from the host on every paint.
+///
+/// `view` is what this client is SHOWING of the window it is watching
+/// ([`Viewport::note`](crate::Viewport::note)) — `None` for the ordinary client that can see all of
+/// it, and so absent from every row this front painted before a viewport existed.
 #[must_use]
-pub fn status_changes(area: Rect, status: &Status, message: Option<&str>) -> Vec<Change> {
+pub fn status_changes(
+    area: Rect,
+    status: &Status,
+    message: Option<&str>,
+    view: Option<&str>,
+) -> Vec<Change> {
     if area.is_empty() {
         return Vec::new();
     }
@@ -502,9 +518,20 @@ pub fn status_changes(area: Rect, status: &Status, message: Option<&str>) -> Vec
     //
     // Nothing else paints that cell — the status row is outside the tiling by construction
     // ([`Split`]) — so what it holds is whatever the last `Clear` left, which is a blank.
+    // The viewport's note LEADS the line, and a MESSAGE replaces both — the row is one sentence at a
+    // time, and a message is the newer one. Leading rather than trailing because the client that
+    // owes this note is by definition the narrow one, so a note after the session and its windows
+    // is the note truncated away on exactly the terminal it exists for.
+    let line = message.map_or_else(
+        || match view {
+            Some(view) => format!("{view} {}", status.line()),
+            None => status.line(),
+        },
+        str::to_owned,
+    );
     push_clipped(
         &mut changes,
-        message.unwrap_or(&status.line()),
+        &line,
         usize::from(area.cols.saturating_sub(1)),
     );
     changes
@@ -922,8 +949,16 @@ fn underline(style: PinUnderlineStyle) -> Underline {
 /// the fold is a bijection — the seventh, `Default`, is the "whatever the terminal prefers" value
 /// no producer-reported cursor means.
 #[must_use]
-pub fn cursor_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
+pub fn cursor_changes(grid: &GridBuffer, area: Rect, from: (u16, u16)) -> Vec<Change> {
     let cursor = grid.cursor();
+    // Where the cursor is on THIS terminal: the pane's own cell, less what the viewport scrolled
+    // past. A cursor above or left of the view has no screen cell at all, which `checked_sub`
+    // reports as `None` and the visibility test below reads as "not here" — the same answer it
+    // already gives for a cursor outside the rectangle, and for the same reason.
+    let at = (
+        cursor.col.checked_sub(from.0),
+        cursor.row.checked_sub(from.1),
+    );
     // Outside the buffer the cursor is not a position this client can honour: pinion's `GridCursor`
     // docs say the producer's position may briefly fall outside during an in-flight resize, and a
     // clamped cursor would draw an authoritative-looking block in a cell the producer never named.
@@ -932,8 +967,8 @@ pub fn cursor_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
     let visible = cursor.visible
         && cursor.col < grid.cols()
         && cursor.row < grid.rows()
-        && cursor.col < area.cols
-        && cursor.row < area.rows;
+        && at.0.is_some_and(|col| col < area.cols)
+        && at.1.is_some_and(|row| row < area.rows);
     let mut changes = vec![
         Change::CursorColor(
             cursor
@@ -956,10 +991,10 @@ pub fn cursor_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
             CursorVisibility::Hidden
         }),
     ];
-    if visible {
+    if let (true, (Some(col), Some(row))) = (visible, at) {
         changes.push(Change::CursorPosition {
-            x: Position::Absolute(usize::from(area.col + cursor.col)),
-            y: Position::Absolute(usize::from(area.row + cursor.row)),
+            x: Position::Absolute(usize::from(area.col + col)),
+            y: Position::Absolute(usize::from(area.row + row)),
         });
     }
     changes
@@ -975,9 +1010,12 @@ pub fn cursor_changes(grid: &GridBuffer, area: Rect) -> Vec<Change> {
 pub struct PanePaint {
     /// Which pane.
     pub pane: PaneId,
-    /// Its rectangle on THIS terminal — already intersected with the screen, so it is what will
-    /// actually be written.
+    /// Its rectangle on THIS terminal — already cut to what this client's
+    /// [`Viewport`](crate::Viewport) shows, so it is what will actually be written.
     pub area: Rect,
+    /// The pane's own `(col, row)` that [`area`](Self::area)'s top-left shows — see
+    /// [`PaneView::from`](crate::PaneView::from). `(0, 0)` whenever the window fits this terminal.
+    pub from: (u16, u16),
     /// The cells to write.
     pub cells: GridBuffer,
     /// The projection token those cells arrived under, or [`None`] for "cannot say".
@@ -1022,11 +1060,16 @@ pub struct PanePaint {
 /// behaviour of every client before this existed.
 #[derive(Default)]
 pub struct PaintCache {
-    /// Which pane owned which rectangle when the remembered rows were written. Compared WHOLE
-    /// rather than per pane: a pane's own rectangle being unchanged does not say another pane has
-    /// not written over it, and the cheapest way to never have to make that argument is not to
-    /// rely on it.
-    arrangement: Vec<(PaneId, Rect)>,
+    /// Which pane owned which rectangle, showing which of its own cells, when the remembered rows
+    /// were written. Compared WHOLE rather than per pane: a pane's own rectangle being unchanged
+    /// does not say another pane has not written over it, and the cheapest way to never have to
+    /// make that argument is not to rely on it.
+    ///
+    /// **The `from` is part of the key and not decoration.** A viewport that scrolls by a row leaves
+    /// every rectangle exactly where it was and changes what each of them SHOWS; without it here,
+    /// the cache would compare a pane's unmoved stamps against an unmoved rectangle and skip every
+    /// row of a frame that had scrolled.
+    arrangement: Vec<(PaneId, Rect, (u16, u16))>,
     /// The token each pane's surface rows were built from. Absent for a pane whose host could not
     /// say, which is what makes "cannot say" rebuild rather than skip.
     tokens: std::collections::HashMap<PaneId, ProjectionToken>,
@@ -1055,8 +1098,10 @@ impl PaintCache {
     /// forgotten by a caller that painted the panes in a loop.
     #[must_use]
     pub fn changes(&mut self, panes: &[PanePaint]) -> Vec<Change> {
-        let arrangement: Vec<(PaneId, Rect)> =
-            panes.iter().map(|drawn| (drawn.pane, drawn.area)).collect();
+        let arrangement: Vec<(PaneId, Rect, (u16, u16))> = panes
+            .iter()
+            .map(|drawn| (drawn.pane, drawn.area, drawn.from))
+            .collect();
         if arrangement != self.arrangement {
             self.tokens.clear();
             self.arrangement = arrangement;
@@ -1071,22 +1116,29 @@ impl PaintCache {
                 .filter(|(now, then)| comparable(now, then));
             match reusable {
                 Some((now, then)) => {
-                    let stamped = drawn.area.rows.min(row_count(now));
+                    // In the PANE's rows, which is what the stamps are numbered in: a rectangle row
+                    // is the pane's `from.1 + row`, so a rectangle whose last row is past the last
+                    // stamp starts being unvouchable that many rows earlier.
+                    let stamped = drawn
+                        .area
+                        .rows
+                        .min(row_count(now).saturating_sub(drawn.from.1));
                     changes.extend(pane_rows_changes(
                         &drawn.cells,
                         drawn.area,
+                        drawn.from,
                         (0..drawn.area.rows).filter(|row| {
                             // Past the stamps is past what this cache can vouch for, so those rows
                             // are always rebuilt. In practice there are none: they are the tail of
                             // a rectangle taller than the grid, which is a pane still catching up
                             // to a resize — and a resize has already discarded the arrangement.
+                            let pane_row = usize::from(drawn.from.1 + *row);
                             *row >= stamped
-                                || now.row_generations[usize::from(*row)]
-                                    != then.row_generations[usize::from(*row)]
+                                || now.row_generations[pane_row] != then.row_generations[pane_row]
                         }),
                     ));
                 }
-                None => changes.extend(pane_changes(&drawn.cells, drawn.area)),
+                None => changes.extend(pane_changes(&drawn.cells, drawn.area, drawn.from)),
             }
             match &drawn.token {
                 Some(token) => self.tokens.insert(drawn.pane, token.clone()),
@@ -1238,8 +1290,8 @@ mod tests {
     /// composition, with the one pane that has focus.
     fn painted_in(grid: &GridBuffer, area: Rect, cols: u16, rows: u16) -> Surface {
         let mut surface = Surface::new(usize::from(cols), usize::from(rows));
-        surface.add_changes(pane_changes(grid, area));
-        surface.add_changes(cursor_changes(grid, area));
+        surface.add_changes(pane_changes(grid, area, (0, 0)));
+        surface.add_changes(cursor_changes(grid, area, (0, 0)));
         surface
     }
 
@@ -1281,6 +1333,7 @@ mod tests {
     /// One pane filling a surface of its own size.
     fn whole(pane: u64, grid: &GridBuffer, token: Option<ProjectionToken>) -> PanePaint {
         PanePaint {
+            from: (0, 0),
             pane: PaneId(pane),
             area: Rect::screen(grid.cols(), grid.rows()),
             cells: grid.clone(),
@@ -1414,6 +1467,66 @@ mod tests {
     ///
     /// The first version of this test asserted the frame was non-empty and passed with the
     /// arrangement check deleted, because the joining pane's own changes were in the same list.
+    /// **A VIEW THAT SCROLLS OVER UNCHANGED CONTENT IS STILL A NEW FRAME.**
+    ///
+    /// The case the arrangement key exists for, and the one no end-to-end gate can reach: a pane
+    /// bigger than the client's viewport keeps the SAME rectangle at every offset, and its rows keep
+    /// the same stamps while nothing writes to it. So a cache keyed on the rectangle and the stamps
+    /// alone would answer "nothing to do" for a frame showing entirely different cells — and it
+    /// would be right about both of the things it was looking at. Moving focus over static output is
+    /// exactly that frame; the mutation that drops `from` from the key was GREEN against the whole
+    /// suite before this existed.
+    #[test]
+    fn a_view_that_scrolled_rewrites_the_pane_although_nothing_in_it_changed() {
+        let grid = grid_of(4, &["one", "two", "three", "four"]);
+        let token = token(&[7, 8, 9, 10], 4);
+        let area = Rect::screen(4, 2);
+        let mut cache = PaintCache::default();
+
+        let first = cache.changes(&[PanePaint {
+            pane: PaneId(1),
+            area,
+            from: (0, 0),
+            cells: grid.clone(),
+            token: Some(token.clone()),
+        }]);
+        assert!(!first.is_empty(), "the first frame writes the pane");
+        assert!(
+            cache
+                .changes(&[PanePaint {
+                    pane: PaneId(1),
+                    area,
+                    from: (0, 0),
+                    cells: grid.clone(),
+                    token: Some(token.clone()),
+                }])
+                .is_empty(),
+            "the same view of the same cells owes nothing",
+        );
+
+        // The view scrolls two rows down it. Same rectangle, same stamps, different CELLS.
+        let scrolled = cache.changes(&[PanePaint {
+            pane: PaneId(1),
+            area,
+            from: (0, 2),
+            cells: grid.clone(),
+            token: Some(token.clone()),
+        }]);
+        assert!(
+            !scrolled.is_empty(),
+            "a scrolled view shows different cells and owes the surface every one of them",
+        );
+
+        // And what it wrote is the rows it scrolled TO, not the ones it left.
+        let mut surface = Surface::new(4, 2);
+        surface.add_changes(scrolled);
+        assert_eq!(
+            surface.screen_chars_to_string().trim_end(),
+            "three\nfour".replace("three", "thre"),
+            "the pane's rows 2 and 3, cut to the rectangle's width",
+        );
+    }
+
     #[test]
     fn a_changed_arrangement_discards_the_cache() {
         let alone = grid_of(4, &["aaaa", "aaaa"]);
@@ -1434,12 +1547,14 @@ mod tests {
         // ...then split, so a neighbour owns the right half...
         surface.add_changes(cache.changes(&[
             PanePaint {
+                from: (0, 0),
                 pane: PaneId(1),
                 area: half(0),
                 cells: left.clone(),
                 token: Some(stamps.clone()),
             },
             PanePaint {
+                from: (0, 0),
                 pane: PaneId(2),
                 area: half(2),
                 cells: right,
@@ -1477,6 +1592,7 @@ mod tests {
         let mut surface = Surface::new(4, 4);
         for _ in 0..2 {
             surface.add_changes(cache.changes(&[PanePaint {
+                from: (0, 0),
                 pane: PaneId(1),
                 area: tall,
                 cells: grid.clone(),
@@ -1484,7 +1600,7 @@ mod tests {
             }]));
         }
         let mut whole_every_time = Surface::new(4, 4);
-        whole_every_time.add_changes(pane_changes(&grid, tall));
+        whole_every_time.add_changes(pane_changes(&grid, tall, (0, 0)));
         assert_eq!(
             surface.screen_chars_to_string(),
             whole_every_time.screen_chars_to_string(),
@@ -1525,7 +1641,7 @@ mod tests {
         let mut whole_every_time = Surface::new(6, 3);
         for (grid, stamps) in &frames {
             cached.add_changes(cache.changes(&[whole(1, grid, Some(stamps.clone()))]));
-            whole_every_time.add_changes(pane_changes(grid, Rect::screen(6, 3)));
+            whole_every_time.add_changes(pane_changes(grid, Rect::screen(6, 3), (0, 0)));
             assert_eq!(
                 cached.screen_chars_to_string(),
                 whole_every_time.screen_chars_to_string(),
@@ -1755,8 +1871,8 @@ mod tests {
     /// not arrived still owns its rectangle, so it paints — blank.
     #[test]
     fn an_empty_rectangle_paints_nothing_but_an_empty_buffer_still_blanks_its_own() {
-        assert!(pane_changes(&GridBuffer::new(4, 1), Rect::screen(0, 0)).is_empty());
-        assert!(!pane_changes(&GridBuffer::new(0, 0), Rect::screen(4, 1)).is_empty());
+        assert!(pane_changes(&GridBuffer::new(4, 1), Rect::screen(0, 0), (0, 0)).is_empty());
+        assert!(!pane_changes(&GridBuffer::new(0, 0), Rect::screen(4, 1), (0, 0)).is_empty());
     }
 
     /// A pane paints at its OWN origin, not the screen's — the whole of what multi-pane adds to the
@@ -1792,6 +1908,7 @@ mod tests {
         surface.add_changes(pane_changes(
             &row(2, vec![cell("o"), cell("k")]),
             Rect::screen(4, 2),
+            (0, 0),
         ));
         let cells = surface.screen_cells();
         assert_eq!(cells[0][0].str(), "o");
@@ -1812,7 +1929,7 @@ mod tests {
         let mut surface = Surface::new(6, 1);
         surface.add_change(Change::Text("......".to_owned()));
         let grid = row(6, "abcdef".chars().map(|c| cell(c.to_string())).collect());
-        surface.add_changes(pane_changes(&grid, Rect::screen(3, 1)));
+        surface.add_changes(pane_changes(&grid, Rect::screen(3, 1), (0, 0)));
         let cells = surface.screen_cells();
         assert_eq!(cells[0][2].str(), "c", "the last column inside");
         assert_eq!(
@@ -1835,7 +1952,7 @@ mod tests {
         let grid = row(4, vec![cell("a"), cell("b"), wide.clone(), wide.trailer()]);
         let mut surface = Surface::new(4, 1);
         surface.add_change(Change::Text("....".to_owned()));
-        surface.add_changes(pane_changes(&grid, Rect::screen(3, 1)));
+        surface.add_changes(pane_changes(&grid, Rect::screen(3, 1), (0, 0)));
         let cells = surface.screen_cells();
         assert_eq!(
             cells[0][2].str(),
@@ -1934,16 +2051,16 @@ mod tests {
         let (left, right) = (Rect::new(0, 0, 2, 1), Rect::new(3, 0, 2, 1));
         let mut surface = Surface::new(5, 1);
         // The composition the client makes: every pane's cells, then the focused pane's cursor.
-        surface.add_changes(pane_changes(&focused, left));
-        surface.add_changes(pane_changes(&other, right));
-        surface.add_changes(cursor_changes(&focused, left));
+        surface.add_changes(pane_changes(&focused, left, (0, 0)));
+        surface.add_changes(pane_changes(&other, right, (0, 0)));
+        surface.add_changes(cursor_changes(&focused, left, (0, 0)));
         assert_eq!(surface.cursor_position(), (1, 0));
         // ...and the wrong order, to show the assertion above is not vacuous: emitting the cursor
         // before the other pane's cells leaves it wherever that pane's text ended.
         let mut wrong = Surface::new(5, 1);
-        wrong.add_changes(pane_changes(&focused, left));
-        wrong.add_changes(cursor_changes(&focused, left));
-        wrong.add_changes(pane_changes(&other, right));
+        wrong.add_changes(pane_changes(&focused, left, (0, 0)));
+        wrong.add_changes(cursor_changes(&focused, left, (0, 0)));
+        wrong.add_changes(pane_changes(&other, right, (0, 0)));
         assert_eq!(wrong.cursor_position(), (5, 0), "trailing the other pane");
     }
 
@@ -1956,6 +2073,7 @@ mod tests {
         surface.add_changes(pane_changes(
             &row(2, vec![reverse.clone(), reverse]),
             Rect::screen(2, 1),
+            (0, 0),
         ));
         surface.add_changes(divider_changes(&Divider {
             area: Rect::new(2, 0, 1, 1),
@@ -2033,7 +2151,7 @@ mod status_tests {
             "and there is no row left to speak in"
         );
         assert!(
-            status_changes(one.status, &status("0", &[("0", true)]), None).is_empty(),
+            status_changes(one.status, &status("0", &[("0", true)]), None, None).is_empty(),
             "an empty status rectangle paints nothing, so no call site needs a branch",
         );
     }
@@ -2048,6 +2166,7 @@ mod status_tests {
             status_changes(
                 split.status,
                 &status("work", &[("0", true), ("logs", false)]),
+                None,
                 None,
             ),
         );
@@ -2071,6 +2190,7 @@ mod status_tests {
                 split.status,
                 &status("work", &[("0", true)]),
                 Some("no session called \"ghost\""),
+                None,
             ),
         );
         assert_eq!(rows[2].trim_end(), "no session called \"ghost\"");
@@ -2093,7 +2213,7 @@ mod status_tests {
         let rows = painted(
             8,
             2,
-            status_changes(split.status, &status("0", &[]), Some("0123456789")),
+            status_changes(split.status, &status("0", &[]), Some("0123456789"), None),
         );
         assert_eq!(
             rows[1], "0123456 ",
@@ -2107,7 +2227,7 @@ mod status_tests {
     fn the_row_reads_as_chrome() {
         let split = Split::of(12, 2);
         let mut surface = Surface::new(12, 2);
-        surface.add_changes(status_changes(split.status, &status("0", &[]), None));
+        surface.add_changes(status_changes(split.status, &status("0", &[]), None, None));
         let cells = surface.screen_cells();
         assert!(
             cells[1][0].attrs().reverse(),

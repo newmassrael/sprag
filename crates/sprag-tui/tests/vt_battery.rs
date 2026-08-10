@@ -37,8 +37,8 @@ fn pane(bytes: &[u8], cols: u16, rows: u16) -> GridBuffer {
 fn painted(grid: &GridBuffer) -> Surface {
     let area = Rect::screen(grid.cols(), grid.rows());
     let mut surface = Surface::new(usize::from(grid.cols()), usize::from(grid.rows()));
-    surface.add_changes(pane_changes(grid, area));
-    surface.add_changes(cursor_changes(grid, area));
+    surface.add_changes(pane_changes(grid, area, (0, 0)));
+    surface.add_changes(cursor_changes(grid, area, (0, 0)));
     surface
 }
 
