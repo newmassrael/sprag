@@ -532,18 +532,61 @@ impl InlineGrammar {
 /// The vocabulary is [`PluginName`](crate::plugins::PluginName)'s own, which the `plugins` slot
 /// publishes as its list too: one definition, two readers.
 ///
-/// ⚠ **`guardrails` is declared as an OBJECT and its inner keys are not described.** It is a nested
-/// value, which [`ArgGrammar`] cannot express (see [`SURFACES`] on the three mux verbs that publish
-/// nothing at all for that reason) — but unlike those, `guardrails` is ONE optional key among many, so
-/// naming it and its JSON type is informative rather than noise: a client learns the key exists, that
-/// it takes an object, and that omitting it is well-formed. Its `max_iterations` / `max_bytes` /
-/// `max_tokens` are the nested-grammar question, and that question is a design one.
+/// # `guardrails` is published PER FORM, and that is what removed its alternation
+///
+/// It was declared `object` with its inner keys unnamed, because a nested value had no grammar. It
+/// has one now ([`ArgGrammar::fields`]) and the three keys are named — but the interesting half is
+/// that each form publishes only the cost key ITS plugin admits. `max_bytes` and `max_tokens` are
+/// mutually exclusive on the wire (a run has one cost unit, and
+/// [`parse_max_cost`](crate::plugins) refuses a mismatched one), which a flat list of optional keys
+/// could not have said. The UNIT is a property of the plugin, so it is a property of the form that
+/// selects the plugin: a byte-relay form offers `max_bytes`, the dialogue form offers `max_tokens`,
+/// and there is no alternation left to describe.
+///
+/// ⚠ The residue: `max_iterations` and the form's own cost key are each optional and can be given
+/// together, which is true. What is NOT published is the DEFAULT each takes when omitted — that is
+/// the `guardrail_defaults` slot, because a default is a fact about this daemon rather than about
+/// the request's shape.
 pub struct PluginGrammar;
 
 impl PluginGrammar {
-    /// The guardrail bound every form of `run` accepts — an object, whose inner keys are the nested
-    /// grammar nobody has designed yet.
-    const GUARDRAILS: ArgGrammar = ArgGrammar::open("guardrails", "object").optional();
+    /// The liveness bound every form of `run` accepts — the iteration ceiling.
+    ///
+    /// Declared once and shared by all four forms, because the LOOP bound is unit-free where the
+    /// COST bound is not.
+    const MAX_ITERATIONS: ArgGrammar = ArgGrammar::open("max_iterations", "int").optional();
+
+    /// The guardrail object a BYTE-RELAY form takes — `orchestrator`, `pipe` and `agent` all spend
+    /// injected PTY bytes.
+    const GUARDRAILS_BYTES: ArgGrammar = ArgGrammar::nested(
+        "guardrails",
+        &[
+            Self::MAX_ITERATIONS,
+            ArgGrammar::open("max_bytes", "int").optional(),
+        ],
+    )
+    .optional();
+
+    /// The guardrail object the DIALOGUE form takes — it spends LLM tokens, so a byte bound cannot
+    /// guard it and is not offered.
+    const GUARDRAILS_TOKENS: ArgGrammar = ArgGrammar::nested(
+        "guardrails",
+        &[
+            Self::MAX_ITERATIONS,
+            ArgGrammar::open("max_tokens", "int").optional(),
+        ],
+    )
+    .optional();
+
+    /// WHO ASKED for this run — the pane whose occupant wants it, on
+    /// [`sprag_terminal::Pane::opened_by`]'s exact terms.
+    ///
+    /// Optional, and its absence means a run nobody claims — which is what a person starting one
+    /// from a shell is. It is PROVENANCE and not authorisation: this wire has no authentication at
+    /// all, so a caller can say anything, exactly as it can for a pane's `opened_by`. What it buys
+    /// is that the agent-facing mouth can keep an agent to its OWN runs without the daemon having
+    /// to grow a notion of identity it does not have.
+    const OPENED_BY: ArgGrammar = ArgGrammar::open("opened_by", "int").optional();
 
     /// ⚠⚠ **EACH FORM'S `plugin` PUBLISHES ONLY THE WORD THAT SELECTS IT**, and that is what makes an
     /// alternation over a VALUE readable at all.
@@ -582,14 +625,16 @@ impl PluginGrammar {
             ArgGrammar::open("pane", "int"),
             ArgGrammar::open("stimulus", "string"),
             ArgGrammar::open("sentinel", "string").optional(),
-            Self::GUARDRAILS,
+            Self::OPENED_BY,
+            Self::GUARDRAILS_BYTES,
         ]),
         // `pipe` — relay one pane's output into another's input.
         CallForm::object(&[
             Self::selected_by(Self::PIPE),
             ArgGrammar::open("src", "int"),
             ArgGrammar::open("dst", "int"),
-            Self::GUARDRAILS,
+            Self::OPENED_BY,
+            Self::GUARDRAILS_BYTES,
         ]),
         // `agent` — prompt the agent in a pane and collect its reply.
         CallForm::object(&[
@@ -598,7 +643,8 @@ impl PluginGrammar {
             ArgGrammar::open("prompt", "string"),
             ArgGrammar::open("eof", "bool").optional(),
             ArgGrammar::open("timeout_ms", "int").optional(),
-            Self::GUARDRAILS,
+            Self::OPENED_BY,
+            Self::GUARDRAILS_BYTES,
         ]),
         // `dialogue` — two endpoints against each other, turn by turn. It spawns its OWN panes, which
         // is why it names argv templates instead of a pane.
@@ -618,7 +664,8 @@ impl PluginGrammar {
             ArgGrammar::open("cols", "int").optional(),
             ArgGrammar::open("rows", "int").optional(),
             ArgGrammar::open("timeout_ms", "int").optional(),
-            Self::GUARDRAILS,
+            Self::OPENED_BY,
+            Self::GUARDRAILS_TOKENS,
         ]),
     ];
 
@@ -4857,6 +4904,19 @@ pub fn mux_action_path(action: &str) -> String {
     format!("/{MUX_TAG}/external/{action}")
 }
 
+/// The `scene/invoke` / `scene/query` path addressing the PLUGIN HOST's `address` —
+/// `/sprag_plugins/external/<address>`.
+///
+/// One function for actions and slots, unlike the pane's, because this surface's two verbs and its
+/// three slots hang off one node — and because every caller of it was formatting the string inline
+/// until the loop got a door. The integration tests that drove `/sprag_plugins/external/run` for
+/// rounds each spelled it by hand, which is exactly the folklore
+/// [`pane_input_path`] exists to stop one surface along.
+#[must_use]
+pub fn plugins_path(address: &str) -> String {
+    format!("/{}/external/{address}", crate::PLUGINS_TAG)
+}
+
 /// The [`CELLS_FIELD`] query slot addressing the frame at scrollback `offset` —
 /// `cells.<offset>` with the argument filled in (`cells_slot_at(0)` is the live view).
 ///
@@ -7004,6 +7064,11 @@ mod tests {
             "full_text",
             "grant_pane",
             "grid_work",
+            // ADDED at R355 with the orchestration loop's door: the bound a `run` that names no
+            // guardrails is given. A name added leaves every older client's requests working, so
+            // WIRE_PROTOCOL stands — and this slot exists precisely so a client need not compile
+            // the number in.
+            "guardrail_defaults",
             "image_data.<id>",
             "join_pane",
             "key",
@@ -7373,6 +7438,37 @@ mod tests {
             36,
             "the whole write half of this crate's wire: twenty-eight multiplexer verbs, a pane's six, \
              and the plugin host's two",
+        );
+    }
+
+    /// ⚠⚠ **NO SURFACE OF THIS CRATE PUBLISHES A NESTED ARGUMENT THAT CANNOT BE FLATTENED** — over
+    /// every surface, derived from [`SURFACES`] rather than named one at a time.
+    ///
+    /// A mouth built on the published grammar offers a nested field as a flag of its own
+    /// (`--max-iterations`, never `--guardrails '{"max_iterations":5}'`), which is only sound while
+    /// no field shares a name with a top-level argument of the same form. Today one surface has
+    /// nesting and two have none, so this drives eight probes and would drive them on a mux verb
+    /// the day `set_layout` publishes its tree — which is the point of walking the list instead of
+    /// asserting about the plugin host alone.
+    ///
+    /// ⚠ The COUNT is what stops it from being vacuous: a claim over three surfaces with no nesting
+    /// anywhere would pass while proving nothing, and this says how many nested fields it actually
+    /// reached.
+    #[test]
+    fn no_surface_publishes_a_nested_argument_that_collides() {
+        let driven: usize = SURFACES
+            .iter()
+            .map(|surface| {
+                sprag_conformance::a_flattened_nested_argument_collides_with_nothing(
+                    surface.grammar,
+                )
+                .count_or_panic()
+            })
+            .sum();
+        assert_eq!(
+            driven, 8,
+            "the nested fields this crate's wire publishes: two guardrail fields on each of the \
+             plugin host's four run forms, and nothing on the multiplexer or a pane",
         );
     }
 }

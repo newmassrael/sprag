@@ -98,6 +98,54 @@ pub fn as_the_wire_delivers_it(value: &Value) -> IntrospectValue {
     }
 }
 
+/// ONE ARGUMENT A FORM DECLARES, and the argument it lives inside when it is a nested field.
+///
+/// # Why every claim walks this instead of `form.args`
+///
+/// `form.args` is the TOP level, and a nested argument's fields are not in it. The moment
+/// `guardrails` stopped being an undescribed `object` and named `max_iterations` and its cost key,
+/// three claims that each walk `form.args` went on driving exactly what they drove before — so the
+/// nested grammar would have been published, read by the mouths built on it, and held by nothing.
+///
+/// That is R353's shape (*a field that was dead an hour after it was declared*) and it is the reason
+/// the walker is a type rather than a nested `for`: a claim added later takes [`declared`] and gets
+/// the nesting whether its author thought about it or not.
+#[derive(Clone, Copy, Debug)]
+struct Declared<'a> {
+    /// The argument under test.
+    arg: &'a ArgGrammar,
+    /// The argument it sits inside, or [`None`] when it is a top-level one.
+    parent: Option<&'a ArgGrammar>,
+}
+
+impl Declared<'_> {
+    /// How a finding names the argument: `guardrails.max_iterations` for a field, `pane` otherwise.
+    fn path(&self) -> String {
+        match self.parent {
+            Some(parent) => format!("{}.{}", parent.name, self.arg.name),
+            None => self.arg.name.to_owned(),
+        }
+    }
+}
+
+/// Every argument one form declares — its top-level ones AND the fields inside them, each paired
+/// with its parent.
+///
+/// A nested argument appears BOTH as itself (so its own `object` type is driven) and once per field.
+/// Both are real claims: a daemon that ignores the parent key entirely is a different defect from
+/// one that ignores a field of it.
+fn declared(form: &CallForm) -> Vec<Declared<'_>> {
+    let mut out = Vec::new();
+    for arg in form.args {
+        out.push(Declared { arg, parent: None });
+        out.extend(arg.fields.iter().map(|field| Declared {
+            arg: field,
+            parent: Some(arg),
+        }));
+    }
+    out
+}
+
 /// The `args` value the PUBLISHED GRAMMAR alone says is well-formed, with one argument set to `probe`
 /// — what an agent that has read the grammar slot and nothing else would send.
 ///
@@ -112,16 +160,27 @@ pub fn as_the_wire_delivers_it(value: &Value) -> IntrospectValue {
 /// a verb whose scalar form takes the bare string, and reported about the object form twice.
 fn call_built_from_the_grammar(
     form: &CallForm,
-    vary: &ArgGrammar,
+    vary: &Declared<'_>,
     probe: Value,
 ) -> IntrospectValue {
     if form.form == FormKind::Scalar {
         return as_the_wire_delivers_it(&probe);
     }
     let mut map = Map::new();
+    // A NESTED field is varied inside a parent object holding nothing else, so exactly one value is
+    // under test here too. The parent is optional on every form that has one, which is why it does
+    // not otherwise appear: a call that omits it is well-formed, and adding it would vary two things.
+    if let Some(parent) = vary.parent {
+        map.insert(
+            parent.name.to_owned(),
+            Value::Object(Map::from_iter([(vary.arg.name.to_owned(), probe.clone())])),
+        );
+    }
     for arg in form.args {
-        if arg.name == vary.name {
+        if vary.parent.is_none() && arg.name == vary.arg.name {
             map.insert(arg.name.to_owned(), probe.clone());
+        } else if vary.parent.is_some_and(|parent| parent.name == arg.name) {
+            // Already inserted above, carrying the probe.
         } else if !arg.optional {
             map.insert(
                 arg.name.to_owned(),
@@ -182,10 +241,12 @@ pub fn every_published_word_is_accepted(
     let mut driven = Driven::default();
     for verb in table {
         for form in verb.forms {
-            for arg in form.args {
-                let Some(words) = arg.words else { continue };
+            for vary in declared(form) {
+                let Some(words) = vary.arg.words else {
+                    continue;
+                };
                 for word in words {
-                    let call = call_built_from_the_grammar(form, arg, Value::from(*word));
+                    let call = call_built_from_the_grammar(form, &vary, Value::from(*word));
                     let answer = invoke(verb.action, call.clone());
                     if matches!(answer, Err(InvokeError::TypeMismatch)) {
                         driven.findings.push(format!(
@@ -193,7 +254,8 @@ pub fn every_published_word_is_accepted(
                              {word:?}, and sending {call:?} came back TypeMismatch — an agent that \
                              enumerated the published vocabulary would have built a call this daemon \
                              cannot read.",
-                            verb.action, arg.name,
+                            verb.action,
+                            vary.path(),
                         ));
                     }
                     driven.count += 1;
@@ -234,11 +296,11 @@ pub fn a_constrained_argument_publishes_what_it_admits(
     let mut driven = Driven::default();
     for verb in table {
         for form in verb.forms {
-            for arg in form.args {
-                if arg.ty != "string" || arg.words.is_some() {
+            for vary in declared(form) {
+                if vary.arg.ty != "string" || vary.arg.words.is_some() {
                     continue;
                 }
-                let call = call_built_from_the_grammar(form, arg, Value::from(NONSENSE));
+                let call = call_built_from_the_grammar(form, &vary, Value::from(NONSENSE));
                 let answer = invoke(verb.action, call.clone());
                 if matches!(answer, Err(InvokeError::TypeMismatch)) {
                     driven.findings.push(format!(
@@ -246,7 +308,8 @@ pub fn a_constrained_argument_publishes_what_it_admits(
                          from a set the wire does not publish. Send {call:?} and the daemon answers \
                          TypeMismatch — declare the vocabulary with `ArgGrammar::one_of`, projected \
                          from the closed set the parser reads through.",
-                        verb.action, arg.name,
+                        verb.action,
+                        vary.path(),
                     ));
                 }
                 driven.count += 1;
@@ -290,15 +353,15 @@ pub fn a_declared_argument_is_one_the_daemon_reads(
     let mut driven = Driven::default();
     for verb in table {
         for form in verb.forms {
-            for arg in form.args {
+            for vary in declared(form) {
                 // The wrong type for what this argument says it is. A vocabulary argument is a
                 // string, so a number is wrong for it too — and wrong in a way no vocabulary could
                 // absorb.
-                let wrong = match arg.ty {
+                let wrong = match vary.arg.ty {
                     "int" | "bool" => Value::from("not-of-the-declared-type"),
                     _ => Value::from(4242),
                 };
-                let call = call_built_from_the_grammar(form, arg, wrong);
+                let call = call_built_from_the_grammar(form, &vary, wrong);
                 let answer = invoke(verb.action, call.clone());
                 if !matches!(answer, Err(InvokeError::TypeMismatch)) {
                     driven.findings.push(format!(
@@ -306,7 +369,10 @@ pub fn a_declared_argument_is_one_the_daemon_reads(
                          that key at all or it does not read it as a {}. Sending {call:?} answered \
                          {answer:?}, and a wire that advertises an argument nothing reads is worse \
                          than one that says nothing.",
-                        verb.action, arg.ty, arg.name, arg.ty,
+                        verb.action,
+                        vary.arg.ty,
+                        vary.path(),
+                        vary.arg.ty,
                     ));
                 }
                 driven.count += 1;
@@ -365,6 +431,58 @@ pub fn a_nullary_form_is_a_verb_that_needs_nothing(
                 ));
             }
             driven.count += 2;
+        }
+    }
+    driven
+}
+
+/// ⚠⚠ **A NESTED FIELD CAN BE OFFERED AS A FLAG OF ITS OWN, UNAMBIGUOUSLY** — the property that
+/// makes a grammar-driven mouth possible at all.
+///
+/// A published nested argument is not something a person types: nobody writes
+/// `--guardrails '{"max_iterations":5}'` at a prompt, and an agent that had to would be assembling
+/// JSON by hand — the state the whole publication exists to end. So a mouth built on the grammar
+/// FLATTENS one level and offers `--max-iterations` instead, re-assembling the parent on the way out
+/// ([`sprag_rpc::PublishedForm::fill`]).
+///
+/// That is only sound while the flattening is injective, and nothing in the DECLARATION makes it so.
+/// Two ways it can break, both driven here per form:
+///
+/// * a field sharing a name with a top-level argument of the same form — the flag would mean two
+///   things and one of them would win silently;
+/// * two nested parents of one form sharing a field name — the same collision, one level down.
+///
+/// ⚠ It drives no daemon: the subject is the DECLARATIONS, and a claim about them needs no live
+/// surface. It is here rather than in a `wire` test because a second surface that grows a nested
+/// argument gets it by calling this, which is the reason every other claim in this crate moved out
+/// of a test module.
+#[must_use]
+pub fn a_flattened_nested_argument_collides_with_nothing(
+    table: &'static [ActionGrammar],
+) -> Driven {
+    let mut driven = Driven::default();
+    for verb in table {
+        for form in verb.forms {
+            for offered in declared(form) {
+                let Some(parent) = offered.parent else {
+                    continue;
+                };
+                for other in declared(form) {
+                    let collides = other.arg.name == offered.arg.name
+                        && !std::ptr::eq(other.arg, offered.arg)
+                        && other.parent.is_none_or(|it| !std::ptr::eq(it, parent));
+                    if collides {
+                        driven.findings.push(format!(
+                            "`{}` OFFERS `{}` AND `{}` UNDER ONE FLAG NAME, so a mouth that \
+                             flattens its nested arguments cannot tell which one a caller meant.",
+                            verb.action,
+                            offered.path(),
+                            other.path(),
+                        ));
+                    }
+                }
+                driven.count += 1;
+            }
         }
     }
     driven

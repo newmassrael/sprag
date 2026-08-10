@@ -24,9 +24,14 @@ use std::sync::{Arc, OnceLock};
 use pinion_rpc::RpcIngress;
 use pinion_rpc_transport::{Exposure, TransportControl, UnixSocketTransport};
 
+pub mod call;
 pub mod client;
 pub mod endpoint;
 pub mod grammar;
+pub use call::{
+    FillError, Flag, GrammarError, PublishedArg, PublishedForm, build_call, read_surface,
+    selector_of,
+};
 pub use client::{
     ACTION_REFUSED, ATTACHED_PARAM, CLIENT_ATTACH_METHOD, CLIENT_HELLO_METHOD,
     CLIENT_MESSAGES_METHOD, CLIENT_PARAM, CLIENT_SIZE_METHOD, COLS_PARAM, CallError,

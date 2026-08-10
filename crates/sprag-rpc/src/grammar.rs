@@ -69,6 +69,28 @@ pub struct ArgGrammar {
     /// (`MoveWindowAsk::PLACE_WORDS`) says so at its declaration and is held to the parser by
     /// `every_published_word_is_a_word_the_daemon_accepts`.
     pub words: Option<&'static [&'static str]>,
+    /// THE ARGUMENTS INSIDE THIS ONE, when its value is an object with a known shape — empty for
+    /// every scalar argument.
+    ///
+    /// # This is the answer to "is a nested value a recursive grammar, or an address of its own?"
+    ///
+    /// It is a RECURSIVE GRAMMAR, and the reason is that a nested argument has no independent
+    /// existence: `guardrails` cannot be invoked, cannot be queried, and lives exactly as long as
+    /// the call it rides on. An address of its own would have promised all three. The alternative
+    /// was considered because `set_layout`'s arrangement TREE really is addressable — and that case
+    /// is still undescribed, deliberately: this answers the FINITE nesting a call carries, not an
+    /// unbounded recursive value. See [`WireSurface::undescribed`].
+    ///
+    /// The publication cost is one additive key ([`FIELDS_KEY`](Self::FIELDS_KEY)), so a reader that
+    /// does not know it sees the shape it always saw — the same argument [`to_answer`](Self::to_answer)
+    /// makes for omitting an absent `one_of`.
+    ///
+    /// ⚠ **What it buys is not documentation, it is a MOUTH.** `guardrails` was declared
+    /// `object` with its inner keys unnamed, so the loop's iteration ceiling and its typed cost
+    /// ceiling — the whole reason a bounded run is safe — could not be reached by any client
+    /// building a call from the publication. A door derived from a grammar that cannot say
+    /// `max_iterations` is a door with no lock on it.
+    pub fields: &'static [ArgGrammar],
 }
 
 impl ArgGrammar {
@@ -80,6 +102,8 @@ impl ArgGrammar {
     pub const OPTIONAL_KEY: &'static str = "optional";
     /// The answer key carrying the closed vocabulary, absent when there is none.
     pub const ONE_OF_KEY: &'static str = "one_of";
+    /// The answer key carrying the arguments INSIDE this one, absent when it carries none.
+    pub const FIELDS_KEY: &'static str = "fields";
 
     /// An argument whose value is the caller's own, and which the call must carry.
     #[must_use]
@@ -89,6 +113,7 @@ impl ArgGrammar {
             ty,
             optional: false,
             words: None,
+            fields: &[],
         }
     }
 
@@ -106,6 +131,24 @@ impl ArgGrammar {
             ty,
             optional: false,
             words: Some(words),
+            fields: &[],
+        }
+    }
+
+    /// An argument whose value is an OBJECT with these arguments inside it.
+    ///
+    /// The type is fixed at `"object"` rather than taken as a parameter: a value with named fields
+    /// inside it is an object, and letting a caller declare `nested("guardrails", "int", …)` would
+    /// spell a shape no reader could act on. [`fields`](Self::fields) says why nesting is a
+    /// recursion here and not an address.
+    #[must_use]
+    pub const fn nested(name: &'static str, fields: &'static [ArgGrammar]) -> Self {
+        Self {
+            name,
+            ty: "object",
+            optional: false,
+            words: None,
+            fields,
         }
     }
 
@@ -138,8 +181,8 @@ impl ArgGrammar {
 
     /// This argument as the client reads it.
     ///
-    /// `one_of` is OMITTED rather than sent as `null` when there is no vocabulary, for the reason
-    /// `ArgForm::Undeclared` publishes nothing: a reader that
+    /// `one_of` and `fields` are OMITTED rather than sent as `null` when there is no vocabulary and
+    /// no nesting, for the reason `ArgForm::Undeclared` publishes nothing: a reader that
     /// does not know the key sees the shape it always saw, and a reader that does tells silence
     /// from a claim by the key's absence.
     #[must_use]
@@ -152,6 +195,17 @@ impl ArgGrammar {
             map.insert(
                 Self::ONE_OF_KEY.to_owned(),
                 Value::from(words.iter().map(|w| Value::from(*w)).collect::<Vec<_>>()),
+            );
+        }
+        if !self.fields.is_empty() {
+            map.insert(
+                Self::FIELDS_KEY.to_owned(),
+                Value::from(
+                    self.fields
+                        .iter()
+                        .map(ArgGrammar::to_answer)
+                        .collect::<Vec<_>>(),
+                ),
             );
         }
         Value::Object(map)

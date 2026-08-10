@@ -36,14 +36,33 @@ use sprag_terminal::{PaneId, Workspace};
 use crate::external::{
     as_object, lock, opt_dim, opt_str, refused, require_pane_id, require_str, rpc_external_impl,
 };
-use crate::runs::{RunId, RunRegistry, RunState};
+use crate::runs::{RunId, RunRegistry, RunState, RunSummary};
 
 /// The plugin-host external's action that STARTS a run.
 pub const RUN_ACTION: &str = "run";
 /// The plugin-host external's action that raises a run's cancel flag.
 pub const CANCEL_ACTION: &str = "cancel";
-const RUNS_SLOT: &str = "runs";
-const PLUGINS_SLOT: &str = "plugins";
+/// The slot reporting every run this daemon holds.
+pub const RUNS_SLOT: &str = "runs";
+/// The slot listing the plugins a `run` may name.
+pub const PLUGINS_SLOT: &str = "plugins";
+/// The slot publishing the guardrail bound a `run` that names none is given.
+///
+/// # Why a number a client could compile in is served over the wire
+///
+/// [`DEFAULT_MAX_ITERATIONS`] and its two siblings are this DAEMON's policy, and a client is not
+/// necessarily this daemon's build — the whole argument `show-grammar` makes about the request
+/// grammar, applied to the one fact a client needs in order to bound a loop it did not choose the
+/// bounds for. The agent-facing mouth turns these into its CEILING (an agent may tighten a bound
+/// and not loosen it), and a ceiling read from a constant compiled six weeks ago would be a
+/// different ceiling from the one the daemon enforces.
+pub const GUARDRAIL_DEFAULTS_SLOT: &str = "guardrail_defaults";
+
+/// The answer key naming a run.
+const RUN_ID_KEY: &str = "id";
+/// The answer key carrying the pane whose occupant asked for a run — absent for a run nobody
+/// claims, on [`sprag_terminal::Pane::opened_by`]'s terms.
+const RUN_OPENED_BY_KEY: &str = "opened_by";
 
 sprag_vt::closed_set! {
     /// WHICH BUNDLED PLUGIN a `run` names — the `plugin` discriminator's whole vocabulary.
@@ -97,10 +116,13 @@ sprag_vt::wire_words!(PluginName: wire_str);
 /// The default iteration ceiling for a `run` that omits guardrails — never
 /// unbounded (the README makes loop safety first-class), and the floor that
 /// bounds every run regardless of its cost unit.
-const DEFAULT_MAX_ITERATIONS: u32 = 100;
+///
+/// Published on [`GUARDRAIL_DEFAULTS_SLOT`], which is what makes it one number with one reader
+/// rather than a constant every mouth compiles in for itself.
+pub const DEFAULT_MAX_ITERATIONS: u32 = 100;
 /// The default cost ceiling for a byte-relay plugin (Orchestrator/Pipe/Agent),
 /// in injected PTY bytes.
-const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
+pub const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
 /// The default cost ceiling for the token-denominated Dialogue plugin, in real
 /// input+output tokens (cache tokens are excluded — see `reply::parse_tokens`).
 /// A COARSE backstop, not the primary bound: at the default 100-iteration cap
@@ -108,7 +130,7 @@ const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
 /// print-mode Text dialogue reports `Tokens(0)` so only iterations bound it.
 /// This ceiling exists to stop a single pathological high-token turn; tune it to
 /// the model's pricing if a dollar-aware bound is ever needed.
-const DEFAULT_MAX_TOKENS: u64 = 200_000;
+pub const DEFAULT_MAX_TOKENS: u64 = 200_000;
 
 /// The plugin host as a pinion `External`: starts background plugin runs over
 /// the shared [`Workspace`] and reports their outcomes as scene-as-data.
@@ -163,10 +185,31 @@ impl PluginsExternal {
         // guardrails are then sized in (a bare `max_cost` is read in that unit).
         let (plugin, label) = self.build_plugin(map)?;
         let guardrails = parse_guardrails(map, plugin.default_cost())?;
-        let id = self.spawn_run(label, plugin, guardrails);
+        let opened_by = self.parse_opener(map)?;
+        let id = self.spawn_run(label, opened_by, plugin, guardrails);
         Ok(IntrospectValue::Int(
             i64::try_from(id.0).unwrap_or(i64::MAX),
         ))
+    }
+
+    /// Parse the OPTIONAL `opened_by` — the pane whose occupant is asking for this run.
+    ///
+    /// The multiplexer's [`parse_opener`](crate::workspace::WorkspaceExternal) rule, verbatim and
+    /// for its reason: a caller with a stale `SPRAG_PANE` — a process that outlived its own pane —
+    /// would otherwise stamp a provenance naming a pane that does not exist, and nothing would ever
+    /// prune it. A non-integer is a MALFORMED request; a pane this daemon does not hold is a
+    /// well-formed one it will not honour.
+    fn parse_opener(&self, map: &Map<String, Value>) -> Result<Option<u64>, InvokeError> {
+        let opener = match map.get(RUN_OPENED_BY_KEY) {
+            None | Some(Value::Null) => return Ok(None),
+            Some(value) => value.as_u64().ok_or(InvokeError::TypeMismatch)?,
+        };
+        self.require_pane(PaneId(opener)).map_err(|_| {
+            refused(format!(
+                "no pane {opener} in this workspace, so nothing can be opened by it"
+            ))
+        })?;
+        Ok(Some(opener))
     }
 
     /// `cancel` action: raise the cancel flag for run `id`. A synchronous
@@ -284,7 +327,13 @@ impl PluginsExternal {
 
     /// Spawn the plugin on a background thread that drives it to a terminal
     /// state and writes that into a shared cell; register it.
-    fn spawn_run(&self, label: String, mut plugin: PluginKind, guardrails: Guardrails) -> RunId {
+    fn spawn_run(
+        &self,
+        label: String,
+        opened_by: Option<u64>,
+        mut plugin: PluginKind,
+        guardrails: Guardrails,
+    ) -> RunId {
         let state = Arc::new(Mutex::new(RunState::Running));
         let worker_state = Arc::clone(&state);
         // The cancel flag is shared two ways: the run's RunContext reads it, and
@@ -317,7 +366,7 @@ impl PluginsExternal {
             let output = plugin.as_plugin().captured();
             *lock(&worker_state) = RunState::Done { outcome, output };
         });
-        lock(&self.runs).submit(label, state, handle, cancel)
+        lock(&self.runs).submit(label, opened_by, state, handle, cancel)
     }
 }
 
@@ -407,6 +456,7 @@ impl ExternalIntrospect for PluginsExternal {
                     SchemaField::action(CANCEL_ACTION, "action"),
                     SchemaField::new(RUNS_SLOT, "list"),
                     SchemaField::new(PLUGINS_SLOT, "list"),
+                    SchemaField::new(GUARDRAIL_DEFAULTS_SLOT, "object"),
                     SchemaField::new(crate::wire::ACTION_GRAMMAR_SLOT, "object"),
                 ]
             },
@@ -424,6 +474,13 @@ impl ExternalIntrospect for PluginsExternal {
             // The same array the `run` grammar publishes as its `plugin` vocabulary —
             // one definition, two readers.
             PLUGINS_SLOT => Some(IntrospectValue::Json(json!(PluginName::WIRE_WORDS))),
+            // THE BOUND A RUN THAT NAMES NONE IS GIVEN, keyed exactly as the `guardrails` argument
+            // spells it, so a client that reads a ceiling here can send it back without a mapping.
+            GUARDRAIL_DEFAULTS_SLOT => Some(IntrospectValue::Json(json!({
+                "max_iterations": DEFAULT_MAX_ITERATIONS,
+                "max_bytes": DEFAULT_MAX_BYTES,
+                "max_tokens": DEFAULT_MAX_TOKENS,
+            }))),
             // HOW TO CALL THIS SURFACE'S TWO VERBS — its own `PLUGINS_GRAMMAR`, answered by
             // the surface that serves them (see `ACTION_GRAMMAR_SLOT`).
             crate::wire::ACTION_GRAMMAR_SLOT => Some(IntrospectValue::Json(
@@ -589,9 +646,9 @@ fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<C
     Ok(Some(bound))
 }
 
-/// Render one run's `(id, label, state)` as JSON for `query("runs")`.
-fn run_to_json((id, label, state): &(RunId, String, RunState)) -> Value {
-    let state_json = match state {
+/// Render one run as JSON for `query("runs")`.
+fn run_to_json(run: &RunSummary) -> Value {
+    let state_json = match &run.state {
         RunState::Running => json!({ "status": "running" }),
         RunState::Done { outcome, output } => json!({
             "status": "done",
@@ -600,7 +657,18 @@ fn run_to_json((id, label, state): &(RunId, String, RunState)) -> Value {
         }),
         RunState::Panicked(message) => json!({ "status": "panicked", "error": message }),
     };
-    json!({ "id": id.0, "label": label, "state": state_json })
+    // `opened_by` is OMITTED for a run nobody claims rather than sent as `null`, the rule
+    // `ArgGrammar::to_answer` follows for an absent vocabulary: a reader tells silence from a claim
+    // by the key's absence, and "a person started this" is a silence.
+    let mut entry = json!({
+        RUN_ID_KEY: run.id.0,
+        "label": run.label,
+        "state": state_json,
+    });
+    if let Some(opener) = run.opened_by {
+        entry[RUN_OPENED_BY_KEY] = json!(opener);
+    }
+    entry
 }
 
 /// Render a plugin [`Outcome`] as JSON (serialization is a host concern, so the
@@ -1278,14 +1346,86 @@ mod tests {
 
     /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THIS SURFACE ACTUALLY READS** — the gate that lets this table
     /// be hand-written, over a verb whose four forms were transcribed from a parser by eye.
+    ///
+    /// ⚠ The number moved by twelve when the loop got a door, and both halves are the point: four
+    /// `opened_by` arguments (one per form) and **eight nested `guardrails` fields the claim could
+    /// not see before it learned to walk them**. `max_iterations` and each form's cost key are now
+    /// each driven at the wrong type inside their parent, which is what turns the nested grammar
+    /// from a published claim into a held one.
     #[test]
     fn a_declared_argument_is_one_the_plugin_host_reads() {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            28,
-            "one probe per declared argument of every FORM: five for an orchestrator, four for a \
-             pipe, six for an agent, twelve for a dialogue, and one to cancel",
+            40,
+            "one probe per declared argument of every FORM, nesting included: eight for an \
+             orchestrator, seven for a pipe, nine for an agent, fifteen for a dialogue, and one to \
+             cancel",
+        );
+    }
+
+    /// ⚠⚠ **THE NESTED GUARDRAILS CAN BE OFFERED ONE FLAG AT A TIME** — the property both new mouths
+    /// rest on, driven over the declarations rather than assumed by the code that flattens them.
+    ///
+    /// A `max_iterations` that collided with a top-level argument would make `--max-iterations`
+    /// mean two things, and the mouth would pick one silently. This is the only place that can say
+    /// it does not, because the collision is a property of the TABLE and no call exhibits it.
+    #[test]
+    fn the_plugin_hosts_nested_arguments_flatten_without_collision() {
+        assert_eq!(
+            sprag_conformance::a_flattened_nested_argument_collides_with_nothing(
+                crate::wire::PLUGINS_GRAMMAR
+            )
+            .count_or_panic(),
+            8,
+            "one per nested field of every form: two guardrail fields on each of the four run forms",
+        );
+    }
+
+    /// ⚠⚠ **A RUN CAN ONLY BE OPENED BY A PANE THIS DAEMON HOLDS** — the arm the type gate cannot
+    /// reach, and the one that keeps the provenance prunable.
+    ///
+    /// `a_declared_argument_is_one_the_plugin_host_reads` drives `opened_by` at the wrong TYPE and
+    /// gets `TypeMismatch`; a well-formed number naming a pane that does not exist is a different
+    /// answer and a different branch. Without it a caller with a stale `SPRAG_PANE` — a process
+    /// that outlived its own pane — would stamp a run with a provenance nothing can ever resolve,
+    /// and the agent-facing mouth would filter on a pane number that means nothing.
+    ///
+    /// The multiplexer states this rule for a pane's own `opened_by`; this is the same rule one
+    /// level up, and it is asserted rather than inherited because they are two parsers.
+    #[test]
+    fn a_run_opened_by_a_pane_this_daemon_does_not_hold_is_refused() {
+        let (workspace, pane) = pane_painting("");
+        let mut external = PluginsExternal::new(
+            workspace,
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+        );
+        let mut ask = |opener: u64| {
+            external.invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    RUN_OPENED_BY_KEY: opener,
+                })),
+            )
+        };
+        let refused = ask(9999).expect_err("a pane nobody holds cannot have opened a run");
+        assert!(
+            format!("{refused:?}").contains("no pane 9999"),
+            "it is a well-formed request this host will not honour, and it says which pane: \
+             {refused:?}",
+        );
+
+        // THE CONTROL: the same call naming a pane that IS here starts a run, so the refusal is
+        // about the opener and not about the shape of the request.
+        assert!(
+            ask(pane.0).is_ok(),
+            "a real pane may open a run, or the refusal above is about something else",
         );
     }
 

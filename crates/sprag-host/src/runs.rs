@@ -40,11 +40,36 @@ pub enum RunState {
 struct RunRecord {
     id: RunId,
     label: String,
+    /// WHO ASKED for this run — the pane whose occupant wanted it, or [`None`] for a run nobody
+    /// claims (what a person starting one from a shell is).
+    ///
+    /// [`sprag_terminal::Pane::opened_by`]'s field, one level up, and carried for its reason: the
+    /// agent-facing mouth keeps an agent to its own runs, and it can only do that if the daemon
+    /// remembers whose a run was. The daemon itself enforces nothing with it — see
+    /// [`crate::wire::PluginGrammar`] on why this is provenance and not authorisation.
+    opened_by: Option<u64>,
     state: Arc<Mutex<RunState>>,
     handle: Option<JoinHandle<()>>,
     /// The run's cancel flag, shared with its `WorkspacePaneAccess`; setting it
     /// makes the worker's Driver/plugin stop at its next check.
     cancel: Arc<AtomicBool>,
+}
+
+/// ONE RUN as the `runs` slot reports it.
+///
+/// A named struct rather than the tuple this was: the opener is a fourth column and a reader has no
+/// way to know from its position that it is a PANE and not a run id — the exact argument
+/// [`crate::wire::WireSurface`] records against the four-tuple it used to be.
+#[derive(Clone, Debug)]
+pub struct RunSummary {
+    /// The run's id, as `cancel` takes it.
+    pub id: RunId,
+    /// What the run is, in a reader's terms (`"agent pane=3"`).
+    pub label: String,
+    /// The pane whose occupant asked for it, or [`None`].
+    pub opened_by: Option<u64>,
+    /// Where it has got to.
+    pub state: RunState,
 }
 
 /// The registry of background plugin runs. Owned by the host (`serve`),
@@ -61,6 +86,7 @@ impl RunRegistry {
     pub fn submit(
         &mut self,
         label: String,
+        opened_by: Option<u64>,
         state: Arc<Mutex<RunState>>,
         handle: JoinHandle<()>,
         cancel: Arc<AtomicBool>,
@@ -70,6 +96,7 @@ impl RunRegistry {
         self.runs.push(RunRecord {
             id,
             label,
+            opened_by,
             state,
             handle: Some(handle),
             cancel,
@@ -112,12 +139,17 @@ impl RunRegistry {
         }
     }
 
-    /// A snapshot of each run's `(id, label, state)`, in submit order.
+    /// A snapshot of every run, in submit order.
     #[must_use]
-    pub fn snapshot(&self) -> Vec<(RunId, String, RunState)> {
+    pub fn snapshot(&self) -> Vec<RunSummary> {
         self.runs
             .iter()
-            .map(|record| (record.id, record.label.clone(), lock(&record.state).clone()))
+            .map(|record| RunSummary {
+                id: record.id,
+                label: record.label.clone(),
+                opened_by: record.opened_by,
+                state: lock(&record.state).clone(),
+            })
             .collect()
     }
 
@@ -167,7 +199,7 @@ mod tests {
             };
         });
         let cancel = Arc::new(AtomicBool::new(false));
-        let id = registry.submit("test".to_string(), state, handle, cancel);
+        let id = registry.submit("test".to_string(), Some(7), state, handle, cancel);
         assert_eq!(id, RunId(0));
 
         // Join (bounded — the worker is trivial) then observe Done.
@@ -175,6 +207,11 @@ mod tests {
         registry.sweep();
         let snap = registry.snapshot();
         assert_eq!(snap.len(), 1);
-        assert!(matches!(snap[0].2, RunState::Done { .. }));
+        assert!(matches!(snap[0].state, RunState::Done { .. }));
+        assert_eq!(
+            snap[0].opened_by,
+            Some(7),
+            "the pane that asked for a run is what the agent-facing mouth keeps an agent to",
+        );
     }
 }
