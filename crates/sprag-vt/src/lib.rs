@@ -16,6 +16,9 @@ pub mod port;
 // A plain `//` for the reason given above `closed_set` — an outer doc here would merge into the
 // module's own `//!` and be resolved in THIS scope, where its types are not in scope at all.
 pub(crate) mod tabstops;
+/// Projecting a closed set's variants through its own spelling into the array of wire words a
+/// schema can publish. A plain `//` on the module below, for `closed_set`'s reason.
+pub mod wire_words;
 
 pub use emulator::{Emulator, osc52_reply};
 pub use history::HistoryLimits;

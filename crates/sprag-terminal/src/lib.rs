@@ -99,6 +99,13 @@ pub use snapshot::{
 /// exactly the drifting `ALL` array this macro exists to remove. Re-exported here so the twenty-odd
 /// `sprag_terminal::closed_set!` call sites above this crate keep one spelling.
 pub use sprag_vt::closed_set;
+/// Projecting a closed set through its own spelling into the array of wire words a declaration can
+/// publish — the companion of the macro above, re-exported here for the same reason it is.
+///
+/// No intra-doc link to that macro: `closed_set` names a module AND a macro in `sprag_vt`, so a
+/// bare reference is the ambiguity the doc gate refuses, and R344's rule is that a word naming two
+/// things is a defect rather than a link to spell around.
+pub use sprag_vt::wire_words;
 pub use tiling::{Divider, PaneRect, Projection, Rect, Tiling, fit_window, tile, with_ratio};
 pub use window_name::{WindowName, WindowNameError};
 pub use workspace::{
