@@ -31,6 +31,88 @@ cd "$repo_root"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/doc-gate.sh"
 
+# ── The pixel smoke, when this push touches what it paints.
+#
+# WHY THIS IS HERE AT ALL. The smoke is the only gate that looks at PIXELS, and it runs in neither
+# CI (it needs an X server and a GPU-less Vulkan) nor pre-commit. So its number was only ever as
+# current as the last round that felt like running it — and R349 shipped a paint change without it,
+# leaving it RED for eleven rounds while every other gate stayed green. A gate nobody runs goes red
+# in silence, and the number people quote for it is a date rather than a state.
+#
+# WHY IT IS SCOPED. It is minutes, not seconds. It runs when the push carries a change to what it
+# watches — the GUI client and the re-wrap the client paints through — and not otherwise.
+#
+# WHY IT REFUSES INSTEAD OF SKIPPING. A gate that quietly steps aside on the machine that lacks its
+# tools is the state this exists to end: it would be absent exactly where nobody notices. Missing
+# tools are a failed push with the package named. The deliberate bypass is `--no-verify`, which is
+# loud and already how everything else here is escaped.
+PIXEL_PATHS="crates/sprag-gui crates/sprag-grid"
+
+# Does the pushed range carry a change under PIXEL_PATHS?
+#
+# Reads the refs git feeds a pre-push hook on stdin. Anything it cannot resolve into a comparison —
+# a brand-new remote branch, a remote commit this clone does not have, an empty stdin from a manual
+# invocation — answers YES: the failure this guards is a paint change going unlooked-at, so the
+# unknown case runs the gate rather than waiving it.
+pixel_smoke_is_owed() {
+    local owed=1 saw_ref=1 local_ref local_sha remote_ref remote_sha
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        saw_ref=0
+        : "$local_ref" "$remote_ref"
+        # A deletion pushes an all-zero local sha and carries no tree to look at.
+        case "$local_sha" in
+            *[!0]*) ;;
+            *) continue ;;
+        esac
+        if ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+            owed=0
+            continue
+        fi
+        # shellcheck disable=SC2086  # PIXEL_PATHS is a deliberate list of pathspecs
+        if [ -n "$(git diff --name-only "$remote_sha" "$local_sha" -- $PIXEL_PATHS)" ]; then
+            owed=0
+        fi
+    done
+    [ "$saw_ref" -eq 0 ] || owed=0
+    return "$owed"
+}
+
+# Build the whole set in ONE release invocation and run the smoke under a fresh, isolated home.
+#
+# One invocation because the binaries must agree: the smoke drives a daemon and a terminal client
+# beside the GUI, and a set built piecemeal has bitten this project before (a stale daemon binary
+# cost four cycles). A fresh XDG home because the smoke writes user config, and a run that read the
+# developer's would be asserting about their machine.
+run_pixel_smoke() {
+    if ! command -v xvfb-run >/dev/null 2>&1; then
+        echo "pre-push: the pixel smoke needs xvfb-run — install xvfb" >&2
+        return 1
+    fi
+    if ! ls /usr/share/vulkan/icd.d/lvp_icd*.json >/dev/null 2>&1; then
+        echo "pre-push: the pixel smoke needs the lavapipe Vulkan ICD — install mesa-vulkan-drivers" >&2
+        return 1
+    fi
+
+    echo "pre-push: this push paints — cargo build --release (gui, host, tui) ..." >&2
+    if ! cargo build --release -p sprag-gui -p sprag-host -p sprag-tui; then
+        echo "pre-push: the smoke set did not build" >&2
+        return 1
+    fi
+
+    local home
+    home="$(mktemp -d)"
+    mkdir -p "$home/config" "$home/data" "$home/state"
+    echo "pre-push: pixel smoke ..." >&2
+    if ! XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_STATE_HOME="$home/state" \
+        xvfb-run -a ./target/release/sprag-smoke; then
+        rm -rf "$home"
+        echo "pre-push: the pixel smoke failed — the checks it prints are the diagnosis" >&2
+        return 1
+    fi
+    rm -rf "$home"
+    return 0
+}
+
 echo "pre-push: mnemosyne-cli validate-workspace ..." >&2
 if ! mnemosyne-cli validate-workspace; then
     echo "pre-push: validate-workspace failed — fix violations before push" >&2
@@ -57,6 +139,10 @@ if [ -f Cargo.toml ]; then
     if ! doc_gate; then
         echo "pre-push: rustdoc gate failed — fix the dead link before push" >&2
         exit 1
+    fi
+
+    if pixel_smoke_is_owed; then
+        run_pixel_smoke || exit 1
     fi
 fi
 
