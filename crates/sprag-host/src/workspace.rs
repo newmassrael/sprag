@@ -8583,11 +8583,12 @@ mod tests {
         // NON-VACUITY, asserted rather than assumed: a table whose vocabularies had all gone
         // missing would pass every assertion above by running none of them.
         assert_eq!(
-            driven, 29,
+            driven, 31,
             "one call per published word: four directions on each of three pane verbs (12), two \
              steps of the window ring, four places to move a window to, the three window-size \
              policies that fold clients (`manual` being the fourth and not one of them), the two \
-             axes a split may run on, three severities and the three states a reporter may name",
+             axes on EACH of the two verbs that place a pane, three severities, and the three \
+             states a reporter may name",
         );
     }
 
@@ -8637,10 +8638,10 @@ mod tests {
         }
 
         assert_eq!(
-            probed, 18,
-            "one probe per open string argument of every form: the window name in eight of them, \
-             the two anchors a move may name, a working directory and a pane name on each of the \
-             two spawning verbs, a message's text and audience, and a report's source and name",
+            probed, 30,
+            "one probe per open string argument of every form — the window and pane NAMES are most \
+             of them, plus the two anchors a move may name, a working directory on each spawning \
+             verb, a message's text and audience, a report's source and name, and a dropped path",
         );
     }
 
@@ -8701,10 +8702,10 @@ mod tests {
         }
 
         assert_eq!(
-            probed, 55,
+            probed, 91,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb: 31 across the seven ask-backed verbs, plus 6 + 9 + 3 + \
-             6 across the four declared inline",
+             per form rather than per verb: 31 across the seven ask-backed verbs and 55 across the \
+             eighteen declared inline",
         );
     }
 

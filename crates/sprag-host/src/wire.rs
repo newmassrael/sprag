@@ -488,6 +488,125 @@ impl InlineGrammar {
         ArgGrammar::open(MESSAGE_CLIENT_KEY, "string").optional(),
     ]];
 
+    /// The key that leaves the session where it is, on the two verbs that create a window.
+    ///
+    /// One declaration each rather than a shared ARRAY, because a `const fn` cannot concatenate
+    /// slices — so the two verbs spell the same two arguments by NAMING them, which is
+    /// [`WindowRef::NAMED_ARG`]'s arrangement and stops the pair drifting between them.
+    const DETACHED_ARG: ArgGrammar = ArgGrammar::open(DETACHED_KEY, "bool").optional();
+    /// The key naming the pane whose occupant asked for the window — [`DETACHED_ARG`](Self::DETACHED_ARG)'s peer.
+    const OPENED_BY_ARG: ArgGrammar = ArgGrammar::open(WINDOW_OPENED_BY_KEY, "int").optional();
+
+    /// [`CLOSE_ACTION`] — the pane to end. Absent means the session's active one.
+    pub const CLOSE: &'static [&'static [ArgGrammar]] =
+        &[&[ArgGrammar::open("id", "int").optional()]];
+
+    /// [`ZOOM_PANE_ACTION`] — a pane, and whether to zoom it. Absent `on` TOGGLES.
+    pub const ZOOM_PANE: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int").optional(),
+        ArgGrammar::open("on", "bool").optional(),
+    ]];
+
+    /// [`SET_FLOATING_ACTION`] — a pane, and which way to move it across the tiling's edge.
+    pub const SET_FLOATING: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open("id", "int"),
+        ArgGrammar::open("floating", "bool"),
+    ]];
+
+    /// [`DROP_FILE_ACTION`] — a pane, and the path a display client dropped on it.
+    pub const DROP_FILE: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int"),
+        ArgGrammar::open("path", "string"),
+    ]];
+
+    /// [`RELEASE_AGENT_ACTION`] — the pane whose agent claim is given up.
+    ///
+    /// [`REPORT_AGENT`](Self::REPORT_AGENT)'s other half, and the second verb R352 found declared
+    /// nowhere at all.
+    pub const RELEASE_AGENT: &'static [&'static [ArgGrammar]] =
+        &[&[ArgGrammar::open(AGENT_ID_KEY, "int")]];
+
+    /// [`RENAME_PANE_ACTION`] — a pane, and what to call it. An absent name CLEARS.
+    pub const RENAME_PANE: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int"),
+        ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
+    ]];
+
+    /// [`RENAME_SESSION_ACTION`] — what to call the request's own session.
+    pub const RENAME_SESSION: &'static [&'static [ArgGrammar]] =
+        &[&[ArgGrammar::open(SPAWN_NAME_KEY, "string")]];
+
+    /// [`KILL_SESSION_ACTION`] — which session to end. Named, never scoped: ending the one you are
+    /// attached to by omission is not a thing this verb lets a caller do by accident.
+    pub const KILL_SESSION: &'static [&'static [ArgGrammar]] =
+        &[&[ArgGrammar::open(SPAWN_NAME_KEY, "string")]];
+
+    /// [`RENAME_WINDOW_ACTION`] — which window, and what to call it.
+    pub const RENAME_WINDOW: &'static [&'static [ArgGrammar]] = &[&[
+        WindowRef::NAMED_ARG,
+        ArgGrammar::open(SPAWN_NAME_KEY, "string"),
+    ]];
+
+    /// [`KILL_WINDOW_ACTION`] — which window to end, by either spelling, or the scoped one.
+    pub const KILL_WINDOW: &'static [&'static [ArgGrammar]] =
+        &[&[WindowRef::NAMED_ARG], &[WindowRef::PICKED_ARG]];
+
+    /// [`NEW_WINDOW_ACTION`] — a name for the window, how it is born, and the birth keys for the
+    /// pane that fills it.
+    pub const NEW_WINDOW: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
+        Self::DETACHED_ARG,
+        Self::OPENED_BY_ARG,
+        ArgGrammar::open(SPAWN_CMD_KEY, "array").optional(),
+        ArgGrammar::open(SPAWN_CWD_KEY, "string").optional(),
+        ArgGrammar::open(SPAWN_COLS_KEY, "int").optional(),
+        ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
+    ]];
+
+    /// [`NEW_SESSION_ACTION`] — a name for the session, and the birth keys for its first pane.
+    pub const NEW_SESSION: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
+        ArgGrammar::open(SPAWN_CMD_KEY, "array").optional(),
+        ArgGrammar::open(SPAWN_CWD_KEY, "string").optional(),
+        ArgGrammar::open(SPAWN_COLS_KEY, "int").optional(),
+        ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
+    ]];
+
+    // ⚠ THE FOUR VERBS THAT PUBLISH NOTHING, AND WHY — a stated boundary rather than an oversight.
+    //
+    // `set_layout` takes an arrangement TREE, `resize` takes a client's cell metrics, and
+    // `grant_pane` takes a nested share object. `ArgGrammar` describes a FLAT key: a name, a type
+    // and the vocabulary it admits. Declaring `{"tree": "object"}` would be true and would tell a
+    // client nothing it did not already know, which is the affirmative-noise version of the
+    // affirmative false statement this whole surface avoids. A nested grammar is a real design
+    // question — pinion's own `SchemaArg` cannot express one either — and it is not this round's.
+    //
+    // The fourth is `WindowBirthAsk`'s `new_window` half, which IS published above: the ask models
+    // only the birth, so the verb's grammar is declared here where its other half can be said too.
+
+    /// [`BREAK_PANE_ACTION`] — the pane to take out of its window, and the window it becomes.
+    pub const BREAK_PANE: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int"),
+        ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
+        Self::DETACHED_ARG,
+        Self::OPENED_BY_ARG,
+    ]];
+
+    /// [`MOVE_PANE_ACTION`] — a pane, the pane it lands beside, and which side of it.
+    ///
+    /// The third verb carrying [`SplitDir`](sprag_terminal::SplitDir)'s two words, after
+    /// [`SPLIT`](Self::SPLIT).
+    pub const MOVE_PANE: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int").optional(),
+        ArgGrammar::open("target", "int"),
+        ArgGrammar::one_of(
+            SPLIT_DIR_KEY,
+            "string",
+            &sprag_terminal::SplitDir::WIRE_WORDS,
+        ),
+        ArgGrammar::open(SPLIT_BEFORE_KEY, "bool").optional(),
+    ]];
+
     /// [`REPORT_AGENT_ACTION`] — an agent reporting its own turn, the SCE requirement's verb.
     ///
     /// ⚠ This is the verb R352 found DISPATCHED AND DECLARED NOWHERE. `state` publishes the three
@@ -667,6 +786,76 @@ impl ActionGrammar {
         Self {
             action: REPORT_AGENT_ACTION,
             forms: InlineGrammar::REPORT_AGENT,
+            from_ask: false,
+        },
+        Self {
+            action: CLOSE_ACTION,
+            forms: InlineGrammar::CLOSE,
+            from_ask: false,
+        },
+        Self {
+            action: ZOOM_PANE_ACTION,
+            forms: InlineGrammar::ZOOM_PANE,
+            from_ask: false,
+        },
+        Self {
+            action: SET_FLOATING_ACTION,
+            forms: InlineGrammar::SET_FLOATING,
+            from_ask: false,
+        },
+        Self {
+            action: DROP_FILE_ACTION,
+            forms: InlineGrammar::DROP_FILE,
+            from_ask: false,
+        },
+        Self {
+            action: RELEASE_AGENT_ACTION,
+            forms: InlineGrammar::RELEASE_AGENT,
+            from_ask: false,
+        },
+        Self {
+            action: RENAME_PANE_ACTION,
+            forms: InlineGrammar::RENAME_PANE,
+            from_ask: false,
+        },
+        Self {
+            action: RENAME_SESSION_ACTION,
+            forms: InlineGrammar::RENAME_SESSION,
+            from_ask: false,
+        },
+        Self {
+            action: KILL_SESSION_ACTION,
+            forms: InlineGrammar::KILL_SESSION,
+            from_ask: false,
+        },
+        Self {
+            action: RENAME_WINDOW_ACTION,
+            forms: InlineGrammar::RENAME_WINDOW,
+            from_ask: false,
+        },
+        Self {
+            action: KILL_WINDOW_ACTION,
+            forms: InlineGrammar::KILL_WINDOW,
+            from_ask: false,
+        },
+        Self {
+            action: NEW_WINDOW_ACTION,
+            forms: InlineGrammar::NEW_WINDOW,
+            from_ask: false,
+        },
+        Self {
+            action: BREAK_PANE_ACTION,
+            forms: InlineGrammar::BREAK_PANE,
+            from_ask: false,
+        },
+        Self {
+            action: MOVE_PANE_ACTION,
+            forms: InlineGrammar::MOVE_PANE,
+            from_ask: false,
+        },
+        Self {
+            action: NEW_SESSION_ACTION,
+            forms: InlineGrammar::NEW_SESSION,
             from_ask: false,
         },
     ];
@@ -6159,18 +6348,36 @@ mod tests {
     fn a_published_value_space_cannot_widen_under_the_protocol_number() {
         const PINNED_WORDS: (u32, &[&str]) = (
             19,
+            // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
+            // ids, names, paths and numbers, all of them values the caller invents. They are here
+            // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
+            // and a list of only the verbs that already have one could not notice.
             &[
+                "break_pane:",
+                "close:",
                 "display_message:severity=note,warn,alert",
-                "join_pane:", // no vocabulary: a pane id and a window reference
+                "drop_file:",
+                "join_pane:",
+                "kill_session:",
+                "kill_window:",
+                "move_pane:dir=horizontal,vertical",
                 "move_window:place=first,last,next,previous",
+                "new_session:",
+                "new_window:",
+                "release_agent:",
+                "rename_pane:",
+                "rename_session:",
+                "rename_window:",
                 "report_agent:state=working,blocked,idle",
                 "resize_pane:dir=left,right,up,down",
                 "resize_window:from=largest,smallest,latest",
                 "select_pane:dir=left,right,up,down",
                 "select_window:relative=next,previous",
-                "spawn:", // no vocabulary: an argv, a directory and three numbers
+                "set_floating:",
+                "spawn:",
                 "split:dir=horizontal,vertical",
                 "swap_pane:dir=left,right,up,down",
+                "zoom_pane:",
             ],
         );
 
