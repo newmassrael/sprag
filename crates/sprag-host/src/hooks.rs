@@ -561,9 +561,33 @@ impl Status {
 /// where that conjunction lives and is tested.
 #[must_use]
 pub fn launch_args(argv: &[String], exe: &Path) -> Vec<String> {
-    launch_args_from(argv, exe, |target| {
-        status(target).is_ok_and(|status| status.reporting())
-    })
+    launch_args_from(argv, exe, |target| already_reports(status(target)))
+}
+
+/// Whether an agent's OWN config already reports, from a reading of this machine that may have
+/// failed — and **what sprag does when it could not tell**.
+///
+/// # The decision, which used to be an `is_ok_and` and nobody's
+///
+/// [`status`] resolves a path before it reads anything, and that resolution has its own failures:
+/// no absolute `$HOME` ([`HookError::NoHome`]), or an agent config-directory variable set to a
+/// RELATIVE path ([`HookError::AmbiguousHome`]), which sprag refuses to guess at because the agent
+/// resolves it against a directory this process is not in.
+///
+/// **An unreadable machine answers `false`, so the launch IS instrumented.** That is the safe
+/// direction of the two, and it is a choice rather than a fallout:
+///
+/// * answering `false` costs, at worst, a DOUBLE report — the user's own install and this launch's
+///   both firing. The level is idempotent, so what they see is right and what it costs is two
+///   processes per event.
+/// * answering `true` costs, at worst, NO report at all, silently, for a user whose supervision
+///   looks configured. Nothing downstream can tell that from an agent that simply had no turns.
+///
+/// A supervisor that says too much is a nuisance; one that says nothing is indistinguishable from a
+/// quiet agent. **The residue is named rather than hidden**: if that unresolvable directory really
+/// does hold sprag's hooks, this double-reports, and `Authority` is where a reader sees it.
+fn already_reports(read: Result<Status, HookError>) -> bool {
+    read.is_ok_and(|status| status.reporting())
 }
 
 /// [`launch_args`]'s DECISION, separated from the machine it reads.
@@ -2249,6 +2273,55 @@ mod tests {
                 "{}: but nothing it names can run, so this agent reports nothing",
                 target.name,
             );
+        }
+    }
+
+    /// **A machine sprag cannot read is one it instruments** — the arm `is_ok_and` used to swallow.
+    ///
+    /// [`already_reports`] answers a question about the user's own config, and the reading can fail
+    /// before it reads anything: `$HOME` names nowhere absolute, or the agent's config-directory
+    /// variable is RELATIVE and sprag refuses to guess which directory it means. Both come back as
+    /// an `Err`, and what sprag does with one is a DECISION — instrument, and risk a double report —
+    /// not a fallout of how the expression was spelled.
+    ///
+    /// All three arms, because two of them agree on the answer for different reasons and a test of
+    /// either alone would not notice the third changing: an install that reports says `true`, one
+    /// that does not says `false`, and an unreadable machine says `false` WITH the error it failed
+    /// on. Driven with plain values rather than a `$HOME` full of agent configuration — the point of
+    /// separating the decision from the machine is that it can be asked without one.
+    ///
+    /// REVERT-PROOF: make the error arm answer `true` (the other safe-looking direction, and the one
+    /// that silently turns supervision off for that user) and the last case fails.
+    #[test]
+    fn a_machine_that_cannot_be_read_is_one_sprag_instruments() {
+        for target in TARGETS {
+            let fixture = Fixture::new(target, None);
+            let program = fixture.program();
+            fixture.install(&program.display().to_string());
+            assert!(
+                already_reports(Ok(status_at(target, fixture.path()))),
+                "{}: a whole install that can run reports on its own",
+                target.name,
+            );
+
+            let bare = Fixture::new(target, None);
+            assert!(
+                !already_reports(Ok(status_at(target, bare.path()))),
+                "{}: nothing is installed, so sprag instruments the launch",
+                target.name,
+            );
+
+            for unreadable in [
+                HookError::NoHome,
+                HookError::AmbiguousHome("CLAUDE_CONFIG_DIR".to_owned()),
+            ] {
+                let why = unreadable.to_string();
+                assert!(
+                    !already_reports(Err(unreadable)),
+                    "{}: sprag could not tell ({why}), so it instruments rather than going quiet",
+                    target.name,
+                );
+            }
         }
     }
 
