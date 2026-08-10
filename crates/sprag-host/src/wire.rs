@@ -229,11 +229,11 @@ pub const REGEX_FIELD: SchemaField =
 /// Each entry reuses its address const rather than re-spelling it, so a field's path and the
 /// path a client builds are the same string by construction.
 pub const PANE_SCHEMA: &[SchemaField] = &[
-    SchemaField::new(KEY_ACTION, "action"),
-    SchemaField::new(MOUSE_ACTION, "action"),
-    SchemaField::new(FOCUS_ACTION, "action"),
-    SchemaField::new(TEXT_ACTION, "action"),
-    SchemaField::new(PASTE_ACTION, "action"),
+    SchemaField::action(KEY_ACTION, "action"),
+    SchemaField::action(MOUSE_ACTION, "action"),
+    SchemaField::action(FOCUS_ACTION, "action"),
+    SchemaField::action(TEXT_ACTION, "action"),
+    SchemaField::action(PASTE_ACTION, "action"),
     CELLS_FIELD,
     SchemaField::new(FRAMES_SLOT, "int"),
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
@@ -245,8 +245,266 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     REGEX_FIELD,
     IMAGE_DATA_FIELD,
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
-    SchemaField::new(CLIPBOARD_ANSWER_ACTION, "action"),
+    SchemaField::action(CLIPBOARD_ANSWER_ACTION, "action"),
 ];
+
+/// ONE ARGUMENT OF ONE VERB, as a client discovers it — the name to send it under, its JSON type,
+/// whether a well-formed call may omit it, and the CLOSED VOCABULARY it admits when it has one.
+///
+/// # Why sprag declares this and does not use pinion's
+///
+/// pinion's [`SchemaArg`] is the same idea and is the right long-term home: after R1638 it carries
+/// an [`ArgDomain`](pinion_core::external::ArgDomain), an argument form, and optionality, and
+/// `SchemaField::action_with` attaches the lot to a verb inside `$schema`. **None of that exists at
+/// the rev sprag pins.** Measured at `0de77429`: `ArgForm`, `action_with` and `ArgDomain::OneOf`
+/// are all absent, and the three commits that add them are unpushed in the sibling checkout, so
+/// there is no rev sprag can name to get them.
+///
+/// The honest options were to publish nothing until the upstream lands, or to publish the same
+/// facts on a surface sprag owns. Publishing nothing is what the wire has been doing since it
+/// existed, and it is the whole of the gap this pays: a client that cannot ask what a word may be
+/// has to know it out of band, which for an AI client means guessing. So the facts go out now, in
+/// sprag's own vocabulary, shaped deliberately like the upstream's — a `name`/`type`/`optional`
+/// triple plus a `one_of` — so the day the pin moves this becomes a second PROJECTION of one table
+/// rather than a second table.
+///
+/// ⚠ The residue, stated rather than hidden: until then a client learns the ARGUMENTS from
+/// [`ACTION_GRAMMAR_SLOT`] and the ADDRESSES from `$schema`, which is two reads where the upstream
+/// design has one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ArgGrammar {
+    /// The key this argument is sent under, inside the action's `args` object.
+    pub name: &'static str,
+    /// The JSON type of the value, in `$schema`'s vocabulary (`"int"`, `"string"`, `"bool"`).
+    pub ty: &'static str,
+    /// Whether a WELL-FORMED call may leave this key out.
+    ///
+    /// True does not mean "unimportant": for several of these verbs the absence has its own
+    /// meaning — no pane names the active one, no rectangle means the un-pin — and the verb's own
+    /// documentation is where that is said.
+    pub optional: bool,
+    /// The CLOSED VOCABULARY this argument admits, or [`None`] when the value is the caller's own
+    /// (a name, a needle, a number).
+    ///
+    /// ⚠ **Never a literal**: every one of these is a
+    /// [`WIRE_WORDS`](sprag_vt::wire_words!) array projected from the closed set the parser reads
+    /// through, so what a client is told it may send is what the daemon admits, by construction and
+    /// not by a test that could be forgotten. The one assembled by hand
+    /// ([`MoveWindowAsk::PLACE_WORDS`]) says so at its declaration and is held to the parser by
+    /// [`every_published_word_is_a_word_the_daemon_accepts`](self).
+    pub words: Option<&'static [&'static str]>,
+}
+
+impl ArgGrammar {
+    /// The answer key naming the argument.
+    pub const NAME_KEY: &'static str = "name";
+    /// The answer key naming its JSON type.
+    pub const TYPE_KEY: &'static str = "type";
+    /// The answer key saying a well-formed call may omit it.
+    pub const OPTIONAL_KEY: &'static str = "optional";
+    /// The answer key carrying the closed vocabulary, absent when there is none.
+    pub const ONE_OF_KEY: &'static str = "one_of";
+
+    /// An argument whose value is the caller's own, and which the call must carry.
+    #[must_use]
+    pub const fn open(name: &'static str, ty: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            optional: false,
+            words: None,
+        }
+    }
+
+    /// An argument drawn from a CLOSED VOCABULARY, and which the call must carry.
+    ///
+    /// Hand a `WIRE_WORDS` array, never a literal — see [`words`](Self::words).
+    #[must_use]
+    pub const fn one_of(
+        name: &'static str,
+        ty: &'static str,
+        words: &'static [&'static str],
+    ) -> Self {
+        Self {
+            name,
+            ty,
+            optional: false,
+            words: Some(words),
+        }
+    }
+
+    /// The same argument, marked as one this form REQUIRES.
+    ///
+    /// The inverse of [`optional`](Self::optional), and it exists because the two shared window
+    /// arguments ([`WindowRef::NAMED_ARG`]) are omittable on most verbs and not on all: a
+    /// `join_pane` with no window names nowhere to put the pane. One declaration, adjusted at the
+    /// form that differs, beats a second copy of the same name and type.
+    #[must_use]
+    pub const fn required(self) -> Self {
+        Self {
+            optional: false,
+            ..self
+        }
+    }
+
+    /// The same argument, marked as one a well-formed call may leave out.
+    ///
+    /// A builder rather than a second pair of constructors, for the reason pinion's own
+    /// `SchemaArg` gives its optional builder: optionality is orthogonal to where the values come
+    /// from, and four constructors would be the product of two axes spelled out.
+    #[must_use]
+    pub const fn optional(self) -> Self {
+        Self {
+            optional: true,
+            ..self
+        }
+    }
+
+    /// This argument as the client reads it.
+    ///
+    /// `one_of` is OMITTED rather than sent as `null` when there is no vocabulary, for the reason
+    /// [`ArgForm::Undeclared`](pinion_core::external::SchemaField) publishes nothing: a reader that
+    /// does not know the key sees the shape it always saw, and a reader that does tells silence
+    /// from a claim by the key's absence.
+    #[must_use]
+    pub fn to_answer(&self) -> Value {
+        let mut map = Map::new();
+        map.insert(Self::NAME_KEY.to_owned(), Value::from(self.name));
+        map.insert(Self::TYPE_KEY.to_owned(), Value::from(self.ty));
+        map.insert(Self::OPTIONAL_KEY.to_owned(), Value::from(self.optional));
+        if let Some(words) = self.words {
+            map.insert(
+                Self::ONE_OF_KEY.to_owned(),
+                Value::from(words.iter().map(|w| Value::from(*w)).collect::<Vec<_>>()),
+            );
+        }
+        Value::Object(map)
+    }
+}
+
+/// ONE VERB'S CALL GRAMMAR — the action's address and every argument it takes.
+///
+/// # What publishing this is for
+///
+/// An agent that can read the pane grid, the layout tree and the session list still could not work
+/// out how to CALL anything: `$schema` published 34 verb names and not one argument, so every
+/// client on this wire has had to carry sprag's request grammar as folklore. This is the table that
+/// stops that, and [`ALL`](Self::ALL) is what [`ACTION_GRAMMAR_SLOT`] serves.
+///
+/// # Which verbs are here, and why the others are not
+///
+/// Exactly the verbs whose request grammar is modelled by an ASK TYPE — the `to_args` / `parse`
+/// pair that already spells the keys once for the daemon, the CLI verb, the MCP tool and the
+/// keybinding. Those types are the source; this is a fourth face of the same grammar, and
+/// [`the_published_grammar_is_the_ask_types_own`](self) holds each declaration to the keys its ask
+/// actually emits.
+///
+/// A verb whose arguments are read inline out of the request map has no such source, and publishing
+/// a hand-transcribed list for it would be the affirmative false statement this project keeps
+/// paying for — worse than silence, because it carries a schema's authority. **So the rule is
+/// mechanical: give a verb an ask type and it publishes itself.** The count of each is asserted, so
+/// the gap is a number rather than an impression.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ActionGrammar {
+    /// The action's address on the multiplexer surface — one of [`MUX_SCHEMA`]'s verbs.
+    pub action: &'static str,
+    /// The WAYS this verb may be spelled, one per arm of its ask type — each a complete list of
+    /// the arguments THAT spelling takes.
+    ///
+    /// ⚠⚠ **A FLAT ARGUMENT LIST CANNOT SAY "EXACTLY ONE OF THESE"**, and this table's first draft
+    /// was flat. Every sprag ask that is an ENUM is an alternation — `swap_pane` takes `with` or
+    /// `dir` and refuses both, `move_window` takes `place` or `before` or `after` — so marking each
+    /// alternative "optional" said, truthfully but uselessly, that a call could omit every one of
+    /// them. An agent following that builds `{"window": "build"}` and is refused as malformed,
+    /// which is exactly what
+    /// [`an_argument_the_daemon_constrains_publishes_what_it_admits`](self) reported the first time
+    /// it ran.
+    ///
+    /// pinion's `SchemaArg` cannot express the alternation either (its `optional` is the same flat
+    /// idea), so this is not a shape sprag is declining to adopt — it is one the upstream has not
+    /// met yet, because its surfaces take arguments and sprag's take REQUESTS.
+    ///
+    /// The forms are not invented here: there is one per arm of the ask, so an arm added to one of
+    /// those enums is a form the round that adds it has to decide about, and
+    /// [`the_published_grammar_is_the_ask_types_own`](self) compares the two lists arm by arm.
+    pub forms: &'static [&'static [ArgGrammar]],
+}
+
+impl ActionGrammar {
+    /// Every verb that publishes its grammar.
+    ///
+    /// ⚠ A LIST, and the one place in this feature that is. What holds it honest is not review:
+    /// each entry's args come from the ask type named beside it, every published word is driven
+    /// through the daemon's own parser, and a declared string argument the parser CONSTRAINS must
+    /// publish a vocabulary — so an entry that drifts, and an argument left out of one, both fail.
+    pub const ALL: &'static [Self] = &[
+        Self {
+            action: SELECT_PANE_ACTION,
+            forms: SelectAsk::GRAMMAR,
+        },
+        Self {
+            action: SWAP_PANE_ACTION,
+            forms: SwapAsk::GRAMMAR,
+        },
+        Self {
+            action: RESIZE_PANE_ACTION,
+            forms: ResizeAsk::GRAMMAR,
+        },
+        Self {
+            action: JOIN_PANE_ACTION,
+            forms: JoinAsk::GRAMMAR,
+        },
+        Self {
+            action: SELECT_WINDOW_ACTION,
+            forms: SelectWindowAsk::GRAMMAR,
+        },
+        Self {
+            action: MOVE_WINDOW_ACTION,
+            forms: MoveWindowAsk::GRAMMAR,
+        },
+        Self {
+            action: RESIZE_WINDOW_ACTION,
+            forms: ResizeWindowAsk::GRAMMAR,
+        },
+    ];
+
+    /// The whole table as [`ACTION_GRAMMAR_SLOT`] serves it: an object keyed by the action's
+    /// address, each holding its arguments in declared order.
+    ///
+    /// Keyed by address rather than sent as a list because the client's question is always *"how do
+    /// I call THIS one"*, and an object answers it without a scan. Each value is a list of FORMS —
+    /// a client picks one and fills it, which is the shape that makes an enumerated call correct
+    /// rather than merely well-typed.
+    #[must_use]
+    pub fn answer() -> Value {
+        let mut map = Map::new();
+        for verb in Self::ALL {
+            map.insert(
+                verb.action.to_owned(),
+                Value::from(
+                    verb.forms
+                        .iter()
+                        .map(|form| {
+                            Value::from(form.iter().map(ArgGrammar::to_answer).collect::<Vec<_>>())
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
+        Value::Object(map)
+    }
+}
+
+/// HOW TO CALL THE VERBS THIS SURFACE PUBLISHES — [`ActionGrammar::ALL`], as a slot.
+///
+/// The read half of the wire has always been discoverable: `$schema` names every address, and a
+/// client walks it. The WRITE half was not — a name and nothing else — so this is the address that
+/// answers *"what do I send?"* for the verbs that can say.
+///
+/// A SLOT rather than an addition to each verb's declaration because the declaration cannot hold it
+/// at the pinned pinion ([`ArgGrammar`] says why), and a slot is the shape that survives the day it
+/// can: this answer becomes a projection of the same table, and the table moves into `$schema`.
+pub const ACTION_GRAMMAR_SLOT: &str = "action_grammar";
 
 /// Every address the MULTIPLEXER surface serves — the actions a client invokes and the slots it
 /// queries, in the order a reader of `show-options`-style output would want them: the verbs, then
@@ -258,32 +516,40 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
 /// RATCHET (`the_wire_surface_cannot_move_under_the_protocol_number`), which needs both schemas
 /// readable from one place without constructing a daemon.
 pub const MUX_SCHEMA: &[SchemaField] = &[
-    SchemaField::new(SPAWN_ACTION, "action"),
-    SchemaField::new(SPLIT_ACTION, "action"),
-    SchemaField::new(CLOSE_ACTION, "action"),
-    SchemaField::new(RESIZE_ACTION, "action"),
-    SchemaField::new(RENAME_PANE_ACTION, "action"),
-    SchemaField::new(GRANT_PANE_ACTION, "action"),
-    SchemaField::new(SET_LAYOUT_ACTION, "action"),
-    SchemaField::new(SET_FLOATING_ACTION, "action"),
-    SchemaField::new(NEW_SESSION_ACTION, "action"),
-    SchemaField::new(KILL_SESSION_ACTION, "action"),
-    SchemaField::new(NEW_WINDOW_ACTION, "action"),
-    SchemaField::new(SELECT_WINDOW_ACTION, "action"),
-    SchemaField::new(MOVE_WINDOW_ACTION, "action"),
-    SchemaField::new(SELECT_PANE_ACTION, "action"),
-    SchemaField::new(RENAME_WINDOW_ACTION, "action"),
-    SchemaField::new(RENAME_SESSION_ACTION, "action"),
-    SchemaField::new(DISPLAY_MESSAGE_ACTION, "action"),
-    SchemaField::new(KILL_WINDOW_ACTION, "action"),
-    SchemaField::new(RESIZE_WINDOW_ACTION, "action"),
-    SchemaField::new(BREAK_PANE_ACTION, "action"),
-    SchemaField::new(JOIN_PANE_ACTION, "action"),
-    SchemaField::new(MOVE_PANE_ACTION, "action"),
-    SchemaField::new(SWAP_PANE_ACTION, "action"),
-    SchemaField::new(RESIZE_PANE_ACTION, "action"),
-    SchemaField::new(ZOOM_PANE_ACTION, "action"),
-    SchemaField::new(DROP_FILE_ACTION, "action"),
+    SchemaField::action(SPAWN_ACTION, "action"),
+    SchemaField::action(SPLIT_ACTION, "action"),
+    SchemaField::action(CLOSE_ACTION, "action"),
+    SchemaField::action(RESIZE_ACTION, "action"),
+    SchemaField::action(RENAME_PANE_ACTION, "action"),
+    SchemaField::action(GRANT_PANE_ACTION, "action"),
+    SchemaField::action(SET_LAYOUT_ACTION, "action"),
+    SchemaField::action(SET_FLOATING_ACTION, "action"),
+    SchemaField::action(NEW_SESSION_ACTION, "action"),
+    SchemaField::action(KILL_SESSION_ACTION, "action"),
+    SchemaField::action(NEW_WINDOW_ACTION, "action"),
+    SchemaField::action(SELECT_WINDOW_ACTION, "action"),
+    SchemaField::action(MOVE_WINDOW_ACTION, "action"),
+    SchemaField::action(SELECT_PANE_ACTION, "action"),
+    SchemaField::action(RENAME_WINDOW_ACTION, "action"),
+    SchemaField::action(RENAME_SESSION_ACTION, "action"),
+    SchemaField::action(DISPLAY_MESSAGE_ACTION, "action"),
+    SchemaField::action(KILL_WINDOW_ACTION, "action"),
+    SchemaField::action(RESIZE_WINDOW_ACTION, "action"),
+    SchemaField::action(BREAK_PANE_ACTION, "action"),
+    SchemaField::action(JOIN_PANE_ACTION, "action"),
+    SchemaField::action(MOVE_PANE_ACTION, "action"),
+    SchemaField::action(SWAP_PANE_ACTION, "action"),
+    SchemaField::action(RESIZE_PANE_ACTION, "action"),
+    SchemaField::action(ZOOM_PANE_ACTION, "action"),
+    SchemaField::action(DROP_FILE_ACTION, "action"),
+    // ⚠ THESE TWO WERE DISPATCHED AND DECLARED NOWHERE, from the round that built them until
+    // R352. The surface answered them and `$schema` never mentioned them, so the agent
+    // self-report the SCE requirement asked for was a verb no agent could discover — and the wire
+    // ratchet could not see the gap, because an omission declares nothing to audit. What makes it
+    // unrepeatable is not this line: it is `WorkspaceExternal::dispatch` refusing any path this
+    // list does not carry.
+    SchemaField::action(REPORT_AGENT_ACTION, "action"),
+    SchemaField::action(RELEASE_AGENT_ACTION, "action"),
     SchemaField::new(PANES_SLOT, "list"),
     SchemaField::new(LAYOUT_SLOT, "tree"),
     SchemaField::new(SESSIONS_SLOT, "list"),
@@ -295,6 +561,7 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::new(WINDOW_SIZE_SLOT, "object"),
     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
     SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
+    SchemaField::new(ACTION_GRAMMAR_SLOT, "object"),
     PROJECT_FIELD,
     NEIGHBORS_FIELD,
     EVENTS_FIELD,
@@ -2013,6 +2280,12 @@ impl WindowBirthAsk {
     /// The request key naming the pane whose occupant asked for the window.
     pub const OPENED_BY_KEY: &'static str = WINDOW_OPENED_BY_KEY;
 
+    // ⚠ NO `GRAMMAR`, AND THE ABSENCE IS THE DECISION. These two keys are the BIRTH's, not the
+    // verb's: `new_window` also takes the pane spec every spawning verb takes, and that half has no
+    // ask type to be read off. Publishing these two under `ArgForm::Object` would claim they are
+    // the arguments, which is the affirmative false statement pinion's `ArgForm::Undeclared` exists
+    // to let a surface avoid — so this verb says nothing until its other half can be said too.
+
     /// The `args` keys a client sends for this ask, merged into whatever else the request carries.
     ///
     /// A key is emitted only when it says something: the default birth emits NOTHING, so a caller
@@ -2094,6 +2367,24 @@ pub enum SelectWindowAsk {
 impl SelectWindowAsk {
     /// The request key naming which way to step along the ring.
     pub const RELATIVE_KEY: &'static str = "relative";
+
+    /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — what [`SELECT_WINDOW_ACTION`]'s
+    /// declaration publishes; see [`ResizeAsk::GRAMMAR`] for why it lives beside the keys.
+    ///
+    /// `relative` publishes the whole of [`OrderStep`], projected from
+    /// the type, so the two words a client may step by are discoverable rather than folklore.
+    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+        // `At`, by NAME — whatever window carries it when the request arrives.
+        &[WindowRef::NAMED_ARG.required()],
+        // `At`, by IDENTITY — that window, or none.
+        &[WindowRef::PICKED_ARG.required()],
+        // `Step` — one place along the ring, which has no ends to a walk.
+        &[ArgGrammar::one_of(
+            Self::RELATIVE_KEY,
+            "string",
+            &sprag_terminal::OrderStep::WIRE_WORDS,
+        )],
+    ];
 
     /// The `args` object a client sends for this ask.
     ///
@@ -2221,6 +2512,53 @@ impl MoveWindowAsk {
     pub const FIRST_WORD: &'static str = "first";
     /// [`WindowPlace::Last`]'s word under [`PLACE_KEY`](Self::PLACE_KEY).
     pub const LAST_WORD: &'static str = "last";
+
+    /// Every word [`PLACE_KEY`](Self::PLACE_KEY) admits: the two ENDS this type names, then the
+    /// whole of [`OrderStep`].
+    ///
+    /// ⚠ A UNION IS THE SHAPE A NEW MEMBER IS LEFT OUT OF, so it is assembled rather than typed:
+    /// the length is `2 + OrderStep::WIRE_WORDS.len()` and the tail is COPIED from that array, so
+    /// a third step arm widens this in the same compile that adds it. What is left hand-written is
+    /// the two ends — and they are hand-written in [`parse`](Self::parse) too, as the same two
+    /// constants, which is what
+    /// [`every_published_word_is_a_word_the_daemon_accepts`](self) holds them to.
+    pub const PLACE_WORDS: [&'static str; 2 + sprag_terminal::OrderStep::WIRE_WORDS.len()] = {
+        const STEPS: [&str; sprag_terminal::OrderStep::WIRE_WORDS.len()] =
+            sprag_terminal::OrderStep::WIRE_WORDS;
+        let steps = STEPS;
+        let mut words = [""; 2 + STEPS.len()];
+        words[0] = Self::FIRST_WORD;
+        words[1] = Self::LAST_WORD;
+        let mut at = 0;
+        while at < steps.len() {
+            words[2 + at] = steps[at];
+            at += 1;
+        }
+        words
+    };
+
+    /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — what [`MOVE_WINDOW_ACTION`]'s
+    /// declaration publishes; see [`ResizeAsk::GRAMMAR`] for why it lives beside the keys.
+    ///
+    /// Three of the four are alternatives ([`SwapAsk::GRAMMAR`]'s note), and only `place`
+    /// draws from a vocabulary: an anchor is another window's NAME, which is the person's string.
+    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+        // `First` / `Last` / `Step` — an end of the order, or one place along it.
+        &[
+            WindowRef::NAMED_ARG,
+            ArgGrammar::one_of(Self::PLACE_KEY, "string", &Self::PLACE_WORDS),
+        ],
+        // `Before` — immediately ahead of the window this names.
+        &[
+            WindowRef::NAMED_ARG,
+            ArgGrammar::open(Self::BEFORE_KEY, "string"),
+        ],
+        // `After` — immediately behind it.
+        &[
+            WindowRef::NAMED_ARG,
+            ArgGrammar::open(Self::AFTER_KEY, "string"),
+        ],
+    ];
 
     /// The `args` object a client sends for this ask.
     ///
@@ -2405,6 +2743,23 @@ impl SelectAsk {
     pub const DIR_KEY: &'static str = "dir";
     /// The request key naming the pane a step is measured FROM.
     pub const FROM_KEY: &'static str = "from";
+
+    /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — what [`SELECT_PANE_ACTION`]'s
+    /// declaration publishes; see [`ResizeAsk::GRAMMAR`] for why it lives beside the keys, and
+    /// [`SwapAsk::GRAMMAR`] for why an alternation publishes as three optional arguments.
+    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+        // `Pane` — select the one named.
+        &[ArgGrammar::open(Self::PANE_KEY, "int")],
+        // `Toward` — step that way, from the active pane unless an origin says otherwise.
+        &[
+            ArgGrammar::one_of(
+                Self::DIR_KEY,
+                "string",
+                &sprag_terminal::PaneDir::WIRE_WORDS,
+            ),
+            ArgGrammar::open(Self::FROM_KEY, "int").optional(),
+        ],
+    ];
 
     /// The `args` object a client sends for this ask.
     ///
@@ -2771,6 +3126,22 @@ impl WindowRef {
     /// The request key addressing a window by IDENTITY.
     pub const WINDOW_ID_KEY: &'static str = "window_id";
 
+    /// [`WINDOW_KEY`](Self::WINDOW_KEY) as a SCHEMA argument, for the verbs that address a window.
+    ///
+    /// Declared once here for the reason the keys are: four verbs take this reference, and four
+    /// copies of the same two declarations is the drift this type was hoisted to end. Optional
+    /// because [`read`](Self::read) answers [`None`] for neither key — a request that names no
+    /// window means the one it is SCOPED to, which is a well-formed call.
+    ///
+    /// The domain is [`Open`](pinion_core::external::ArgDomain::Open) and that is honest rather
+    /// than lazy: a window NAME is a string the person chose, so there is no vocabulary to
+    /// enumerate — the answerable values live on the `windows` slot, which is a different surface
+    /// from this one and a bound this declaration cannot state.
+    pub const NAMED_ARG: ArgGrammar = ArgGrammar::open(Self::WINDOW_KEY, "string").optional();
+    /// [`WINDOW_ID_KEY`](Self::WINDOW_ID_KEY) as a SCHEMA argument, [`NAMED_ARG`](Self::NAMED_ARG)'s
+    /// peer — the identity spelling of the same reference.
+    pub const PICKED_ARG: ArgGrammar = ArgGrammar::open(Self::WINDOW_ID_KEY, "int").optional();
+
     /// Write this reference into a request's `args` map.
     pub fn write(&self, map: &mut Map<String, Value>) {
         let (key, value) = match self {
@@ -2902,6 +3273,41 @@ impl ResizeWindowAsk {
     /// `-a` / `-A`).
     pub const FROM_KEY: &'static str = "from";
 
+    /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — what [`RESIZE_WINDOW_ACTION`]'s
+    /// declaration publishes; see [`ResizeAsk::GRAMMAR`] for why it lives beside the keys.
+    ///
+    /// Every argument is omittable and that is load-bearing rather than lax: the request naming NO
+    /// rectangle is the UN-PIN, so the empty object is a well-formed call with a meaning of its own.
+    ///
+    /// `from` publishes the whole of [`WindowSize`](crate::WindowSize) — the same four names the
+    /// user's `window-size` option takes, which is the point: one vocabulary, whether a person
+    /// writes it in a file or a client sends it here.
+    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+        // `Exact` — pin this rectangle. Both edges, because half a rectangle is refused.
+        &[
+            WindowRef::NAMED_ARG,
+            ArgGrammar::open(Self::COLS_KEY, "int"),
+            ArgGrammar::open(Self::ROWS_KEY, "int"),
+        ],
+        // `Adjust` — move the edges that are named, leave the rest. ⚠ And with NEITHER named this
+        // is also `Clear`, the un-pin: the request naming no rectangle at all is the one that
+        // throws the pin away, which is why the un-pin is not a fourth form with a key of its own.
+        &[
+            WindowRef::NAMED_ARG,
+            ArgGrammar::open(Self::ADJUST_COLS_KEY, "int").optional(),
+            ArgGrammar::open(Self::ADJUST_ROWS_KEY, "int").optional(),
+        ],
+        // `Clients` — fold the attached clients under a policy.
+        &[
+            WindowRef::NAMED_ARG,
+            ArgGrammar::one_of(
+                Self::FROM_KEY,
+                "string",
+                &crate::WindowSize::CLIENT_FOLD_WORDS,
+            ),
+        ],
+    ];
+
     /// The `args` object a caller sends for this ask.
     ///
     /// [`SizeRequest::Clear`](crate::window::SizeRequest::Clear) renders as the EMPTY object, which
@@ -2988,9 +3394,14 @@ impl ResizeWindowAsk {
         };
         let from = match map.get(Self::FROM_KEY).filter(|value| !value.is_null()) {
             None => None,
+            // ⚠ THE PREDICATE, not a match arm naming `Manual`. `folds_clients` is what this
+            // refusal means, and it is the same const the published vocabulary
+            // (`WindowSize::CLIENT_FOLD_WORDS`) is projected through — so the words a client is
+            // told it may send here are exactly the words this admits, and neither can move
+            // without the other.
             Some(Value::String(name)) => match crate::WindowSize::parse(name) {
-                Some(crate::WindowSize::Manual) | None => return None,
-                Some(policy) => Some(policy),
+                Some(policy) if policy.folds_clients() => Some(policy),
+                _ => return None,
             },
             Some(_) => return None,
         };
@@ -3190,6 +3601,26 @@ impl JoinAsk {
     /// The request key naming the pane to move.
     pub const PANE_KEY: &'static str = "pane";
 
+    /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — what [`JOIN_PANE_ACTION`]'s declaration
+    /// publishes; see [`ResizeAsk::GRAMMAR`] for why it lives beside the keys.
+    ///
+    /// The pane is the one REQUIRED argument on this verb: a join with no pane names nothing to
+    /// move. No argument here draws from a vocabulary — a pane is an id and a window is a name or
+    /// an id, all three of them values the caller reads off another slot.
+    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+        // The destination by NAME. Required on this verb, unlike everywhere else the reference
+        // appears: a join with no window names nowhere to put the pane.
+        &[
+            ArgGrammar::open(Self::PANE_KEY, "int"),
+            WindowRef::NAMED_ARG.required(),
+        ],
+        // ...and by IDENTITY.
+        &[
+            ArgGrammar::open(Self::PANE_KEY, "int"),
+            WindowRef::PICKED_ARG.required(),
+        ],
+    ];
+
     /// The `args` object a client sends for this ask.
     #[must_use]
     pub fn to_args(&self) -> Value {
@@ -3341,6 +3772,32 @@ impl SwapAsk {
     pub const WITH_KEY: &'static str = "with";
     /// The request key naming which way to look for the partner.
     pub const DIR_KEY: &'static str = "dir";
+
+    /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — [`ResizeAsk::GRAMMAR`]'s peer, and
+    /// what [`SWAP_PANE_ACTION`]'s declaration publishes.
+    ///
+    /// EVERY argument is optional here, and that is a limit of the DECLARATION rather than of the
+    /// grammar: this ask is an enum, so a well-formed call carries `with` or `dir` and never both,
+    /// and a schema argument can say *"a call is well-formed without me"* but not *"exactly one of
+    /// these two"*. Marking both optional is the true half of that; the alternation is stated in
+    /// [`SWAP_PANE_ACTION`]'s prose and enforced by [`parse`](Self::parse). Publishing them as
+    /// REQUIRED would be the affirmative false statement — it would tell an agent to send both.
+    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[
+        // `With` — trade with a pane named outright.
+        &[
+            ArgGrammar::open(Self::PANE_KEY, "int").optional(),
+            ArgGrammar::open(Self::WITH_KEY, "int"),
+        ],
+        // `Toward` — trade with whatever lies that way.
+        &[
+            ArgGrammar::open(Self::PANE_KEY, "int").optional(),
+            ArgGrammar::one_of(
+                Self::DIR_KEY,
+                "string",
+                &sprag_terminal::PaneDir::WIRE_WORDS,
+            ),
+        ],
+    ];
 
     /// The `args` object a client sends for this ask.
     ///
@@ -3609,6 +4066,30 @@ impl ResizeAsk {
     pub const DIR_KEY: &'static str = "dir";
     /// The request key naming how far, in cells.
     pub const CELLS_KEY: &'static str = "cells";
+
+    /// THE GRAMMAR ABOVE, AS DATA A CLIENT CAN DISCOVER — what
+    /// [`RESIZE_PANE_ACTION`]'s declaration publishes.
+    ///
+    /// Beside [`to_args`](Self::to_args) and [`parse`](Self::parse) because it is the third face of
+    /// the one grammar those two are the other two faces of, and a declaration living anywhere else
+    /// is a fourth list of these three keys. `dir` publishes the whole vocabulary it admits, taken
+    /// from [`PaneDir::WIRE_WORDS`](sprag_terminal::PaneDir::WIRE_WORDS) — which is projected from
+    /// the type, so it is the same set [`PaneDir::from_wire`](sprag_terminal::PaneDir::from_wire)
+    /// reads and cannot be a stale copy of it.
+    ///
+    /// It is the one REQUIRED argument here: a boundary is always named by a direction, and
+    /// [`parse`](Self::parse) refuses a request without one. The other two are omittable, and both
+    /// have a meaning when omitted rather than a default that happens to work — the scoped window's
+    /// active pane, and [`CELLS_DEFAULT`](Self::CELLS_DEFAULT).
+    pub const GRAMMAR: &'static [&'static [ArgGrammar]] = &[&[
+        ArgGrammar::one_of(
+            Self::DIR_KEY,
+            "string",
+            &sprag_terminal::PaneDir::WIRE_WORDS,
+        ),
+        ArgGrammar::open(Self::PANE_KEY, "int").optional(),
+        ArgGrammar::open(Self::CELLS_KEY, "int").optional(),
+    ]];
 
     /// How far a request that names no distance means — tmux's own `resize-pane` default, and the
     /// only amount a bare key can sensibly carry.
@@ -5442,6 +5923,104 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **THE PUBLISHED VOCABULARY PIN — the value spaces a client READS OFF THE WIRE.**
+    ///
+    /// [`an_answers_value_space_cannot_widen_under_the_protocol_number`] pins the two closed sets a
+    /// peer DECODES, where a widened set breaks the decode. This pins the closed sets the daemon
+    /// PUBLISHES, where a widened set is something else: an agent that enumerated the vocabulary
+    /// yesterday built its calls from a shorter list, and one that reads it today gets a longer
+    /// one. Neither breaks — which is exactly why nothing else can see the change.
+    ///
+    /// # Why this is a pin and not left to the two gates
+    ///
+    /// [`every_published_word_is_a_word_the_daemon_accepts`](crate::workspace) holds the published
+    /// set to the PARSER, so the two move together — and that is the point: they move together
+    /// SILENTLY. A round that adds an arm to `PaneDir` widens the type, the parser, and the wire in
+    /// one compile with every test green, and the client that hard-coded four directions is the
+    /// last to find out. This is the line that makes that a decision.
+    ///
+    /// ⚠ **DERIVED FROM THE SERVED ANSWER**, never from the const table: it reads
+    /// [`ACTION_GRAMMAR_SLOT`]'s own JSON, so a vocabulary that stops being published — because the
+    /// verb left the table, or the slot stopped answering — fails here too. R320's rule: a ratchet
+    /// over a declaration is not a ratchet over the product.
+    #[test]
+    fn a_published_value_space_cannot_widen_under_the_protocol_number() {
+        const PINNED_WORDS: (u32, &[&str]) = (
+            19,
+            &[
+                "join_pane:", // no vocabulary: a pane id and a window reference
+                "move_window:place=first,last,next,previous",
+                "resize_pane:dir=left,right,up,down",
+                "resize_window:from=largest,smallest,latest",
+                "select_pane:dir=left,right,up,down",
+                "select_window:relative=next,previous",
+                "swap_pane:dir=left,right,up,down",
+            ],
+        );
+
+        // ⚠ THROUGH THE DAEMON'S OWN SCENE, not through `ActionGrammar::answer()`. The first
+        // version of this ratchet called the renderer directly and its own doc claimed it read the
+        // served answer — the exact defect R320 records, one level down: deleting the slot's arm
+        // from `RegistryView::query` left it GREEN, because the table it was reading is not the
+        // thing a client can reach.
+        let served = served_fields();
+        assert!(
+            served
+                .iter()
+                .any(|field| field.path == ACTION_GRAMMAR_SLOT && field.answers),
+            "the grammar slot is SERVED, or everything below is about a table nobody can read",
+        );
+        let published = query_served(ACTION_GRAMMAR_SLOT).expect("the slot answers");
+        let verbs = published.as_object().expect("the slot answers an object");
+        let mut served: Vec<String> = verbs
+            .iter()
+            .map(|(action, forms)| {
+                let mut spaces: Vec<String> = forms
+                    .as_array()
+                    .expect("a verb answers its forms")
+                    .iter()
+                    .flat_map(|form| form.as_array().expect("a form answers its arguments"))
+                    .filter_map(|arg| {
+                        let words = arg.get(ArgGrammar::ONE_OF_KEY)?.as_array()?;
+                        Some(format!(
+                            "{}={}",
+                            arg[ArgGrammar::NAME_KEY].as_str().unwrap_or("<unnamed>"),
+                            words
+                                .iter()
+                                .map(|word| word.as_str().unwrap_or("<not a word>"))
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        ))
+                    })
+                    .collect();
+                // A vocabulary spelled the same way in two forms of one verb is ONE value space —
+                // `swap_pane` publishes `dir` on one arm only, but a verb that came to publish it
+                // on two would otherwise read here as a widening that never happened.
+                spaces.sort_unstable();
+                spaces.dedup();
+                format!("{action}:{}", spaces.join(" "))
+            })
+            .collect();
+        let mut pinned: Vec<String> = PINNED_WORDS.1.iter().map(|n| (*n).to_owned()).collect();
+        served.sort_unstable();
+        pinned.sort_unstable();
+        assert_eq!(
+            served, pinned,
+            "A PUBLISHED VALUE SPACE MOVED. An agent enumerates these to build a call, so a word \
+             ADDED gives every client written against the old list a gap it cannot know about, and \
+             a word REMOVED or RENAMED breaks the calls it already builds. Update this pin, and \
+             decide about sprag_rpc::WIRE_PROTOCOL: a widened space usually leaves the number \
+             standing, a narrowed one does not.",
+        );
+        assert_eq!(
+            PINNED_WORDS.0,
+            sprag_rpc::WIRE_PROTOCOL,
+            "THE PROTOCOL NUMBER MOVED WITH EVERY PUBLISHED VOCABULARY UNCHANGED — legitimate \
+             when some other part of the wire moved, and a mistake when this pin was simply not \
+             re-stamped.",
+        );
+    }
+
     /// ⚠ And the pin above is only worth its words if an older decoder REALLY refuses. Measured.
     ///
     /// Stand-ins for the two enums as a build one commit older declares them — same serde
@@ -5767,6 +6346,7 @@ mod tests {
     const PINNED_SURFACE: (u32, &[&str]) = (
         19,
         &[
+            "action_grammar",
             "agent_manifests",
             "application_cursor_keys",
             "break_pane",
@@ -5811,8 +6391,10 @@ mod tests {
             "regex.<pattern>",
             "rename_pane",
             "rename_session",
+            "release_agent",
             "rename_window",
             "resize",
+            "report_agent",
             "resize_pane",
             "resize_window",
             "run",
@@ -5835,6 +6417,23 @@ mod tests {
         ],
     );
 
+    /// One declared member of the surface the daemon SERVES, taken with the answer that surface
+    /// gives when the address is QUERIED — the declaration and the behaviour, read in one pass so
+    /// no test can compare a claim against a fixture built separately from it.
+    struct ServedField {
+        /// The declared path, verbatim — a parametric family spells its placeholders.
+        path: String,
+        /// Which channel the declaration puts this path on: read, or invoke.
+        channel: pinion_core::external::SchemaChannel,
+        /// The declared arguments, empty for a scalar read that has said so.
+        args: &'static [pinion_core::external::SchemaArg],
+        /// Whether `query` at this exact path ANSWERED. Meaningful only for a path with no
+        /// arguments: a parametric family's template is not an address any client sends.
+        answers: bool,
+        /// WHAT it answered, for a ratchet whose subject is the value rather than the declaration.
+        answer: Option<serde_json::Value>,
+    }
+
     /// Every address the DAEMON SERVES, read off the scene it assembles for a request — the whole
     /// point of the correction: a schema this module declares and a schema the daemon returns are
     /// two different facts, and only the second one is the wire.
@@ -5842,6 +6441,15 @@ mod tests {
     /// Walked through `External::introspect`, which is the same accessor `scene/query` resolves a
     /// path with, so a surface reachable by a client is a surface counted here.
     fn served_addresses() -> Vec<String> {
+        served_fields()
+            .into_iter()
+            .map(|field| field.path)
+            .collect()
+    }
+
+    /// The same walk, keeping each field's DECLARATION beside what its surface does — what
+    /// [`served_addresses`] projects a path out of.
+    fn served_fields() -> Vec<ServedField> {
         let registry = std::sync::Arc::new(std::sync::Mutex::new(
             sprag_terminal::SessionRegistry::new((80, 24)),
         ));
@@ -5873,20 +6481,33 @@ mod tests {
         found
     }
 
-    /// Collect every external's declared addresses, depth first — a container's children included,
+    /// Collect every external's declared fields, depth first — a container's children included,
     /// because the pane surfaces hang under one.
-    fn walk(scene: &pinion_core::scene::Scene, found: &mut Vec<String>) {
+    ///
+    /// Each field is QUERIED as it is collected, through the same handle that declared it, so the
+    /// pair this returns is one surface answering about itself rather than two readings a fixture
+    /// could have taken from different states.
+    fn walk(scene: &pinion_core::scene::Scene, found: &mut Vec<ServedField>) {
         use pinion_core::scene::Scene;
         match scene {
             Scene::External(node) => {
                 if let Some(introspect) = node.handle.introspect() {
-                    found.extend(
-                        introspect
-                            .schema()
-                            .fields
-                            .iter()
-                            .map(|field| field.path.to_owned()),
-                    );
+                    for field in introspect.schema().fields {
+                        let answered = introspect.query(field.path);
+                        found.push(ServedField {
+                            path: field.path.to_owned(),
+                            channel: field.channel,
+                            args: field.args,
+                            answers: answered.is_some(),
+                            // Only the JSON arm: every slot this ratchet reads answers a
+                            // document, and a scalar arm coerced into one would let a gate about a
+                            // structure pass over something that is not one.
+                            answer: answered.and_then(|value| match value {
+                                pinion_core::external::IntrospectValue::Json(json) => Some(json),
+                                _ => None,
+                            }),
+                        });
+                    }
                 }
             }
             Scene::Container(node) => {
@@ -5896,6 +6517,101 @@ mod tests {
             }
             _ => {}
         }
+    }
+
+    /// What the daemon ANSWERS at `path`, off the scene it assembles for a request.
+    ///
+    /// The peer of [`served_fields`], and separate from it because a ratchet over an answer wants
+    /// the answer rather than the declaration. Both go through `External::introspect`, which is
+    /// what `scene/query` resolves with, so this is the value a client gets.
+    fn query_served(path: &str) -> Option<serde_json::Value> {
+        served_fields()
+            .into_iter()
+            .find(|field| field.path == path)
+            .and_then(|field| field.answer)
+    }
+
+    /// ⚠⚠ **A DECLARED PATH IS A CLAIM THAT A CLIENT CAN READ IT** — and the channel is where that
+    /// claim is made.
+    ///
+    /// pinion's schema has two channels: [`SchemaChannel::Read`](pinion_core::external::SchemaChannel::Read)
+    /// says `scene/query` answers here, [`Invoke`](pinion_core::external::SchemaChannel::Invoke)
+    /// says the address is CALLED and probing it answers nothing. The distinction exists so a
+    /// client auditing *"does every declared path answer?"* can skip the verbs **without being
+    /// handed a list of names to maintain** — which is this project's own hand-written-list rule,
+    /// upstream.
+    ///
+    /// This asserts sprag makes that claim truthfully in both directions, over the surface the
+    /// daemon SERVES rather than over the constants this module declares. It is the read half of
+    /// the pair: [`every_published_word_is_a_word_the_daemon_accepts`] is the write half.
+    ///
+    /// # What the two halves cost when they are wrong
+    ///
+    /// A verb mis-declared as readable sends an agent to `scene/query` for a name that will never
+    /// answer, and the refusal it gets (`UnknownIntrospectPath`) is the same refusal a client
+    /// meeting a DAEMON TOO OLD gets — so the surface's own mistake reads as version skew. A slot
+    /// mis-declared as a verb is invisible in the other direction: nobody reads it at all.
+    ///
+    /// # Why parametric fields are counted and not queried
+    ///
+    /// `cells.<offset>` is a TEMPLATE, not an address — no client sends those angle brackets, so
+    /// querying it verbatim would answer nothing and this gate would report the whole read surface
+    /// as broken. They are asserted to be exactly the fields carrying arguments, and the count is
+    /// reported, because a silent skip is the shape that reads as coverage.
+    #[test]
+    fn a_declared_read_answers_and_a_declared_verb_does_not() {
+        use pinion_core::external::SchemaChannel;
+
+        let served = served_fields();
+        assert!(
+            served.len() > 40,
+            "the fixture serves the whole wire, not a corner of it: {}",
+            served.len(),
+        );
+
+        let unreadable_reads: Vec<&str> = served
+            .iter()
+            .filter(|field| {
+                field.channel == SchemaChannel::Read && field.args.is_empty() && !field.answers
+            })
+            .map(|field| field.path.as_str())
+            .collect();
+        assert_eq!(
+            unreadable_reads,
+            Vec::<&str>::new(),
+            "THESE ADDRESSES ARE DECLARED ON THE READ CHANNEL AND ANSWER NOTHING. An agent \
+             discovering the wire from its own schema queries each of them and is refused with \
+             the same error a daemon too old to know the name would give. Declare a verb with \
+             `SchemaField::action`/`action_with` so the channel says what it is.",
+        );
+
+        let readable_verbs: Vec<&str> = served
+            .iter()
+            .filter(|field| field.channel == SchemaChannel::Invoke && field.answers)
+            .map(|field| field.path.as_str())
+            .collect();
+        assert_eq!(
+            readable_verbs,
+            Vec::<&str>::new(),
+            "THESE ADDRESSES ARE DECLARED AS VERBS AND ALSO ANSWER A QUERY — one address serving \
+             two channels, so what a client gets depends on which door it knocked on.",
+        );
+
+        // NOT SILENTLY SKIPPED: the fields this gate could not query are exactly the parametric
+        // ones, and it says how many.
+        let skipped: Vec<&str> = served
+            .iter()
+            .filter(|field| field.channel == SchemaChannel::Read && !field.args.is_empty())
+            .map(|field| field.path.as_str())
+            .collect();
+        assert!(
+            skipped.iter().all(|path| path.contains('<')),
+            "a skipped read is a TEMPLATE, and a template spells its placeholder: {skipped:?}",
+        );
+        assert!(
+            !skipped.is_empty(),
+            "the fixture reaches the parametric families too, or the skip rule is about nothing",
+        );
     }
 
     /// **THE RATCHET: the wire's surface cannot move under the protocol number.**

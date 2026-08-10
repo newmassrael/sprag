@@ -349,8 +349,8 @@ impl ExternalIntrospect for PluginsExternal {
         IntrospectSchema::new(
             const {
                 &[
-                    SchemaField::new(RUN_ACTION, "action"),
-                    SchemaField::new(CANCEL_ACTION, "action"),
+                    SchemaField::action(RUN_ACTION, "action"),
+                    SchemaField::action(CANCEL_ACTION, "action"),
                     SchemaField::new(RUNS_SLOT, "list"),
                     SchemaField::new(PLUGINS_SLOT, "list"),
                 ]

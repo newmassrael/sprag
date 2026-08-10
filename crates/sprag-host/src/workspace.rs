@@ -58,6 +58,7 @@ use std::time::{Duration, Instant};
 
 use pinion_core::external::{
     ExternalIntrospect, InterveneError, IntrospectSchema, IntrospectValue, InvokeError, RawJson,
+    SchemaChannel,
 };
 use serde_json::{Map, Value};
 use sprag_terminal::{
@@ -280,6 +281,15 @@ impl RegistryView<'_> {
             // for a stronger reason: the ruleset is the DAEMON's, one list for every session it
             // serves, so scoping this answer would name a session for a fact no session owns.
             AGENT_MANIFESTS_SLOT => Some(agent_manifests_value(self.agents)),
+            // HOW TO CALL THE VERBS THIS SURFACE PUBLISHES. Unscoped for the strongest reason on
+            // this door: its subject is the WIRE, so it is the same answer for every session, every
+            // client and every request — a fact about the daemon's vocabulary rather than about
+            // anything the daemon is holding. That is also why it is served from HERE and reaches
+            // a reader whose own session has gone: how to spell a call cannot depend on having
+            // somewhere to send it.
+            crate::wire::ACTION_GRAMMAR_SLOT => {
+                Some(IntrospectValue::Json(crate::wire::ActionGrammar::answer()))
+            }
             _ => None,
         }
     }
@@ -2920,11 +2930,37 @@ impl ExternalIntrospect for WorkspaceExternal {
 impl WorkspaceExternal {
     /// The action table itself — [`Self::invoke`]'s match, split out so the boundary can act on
     /// what an action answered without wrapping every arm.
+    ///
+    /// # A verb this surface does not DECLARE is a verb it does not run
+    ///
+    /// ⚠⚠ **`report_agent` and `release_agent` were dispatched here and named nowhere in
+    /// [`MUX_SCHEMA`](crate::wire::MUX_SCHEMA)** from the round that built them until R352 — so the
+    /// agent self-report the SCE requirement asked for was a verb that worked and that no agent
+    /// could discover. Nothing could have caught it: the wire ratchet walks the DECLARED surface,
+    /// and an omission declares nothing to audit.
+    ///
+    /// The guard below turns that from a mistake into an impossibility. It is deliberately not
+    /// only a wire concern: pinion refuses an undeclared `scene/invoke` at the RPC boundary from
+    /// R1637, and its own documentation says what that leaves open — *"In-process dispatch. A
+    /// binding that calls `ExternalIntrospect::invoke` directly — a keybinding forwarding a verb,
+    /// say — does not pass through here, and the framework has no seam that could intercept it."*
+    /// **A keybinding forwarding a verb is most of how sprag is used**, so the check belongs at the
+    /// surface's own door, where both callers pass.
+    ///
+    /// The cost is one linear scan of a `&'static [SchemaField]` per action — paid at keystroke
+    /// cadence, not per frame — and the same scan is what makes a declared verb's arm reachable at
+    /// all, so nothing can be added here without being published in the same edit.
     fn dispatch(
         &mut self,
         path: &str,
         args: IntrospectValue,
     ) -> Result<IntrospectValue, InvokeError> {
+        if !crate::wire::MUX_SCHEMA
+            .iter()
+            .any(|field| field.path == path && field.channel == SchemaChannel::Invoke)
+        {
+            return Err(InvokeError::UnknownPath);
+        }
         match path {
             SPAWN_ACTION => self.spawn(&args),
             SPLIT_ACTION => self.split(&args),
@@ -3197,7 +3233,10 @@ mod tests {
 
         // EVERY action is refused — swept rather than sampled, because the failure this guards is
         // one arm quietly gaining a body.
-        for action in crate::wire::MUX_SCHEMA.iter().filter(|f| f.ty == "action") {
+        for action in crate::wire::MUX_SCHEMA
+            .iter()
+            .filter(|f| f.channel == SchemaChannel::Invoke)
+        {
             assert!(
                 matches!(
                     surface.invoke(action.path, IntrospectValue::Null),
@@ -8398,5 +8437,360 @@ mod tests {
             Some(2),
             "and the window is back on the neighbour that inherited",
         );
+    }
+
+    /// A live mux surface with two panes and two windows, for the two grammar gates below.
+    ///
+    /// Two of each because a published grammar is about ADDRESSING: `pane`, `with`, `from`,
+    /// `window` and `window_id` all name something, and a fixture holding one of a thing cannot
+    /// tell an argument that resolved from one the action ignored.
+    fn grammar_fixture() -> (Arc<Mutex<SessionRegistry>>, WorkspaceExternal) {
+        let reg = registry();
+        let mut ext = control_with_a_window(&reg, 100, 30);
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .expect("a pane the addressing arguments can name");
+        }
+        ext.invoke(NEW_WINDOW_ACTION, IntrospectValue::Json(json!({})))
+            .expect("a second window the window arguments can name");
+        (reg, ext)
+    }
+
+    /// The `args` object the PUBLISHED GRAMMAR alone says is well-formed, with one argument set to
+    /// `probe` — what an agent that has read [`ACTION_GRAMMAR_SLOT`] and nothing else would send.
+    ///
+    /// Every REQUIRED argument is filled, because a call missing one is malformed by the
+    /// declaration's own account and its refusal would say nothing about the word under test.
+    /// Every OPTIONAL one is left out, so exactly one argument is being varied. The filler for a
+    /// required argument comes from the declaration too: a vocabulary's first word, or `0` for the
+    /// only other required shape this table has (a pane id, which the fixture holds).
+    fn call_built_from_the_grammar(
+        form: &[crate::wire::ArgGrammar],
+        vary: &crate::wire::ArgGrammar,
+        probe: Value,
+    ) -> Value {
+        let mut map = Map::new();
+        for arg in form {
+            if arg.name == vary.name {
+                map.insert(arg.name.to_owned(), probe.clone());
+            } else if !arg.optional {
+                map.insert(
+                    arg.name.to_owned(),
+                    match (arg.words, arg.ty) {
+                        // A vocabulary supplies its own filler. The FIRST word, arbitrarily: this
+                        // argument is not the one under test, and every word of it is driven by
+                        // its own turn through the loop.
+                        (Some(words), _) => Value::from(words[0]),
+                        // ⚠ ONE, NOT ZERO, AND THE FILLER IS A CLAIM TOO. Zero is a legal pane id
+                        // and an ILLEGAL dimension — `resize_window` refuses a zero-column
+                        // rectangle as malformed — so a zero filler made this gate report
+                        // `resize_window`'s `window` as constrained when what the daemon had
+                        // rejected was the filler beside it. One is admissible in every int
+                        // argument these verbs take, and the fixture holds pane 1 and a second
+                        // window, so it RESOLVES as well as parses.
+                        (None, "int") => Value::from(1),
+                        (None, "bool") => Value::from(false),
+                        // A window NAME the fixture does not hold: it parses, which is all this
+                        // filler has to do, and it cannot collide with a real window.
+                        (None, _) => Value::from("filler-not-a-window"),
+                    },
+                );
+            }
+        }
+        Value::Object(map)
+    }
+
+    /// ⚠⚠ **EVERY WORD THE WIRE PUBLISHES IS A WORD THE DAEMON ACCEPTS** — the write half of the
+    /// discovery pair, and the claim that makes [`ACTION_GRAMMAR_SLOT`] worth reading.
+    ///
+    /// A schema that publishes a vocabulary is making a promise about somebody else's code: it says
+    /// an agent may enumerate these words and send any of them. Nothing about a `const` array
+    /// enforces that — the words could be yesterday's spelling, or a set the parser narrowed — so
+    /// the promise is driven, one call per word, through `invoke`.
+    ///
+    /// # Why `TypeMismatch` is the discriminator and the other refusals are not
+    ///
+    /// Every one of these verbs answers `TypeMismatch` for exactly one thing: a request its
+    /// GRAMMAR does not admit (`Ask::parse` answering `None`). A `Rejected` means the grammar was
+    /// read and the request could not be honoured — no pane that way, no window by that name —
+    /// which is the action's business and not this gate's. So a word that gets anything other than
+    /// `TypeMismatch` was ACCEPTED as a word, which is the whole claim.
+    ///
+    /// ⚠ This also proves the parser under test is the one the daemon USES: it goes through
+    /// `dispatch`, so a published grammar belonging to an ask type nothing calls would fail here.
+    #[test]
+    fn every_published_word_is_a_word_the_daemon_accepts() {
+        let (_reg, mut ext) = grammar_fixture();
+
+        let mut driven = 0;
+        for verb in crate::wire::ActionGrammar::ALL {
+            for form in verb.forms {
+                for arg in *form {
+                    let Some(words) = arg.words else { continue };
+                    for word in words {
+                        let call = call_built_from_the_grammar(form, arg, Value::from(*word));
+                        let answer = ext.invoke(verb.action, IntrospectValue::Json(call.clone()));
+                        assert!(
+                            !matches!(answer, Err(InvokeError::TypeMismatch)),
+                            "THE WIRE PUBLISHES A WORD THE DAEMON REFUSES. `{}` says its `{}` may \
+                             be {:?}, and sending {call} came back TypeMismatch — an agent that \
+                             enumerated the published vocabulary would have built a call this \
+                             daemon cannot read.",
+                            verb.action,
+                            arg.name,
+                            word,
+                        );
+                        driven += 1;
+                    }
+                }
+            }
+        }
+
+        // NON-VACUITY, asserted rather than assumed: a table whose vocabularies had all gone
+        // missing would pass every assertion above by running none of them.
+        assert_eq!(
+            driven, 21,
+            "one call per published word: four directions on each of three pane verbs (12), two \
+             steps of the window ring, four places to move a window to, and the three window-size \
+             policies that fold clients — `manual` being the fourth policy and not one of them",
+        );
+    }
+
+    /// ⚠⚠ **AN ARGUMENT THE PARSER CONSTRAINS MUST PUBLISH WHAT IT ADMITS** — the completeness
+    /// half, and the one that cannot be satisfied by remembering.
+    ///
+    /// The gate above is soundness: nothing published is refused. It says nothing about an argument
+    /// whose vocabulary was simply left out — which is the failure this project keeps meeting,
+    /// because a hand-written list is the one a new thing is missing from. There is no way to
+    /// DERIVE "this string argument is closed" from the declaration, so it is derived from the
+    /// PRODUCT instead: send a word nobody could have declared, and see whether the parser takes
+    /// it.
+    ///
+    /// * it takes the nonsense ⇒ the argument really is open, and publishing no vocabulary is true;
+    /// * it refuses ⇒ the argument is drawn from some set, and the wire is keeping it a secret.
+    ///
+    /// So an argument added tomorrow with a closed vocabulary and no `one_of` fails here, with
+    /// nobody having had to notice.
+    #[test]
+    fn an_argument_the_daemon_constrains_publishes_what_it_admits() {
+        let (_reg, mut ext) = grammar_fixture();
+
+        // A value no vocabulary in this workspace can contain, and no window or pane is named.
+        const NONSENSE: &str = "not-a-word-any-vocabulary-holds";
+
+        let mut probed = 0;
+        for verb in crate::wire::ActionGrammar::ALL {
+            for form in verb.forms {
+                for arg in *form {
+                    if arg.ty != "string" || arg.words.is_some() {
+                        continue;
+                    }
+                    let call = call_built_from_the_grammar(form, arg, Value::from(NONSENSE));
+                    let answer = ext.invoke(verb.action, IntrospectValue::Json(call.clone()));
+                    assert!(
+                        !matches!(answer, Err(InvokeError::TypeMismatch)),
+                        "`{}` REFUSES ITS OWN DECLARED `{}` AS MALFORMED, so that argument is \
+                         drawn from a set the wire does not publish. Send {call} and the daemon \
+                         answers TypeMismatch — declare the vocabulary with `ArgGrammar::one_of`, \
+                         projected from the closed set the parser reads through.",
+                        verb.action,
+                        arg.name,
+                    );
+                    probed += 1;
+                }
+            }
+        }
+
+        assert_eq!(
+            probed, 10,
+            "one probe per open string argument of every form: the window name appears in eight \
+             of them (three ways to move a window, three ways to size one, one to select one by \
+             name, one to join into one), plus the two anchors a move may name",
+        );
+    }
+
+    /// The published grammar names the keys its ASK TYPE emits — no more, and no fewer.
+    ///
+    /// [`ActionGrammar::ALL`] is a hand-written table, and this is what stops it drifting from the
+    /// grammar it claims to describe. The ask types are the source: `to_args` on a value carrying
+    /// every field emits every key the request has, so the KEY SET is derivable and is not
+    /// re-typed here.
+    ///
+    /// ⚠ An ask whose arms are ALTERNATIVES cannot emit them all from one value — `SwapAsk` is
+    /// either a `with` or a `dir` — so the union is taken over one value per arm. That is the ask
+    /// type enumerating itself, not a list: an arm added to one of these enums makes its own value
+    /// unconstructible here and the round that adds it has to decide what the wire says.
+    #[test]
+    fn the_published_grammar_is_the_ask_types_own() {
+        use crate::wire::{
+            JoinAsk, MoveWindowAsk, ResizeAsk, ResizeWindowAsk, SelectAsk, SelectWindowAsk,
+            SwapAsk, WindowRef,
+        };
+        use sprag_terminal::{OrderStep, PaneDir, WindowPlace};
+
+        // One key list PER ARM, in the order the forms are declared in.
+        let keys = |values: Vec<Value>| -> Vec<Vec<String>> {
+            values
+                .iter()
+                .map(|value| {
+                    let mut found: Vec<String> = value
+                        .as_object()
+                        .expect("an ask renders an object")
+                        .keys()
+                        .cloned()
+                        .collect();
+                    found.sort_unstable();
+                    found
+                })
+                .collect()
+        };
+
+        // One value per ARM of each ask, each with every optional field filled, so the union of
+        // what they emit is the whole key set of the request grammar.
+        let emitted: Vec<(&str, Vec<Vec<String>>)> = vec![
+            (
+                crate::wire::SELECT_PANE_ACTION,
+                keys(vec![
+                    SelectAsk::Pane(PaneId(0)).to_args(),
+                    SelectAsk::Toward {
+                        dir: PaneDir::Left,
+                        from: Some(PaneId(0)),
+                    }
+                    .to_args(),
+                ]),
+            ),
+            (
+                crate::wire::SWAP_PANE_ACTION,
+                keys(vec![
+                    SwapAsk::With {
+                        pane: Some(PaneId(0)),
+                        with: PaneId(1),
+                    }
+                    .to_args(),
+                    SwapAsk::Toward {
+                        pane: Some(PaneId(0)),
+                        dir: PaneDir::Left,
+                    }
+                    .to_args(),
+                ]),
+            ),
+            (
+                crate::wire::RESIZE_PANE_ACTION,
+                keys(vec![
+                    ResizeAsk {
+                        pane: Some(PaneId(0)),
+                        dir: PaneDir::Left,
+                        cells: 1,
+                    }
+                    .to_args(),
+                ]),
+            ),
+            (
+                crate::wire::JOIN_PANE_ACTION,
+                keys(vec![
+                    JoinAsk {
+                        pane: PaneId(0),
+                        window: WindowRef::Named("w".to_owned()),
+                    }
+                    .to_args(),
+                    JoinAsk {
+                        pane: PaneId(0),
+                        window: WindowRef::Picked(sprag_terminal::WindowId(1)),
+                    }
+                    .to_args(),
+                ]),
+            ),
+            (
+                crate::wire::SELECT_WINDOW_ACTION,
+                keys(vec![
+                    SelectWindowAsk::At(WindowRef::Named("w".to_owned())).to_args(),
+                    SelectWindowAsk::At(WindowRef::Picked(sprag_terminal::WindowId(1))).to_args(),
+                    SelectWindowAsk::Step(OrderStep::Next).to_args(),
+                ]),
+            ),
+            (
+                crate::wire::MOVE_WINDOW_ACTION,
+                keys(vec![
+                    MoveWindowAsk {
+                        window: Some("w".to_owned()),
+                        place: WindowPlace::First,
+                    }
+                    .to_args(),
+                    MoveWindowAsk {
+                        window: Some("w".to_owned()),
+                        place: WindowPlace::Before("x".to_owned()),
+                    }
+                    .to_args(),
+                    MoveWindowAsk {
+                        window: Some("w".to_owned()),
+                        place: WindowPlace::After("x".to_owned()),
+                    }
+                    .to_args(),
+                ]),
+            ),
+            (
+                crate::wire::RESIZE_WINDOW_ACTION,
+                keys(vec![
+                    ResizeWindowAsk {
+                        window: Some("w".to_owned()),
+                        size: crate::window::SizeRequest::Exact(crate::ClientSize {
+                            cols: 10,
+                            rows: 5,
+                        }),
+                    }
+                    .to_args(),
+                    ResizeWindowAsk {
+                        window: Some("w".to_owned()),
+                        size: crate::window::SizeRequest::Adjust { cols: 1, rows: 1 },
+                    }
+                    .to_args(),
+                    ResizeWindowAsk {
+                        window: Some("w".to_owned()),
+                        size: crate::window::SizeRequest::Clients(crate::WindowSize::Largest),
+                    }
+                    .to_args(),
+                ]),
+            ),
+        ];
+
+        // EVERY published verb is covered, and nothing here describes one that is not published:
+        // the two lists are compared as sets before any of them is compared in detail.
+        let mut published: Vec<&str> = crate::wire::ActionGrammar::ALL
+            .iter()
+            .map(|verb| verb.action)
+            .collect();
+        let mut driven: Vec<&str> = emitted.iter().map(|(action, _)| *action).collect();
+        published.sort_unstable();
+        driven.sort_unstable();
+        assert_eq!(
+            published, driven,
+            "a verb that publishes a grammar is a verb this gate drives, both ways",
+        );
+
+        for (action, sent) in emitted {
+            let verb = crate::wire::ActionGrammar::ALL
+                .iter()
+                .find(|verb| verb.action == action)
+                .expect("compared as sets above");
+            // FORM BY FORM, in declaration order against arm order — the two lists are the same
+            // list seen from two sides, so comparing only their union would let a key wander from
+            // one form to another unnoticed.
+            assert_eq!(
+                verb.forms.len(),
+                sent.len(),
+                "{action}: one published form per arm of its ask",
+            );
+            for (form, arm) in verb.forms.iter().zip(sent) {
+                let mut declared: Vec<String> =
+                    form.iter().map(|arg| arg.name.to_owned()).collect();
+                let mut emitted = arm;
+                declared.sort_unstable();
+                emitted.sort_unstable();
+                assert_eq!(
+                    declared, emitted,
+                    "{action}: this form's argument names, and the keys the matching arm emits",
+                );
+            }
+        }
     }
 }

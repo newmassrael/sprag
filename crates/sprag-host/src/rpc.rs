@@ -4510,7 +4510,11 @@ mod tests {
 
         let (mut registry_subject, mut session_subject) = (Vec::new(), Vec::new());
         for field in crate::wire::MUX_SCHEMA {
-            if field.ty == "action" {
+            // ⚠ THE CHANNEL, NOT THE TYPE TAG. Until R352 this skipped on `ty == "action"`, a
+            // string convention of sprag's own, while the declaration carries the fact:
+            // `SchemaChannel::Invoke` is what the surface publishes and what pinion's own invoke
+            // door reads. Two encodings of one thing is the drift this file keeps finding.
+            if field.channel == pinion_core::external::SchemaChannel::Invoke {
                 continue;
             }
             // A parametric family is addressed at a member that exists in this fixture (pane 0,
@@ -4547,6 +4551,10 @@ mod tests {
                 "grid_work",
                 "commands",
                 "agent_manifests",
+                // R352 — HOW TO CALL THE VERBS. Registry-subject for the strongest reason on this
+                // list: its subject is the WIRE, so no session can be wrong about it, and a client
+                // whose session has gone is exactly the one that may need to look a verb up.
+                "action_grammar",
                 "session_activity.<max_age_ms>",
                 "pane_processes.<max_age_ms>",
                 "pane_resources.<max_age_ms>",
