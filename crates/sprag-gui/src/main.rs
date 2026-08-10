@@ -257,6 +257,7 @@ mod outward;
 mod palette;
 mod prompt;
 mod reflow;
+mod rewrap;
 mod rpc;
 mod scrollbar;
 mod selection;

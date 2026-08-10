@@ -662,6 +662,12 @@ fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     // selected band, which two stacked inversions would cancel. Reading the find Signals here
     // subscribes the paint, so typing in the bar repaints the highlight.
     let cells = crate::find::overlay_matches(cells, i, scroll.offset_y(), dims.visible_rows);
+    // R349: a pane the DAEMON sized wider than this client's tile is re-wrapped into what the tile
+    // can show, so the person reads the whole line instead of the columns that happen to fit. LAST
+    // in the chain, because every overlay above works in the PANE's coordinates and this is the
+    // one step that leaves them. A tracked read of the pane's measured rect, exactly as the hover
+    // and selection reads above are, so a window resize repaints through here.
+    let cells = crate::rewrap::for_tile(tv, i, cells);
     let grid =
         sprag_host::pane_view_scene_from_cells(pane_tag(i), cells, tv.metric, tv.font_size_px);
     // R-71.1: the hand cursor while hovering a link (the grid's whole rect resolves to
