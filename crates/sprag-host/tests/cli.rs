@@ -7270,7 +7270,10 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
     assert_eq!(
         (ran, refused, unbuilt),
         // R353: `show-grammar` is the 53rd — the CLI door onto the wire's own call grammar.
-        (53, 5, 3),
+        // R355: three more, and they are the door onto the LOOP the README leads with. Each was
+        // DRIVEN here before the count moved: the binary answers for `orchestrate`, `runs` and
+        // `cancel-run` against a live daemon, which is what this sweep is for.
+        (56, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7435,7 +7438,11 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
     assert_eq!(
         counts,
         // R353: `show-grammar` ANSWERS something, so it is refused with a rule like `doctor`.
-        (15, 10, 35, 1),
+        // R355 lands in BOTH remaining columns at once, which is what the four are for:
+        // `orchestrate` (its whole content is the words) and `runs` (it answers) join the third,
+        // and `cancel-run` is the SECOND entry in the fourth — a key could mean "cancel the runs I
+        // started" and nobody has built that verb, which is a gap rather than a refusal.
+        (15, 10, 37, 2),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 
@@ -7740,5 +7747,284 @@ fn show_grammar_says_what_it_takes_when_a_caller_gets_it_wrong() {
         !two.ok && two.stderr.contains("one verb at a time"),
         "a second verb is a caller's mistake, not a silent narrowing: {}",
         two.stderr,
+    );
+}
+
+// ----- the orchestration loop's CLI door (R355) -----
+
+/// A daemon of this test's own, with one session holding one pane — the fixture the three
+/// orchestration gates drive.
+///
+/// Returns the guard (which kills the daemon and clears its state on drop), the socket, and the
+/// host id of the pane a run can name. The ID rather than a number, because `run` takes the id the
+/// daemon knows and `sprag panes` is what a person reads.
+fn daemon_with_one_pane(label: &str) -> (DaemonGuard, PathBuf, u64) {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-{label}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect to the daemon");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "work", "cmd": ["sh", "-c", "exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    // The pane's HOST ID, read from the session's own pane list — `new_session` answers with the
+    // name it took, and the id is what a `run` names.
+    let listed = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the session's panes");
+    let pane = listed
+        .as_array()
+        .and_then(|panes| panes.first())
+        .and_then(|pane| pane["id"].as_u64())
+        .unwrap_or_else(|| panic!("the session's first pane id: {listed}"));
+    (guard, sock, pane)
+}
+
+/// ⚠⚠ **A PERSON CAN START A BOUNDED LOOP FROM A SHELL, AND THE BOUND IS THE ONE THEY ASKED FOR.**
+///
+/// The README's first line names the AI↔AI orchestration loop as what sprag is FOR, and until R355
+/// there was no way to start one that did not involve hand-writing a `scene/invoke` body. This is
+/// that verb, driven as a person drives it: the shipped binary, a real daemon, a real pane.
+///
+/// The number is the claim. `--max-iterations 2` against a daemon whose own default is 100 must
+/// come back `exhausted after 2 iterations` — a run that ignored the guardrail would report a
+/// different number and fail here with it.
+#[test]
+fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
+    let (_guard, sock, pane) = daemon_with_one_pane("orchestrate");
+    let pane = pane.to_string();
+
+    let started = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo bounded",
+            "--max-iterations",
+            "2",
+            "--wait",
+        ],
+    );
+    assert!(started.ok, "the run was refused: {}", started.stderr);
+    assert!(
+        started.stdout.contains("exhausted after 2 iterations"),
+        "THE GUARDRAIL BOUND IT, at the number the person asked for rather than this daemon's \
+         default of {}: {}",
+        sprag_host::plugins::DEFAULT_MAX_ITERATIONS,
+        started.stdout,
+    );
+    assert!(
+        started.stdout.contains("bytes"),
+        "and the cost is in the run's OWN unit: {}",
+        started.stdout,
+    );
+
+    // ...and it is still readable afterwards, which is what makes a run an outcome rather than an
+    // event somebody had to be watching for.
+    let listed = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(listed.ok, "{}", listed.stderr);
+    assert!(
+        listed.stdout.contains("run 0") && listed.stdout.contains("exhausted"),
+        "runs reports the finished run: {}",
+        listed.stdout,
+    );
+}
+
+/// ⚠⚠ **THE CLI BUILDS ITS CALL OUT OF WHAT THE DAEMON PUBLISHED**, so its refusals are the
+/// daemon's grammar speaking and not a second list of argument names in this binary.
+///
+/// This is the first consumer in the workspace that ACTS on the published grammar rather than
+/// printing it. Three refusals, each of which can only be produced by having read the daemon's
+/// answer:
+///
+/// * no plugin word — names every word the daemon publishes as selecting a form;
+/// * a missing required argument — names it, out of the SELECTED form;
+/// * a cost bound the chosen plugin cannot take — `--max-tokens` is not an argument of a byte-relay
+///   form at all, which is the mutual exclusion made UNREPRESENTABLE by publishing guardrails per
+///   form rather than as one flat object.
+#[test]
+fn the_orchestrate_refusals_are_the_daemons_own_grammar() {
+    let (_guard, sock, pane) = daemon_with_one_pane("grammar");
+    let pane = pane.to_string();
+
+    let no_word = sprag(&sock, &["orchestrate", "-t", "work", "--pane", &pane]);
+    assert!(!no_word.ok);
+    for word in ["orchestrator", "pipe", "agent", "dialogue"] {
+        assert!(
+            no_word.stderr.contains(word),
+            "the refusal names every plugin this daemon serves, {word} included: {}",
+            no_word.stderr,
+        );
+    }
+
+    let missing = sprag(
+        &sock,
+        &["orchestrate", "agent", "-t", "work", "--pane", &pane],
+    );
+    assert!(!missing.ok);
+    assert!(
+        missing.stderr.contains("needs prompt"),
+        "it names the argument the SELECTED form requires: {}",
+        missing.stderr,
+    );
+
+    let wrong_unit = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "agent",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--prompt",
+            "hi",
+            "--max-tokens",
+            "5",
+        ],
+    );
+    assert!(!wrong_unit.ok);
+    assert!(
+        wrong_unit
+            .stderr
+            .contains("--max-tokens is not an argument")
+            && wrong_unit.stderr.contains("max_bytes"),
+        "a token bound is not offered on a plugin that spends bytes, and the refusal says what IS: \
+         {}",
+        wrong_unit.stderr,
+    );
+}
+
+/// ⚠⚠ **A RUNNING LOOP CAN BE STOPPED, AND STOPPING ONE THAT IS NOT THERE IS A DIFFERENT ANSWER.**
+///
+/// The cancel flag is polled by every wait inside the driver, so a cancel lands BETWEEN steps
+/// rather than killing a thread mid-write — which is what leaves the pane readable. The fixture
+/// starts a run whose ceiling it will not reach in the life of this test, so what ends it is
+/// provably the cancel and not exhaustion.
+#[test]
+fn a_running_loop_is_cancelled_and_an_absent_one_is_told_apart() {
+    let (_guard, sock, pane) = daemon_with_one_pane("cancel");
+    let pane = pane.to_string();
+
+    let started = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "sleep 1",
+            "--max-iterations",
+            "1000000",
+        ],
+    );
+    assert!(started.ok, "{}", started.stderr);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(
+            &sock,
+            &["runs", "-t", "work"]
+        )
+        .stdout
+        .contains("running")),
+        "the run never reached the state this test is about",
+    );
+
+    let cancelled = sprag(&sock, &["cancel-run", "0", "-t", "work"]);
+    assert!(cancelled.ok, "{}", cancelled.stderr);
+    assert!(
+        wait_for(Duration::from_secs(20), || sprag(
+            &sock,
+            &["runs", "-t", "work"]
+        )
+        .stdout
+        .contains("cancelled")),
+        "the run never ended cancelled: {}",
+        sprag(&sock, &["runs", "-t", "work"]).stdout,
+    );
+
+    // A run nobody has is a REFUSAL with its own sentence, not a silent success — the difference
+    // between "stopped" and "there was nothing to stop" is the whole of what a caller needs next.
+    let absent = sprag(&sock, &["cancel-run", "999", "-t", "work"]);
+    assert!(!absent.ok);
+    assert!(
+        absent.stderr.contains("no run 999 is in flight"),
+        "{}",
+        absent.stderr,
+    );
+}
+
+/// ⚠⚠ **THE DOOR ONTO THE WIRE'S GRAMMAR CAN BE POINTED AT THE LOOP** — and what it says there
+/// includes the arguments INSIDE `guardrails`.
+///
+/// Two defects in one gate, both found by the round that built the loop's door:
+///
+/// * `show-grammar` knew two surfaces and this daemon serves three. The plugin host has published
+///   its own `action_grammar` since a derived audit found it (R353), and the verb whose whole job
+///   is *"ask the daemon how to call this"* could not be pointed at it — so the loop the README
+///   leads with was undiscoverable from the discovery verb.
+/// * the printer walked the answer's JSON by hand and stopped at the top level, so a nested
+///   argument printed as `guardrails object optional` and its fields were never named. That is the
+///   silence the nested grammar was added to end, printed by the verb that exists to end it.
+///
+/// The assertion is on the FIELDS, because the parent alone is what the defect looked like.
+#[test]
+fn show_grammar_points_at_the_plugin_host_and_names_what_is_inside_guardrails() {
+    let (_guard, sock, _pane) = daemon_with_one_pane("grammar-surface");
+
+    let run = sprag(&sock, &["show-grammar", "run", "--plugins", "-t", "work"]);
+    assert!(run.ok, "show-grammar --plugins failed: {}", run.stderr);
+    assert!(
+        run.stdout.contains("guardrails") && run.stdout.contains("max_iterations"),
+        "the iteration ceiling is NAMED, not hidden behind its parent's type: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stdout.contains("max_bytes") && run.stdout.contains("max_tokens"),
+        "and each form publishes the cost key ITS plugin admits, which is what removed the \
+         mutual exclusion from the grammar: {}",
+        run.stdout,
+    );
+    assert!(
+        run.stdout.contains("one of: orchestrator"),
+        "each form still says the one word that selects it: {}",
+        run.stdout,
+    );
+
+    // ...and the surfaces are still NOT each other: a plugin verb is not on the multiplexer, and
+    // the refusal says which surface was asked and how to name another.
+    let wrong = sprag(&sock, &["show-grammar", "run", "-t", "work"]);
+    assert!(!wrong.ok);
+    assert!(
+        wrong.stderr.contains("sprag_mux") && wrong.stderr.contains("--plugins"),
+        "the refusal names the surface it asked and the flags that name the others: {}",
+        wrong.stderr,
     );
 }

@@ -170,6 +170,18 @@ pub enum Verb {
     ReportAgent,
     /// `release-agent` — an agent stops claiming a pane.
     ReleaseAgent,
+    /// `orchestrate` — start a BOUNDED AI↔AI loop, and get its run id back.
+    ///
+    /// The verb the README's first line describes and that this table did not have. The platform
+    /// held four plugins, an iteration ceiling, a typed cost ceiling, a cancel flag and
+    /// agent-state-aware supervision, and the only way to start one was to hand-write
+    /// `scene/invoke /sprag_plugins/external/run` — so the guardrails that make a loop safe were
+    /// reachable by nobody the platform was built for.
+    Orchestrate,
+    /// `runs` — the loops this daemon is running, and how the finished ones ended.
+    Runs,
+    /// `cancel-run` — ask a run to stop at its next step.
+    CancelRun,
     /// `display-message` — put a sentence on somebody's screen.
     DisplayMessage,
     /// `install-hooks` — wire an agent's hooks into its own config.
@@ -454,6 +466,20 @@ pub enum Group {
     Pane,
     /// An AI agent working in a pane, and the messages around it.
     Agent,
+    /// A BOUNDED LOOP the platform drives — one AI against another, or one against a pane.
+    ///
+    /// # Why the loop is not filed under [`Agent`](Self::Agent)
+    ///
+    /// The agent group is about ONE pane's occupant: what it is doing, what it is blocked on, who
+    /// owns it. A run is about a loop over several — and one of the four plugins (`pipe`) has no
+    /// agent in it at all, while another (`dialogue`) spawns the panes it drives. Filing them
+    /// together would put the product's headline feature under a heading about somebody else's
+    /// process.
+    ///
+    /// It is also the honest reading of the README, which names *"AI↔AI 오케스트레이션 루프"* as
+    /// what sprag is FOR. A heading of its own is what a person scanning `sprag --help` for that
+    /// sentence finds.
+    Orchestration,
     /// The keyboard.
     Keys,
     /// The settings.
@@ -477,6 +503,7 @@ impl Group {
             Self::Window => "windows",
             Self::Pane => "panes",
             Self::Agent => "agents",
+            Self::Orchestration => "orchestration",
             Self::Keys => "keys",
             Self::Options => "options",
             Self::Tool => "sprag",
@@ -514,7 +541,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 61] = [
+    pub const ALL: [Self; 64] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -562,6 +589,9 @@ impl Verb {
         Self::ListHooks,
         Self::Hook,
         Self::Events,
+        Self::Orchestrate,
+        Self::Runs,
+        Self::CancelRun,
         Self::ListKeys,
         Self::BindKey,
         Self::UnbindKey,
@@ -1002,6 +1032,50 @@ impl Verb {
                 Keystroke::Cannot(NotAKeystroke::Answers),
                 Agent::Tools(&["wait_for_change"]),
             ),
+            // ── orchestration ───────────────────────────────────────────────────────────────────
+            // THE THREE VERBS THE README'S FIRST LINE DESCRIBES, and which this table did not have
+            // until R355. The loop was BUILT — four plugins, an SCXML driver, `Guardrails`, a
+            // typed `Cost` that cannot bind bytes with a token budget, a cancel flag, agent-state
+            // aware supervision — and reachable from no mouth at all: no CLI verb, no MCP tool, no
+            // keystroke, no palette row. `sprag_host::vocabulary`, documented as the ONE list of
+            // what this product does, did not mention plugins, orchestration or dialogue anywhere,
+            // so the list of what the product does omitted what the README says it is FOR.
+            //
+            // ⚠ THE ARGUMENTS ARE NOT SPELLED IN THE SHELL FORM BELOW, and that is the round's own
+            // finding rather than an omission: `orchestrate`'s arguments are FOUR forms, one per
+            // plugin, and the daemon publishes them ([`crate::wire::PluginGrammar`]). A synopsis
+            // here would be a fifth copy of a table that already exists and that a `show-grammar`
+            // client already reads — the exact defect this module was written to end, one surface
+            // along. So the usage names the discriminator and points at the door that answers.
+            Self::Orchestrate => (
+                "orchestrate",
+                Group::Orchestration,
+                Shell::Runs(
+                    " PLUGIN [--ARG VALUE]… [-t SESSION] [--wait]  (--help lists each form)",
+                ),
+                // Its whole content is the words: a stimulus, a prompt, a seed. A binding would
+                // fix one and mean it forever — `send-keys`'s rule, and `display-message`'s.
+                Keystroke::Cannot(NotAKeystroke::NeedsWords),
+                Agent::Tools(&["orchestrate"]),
+            ),
+            Self::Runs => (
+                "runs",
+                Group::Orchestration,
+                Shell::Runs("[-t SESSION]"),
+                Keystroke::Cannot(NotAKeystroke::Answers),
+                Agent::Tools(&["list_runs"]),
+            ),
+            Self::CancelRun => (
+                "cancel-run",
+                Group::Orchestration,
+                Shell::Runs(" ID [-t SESSION]"),
+                // ⚠ `NotBuilt`, not `NeedsWords`, and the difference is a real one. A binding that
+                // fixed ONE run id would be useless — that is the NeedsWords shape — but "cancel
+                // every run I started" is an act a key could perform and nobody has built the verb
+                // for it. Filing it under a refusal would print a reason that is not true.
+                Keystroke::NotBuilt,
+                Agent::Tools(&["cancel_run"]),
+            ),
             // ── keys ────────────────────────────────────────────────────────────────────────────
             // THE ONE ANSWERING VERB THAT IS BOUND, and the reason is the whole content of
             // [`NotAKeystroke::Answers`]: this client has a VIEW for the answer
@@ -1369,11 +1443,19 @@ pub fn subject_of(verb: Verb) -> ActionSubject {
         Group::Window => ActionSubject::Window,
         Group::Pane => ActionSubject::Pane,
         Group::Session => ActionSubject::Session,
-        // The keyboard, the settings, an agent's reports, and sprag itself are all things a CLIENT
-        // asks about rather than parts of the containment.
-        Group::Agent | Group::Keys | Group::Options | Group::Tool | Group::Client => {
-            ActionSubject::Client
-        }
+        // The keyboard, the settings, an agent's reports, a bounded run, and sprag itself are all
+        // things a CLIENT asks about rather than parts of the containment.
+        //
+        // ⚠ A run is a client's rather than a pane's even though it DRIVES panes, and the reason is
+        // what this axis is for: it says where a bound verb appears in the key help, and the
+        // question a person asks there is about the thing they are addressing. A run's subject is
+        // the run, which is not one of the three containers.
+        Group::Agent
+        | Group::Orchestration
+        | Group::Keys
+        | Group::Options
+        | Group::Tool
+        | Group::Client => ActionSubject::Client,
     }
 }
 
@@ -1487,7 +1569,10 @@ mod tests {
             // R353: `show-grammar` is the 21st refusal — an MCP client learns how to call ITS
             // OWN mouth from `tools/list`, so a tool here would be a second authority on one
             // question and a wronger one (it describes the raw wire's verbs, not the agent's tools).
-            (33, 7, 21),
+            // R355: three more served, and this is the mouth they matter most on — an agent that
+            // wanted a bounded loop against a sibling had to hand-roll one in its own turns,
+            // without the iteration ceiling, the typed cost ceiling or the cancel flag that exist.
+            (36, 7, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1635,7 +1720,9 @@ mod tests {
         assert_eq!(
             (runs, not_built, refused),
             // R353: `show-grammar` is the 53rd shell verb — the door onto the wire's own grammar.
-            (53, 3, 5),
+            // R355: three more, and they are the door onto the LOOP the README leads with —
+            // `orchestrate`, `runs` and `cancel-run`.
+            (56, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1717,7 +1804,10 @@ mod tests {
         assert_eq!(
             (bindable, not_built, refused),
             // R353: `show-grammar` ANSWERS something, so it joins the verbs a keystroke cannot mean.
-            (25, 1, 35),
+            // R355: `orchestrate` needs words and `runs` answers, so both are refused with a
+            // reason; `cancel-run` is the second `NotBuilt` — a key COULD mean "cancel the runs I
+            // started" and nobody has built that verb.
+            (25, 2, 37),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
@@ -1728,7 +1818,11 @@ mod tests {
             .filter(|verb| verb.keystroke() == Keystroke::NotBuilt)
             .map(|verb| verb.name())
             .collect();
-        assert_eq!(pending, ["run"], "the keyboard's remaining gap, by name",);
+        assert_eq!(
+            pending,
+            ["run", "cancel-run"],
+            "the keyboard's remaining gap, by name",
+        );
     }
 
     /// The forms the keyboard lists are exactly the bindable verbs, each spelling its own name
@@ -1787,6 +1881,7 @@ mod tests {
                 Group::Window.heading(),
                 Group::Pane.heading(),
                 Group::Agent.heading(),
+                Group::Orchestration.heading(),
                 Group::Keys.heading(),
                 Group::Options.heading(),
                 Group::Tool.heading(),

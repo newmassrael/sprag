@@ -186,14 +186,14 @@ use sprag_host::shellword::shell_quote;
 use sprag_host::vocabulary::{self, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
-    ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, ArgGrammar, BREAK_PANE_ACTION, CLIENTS_SLOT,
-    CLOSE_ACTION, CallForm, DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT,
-    GRANT_PANE_ACTION, JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION,
-    LAYOUT_SLOT, MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM,
-    NEW_SESSION_ACTION, NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT,
-    PASTE_ACTION, PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION,
-    RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
-    RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
+    ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
+    DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT, GRANT_PANE_ACTION,
+    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
+    MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION,
+    NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION,
+    PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
+    RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
     SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
     TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, doctor_over,
@@ -202,8 +202,8 @@ use sprag_host::wire::{
 };
 use sprag_host::{ClientSize, PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
-    CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, HOST_SOCKET, HostConn, HostEndpoint,
-    INVALID_PARAMS, RpcFault, SINCE_PARAM, socket_path,
+    CallError, EVENTS_CHANGED_METHOD, EVENTS_SUBSCRIBE_METHOD, Flag, HOST_SOCKET, HostConn,
+    HostEndpoint, INVALID_PARAMS, PublishedForm, RpcFault, SINCE_PARAM, socket_path,
 };
 use sprag_terminal::{
     Ceiling, Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow,
@@ -294,6 +294,9 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Grant => grant(args.collect()),
         Verb::Doctor => doctor(args.collect()),
         Verb::ShowGrammar => show_grammar(args.collect()),
+        Verb::Orchestrate => orchestrate(args.collect()),
+        Verb::Runs => runs(args.collect()),
+        Verb::CancelRun => cancel_run(args.collect()),
         Verb::Agent => agent(args.collect()),
         Verb::DisplayMessage => display_message(args.collect()),
         Verb::ReportAgent => report_agent(args.collect()),
@@ -2037,6 +2040,18 @@ fn scoped_params(session: Option<&str>, path: String) -> Value {
         Some(name) => json!({ "session": name, "path": path }),
         None => json!({ "path": path }),
     }
+}
+
+/// [`scoped_params`] plus the action's `args` — for the verbs whose arguments are BUILT rather than
+/// written as a `json!` literal beside the path.
+///
+/// Most acting verbs spell the whole request in one `json!`, which is right when the keys are known
+/// at the call site. `orchestrate` and `cancel-run` are not: their arguments come from the daemon's
+/// own published grammar, so the object arrives as a value and the scope has to be put around it.
+fn scoped_call(session: Option<&str>, path: String, args: Value) -> Value {
+    let mut params = scoped_params(session, path);
+    params["args"] = args;
+    params
 }
 
 /// The scope ALONE, for the two methods that read no path — `scene/revision` and `scene/waitFor`.
@@ -3809,11 +3824,13 @@ fn doctor(args: Vec<String>) -> io::Result<()> {
 /// do because every pane's input surface serves the same grammar, so it takes the caller's active one
 /// rather than making them name one.
 fn show_grammar(args: Vec<String>) -> io::Result<()> {
-    let (mut only, mut pane_surface, mut session) = (None, false, None);
+    let (mut only, mut surface, mut session) = (None, GrammarSurface::Mux, None);
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
-            "--pane" => pane_surface = true,
+            flag if GrammarSurface::of_flag(flag).is_some() => {
+                surface = GrammarSurface::of_flag(flag).expect("just matched");
+            }
             "-t" | "--session" => {
                 session = Some(
                     rest.next()
@@ -3822,7 +3839,8 @@ fn show_grammar(args: Vec<String>) -> io::Result<()> {
             }
             other if other.starts_with('-') => {
                 return Err(bad_input(&format!(
-                    "show-grammar: unknown option {other:?} (it takes [VERB] and --pane)"
+                    "show-grammar: unknown option {other:?} (it takes [VERB] and one of {})",
+                    GrammarSurface::flags().join(", "),
                 )));
             }
             verb if only.is_none() => only = Some(verb.to_owned()),
@@ -3838,21 +3856,24 @@ fn show_grammar(args: Vec<String>) -> io::Result<()> {
     // THE ADDRESS THE ANSWER DESCRIBES. A pane's grammar is served by the pane, so asking the
     // multiplexer for it would be asking the wrong surface — which is exactly the confusion a single
     // global table would have created.
-    let path =
-        if pane_surface {
+    let path = match surface {
+        GrammarSurface::Mux => mux_action_path(ACTION_GRAMMAR_SLOT),
+        GrammarSurface::Plugins => sprag_host::wire::plugins_path(ACTION_GRAMMAR_SLOT),
+        GrammarSurface::PaneInput => {
             // ANY pane: every pane's input surface serves the same six verbs, so the first one this
-            // session holds answers the question, and making the caller name one would suggest the answer
-            // differs per pane. A session with no panes cannot answer it at all, and says so.
-            let pane = *pane_ids(&mut conn, session.as_deref())?.first().ok_or_else(|| {
-            bad_input(
-                "show-grammar --pane: this session has no pane, and a pane's input grammar is \
-                 served by a pane",
-            )
-        })?;
+            // session holds answers the question, and making the caller name one would suggest the
+            // answer differs per pane. A session with no panes cannot answer it at all, and says so.
+            let pane = *pane_ids(&mut conn, session.as_deref())?
+                .first()
+                .ok_or_else(|| {
+                    bad_input(
+                        "show-grammar --pane: this session has no pane, and a pane's input grammar \
+                         is served by a pane",
+                    )
+                })?;
             pane_input_path(pane, ACTION_GRAMMAR_SLOT)
-        } else {
-            mux_action_path(ACTION_GRAMMAR_SLOT)
-        };
+        }
+    };
     let answer = query_slot(&mut conn, scoped_params(session.as_deref(), path))?;
     let verbs = answer
         .as_object()
@@ -3867,55 +3888,492 @@ fn show_grammar(args: Vec<String>) -> io::Result<()> {
             let mut known: Vec<&str> = verbs.keys().map(String::as_str).collect();
             known.sort_unstable();
             return Err(bad_input(&format!(
-                "show-grammar: this daemon publishes no grammar for {wanted:?}. It publishes: {}",
+                "show-grammar: this daemon's {} surface publishes no grammar for {wanted:?}. It \
+                 publishes: {}. Another surface may serve that verb — {} name the others.",
+                surface.tag(),
                 known.join(", "),
+                GrammarSurface::flags().join(" and "),
             )));
         }
     }
 
-    let mut names: Vec<&String> = verbs.keys().collect();
-    names.sort_unstable();
-    for name in names {
+    // ⚠ THROUGH THE ONE READER OF A PUBLISHED GRAMMAR, and it was a hand-rolled JSON walk here
+    // until R355. Two readers of one answer is the shape this whole surface exists to remove, and
+    // the second one had already gone wrong: it printed a nested argument's TYPE and never its
+    // fields, so `guardrails object optional` was the entire truth an operator got about the
+    // iteration ceiling and the cost ceiling — the affirmative silence the nesting was added to
+    // end, printed by the verb whose job is to end it.
+    let surface =
+        sprag_rpc::read_surface(&answer).map_err(|error| bad_input(&format!("{error}")))?;
+    let mut surface = surface;
+    surface.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, forms) in &surface {
         if only.as_ref().is_some_and(|wanted| wanted != name) {
             continue;
         }
         println!("{name}");
-        let forms = verbs[name].as_array().map_or(&[][..], Vec::as_slice);
         for form in forms {
-            // A form that does not say its shape is an OLDER DAEMON's answer, and saying so is more
-            // use than printing nothing: the two are told apart by the key's absence, which is why
-            // `one_of` and this are both omitted rather than sent as null.
-            let shape = form[CallForm::FORM_KEY].as_str().unwrap_or("object");
-            println!("  form {shape}");
-            let args = form[CallForm::ARGS_KEY]
-                .as_array()
-                .map_or(&[][..], Vec::as_slice);
-            for arg in args {
-                let name = arg[ArgGrammar::NAME_KEY].as_str().unwrap_or("?");
-                let ty = arg[ArgGrammar::TYPE_KEY].as_str().unwrap_or("?");
-                let need = if arg[ArgGrammar::OPTIONAL_KEY].as_bool().unwrap_or(false) {
-                    "optional"
-                } else {
-                    "required"
-                };
-                let words = arg[ArgGrammar::ONE_OF_KEY]
-                    .as_array()
-                    .map(|words| {
-                        words
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .map_or_else(String::new, |list| format!("  one of: {list}"));
-                println!("    {name:<14} {ty:<8} {need}{words}");
+            println!("  form {}", form.form.wire_str());
+            for arg in &form.args {
+                print_grammar_arg(arg, 4);
             }
-            if args.is_empty() {
+            if form.args.is_empty() {
                 println!("    (no arguments)");
             }
         }
     }
     Ok(())
+}
+
+/// One published argument, indented, with the arguments INSIDE it under it.
+///
+/// Recursive because [`sprag_rpc::PublishedArg::fields`] is: a nested value's grammar is a grammar,
+/// which is the answer R355 gave to *"is a nested argument a recursive grammar or an address of its
+/// own?"*. A printer that stopped at the top level would be publishing the same silence the
+/// declaration stopped publishing.
+fn print_grammar_arg(arg: &sprag_rpc::PublishedArg, indent: usize) {
+    let need = if arg.optional { "optional" } else { "required" };
+    let words = arg.words.as_ref().map_or_else(String::new, |words| {
+        format!("  one of: {}", words.join(", "))
+    });
+    let pad = " ".repeat(indent);
+    let width = 14_usize.saturating_sub(indent.saturating_sub(4));
+    println!("{pad}{:<width$} {:<8} {need}{words}", arg.name, arg.ty);
+    for field in &arg.fields {
+        print_grammar_arg(field, indent + 2);
+    }
+}
+
+/// The CLI-only flag on `orchestrate` that PARKS until the run ends.
+///
+/// Named here because it is the one word in that verb's command line that is not an argument of the
+/// wire action, and [`orchestrate`] refuses to run at all if the daemon ever publishes an argument
+/// spelled the same — see there for why that is a refusal and not a rename.
+const WAIT_FLAG: &str = "wait";
+
+/// How often [`orchestrate`] `--wait` re-reads the run's state.
+///
+/// A poll and not a subscription because a run's outcome is a LEVEL: the `runs` slot answers where
+/// a run got to whether or not anybody was watching when it got there, which is the same property
+/// `agent_state` is a level for. A missed edge costs nothing here.
+const RUN_POLL: Duration = Duration::from_millis(120);
+
+/// `orchestrate PLUGIN [--ARG VALUE]… [--wait]`: start a BOUNDED loop and print its run id.
+///
+/// # This verb is the door the product's headline feature did not have
+///
+/// The README's first line names *"AI↔AI 오케스트레이션 루프"*, and until R355 it was reachable from
+/// no mouth of this product: not a CLI verb, not an MCP tool, not a keystroke, not a palette row.
+/// The loop itself was built and well built — four plugins, an SCXML driver, an iteration ceiling, a
+/// typed cost ceiling that cannot bind bytes with a token budget, a cancel flag, agent-state-aware
+/// turn ends — and the only way in was to hand-write
+/// `scene/invoke /sprag_plugins/external/run`.
+///
+/// # ⚠⚠ Its arguments are not written down here, and that is the design
+///
+/// `run` has FOUR forms, one per plugin, and the daemon publishes all four on `action_grammar`.
+/// This verb READS that publication and builds the call from it
+/// ([`sprag_rpc::build_call`]), so:
+///
+/// * there is no second list of argument names in this binary to drift from the daemon's;
+/// * `--help` prints the forms the DAEMON serves, not the ones this build was compiled against, so
+///   version skew is visible instead of silent;
+/// * a plugin added upstream is callable from this shell with no edit here at all.
+///
+/// That is the first consumer of the published grammar that ACTS on it. `show-grammar` proved a
+/// client can ask; this proves the answer is enough to call with — which is the claim the whole
+/// surface was built on and which nothing had ever driven.
+///
+/// The discriminator is POSITIONAL for the same reason it is published: the grammar says which
+/// argument chooses a form, so `sprag orchestrate agent …` needs no `--plugin`.
+fn orchestrate(args: Vec<String>) -> io::Result<()> {
+    let wants_help = args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h");
+    let (session, args) = scope_and_rest(args, "orchestrate")?;
+    let mut conn = connect()?;
+    let forms = published_forms(
+        &mut conn,
+        session.as_deref(),
+        sprag_host::plugins::RUN_ACTION,
+    )?;
+    let (selector, words) = sprag_rpc::selector_of(&forms);
+
+    if wants_help {
+        print_orchestrate_usage(&forms, &selector);
+        return Ok(());
+    }
+
+    if let Some(collision) = wait_flag_collision(&forms) {
+        return Err(bad_input(&collision));
+    }
+
+    let mut flags = Vec::new();
+    let mut wait = false;
+    let mut rest = args.into_iter().peekable();
+    // The FIRST bare word is the plugin, under whatever name the publication says chooses a form.
+    if let Some(selector) = &selector
+        && rest.peek().is_some_and(|arg| !arg.starts_with('-'))
+    {
+        flags.push(Flag::new(
+            selector.clone(),
+            rest.next().expect("just peeked"),
+        ));
+    }
+    while let Some(arg) = rest.next() {
+        let Some(spelled) = arg.strip_prefix("--") else {
+            return Err(bad_input(&format!(
+                "orchestrate: {arg:?} is not a flag. Say the plugin first, then --name value."
+            )));
+        };
+        // BOTH SPELLINGS (R350): `--key value` and `--key=value`. The second is not a convenience
+        // here — it is the only way to pass a value that begins with a dash, which an argv template
+        // (`--endpoint-a=-p`) needs.
+        if let Some((name, value)) = spelled.split_once('=') {
+            flags.push(Flag::new(name, value));
+            continue;
+        }
+        if sprag_rpc::call::same_name(spelled, WAIT_FLAG) {
+            wait = true;
+            continue;
+        }
+        match rest.peek() {
+            Some(value) if !value.starts_with("--") => {
+                flags.push(Flag::new(spelled, rest.next().expect("just peeked")));
+            }
+            // A bare flag. Well-formed only for a bool, and the fill says so in the argument's own
+            // terms rather than this parser guessing which it was.
+            _ => flags.push(Flag::bare(spelled)),
+        }
+    }
+
+    let call = sprag_rpc::build_call(&forms, &flags).map_err(|error| {
+        bad_input(&format!(
+            "orchestrate: {error}\n{}",
+            usage_for(&forms, &flags, &selector, &words),
+        ))
+    })?;
+    let answer = invoke_action(
+        &mut conn,
+        scoped_call(
+            session.as_deref(),
+            sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            call,
+        ),
+    )?;
+    let id = answer
+        .as_u64()
+        .ok_or_else(|| bad_input("orchestrate: the daemon's answer was not a run id"))?;
+    println!("run {id} started");
+    if wait {
+        let finished = wait_for_run(&mut conn, session.as_deref(), id)?;
+        print!("{}", render_run(&finished));
+    } else {
+        println!("  sprag runs           to see how it ends");
+        println!("  sprag cancel-run {id}   to stop it");
+    }
+    Ok(())
+}
+
+/// WHICH SURFACE `show-grammar` is asking, and the flag that names it.
+///
+/// # ⚠⚠ The plugin host was unreachable from this verb for two rounds
+///
+/// A verb's grammar belongs to the surface that SERVES it — that is why the answer is a per-surface
+/// slot rather than one global table, and `show-grammar` narrows by surface for the same reason.
+/// It knew two: the multiplexer and a pane. The plugin host has published its own `action_grammar`
+/// since R353, when a derived audit found it, and **nothing taught the door about it** — so the one
+/// verb whose whole job is *"ask the daemon how to call it"* could not be pointed at the loop.
+///
+/// The list is here rather than derived from `sprag_host::wire::SURFACES` because a surface's PATH
+/// is not a function of its tag alone: a pane's is per-instance, hanging under a `pane_<id>`
+/// container that has to be resolved first. What is derived is the COVERAGE —
+/// `every_surface_this_crate_serves_is_reachable_from_show_grammar` requires every sprag-authored
+/// entry of `SURFACES` to be named here, so a fourth one fails a test instead of quietly becoming
+/// undiscoverable the way this one did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GrammarSurface {
+    /// The multiplexer — sessions, windows, panes. The default, because it is where most verbs are.
+    Mux,
+    /// A pane's input surface — how to type into one.
+    PaneInput,
+    /// The plugin host — how to start, watch and stop a bounded loop.
+    Plugins,
+}
+
+impl GrammarSurface {
+    /// The flag that names this surface, or [`None`] for the default one — which is named by
+    /// saying nothing.
+    const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Mux => None,
+            Self::PaneInput => Some("--pane"),
+            Self::Plugins => Some("--plugins"),
+        }
+    }
+
+    /// The surface a flag names, or [`None`] for a word that is not one of them.
+    ///
+    /// Derived from [`ALL`](Self::ALL) rather than matched a second time, so an arm added to the
+    /// enum is a flag this verb accepts and lists without another edit — the inverse being written
+    /// twice is how a door grows a spelling nothing reaches.
+    fn of_flag(flag: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|surface| surface.flag() == Some(flag))
+    }
+
+    /// Every flag this verb takes, for the message that lists them.
+    fn flags() -> Vec<&'static str> {
+        Self::ALL.iter().filter_map(|it| it.flag()).collect()
+    }
+
+    /// The scene TAG whose grammar this asks — the half that is held against `SURFACES`.
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Mux => sprag_host::MUX_TAG,
+            Self::PaneInput => sprag_host::INPUT_TAG,
+            Self::Plugins => sprag_host::PLUGINS_TAG,
+        }
+    }
+
+    /// Every surface this verb can be pointed at.
+    const ALL: [Self; 3] = [Self::Mux, Self::PaneInput, Self::Plugins];
+}
+
+/// The sentence to refuse with when the DAEMON publishes a run argument spelled like this CLI's own
+/// `--wait`, or [`None`] while the two vocabularies are disjoint.
+///
+/// # ⚠ A REFUSAL, NOT A RENAME, and a free function rather than an `if` inside the verb
+///
+/// `--wait` is this command's own and every other flag is the daemon's, so the day the wire
+/// publishes an argument of that name the two meanings collide silently — one would win and nobody
+/// would be told. Refusing is the only answer that does not require this binary to have guessed
+/// right about a daemon it did not compile with.
+///
+/// It is a function because the branch is otherwise reachable only from a daemon this workspace
+/// cannot build: a test would have to serve a doctored grammar to drive one `if`. Narrowing the
+/// ROLE to "given these forms, is there a collision?" makes the claim a unit test — the move R334
+/// recorded when a rule about ORDER could not be faked through its trait.
+fn wait_flag_collision(forms: &[PublishedForm]) -> Option<String> {
+    forms
+        .iter()
+        .flat_map(|form| form.args.iter())
+        .any(|arg| sprag_rpc::call::same_name(&arg.name, WAIT_FLAG))
+        .then(|| {
+            format!(
+                "orchestrate: this daemon publishes a run argument called {WAIT_FLAG:?}, which is \
+                 also this command's own flag for parking until a run ends. Start the run without \
+                 --{WAIT_FLAG} and read `sprag runs`."
+            )
+        })
+}
+
+/// One usage block per form, under the word that selects it — built from what the daemon answered.
+fn print_orchestrate_usage(forms: &[PublishedForm], selector: &Option<String>) {
+    println!("sprag orchestrate PLUGIN [--ARG VALUE]… [--{WAIT_FLAG}]");
+    println!(
+        "\n  Start a bounded loop and print its run id. Every run is guardrail-bounded: it stops\n  \
+         at its iteration ceiling or its cost ceiling, whichever binds first, and `sprag\n  \
+         cancel-run` stops it sooner. `--{WAIT_FLAG}` parks until it ends and prints the outcome.\n"
+    );
+    for form in forms {
+        let word = selector
+            .as_ref()
+            .and_then(|selector| {
+                form.args
+                    .iter()
+                    .find(|arg| &arg.name == selector)
+                    .and_then(|arg| arg.words.as_ref())
+                    .and_then(|words| words.first())
+            })
+            .cloned()
+            .unwrap_or_default();
+        println!("  {word}");
+        println!("    {}", form.usage());
+    }
+    println!(
+        "\n  The forms above are what THIS daemon publishes (`sprag show-grammar run`), not a list\n  \
+         compiled into this binary. A value beginning with a dash needs --name=value."
+    );
+}
+
+/// The usage a refusal prints under itself — the SELECTED form alone when the caller chose one,
+/// because reprinting four forms buries the one they were typing.
+fn usage_for(
+    forms: &[PublishedForm],
+    flags: &[Flag],
+    selector: &Option<String>,
+    words: &[String],
+) -> String {
+    let chosen = selector.as_ref().and_then(|selector| {
+        let word = flags
+            .iter()
+            .find(|flag| sprag_rpc::call::same_name(&flag.name, selector))
+            .and_then(|flag| flag.value.as_deref())?;
+        forms.iter().find(|form| {
+            form.args.iter().any(|arg| {
+                &arg.name == selector
+                    && arg
+                        .words
+                        .as_ref()
+                        .is_some_and(|it| it.iter().any(|w| w == word))
+            })
+        })
+    });
+    match chosen {
+        Some(form) => format!("  sprag orchestrate {}", form.usage()),
+        None => format!("  sprag orchestrate <{}> …", words.join("|")),
+    }
+}
+
+/// `runs`: every loop this daemon holds, and how the finished ones ended.
+fn runs(args: Vec<String>) -> io::Result<()> {
+    let (session, args) = scope_and_rest(args, "runs")?;
+    if let Some(extra) = args.first() {
+        return Err(bad_input(&format!(
+            "runs: unexpected argument {extra:?} (it takes only -t SESSION)"
+        )));
+    }
+    let mut conn = connect()?;
+    let answer = query_slot(
+        &mut conn,
+        scoped_params(
+            session.as_deref(),
+            sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+        ),
+    )?;
+    let entries = answer
+        .as_array()
+        .ok_or_else(|| bad_input("runs: the daemon's answer was not a list of runs"))?;
+    if entries.is_empty() {
+        println!("no runs (start one with `sprag orchestrate`)");
+        return Ok(());
+    }
+    for run in entries {
+        print!("{}", render_run(run));
+    }
+    Ok(())
+}
+
+/// One run as a person reads it: what it is, who asked for it, and where it got to.
+///
+/// The OPENER is printed because it is the fact that makes a shared daemon legible — a person
+/// looking at a list of runs wants to know which of them an agent started, and that is exactly the
+/// provenance the agent-facing mouth keeps agents to.
+fn render_run(run: &Value) -> String {
+    let id = run["id"].as_u64().unwrap_or_default();
+    let label = run["label"].as_str().unwrap_or("?");
+    let opener = run["opened_by"]
+        .as_u64()
+        .map_or_else(String::new, |pane| format!("  (asked for by pane {pane})"));
+    let state = &run["state"];
+    let head = format!("run {id}  {label}{opener}\n");
+    match state["status"].as_str() {
+        Some("running") => format!("{head}  running\n"),
+        Some("done") => {
+            let outcome = &state["outcome"];
+            let unit = outcome["unit"].as_str().unwrap_or("steps");
+            let output = state["output"]
+                .as_str()
+                .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
+            format!(
+                "{head}  {} after {} iterations, {} {unit}{}\n{output}",
+                outcome["state"].as_str().unwrap_or("?"),
+                outcome["iterations"].as_u64().unwrap_or_default(),
+                outcome["cost"].as_u64().unwrap_or_default(),
+                outcome["failure"]
+                    .as_str()
+                    .map_or_else(String::new, |why| format!("\n  failed: {why}")),
+            )
+        }
+        _ => format!("{head}  {}\n", state["status"].as_str().unwrap_or("?")),
+    }
+}
+
+/// Park until run `id` leaves `running`, then answer its entry.
+///
+/// ⚠ NO DEADLINE OF ITS OWN, deliberately. A run is bounded by ITS guardrails — the iteration
+/// ceiling and the cost ceiling it was started with — so a waiter that gave up early would be
+/// inventing a second, weaker bound and reporting a run as unfinished that the daemon is still
+/// correctly running. The bound belongs to the run; the wait belongs to the person, who has a
+/// keyboard.
+fn wait_for_run(conn: &mut HostConn, session: Option<&str>, id: u64) -> io::Result<Value> {
+    loop {
+        let answer = query_slot(
+            conn,
+            scoped_params(
+                session,
+                sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+            ),
+        )?;
+        let entry = answer
+            .as_array()
+            .and_then(|runs| {
+                runs.iter()
+                    .find(|run| run["id"].as_u64() == Some(id))
+                    .cloned()
+            })
+            .ok_or_else(|| {
+                bad_input(&format!(
+                    "orchestrate --{WAIT_FLAG}: run {id} is gone from the daemon"
+                ))
+            })?;
+        if entry["state"]["status"].as_str() != Some("running") {
+            return Ok(entry);
+        }
+        std::thread::sleep(RUN_POLL);
+    }
+}
+
+/// `cancel-run ID`: ask a run to stop at its next step.
+///
+/// The flag the run's own `RunContext` polls, which every wait inside the driver checks — so a
+/// cancel lands between steps rather than killing a thread mid-write.
+fn cancel_run(args: Vec<String>) -> io::Result<()> {
+    let (session, args) = scope_and_rest(args, "cancel-run")?;
+    let mut rest = args.into_iter();
+    let id = rest
+        .next()
+        .ok_or_else(|| bad_input("cancel-run: which run? (see `sprag runs`)"))?;
+    if let Some(extra) = rest.next() {
+        return Err(bad_input(&format!(
+            "cancel-run: unexpected argument {extra:?} (one run at a time)"
+        )));
+    }
+    let id: u64 = id.parse().map_err(|_| {
+        bad_input(&format!(
+            "cancel-run: {id:?} is not a run id (see `sprag runs`)"
+        ))
+    })?;
+    let mut conn = connect()?;
+    invoke_action(
+        &mut conn,
+        scoped_call(
+            session.as_deref(),
+            sprag_host::wire::plugins_path(sprag_host::plugins::CANCEL_ACTION),
+            json!({ "id": id }),
+        ),
+    )?;
+    println!("run {id} asked to stop; `sprag runs` says when it has");
+    Ok(())
+}
+
+/// The published forms of one plugin-host verb, asked of the daemon this connection holds.
+fn published_forms(
+    conn: &mut HostConn,
+    session: Option<&str>,
+    action: &str,
+) -> io::Result<Vec<PublishedForm>> {
+    let answer = query_slot(
+        conn,
+        scoped_params(session, sprag_host::wire::plugins_path(ACTION_GRAMMAR_SLOT)),
+    )?;
+    let table = answer.get(action).ok_or_else(|| {
+        bad_input(&format!(
+            "this daemon publishes no grammar for {action:?}, so there is nothing to build a call \
+             from — it is older than this command."
+        ))
+    })?;
+    PublishedForm::read_all(table, action).map_err(|error| bad_input(&format!("{error}")))
 }
 
 /// How long the CLI asks the daemon to measure the competition over.
@@ -6361,6 +6819,9 @@ fn zoom_pane(args: Vec<String>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The DECLARATION side of the grammar, which only a test builds here: this binary reads a
+    // published grammar off a socket and never declares one.
+    use sprag_host::wire::{ArgGrammar, CallForm};
 
     /// Every shape of the GRANT columns — the ceiling beside a usage, the ceiling on its own, and
     /// the weight — because the absences are the whole reason the type has three arms.
@@ -7034,6 +7495,89 @@ mod tests {
     /// `-t` is OPTIONAL for a pane command (the module docs' rule), and everything after a bare
     /// `--` is payload — so a command run in a new pane may contain `-t` without this parse
     /// claiming it.
+    /// ⚠⚠ **EVERY SURFACE THIS CRATE SERVES IS REACHABLE FROM `show-grammar`** — the gate that
+    /// would have caught the plugin host being undiscoverable for two rounds.
+    ///
+    /// A verb's grammar is answered by the surface that SERVES it, so the door has to be pointed at
+    /// one. It knew the multiplexer and a pane; the plugin host published its own `action_grammar`
+    /// from the round a derived audit found it (R353) and no flag ever reached it — so the verb
+    /// whose whole job is *"ask the daemon how to call this"* could not be pointed at the loop the
+    /// README leads with.
+    ///
+    /// The list of flags is hand-written, because a surface's PATH is not a function of its tag
+    /// (a pane's hangs under a `pane_<id>` container that has to be resolved first). Its COVERAGE
+    /// is not: this derives from `SURFACES`, which is itself checked against the scene the daemon
+    /// SERVES, so a fourth sprag-authored surface fails here rather than quietly becoming
+    /// undiscoverable.
+    ///
+    /// ⚠ An UPSTREAM surface is deliberately not required: sprag does not publish a grammar for a
+    /// pinion widget's verbs, so there is nothing for this verb to point at.
+    #[test]
+    fn every_surface_this_crate_serves_is_reachable_from_show_grammar() {
+        let reachable: Vec<&str> = GrammarSurface::ALL.iter().map(|it| it.tag()).collect();
+        let mut checked = 0;
+        for surface in sprag_host::wire::SURFACES {
+            if surface.author != sprag_rpc::grammar::SurfaceAuthor::Sprag {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                reachable.contains(&surface.tag),
+                "{} serves verbs and publishes their grammar, and `show-grammar` cannot be pointed \
+                 at it — add a flag to GrammarSurface, or the one verb for asking the daemon how to \
+                 call something cannot be asked about this surface",
+                surface.name,
+            );
+        }
+        assert_eq!(
+            checked,
+            GrammarSurface::ALL.len(),
+            "the flags and the surfaces are one-to-one; a flag naming a surface this crate does not \
+             serve is a door onto nothing",
+        );
+    }
+
+    /// ⚠⚠ **THE CLI'S OWN `--wait` AND THE DAEMON'S ARGUMENTS ARE ONE NAMESPACE, AND A COLLISION IS
+    /// SAID RATHER THAN RESOLVED.**
+    ///
+    /// Every other flag of `orchestrate` is the daemon's, read off its published grammar. `--wait`
+    /// is this command's. If a daemon ever publishes a run argument of that name the two meanings
+    /// collide, and a binary that picked one would be guessing about a daemon it did not compile
+    /// with — so it refuses and names the way round.
+    ///
+    /// Driven by handing the check a doctored publication, which is the only way this branch is
+    /// reachable: no daemon in this workspace publishes such an argument, and
+    /// `the_orchestrate_refusals_are_the_daemons_own_grammar` shows the real one does not.
+    #[test]
+    fn a_daemon_argument_that_collides_with_the_waiting_flag_is_refused() {
+        // Two doctored publications, declared as the wire declares one — no daemon serves
+        // either, which is exactly why the branch needs a fixture rather than a run.
+        const CLASHING: &[ArgGrammar] = &[ArgGrammar::open(WAIT_FLAG, "int")];
+        const REAL: &[ArgGrammar] = &[
+            ArgGrammar::open("pane", "int"),
+            ArgGrammar::open("stimulus", "string"),
+        ];
+        let read = |args: &'static [ArgGrammar]| {
+            sprag_rpc::PublishedForm::read(
+                &CallForm::object(args).to_answer(),
+                "a doctored publication",
+            )
+            .expect("it reads")
+        };
+        let clashing = read(CLASHING);
+        let refusal = wait_flag_collision(std::slice::from_ref(&clashing))
+            .expect("a daemon publishing `wait` collides with this command's own flag");
+        assert!(
+            refusal.contains(WAIT_FLAG) && refusal.contains("sprag runs"),
+            "{refusal}"
+        );
+
+        // THE CONTROL, and it is the case that actually ships: the arguments a real `run` form
+        // carries do not collide, so the check is silent and every flag reaches the fill.
+        let real = read(REAL);
+        assert!(wait_flag_collision(std::slice::from_ref(&real)).is_none());
+    }
+
     #[test]
     fn a_pane_commands_scope_is_optional_and_stops_at_a_double_dash() {
         let split = |args: &[&str]| {
