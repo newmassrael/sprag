@@ -1740,11 +1740,30 @@ impl Screen {
 
     /// Row `row`'s soft-wrap continuation: `Some(n)` when its logical line runs onto row `row + 1`
     /// having put `n` cells on this one, `None` when the line ends here (or the row is out of
-    /// bounds). The fact [`Self::wrapped`] answers a `bool` from; [`line_cells`] is what turns it
-    /// into the row's share of its logical line.
+    /// bounds). The fact [`Self::wrapped`] answers a `bool` from; the private `line_cells` is what
+    /// turns it into the row's share of its logical line.
+    ///
+    /// **Public because a DISPLAY that re-wraps needs the count and not the flag.** A client
+    /// narrower than the pane it is watching rebuilds the logical lines and cuts them to its own
+    /// width, and it cannot do that from a `bool`: the columns from `n` are LAYOUT — the pad a wide
+    /// cluster leaves when it will not fit at the margin — and joining them into the line is the
+    /// defect `line_cells`'s own doc records. [`Self::wrapped`] stays as the question a display
+    /// asks when it only needs to know THAT the line runs on, and it is derived from this, so the
+    /// two cannot disagree.
     #[must_use]
-    pub(crate) fn continues(&self, row: u16) -> Option<u16> {
+    pub fn continues(&self, row: u16) -> Option<u16> {
         self.continues.get(row as usize).copied().flatten()
+    }
+
+    /// Scrolled-off line `index`'s soft-wrap continuation (0 = oldest) — [`Self::continues`] for
+    /// the history rows, as [`Self::scrollback_mark`] is [`Self::mark`] for them.
+    ///
+    /// A scrolled-back view projects history rows beside visible ones, so a client re-wrapping that
+    /// view needs the same fact about both halves; without this one, the rows above the live region
+    /// would join into the wrong lines.
+    #[must_use]
+    pub fn scrollback_continues(&self, index: usize) -> Option<u16> {
+        self.scrollback.get(index).and_then(|line| line.continues)
     }
 
     /// A row's cells (`0..cols`, oldest-left), cloned. The row-to-cells mapping
@@ -1781,12 +1800,52 @@ impl Screen {
     /// Empty for a row out of bounds, as [`Self::row_text`] is.
     #[must_use]
     pub fn row_share_text(&self, row: u16) -> String {
-        let cells = self.row_cells(row);
         let mut text = String::new();
-        for cell in line_cells(&cells, self.continues(row)) {
+        for cell in self.row_share(row) {
             text.push_str(&cell.cluster);
         }
         text
+    }
+
+    /// A row's share of its logical line, as CELLS — `line_cells` over one live row, and the one
+    /// thing [`Self::row_share_text`], [`Self::row_share_len`] and the grid projection all read.
+    ///
+    /// Borrowed rather than cloned, and that is not a micro-optimisation: this is on the per-frame
+    /// path now that a display asks it of every row, and [`Self::row_cells`] clones a heap cluster
+    /// per cell. R344 shipped a 6x per-keystroke regression of exactly that shape.
+    #[must_use]
+    fn row_share(&self, row: u16) -> &[Cell] {
+        let Some(start) = self.index(0, row) else {
+            return &[];
+        };
+        let cells = &self.cells[start..start + self.cols as usize];
+        line_cells(cells, self.continues(row))
+    }
+
+    /// How many of row `row`'s cells belong to its logical line — the length of the row's share
+    /// (the private `row_share`), and `0` out of bounds.
+    ///
+    /// The count a display re-wrapping this pane needs for every row: for a row its line runs off,
+    /// it is [`Self::continues`]'s column; for a row the line ENDS on, it is where the text stops
+    /// and the grid's padding starts. Both answers come from `line_cells`, so a client cutting
+    /// lines at these positions is cutting them where the reflow, the durable history and the
+    /// search all agree they end.
+    #[must_use]
+    pub fn row_share_len(&self, row: u16) -> u16 {
+        u16::try_from(self.row_share(row).len()).unwrap_or(u16::MAX)
+    }
+
+    /// [`Self::row_share_len`] for scrolled-off line `index` (0 = oldest) — the pair to
+    /// [`Self::scrollback_continues`], as [`Self::scrollback_mark`] pairs with [`Self::mark`].
+    ///
+    /// Through `line_cells` and NOT the stored length, because a history line is not stored
+    /// pre-trimmed to its share: the history encoder applies the same rule to the same cells, and
+    /// a second answer here would be a client cutting lines where nothing else does.
+    #[must_use]
+    pub fn scrollback_share_len(&self, index: usize) -> u16 {
+        self.scrollback.get(index).map_or(0, |line| {
+            u16::try_from(line_cells(&line.cells, line.continues).len()).unwrap_or(u16::MAX)
+        })
     }
 
     /// The scrolled-off lines as TEXT (oldest first) — the MAIN screen's history
