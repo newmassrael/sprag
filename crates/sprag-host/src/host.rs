@@ -51,10 +51,10 @@ use sprag_grid::{ProjectionToken, RowShares};
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, Attention, CommandBuilder, DividerStep, Ended, HistoryLimitSource,
-    LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneBirthHooks, PaneDir, PaneEnvSource, PaneHomes,
-    PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow, Projection, Rect,
-    SessionId, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir, SplitSide, Tree,
-    WindowId, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
+    LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneArgsSource, PaneBirthHooks, PaneDir,
+    PaneEnvSource, PaneHomes, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow,
+    Projection, Rect, SessionId, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir,
+    SplitSide, Tree, WindowId, WindowInfo, WindowPlace, Workspace, ZoomOutcome, tile, with_ratio,
 };
 use sprag_vt::{ClipboardTarget, ClipboardTargets, Image, MouseProtocol, Screen, osc52_reply};
 
@@ -1616,6 +1616,11 @@ pub struct Host {
     /// [`with_pane_env`](Self::with_pane_env). HELD as well as installed on the registry because a
     /// [`restore`](Self::restore) replaces the registry's pools wholesale and must re-install it.
     pane_env: Option<PaneEnvSource>,
+    /// What every pane born here adds to its launch — see [`with_pane_args`](Self::with_pane_args).
+    /// HELD for [`pane_env`](Self::pane_env)'s reason: after a [`restore`](Self::restore) an agent
+    /// brought back from a snapshot would otherwise be the one agent in the daemon that cannot
+    /// report.
+    pane_args: Option<PaneArgsSource>,
     /// Where every pane of this host lives in the machine — the daemon's delegated cgroup subtree
     /// (R336), or [`PaneHomes::none`] for a host with nothing to enforce.
     ///
@@ -1686,6 +1691,63 @@ pub fn pane_env_source(socket: &std::path::Path) -> PaneEnvSource {
     })
 }
 
+/// The [`PaneArgsSource`] a daemon installs: an AGENT this daemon starts is launched already
+/// instrumented to report its own turn boundaries, and everything else is launched untouched.
+///
+/// This is the other half of what [`pane_env_source`] began. That one told a pane's child where to
+/// report; a child still has to be CONFIGURED to report, and until this existed the only way to
+/// configure one was `sprag install-hooks`, which edits the user's own file and so instruments every
+/// copy of that agent on the machine — including the ones that have nothing to do with sprag. A
+/// user who never ran it got an agent supervised by SCRAPING its screen, which is a sample of an
+/// animation and loses any turn that starts and ends between two samples.
+///
+/// The whole decision is [`crate::hooks::launch_args`], including the case that is nearly every
+/// pane: a shell gets nothing added to its argv.
+///
+/// # What it cannot reach, stated rather than discovered
+///
+/// An agent a PERSON types at a shell prompt inside a pane. sprag never sees that argv — the pane's
+/// child is the shell, and the agent is the shell's child — so there is nothing to append to. That
+/// user's door is `install-hooks`, which is why this does not replace it, and their agent is
+/// reported through [`sprag_plugin::Authority::Scraped`] so a supervisor knows which it has.
+#[must_use]
+pub fn pane_args_source() -> PaneArgsSource {
+    // Resolved ONCE, for the reason `pane_env_source` resolves its socket once: where this binary's
+    // sibling is cannot change while the daemon runs, and asking per birth would make every pane pay
+    // a filesystem probe for an answer that is fixed.
+    let sprag = sprag_bin();
+    Arc::new(move |argv: &[String]| crate::hooks::launch_args(argv, &sprag))
+}
+
+/// The `sprag` binary this daemon's agents report THROUGH: the sibling of the running executable,
+/// else `sprag` on `PATH`.
+///
+/// `sprag install-hooks` writes `std::env::current_exe()` because it IS that binary. A daemon is
+/// `sprag-term`, so it has to name its sibling — the same discovery `sprag` itself uses to find the
+/// client binary it launches, and the same reason: a build tree works uninstalled, where `PATH`
+/// alone finds nothing or finds an installed sprag of another version.
+fn sprag_bin() -> std::path::PathBuf {
+    sprag_beside(std::env::current_exe().ok().as_deref())
+}
+
+/// [`sprag_bin`]'s DECISION, separated from the process it reads.
+///
+/// Split for the reason `hooks::Target::dir_from` is split from `dir_path`: the rule and the
+/// environment it consults fail differently, and `current_exe` is process-global, so a test of the
+/// rule would otherwise be a test nothing can drive. The fallback in particular — an executable with
+/// no sibling of that name, which is every installed layout that separates the two — is a branch no
+/// developer's build tree ever takes.
+fn sprag_beside(exe: Option<&std::path::Path>) -> std::path::PathBuf {
+    if let Some(sibling) = exe
+        .and_then(std::path::Path::parent)
+        .map(|dir| dir.join("sprag"))
+        && sibling.exists()
+    {
+        return sibling;
+    }
+    std::path::PathBuf::from("sprag")
+}
+
 impl Host {
     /// A new host over a registry with one empty session / window whose dimension-less
     /// spawns adopt `default_size`. Boot panes are added with [`spawn`](Self::spawn).
@@ -1698,6 +1760,7 @@ impl Host {
             samplers: crate::Samplers::default(),
             pane_hooks: None,
             pane_env: None,
+            pane_args: None,
             homes: Arc::new(PaneHomes::none()),
         }
     }
@@ -1742,6 +1805,20 @@ impl Host {
     pub fn with_pane_env(mut self, source: PaneEnvSource) -> Self {
         lock(&self.registry).set_pane_env_source(Arc::clone(&source));
         self.pane_env = Some(source);
+        self
+    }
+
+    /// Instrument every AGENT this host launches so it reports its own turn boundaries — the daemon
+    /// passes [`pane_args_source`], a GUI's in-process host and a test pass nothing and launch every
+    /// argv exactly as written.
+    ///
+    /// Installed on the REGISTRY and held, exactly like [`with_pane_env`](Self::with_pane_env) and
+    /// for both of its reasons: every birth door in the daemon goes through a pool, and a restore
+    /// replaces the pools.
+    #[must_use]
+    pub fn with_pane_args(mut self, source: PaneArgsSource) -> Self {
+        lock(&self.registry).set_pane_args_source(Arc::clone(&source));
+        self.pane_args = Some(source);
         self
     }
 
@@ -1859,6 +1936,13 @@ impl Host {
         // reboot.
         if let Some(source) = &self.pane_env {
             registry.set_pane_env_source(Arc::clone(source));
+        }
+        // And what a restored AGENT's launch carries, at that moment for that reason. A restore
+        // re-derives it rather than replaying what the snapshot recorded, which is the whole reason
+        // `Workspace::spawn_restored` asks the source instead of trusting the stored argv: the
+        // instrumentation names a daemon, and the daemon that recorded it is gone.
+        if let Some(source) = &self.pane_args {
+            registry.set_pane_args_source(Arc::clone(source));
         }
         // And where its panes live in the machine, for exactly that reason at exactly that moment.
         // A restored pane placed nowhere would be the one unweighted pane in the daemon, and the gap
@@ -3639,6 +3723,36 @@ mod tests {
 
     /// The installed source reaches a pane born through the in-process host — the path the daemon's
     /// boot pane and every `new_pane` take.
+    /// The `sprag` a launched agent reports THROUGH is the one beside this binary, and a bare name only
+    /// when there is none.
+    ///
+    /// The fallback is the branch worth driving: a build tree always has the sibling, so the case
+    /// `PATH` exists for is the one no developer's machine ever takes. Read twice with the input
+    /// changed — the same directory, with and without the sibling in it.
+    #[test]
+    fn the_agent_reports_through_the_sprag_beside_this_binary() {
+        let dir = std::env::temp_dir().join(format!("sprag-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let exe = dir.join("sprag-term");
+
+        assert_eq!(
+            sprag_beside(Some(&exe)),
+            std::path::PathBuf::from("sprag"),
+            "with no sibling there is nothing to name but the one on PATH",
+        );
+
+        std::fs::write(dir.join("sprag"), "").expect("a sibling");
+        assert_eq!(
+            sprag_beside(Some(&exe)),
+            dir.join("sprag"),
+            "a build tree's own sprag, which PATH would miss or answer with another version's",
+        );
+
+        assert_eq!(sprag_beside(None), std::path::PathBuf::from("sprag"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_host_with_a_pane_environment_tells_each_pane_its_own_id() {
         let host = Host::new((40, 6))
@@ -3718,6 +3832,80 @@ mod tests {
             restored.pane_full_text(id).contains(&expected),
             "the restored pane's screen: {:?}",
             restored.pane_full_text(id),
+        );
+    }
+
+    /// A RESTORED agent is instrumented by the daemon RESTORING it, not by the one that recorded it.
+    ///
+    /// The twin of the test above, and the branch that only exists after a reboot: `restore` builds
+    /// a whole new set of pools, so a source installed at construction is gone from every one of
+    /// them. REVERT-PROOF: drop the `set_pane_args_source` call from `restore` and this fails while
+    /// every other restore test stays green.
+    ///
+    /// It matters because `claude` is in the DEFAULT restore allowlist — an agent pane really does
+    /// come back running the agent — so without this the one pane in the daemon that could not
+    /// report would be the agent somebody had open when the machine rebooted.
+    #[test]
+    fn a_restored_agent_is_instrumented_by_the_daemon_restoring_it() {
+        use sprag_terminal::{PaneSnapshot, SessionSnapshot, WindowSnapshot};
+
+        // `echo` stands in for the agent: allowlisted here so the restore re-runs it exactly, and it
+        // PRINTS what it was launched with, which is the only way to read an argv from outside.
+        let allow: std::collections::HashSet<String> = ["echo".to_owned()].into_iter().collect();
+        let snap = Snapshot {
+            version: sprag_terminal::SNAPSHOT_VERSION,
+            next_id: 1,
+            default_size: (80, 24),
+            sessions: vec![SessionSnapshot {
+                name: "0".to_owned(),
+                current_window: "0".to_owned(),
+                windows: vec![WindowSnapshot {
+                    name: "0".to_owned(),
+                    layout: LayoutWire::default(),
+                    floating: vec![],
+                    panes: vec![PaneSnapshot {
+                        id: PaneId(0),
+                        cwd: None,
+                        command_label: "echo".to_owned(),
+                        argv: vec!["echo".to_owned(), "recorded".to_owned()],
+                        remote: None,
+                        opened_by: None,
+                        name: None,
+                        cols: 80,
+                        rows: 24,
+                    }],
+                    manual_size: None,
+                    active: None,
+                    zoomed: None,
+                    opened_by: None,
+                }],
+            }],
+        };
+
+        let host = Host::new((80, 24)).with_pane_args(Arc::new(|argv: &[String]| {
+            if argv.first().is_some_and(|first| first.ends_with("echo")) {
+                vec!["--settings".to_owned(), "DOC".to_owned()]
+            } else {
+                Vec::new()
+            }
+        }));
+        assert_eq!(
+            host.restore(snap, &allow, |_| None, || None, || None, |_| Vec::new())
+                .expect("restores"),
+            1,
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let wanted = "recorded --settings DOC";
+        while std::time::Instant::now() < deadline
+            && !host.pane_full_text(PaneId(0)).contains(wanted)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            host.pane_full_text(PaneId(0)).contains(wanted),
+            "the restored pane's screen: {:?}",
+            host.pane_full_text(PaneId(0)),
         );
     }
 

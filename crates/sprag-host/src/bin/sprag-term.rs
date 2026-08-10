@@ -148,7 +148,13 @@ fn main() -> io::Result<()> {
     // an address is a promise to serve it — the GUI's in-process host, which serves no host socket,
     // installs nothing and its panes are spawned exactly as before. The path is `sock`, resolved
     // above once, so what a pane is told and what `mount` binds cannot differ.
-    let host = Host::new((args.cols, args.rows)).with_pane_env(sprag_host::pane_env_source(&sock));
+    // And every AGENT this daemon launches is launched already reporting: the pane environment says
+    // where to report, and this says how. Installed at the same site for the same reason — the
+    // instrumentation names the `sprag` beside this binary, and a host that serves no socket has
+    // nowhere for a report to go, so the GUI's in-process host installs neither half.
+    let host = Host::new((args.cols, args.rows))
+        .with_pane_env(sprag_host::pane_env_source(&sock))
+        .with_pane_args(sprag_host::pane_args_source());
     // Every pane this daemon births lands in the subtree taken above, so a person's session cannot
     // be starved by whichever neighbour spawned the most threads. A host with no tree spawns
     // exactly as it always did.

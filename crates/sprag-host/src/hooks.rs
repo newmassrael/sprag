@@ -142,6 +142,20 @@ pub struct Target {
     /// A dotted path to the agent's own switch for hooks, when it has one. A `false` there means
     /// every hook installed is inert — see [`Status::disabled_by`].
     disable_switch: Option<&'static str>,
+    /// The flag this agent takes ONE launch's configuration on, when it has one.
+    ///
+    /// The difference between instrumenting a MACHINE and instrumenting a LAUNCH. Everything else
+    /// in this module edits the user's own configuration file, which reaches every run of that agent
+    /// anywhere — right for a user who asked for it, and not something sprag may do on their behalf
+    /// because they opened a pane. This flag is how sprag instruments the agent it is starting
+    /// ITSELF, leaving every other copy on the machine untouched: see [`Target::session_args`].
+    ///
+    /// `None` says this agent has no such door and its users go through `install-hooks`. That is
+    /// codex's answer TODAY rather than forever: its own per-run overrides are dotted `key=value`
+    /// pairs over a TOML document, and whether a whole hooks table can be spelled that way is a
+    /// claim nobody here has run. An unverified `Some` would be worse than an honest `None` — it
+    /// would append a flag to somebody's editor session and find out at their expense.
+    session_flag: Option<&'static str>,
     /// What the user must still do after the file is written, when writing it is not enough.
     ///
     /// Printed by the installer and by `list-hooks`. It exists because an agent may hold a hook it
@@ -163,6 +177,11 @@ pub const CLAUDE: Target = Target {
     file: "settings.json",
     format: Format::Json,
     disable_switch: None,
+    // Verified against `claude --help` on the box that wrote this: "--settings <file-or-json> —
+    // Path to a settings JSON file or a JSON string to load additional settings from". The JSON
+    // form is what makes this a launch and not a file: nothing is written, so nothing is left
+    // behind to version, clean up, or point at a daemon that has since gone.
+    session_flag: Some("--settings"),
     follow_up: None,
     events: &[
         // The turn starts, and every step inside it. `PreToolUse` and `PostToolUse` both mean
@@ -197,6 +216,9 @@ pub const CODEX: Target = Target {
     // when unset, so sprag does not write it. It reads false only if the user turned hooks off, and
     // then every entry below is inert — which is worth saying and not worth overriding.
     disable_switch: Some("features.hooks"),
+    // See `session_flag`: codex's per-run overrides are `-c key=value` over TOML, and no one has
+    // run whether a hooks table can be spelled that way. Its users go through `install-hooks`.
+    session_flag: None,
     // codex hashes each configured hook and holds it until its user has seen it. Writing the file
     // is therefore only half the install, and the half sprag must not do for them.
     follow_up: Some(
@@ -305,6 +327,63 @@ impl Target {
     #[must_use]
     pub fn owns(&self, command: &str) -> bool {
         self.program_of(command).is_some()
+    }
+
+    /// The arguments that instrument ONE launch of this agent, whose own argv is `argv` and whose
+    /// reports reach the daemon through the `sprag` at `exe`.
+    ///
+    /// `None` when the launch must be left exactly as its caller wrote it: an agent with no
+    /// per-launch door (no `session_flag` in its table), or an `argv` that already carries that flag
+    /// in either of the two spellings a command line has for one. The
+    /// second is a refusal and not an oversight — a caller passing its own settings has said what
+    /// this launch is configured by, and a second copy of the same flag is a precedence question no
+    /// agent's manual answers the same way twice. The cost is stated rather than hidden: such a
+    /// launch reports nothing, and its supervisor is told so by
+    /// [`sprag_plugin::Authority`] rather than left to assume.
+    ///
+    /// It is asked HERE rather than by the source that calls this, because a caller that has to
+    /// remember a refusal is the caller that forgets it (R349).
+    ///
+    /// # One table, three readers
+    ///
+    /// The module docs called [`Target::events`] one table with two readers — what an install
+    /// WRITES and what [`report_for`] MEANS. This is the third, and the reason it is derived here
+    /// rather than spelled out at the launch site is R344's rule: a second reader that built the
+    /// same document from its own idea of the events would parse perfectly and report the wrong
+    /// thing. An event added to the table is instrumented on both paths or on neither.
+    ///
+    /// The DOCUMENT is the same object an install puts in the user's file, cut down to sprag's own
+    /// group — built by the same private entry renderer, so the timeout and the one command per
+    /// event cannot differ between the two. It
+    /// travels as a JSON string rather than a temporary file so that a launch leaves nothing on
+    /// disk: a file would have to outlive the agent, be cleaned up after a daemon that was killed,
+    /// and be readable by whoever the agent runs as.
+    #[must_use]
+    pub fn session_args(&self, argv: &[String], exe: &Path) -> Option<Vec<String>> {
+        let flag = self.session_flag?;
+        // BOTH spellings of a flag that is already there. A command line may join a flag to its
+        // value with `=`, and a check that read only the separated form would append a second
+        // `--settings` to `claude --settings={...}` — the exact collision this refusal exists to
+        // avoid, met by the one spelling nobody tests with.
+        let joined = format!("{flag}=");
+        if argv
+            .iter()
+            .any(|arg| arg == flag || arg.starts_with(&joined))
+        {
+            return None;
+        }
+        let command = self.command(exe);
+        let mut hooks = Map::new();
+        for (event, _) in self.events {
+            hooks.insert(
+                (*event).to_owned(),
+                serde_json::json!([{ "hooks": [json_entry(&command)] }]),
+            );
+        }
+        Some(vec![
+            flag.to_owned(),
+            serde_json::json!({ "hooks": Value::Object(hooks) }).to_string(),
+        ])
     }
 }
 
@@ -433,6 +512,71 @@ impl Status {
     pub fn inert(&self) -> bool {
         self.installed > 0 && (self.missing_program.is_some() || self.disabled_by.is_some())
     }
+
+    /// Whether this agent ALREADY reports on its own — every event wired, and nothing stopping any
+    /// of them from firing.
+    ///
+    /// The question [`launch_args`] asks before instrumenting a launch, and it is the CONJUNCTION
+    /// rather than either half: a complete install whose binary has moved reports nothing, so
+    /// treating `complete()` alone as reporting would leave exactly the user whose integration is
+    /// broken with no reporting at all — and no way to tell, since their config says it is wired.
+    #[must_use]
+    pub fn reporting(&self) -> bool {
+        self.complete() && !self.inert()
+    }
+}
+
+/// What sprag adds to `argv` so the agent it names reports its own turn boundaries — the whole of
+/// the decision [`crate::pane_args_source`] makes at a pane's birth, reading this machine.
+///
+/// Empty for everything that is not an agent with a per-launch door, which is nearly every pane
+/// ever opened: the source is consulted on every birth and this is what it answers for a shell.
+///
+/// # Why an agent whose OWN config already reports is left alone
+///
+/// The two mechanisms are exclusive by construction rather than by hoping they compose. An agent
+/// merges the settings it is handed with the settings it reads, so an `install-hooks` user whose
+/// launch was also instrumented would run every hook TWICE — two processes and two round trips per
+/// event, in the agent's critical path, for a level that is idempotent and would look identical
+/// either way. A user who asked for the machine-wide install gets exactly what they asked for, and
+/// sprag adds nothing on top of it.
+///
+/// An install that cannot RUN does not count as reporting — see [`Status::reporting`], which is
+/// where that conjunction lives and is tested.
+#[must_use]
+pub fn launch_args(argv: &[String], exe: &Path) -> Vec<String> {
+    launch_args_from(argv, exe, |target| {
+        status(target).is_ok_and(|status| status.reporting())
+    })
+}
+
+/// [`launch_args`]'s DECISION, separated from the machine it reads.
+///
+/// Split for the reason [`Target::dir_from`] is: what a launch carries and whether a user's own
+/// config already reports fail for different reasons, and the rule should be provable without a
+/// `$HOME` full of agent configuration — a test that wrote one would be a test of this module's
+/// file surgery, which has its own.
+fn launch_args_from(
+    argv: &[String],
+    exe: &Path,
+    already_reports: impl Fn(&'static Target) -> bool,
+) -> Vec<String> {
+    // The PROGRAM decides, by its basename, so `/usr/local/bin/claude` and `claude` are one agent
+    // and `sh -c claude` is not: an argv sprag did not write is one whose words it cannot read, and
+    // appending a flag to a shell's would hand the shell an argument meant for something else.
+    let Some(target) = argv
+        .first()
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(target)
+    else {
+        return Vec::new();
+    };
+    if already_reports(target) {
+        return Vec::new();
+    }
+    target.session_args(argv, exe).unwrap_or_default()
 }
 
 /// Read `target`'s configuration and report where the integration stands.
@@ -1931,5 +2075,164 @@ mod tests {
             serde_json::from_str::<Value>(&text).expect("still JSON"),
             serde_json::json!({ "model": "opus" })
         );
+    }
+
+    /// ONE TABLE, THREE READERS: what a launch's document says about an event is byte-for-byte what
+    /// an INSTALL writes into the user's file for it.
+    ///
+    /// The gate R344's rule asks for. Two renderers now build sprag's hooks — one editing somebody's
+    /// config, one composing a `--settings` document — and the failure mode of a second reader is
+    /// not a crash: it is a document that parses perfectly and reports the wrong thing, or reports
+    /// on a different set of events than the install does. Reading both out of the SAME fixture and
+    /// comparing the entries is the only thing that keeps them one mechanism.
+    ///
+    /// It compares the ENTRY under each event rather than the whole file, because the two documents
+    /// legitimately differ in one way: the file is the user's and holds their other keys, and the
+    /// launch document is sprag's alone.
+    #[test]
+    fn a_launch_document_says_exactly_what_an_install_would_write() {
+        let fixture = Fixture::new(&CLAUDE, None);
+        let installed: Value =
+            serde_json::from_str(&fixture.install(EXE)).expect("the installed file is JSON");
+        let launch = CLAUDE
+            .session_args(&[], Path::new(EXE))
+            .expect("claude takes a per-launch document");
+        assert_eq!(launch[0], "--settings", "the flag comes first: {launch:?}");
+        let document: Value =
+            serde_json::from_str(&launch[1]).expect("the launch document is JSON");
+
+        for (event, _) in CLAUDE.events {
+            assert_eq!(
+                document["hooks"][event], installed["hooks"][event],
+                "the two readers disagree about {event}",
+            );
+        }
+        assert_eq!(
+            document["hooks"]
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>(),
+            installed["hooks"]
+                .as_object()
+                .expect("an object")
+                .keys()
+                .collect::<Vec<_>>(),
+            "and about WHICH events there are",
+        );
+    }
+
+    /// A launch already carrying the flag is left exactly as its caller wrote it.
+    ///
+    /// Not politeness: two `--settings` on one command line is a precedence question the agent's
+    /// manual does not answer, and sprag guessing at it would silently replace configuration
+    /// somebody chose. The cost — that launch reports nothing — is what `Authority` exists to make
+    /// visible.
+    #[test]
+    fn a_launch_that_brings_its_own_settings_keeps_them() {
+        for argv in [
+            vec!["claude", "--settings", "/home/me/mine.json"],
+            // The spelling the first draft of this rule missed, found by asking the debt question of
+            // the round's own code: a command line may join a flag to its value with `=`, and a
+            // reader that knew only the separated form would append the second `--settings` this
+            // refusal exists to prevent.
+            vec!["claude", "--settings={\"hooks\":{}}"],
+        ] {
+            let argv = argv.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+            assert_eq!(
+                CLAUDE.session_args(&argv, Path::new(EXE)),
+                None,
+                "{argv:?} already says what configures it",
+            );
+            assert!(launch_args_from(&argv, Path::new(EXE), |_| false).is_empty());
+        }
+    }
+
+    /// What a launch carries is decided by the program, by its BASENAME, and by nothing else.
+    ///
+    /// The three answers in one place because they are one rule: an absolute path to an agent is
+    /// that agent, an agent with no per-launch door is left to `install-hooks`, and everything else
+    /// — which is nearly every pane ever opened — is launched untouched.
+    #[test]
+    fn only_a_recognised_agent_with_a_per_launch_door_carries_anything() {
+        let carried = |argv: &[&str]| {
+            launch_args_from(
+                &argv.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>(),
+                Path::new(EXE),
+                |_| false,
+            )
+        };
+        assert_eq!(
+            carried(&["/usr/local/bin/claude", "-p", "hello"]).first(),
+            Some(&"--settings".to_owned()),
+            "an agent named by its absolute path is still that agent",
+        );
+        assert!(
+            carried(&["codex"]).is_empty(),
+            "an agent with no per-launch door is left to install-hooks",
+        );
+        assert!(
+            carried(&["/bin/sh", "-c", "claude"]).is_empty(),
+            "a SHELL is not an agent, whatever it goes on to run"
+        );
+        assert!(carried(&["/bin/bash"]).is_empty());
+        assert!(
+            carried(&[]).is_empty(),
+            "and a launch with no program at all"
+        );
+    }
+
+    /// An agent whose OWN configuration already reports is not instrumented a second time.
+    #[test]
+    fn an_agent_that_already_reports_is_not_instrumented_twice() {
+        let argv = ["claude".to_owned()];
+        assert!(
+            launch_args_from(&argv, Path::new(EXE), |target| target.name == "claude").is_empty(),
+            "the user ran install-hooks; sprag adds nothing on top of it",
+        );
+        assert!(
+            !launch_args_from(&argv, Path::new(EXE), |_| false).is_empty(),
+            "and the control: with nothing installed the launch is instrumented",
+        );
+    }
+
+    /// "Already reporting" is COMPLETE AND ABLE TO RUN, and the second half is what a `complete()`
+    /// test alone would get wrong.
+    ///
+    /// Three fixtures, because the three answers must differ: nothing installed, a whole install
+    /// whose binary is on disk, and the same install whose binary has since moved. A user in the
+    /// third state has a config that says it is wired and an agent that reports nothing, and it is
+    /// exactly the user sprag must still instrument.
+    #[test]
+    fn an_installed_hook_that_cannot_run_is_not_an_agent_that_reports() {
+        for target in TARGETS {
+            let fixture = Fixture::new(target, None);
+            assert!(
+                !status_at(target, fixture.path()).reporting(),
+                "{}: nothing is installed",
+                target.name,
+            );
+
+            let program = fixture.program();
+            fixture.install(&program.display().to_string());
+            assert!(
+                status_at(target, fixture.path()).reporting(),
+                "{}: every event is wired and the binary is there",
+                target.name,
+            );
+
+            std::fs::remove_file(&program).expect("the binary moves away");
+            let moved = status_at(target, fixture.path());
+            assert!(
+                moved.complete(),
+                "{}: the file still says it is wired",
+                target.name
+            );
+            assert!(
+                !moved.reporting(),
+                "{}: but nothing it names can run, so this agent reports nothing",
+                target.name,
+            );
+        }
     }
 }
