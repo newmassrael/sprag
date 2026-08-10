@@ -3272,7 +3272,19 @@ mod tests {
         value.to_string()
     }
 
-    /// One `scene/invoke` through the real per-frame dispatch body, discarding the reply.
+    /// One `scene/invoke` through the real per-frame dispatch body — and it FAILS on a refusal.
+    ///
+    /// # ⚠ It used to discard the reply, and that cost a CI cycle nobody could attribute
+    ///
+    /// Every caller here drives an action for its EFFECT, so a refusal is never the thing under
+    /// test — and a discarded reply made one invisible. Measured on the macOS runner at `679d330`:
+    /// a 63-split burst built 63 panes instead of 64 and the only thing the failure could say was
+    /// `left: 63, right: 64`. Whichever split was refused, and why, was not in the log at all;
+    /// every diagnosis of it was a guess.
+    ///
+    /// The daemon already answers with its reason ([`crate::external::refused`] carries one), so
+    /// the helper reads it. A caller that WANTS a refusal asserts on the reply itself rather than
+    /// going through here — none does today, which is why this can be strict.
     fn invoke_recording(state: &HostState, action: &str, args: serde_json::Value) {
         let sink = Arc::new(Mutex::new(Vec::new()));
         let request = serde_json::json!({
@@ -3282,6 +3294,16 @@ mod tests {
             "params": { "path": crate::wire::mux_action_path(action), "args": args },
         });
         dispatch_recording(state, &request.to_string(), &sink);
+        let replies = sink.lock().expect("the recording sink").clone();
+        for reply in &replies {
+            let parsed: serde_json::Value =
+                serde_json::from_str(reply).expect("the daemon answers JSON");
+            assert!(
+                parsed.get("error").is_none(),
+                "`{action}` was REFUSED, so whatever this test asserts next is about a workspace \
+                 the action never changed: {reply}",
+            );
+        }
     }
 
     /// Everything `BOOT`'s journal has recorded above `cursor`.
