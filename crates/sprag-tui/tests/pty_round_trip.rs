@@ -52,7 +52,7 @@ use sprag_host::keymap::{Keymap, PrefixMode, Routed};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
     NEW_WINDOW_ACTION, PANES_SLOT, RENAME_SESSION_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
-    SESSIONS_SLOT, SPLIT_ACTION, TREE_SLOT, WINDOWS_SLOT,
+    SESSIONS_SLOT, SPLIT_ACTION, TEXT_ACTION, TREE_SLOT, WINDOWS_SLOT,
 };
 use sprag_host::{mux_action_path, pane_input_path};
 use sprag_rpc::HostConn;
@@ -390,6 +390,25 @@ fn pane_mouse(conn: &mut HostConn, session: &str, pane: u64) -> Option<String> {
 /// look identical from the client's terminal, and they are opposite bugs.
 fn pane_text(conn: &mut HostConn, session: &str) -> String {
     pane_text_of(conn, session, 0)
+}
+
+/// Write `text` straight into pane 0's child, past every client.
+///
+/// ⚠ **A TEST THAT NEEDS AN ESCAPE SEQUENCE IN THE PANE CANNOT TYPE IT AT A CLIENT.** A client
+/// DECODES a keystroke into the wire's key vocabulary, so `\x1b[?25l` arrives as an Escape key and
+/// some letters rather than as DECTCEM — and with echo on, the line discipline paints it as
+/// `^[[?25l` before anything else sees it. The daemon's own `text` action is the door that carries
+/// bytes, which is what a program running in the pane would have written.
+fn feed_pane(conn: &mut HostConn, session: &str, text: &str) {
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": session,
+            "path": pane_input_path(0, TEXT_ACTION),
+            "args": { "text": text },
+        }),
+    )
+    .expect("the pane accepts text");
 }
 
 /// [`pane_text`] for a pane named by ID — what a test that SPLIT needs, since the pane it created
@@ -3954,6 +3973,100 @@ fn a_re_wrapped_pane_taller_than_the_client_shows_its_newest_rows() {
     assert!(
         rows.iter().any(|row| row.starts_with("L10")),
         "...and the last must be on it: {rows:?}",
+    );
+}
+
+/// **A PANE WITH NO CURSOR IS ANCHORED AT ITS BOTTOM** — the arm `first_row` was written for and
+/// nothing drove.
+///
+/// It was registered as having no live driver, on the reasoning that a cursor-less frame is a
+/// scrolled-back history window and this client never scrolls. **That diagnosis was wrong**:
+/// DECTCEM hides the cursor on the LIVE screen too, so a program that does it (a progress meter, a
+/// spinner, `tput civis`) reaches this arm on every frame. The driver is one escape sequence.
+///
+/// What the arm decides: with no cursor to keep on screen there is nothing to follow, so the client
+/// shows the END of the re-wrapped content — which for a line-oriented pane is its newest output.
+///
+/// ⚠ **THE PANE RUNS `stty raw -echo`**, and both halves are load-bearing (R347). With echo ON the
+/// line discipline prints an escape as `^[[20A` and the emulator never sees one; in CANONICAL mode
+/// `cat` holds every byte until a newline, so the escape would not arrive at all.
+///
+/// ⚠ **AND THE FIXTURE MOVES THE STATE OFF THE ANSWER FIRST.** With the cursor where the output
+/// leaves it — at the end — following it and anchoring at the bottom give the SAME rows, so a
+/// client that ignored the arm entirely would pass. The cursor goes UP to the top of the pane
+/// first, where the two answers disagree completely, and the CONTROL asserts the view followed it
+/// there before the cursor is hidden.
+///
+/// REVERT-PROOF: make the no-cursor arm anchor at 0 and the newest line is off screen.
+#[test]
+fn a_pane_that_hid_its_cursor_is_anchored_at_its_newest_output() {
+    let config = ConfigHome::new("[options]\nwindow-size = \"largest\"\n");
+    let (_daemon, sock) = spawn_daemon_with_config(
+        &[
+            "sh",
+            "-c",
+            "stty raw -echo 2>/dev/null; printf GO; exec cat",
+        ],
+        Some(config.as_str()),
+    );
+    let mut conn = observe(&sock);
+    let session = boot_session(&mut conn);
+
+    let (wide_pty, narrow_pty) = ((100u16, 24u16), (60u16, 24u16));
+    let (wide, narrow) = two_clients(&sock, &session, &mut conn, wide_pty, narrow_pty, None);
+    wide.wait_for("the pane to say it has configured its terminal", || {
+        if wide.row(0).starts_with("GO") {
+            Ok(())
+        } else {
+            Err(format!("row0 {:?}", wide.row(0)))
+        }
+    });
+
+    // FIFTEEN wrapped lines, and the count is the fixture doing its job: at ten the re-wrapped
+    // content is twenty-one rows, which FITS the narrow client's twenty-three — and then both arms
+    // answer zero and the test passes about nothing. Fifteen makes it thirty-one.
+    let line = |n: usize| format!("L{n:02}{}E{n:02}", "-".repeat(73));
+    for n in 1..=15 {
+        feed_pane(&mut conn, &session, &format!("\r\n{}", line(n)));
+    }
+    wide.wait_for("the wide client to paint the last line", || {
+        let last = line(15);
+        if wide.rows().iter().any(|row| row == &last) {
+            Ok(())
+        } else {
+            Err(format!("{:?}", wide.rows()))
+        }
+    });
+
+    // THE CONTROL: the cursor goes to the top of the pane and the view FOLLOWS it there, which is
+    // the opposite of the answer this test is about.
+    feed_pane(&mut conn, &session, "\x1b[20A");
+    narrow.wait_for("the view to follow the cursor to the pane's top", || {
+        let rows = narrow.rows();
+        if rows.iter().any(|row| row.starts_with("L01")) {
+            Ok(())
+        } else {
+            Err(format!("{rows:?}"))
+        }
+    });
+
+    // Now hide it. Nothing else moves.
+    feed_pane(&mut conn, &session, "\x1b[?25l");
+    narrow.wait_for(
+        "the client with no cursor to show the newest output",
+        || {
+            let rows = narrow.rows();
+            if rows.iter().any(|row| row.starts_with("L15")) {
+                Ok(())
+            } else {
+                Err(format!("{rows:?}"))
+            }
+        },
+    );
+    let rows = narrow.rows();
+    assert!(
+        !rows.iter().any(|row| row.starts_with("L01")),
+        "the bottom of the content, not the top it was just showing: {rows:?}",
     );
 }
 

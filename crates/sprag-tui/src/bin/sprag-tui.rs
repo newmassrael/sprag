@@ -112,6 +112,7 @@ use std::time::{Duration, Instant};
 use pinion_core::GridBuffer;
 use pinion_core::QuitSink;
 use sprag_client::WireHost;
+use sprag_grid::ProjectionToken;
 use sprag_host::HostClient;
 use sprag_host::chooser::Pick;
 use sprag_host::keyhelp::{KeyHelp, Pressed, Scroll};
@@ -125,9 +126,10 @@ use sprag_terminal::{Ended, PaneId, PlaceHow, SplitId};
 use sprag_tui::focus::{self, Person};
 use sprag_tui::outward::Outward;
 use sprag_tui::{
-    Divider, MouseEdges, PaintCache, PanePaint, PaneView, Rect, Split, Tiling, Viewport, WireKey,
-    agent_window_title, chooser_changes, cursor_changes, divider_changes, first_row, help_changes,
-    help_viewport, prompt_changes, status_changes, tile, title_change, wire_key, with_ratio,
+    Divider, MouseEdges, PaintCache, PanePaint, PaneSource, PaneView, Rect, Split, Tiling,
+    Viewport, WireKey, agent_window_title, chooser_changes, cursor_changes, divider_changes,
+    help_changes, help_viewport, prompt_changes, status_changes, tile, title_change, wire_key,
+    with_ratio,
 };
 use sprag_vt::MouseProtocol;
 use termwiz::caps::{Capabilities, ProbeHints};
@@ -301,18 +303,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         &tiling,
         split.panes,
         &mut looking,
-        Frame {
-            focus,
-            clear: Clear::Yes,
-            // Nothing is over the panes at boot, and the state that would say so is
-            // declared below — where it belongs, one line before the loop that owns it.
-            overlay: &Overlay::None,
-            status: split.status,
-            // Nothing has been pressed yet, so the row says where this client is — which is the
-            // first thing a person attaching over ssh wants to know anyway.
-            message: None,
-            rewrap: rewrapping(&keymap),
-        },
+        Frame::of(focus, Clear::Yes, &Overlay::None, &split, None, &keymap),
         &mut held,
     )?;
 
@@ -428,14 +419,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &tiling,
                                 split.panes,
                                 &mut looking,
-                                Frame {
+                                Frame::of(
                                     focus,
-                                    clear: Clear::Yes,
-                                    overlay: &overlay,
-                                    status: split.status,
-                                    message: showing(&message).as_deref(),
-                                    rewrap: rewrapping(&keymap),
-                                },
+                                    Clear::Yes,
+                                    &overlay,
+                                    &split,
+                                    showing(&message).as_deref(),
+                                    &keymap,
+                                ),
                                 &mut held,
                             )?;
                             continue;
@@ -449,14 +440,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &tiling,
                                 split.panes,
                                 &mut looking,
-                                Frame {
+                                Frame::of(
                                     focus,
-                                    clear: Clear::Yes,
-                                    overlay: &overlay,
-                                    status: split.status,
-                                    message: showing(&message).as_deref(),
-                                    rewrap: rewrapping(&keymap),
-                                },
+                                    Clear::Yes,
+                                    &overlay,
+                                    &split,
+                                    showing(&message).as_deref(),
+                                    &keymap,
+                                ),
                                 &mut held,
                             )?;
                             Command::Act(action)
@@ -476,14 +467,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                                 &tiling,
                                 split.panes,
                                 &mut looking,
-                                Frame {
+                                Frame::of(
                                     focus,
-                                    clear: Clear::Yes,
-                                    overlay: &overlay,
-                                    status: split.status,
-                                    message: showing(&message).as_deref(),
-                                    rewrap: rewrapping(&keymap),
-                                },
+                                    Clear::Yes,
+                                    &overlay,
+                                    &split,
+                                    showing(&message).as_deref(),
+                                    &keymap,
+                                ),
                                 &mut held,
                             )?;
                         }
@@ -566,14 +557,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::No,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::No,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         report
@@ -608,14 +599,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::No,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::No,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         report
@@ -811,14 +802,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::Yes,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::Yes,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         report
@@ -849,14 +840,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::No,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::No,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         report
@@ -881,14 +872,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::No,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::No,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         report
@@ -920,14 +911,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::No,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::No,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         report
@@ -960,14 +951,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::Yes,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::Yes,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         report
@@ -1006,14 +997,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::No,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::No,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                         // The ring is this client's own paint order, so a window holding one pane
@@ -1163,14 +1154,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                                         &tiling,
                                         split.panes,
                                         &mut looking,
-                                        Frame {
+                                        Frame::of(
                                             focus,
-                                            clear: Clear::Yes,
-                                            overlay: &overlay,
-                                            status: split.status,
-                                            message: showing(&message).as_deref(),
-                                            rewrap: rewrapping(&keymap),
-                                        },
+                                            Clear::Yes,
+                                            &overlay,
+                                            &split,
+                                            showing(&message).as_deref(),
+                                            &keymap,
+                                        ),
                                         &mut held,
                                     )?;
                                 }
@@ -1194,14 +1185,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                             &tiling,
                             split.panes,
                             &mut looking,
-                            Frame {
+                            Frame::of(
                                 focus,
-                                clear: Clear::No,
-                                overlay: &overlay,
-                                status: split.status,
-                                message: showing(&message).as_deref(),
-                                rewrap: rewrapping(&keymap),
-                            },
+                                Clear::No,
+                                &overlay,
+                                &split,
+                                showing(&message).as_deref(),
+                                &keymap,
+                            ),
                             &mut held,
                         )?;
                     }
@@ -1234,14 +1225,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                     &tiling,
                     split.panes,
                     &mut looking,
-                    Frame {
+                    Frame::of(
                         focus,
-                        clear: Clear::Yes,
-                        overlay: &overlay,
-                        status: split.status,
-                        message: showing(&message).as_deref(),
-                        rewrap: rewrapping(&keymap),
-                    },
+                        Clear::Yes,
+                        &overlay,
+                        &split,
+                        showing(&message).as_deref(),
+                        &keymap,
+                    ),
                     &mut held,
                 )?;
             }
@@ -1348,14 +1339,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                 &tiling,
                 split.panes,
                 &mut looking,
-                Frame {
+                Frame::of(
                     focus,
-                    clear: Clear::No,
-                    overlay: &overlay,
-                    status: split.status,
-                    message: showing(&message).as_deref(),
-                    rewrap: rewrapping(&keymap),
-                },
+                    Clear::No,
+                    &overlay,
+                    &split,
+                    showing(&message).as_deref(),
+                    &keymap,
+                ),
                 &mut held,
             )?;
         }
@@ -1757,7 +1748,7 @@ fn paint(
         .iter()
         .find(|held| focus == Some(held.pane))
         .map_or_else(Vec::new, |held| {
-            cursor_changes(&held.cells, held.area, held.from)
+            cursor_changes(&held.cells, held.area, held.source.read_at())
         });
     screen.add_changes(held.cache.changes(&drawn));
     for divider in &tiling.dividers {
@@ -2087,16 +2078,12 @@ fn rewrapped(rewrap: bool, area: Rect, screen: Rect, cells: &GridBuffer) -> bool
 /// One pane's contribution to the frame: its cells cut to this client's width when it is being
 /// re-wrapped, and the viewport's own slice of them when it is not.
 ///
-/// The re-wrapped arm answers NO TOKEN, and that is a correctness bound rather than a cost
-/// decision. [`PaintCache`]'s skip rests on the producer's per-row damage stamps, and those are
-/// numbered in the PANE's rows; a re-wrapped row is a piece of a logical line that can come from
-/// two of them, so no stamp describes it. `None` is the answer the cache already has for "cannot
-/// say", and it means this pane is rebuilt every frame — which is what every client did for every
-/// pane before the cache existed.
+/// The re-wrapped arm reads `from = (0, 0)`, because [`sprag_grid::rewrap`] has already chosen
+/// which rows this client shows — the anchoring rule lives beside the re-wrap so both frontends
+/// get one answer, and a second slice here would be the second.
 ///
-/// `from.1` carries which re-wrapped row is on top, so the cache's arrangement key notices the
-/// content scrolling even though the rectangle has not moved — the same reason
-/// [`PaneView::from`](sprag_tui::PaneView::from) is part of that key at all.
+/// The TOKEN is dropped, so a re-wrapped pane is rebuilt every frame — see the measurement in
+/// `crates/sprag-grid/tests/rewrap_allocs.rs`.
 fn rewrap_or_slice(
     pane: PaneId,
     view: PaneView,
@@ -2111,31 +2098,51 @@ fn rewrap_or_slice(
         token,
     } = read;
     let cut = rewrapped(rewrap, area, screen, &cells)
-        .then(|| sprag_grid::rewrap(&cells, &shares, view.area.cols))
+        .then(|| sprag_grid::rewrap(&cells, &shares, view.area.cols, view.area.rows))
         .flatten();
     match cut {
-        Some(tall) => {
-            let cursor = tall.cursor();
-            let top = first_row(
-                tall.rows(),
-                view.area.rows,
-                cursor.visible.then_some(cursor.row),
-            );
-            PanePaint {
-                pane,
-                area: view.area,
-                from: (0, top),
-                cells: tall,
-                token: None,
-            }
-        }
+        Some(sprag_grid::Rewrapped { cells, top }) => PanePaint {
+            pane,
+            area: view.area,
+            source: PaneSource::Rewrapped { top },
+            token: token.as_ref().map(|token| rewrapped_token(token, &cells)),
+            cells,
+        },
         None => PanePaint {
             pane,
             area: view.area,
-            from: view.from,
+            source: PaneSource::Direct(view.from),
             cells,
             token,
         },
+    }
+}
+
+/// A [`ProjectionToken`] describing a RE-WRAPPED buffer, taken from the buffer itself.
+///
+/// **The stamps are already folded**: `sprag_grid::rewrap` writes each shown row's damage as the
+/// maximum over the pane rows its logical line occupies, so equal folded stamp implies equal source
+/// stamps implies equal cells — the one direction a cache skip may rely on, and the same direction
+/// [`ProjectionToken`] has always promised. This only reads them off.
+///
+/// The pane's OWN token supplies what a fold cannot: the screen kind and the scrollback depth,
+/// which a re-wrap does not touch and which are what tell an alternate-screen switch from a
+/// repaint. `cols` is the CLIENT's, because that is the width these rows are.
+///
+/// ⚠ It is sound only beside a [`PaneSource::Rewrapped`] in the cache's key. Two adjacent logical
+/// lines that have not been touched carry the SAME folded stamp, so a view that scrolls by one row
+/// puts different content under the same number — and the anchor is what makes the arrangement
+/// differ and the frame rebuild. Neither half is sufficient alone; this note is here because the
+/// first draft had only this one.
+fn rewrapped_token(token: &ProjectionToken, cells: &GridBuffer) -> ProjectionToken {
+    ProjectionToken {
+        row_generations: (0..cells.rows())
+            .map(|row| cells.row_generation(row).unwrap_or_default())
+            .collect(),
+        cursor: token.cursor,
+        screen: token.screen,
+        cols: cells.cols(),
+        scrollback_len: token.scrollback_len,
     }
 }
 
@@ -2591,12 +2598,47 @@ struct Frame<'a> {
     /// Whether a pane too WIDE for this terminal is re-wrapped into what it can show, rather than
     /// shown as a slice of itself — [`options::REWRAP`](sprag_host::options::REWRAP).
     ///
+    /// Filled by [`Frame::of`] rather than at the call sites, which is why that constructor
+    /// exists: sixteen repaints spell a frame here, and sixteen copies of one expression is a
+    /// thing that only has to be got wrong once.
+    ///
     /// Carried here rather than read inside [`paint`] for the reason the message above is, one
     /// step milder: this client re-reads its config per keystroke, so a paint that read it would
     /// read a file at a different instant than the loop around it. It is also the option's own
     /// rule ([`ClientConfig`](sprag_host::config::ClientConfig)) that nothing be frozen out of that
     /// table, and a frame is the shortest thing this client holds.
     rewrap: bool,
+}
+
+impl<'a> Frame<'a> {
+    /// The frame a repaint draws: the two facts that VARY at a call site, and the rest read from
+    /// where each of them lives.
+    ///
+    /// Sixteen call sites build one of these, and before this they built it field by field. That
+    /// is not merely repetition: every one of them had to remember the live config, and a repaint
+    /// that forgot would render under a setting the person had changed. `Overlay`'s own doc makes
+    /// the same argument one field earlier ("an arm and not another thirteen call sites"); this is
+    /// it applied to the record itself.
+    ///
+    /// What is NOT hidden in here is the MESSAGE, and that is deliberate: it has a deadline, so it
+    /// is the caller's clock that decides whether there is one — see [`Frame::message`].
+    fn of(
+        focus: Option<PaneId>,
+        clear: Clear,
+        overlay: &'a Overlay,
+        split: &Split,
+        message: Option<&'a str>,
+        config: &sprag_host::config::ClientConfig,
+    ) -> Self {
+        Self {
+            focus,
+            clear,
+            overlay,
+            status: split.status,
+            message,
+            rewrap: rewrapping(config),
+        }
+    }
 }
 
 /// What the loop should do with a key.

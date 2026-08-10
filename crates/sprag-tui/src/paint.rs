@@ -1000,6 +1000,42 @@ pub fn cursor_changes(grid: &GridBuffer, area: Rect, from: (u16, u16)) -> Vec<Ch
     changes
 }
 
+/// Where a pane's rectangle READS its cells, and which of the pane's own content that is.
+///
+/// One field with two arms rather than a pair of coordinates, because the two facts stopped being
+/// the same thing when a client could re-wrap. A pane drawn directly reads the buffer at the cell
+/// the viewport scrolled to, and that cell IS the content's identity. A re-wrapped pane is handed a
+/// buffer already cut to its rectangle ([`sprag_grid::rewrap`]), so it reads from the origin — but
+/// its identity is the re-wrapped row that buffer STARTS at, and a cache keyed on the read offset
+/// would see `(0, 0)` for every frame and skip a pane whose content had scrolled underneath it.
+///
+/// Made a type rather than two fields so that "which do I use here" is answered by
+/// [`read_at`](Self::read_at) once, instead of at every call site.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaneSource {
+    /// The pane's own buffer, drawn from this cell of it — `(0, 0)` whenever the window fits.
+    Direct((u16, u16)),
+    /// A buffer already cut for this client, whose first row is re-wrapped row `top` of the pane.
+    Rewrapped {
+        /// Which re-wrapped row the buffer's first row is. Not an index into it.
+        top: u16,
+    },
+}
+
+impl PaneSource {
+    /// The cell of the buffer the rectangle's top-left corner reads.
+    ///
+    /// The ONE place the difference between the two arms is spent. A re-wrapped buffer is the
+    /// window, so it is read from its origin however far the content has scrolled.
+    #[must_use]
+    pub const fn read_at(self) -> (u16, u16) {
+        match self {
+            Self::Direct(at) => at,
+            Self::Rewrapped { .. } => (0, 0),
+        }
+    }
+}
+
 /// One pane's contribution to a frame: where it goes, what it holds, and the stamp that says how
 /// much of it can have changed.
 ///
@@ -1013,9 +1049,8 @@ pub struct PanePaint {
     /// Its rectangle on THIS terminal — already cut to what this client's
     /// [`Viewport`](crate::Viewport) shows, so it is what will actually be written.
     pub area: Rect,
-    /// The pane's own `(col, row)` that [`area`](Self::area)'s top-left shows — see
-    /// [`PaneView::from`](crate::PaneView::from). `(0, 0)` whenever the window fits this terminal.
-    pub from: (u16, u16),
+    /// Where its cells are read from, and what identifies them — see [`PaneSource`].
+    pub source: PaneSource,
     /// The cells to write.
     pub cells: GridBuffer,
     /// The projection token those cells arrived under, or [`None`] for "cannot say".
@@ -1065,11 +1100,12 @@ pub struct PaintCache {
     /// does not say another pane has not written over it, and the cheapest way to never have to
     /// make that argument is not to rely on it.
     ///
-    /// **The `from` is part of the key and not decoration.** A viewport that scrolls by a row leaves
-    /// every rectangle exactly where it was and changes what each of them SHOWS; without it here,
-    /// the cache would compare a pane's unmoved stamps against an unmoved rectangle and skip every
-    /// row of a frame that had scrolled.
-    arrangement: Vec<(PaneId, Rect, (u16, u16))>,
+    /// **The [`PaneSource`] is part of the key and not decoration.** A viewport that scrolls by a
+    /// row leaves every rectangle exactly where it was and changes what each of them SHOWS; without
+    /// it here, the cache would compare a pane's unmoved stamps against an unmoved rectangle and
+    /// skip every row of a frame that had scrolled. It is a TYPE rather than a coordinate pair
+    /// because a re-wrapped pane's identity is not the cell it reads from — see [`PaneSource`].
+    arrangement: Vec<(PaneId, Rect, PaneSource)>,
     /// The token each pane's surface rows were built from. Absent for a pane whose host could not
     /// say, which is what makes "cannot say" rebuild rather than skip.
     tokens: std::collections::HashMap<PaneId, ProjectionToken>,
@@ -1098,9 +1134,9 @@ impl PaintCache {
     /// forgotten by a caller that painted the panes in a loop.
     #[must_use]
     pub fn changes(&mut self, panes: &[PanePaint]) -> Vec<Change> {
-        let arrangement: Vec<(PaneId, Rect, (u16, u16))> = panes
+        let arrangement: Vec<(PaneId, Rect, PaneSource)> = panes
             .iter()
-            .map(|drawn| (drawn.pane, drawn.area, drawn.from))
+            .map(|drawn| (drawn.pane, drawn.area, drawn.source))
             .collect();
         if arrangement != self.arrangement {
             self.tokens.clear();
@@ -1119,26 +1155,31 @@ impl PaintCache {
                     // In the PANE's rows, which is what the stamps are numbered in: a rectangle row
                     // is the pane's `from.1 + row`, so a rectangle whose last row is past the last
                     // stamp starts being unvouchable that many rows earlier.
+                    let read_at = drawn.source.read_at();
                     let stamped = drawn
                         .area
                         .rows
-                        .min(row_count(now).saturating_sub(drawn.from.1));
+                        .min(row_count(now).saturating_sub(read_at.1));
                     changes.extend(pane_rows_changes(
                         &drawn.cells,
                         drawn.area,
-                        drawn.from,
+                        read_at,
                         (0..drawn.area.rows).filter(|row| {
                             // Past the stamps is past what this cache can vouch for, so those rows
                             // are always rebuilt. In practice there are none: they are the tail of
                             // a rectangle taller than the grid, which is a pane still catching up
                             // to a resize — and a resize has already discarded the arrangement.
-                            let pane_row = usize::from(drawn.from.1 + *row);
+                            let pane_row = usize::from(read_at.1 + *row);
                             *row >= stamped
                                 || now.row_generations[pane_row] != then.row_generations[pane_row]
                         }),
                     ));
                 }
-                None => changes.extend(pane_changes(&drawn.cells, drawn.area, drawn.from)),
+                None => changes.extend(pane_changes(
+                    &drawn.cells,
+                    drawn.area,
+                    drawn.source.read_at(),
+                )),
             }
             match &drawn.token {
                 Some(token) => self.tokens.insert(drawn.pane, token.clone()),
@@ -1333,12 +1374,81 @@ mod tests {
     /// One pane filling a surface of its own size.
     fn whole(pane: u64, grid: &GridBuffer, token: Option<ProjectionToken>) -> PanePaint {
         PanePaint {
-            from: (0, 0),
+            source: PaneSource::Direct((0, 0)),
             pane: PaneId(pane),
             area: Rect::screen(grid.cols(), grid.rows()),
             cells: grid.clone(),
             token,
         }
+    }
+
+    /// A re-wrapped pane, keyed on which re-wrapped ROW it starts at.
+    fn rewrapped(
+        pane: u64,
+        grid: &GridBuffer,
+        top: u16,
+        token: Option<ProjectionToken>,
+    ) -> PanePaint {
+        PanePaint {
+            source: PaneSource::Rewrapped { top },
+            pane: PaneId(pane),
+            area: Rect::screen(grid.cols(), grid.rows()),
+            cells: grid.clone(),
+            token,
+        }
+    }
+
+    /// **A RE-WRAPPED PANE IS CACHEABLE, AND THE ANCHOR IS WHY IT IS SOUND.**
+    ///
+    /// Two claims, and the second is the one that took a measurement to find. A re-wrapped pane
+    /// whose folded stamps have not moved is skipped like any other — that is worth ~94% of what
+    /// such a pane costs per frame (`tests/rewrap_frame_cost.rs`: the change list is 1350
+    /// allocations against the re-wrap's 80).
+    ///
+    /// And a re-wrapped pane whose VIEW SCROLLED is rebuilt even though its stamps are identical.
+    /// That case is real rather than theoretical: two logical lines nobody has touched carry the
+    /// same folded damage, so a view sliding by one row puts different content under the same
+    /// numbers. The buffer is already cut to the rectangle, so its own coordinates start at zero
+    /// however far it has scrolled — [`PaneSource::Rewrapped`]'s `top` is the only thing left that
+    /// can say the frame moved.
+    ///
+    /// REVERT-PROOF: drop `top` from the key (make `Rewrapped` a unit variant, or read the source
+    /// as `read_at`) and the second half returns an empty change list for a screen that scrolled.
+    #[test]
+    fn a_re_wrapped_pane_is_skipped_by_its_folded_stamps_and_rebuilt_when_the_view_scrolls() {
+        // Two rows of a pane nobody has touched: the SAME folded stamp on both, which is what a
+        // fold over untouched source lines produces.
+        let showing = grid_of(4, &["ab", "cd"]);
+        let mut cache = PaintCache::default();
+        let all = cache.changes(&[rewrapped(1, &showing, 0, Some(token(&[9, 9], 4)))]);
+        assert!(!all.is_empty(), "the first frame writes the pane");
+
+        let again = cache.changes(&[rewrapped(1, &showing, 0, Some(token(&[9, 9], 4)))]);
+        assert!(
+            again.is_empty(),
+            "nothing moved, so a re-wrapped pane costs the surface nothing: {again:?}",
+        );
+
+        // The view slides by one re-wrapped row. The stamps are IDENTICAL — they are folds over
+        // lines nothing has written to — and the content is not.
+        let scrolled = grid_of(4, &["cd", "ef"]);
+        let moved = cache.changes(&[rewrapped(1, &scrolled, 1, Some(token(&[9, 9], 4)))]);
+        assert_eq!(
+            moved.len(),
+            all.len(),
+            "a scrolled view must be rebuilt whole, since its stamps cannot say it moved",
+        );
+
+        // ...and it must be rebuilt from the buffer's OWN ORIGIN. The anchor says which re-wrapped
+        // row this buffer starts at; it is not an index into it, and reading at it would draw the
+        // second row twice and lose the first.
+        let mut surface = Surface::new(4, 2);
+        surface.add_changes(moved);
+        let painted = surface.screen_chars_to_string();
+        assert!(
+            painted.starts_with("cd") && painted.contains("ef"),
+            "the scrolled window's own two rows, in order: {painted:?}",
+        );
     }
 
     /// **THE claim.** A row whose stamp did not move is not written again — and the one that moved
@@ -1486,7 +1596,7 @@ mod tests {
         let first = cache.changes(&[PanePaint {
             pane: PaneId(1),
             area,
-            from: (0, 0),
+            source: PaneSource::Direct((0, 0)),
             cells: grid.clone(),
             token: Some(token.clone()),
         }]);
@@ -1496,7 +1606,7 @@ mod tests {
                 .changes(&[PanePaint {
                     pane: PaneId(1),
                     area,
-                    from: (0, 0),
+                    source: PaneSource::Direct((0, 0)),
                     cells: grid.clone(),
                     token: Some(token.clone()),
                 }])
@@ -1508,7 +1618,7 @@ mod tests {
         let scrolled = cache.changes(&[PanePaint {
             pane: PaneId(1),
             area,
-            from: (0, 2),
+            source: PaneSource::Direct((0, 2)),
             cells: grid.clone(),
             token: Some(token.clone()),
         }]);
@@ -1547,14 +1657,14 @@ mod tests {
         // ...then split, so a neighbour owns the right half...
         surface.add_changes(cache.changes(&[
             PanePaint {
-                from: (0, 0),
+                source: PaneSource::Direct((0, 0)),
                 pane: PaneId(1),
                 area: half(0),
                 cells: left.clone(),
                 token: Some(stamps.clone()),
             },
             PanePaint {
-                from: (0, 0),
+                source: PaneSource::Direct((0, 0)),
                 pane: PaneId(2),
                 area: half(2),
                 cells: right,
@@ -1592,7 +1702,7 @@ mod tests {
         let mut surface = Surface::new(4, 4);
         for _ in 0..2 {
             surface.add_changes(cache.changes(&[PanePaint {
-                from: (0, 0),
+                source: PaneSource::Direct((0, 0)),
                 pane: PaneId(1),
                 area: tall,
                 cells: grid.clone(),
