@@ -689,13 +689,9 @@ impl SlotView {
 
     /// Slot `slot`'s per-frame scroll facts (a zero-depth default for a hole).
     pub(crate) fn pane_scroll_facts(&self, slot: usize) -> PaneScrollFacts {
-        self.id(slot).map_or(
-            PaneScrollFacts {
-                scrollback_len: 0,
-                visible_rows: 1,
-            },
-            |id| self.host.pane_scroll_facts(id),
-        )
+        self.id(slot).map_or(PaneScrollFacts::absent(), |id| {
+            self.host.pane_scroll_facts(id)
+        })
     }
 
     /// Slot `slot`'s OSC 133 prompt-mark positions (the jump-to-prompt targets), empty for a
@@ -1251,10 +1247,7 @@ mod tests {
             GridBuffer::new(1, 1)
         }
         fn pane_scroll_facts(&self, _id: PaneId) -> PaneScrollFacts {
-            PaneScrollFacts {
-                scrollback_len: 0,
-                visible_rows: 1,
-            }
+            PaneScrollFacts::absent()
         }
         fn pane_prompt_positions(&self, _id: PaneId) -> Vec<usize> {
             Vec::new()

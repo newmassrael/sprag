@@ -1162,10 +1162,10 @@ fn main() -> ExitCode {
     // the first time it was run against the change.
     let frame = CellFrame {
         cells: project(&ascii, &palette),
-        facts: PaneScrollFacts {
-            scrollback_len: 0,
-            visible_rows: ROWS,
-        },
+        // The daemon's OWN population, not a hand-spelled copy: this instrument prices the frame
+        // a client receives, and a literal here would have priced every fact added after it at
+        // zero.
+        facts: PaneScrollFacts::of(&ascii, 0),
     };
     let dom = serde_json::to_value(&frame).expect("a frame serialises");
     let encoded = serde_json::to_string(&frame).expect("a frame encodes");

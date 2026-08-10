@@ -1680,10 +1680,7 @@ mod tests {
             GridBuffer::new(1, 1)
         }
         fn pane_scroll_facts(&self, _id: PaneId) -> PaneScrollFacts {
-            PaneScrollFacts {
-                scrollback_len: 0,
-                visible_rows: 1,
-            }
+            PaneScrollFacts::absent()
         }
         fn pane_prompt_positions(&self, _id: PaneId) -> Vec<usize> {
             Vec::new()

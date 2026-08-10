@@ -47,7 +47,7 @@
 use std::sync::{Arc, Mutex};
 
 use pinion_core::GridBuffer;
-use sprag_grid::ProjectionToken;
+use sprag_grid::{ProjectionToken, RowShares};
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
     ActivityReading, Attention, CommandBuilder, DividerStep, Ended, HistoryLimitSource,
@@ -82,6 +82,19 @@ use crate::wire::{ResizeAsk, ResizeHow, SelectAsk, SelectHow, SwapAsk, SwapHow};
 pub struct PaneScrollFacts {
     pub scrollback_len: usize,
     pub visible_rows: u16,
+    /// Where each of the frame's rows ends its logical LINE, and which of them run on — what a
+    /// client narrower than this pane needs to re-wrap it ([`sprag_grid::rewrap`]) instead of
+    /// showing a sixty-column slice of a hundred-column line.
+    ///
+    /// A fact and not a rendering: the producer owns where a line ends (`sprag_vt`'s `line_cells`
+    /// is the one place that is decided) and a rectangle of cells cannot carry it. R344 recorded
+    /// what three readers guessing it cost, so it is sent rather than inferred.
+    ///
+    /// ADDITIVE, and absent-not-wrong to a reader that has never heard of it: a client that
+    /// ignores this key draws the pane exactly as every client did before it existed. Skipped when
+    /// empty so a host answering a frame nobody derived shares for costs a reader nothing.
+    #[serde(default, skip_serializing_if = "RowShares::is_empty")]
+    pub shares: RowShares,
 }
 
 impl PaneScrollFacts {
@@ -89,12 +102,63 @@ impl PaneScrollFacts {
     /// shared by [`Host::pane_scroll_facts`](HostClient::pane_scroll_facts) and the
     /// wire `cells` action, so the two never disagree on how a fact is derived
     /// (adding a fact edits only here + the struct).
-    pub(crate) fn from_screen(screen: &Screen) -> Self {
+    ///
+    /// `offset_lines` is the scrollback offset the CELLS beside these facts were projected at, and
+    /// it is a parameter rather than an assumption because [`shares`](Self::shares) describes
+    /// those rows: a frame windowed into history whose shares described the live rows would tell a
+    /// client to cut lines that are not on its screen.
+    ///
+    /// Public so the WIRE-COST instrument (`sprag-latency`) can build the frame the daemon
+    /// actually sends. It used to spell the fields by hand, which measured a frame no client ever
+    /// receives — and would have priced this fact at zero on the day it was added.
+    #[must_use]
+    pub fn of(screen: &Screen, offset_lines: usize) -> Self {
         Self {
             scrollback_len: screen.scrollback_len(),
             visible_rows: screen.rows(),
+            shares: sprag_grid::shares(screen, offset_lines),
         }
     }
+
+    /// [`Self::of`] for the LIVE view — the offset every in-process reader of these facts uses.
+    pub(crate) fn from_screen(screen: &Screen) -> Self {
+        Self::of(screen, 0)
+    }
+
+    /// The facts for a pane that is NOT THERE — a zero-depth, one-row frame nobody can scroll.
+    ///
+    /// Spelled once because five surfaces answer it (the host, the wire client, and three test
+    /// doubles), and the round that added [`shares`](Self::shares) is the round that found all
+    /// five by breaking them. A default nobody can spell wrongly is the point.
+    #[must_use]
+    pub fn absent() -> Self {
+        Self {
+            scrollback_len: 0,
+            visible_rows: 1,
+            shares: RowShares::default(),
+        }
+    }
+}
+
+/// What ONE read of a pane produced: its cells, where each of their rows ends its logical line,
+/// and the token they arrived under.
+///
+/// The distinction from [`CellFrame`](crate::CellFrame) is which side of the wire is speaking.
+/// `CellFrame` is a pane frame as the HOST ANSWERS it — cells plus the facts that ride with them.
+/// This is the same frame as a CLIENT READ it, and the difference is the [`ProjectionToken`]: a
+/// cache key the client derives from its own last paint, which never crosses the wire at all.
+///
+/// The three travel together because each of the other two describes the cells: separating them
+/// is separating a frame from what it means. See [`HostClient::pane_frame`].
+#[derive(Debug, Clone)]
+pub struct PaneFrame {
+    /// The paint-authoritative cells.
+    pub cells: GridBuffer,
+    /// Where each of those rows ends its logical line, and which run on. EMPTY means the host
+    /// could not say, which a caller reads as "draw the pane as it stands".
+    pub shares: RowShares,
+    /// The projection those cells arrived under, or `None` for "cannot say" — rebuild everything.
+    pub token: Option<ProjectionToken>,
 }
 
 /// One find-in-scrollback match, as a client reads it off the wire — the serde projection of
@@ -331,30 +395,33 @@ pub trait HostClient: crate::wake::WakeSource {
     /// `id` is absent.
     fn pane_cells(&self, id: PaneId, offset_lines: usize) -> GridBuffer;
 
-    /// [`pane_cells`](Self::pane_cells) TOGETHER WITH the token those cells were projected under —
-    /// what a client needs to repaint only the rows the producer stamped.
+    /// [`pane_cells`](Self::pane_cells) TOGETHER WITH everything that describes them — the token
+    /// they were projected under, and where their rows end their logical lines.
     ///
-    /// **One call rather than two, and that is the whole reason it exists.** A client that read the
-    /// cells and then the token would be reading two facts a frame apart: a fetch landing between
-    /// them pairs OLD cells with a NEW token, the client stores the new token beside the old cells,
-    /// and every row those cells still owe goes unpainted for as long as nothing else stamps it.
-    /// Answering both under one lock is what makes the pair describe one frame.
+    /// **One call rather than three, and that is the whole reason it exists.** A client that read
+    /// the cells and then the token would be reading two facts a frame apart: a fetch landing
+    /// between them pairs OLD cells with a NEW token, the client stores the new token beside the
+    /// old cells, and every row those cells still owe goes unpainted for as long as nothing else
+    /// stamps it. The row shares join the pair for the same reason and a second one — they say
+    /// where to CUT those cells, so a share read off a later frame re-wraps a line at a column
+    /// nothing printed.
     ///
-    /// `None` for the token means "this host cannot say", and every caller must read it as "rebuild
-    /// everything" — the answer that is never wrong. It is the default here, so an impl need not
-    /// implement it; it is also the honest answer for a NON-ZERO `offset_lines`, because the token
-    /// summarises the live screen and says nothing about a projection windowed into scrollback.
+    /// An EMPTY [`PaneFrame::shares`] and a `None` token are the same kind of answer — "this host
+    /// cannot say" — and both have one safe reading a caller must take: draw the pane whole, the
+    /// way every client did before either fact existed. They are the default here, so an impl need
+    /// not implement this at all; they are also the honest answer for a NON-ZERO `offset_lines` on
+    /// a host that only knows the live screen.
     ///
     /// See [`ProjectionToken`] for the one direction it promises: equal token ⇒ equal projection,
     /// never the converse. A row whose stamp is unchanged is a row a painter may leave alone — the
     /// same invariant pinion's `TextGrid` already rests on, and the reason the emulator stamps
     /// EVERY row on a palette change.
-    fn pane_cells_and_token(
-        &self,
-        id: PaneId,
-        offset_lines: usize,
-    ) -> (GridBuffer, Option<ProjectionToken>) {
-        (self.pane_cells(id, offset_lines), None)
+    fn pane_frame(&self, id: PaneId, offset_lines: usize) -> PaneFrame {
+        PaneFrame {
+            cells: self.pane_cells(id, offset_lines),
+            shares: RowShares::default(),
+            token: None,
+        }
     }
 
     /// Pane `id`'s non-cell per-frame facts ([`PaneScrollFacts`]): scrollback depth +
@@ -1397,7 +1464,7 @@ pub trait HostClient: crate::wake::WakeSource {
     /// EVERY pane an agent claims, with its verdict, in host order — the whole answer at once.
     ///
     /// **One call rather than N+1, and that is the whole reason it exists**, on the same terms as
-    /// [`pane_cells_and_token`](Self::pane_cells_and_token). A caller that read
+    /// [`pane_frame`](Self::pane_frame). A caller that read
     /// [`pane_ids`](Self::pane_ids) and then [`pane_agent`](Self::pane_agent) per id would be
     /// reading the MEMBERSHIP and the VERDICTS at different moments: for an impl that mirrors both
     /// in a cache another thread replaces, a refresh landing mid-walk pairs one generation's pane
@@ -2722,14 +2789,34 @@ impl HostClient for Host {
             .unwrap_or_else(|| GridBuffer::new(1, 1))
     }
 
+    /// The in-process frame, read under ONE screen lock — the same atomicity the wire client gets
+    /// from one borrow of its mirror, and the reason this is overridden rather than defaulted: a
+    /// host that HAS the screen answering "cannot say" would leave a client attached to a local
+    /// daemon unable to re-wrap a pane it can see perfectly well.
+    ///
+    /// The token stays `None`, which is the default's answer and still the right one: nothing here
+    /// has a place to remember a projection between frames, so a caller must rebuild — see
+    /// [`HostClient::pane_frame`].
+    fn pane_frame(&self, id: PaneId, offset_lines: usize) -> PaneFrame {
+        self.with_pane_id(id, |pane| {
+            pane.pty().with_screen_palette(|screen, palette| PaneFrame {
+                cells: sprag_grid::project_scrolled(screen, offset_lines, palette),
+                shares: sprag_grid::shares(screen, offset_lines),
+                token: None,
+            })
+        })
+        .unwrap_or_else(|| PaneFrame {
+            cells: GridBuffer::new(1, 1),
+            shares: RowShares::default(),
+            token: None,
+        })
+    }
+
     fn pane_scroll_facts(&self, id: PaneId) -> PaneScrollFacts {
         self.with_pane_id(id, |pane| {
             pane.pty().with_screen(PaneScrollFacts::from_screen)
         })
-        .unwrap_or(PaneScrollFacts {
-            scrollback_len: 0,
-            visible_rows: 1,
-        })
+        .unwrap_or(PaneScrollFacts::absent())
     }
 
     fn pane_prompt_positions(&self, id: PaneId) -> Vec<usize> {

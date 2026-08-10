@@ -4974,6 +4974,10 @@ mod tests {
                 facts: crate::PaneScrollFacts {
                     scrollback_len: 11,
                     visible_rows: 1,
+                    // EMPTY, and the pinned string below is what that buys: the row-share fact is
+                    // skipped when it says nothing, so a frame from a host nobody asked for it is
+                    // byte-identical to every frame this wire has ever carried.
+                    shares: sprag_grid::RowShares::default(),
                 },
             })
             .expect("a cell frame serialises"),
@@ -5586,6 +5590,112 @@ mod tests {
         assert!(
             serde_json::from_value::<PaneMatchBefore>(wrapping).is_ok(),
             "`wrapped` on its own would not have owed a version — `line` did",
+        );
+    }
+
+    /// **WHAT THE ROW-SHARE FACT COSTS A FRAME, in bytes** — R349's own answer to the standing debt
+    /// that nothing in this suite asks what a READ costs.
+    ///
+    /// The fact is on the per-frame path: every client re-fetches every pane's frame on every wake,
+    /// so a fact that is cheap per row is not automatically cheap. Measured on the pane size the
+    /// project quotes everywhere: **107 bytes on a 5999-byte frame, 1.8%**. The bound below is a
+    /// CEILING over that, so the encoding cannot quietly become an expensive one.
+    ///
+    /// The shape it forbids is a real alternative that was considered: one self-describing object
+    /// per row (`{"row":0,"cells":80}` × 24) is roughly 600 bytes and would blow this bound. What
+    /// is sent instead is two positional arrays — the same idiom as `row_generations` beside it —
+    /// and the sparse half is EMPTY on a screen where nothing wrapped, which is the ordinary one.
+    #[test]
+    fn the_row_shares_cost_a_frame_a_bounded_number_of_bytes() {
+        use sprag_vt::{Emulator, Palette, VtPort};
+
+        let mut em = Emulator::new(80, 24);
+        // Twenty lines of ordinary output, one of them long enough to wrap.
+        for line in 0..20 {
+            em.advance(format!("line {line}: the quick brown fox\r\n").as_bytes());
+        }
+        em.advance(&[b'x'; 100]);
+        let screen = em.screen().clone();
+        let palette = Palette::xterm_default();
+
+        let with = crate::CellFrame {
+            cells: sprag_grid::project(&screen, &palette),
+            facts: crate::PaneScrollFacts::of(&screen, 0),
+        };
+        assert!(
+            !with.facts.shares.continues.is_empty(),
+            "the fixture must contain a wrap or this measures the empty case",
+        );
+        let without = crate::CellFrame {
+            cells: sprag_grid::project(&screen, &palette),
+            facts: crate::PaneScrollFacts {
+                shares: sprag_grid::RowShares::default(),
+                ..crate::PaneScrollFacts::of(&screen, 0)
+            },
+        };
+
+        let whole = serde_json::to_string(&with).expect("a frame encodes").len();
+        let bare = serde_json::to_string(&without)
+            .expect("a frame encodes")
+            .len();
+        let cost = whole - bare;
+        assert!(
+            cost <= 160,
+            "the row shares cost {cost} bytes of a {whole}-byte frame; a positional pair of \
+             arrays for 24 rows is about a hundred, and a per-row object would be six times that",
+        );
+        // And the ordinary screen — nothing wrapped — pays for the sparse half not at all.
+        let mut plain = Emulator::new(80, 24);
+        plain.advance(b"hello\r\n");
+        let quiet = crate::PaneScrollFacts::of(plain.screen(), 0);
+        assert!(
+            quiet.shares.continues.is_empty(),
+            "nothing wrapped, so the sparse half is empty and encodes as `[]`",
+        );
+    }
+
+    /// **THE KEY IS ADDITIVE, IN BOTH DIRECTIONS** — R342's rule, driven rather than asserted.
+    ///
+    /// An added answer KEY is absent-not-wrong to an older reader: the verb still works, the reply
+    /// still parses, the client is simply told less. That is the property this whole fact rests on
+    /// — it is why no `WIRE_PROTOCOL` bump is owed — and it is exactly the property no address pin
+    /// and no shape pin can see, because neither of them decodes a payload the other end wrote.
+    ///
+    /// So both ends are stood up: a decoder of the PREVIOUS shape reads a frame carrying the new
+    /// key, and today's decoder reads a payload without it and answers "cannot say", which every
+    /// caller reads as "draw the pane as it stands".
+    #[test]
+    fn a_frame_carrying_the_row_shares_still_reads_on_a_decoder_that_has_never_heard_of_them() {
+        /// `PaneScrollFacts` as it was BEFORE the shares — a stand-in for a peer built yesterday.
+        #[derive(serde::Deserialize)]
+        struct Older {
+            scrollback_len: usize,
+            visible_rows: u16,
+        }
+
+        let facts = crate::PaneScrollFacts {
+            scrollback_len: 12,
+            visible_rows: 24,
+            shares: sprag_grid::RowShares {
+                upto: vec![80, 3],
+                continues: vec![0],
+            },
+        };
+        let json = serde_json::to_string(&facts).expect("facts encode");
+        let older: Older = serde_json::from_str(&json).expect(
+            "an older peer must still read a frame that carries a key it has never heard of",
+        );
+        assert_eq!((older.scrollback_len, older.visible_rows), (12, 24));
+
+        // ...and the other direction: a payload from a daemon that predates the fact.
+        let ancient = r#"{"scrollback_len":3,"visible_rows":9}"#;
+        let read: crate::PaneScrollFacts =
+            serde_json::from_str(ancient).expect("today's decoder reads yesterday's payload");
+        assert_eq!((read.scrollback_len, read.visible_rows), (3, 9));
+        assert!(
+            read.shares.is_empty(),
+            "and says it cannot tell where the lines end, which is what makes a client draw \
+             the pane un-wrapped rather than cut it in the wrong place",
         );
     }
 

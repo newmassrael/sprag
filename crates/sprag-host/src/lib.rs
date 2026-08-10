@@ -119,7 +119,7 @@ pub use history::{
 pub use hooks::{HookError, Outcome, Plan, Target, plan_install, plan_uninstall, report_for};
 pub use host::{
     Host, HostClient, PANE_ENV_VAR, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
-    PaneMatch, PaneNotification, PaneScrollFacts, pane_env_source,
+    PaneFrame, PaneMatch, PaneNotification, PaneScrollFacts, pane_env_source,
 };
 pub use job::JobWatch;
 pub use keymap::{BoundAction, KeyError, KeySpec, Keymap};

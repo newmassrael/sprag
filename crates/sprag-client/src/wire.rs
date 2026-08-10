@@ -105,7 +105,7 @@ use sprag_host::wire::{
     find_slot_for, project_slot_for, regex_slot_for, session_activity_at,
 };
 use sprag_host::{
-    CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind,
+    CellFrame, HostClient, PaneAgent, PaneClipboardQuery, PaneClipboardWrite, PaneFind, PaneFrame,
     PaneNotification, PaneScrollFacts, Project, UserConfig, mux_action_path, pane_input_path,
 };
 use sprag_input::{Modifiers, MouseButton, MouseEventKind, MouseInput};
@@ -2623,20 +2623,33 @@ impl HostClient for WireHost {
     /// One `lock_cache` and not two, which is the whole point: the poll thread replaces a pane's
     /// frame and its token together, so a caller taking them in two calls can straddle that swap
     /// and pair last wake's cells with this wake's token. It would then believe it had painted rows
-    /// it never received — see [`HostClient::pane_cells_and_token`].
+    /// it never received — see [`HostClient::pane_frame`].
     ///
     /// A non-zero offset answers no token: this client's own scrolled fetch re-projects the screen
     /// windowed into scrollback, and the token summarises the LIVE screen. Answering the live
-    /// token beside a scrolled buffer would let a painter skip rows it has never drawn.
-    fn pane_cells_and_token(
-        &self,
-        id: PaneId,
-        offset_lines: usize,
-    ) -> (GridBuffer, Option<ProjectionToken>) {
+    /// token beside a scrolled buffer would let a painter skip rows it has never drawn. The row
+    /// SHARES do come back for a scrolled read, because that fetch answers a whole
+    /// [`CellFrame`] and the shares in it describe the rows it carries.
+    fn pane_frame(&self, id: PaneId, offset_lines: usize) -> PaneFrame {
         if offset_lines != 0 {
-            return (self.pane_cells(id, offset_lines), None);
+            let params = json!({ "path": pane_input_path(id.0, &cells_slot_at(offset_lines)) });
+            return self
+                .request("scene/query", params, "pane_cells")
+                .and_then(|value| serde_json::from_value::<CellFrame>(value).ok())
+                .map_or_else(
+                    || PaneFrame {
+                        cells: self.live_cells(id),
+                        shares: sprag_grid::RowShares::default(),
+                        token: None,
+                    },
+                    |frame| PaneFrame {
+                        cells: frame.cells,
+                        shares: frame.facts.shares,
+                        token: None,
+                    },
+                );
         }
-        cells_and_token(&self.lock_cache(), id)
+        live_frame(&self.lock_cache(), id)
     }
 
     /// The mirrored arrangement — a lock and a clone, never a socket call, so the paint
@@ -3441,10 +3454,7 @@ impl HostClient for WireHost {
         self.lock_cache()
             .get(id)
             .map(|pane| pane.frame.facts.clone())
-            .unwrap_or(PaneScrollFacts {
-                scrollback_len: 0,
-                visible_rows: 1,
-            })
+            .unwrap_or(PaneScrollFacts::absent())
     }
 
     fn pane_grid_size(&self, id: PaneId) -> (u16, u16) {
@@ -4321,19 +4331,25 @@ fn boot_panes(
 /// catch — and it is neither transient nor self-correcting: every wake will fail the same way and
 /// the window will show nothing at all. Logging both at `debug` made the second one look like the
 /// first, so the shape change in R222 that made the skew reachable is the reason for the split.
-/// Pane `id`'s live cells and the token they were fetched under, read out of ONE borrow of the
-/// mirror — the body of [`HostClient::pane_cells_and_token`], split out so the pairing can be
-/// asserted without a daemon.
+/// Pane `id`'s live frame — cells, row shares and token — read out of ONE borrow of the mirror,
+/// which is the body of [`HostClient::pane_frame`], split out so the pairing can be asserted
+/// without a daemon.
 ///
-/// A pane the mirror does not hold answers the `1x1` placeholder every absent-id read here answers,
-/// with no token: nothing has been painted for it, so there is nothing a later frame could skip.
-fn cells_and_token(
-    cache: &PaneCache,
-    id: PaneId,
-) -> (GridBuffer, Option<sprag_grid::ProjectionToken>) {
+/// A pane the mirror does not hold answers the `1x1` placeholder every absent-id read here
+/// answers, with no shares and no token: nothing has been painted for it, so there is nothing a
+/// later frame could skip and nothing whose lines could be cut.
+fn live_frame(cache: &PaneCache, id: PaneId) -> PaneFrame {
     cache.get(id).map_or_else(
-        || (GridBuffer::new(1, 1), None),
-        |pane| (pane.frame.cells.clone(), pane.projection.clone()),
+        || PaneFrame {
+            cells: GridBuffer::new(1, 1),
+            shares: sprag_grid::RowShares::default(),
+            token: None,
+        },
+        |pane| PaneFrame {
+            cells: pane.frame.cells.clone(),
+            shares: pane.frame.facts.shares.clone(),
+            token: pane.projection.clone(),
+        },
     )
 }
 
@@ -6012,6 +6028,10 @@ mod tests {
             facts: PaneScrollFacts {
                 scrollback_len: 7,
                 visible_rows: 2,
+                shares: sprag_grid::RowShares {
+                    upto: vec![3, 1],
+                    continues: vec![0],
+                },
             },
         };
         let json = serde_json::to_value(&frame).expect("host serializes CellFrame");
@@ -6342,28 +6362,48 @@ mod tests {
         );
     }
 
-    /// The paint path's read: a pane's cells and the token they arrived under come back TOGETHER.
+    /// The paint path's read: a pane's cells, the token they arrived under, and where their rows
+    /// end their logical lines all come back TOGETHER.
     ///
-    /// The pairing is the claim, not either half. A client that answered the cells and dropped the
-    /// token would paint correctly and rebuild every row of every pane on every frame — invisible
-    /// from any screen, which is why it is asserted here rather than left to the live gate.
+    /// The pairing is the claim, not any one part. A client that answered the cells and dropped
+    /// the token would paint correctly and rebuild every row of every pane on every frame —
+    /// invisible from any screen, which is why it is asserted here rather than left to the live
+    /// gate. The shares joined it for a louder reason: they say where to CUT those cells, so a
+    /// share taken from a later frame re-wraps a line at a column nothing printed.
+    ///
+    /// REVERT-PROOF: answer `RowShares::default()` instead of the mirror's own and the shares come
+    /// back empty, which a caller reads as "this host cannot say" and draws un-wrapped.
     #[test]
-    fn a_panes_cells_come_back_with_the_token_they_were_fetched_under() {
+    fn a_panes_cells_come_back_with_the_token_and_the_shares_they_were_fetched_under() {
         let mirror = PaneCache::new(vec![cached(1, Some(token(9))), cached(2, None)]);
 
-        let (cells, held) = cells_and_token(&mirror, PaneId(1));
-        assert_eq!(held, Some(token(9)), "the token must ride with the cells");
-        assert_eq!(cells.cols(), frame(3).cells.cols());
+        let held = live_frame(&mirror, PaneId(1));
+        assert_eq!(
+            held.token,
+            Some(token(9)),
+            "the token must ride with the cells"
+        );
+        assert_eq!(held.cells.cols(), frame(3).cells.cols());
+        assert_eq!(
+            held.shares,
+            frame(3).facts.shares,
+            "and so must the fact that says where those cells' lines end",
+        );
+        assert!(!held.shares.is_empty(), "or this proves nothing");
 
         assert_eq!(
-            cells_and_token(&mirror, PaneId(2)).1,
+            live_frame(&mirror, PaneId(2)).token,
             None,
             "a pane the host could not vouch for must not be given a token",
         );
+        let absent = live_frame(&mirror, PaneId(7));
         assert_eq!(
-            cells_and_token(&mirror, PaneId(7)).1,
-            None,
+            absent.token, None,
             "and neither must a pane the mirror does not hold",
+        );
+        assert!(
+            absent.shares.is_empty(),
+            "which has no lines to describe either",
         );
     }
 
@@ -6472,12 +6512,19 @@ mod tests {
     }
 
     /// A cell frame `n` cols wide, so a test can tell frames apart by `cells.cols()`.
+    ///
+    /// It carries NON-EMPTY row shares, and that is load-bearing rather than decoration: the
+    /// pairing gate asserts the shares ride with the cells, and a helper answering the empty
+    /// default would make that assertion true of a client that had dropped them.
     fn frame(cols: u16) -> CellFrame {
         CellFrame {
             cells: GridBuffer::new(cols, 1),
             facts: PaneScrollFacts {
-                scrollback_len: 0,
-                visible_rows: 1,
+                shares: sprag_grid::RowShares {
+                    upto: vec![cols],
+                    continues: Vec::new(),
+                },
+                ..PaneScrollFacts::absent()
             },
         }
     }

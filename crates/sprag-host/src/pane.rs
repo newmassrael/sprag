@@ -359,7 +359,7 @@ impl SpragPaneExternal {
     fn frame_at(&self, offset: usize) -> CellFrame {
         self.pty.with_screen_palette(|screen, palette| CellFrame {
             cells: sprag_grid::project_scrolled(screen, offset, palette),
-            facts: PaneScrollFacts::from_screen(screen),
+            facts: PaneScrollFacts::of(screen, offset),
         })
     }
 }

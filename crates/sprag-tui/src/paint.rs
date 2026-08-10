@@ -1004,9 +1004,9 @@ pub fn cursor_changes(grid: &GridBuffer, area: Rect, from: (u16, u16)) -> Vec<Ch
 /// much of it can have changed.
 ///
 /// The cells and the token are taken TOGETHER
-/// ([`HostClient::pane_cells_and_token`](sprag_host::HostClient::pane_cells_and_token)) and travel
-/// together from there on, because a token that does not describe the buffer beside it is worse
-/// than no token at all — it licenses a skip of rows the client never received.
+/// ([`HostClient::pane_frame`](sprag_host::HostClient::pane_frame)) and travel together from there
+/// on, because a token that does not describe the buffer beside it is worse than no token at all —
+/// it licenses a skip of rows the client never received.
 pub struct PanePaint {
     /// Which pane.
     pub pane: PaneId,

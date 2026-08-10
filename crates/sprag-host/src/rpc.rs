@@ -5286,6 +5286,91 @@ mod tests {
         );
     }
 
+    /// **THE IN-PROCESS HOST ANSWERS ITS OWN FRAME, SHARES AND ALL** — the override, driven.
+    ///
+    /// [`HostClient::pane_frame`] has a default that answers "cannot say" for both the token and
+    /// the shares, and [`Host`] overrides it because it HAS the screen: a client attached to a
+    /// local daemon in-process would otherwise be told it cannot re-wrap a pane it can see
+    /// perfectly well. Nothing drove that override, and a mutation replacing it with the default's
+    /// empty answer came back GREEN against the whole suite — so this is that mutation's gate
+    /// rather than a note that one exists.
+    ///
+    /// The cells and the shares are asserted TOGETHER, which is the method's whole promise: they
+    /// come out of one screen lock, so a frame whose shares describe some other moment is a value
+    /// this cannot produce.
+    ///
+    /// REVERT-PROOF: delete the override and the shares come back empty while the cells do not.
+    #[test]
+    fn the_in_process_host_answers_a_frame_with_the_shares_of_its_own_cells() {
+        // A 12-column pane and lines long enough to wrap, so the shares have something to say.
+        use crate::HostClient as _;
+        let state = host_with("printf 'aaaaaaaaaaaaaaaaaaaa\\n'", 12, 4);
+        wait_for_pane0_eof(&state);
+
+        let frame = state.host.pane_frame(PaneId(0), 0);
+        assert_eq!(
+            frame.shares.upto.len(),
+            usize::from(frame.cells.rows()),
+            "one share per row of the cells it came back with: {:?}",
+            frame.shares,
+        );
+        assert_eq!(
+            frame.shares.continues,
+            vec![0],
+            "the twenty-character line wrapped off row 0, which is what a client re-joins",
+        );
+        assert_eq!(
+            frame.token, None,
+            "and the in-process host still cannot vouch for a projection between frames",
+        );
+
+        // An absent pane is the other arm: no cells to describe, so nothing describing them.
+        let nobody = state.host.pane_frame(PaneId(9999), 0);
+        assert!(nobody.shares.is_empty(), "{:?}", nobody.shares);
+    }
+
+    /// **AND THE ROW SHARES TRAVEL TO THE SAME OFFSET AS THE CELLS.** The branch above reaches the
+    /// projection; this one reaches the fact that says where the projected rows' LINES end, which
+    /// a client too narrow for the pane cuts them at.
+    ///
+    /// Written because nothing built it: the shares had a test at the offset the TUI reads (zero)
+    /// and none at any other, and a fact derived from the live screen while the cells came from
+    /// history is exactly the pairing that paints text nobody printed.
+    ///
+    /// The fixture makes the two answers different on purpose — a 10-column pane and lines long
+    /// enough to WRAP, so the history rows carry a share the live rows do not.
+    ///
+    /// REVERT-PROOF: build the facts at offset 0 whatever the frame's offset (`PaneScrollFacts::
+    /// from_screen`) and the scrolled frame's shares come back equal to the live one's.
+    #[test]
+    fn the_cells_family_carries_the_row_shares_of_the_rows_it_answered() {
+        // Twelve columns of pane and twenty lines of sixteen characters: every line wraps.
+        let state = host_with("seq -f '%.0f_padded_line' 1 40", 12, 4);
+        wait_for_pane0_eof(&state);
+
+        let live = cells_frame_typed(&state, 0);
+        let scrolled = cells_frame_typed(&state, 20);
+        assert_eq!(
+            live.facts.shares.upto.len(),
+            usize::from(live.cells.rows()),
+            "one share per row the frame carries",
+        );
+        assert_eq!(
+            scrolled.facts.shares.upto.len(),
+            usize::from(scrolled.cells.rows()),
+            "...at every offset, not only the live one",
+        );
+        assert!(
+            !scrolled.facts.shares.continues.is_empty(),
+            "the fixture's lines wrap, so a scrolled frame HAS a continuation to report: {:?}",
+            scrolled.facts.shares,
+        );
+        assert_ne!(
+            scrolled.facts.shares, live.facts.shares,
+            "and the shares moved with the cells rather than describing the live screen",
+        );
+    }
+
     /// A [`SessionInfo`] row carrying only what [`step_along`] reads, so the fixture cannot
     /// accidentally agree with the walk through some other field.
     fn row(name: &str) -> SessionInfo {
