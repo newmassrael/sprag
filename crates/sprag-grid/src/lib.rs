@@ -35,7 +35,7 @@ pub mod wire;
 // cells came from would be R344's defect with a longer reach.
 mod rewrap;
 
-pub use rewrap::{Rewrapped, RowShares, first_row, rewrap, shares};
+pub use rewrap::{Rewrapped, RowShares, rewrap, shares};
 
 /// Which of a screen's rows one row of a projection comes from.
 ///
@@ -109,7 +109,7 @@ static REWRAPS: AtomicU64 = AtomicU64::new(0);
 ///
 /// Both totals are monotonic and process-wide. A caller reads them twice and takes the DELTA; a
 /// single reading means nothing on its own, because it includes every projection since boot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct GridWork {
     /// Whole-screen projections run — the FAN-OUT. One per [`project`] / [`project_scrolled`]
     /// call that actually built a buffer.

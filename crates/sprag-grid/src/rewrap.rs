@@ -21,10 +21,11 @@ use crate::{meter_rewrap, projected_rows};
 /// **The pane's own first row, moved down by the LEAST that keeps the cursor on screen** — the
 /// rule a terminal editor scrolls by, applied to one pane's re-wrapped lines.
 ///
-/// **Public, and in THIS crate rather than in a frontend, because both frontends owe the same
-/// answer.** R348 put the viewport in `sprag-tui` alone and R349 registered that a third client
-/// would re-invent the translation; the rule that decides which rows a re-wrapped pane shows is the
-/// half that is not display-specific, so it lives beside the re-wrap it is about.
+/// **In THIS crate rather than in a frontend, because both frontends owe the same answer** — R348
+/// put the viewport in `sprag-tui` alone and a third client would have re-invented the translation.
+/// PRIVATE, because [`rewrap`] applies it and hands back the rows: a second public spelling of a
+/// question the public answer already settles is a second thing a caller could disagree with
+/// (R348 made `Viewport::is_whole` private for exactly this).
 ///
 /// Bottom-anchoring was written first and MEASURED WRONG. A 100-column pane holding one wrapped
 /// line and twenty-two blank rows re-wraps to twenty-four rows on a twenty-three-row client, and
@@ -36,7 +37,7 @@ use crate::{meter_rewrap, projected_rows};
 /// `cursor` is `None` for a frame that has none — a scrolled-back history window, whose last row
 /// IS its newest — and that arm alone anchors at the bottom.
 #[must_use]
-pub const fn first_row(tall: u16, on_screen: u16, cursor: Option<u16>) -> u16 {
+const fn first_row(tall: u16, on_screen: u16, cursor: Option<u16>) -> u16 {
     let deepest = tall.saturating_sub(on_screen);
     let top = match cursor {
         Some(at) => at.saturating_sub(on_screen.saturating_sub(1)),
@@ -211,8 +212,8 @@ pub fn shares(screen: &Screen, offset_lines: usize) -> RowShares {
 ///   comes back twice as tall.
 ///
 /// The result is `cols` columns by AT MOST `rows` rows: the part of the re-wrapped content this
-/// client can show, chosen by [`first_row`] so the cursor is on it. Cutting the window HERE rather
-/// than handing back the whole tall buffer is what keeps the two frontends honest — a cell client
+/// client can show, chosen by the private `first_row` so the cursor is on it. Cutting the window
+/// HERE rather than handing back the whole tall buffer is what keeps the two frontends honest — a cell client
 /// scrolls by an offset and a pixel client cannot, so a caller-side slice would be two answers to
 /// "which rows am I showing" and the round that adds the second is the one that finds them
 /// disagreeing. The cursor is carried across to where its cell ended up, so a client painting from

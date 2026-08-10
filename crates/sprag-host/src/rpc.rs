@@ -5286,6 +5286,38 @@ mod tests {
         );
     }
 
+    /// **THE GRID METER'S ANSWER NAMES EVERY COUNTER IT HAS** — the ratchet R349's own debt sweep
+    /// asked for, after finding the answer had been left one behind.
+    ///
+    /// The slot used to spell its keys by hand, with a comment arguing that this kept them "spelled
+    /// once in the place the schema declares them". What it actually did was make the answer a
+    /// hand-written list, and a counter added to `GridWork` was silently not on it — a meter
+    /// nobody can read. It serialises the TYPE now, so a field reaches the wire by construction,
+    /// and this pins the counters a reader is entitled to against somebody spelling them again.
+    ///
+    /// REVERT-PROOF: go back to a hand-written `json!` and drop any counter from it.
+    #[test]
+    fn the_grid_work_slot_answers_every_counter_the_meter_keeps() {
+        let state = host_with("printf hi", 20, 4);
+        let answer = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/sprag_mux/external/grid_work"}}"#,
+        );
+        let work = &answer["result"];
+        let mut keys: Vec<&str> = work
+            .as_object()
+            .expect("an object: {answer}")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["cells_total", "projections_total", "rewraps_total"],
+            "every counter `GridWork` keeps is one a reader can read: {answer}",
+        );
+    }
+
     /// **THE IN-PROCESS HOST ANSWERS ITS OWN FRAME, SHARES AND ALL** — the override, driven.
     ///
     /// [`HostClient::pane_frame`] has a default that answers "cannot say" for both the token and

@@ -260,18 +260,18 @@ impl RegistryView<'_> {
                 };
                 encoded_answer(&clients, "clients")
             }
-            // What this host has paid to project its cells. Read straight off the meter rather
-            // than recomputed, and UNSCOPED on purpose: the counters are process-wide, so scoping
-            // them to the request's session would name a session for work every session shares.
-            // Serialised by hand rather than through the type, so the wire keys are spelled once
-            // in the place the schema declares them.
-            GRID_WORK_SLOT => {
-                let work = sprag_grid::work();
-                Some(IntrospectValue::Json(serde_json::json!({
-                    "projections_total": work.projections_total,
-                    "cells_total": work.cells_total,
-                })))
-            }
+            // What this host has paid to build its cells. Read straight off the meter rather than
+            // recomputed, and UNSCOPED on purpose: the counters are process-wide, so scoping them
+            // to the request's session would name a session for work every session shares.
+            //
+            // ⚠ THROUGH THE TYPE, and it did not used to be. The keys were spelled by hand here
+            // "so the wire keys are spelled once in the place the schema declares them" — which
+            // made this a hand-written list, and R349 added a counter to `GridWork` that the list
+            // was silently left out of. A meter nobody can read is not a meter. Serialising the
+            // type means a field added to it reaches the wire by construction.
+            GRID_WORK_SLOT => serde_json::to_value(sprag_grid::work())
+                .ok()
+                .map(IntrospectValue::Json),
             // The USER's own declared commands — no pane, no session, no scope: this answer is the
             // same for every request the host serves, which is exactly why it is a fixed slot beside
             // the parametric project one rather than a variant of it.
