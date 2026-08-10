@@ -2437,6 +2437,11 @@ fn the_whole_roster_reaches_a_pane_one_window_over() {
             "window" => json!("0"),
             "target" => json!("faraway"),
             "timeout_seconds" => json!(1),
+            // The loop's discriminator (R355). `orchestrator` is the form that names a `pane`,
+            // which is the argument this ratchet is about — and the run never starts, because the
+            // far pane is somebody else's and the authorship refusal below is what proves the
+            // request reached it.
+            "plugin" => json!("orchestrator"),
             _ => return None,
         })
     };
@@ -3854,6 +3859,12 @@ fn a_tool_against_an_older_daemon_says_so() {
             "close_window" => json!({ "window": "0" }),
             "rename_window" => json!({ "window": "0", "name": "x" }),
             "resize_window" => json!({ "window": "0" }),
+            // The three that reach the LOOP. `orchestrate` reads this daemon's guardrail defaults
+            // before it does anything else — a tool that could not learn the ceiling must not
+            // invent one — so an old daemon is met on that read; the other two read the run list.
+            "orchestrate" => json!({ "plugin": "orchestrator", "pane": 1, "stimulus": "x" }),
+            "list_runs" => json!({}),
+            "cancel_run" => json!({ "run": 0 }),
             _ => return None,
         })
     };
@@ -4245,4 +4256,205 @@ fn a_tool_that_is_not_there_says_which_kind_of_absence_it_is() {
         typo.contains("unknown tool: no_such_tool") && typo.contains("tools/list"),
         "a word that names nothing is still a typo, and is told where the list is: {typo}",
     );
+}
+
+// ----- the orchestration loop's door (R355) -----
+
+/// ⚠⚠ **AN AGENT CAN ASK FOR A BOUNDED LOOP, AND THE BOUND IS THE PLATFORM'S** — the whole of L2, at
+/// the mouth it was missing from.
+///
+/// # What only a live run can prove here
+///
+/// Every part of this was already built and reachable by nobody: the plugin, the driver, the
+/// iteration ceiling. What had never been observed is that an AGENT can get at them — that a
+/// `tools/call` becomes a real run against a real pane, bounded where it was told to be, and that
+/// the outcome is still readable afterwards. The number `3` is what makes it a claim rather than a
+/// smoke test: a run that ignored its guardrail would report the daemon's default of 100 and this
+/// would fail with the number it saw.
+///
+/// The pane is one the agent OPENED, because that is the only kind it may drive — see the twin
+/// below, which is the same call against somebody else's pane.
+#[test]
+fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "loop-target", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+
+    let started = server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "loop-target",
+            "stimulus": "echo bounded",
+            "max_iterations": 3,
+        }),
+    );
+    assert!(
+        started.contains("Run 0 started") && started.contains("bounded"),
+        "a run id comes back at once, and the answer says the run is bounded: {started}",
+    );
+
+    let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
+    assert!(
+        ended.contains("exhausted after 3 iterations"),
+        "THE GUARDRAIL BOUND IT: the agent asked for three turns and got three, where this \
+         daemon's own default is {}. {ended}",
+        sprag_host::plugins::DEFAULT_MAX_ITERATIONS,
+    );
+    assert!(
+        ended.contains("bytes"),
+        "and the cost is reported in the run's OWN unit, which is what stops a byte budget from \
+         being read as a token one: {ended}",
+    );
+}
+
+/// ⚠⚠ **A LOOP IS REFUSED AGAINST A PANE THE AGENT DOES NOT OWN** — the rule the five other writing
+/// tools keep, and the reason this one had to have it.
+///
+/// Without it `orchestrate` is a LAUNDERING PATH around every one of them: an agent refused
+/// `write_pane` on a person's pane could have driven that same pane through a plugin run, injecting
+/// the same bytes through a door nobody had put the check on. R340 recorded exactly this shape when
+/// `grant_pane` shipped without the guard its four neighbours had.
+///
+/// The control is the twin above: the same verb, the same daemon, a pane the agent opened.
+#[test]
+fn an_agent_cannot_loop_a_pane_it_does_not_own() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    let refused = server.call_tool_error(
+        "orchestrate",
+        json!({ "plugin": "orchestrator", "pane": 1, "stimulus": "echo mine" }),
+    );
+    assert!(
+        refused.contains("opened by a person") && refused.contains("orchestrate will not touch it"),
+        "it is refused in the words of the ownership rule, naming this verb: {refused}",
+    );
+    assert!(
+        server.call_tool("list_runs", json!({})).contains("no runs"),
+        "and nothing was started",
+    );
+}
+
+/// ⚠⚠ **A GUARDRAIL AN AGENT COULD RAISE IS NOT A GUARDRAIL** — the cost decision, driven at both
+/// ends.
+///
+/// The wire accepts any bound from anyone, which is right for a person driving their own machine.
+/// This surface is the one that knows who is asking, so it is the one that holds an agent to the
+/// daemon's own published defaults — and it REFUSES rather than silently clamping, because a run
+/// that quietly did something other than what it was asked is how a guardrail becomes folklore.
+///
+/// Both directions are here: asking for more is refused NAMING the ceiling, and asking for less is
+/// honoured. A gate with only the first half would pass over an implementation that refused
+/// everything.
+#[test]
+fn an_agent_may_tighten_a_guardrail_and_never_loosen_one() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "budget", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+
+    let ceiling = sprag_host::plugins::DEFAULT_MAX_ITERATIONS;
+    let refused = server.call_tool_error(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "budget",
+            "stimulus": "x",
+            "max_iterations": u64::from(ceiling) + 1,
+        }),
+    );
+    assert!(
+        refused.contains(&format!("at most {ceiling}")),
+        "the refusal names the ceiling the daemon published, so the agent knows what to ask for: \
+         {refused}",
+    );
+
+    // THE OTHER HALF: under the ceiling is honoured, so this is a bound and not a ban.
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "budget",
+            "stimulus": "x",
+            "max_iterations": 2,
+        }),
+    );
+    let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
+    assert!(ended.contains("after 2 iterations"), "{ended}");
+}
+
+/// ⚠⚠ **AN AGENT SEES AND CANCELS ITS OWN RUNS, AND NOBODY ELSE'S** — the answer to *whose runs are
+/// these?*, which the registry itself cannot give.
+///
+/// The run registry is DAEMON-WIDE: the `runs` slot answers with every run the host holds, whatever
+/// session asked. So an unfiltered tool would show an agent the person's work and let it cancel
+/// somebody else's loop. What makes the filter possible is the provenance the daemon now records at
+/// submit time, stamped by this server from its own pane and never taken from the caller.
+///
+/// Two agents in two panes, against one daemon, is the fixture that can express it: a single agent
+/// cannot tell "my runs" from "all runs".
+#[test]
+fn one_agents_runs_are_invisible_to_another() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut first = McpServer::spawn_in_pane(&sock, 0);
+    first.call_tool(
+        "open_pane",
+        json!({ "name": "firsts", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+    first.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "firsts",
+            "stimulus": "x",
+            "max_iterations": 2,
+        }),
+    );
+    let mine = first.wait_for_tool("list_runs", json!({}), "exhausted");
+    assert!(
+        mine.contains("Run 0"),
+        "the first agent sees its own: {mine}"
+    );
+
+    // The SECOND agent, in the pane the first one opened — a different pane of the same daemon, so
+    // the registry it reads is the same one and only the provenance tells them apart.
+    let target = first.call_tool("list_panes", json!({}));
+    let mut second = McpServer::spawn_in_pane(&sock, pane_id_named(&target, "firsts"));
+    let theirs = second.call_tool("list_runs", json!({}));
+    assert!(
+        theirs.contains("no runs"),
+        "the second agent started nothing, and the daemon's registry is not its own list: {theirs}",
+    );
+    let refused = second.call_tool_error("cancel_run", json!({ "run": 0 }));
+    assert!(
+        refused.contains("not one of yours"),
+        "and it cannot stop a loop it did not start: {refused}",
+    );
+
+    // THE CONTROL: the first agent CAN still see run 0, so the second's blindness is about
+    // ownership and not about the run having gone away.
+    assert!(first.call_tool("list_runs", json!({})).contains("Run 0"));
+}
+
+/// The host id of the pane called `name` in a `list_panes` answer.
+///
+/// Reads the `id=` the listing prints rather than the 1-based number, because what a server is
+/// SPAWNED in is a host id — the variable the daemon exports — and a number would mean the row it
+/// happened to be on.
+fn pane_id_named(listing: &str, name: &str) -> u64 {
+    listing
+        .lines()
+        .find(|line| line.contains(&format!("\"{name}\"")))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|word| word.strip_prefix("id="))
+        })
+        .and_then(|id| id.parse().ok())
+        .unwrap_or_else(|| panic!("no pane called {name:?} in:\n{listing}"))
 }

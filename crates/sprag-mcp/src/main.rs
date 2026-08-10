@@ -347,6 +347,16 @@ fn handle_initialize(message: &Value) -> Value {
             on a window you opened, a person's window is refused, and so is closing the session's \
             last one. A forced size is only laid out while the `window-size` option is `manual`, \
             so read what `resize_window` answers rather than assuming the columns moved. \
+            When the work is a LOOP rather than a single act — prompt something, read what it \
+            said, decide, prompt again — do not run that loop in your own turns. `orchestrate` \
+            runs it inside the platform, which is the only way it is BOUNDED: it stops at an \
+            iteration ceiling and at a cost ceiling in the run's own unit (injected bytes, or \
+            model tokens), it ends each turn on the sibling agent's MEASURED state rather than \
+            on a timer, and `cancel_run` stops it between steps so the pane is left readable. A \
+            loop you drive yourself has none of those, and nothing can stop it if it does not \
+            converge. It returns a run id at once; `list_runs` says how it ended, and it still \
+            says so if the run finished while you were doing something else. Every pane a run \
+            touches must be one you opened, and the runs you see are the ones you started. \
             If a tool reports it is not inside a sprag terminal, these tools do not apply to \
             this session."
     })
@@ -373,7 +383,7 @@ fn tools_list() -> Value {
             never moves. Name a pane you will come back to (open_pane's `name`, or \
             rename_pane) and address it by that."
     });
-    json!({
+    let mut roster = json!({
         "tools": [
             {
                 "name": "list_panes",
@@ -1351,7 +1361,528 @@ fn tools_list() -> Value {
                 }
             }
         ]
+    });
+    // ⚠ APPENDED RATHER THAN WRITTEN INSIDE THE LITERAL ABOVE, and not by choice: three more
+    // entries put `json!` past its expansion recursion limit. Raising `recursion_limit` would have
+    // bought one more round of the same, so the roster splits by SUBJECT instead — which is also
+    // where it was going, since these three are the only tools whose schema is DERIVED rather than
+    // written.
+    if let Some(list) = roster["tools"].as_array_mut() {
+        list.extend(orchestration_tools());
+    }
+    roster
+}
+
+/// The three tools that reach the orchestration loop.
+///
+/// Their schemas come from [`orchestrate_schema`], which reads the wire's own published grammar —
+/// so a plugin added upstream is advertised here in the compile that adds it, and no argument name
+/// is spelled twice in this workspace.
+fn orchestration_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "orchestrate",
+            "description": orchestrate_description(),
+            "inputSchema": orchestrate_schema()
+        }),
+        json!({
+            "name": "list_runs",
+            "description": "List the bounded loops YOU started with orchestrate, and how the \
+                finished ones ended — the outcome (converged / exhausted / failed / cancelled), \
+                how many iterations it took, what it spent in its own cost unit, and any reply the \
+                run captured. Runs another agent or the person started are NOT listed: a run \
+                carries the pane that asked for it, and this answers about yours. Poll this after \
+                orchestrate rather than watching the pane — a run's outcome is a level, so it is \
+                still here whether or not you were looking when it finished.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "cancel_run",
+            "description": "Ask one of YOUR runs to stop. It stops at its next step rather than \
+                being killed mid-write, so the pane it was driving is left in a state somebody can \
+                read. A run you did not start is refused — cancelling somebody else's loop is a \
+                decision about their work. Use it when the pane's output shows the loop is not \
+                going to converge; you do not need it for safety, because every run is already \
+                bounded.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "run": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The run id, from orchestrate or list_runs."
+                    }
+                },
+                "required": ["run"],
+                "additionalProperties": false
+            }
+        }),
+    ]
+}
+
+/// THE ARGUMENTS OF `run` THAT NAME A PANE, and so resolve through this surface's own addressing.
+///
+/// # Why a list, and why it is safe to be one
+///
+/// The published grammar says these are `int`; it does not say they are PANES. Nothing in
+/// [`sprag_rpc::ArgGrammar`] can, and inventing a subject axis for three keys would be a wire
+/// change made for one consumer. So the list is here — and
+/// [`every_int_argument_of_a_run_is_classified`](self) makes it fail-closed: every `int` argument
+/// of every published form is either here or in [`NOT_A_PANE`], so an argument added upstream
+/// forces a decision instead of silently arriving unresolved and unauthorised.
+const PANE_ARGUMENTS: &[&str] = &["pane", "src", "dst"];
+
+/// The `int` arguments of `run` that are NOT panes — a count, a size, a bound, a provenance.
+///
+/// The other half of [`PANE_ARGUMENTS`]'s fail-closed pair. An entry here is a decision that this
+/// argument needs no ownership check, which is true of every number that is not a pane.
+const NOT_A_PANE: &[&str] = &[
+    "timeout_ms",
+    "cols",
+    "rows",
+    "opened_by",
+    "max_iterations",
+    "max_bytes",
+    "max_tokens",
+];
+
+/// The argument the SERVER stamps and an agent may never send.
+///
+/// # ⚠⚠ The authority decision, in one constant
+///
+/// `opened_by` is what makes a run somebody's. If an agent could set it, it could claim a run as
+/// another pane's — or, worse, list and cancel that pane's runs by asserting its number. So it is
+/// absent from the advertised schema, refused if sent, and filled in by this server from its OWN
+/// pane. That is the same shape as every other tool here: the agent says what it wants done, and
+/// the surface says who is asking.
+const OPENED_BY: &str = "opened_by";
+
+/// The `run` forms this build was compiled against — the ONE definition the tool schema, the
+/// description and the argument classification all read.
+fn run_forms() -> &'static [sprag_rpc::CallForm] {
+    sprag_host::wire::PLUGINS_GRAMMAR
+        .iter()
+        .find(|verb| verb.action == sprag_host::plugins::RUN_ACTION)
+        .map_or(&[], |verb| verb.forms)
+}
+
+/// ONE ARGUMENT of `orchestrate`, MERGED across the forms that declare it.
+///
+/// A form-level fact folded into a flat one, and the merge is not a formality: the `plugin`
+/// discriminator publishes exactly ONE word per form (that is how a form is selected), so a schema
+/// that took the first occurrence would advertise `orchestrator` as the only plugin an agent may
+/// name. The union across forms is the whole vocabulary — which is what
+/// [`PluginGrammar`](sprag_host::wire::PluginGrammar) says the union is for.
+struct RunArgument {
+    name: &'static str,
+    ty: &'static str,
+    /// Every word any form admits for it, or empty for an open value.
+    words: Vec<&'static str>,
+}
+
+/// Every argument of every `run` form, nesting flattened, minus the one the agent may not send.
+///
+/// Merged by NAME across forms: an MCP `inputSchema` is one flat object and the wire's four forms
+/// are an alternation, which JSON Schema could express with `oneOf` and which no MCP client is
+/// guaranteed to enforce. The description carries the alternation instead (see
+/// [`orchestrate_description`]) and the DAEMON is what actually refuses a mixed call — which is the
+/// right place for it, since the daemon is the thing that knows.
+fn orchestrate_arguments() -> Vec<RunArgument> {
+    let mut out: Vec<RunArgument> = Vec::new();
+    for form in run_forms() {
+        for arg in form.args {
+            for arg in std::iter::once(arg).chain(arg.fields) {
+                if arg.name == OPENED_BY || !arg.fields.is_empty() {
+                    continue;
+                }
+                let words = arg.words.unwrap_or_default();
+                match out.iter_mut().find(|seen| seen.name == arg.name) {
+                    Some(seen) => {
+                        for word in words {
+                            if !seen.words.contains(word) {
+                                seen.words.push(word);
+                            }
+                        }
+                    }
+                    None => out.push(RunArgument {
+                        name: arg.name,
+                        ty: arg.ty,
+                        words: words.to_vec(),
+                    }),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The `orchestrate` tool's input schema, DERIVED from the wire's published grammar.
+///
+/// Not hand-written, for this crate's standing reason: a roster that re-spells the daemon's
+/// arguments is a second list, and a second list is the one a new plugin is left out of. A plugin
+/// added to `PluginName` reaches this schema in the compile that adds it.
+fn orchestrate_schema() -> Value {
+    let mut properties = serde_json::Map::new();
+    for arg in orchestrate_arguments() {
+        let schema = if PANE_ARGUMENTS.contains(&arg.name) {
+            json!({
+                "type": ["integer", "string"],
+                "minimum": 1,
+                "description": "Which pane — a NUMBER from list_panes or a NAME, exactly as every \
+                    other tool here takes one. It must be a pane YOU opened."
+            })
+        } else {
+            let mut schema = serde_json::Map::new();
+            schema.insert(
+                "type".to_owned(),
+                match arg.ty {
+                    "int" => json!("integer"),
+                    "bool" => json!("boolean"),
+                    "array" => json!("array"),
+                    "object" => json!("object"),
+                    _ => json!("string"),
+                },
+            );
+            if arg.ty == "array" {
+                schema.insert("items".to_owned(), json!({ "type": "string" }));
+            }
+            if !arg.words.is_empty() {
+                schema.insert("enum".to_owned(), json!(arg.words));
+            }
+            schema.insert("description".to_owned(), json!(argument_help(arg.name)));
+            Value::Object(schema)
+        };
+        properties.insert(arg.name.to_owned(), schema);
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        // ONLY the discriminator, because the other required arguments differ per plugin and a
+        // flat `required` would demand a dialogue's `seed` of an agent run. The daemon refuses a
+        // missing one by name.
+        "required": ["plugin"],
+        "additionalProperties": false,
     })
+}
+
+/// What one argument of `orchestrate` is FOR, in an agent's terms.
+///
+/// A per-name table and not a rule, because a type cannot say what a stimulus is. It is keyed by
+/// the published name so an argument this build does not know still appears in the schema with an
+/// honest blank rather than being dropped.
+fn argument_help(name: &str) -> &'static str {
+    match name {
+        "plugin" => {
+            "Which loop to run. `agent` prompts the AI in a pane and collects its reply; \
+             `orchestrator` retypes one stimulus until a sentinel appears; `pipe` relays one \
+             pane's output into another's input; `dialogue` runs two commands against each other, \
+             turn by turn."
+        }
+        "stimulus" => "The text typed into the pane each iteration (orchestrator).",
+        "sentinel" => {
+            "Stop as soon as this appears on the pane (orchestrator). Without it the \
+             run goes to its iteration ceiling."
+        }
+        "prompt" => "What to say to the agent in the pane (agent).",
+        "eof" => "Send end-of-input after the prompt (agent), for a command that reads until EOF.",
+        "timeout_ms" => "How long one turn may take before the run gives up on it.",
+        "seed" => "The first message, given to endpoint A (dialogue).",
+        "endpoint_a" => "The command line of the first speaker, as a list (dialogue).",
+        "endpoint_b" => "The command line of the second speaker, as a list (dialogue).",
+        "label_a" => "What to call the first speaker in the transcript (dialogue).",
+        "label_b" => "What to call the second speaker in the transcript (dialogue).",
+        "format_a" => "How to read the first speaker's reply (dialogue).",
+        "format_b" => "How to read the second speaker's reply (dialogue).",
+        "cols" => "How wide the panes a dialogue spawns are.",
+        "rows" => "How tall the panes a dialogue spawns are.",
+        "max_iterations" => {
+            "Stop after this many turns. It may only be LOWER than this daemon's \
+             default, never higher — the ceiling is the person's to raise."
+        }
+        "max_bytes" => "Stop after injecting this many bytes. Lower than the default only.",
+        "max_tokens" => "Stop after this many model tokens. Lower than the default only.",
+        _ => "See `sprag show-grammar run` for what this daemon says about this argument.",
+    }
+}
+
+/// The `orchestrate` tool's description, with one line per form — the alternation the flat schema
+/// above cannot carry, written from the same table.
+fn orchestrate_description() -> String {
+    let mut text = String::from(
+        "Run a BOUNDED loop against panes and get a run id back immediately. This is what you \
+         should use instead of hand-rolling a drive-and-wait loop in your own turns: the platform \
+         enforces an iteration ceiling, a cost ceiling in the run's own unit, and a cancel flag, \
+         and it ends a turn on the agent's MEASURED state rather than on a timer. Your loop has \
+         none of that. It returns at once — poll list_runs for the outcome. Every pane it touches \
+         must be one YOU opened. Forms:",
+    );
+    for form in run_forms() {
+        let Some(word) = form
+            .args
+            .iter()
+            .find(|arg| arg.words.is_some_and(|words| words.len() == 1))
+            .and_then(|arg| arg.words.and_then(<[&str]>::first))
+        else {
+            continue;
+        };
+        let needed: Vec<&str> = form
+            .args
+            .iter()
+            .filter(|arg| !arg.optional && arg.name != "plugin")
+            .map(|arg| arg.name)
+            .collect();
+        text.push_str(&format!("\n  {word}: needs {}", needed.join(", ")));
+    }
+    text
+}
+
+/// `orchestrate`: start a bounded loop for the agent that asked, on the panes it owns.
+///
+/// # The three things this adds to the wire's own `run`, and why each is the MOUTH's job
+///
+/// The daemon accepts a `run` from anyone for any pane with any bound, and that is right: it has no
+/// authentication, and a person driving their own machine should not be second-guessed. This
+/// surface is the one with a caller it can identify, so it is the one that can say:
+///
+/// 1. **Every pane must be the agent's own** — [`require_own_pane`], the rule the five other
+///    writing tools keep. Without it a plugin run would be a laundering path around them: an agent
+///    refused `write_pane` on a person's pane could have driven the same pane through a loop.
+/// 2. **A guardrail may only TIGHTEN** — the daemon's published defaults are the ceiling, and an
+///    agent asking for more is REFUSED rather than silently clamped. A run that quietly did
+///    something other than what it was asked is how a guardrail becomes folklore.
+/// 3. **The run carries who asked** — stamped here from this server's own pane, never taken from
+///    the caller ([`OPENED_BY`]), which is what makes `list_runs` and `cancel_run` answer about the
+///    caller's own work.
+fn tool_orchestrate(args: &Value) -> Result<String, String> {
+    let mut action_args = serde_json::Map::new();
+    let known = orchestrate_arguments();
+    let object = args.as_object().cloned().unwrap_or_default();
+
+    if object.contains_key(OPENED_BY) {
+        return Err(format!(
+            "'{OPENED_BY}' is not yours to set — this server stamps the run with the pane you are \
+             running in, which is what makes list_runs and cancel_run answer about your own runs."
+        ));
+    }
+    for key in object.keys() {
+        if !known.iter().any(|arg| arg.name == key) {
+            return Err(format!(
+                "'{key}' is not an argument of orchestrate. It takes: {}",
+                known
+                    .iter()
+                    .map(|arg| arg.name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+    }
+
+    let ceilings = guardrail_defaults()?;
+    let mut guardrails = serde_json::Map::new();
+    for arg in &known {
+        let Some(value) = object.get(arg.name) else {
+            continue;
+        };
+        // A PANE argument resolves through this surface's own addressing and must be the agent's.
+        if PANE_ARGUMENTS.contains(&arg.name) {
+            let pane = resolve_pane_ref_at(args, arg.name)?;
+            require_own_pane(
+                &pane,
+                "orchestrate",
+                "A loop drives a pane exactly as write_pane and send_keys do, so it is refused for \
+                 the same reason: open your own pane with open_pane and orchestrate that. If the \
+                 work has to happen in the person's pane, tell them what you would run.",
+            )?;
+            action_args.insert(arg.name.to_owned(), json!(pane.id()));
+            continue;
+        }
+        // A GUARDRAIL field is checked against this daemon's own published default and then moves
+        // inside the nested object the wire takes.
+        if let Some(ceiling) = ceilings.get(arg.name) {
+            let asked = value
+                .as_u64()
+                .ok_or_else(|| format!("'{}' must be a whole number", arg.name))?;
+            if asked > *ceiling {
+                return Err(format!(
+                    "'{}' may be at most {ceiling} here, and {asked} was asked for. A guardrail an \
+                     agent could raise is not a guardrail — lower it, or ask the person to raise \
+                     this daemon's default.",
+                    arg.name,
+                ));
+            }
+            guardrails.insert(arg.name.to_owned(), json!(asked));
+            continue;
+        }
+        // ⚠⚠ FAIL CLOSED ON AN UNCLASSIFIED NUMBER. Every `int` this daemon publishes is either a
+        // pane (resolved and ownership-checked above) or one of [`NOT_A_PANE`]. A number that is
+        // neither is one this build cannot tell apart from a pane id — so passing it through would
+        // be handing the wire a pane reference that skipped the ownership rule, which is the one
+        // thing this surface exists to apply.
+        //
+        // ⚠ UNREACHABLE AGAINST A DAEMON OF THIS BUILD, and that is the point rather than a gap:
+        // `every_int_argument_of_a_run_is_classified` proves the two lists cover every `int` the
+        // compiled-in grammar publishes, so nothing this workspace serves can get here. The branch
+        // is for a daemon that is NEWER than this binary — the one case where the classification
+        // cannot have been made in advance, and the one where guessing would be worst.
+        if arg.ty == "int" && !NOT_A_PANE.contains(&arg.name) {
+            return Err(format!(
+                "this daemon's '{}' is a number that this server does not know how to check — it \
+                 may name a pane, and a pane argument has to be one you own. Start the run without \
+                 it, or use `sprag orchestrate` where the person is the authority.",
+                arg.name,
+            ));
+        }
+        action_args.insert(arg.name.to_owned(), value.clone());
+    }
+    if !guardrails.is_empty() {
+        action_args.insert("guardrails".to_owned(), Value::Object(guardrails));
+    }
+    // WHO ASKED — this server's own pane, never the caller's word for it.
+    let mine = own_pane().ok_or_else(|| {
+        "orchestrate needs to know which pane you are in, and this process is not inside one — so \
+         a run started here could not be told apart from anybody else's."
+            .to_owned()
+    })?;
+    action_args.insert(OPENED_BY.to_owned(), json!(mine));
+
+    let answer = host_call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": Value::Object(action_args),
+        }),
+    )?;
+    let id = answer
+        .as_u64()
+        .ok_or_else(|| "the daemon's answer was not a run id".to_owned())?;
+    Ok(format!(
+        "Run {id} started. It is bounded: it stops at its iteration ceiling or its cost ceiling, \
+         whichever binds first. Call list_runs for the outcome — it is still there when you look, \
+         even if the run finished while you were doing something else.\n"
+    ))
+}
+
+/// This daemon's guardrail defaults, which are this surface's CEILINGS.
+///
+/// Read from the daemon rather than from [`sprag_host::plugins::DEFAULT_MAX_ITERATIONS`] and its
+/// siblings, though this binary could see both: the ceiling an agent is held to must be the one the
+/// daemon actually enforces, and a constant compiled into a separately-built client is a different
+/// number the day the two are not the same build. That is `show-grammar`'s whole argument, applied
+/// to the one fact that decides whether a bound is real.
+fn guardrail_defaults() -> Result<std::collections::BTreeMap<String, u64>, String> {
+    let answer = host_call(
+        "scene/query",
+        json!({
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::GUARDRAIL_DEFAULTS_SLOT),
+        }),
+    )?;
+    let map = answer
+        .as_object()
+        .ok_or_else(|| "the daemon's guardrail defaults were not an object".to_owned())?;
+    Ok(map
+        .iter()
+        .filter_map(|(key, value)| Some((key.clone(), value.as_u64()?)))
+        .collect())
+}
+
+/// `list_runs`: the runs THIS agent started, with where each got to.
+fn tool_list_runs() -> Result<String, String> {
+    let mine = own_runs()?;
+    if mine.is_empty() {
+        return Ok("You have started no runs. orchestrate starts one.\n".to_owned());
+    }
+    let mut out = String::new();
+    for run in mine {
+        out.push_str(&render_run(&run));
+    }
+    Ok(out)
+}
+
+/// Every run this agent's own pane asked for.
+///
+/// ⚠ The registry is DAEMON-WIDE and the filter is what makes this surface's promise true: the
+/// `runs` slot answers with every run the host holds, including a person's and another agent's, so
+/// an unfiltered tool would report on work its caller cannot see and did not start. The provenance
+/// it filters by is the one the daemon recorded at submit time.
+fn own_runs() -> Result<Vec<Value>, String> {
+    let mine = own_pane().ok_or_else(|| {
+        "this process is not inside a pane, so there is no way to say which runs are yours."
+            .to_owned()
+    })?;
+    let answer = host_call(
+        "scene/query",
+        json!({ "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT) }),
+    )?;
+    Ok(answer
+        .as_array()
+        .map(|runs| {
+            runs.iter()
+                .filter(|run| run["opened_by"].as_u64() == Some(mine))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// One run as an agent reads it.
+fn render_run(run: &Value) -> String {
+    let id = run["id"].as_u64().unwrap_or_default();
+    let label = run["label"].as_str().unwrap_or("?");
+    let state = &run["state"];
+    match state["status"].as_str() {
+        Some("running") => format!("Run {id} ({label}): still running.\n"),
+        Some("done") => {
+            let outcome = &state["outcome"];
+            let reply = state["output"]
+                .as_str()
+                .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
+            format!(
+                "Run {id} ({label}): {} after {} iterations, {} {}.{}\n{reply}",
+                outcome["state"].as_str().unwrap_or("?"),
+                outcome["iterations"].as_u64().unwrap_or_default(),
+                outcome["cost"].as_u64().unwrap_or_default(),
+                outcome["unit"].as_str().unwrap_or("steps"),
+                outcome["failure"]
+                    .as_str()
+                    .map_or_else(String::new, |why| format!(" It failed: {why}.")),
+            )
+        }
+        _ => format!(
+            "Run {id} ({label}): {}.\n",
+            state["status"].as_str().unwrap_or("in an unknown state"),
+        ),
+    }
+}
+
+/// `cancel_run`: stop one of this agent's own runs.
+fn tool_cancel_run(args: &Value) -> Result<String, String> {
+    let wanted = args
+        .get("run")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "give the run id from orchestrate or list_runs as 'run'".to_owned())?;
+    // OWNERSHIP BEFORE THE ACT, read from the daemon's own record rather than from the caller: a
+    // run somebody else started is refused, and a run that never existed is told apart from one
+    // that is not the caller's — two different things for the agent to do next.
+    if !own_runs()?
+        .iter()
+        .any(|run| run["id"].as_u64() == Some(wanted))
+    {
+        return Err(format!(
+            "Run {wanted} is not one of yours. list_runs shows the runs you started; a run started \
+             by the person or by another agent is theirs to stop."
+        ));
+    }
+    host_call(
+        "scene/invoke",
+        json!({
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::CANCEL_ACTION),
+            "args": { "id": wanted },
+        }),
+    )?;
+    Ok(format!(
+        "Run {wanted} was asked to stop. It ends at its next step, so the pane it was driving is \
+         left readable. list_runs says when it has.\n"
+    ))
 }
 
 /// Dispatch a `tools/call`, wrapping the outcome into MCP `content`. A tool-level
@@ -1402,6 +1933,9 @@ fn handle_tools_call(message: &Value) -> Value {
         "join_pane" => tool_join_pane(&args),
         "move_pane" => tool_move_pane(&args),
         "resize_window" => tool_resize_window(&args),
+        "orchestrate" => tool_orchestrate(&args),
+        "list_runs" => tool_list_runs(),
+        "cancel_run" => tool_cancel_run(&args),
         other => Err(no_such_tool(other)),
     };
     match outcome {
@@ -6255,7 +6789,123 @@ mod tests {
         );
         // THE CONTROL: this is not vacuously true over two empty lists. The count is asserted where
         // the register's estimate was, so a later round reads a measured number.
-        assert_eq!(advertised.len(), 36, "the agent surface's roster");
+        assert_eq!(advertised.len(), 39, "the agent surface's roster");
+    }
+
+    /// ⚠⚠ **EVERY `int` ARGUMENT OF A RUN IS CLASSIFIED AS A PANE OR AS NOT ONE** — the gate that
+    /// makes [`PANE_ARGUMENTS`] fail-closed instead of being a list somebody remembered to update.
+    ///
+    /// The published grammar says `pane`, `src`, `dst`, `cols` and `max_iterations` are all `int`.
+    /// Only the first three name a pane, and only a pane argument gets [`require_own_pane`]. So an
+    /// `int` argument added upstream and left out of both lists would arrive UNRESOLVED and
+    /// UNAUTHORISED — an agent could drive a pane it does not own by whichever new key that is.
+    ///
+    /// Two lists and this claim make the omission impossible: a new argument fails here, and the
+    /// round that adds it decides which it is.
+    #[test]
+    fn every_int_argument_of_a_run_is_classified() {
+        let mut seen = 0;
+        for arg in orchestrate_arguments() {
+            if arg.ty != "int" {
+                continue;
+            }
+            seen += 1;
+            assert!(
+                PANE_ARGUMENTS.contains(&arg.name) ^ NOT_A_PANE.contains(&arg.name),
+                "the run argument {:?} is an int that is in neither PANE_ARGUMENTS nor NOT_A_PANE \
+                 (or in both). An unclassified int is one this tool passes through without \
+                 resolving it or checking who owns it.",
+                arg.name,
+            );
+        }
+        assert_eq!(
+            seen, 9,
+            "the int arguments of every published run form: pane, src, dst, timeout_ms, cols, \
+             rows, max_iterations, max_bytes and max_tokens",
+        );
+        // ⚠ AND THE EXEMPTION LIST IS PRUNED TOO — an entry naming an argument no form publishes
+        // any more is a stale decision, which is the half R353's exemption rule adds.
+        for name in PANE_ARGUMENTS.iter().chain(NOT_A_PANE) {
+            assert!(
+                orchestrate_arguments()
+                    .iter()
+                    .any(|arg| arg.name == *name || *name == OPENED_BY),
+                "{name:?} is classified here and no run form publishes it",
+            );
+        }
+    }
+
+    /// ⚠⚠ **THE `orchestrate` SCHEMA IS THE WIRE'S OWN GRAMMAR, MINUS THE ONE ARGUMENT AN AGENT
+    /// MAY NOT SEND.**
+    ///
+    /// Both halves are the claim. Every argument the daemon publishes is offered, so a plugin
+    /// added upstream is callable here without an edit; and `opened_by` is NOT, because an agent
+    /// that could stamp who asked for a run could claim — and then cancel — another pane's.
+    #[test]
+    fn the_orchestrate_schema_is_the_wires_own_grammar() {
+        let schema = orchestrate_schema();
+        let properties = schema["properties"]
+            .as_object()
+            .expect("an object of arguments");
+        for form in run_forms() {
+            for arg in form.args {
+                for arg in std::iter::once(arg).chain(arg.fields) {
+                    if !arg.fields.is_empty() {
+                        continue; // the parent is offered by its fields
+                    }
+                    if arg.name == OPENED_BY {
+                        assert!(
+                            !properties.contains_key(OPENED_BY),
+                            "the schema offers the provenance an agent must not choose",
+                        );
+                        continue;
+                    }
+                    assert!(
+                        properties.contains_key(arg.name),
+                        "the daemon publishes {:?} and the tool does not offer it, so an agent \
+                         cannot send an argument this build's own wire takes",
+                        arg.name,
+                    );
+                }
+            }
+        }
+        // The DISCRIMINATOR carries every plugin word, so a fifth plugin is advertised the day it
+        // is added rather than the day somebody edits a literal here.
+        assert_eq!(
+            properties["plugin"]["enum"],
+            json!(sprag_host::plugins::PluginName::WIRE_WORDS),
+        );
+        assert_eq!(schema["required"], json!(["plugin"]));
+        // THE CONTROL: the walk above is not vacuous — it really did visit the nested guardrail
+        // fields, which is where the loop's whole safety story lives.
+        for bound in ["max_iterations", "max_bytes", "max_tokens"] {
+            assert!(
+                properties.contains_key(bound),
+                "{bound} is a nested field of the published grammar and must reach the agent",
+            );
+        }
+    }
+
+    /// ⚠⚠ **AN AGENT CANNOT SAY WHO ASKED FOR A RUN** — the authority decision, driven.
+    ///
+    /// This is refused before anything is sent, so it needs no daemon: the point is that the
+    /// provenance is the SERVER's to stamp. Without it, `list_runs` and `cancel_run` would answer
+    /// about whichever pane the caller claimed to be, and the ownership rule would be a suggestion.
+    #[test]
+    fn an_agent_cannot_stamp_who_asked_for_a_run() {
+        let refusal = tool_orchestrate(&json!({
+            "plugin": "agent", "pane": 1, "prompt": "hi", OPENED_BY: 99,
+        }))
+        .expect_err("a caller-supplied provenance is refused");
+        assert!(refusal.contains(OPENED_BY), "{refusal}");
+        // THE CONTROL: the refusal is about THAT key and not about the call being malformed in
+        // general — an unknown key gets its own sentence naming what the tool does take.
+        let other = tool_orchestrate(&json!({ "plugin": "agent", "nonsense": 1 }))
+            .expect_err("an unknown argument is refused");
+        assert!(
+            other.contains("nonsense") && other.contains("prompt"),
+            "{other}"
+        );
     }
 
     #[test]
