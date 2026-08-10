@@ -128,6 +128,81 @@ jobs:
         if: always()
         run: cargo run -q -p sprag-gate --bin ambient-home-guard
 
+  pixel-linux:
+    name: pixel (linux)
+    runs-on: ubuntu-latest
+    # THE GATE THAT LOOKS AT PIXELS, AND THE REASON IT IS HERE.
+    #
+    # `sprag-smoke` is the only check in this repository that asserts on what a person would SEE. It
+    # lived outside every automated gate — not in this file, not in `pre-commit` — so its number was
+    # only ever as current as the last round that felt like running it. R349 shipped a paint change
+    # without it and it stayed RED for ELEVEN rounds while every job here was green. A gate nobody
+    # runs goes red in silence.
+    #
+    # ⚠ THE `--exclude sprag-gui` AT THE TOP OF THIS FILE IS NOT CONTRADICTED. That exclusion makes
+    # the two headless jobs a GATE on the headless/display split: the remaining workspace must
+    # compile no GPU or windowing crate. This job is the other side of the same line — it is the ONLY
+    # one that builds the display half, and it says so by being separate rather than by widening
+    # theirs.
+    #
+    # WHY THIS CAN RUN WITHOUT A GPU: Mesa's lavapipe is a software Vulkan device, and `sprag-smoke`
+    # points `VK_ICD_FILENAMES` at it itself (see the bin's own docs — it derives the ICD path,
+    # because the file lost its arch suffix once already).
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # MEASURED, NOT GUESSED, AND THE MEASUREMENT IS CHECKED FOR COMPLETENESS.
+      #
+      # `ldd` on the GUI reports almost nothing — winit and the Vulkan loader bring their X11 and
+      # driver libraries in with `dlopen`, so a list read off the link line is wrong in exactly the
+      # places that matter. So: run the client under `LD_DEBUG=libs`, take every object it actually
+      # initialised (58), and map each back to its package with `dpkg -S` (50 packages, none
+      # unowned). Then check that this seven-line list REACHES them — `apt-cache depends --recurse`
+      # over it is 160 packages and contains 46 of the 50.
+      #
+      # The four it does not contain were attributed rather than waved at: `libacl1` is loaded by
+      # `sed`, `libgmp10` by `expr`, `libseccomp2` by `manpath` — `xvfb-run`'s own shell helpers,
+      # which no client of ours ever calls, and the GUI's trace loads none of the four.
+      #
+      # This repository has a scar from the other approach — `crates/sprag-gate` exists because a
+      # gate written straight into this file was never tested and failed unconditionally on every
+      # run that carried it.
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfontconfig-dev \
+            xvfb \
+            mesa-vulkan-drivers \
+            libvulkan1 \
+            libxkbcommon-x11-0 \
+            libxcursor1 \
+            libxi6
+
+      - name: Toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
+
+      # ONE invocation for the whole set, and that is not tidiness: the smoke drives a daemon and a
+      # terminal client beside the GUI, and a set built piecemeal is how a stale binary once cost
+      # four cycles. RELEASE, because the smoke's frame budgets are written against an optimised
+      # client — a debug build under a software rasteriser is a different machine.
+      - name: Build the smoke set
+        run: cargo build --release -p sprag-gui -p sprag-host -p sprag-tui
+
+      # A fresh XDG home per run, because the smoke writes user config and a run that read the
+      # runner's would be asserting about the image rather than about sprag.
+      - name: Pixel smoke
+        run: |
+          export XDG_CONFIG_HOME="${{ github.workspace }}/../pixel/config"
+          export XDG_DATA_HOME="${{ github.workspace }}/../pixel/data"
+          export XDG_STATE_HOME="${{ github.workspace }}/../pixel/state"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+          xvfb-run -a ./target/release/sprag-smoke
+
   headless-macos:
     name: headless (macos)
     runs-on: macos-latest
