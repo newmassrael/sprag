@@ -7697,3 +7697,48 @@ fn the_cli_reports_a_stale_daemons_grammar_as_skew() {
         run.stderr,
     );
 }
+
+/// `show-grammar`'s own ARGUMENT parsing — the arms a test has to build because a person's typo is
+/// what reaches them.
+///
+/// ⚠ Written because the round's debt sweep asked which branches of its own new code nothing drives
+/// (R340's rule): the option parser had four refusal arms and one scope arm, and the tests above drove
+/// none of them. A refusal nobody has run is a sentence that is wrong the first time somebody sees it.
+#[test]
+fn show_grammar_says_what_it_takes_when_a_caller_gets_it_wrong() {
+    let (_host, sock) = spawn_host();
+
+    // The SCOPE arm: a named session, which is what `--pane` needs to find a pane at all.
+    // The boot session is "0" — the name `ls` prints and an unscoped request lands in.
+    let scoped = sprag(&sock, &["show-grammar", "--pane", "-t", "0"]);
+    assert!(
+        scoped.ok && scoped.stdout.contains(KEY_ACTION),
+        "a scoped ask reaches the pane surface: {} {}",
+        scoped.stdout,
+        scoped.stderr,
+    );
+
+    // `-t` with nothing after it.
+    let dangling = sprag(&sock, &["show-grammar", "-t"]);
+    assert!(
+        !dangling.ok && dangling.stderr.contains("takes a session name"),
+        "a dangling -t says what it wanted: {}",
+        dangling.stderr,
+    );
+
+    // An option this verb does not have — and the sentence names the two it does.
+    let bogus = sprag(&sock, &["show-grammar", "--json"]);
+    assert!(
+        !bogus.ok && bogus.stderr.contains("--pane"),
+        "an unknown option names what the verb takes: {}",
+        bogus.stderr,
+    );
+
+    // Two verbs at once: this narrows to ONE, and says so rather than printing the first.
+    let two = sprag(&sock, &["show-grammar", SPLIT_ACTION, SPAWN_ACTION]);
+    assert!(
+        !two.ok && two.stderr.contains("one verb at a time"),
+        "a second verb is a caller's mistake, not a silent narrowing: {}",
+        two.stderr,
+    );
+}

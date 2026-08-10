@@ -5347,13 +5347,11 @@ pub(crate) mod grammar_gate {
                         // had no arm for one — the plugin surface's gates found that on their first
                         // run, with a string where an array was declared.
                         (None, "array") => Value::from(vec![Value::from("/bin/echo")]),
-                        // An OBJECT argument the call must carry: empty, because a required object
-                        // whose inner keys this cannot know is one whose defaults must be enough. The
-                        // only one today is `guardrails`, which is optional — so this arm exists for
-                        // the declaration that comes next, and its emptiness is a claim the
-                        // wrong-type gate holds (a parser that reads no key still refuses a
-                        // non-object).
-                        (None, "object") => Value::Object(Map::new()),
+                        // ⚠ NO ARM FOR A REQUIRED OBJECT, deliberately: every object argument on
+                        // this wire today is optional (`guardrails`), so an arm for one would be a
+                        // fallback nothing drives — wrong the first time it ran, and R318's rule. The
+                        // first required object falls to the string filler below and fails the gate
+                        // NAMING the argument, which is exactly how the missing array arm was found.
                         // A window NAME the fixture does not hold: it parses, which is all this
                         // filler has to do, and it cannot collide with a real window.
                         (None, _) => Value::from("filler-not-a-window"),
@@ -7206,6 +7204,19 @@ mod tests {
                         // A FORM IS AN OBJECT now — `{form, args}` — because a form that carries its
                         // shape can describe a scalar call, which an array of arguments could not.
                         // That is the value change this pin's number rose for.
+                        //
+                        // ⚠ THE SHAPE WORD IS A PUBLISHED VALUE TOO, and this is the only pin that
+                        // can see it: it is not an argument, so it carries no `one_of` and the three
+                        // property gates never look at it. Held to the TYPE's own vocabulary, so a
+                        // third shape reaches a client's reader only if `FormKind` spells it.
+                        let shape = form[CallForm::FORM_KEY]
+                            .as_str()
+                            .expect("a form says which shape it is");
+                        assert!(
+                            FormKind::WIRE_WORDS.contains(&shape),
+                            "`{shape}` is a form shape no `FormKind` spells, so a client decoding \
+                             the published forms meets a word it cannot have",
+                        );
                         form.get(CallForm::ARGS_KEY)
                             .and_then(Value::as_array)
                             .expect("a form answers its arguments")
