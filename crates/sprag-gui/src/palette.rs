@@ -1289,11 +1289,15 @@ mod tests {
                     table,
                     &mut |action, args| surface.invoke(action, args)
                 )
-                .findings,
-                Vec::<String>::new(),
-                "⚠⚠ AN OPTIONAL ARGUMENT SPELLED `null` IS ONE THE CALLER DECLINED — asked of \
-                 THIS surface too, because a client whose language serialises absence that way \
-                 calls every verb of every surface that way",
+                .count_or_panic(),
+                0,
+                "⚠⚠ ZERO IS THE MEASUREMENT, AND IT IS A TRIPWIRE. This surface declares no \
+                 OPTIONAL argument at all, so the `null`-is-declined class cannot arise on it — \
+                 which is a fact about the grammar and not a pass. Asserted as a COUNT because \
+                 the first form of this gate checked only that there were no FINDINGS, and a \
+                 walker with nothing to drive has none: it reported this surface clean while \
+                 measuring nothing. The day a form here grows its first optional argument this \
+                 number moves, and whoever moves it has to answer the question",
             );
 
             assert_eq!(
