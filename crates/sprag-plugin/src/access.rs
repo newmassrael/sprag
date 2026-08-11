@@ -18,6 +18,7 @@ use sprag_terminal::{
     Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput,
     Workspace, foreground_leader_of,
 };
+use sprag_vt::LinesSince;
 use sprag_vt::Screen;
 
 use crate::readiness::ReadyWhen;
@@ -340,6 +341,42 @@ pub trait PaneAccess {
     fn foreground_job(&self) -> Option<&dyn PaneForegroundJob> {
         None
     }
+
+    /// The pane's *output stream* — the COMPLETE logical lines it has produced, by absolute line
+    /// number. `None` by default, on the same terms as the other five sub-surfaces.
+    ///
+    /// ⚠ A consumer without it must fall back to comparing the RENDERING, which is what
+    /// [`RowTrail`] does and what its documentation is about. That fallback is a degradation, not
+    /// an equivalent: it cannot see a line that scrolled away, and a genuine RE-WRAP changes the
+    /// rows under it.
+    fn output_lines(&self) -> Option<&dyn PaneOutputLines> {
+        None
+    }
+}
+
+/// Pane *output stream*: the complete logical lines a pane has produced, addressed by a number
+/// that survives a resize. Reached via [`PaneAccess::output_lines`].
+///
+/// # ⚠⚠ Why a relay cannot be built on the grid
+///
+/// A pane's grid is a RENDERING of its output at the width it currently has. Reading *what did this
+/// pane produce* off it means reading rows, and a row is not something the child made: a **resize**
+/// re-wraps and renumbers every one, a **repaint** changes none of them, and **scrolling** drops
+/// the ones nobody came back for. Each of those was measured here as a live defect — a relay that
+/// re-injected a whole screen because a client attached, an agent adapter that published that
+/// screen as the model's reply.
+///
+/// A LOGICAL line IS what the child produced, and reflow is defined as preserving it. Numbering
+/// those lines from the pane's birth turns a cursor into an ADDRESS, so a consumer can say *"I have
+/// had everything up to line N"* and be given the rest EXACTLY ONCE — however many times the rows
+/// carrying it are re-wrapped or repainted in between.
+pub trait PaneOutputLines {
+    /// The complete logical lines `id` has produced after absolute line `cursor`, with how many
+    /// were lost first. `None` for a pane nobody knows.
+    ///
+    /// ⚠ A loss is COUNTED rather than hidden: retained history is bounded, and a silent gap is
+    /// indistinguishable from a quiet source.
+    fn pane_lines_since(&self, id: PaneId, cursor: u64) -> Option<LinesSince>;
 }
 
 /// Pane *foreground job*: which program owns a pane's terminal right now. Reached via
@@ -697,6 +734,10 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self)
     }
 
+    fn output_lines(&self) -> Option<&dyn PaneOutputLines> {
+        Some(self)
+    }
+
     fn supervision(&self) -> Option<&dyn PaneSupervision> {
         // Gated on the reader rather than answered unconditionally: a surface with no detector
         // behind it must say so, or every pane on a host that never looked reads as "not an agent".
@@ -715,6 +756,12 @@ impl PaneSupervision for WorkspacePaneAccess {
 impl PaneInputEcho for WorkspacePaneAccess {
     fn pane_recent_input(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.echo_trail())
+    }
+}
+
+impl PaneOutputLines for WorkspacePaneAccess {
+    fn pane_lines_since(&self, id: PaneId, cursor: u64) -> Option<LinesSince> {
+        Some(self.handle(id)?.lines_since(cursor))
     }
 }
 

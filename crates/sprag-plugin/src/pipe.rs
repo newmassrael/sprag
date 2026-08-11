@@ -1,16 +1,31 @@
 //! The `Pipe` plugin — relay one pane's output into another (plugin #2).
 //!
-//! The second consumer that validates the extension API. Each step reads the
-//! *source* pane and injects the text of whatever rows are newly damaged since
-//! its last relay into the *destination* pane. It never self-converges — the
-//! [`Driver`]'s guardrails bind it (first-class safety per the README). This
-//! proves the substrate generalizes beyond the orchestrator: the same
-//! damage-`generation` primitive, but the cursor is "after last relay" rather
-//! than "before last stimulus", and it lives in the plugin (not the Driver).
+//! The second consumer that validates the extension API. Each step takes the source pane's
+//! COMPLETE LOGICAL LINES since its cursor and injects them into the *destination* pane. It never
+//! self-converges — the [`Driver`]'s guardrails bind it (first-class safety per the README).
 //!
-//! Known limitation (for the AI↔AI relay layer, not now): a row is relayed
-//! whole whenever its generation bumps, not as a character-level delta — over-
-//! relays for in-place redraws, correct for an append/echo source.
+//! # ⚠⚠ Why the cursor is a LINE NUMBER and not a mark on the rows
+//!
+//! This relay read the source's GRID for most of its life — first by damage generation, then by
+//! row text — and a grid is a RENDERING of output at the width the pane currently has. Every
+//! version of that had the same three holes, and two of them were measured as live defects:
+//!
+//! * a **RESIZE** re-wraps and re-stamps every row, so a client merely ATTACHING to the session
+//!   made this relay re-inject the source's entire screen into a peer that ACTS on what it
+//!   receives (measured: 16 bytes for a resize that printed nothing);
+//! * a **REPAINT** changes no content at all, and a generation-keyed reader called it output;
+//! * **SCROLLING** dropped every line the relay did not come back for in time — silently, with
+//!   every number the run reported identical to a working relay's.
+//!
+//! A LOGICAL line is what the child actually wrote, and reflow is defined as preserving it. So the
+//! source numbers its lines from birth ([`PaneOutputLines`](crate::access::PaneOutputLines)) and
+//! this holds an ADDRESS: each line is delivered EXACTLY ONCE however often its rows are re-wrapped
+//! or repainted, a line that scrolled away is still delivered, and a source that outruns the
+//! retained history produces a COUNTED gap rather than a silent one.
+//!
+//! ⚠ Known limitation (for the AI↔AI relay layer, not now): a line is relayed whole once complete,
+//! not as a character-level delta — so an in-place redraw is relayed as the lines it settles on,
+//! and the line the source's cursor is still on waits until it is finished.
 //!
 //! [`Driver`]: crate::driver::Driver
 
@@ -84,8 +99,16 @@ impl PipeSpec {
 pub struct Pipe {
     src: PaneId,
     dst: PaneId,
-    /// What each source row HELD when it was last relayed. ⚠ Text and not a damage generation:
-    /// a resize stamps every row, and this decides what to RE-INJECT. See [`RowTrail`].
+    /// The absolute line number this relay has delivered up to — see
+    /// [`PaneOutputLines`](crate::access::PaneOutputLines).
+    ///
+    /// ⚠⚠ A LINE NUMBER, not a row mark. It is an ADDRESS that survives a resize, so each of the
+    /// source's lines is delivered EXACTLY ONCE however many times its rows are re-wrapped or
+    /// repainted underneath.
+    cursor: u64,
+    /// The fallback for a host with no output stream: what each source row HELD when it was last
+    /// relayed. ⚠ A DEGRADATION and not an equivalent — it cannot see a line that scrolled away,
+    /// and a genuine re-wrap moves the rows under it. See [`RowTrail`].
     consumed: RowTrail,
     /// The barrier the DESTINATION must clear before anything is typed into it.
     ready: Readiness,
@@ -98,6 +121,7 @@ impl Pipe {
         Self {
             src: spec.src,
             dst: spec.dst,
+            cursor: 0,
             consumed: RowTrail::default(),
             ready: Readiness::new(spec.ready_when, spec.ready_within),
         }
@@ -159,20 +183,30 @@ impl Plugin for Pipe {
                 .noting("the run ended while waiting for the destination to be ready"));
         }
 
-        // The source rows whose CONTENT is new since the last relay, AS LINES — and the cursor
-        // advances past them, so nothing is delivered twice.
+        // ⚠⚠ WHAT THE SOURCE PRODUCED, BY LINE NUMBER — not what its grid looks like. A row is
+        // where the terminal broke a line at the width it had; a LOGICAL line is what the child
+        // wrote. Keyed on the rendering, this relay re-injected the source's whole screen every
+        // time a client attached (a resize re-stamps and re-wraps every row) and lost anything
+        // that scrolled away between steps.
         //
         // ⚠⚠ A ROW IS A LINE, AND IT HAS TO ARRIVE AS ONE. These were concatenated into a single
         // run-on string and written with no terminator, so a line-oriented destination — `read`,
         // a REPL, anything cooked — never saw a complete line and could not act on the relay at
         // all. Both of this plugin's gates passed anyway, because the pty's echo put the text on
         // the destination's screen and the check was looking at the screen.
-        let lines: Vec<String> = self
-            .consumed
-            .take_fresh(panes, self.src)
-            .into_iter()
-            .filter(|line| !line.is_empty())
-            .collect();
+        let (lines, lost) = match panes
+            .output_lines()
+            .and_then(|stream| stream.pane_lines_since(self.src, self.cursor))
+        {
+            Some(since) => {
+                self.cursor = since.next;
+                (since.lines, since.lost)
+            }
+            // ⚠ The DEGRADATION, named rather than silent: a host with no output stream is read by
+            // comparing its rendering, which cannot see a scrolled-away line.
+            None => (self.consumed.take_fresh(panes, self.src), 0),
+        };
+        let lines: Vec<String> = lines.into_iter().filter(|line| !line.is_empty()).collect();
         if lines.is_empty() {
             return Ok(
                 Step::new(Cost::Bytes(0), Verdict::Continue).noting("nothing new on the source")
@@ -198,9 +232,18 @@ impl Plugin for Pipe {
             Self::shown(panes, self.dst, &before, &relayed) == Shown::Output
         });
 
+        // ⚠⚠ A GAP IS REPORTED, NEVER SWALLOWED. Retained history is bounded, so a source that
+        // outruns it between two steps has lines this relay can never deliver — and a silent gap
+        // is indistinguishable from a quiet source, which is the confusion that would make every
+        // number this run publishes a lie about completeness.
+        let gap = if lost == 0 {
+            String::new()
+        } else {
+            format!("; {lost} EARLIER LINES WERE LOST — the source outran the retained history")
+        };
         // The pipe never self-terminates; the Driver's guardrails bind it.
-        Ok(
-            Step::new(Cost::Bytes(cost), Verdict::Continue).noting(match reacted {
+        Ok(Step::new(Cost::Bytes(cost), Verdict::Continue).noting(
+            gap + &match reacted {
                 Waited::Ready => format!("relayed {cost} bytes; the destination answered"),
                 // ⚠ The wait ran out with no output of the destination's own — and WHICH of the
                 // two silences it was is the difference between a pane nobody is reading and one
@@ -216,8 +259,8 @@ impl Plugin for Pipe {
                     }
                 },
                 Waited::Stopped => format!("relayed {cost} bytes; the run ended"),
-            }),
-        )
+            },
+        ))
     }
 }
 
@@ -231,6 +274,60 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
+
+    /// ⚠⚠ **A LINE THAT SCROLLED AWAY IS STILL RELAYED** — what only an output STREAM can do, and
+    /// the reason this plugin stopped reading the grid.
+    ///
+    /// A relay keyed on rows can only ever deliver what is currently VISIBLE. A source that prints
+    /// faster than the relay steps — which is every source worth relaying — pushes its earlier
+    /// lines off the top, and a row-keyed reader simply never sees them: no error, no gap, no
+    /// number that differs from a working relay's. **The peer is silently given a subset.**
+    ///
+    /// The fixture makes that certain rather than likely: FIVE lines onto a TWO-row pane, so three
+    /// of them are gone from the grid before the relay ever looks.
+    #[test]
+    fn a_line_that_scrolled_off_the_source_is_still_relayed() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 2))));
+        let spawn = |ws: &Arc<Mutex<Workspace>>, script: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            ws.lock()
+                .unwrap()
+                .spawn(command, "peer".to_string(), 20, 2)
+                .expect("spawn")
+        };
+        let src = spawn(&workspace, "printf 'L1\\nL2\\nL3\\nL4\\nL5\\n'; exec cat");
+        let dst = spawn(&workspace, "cat");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        assert!(wait_until(&access, src, "L5"), "the source never printed");
+        assert!(
+            !access
+                .pane_collapsed(src)
+                .unwrap_or_default()
+                .contains("L1"),
+            "⚠ THE CONTROL: `L1` must ALREADY be off the two-row grid, or this gate is about a \
+             visible line and measures nothing new",
+        );
+
+        let mut pipe = Pipe::new(PipeSpec::new(src, dst));
+        let _relayed = pipe
+            .step(&access, &RunContext::uncancellable())
+            .expect("the relay");
+
+        // ⚠ The destination's FULL retained text, not its two-row screen — it scrolls too, and
+        // reading the screen would measure the fixture's height rather than the relay's delivery.
+        let seen = access.pane_full_text(dst).unwrap_or_default();
+        for line in ["L1", "L2", "L3", "L4", "L5"] {
+            assert!(
+                seen.contains(line),
+                "{line} was produced by the source and must reach the destination — a relay that \
+                 delivers only what is still on screen hands its peer a SUBSET and reports the \
+                 same numbers a working one does: {seen:?}",
+            );
+        }
+    }
 
     /// ⚠⚠ **A RESIZE RE-RELAYS THE WHOLE SCREEN** — the same paint-vs-content category error R361
     /// removed from the readiness barrier, in the plugin where it is worst.

@@ -25,7 +25,8 @@ pub use history::HistoryLimits;
 pub use port::{
     Attrs, BadPattern, Cell, ClipboardQuery, ClipboardTarget, ClipboardTargets, ClipboardWrite,
     Color, ColorTarget, Cursor, CursorShape, DEFAULT_SCROLLBACK_LINES, FIND_MATCH_CAP, FindLine,
-    FindMatch, FindResult, Hyperlink, Image, InputModes, KittyKeyboardFlags, LastCommand, LinkRun,
-    MouseEncoding, MouseProtocol, Notification, Palette, PromptMark, REGEX_SIZE_LIMIT, Rgb, Screen,
-    ScreenKind, ShellState, UnderlineStyle, Urgency, VtPort, Width, char_columns,
+    FindMatch, FindResult, Hyperlink, Image, InputModes, KittyKeyboardFlags, LastCommand,
+    LinesSince, LinkRun, MouseEncoding, MouseProtocol, Notification, Palette, PromptMark,
+    REGEX_SIZE_LIMIT, Rgb, Screen, ScreenKind, ShellState, UnderlineStyle, Urgency, VtPort, Width,
+    char_columns,
 };

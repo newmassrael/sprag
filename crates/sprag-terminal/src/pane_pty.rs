@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use crate::pty::Pty;
 use sprag_vt::{
-    ClipboardQuery, ClipboardWrite, Emulator, HistoryLimits, InputModes, MouseProtocol,
+    ClipboardQuery, ClipboardWrite, Emulator, HistoryLimits, InputModes, LinesSince, MouseProtocol,
     Notification, Palette, Screen, ShellState, VtPort,
 };
 
@@ -1043,6 +1043,19 @@ impl PanePtyHandle {
 
     /// A snapshot of the child's raw output bytes (the source stream, before
     /// emulation) paired with whether the capture was truncated at the cap —
+    /// The COMPLETE logical lines this pane has produced after absolute line `cursor`, and how
+    /// many were lost before the caller asked — see
+    /// [`Screen::lines_since`](sprag_vt::Screen::lines_since).
+    ///
+    /// ⚠ The reader for *what has this pane printed since I last looked*. Every consumer here
+    /// reached first for a per-ROW comparison, and a row is not a unit the child produced — it is
+    /// where the terminal happened to break a line at the width it happened to have, so a resize
+    /// renumbers all of them and a repaint changes none of them.
+    #[must_use]
+    pub fn lines_since(&self, cursor: u64) -> LinesSince {
+        self.with_screen(|screen| screen.lines_since(cursor))
+    }
+
     /// the seam a control plugin reads to parse structured output from a pane
     /// it does not own. See [`PanePty::raw_output`].
     #[must_use]

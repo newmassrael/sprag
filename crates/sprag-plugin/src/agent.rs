@@ -18,10 +18,14 @@
 //! so "settle after the first change" would converge on the echo. A `timeout`
 //! bounds the wait so a tool that never exits cannot hang the run.
 //!
-//! Known limitations (deferred, in the spirit of [`crate::pipe`]'s): the
-//! captured text is the pane delta since the prompt, so it includes the
-//! prompt's own cooked-mode echo; and a reply that scrolls past the screen
-//! loses the scrolled-off rows (the projection has no scrollback yet).
+//! Known limitations (deferred, in the spirit of [`crate::pipe`]'s): the captured text is the pane
+//! delta since the prompt, so it includes the prompt's own cooked-mode echo; and a reply that
+//! scrolls past the screen loses the scrolled-off rows.
+//!
+//! ⚠ That last one used to say *"the projection has no scrollback yet"*, and it had been false for
+//! a long time — `sprag-vt` retains history and [`crate::pipe`] now reads it by line number. The
+//! same move is available here and is not made yet: this adapter's delta is still row-keyed
+//! ([`RowTrail`]), which is repaint-proof but not scroll-proof.
 
 use std::time::Duration;
 

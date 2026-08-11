@@ -1535,6 +1535,24 @@ impl ScrollRegion {
 /// This is the authoritative terminal state sprag owns (DESIGN.md §3:
 /// the producer owns state; pinion is a projection). A VT backend fills
 /// it; the projection reads it.
+/// What a reader learned from [`Screen::lines_since`]: the lines, where to resume, and how many it
+/// was too late for.
+///
+/// A type rather than a tuple because [`lost`](Self::lost) is the field a caller most wants to
+/// forget and least can afford to — a silent gap in a relay is indistinguishable from a quiet
+/// source, and this crate has paid for that confusion in other shapes already.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct LinesSince {
+    /// The complete logical lines after the cursor, oldest first, joined across the rows the
+    /// terminal wrapped them onto.
+    pub lines: Vec<String>,
+    /// The cursor to pass next time — the address just past the last line yielded.
+    pub next: u64,
+    /// How many complete lines were shed and evicted before this reader asked for them. `0` in the
+    /// ordinary case; non-zero means the source outran the retained history.
+    pub lost: u64,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Screen {
     cols: u16,
@@ -1622,6 +1640,14 @@ pub struct Screen {
     /// [`Self::trim_scrollback`] / [`Self::clear_scrollback`] so it cannot desync (a debug
     /// assertion in [`Self::reflowed`] re-checks it against a full recount).
     scrollback_logical: usize,
+    /// How many complete logical lines this screen has EVER shed into scrollback — monotonic.
+    ///
+    /// ⚠⚠ The sibling of [`scrollback_logical`](Self::scrollback_logical), and the difference is
+    /// the whole point: that one counts what is RETAINED and moves both ways, so an index into it
+    /// means a different line after a trim. This one only ever grows, so an absolute line number
+    /// keeps its meaning for the life of the screen — which is what lets a consumer say *"I have
+    /// had everything up to line N"* and be told honestly how much it MISSED.
+    logical_shed: u64,
     /// How many logical lines of scrollback THIS screen retains — tmux's `history-limit`, per
     /// screen because it is a setting the user changes rather than a property of the emulator.
     ///
@@ -1661,6 +1687,7 @@ impl Screen {
             images: Vec::new(),
             next_image_seq: 0,
             scrollback_logical: 0,
+            logical_shed: 0,
             content_epoch: 0,
             history_limit,
         }
@@ -1880,6 +1907,98 @@ impl Screen {
         self.scrollback.get(index).map_or(0, |line| {
             u16::try_from(line_cells(&line.cells, line.continues).len()).unwrap_or(u16::MAX)
         })
+    }
+
+    /// The COMPLETED logical lines this screen has produced after absolute line `cursor`, and how
+    /// many were lost before the reader got there.
+    ///
+    /// # ⚠⚠ Why a consumer of a pane's output needs this and not the grid
+    ///
+    /// *"What has this pane produced since I last looked?"* has been answered here by comparing
+    /// ROWS — their damage generations, then their text — and every such answer is a claim about a
+    /// RENDERING rather than about output. A row is not a unit the child produced: it is where the
+    /// terminal happened to break a line at the width it happened to have. So
+    ///
+    /// * a **RESIZE** re-wraps every row and re-numbers them, and a row-keyed reader either
+    ///   re-delivers the screen or loses its place;
+    /// * a **REPAINT** (a palette change, a redraw) changes no content at all, and a
+    ///   generation-keyed reader calls it output;
+    /// * **SCROLLING** silently drops what a row-keyed reader never came back for.
+    ///
+    /// A LOGICAL line is the unit the child actually produced, and reflow is defined as preserving
+    /// it. Numbering those lines from the screen's birth gives an ADDRESS: line 4 is the same line
+    /// after any number of resizes, so a cursor means *"I have had everything up to here"* and can
+    /// be honoured EXACTLY ONCE even if the rows carrying it are repainted a hundred times.
+    ///
+    /// # What it answers, and what it admits
+    ///
+    /// Lines are yielded oldest-first in [`LinesSince::lines`], joined across their soft-wrapped
+    /// rows through [`row_share_text`](Self::row_share_text) — so a line the terminal wrapped comes
+    /// back as the child wrote it, at any width.
+    ///
+    /// ⚠ **Only COMPLETE lines.** The line the cursor is on is still being written and is never
+    /// yielded — a consumer that acted on half a line would act on something the child had not
+    /// finished saying.
+    ///
+    /// ⚠⚠ **AND A LOSS IS REPORTED, NOT HIDDEN.** Scrollback is bounded, so a reader that stays
+    /// away longer than the history is deep cannot be given what it missed. [`LinesSince::lost`] is
+    /// how many lines that was. **The alternative is the one this project keeps paying for**: a
+    /// silent gap looks exactly like a quiet source, and a consumer cannot tell *nothing happened*
+    /// from *I was not fast enough*.
+    #[must_use]
+    pub fn lines_since(&self, cursor: u64) -> LinesSince {
+        // The oldest line still retained: everything shed, minus what scrollback still holds.
+        let oldest = self.logical_shed - self.scrollback_logical as u64;
+        let lost = oldest.saturating_sub(cursor);
+        let from = cursor.max(oldest);
+
+        let mut lines = Vec::new();
+        // The scrollback half: logical lines rebuilt from their soft-wrapped rows, counted so the
+        // absolute index of each is known without storing one per row.
+        let mut at = oldest;
+        let mut joined = String::new();
+        for index in 0..self.scrollback.len() {
+            joined.push_str(&cells_text(line_cells(
+                &self.scrollback[index].cells,
+                self.scrollback[index].continues,
+            )));
+            if self.scrollback_continues(index).is_none() {
+                if at >= from {
+                    lines.push(std::mem::take(&mut joined).trim_end().to_string());
+                } else {
+                    joined.clear();
+                }
+                at += 1;
+            }
+        }
+
+        // The visible half: rows ABOVE the cursor's, which the child has moved past. The cursor's
+        // own line is unfinished, and a run that continues into it is unfinished with it.
+        joined.clear();
+        for row in 0..self.cursor.row.min(self.rows) {
+            joined.push_str(&self.row_share_text(row));
+            if self.continues(row).is_none() {
+                if at >= from {
+                    lines.push(std::mem::take(&mut joined).trim_end().to_string());
+                } else {
+                    joined.clear();
+                }
+                at += 1;
+            }
+        }
+
+        LinesSince {
+            lines,
+            next: at,
+            lost,
+        }
+    }
+
+    /// How many complete logical lines this screen has produced in its life — the address just past
+    /// its newest complete line. See [`lines_since`](Self::lines_since).
+    #[must_use]
+    pub fn lines_produced(&self) -> u64 {
+        self.lines_since(u64::MAX).next
     }
 
     /// The scrolled-off lines as TEXT (oldest first) — the MAIN screen's history
@@ -2591,6 +2710,10 @@ impl Screen {
         // history to the new width; an alt-screen app owns its own layout, so it stays verbatim.
         next.scrollback = self.scrollback.clone();
         next.scrollback_logical = self.scrollback_logical; // same lines -> same logical count
+        // ⚠⚠ AND THE MONOTONIC TOTAL CARRIES, which is the invariant a reader's cursor rests on: a
+        // resize re-wraps ROWS and cannot create or destroy a LOGICAL line, so re-deriving this
+        // would double-count every line on every resize and silently re-deliver the lot.
+        next.logical_shed = self.logical_shed;
         // Inline images (Kitty / Sixel) carry across a resize verbatim — a plain
         // resize must NOT drop them. This is the alt-screen / degenerate fallback: the app owns its
         // layout, so the anchor is not re-mapped here (the main-screen rewrap in [`Self::reflowed`]
@@ -2829,6 +2952,13 @@ impl Screen {
                 .count(),
             "scrollback_logical stayed in sync with the deque across the rewrap"
         );
+        // ⚠⚠ THE MONOTONIC TOTAL IS CARRIED, NOT RE-DERIVED — and it has to be set HERE, after the
+        // loop above, precisely because that loop goes through `push_scrollback` and has therefore
+        // just counted the RETAINED lines as if they were newly shed. A resize re-wraps ROWS; it
+        // cannot create or destroy a LOGICAL line. Left re-derived, every reader's cursor would
+        // jump backwards on each resize and the whole retained history would be delivered again —
+        // which is the exact defect class this counter exists to end.
+        next.logical_shed = self.logical_shed;
         for (out_r, (cells, continues, mark)) in phys[start..].iter().enumerate() {
             for (c, cell) in cells.iter().take(ncols).enumerate() {
                 next.cells[out_r * ncols + c] = cell.clone();
@@ -2905,6 +3035,10 @@ impl Screen {
     pub(crate) fn clear_scrollback(&mut self) {
         self.scrollback.clear();
         self.scrollback_logical = 0;
+        // ⚠ `logical_shed` is deliberately NOT reset. The child cleared its HISTORY; it did not
+        // un-print those lines. Resetting would rewind every reader's cursor into a past that no
+        // longer exists and re-deliver whatever came next — see [`Self::lines_since`], where the
+        // honest answer to "your cursor is behind what I kept" is a COUNT OF WHAT YOU LOST.
         self.touch_scrollback();
     }
 
@@ -2953,6 +3087,10 @@ impl Screen {
     fn push_scrollback(&mut self, line: ScrollbackLine) {
         if line.continues.is_none() {
             self.scrollback_logical += 1;
+            // ⚠ The MONOTONIC sibling: never decremented by a trim, never reset by a clear, and
+            // carried verbatim across a reflow. It is what makes a reader's cursor an ADDRESS
+            // rather than an offset into a window that moves under it. See [`Self::lines_since`].
+            self.logical_shed += 1;
         }
         self.scrollback.push_back(line);
         self.touch_scrollback();
@@ -3745,6 +3883,123 @@ mod tests {
         assert_eq!(e.screen().row_text(1), "b");
         assert_eq!(e.screen().row_text(2), "c");
         assert_eq!(e.screen().full_text(), "a\nb\nc", "no history lost");
+    }
+
+    /// ⚠⚠ **A LINE NUMBER SURVIVES A RESIZE, WHICH IS THE WHOLE REASON THE UNIT IS A LOGICAL LINE.**
+    ///
+    /// A reader holding a cursor is holding an ADDRESS. If a resize could change what line 2 means,
+    /// the address would be an offset into a window that moves, and every consumer would either
+    /// re-deliver its source's history or lose its place — the defect class this exists to end.
+    ///
+    /// Reflow re-wraps ROWS and cannot create or destroy a LOGICAL line, so the fixture reads the
+    /// same lines at three different widths from the same cursor, including one line that is
+    /// physically ONE row at width 8 and TWO at width 4.
+    #[test]
+    fn a_line_keeps_its_number_and_its_text_across_a_resize() {
+        let mut e = em(8, 2, "abcdef\r\n1\r\n2\r\n3");
+        let wide = e.screen().lines_since(0);
+        assert_eq!(
+            wide.lines,
+            ["abcdef", "1", "2"],
+            "two shed lines and the one COMPLETE visible row — `3` is the cursor's own line and is \
+             still being written",
+        );
+        assert_eq!(wide.lost, 0);
+
+        e.resize(4, 2);
+        let narrow = e.screen().lines_since(0);
+        assert_eq!(
+            narrow.lines, wide.lines,
+            "⚠⚠ the SAME lines at half the width — `abcdef` is one row at 8 and two at 4, and a \
+             reader must not be told the difference",
+        );
+        assert_eq!(
+            narrow.next, wide.next,
+            "and the cursor to resume from is the same number, or every resize would re-deliver \
+             the history",
+        );
+
+        e.resize(20, 2);
+        assert_eq!(
+            e.screen().lines_since(0).lines,
+            wide.lines,
+            "and widening rejoins it without inventing a line either",
+        );
+        // Resuming from the mid-stream cursor yields only what follows it, at any width.
+        assert_eq!(e.screen().lines_since(1).lines, ["1", "2"]);
+        assert_eq!(e.screen().lines_since(3).lines, Vec::<String>::new());
+
+        // ⚠⚠ AND THE HALF THAT MEASURES THE CARRY. Above, everything ever shed is still retained,
+        // so a reflow that RE-DERIVED the total from the rows it re-pushes would arrive at the
+        // same number and this gate would pass while covering nothing — measured: removing the
+        // carry left the assertions above green. Once a TRIM has evicted lines the two answers
+        // diverge, and re-deriving rewinds every reader's cursor by exactly the evicted count.
+        let mut small = Emulator::with_history_limit(8, 2, 2);
+        small.advance(b"1\r\n2\r\n3\r\n4\r\n5\r\n6");
+        let before = small.screen().lines_since(u64::MAX).next;
+        small.resize(4, 2);
+        assert_eq!(
+            small.screen().lines_since(u64::MAX).next,
+            before,
+            "a resize must not rewind the numbering of a screen whose history has been TRIMMED — \
+             re-deriving the total from the retained rows loses every evicted line's address, and \
+             a reader resuming from its cursor is handed the retained history all over again",
+        );
+    }
+
+    /// ⚠⚠ **A READER THAT WAS TOO SLOW IS TOLD HOW MUCH IT MISSED.**
+    ///
+    /// Scrollback is bounded, so a consumer that stays away longer than the history is deep cannot
+    /// be given what it missed. **The alternative is a silent gap, which looks exactly like a quiet
+    /// source** — and a relay cannot tell *nothing happened* from *I was not fast enough*.
+    ///
+    /// ⚠ The count is what a caller can act on: it is the number of complete lines that existed and
+    /// were evicted, not a flag saying something went wrong.
+    #[test]
+    fn a_cursor_behind_the_retained_history_is_told_what_it_lost() {
+        // A two-line history on a two-row screen: print well past both.
+        let mut e = Emulator::with_history_limit(8, 2, 2);
+        e.advance(b"1\r\n2\r\n3\r\n4\r\n5\r\n6");
+        let all = e.screen().lines_since(0);
+        assert!(all.lost > 0, "the fixture must actually overrun: {all:?}");
+        assert_eq!(
+            u64::try_from(all.lines.len()).unwrap() + all.lost,
+            all.next,
+            "⚠ EVERY line is accounted for: what was handed over plus what was lost IS the address \
+             the reader resumes from — a reader can never silently skip one",
+        );
+        assert!(
+            !all.lines.iter().any(|line| line == "1"),
+            "the earliest lines are genuinely gone rather than quietly re-numbered: {all:?}",
+        );
+        assert_eq!(
+            e.screen().lines_since(all.next).lines,
+            Vec::<String>::new(),
+            "and a caller that is caught up is handed nothing",
+        );
+    }
+
+    /// ⚠⚠ **CLEARING THE HISTORY DOES NOT UN-PRINT WHAT WAS PRINTED.**
+    ///
+    /// `ESC [ 3 J` drops retained scrollback. Resetting the line numbering with it would rewind
+    /// every reader's cursor into a past that no longer exists, and everything printed afterwards
+    /// would be delivered a second time — so the monotonic count survives the clear, and a reader
+    /// whose cursor is now behind the retained history learns that as a LOSS.
+    #[test]
+    fn clearing_the_scrollback_does_not_rewind_the_line_numbering() {
+        let mut e = em(8, 2, "1\r\n2\r\n3\r\n4");
+        let before = e.screen().lines_since(0).next;
+        assert!(before >= 3, "the fixture must have shed lines: {before}");
+        e.advance(b"\x1b[3J");
+        assert_eq!(
+            e.screen().lines_since(0).next,
+            before,
+            "the child cleared its HISTORY, not its past — the numbering must not restart",
+        );
+        assert!(
+            e.screen().lines_since(0).lost > 0,
+            "and a reader still at line 0 is told the lines it wanted are gone",
+        );
     }
 
     #[test]
