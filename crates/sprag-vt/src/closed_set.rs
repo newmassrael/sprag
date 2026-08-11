@@ -68,6 +68,28 @@
 /// assert_eq!(Refused::ALL, [Refused::Locked, Refused::Errno(13)]);
 /// ```
 ///
+/// A variant with NAMED fields declares its sample the same way, in braces:
+///
+/// ```
+/// sprag_vt::closed_set! {
+///     /// Why a door would not open.
+///     #[derive(Clone, PartialEq, Eq, Debug)]
+///     pub enum Refusal {
+///         /// It is locked.
+///         Locked,
+///         /// A guard refused, and said which door and to whom.
+///         Guarded { door: String, whom: String } = { door: String::new(), whom: String::new() },
+///     }
+/// }
+/// assert_eq!(Refusal::ALL.len(), 2);
+/// ```
+///
+/// ⚠ Named fields were the form this could NOT express, and the omission was load-bearing:
+/// `sprag_plugin::PaneError` — **the failure sentence an agent reads** — carries its readiness cause
+/// in a `NeverReady { wanted, instead }`, so it could not be a closed set, so the gate over every
+/// variant's sentence stayed a hand-written list of five. A macro that covers most shapes leaves the
+/// types it cannot describe to the very hand-written lists it exists to abolish.
+///
 /// Without this form such an enum simply has no `ALL`, which is how `sprag_terminal::Unmeasured`
 /// came to be enumerated by hand on three surfaces — and how a fourth variant added to it reached
 /// an agent's screen with no test mentioning it. A ratchet that cannot describe the type it guards
@@ -79,7 +101,9 @@ macro_rules! closed_set {
         $vis:vis enum $name:ident {
             $(
                 $(#[$vmeta:meta])*
-                $variant:ident $( ( $($field:ty),+ $(,)? ) = ( $($sample:expr),+ $(,)? ) )?
+                $variant:ident
+                $( ( $($field:ty),+ $(,)? ) = ( $($sample:expr),+ $(,)? ) )?
+                $( { $($(#[$fmeta:meta])* $named:ident : $nty:ty),+ $(,)? } = { $($sname:ident : $ssample:expr),+ $(,)? } )?
             ),+ $(,)?
         }
     ) => {
@@ -87,7 +111,9 @@ macro_rules! closed_set {
         $vis enum $name {
             $(
                 $(#[$vmeta])*
-                $variant $( ( $($field),+ ) )?,
+                $variant
+                    $( ( $($field),+ ) )?
+                    $( { $($(#[$fmeta])* $named : $nty),+ } )?,
             )+
         }
 
@@ -107,7 +133,11 @@ macro_rules! closed_set {
             /// want: what they ask is *does every variant have a reader*, and a variant that
             /// carries a payload answers that question with any one inhabitant.
             pub const ALL: [Self; $crate::closed_set!(@count $($variant)+)] = [
-                $(Self::$variant $( ( $($sample),+ ) )?,)+
+                $(
+                    Self::$variant
+                        $( ( $($sample),+ ) )?
+                        $( { $($sname : $ssample),+ } )?,
+                )+
             ];
         }
     };

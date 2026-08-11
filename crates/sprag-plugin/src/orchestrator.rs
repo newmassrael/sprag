@@ -943,7 +943,8 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **THE FAILURE AN AGENT READS IS A SENTENCE**, and not one of these five had a gate.
+    /// ⚠⚠ **THE FAILURE AN AGENT READS IS A SENTENCE**, and the list it was derived from was typed
+    /// by hand.
     ///
     /// A run's `failure` is published to its caller as this text
     /// ([`plugins.rs`](../../sprag_host/plugins/index.html) does `.map(ToString::to_string)`), and
@@ -951,20 +952,27 @@ mod tests {
     /// name and its debug payload, reaching the one reader who cannot look up what a variant means.
     ///
     /// The fix had no test, so a reverted `to_string()` would have broken nothing and the leak
-    /// would have come back unnoticed. Derived from a list of every variant rather than spot-
-    /// checked, so a SIXTH variant added with a debug-shaped sentence fails here.
+    /// would have come back unnoticed. Its gate then said it was *"derived from a list of every
+    /// variant"* while holding **an array of five literals** — a hand-written list is the one a new
+    /// thing is left out of, and this one guards the sentence an agent reads. It walks
+    /// [`PaneError::ALL`] now, so a SIXTH variant is covered the moment it is declared and cannot be
+    /// added without naming an inhabitant.
+    ///
+    /// ⚠ AND THE SENTENCES MUST BE DISTINCT. A catch-all message would satisfy every shape claim
+    /// below while telling five different failures apart from none of them, so the count of
+    /// sentences is asserted against the count of variants — the one thing a walker measures that
+    /// a per-item check cannot.
     #[test]
     fn every_pane_failure_reads_as_a_sentence_rather_than_a_rust_variant() {
-        let every = [
-            PaneError::UnknownPane(PaneId(7)),
-            PaneError::Encode("F13".to_string()),
-            PaneError::Write("Broken pipe (os error 32)".to_string()),
-            PaneError::Spawn("No such file or directory".to_string()),
-            PaneError::NeverReady {
-                wanted: ReadyWhen::Prints("PEER-UP".to_string()),
-                instead: PaneDoing::Job(JobLeader::known_as("sh".to_string())),
-            },
-        ];
+        let every = PaneError::ALL;
+        let distinct: std::collections::BTreeSet<String> =
+            every.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            distinct.len(),
+            every.len(),
+            "two failures read as the SAME sentence, so the reader cannot tell them apart: \
+             {distinct:?}",
+        );
         for error in &every {
             let said = error.to_string();
             let debug = format!("{error:?}");
@@ -1011,6 +1019,29 @@ mod tests {
             PaneError::UnknownPane(PaneId(7)).to_string().contains('7'),
             "and an unknown pane must name the id that was asked for",
         );
+
+        // ⚠⚠ AND EVERY [`PaneDoing`] ARM, for the same reason and from its own `ALL`: the
+        // diagnostic half is a CLAUSE that continues the failure's sentence, so each must either
+        // continue it or say nothing. `Unknown` says nothing ON PURPOSE — a host with no view of
+        // the process table has no business appending a guess — and that is exactly the arm a
+        // "must be non-empty" check would have got wrong.
+        for doing in &PaneDoing::ALL {
+            let clause = doing.to_string();
+            assert!(
+                clause.is_empty() || clause.starts_with("; "),
+                "a diagnostic that does not continue the sentence it is appended to reads as two \
+                 fragments: {clause:?}",
+            );
+            let whole = PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("claude".to_string()),
+                instead: doing.clone(),
+            }
+            .to_string();
+            assert!(
+                whole.contains("claude") && whole.starts_with(char::is_lowercase),
+                "and the whole failure stays one sentence with the question in it: {whole:?}",
+            );
+        }
     }
 
     /// ⚠⚠ **A PEER THAT ANSWERS IS WAITED FOR; ITS OWN ECHO IS NOT AN ANSWER.**

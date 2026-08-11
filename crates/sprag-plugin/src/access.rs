@@ -165,18 +165,26 @@ impl Written {
     }
 }
 
+sprag_vt::closed_set! {
 /// Why [`PaneAccess::inject`] failed — a typed cause, not a discarded error.
+///
+/// ⚠⚠ **A CLOSED SET, because the sentence gate over it was a hand-written list of five.** A run's
+/// failure reaches its caller as this type's [`Display`](std::fmt::Display), and that gate is the
+/// only thing standing between an agent and a `format!("{e:?}")` leak. It walked a literal array,
+/// so a SIXTH variant would have been ungated the day it was added — and the list could not be
+/// derived, because [`NeverReady`](Self::NeverReady) has named fields and `closed_set!` could not
+/// express one. The macro grew the form rather than this type losing its field names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneError {
     /// No pane has the given id.
-    UnknownPane(PaneId),
+    UnknownPane(PaneId) = (PaneId(0)),
     /// A keystroke had no PTY-byte encoding (the offending key).
-    Encode(String),
+    Encode(String) = (String::new()),
     /// Writing the encoded bytes to the pane failed (the IO error message).
-    Write(String),
+    Write(String) = (String::new()),
     /// Spawning a pane failed: no [`PaneLifecycle`] support, an empty argv, or
     /// the pseudoterminal/child could not start (the cause message).
-    Spawn(String),
+    Spawn(String) = (String::new()),
     /// A run's readiness barrier gave up: the pane never answered the question the caller asked,
     /// so nothing was injected.
     NeverReady {
@@ -195,7 +203,11 @@ pub enum PaneError {
         /// kind, because *what was actually running* diagnoses a marker that never printed just as
         /// well as a name that never matched.
         instead: PaneDoing,
+    } = {
+        wanted: ReadyWhen::Shows(String::new()),
+        instead: PaneDoing::Unknown,
     },
+}
 }
 
 /// What a pane was doing when a readiness barrier gave up — the diagnostic half of
@@ -309,15 +321,17 @@ impl std::fmt::Display for JobLeader {
     }
 }
 
+sprag_vt::closed_set! {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneDoing {
     /// A job owns the pane's terminal; this is the leader it is led by.
-    Job(JobLeader),
+    Job(JobLeader) = (JobLeader::known_as(String::new())),
     /// The host CAN see the process table and nothing owns this pane's terminal — its child has
     /// exited, or the pane never had one.
     Nothing,
     /// This host has no view of the process table at all, so it cannot say.
     Unknown,
+}
 }
 
 impl PaneDoing {
