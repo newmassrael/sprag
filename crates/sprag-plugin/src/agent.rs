@@ -84,6 +84,15 @@ impl AgentSpec {
     }
 }
 
+/// Where a turn's reply starts — an ADDRESS when the host can number its lines, and a mark on the
+/// rendering when it cannot. See [`Agent::capture`] for what the difference costs.
+enum Baseline {
+    /// The absolute line number the reply begins at.
+    Line(u64),
+    /// What the rows held before the prompt — the degradation.
+    Rows(RowTrail),
+}
+
 /// A one-shot AI-tool adapter over one pane.
 pub struct Agent {
     pane: PaneId,
@@ -132,15 +141,66 @@ impl Agent {
         })
     }
 
-    /// Capture the rows whose CONTENT is new since `baseline` — the reply region — joined as the
+    /// Capture what the pane has produced since `baseline` — the reply region — joined as the
     /// response text.
     ///
-    /// ⚠⚠ Keyed on the text and not on damage generations, and here that is the difference between
-    /// a reply and a screenshot: this plugin publishes what it captures to the caller AS THE
-    /// MODEL'S ANSWER, and a resize stamps every row — so a client attaching mid-turn made the
-    /// whole screen, prompt and all, come back as the model's reply. See [`RowTrail`].
-    fn capture(&self, panes: &dyn PaneAccess, baseline: &RowTrail) -> String {
-        baseline.fresh(panes, self.pane).join("\n")
+    /// # ⚠⚠ Why the reply is addressed by LINE NUMBER
+    ///
+    /// What this returns is published to the caller AS THE MODEL'S ANSWER, so every way of
+    /// mis-reading the pane becomes a lie about what a model said. Two were measured:
+    ///
+    /// * keyed on each row's DAMAGE GENERATION, a resize stamped every row, so a client merely
+    ///   ATTACHING mid-turn made the whole screen — banner, shell prompt and all — come back as
+    ///   the reply;
+    /// * keyed on row TEXT, that is fixed, but a reply longer than the pane is tall SCROLLS, and
+    ///   the rows that left were never in the answer at all. **A truncated reply is worse than a
+    ///   missing one, because nothing in it says it is truncated.**
+    ///
+    /// A LOGICAL LINE is what the tool actually wrote, and numbering those from the pane's birth
+    /// makes the baseline an ADDRESS: everything after it is the reply, whether it is still on the
+    /// grid or long scrolled into history.
+    ///
+    /// ⚠ **The unfinished last line is taken here and nowhere else**, because this adapter waits
+    /// for the child to EXIT — an unterminated line at EOF is unterminated forever, and a reply
+    /// need not end in a newline. On the timeout path it is taken too, which is exactly what that
+    /// path's own `PARTIAL` marking already tells the caller.
+    ///
+    /// ⚠ [`RowTrail`] remains the fallback for a host with no output stream — repaint-proof, not
+    /// scroll-proof, and named as a degradation rather than an equivalent.
+    fn capture(&self, panes: &dyn PaneAccess, baseline: &Baseline) -> String {
+        match baseline {
+            Baseline::Line(cursor) => {
+                let Some(since) = panes
+                    .output_lines()
+                    .and_then(|stream| stream.pane_lines_since(self.pane, *cursor))
+                else {
+                    return String::new();
+                };
+                let mut lines = since.lines;
+                if !since.partial.is_empty() {
+                    lines.push(since.partial);
+                }
+                lines.join("\n")
+            }
+            Baseline::Rows(trail) => trail.fresh(panes, self.pane).join("\n"),
+        }
+    }
+
+    /// Where a turn's reply begins.
+    ///
+    /// Two shapes because the precise one is a CAPABILITY: a host that can number its lines gives
+    /// an address that survives a resize and a scroll, and one that cannot is read by comparing its
+    /// rendering. See [`Agent::capture`].
+    fn mark(&self, panes: &dyn PaneAccess) -> Baseline {
+        panes
+            .output_lines()
+            // ⚠ `u64::MAX` MARKS WITHOUT TAKING: it is past every line, so nothing is yielded and
+            // `next` is the address the reply will start at.
+            .and_then(|stream| stream.pane_lines_since(self.pane, u64::MAX))
+            .map_or_else(
+                || Baseline::Rows(RowTrail::mark(panes, self.pane)),
+                |since| Baseline::Line(since.next),
+            )
     }
 }
 
@@ -155,9 +215,9 @@ impl Plugin for Agent {
             ));
         }
 
-        // Baseline what the rows HOLD before acting, so `capture` isolates this prompt's reply
-        // (and its cooked-mode echo) from prior content.
-        let baseline = RowTrail::mark(panes, self.pane);
+        // Baseline before acting, so `capture` isolates this prompt's reply (and its cooked-mode
+        // echo) from prior content.
+        let baseline = self.mark(panes);
 
         let cost = panes.inject(self.pane, &self.prompt_keys())?.bytes();
 
@@ -303,6 +363,59 @@ mod tests {
             !captured.contains("not found") && !captured.contains("SHELL-ATE"),
             "and it must carry no trace of the shell that was there first — a caller reading this \
              as the model's answer would be reading a shell error: {captured:?}",
+        );
+    }
+
+    /// ⚠⚠ **A REPLY LONGER THAN THE PANE IS TALL IS CAPTURED WHOLE** — what only an addressed
+    /// reply region can do, and the residue the row-keyed capture carried.
+    ///
+    /// A capture that compares ROWS can only ever return what is still on the grid. A model whose
+    /// answer is longer than the pane pushes its own opening off the top, and the caller is handed
+    /// the tail as though it were the whole reply — **a truncated answer, with nothing in it saying
+    /// so**. That is worse than a missing one: it reads as complete.
+    ///
+    /// The fixture makes it certain rather than likely — a TEN-line reply into a FOUR-row pane —
+    /// and the last line deliberately ends WITHOUT a newline, because a reply need not end in one
+    /// and dropping it would lose the model's last word.
+    #[test]
+    fn a_reply_that_scrolled_past_the_pane_is_captured_whole() {
+        let (access, pane) = sh_access(
+            "exec sh -c 'in=$(cat); i=1; while [ $i -le 9 ]; do echo \"R$i[$in]\"; \
+             i=$((i+1)); done; printf \"R10[$in]\"'",
+            40,
+            4,
+        );
+        let mut agent = Agent::new(pane, AgentSpec::new("ask"));
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 2,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .run(&mut agent, &access, &RunContext::uncancellable());
+        assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+
+        let captured = agent.captured().expect("a captured reply");
+        assert!(
+            !access
+                .pane_collapsed(pane)
+                .unwrap_or_default()
+                .contains("R1[ask]"),
+            "⚠ THE CONTROL: the reply's opening must ALREADY be off the four-row grid, or this \
+             gate is about a visible reply and measures nothing new",
+        );
+        for i in 1..=9 {
+            assert!(
+                captured.contains(&format!("R{i}[ask]")),
+                "line {i} of the model's answer must reach the caller — a capture that returns \
+                 only what is still on screen hands back a TRUNCATED reply that reads as a \
+                 complete one: {captured:?}",
+            );
+        }
+        assert!(
+            captured.contains("R10[ask]"),
+            "⚠⚠ INCLUDING THE LAST LINE, WHICH HAS NO NEWLINE AFTER IT. A reply need not end in \
+             one, and for a one-shot tool that unterminated line is the end of its answer — the \
+             child has EXITED, so it is unfinished forever: {captured:?}",
         );
     }
 

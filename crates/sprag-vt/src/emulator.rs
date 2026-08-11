@@ -1687,7 +1687,31 @@ impl Emulator {
                 // the editor's reprint stopped. This break lands mid-row by construction (that is
                 // what distinguishes it from a hard newline), so the columns past it are the OLD
                 // line's leftovers and are not this line's content.
-                let soft_wrap = self.in_resize_redraw.then_some(self.col);
+                //
+                // ⚠⚠⚠ **THE COLUMN IS NOT THE COUNT ONCE A CARRIAGE RETURN HAS MOVED IT.**
+                // `continues[r] = Some(n)` means *this row's logical line put n cells here*, and
+                // `line_cells` reads exactly those. For an AUTOWRAP the cursor sits where the
+                // grapheme did not fit, so the column IS that count. **The redraw idiom this arm
+                // exists for is `CR content CR LF`, where the trailing CR has already moved the
+                // cursor back to the left margin** — so the column recorded was ZERO while the row
+                // held its text, which says the row contributes NOTHING to its own line.
+                //
+                // Every logical-line reader then skipped the row, and the next reflow rebuilt the
+                // line without it: **the row was ERASED — printed perfectly, displayed perfectly,
+                // and destroyed by the next resize.** In a multiplexer the trigger is a client
+                // ATTACHING. Measured end to end: an agent's reply stood on screen, a resize
+                // dropped it, and the adapter published what was left as the model's answer.
+                //
+                // ⚠ The gate that guarded this arm asserted only that the row WAS flagged, never
+                // what the flag said, so it passed throughout — and its own fixture (`\rAAAA\r\n`)
+                // was losing `AAAA` the same way.
+                //
+                // So record what the row actually HOLDS. The line does continue — that is the
+                // idiom, and widening must rejoin it — but a continuation cannot claim fewer cells
+                // than the row has in it.
+                let soft_wrap = self
+                    .in_resize_redraw
+                    .then(|| self.col.max(self.screen.row_content_len(self.row)));
                 self.screen.set_wrapped_at(self.row, soft_wrap);
                 self.line_feed();
                 // LNM (ANSI mode 20): under new-line mode a line feed also returns the cursor to
@@ -4803,6 +4827,55 @@ mod tests {
         assert!(!em.screen().wrapped(1), "row 1 did not wrap");
     }
 
+    /// ⚠⚠⚠ **A RESIZE USED TO DELETE THE NEXT LINE THE CHILD PRINTED.**
+    ///
+    /// After a resize the emulator opens a redraw epoch in which a LINE FEED is read as a SOFT WRAP
+    /// — the idiom an editor uses to repaint after `SIGWINCH` — recording the cursor's column as
+    /// how many cells the line put on the row it is leaving. A program ending a line the ordinary
+    /// way sends `\r\n`, so the CR has already moved the cursor to the left margin and the column
+    /// recorded was **zero**.
+    ///
+    /// `continues[r] = Some(0)` says *this row contributes NOTHING to its own logical line*, which
+    /// contradicts the row holding text. Every logical-line reader skipped it, and the next reflow
+    /// rebuilt the line without it — **so the row was erased, by a resize, having been printed
+    /// perfectly.** In a terminal multiplexer the trigger is a client ATTACHING to the session.
+    ///
+    /// Measured end to end before the fix: an agent's reply stood on screen, the next resize
+    /// dropped it, and the adapter published what was left as the model's answer.
+    ///
+    /// ⚠ Both halves. The FLAG is checked because that is the state the corruption lives in, and
+    /// the TEXT after a second resize is checked because that is the loss a person would see — a
+    /// fix that cleared the flag but still dropped the row would pass only the first.
+    #[test]
+    fn a_line_printed_after_a_resize_survives_the_next_one() {
+        let mut e = Emulator::new(40, 8);
+        e.advance(b"OLD\r\nask\r\n");
+        e.resize(34, 8); // a client attaches — the redraw epoch opens
+        e.advance(b"REPLY\r\n"); // the child ends a line the ordinary way
+
+        assert_eq!(
+            e.screen().continues(2),
+            Some(5),
+            "the continuation must record what the row HOLDS. It recorded the CURSOR COLUMN, and \
+             the `\\r` had already moved that to the left margin — so it claimed the row put ZERO \
+             cells on its own line",
+        );
+        assert_eq!(
+            e.screen().row_share_text(2),
+            "REPLY",
+            "so the row contributes its own text to its own logical line",
+        );
+
+        e.resize(30, 8); // a second client attaches, and the reflow rebuilds every line
+        assert_eq!(
+            (0..3).map(|r| e.screen().row_text(r)).collect::<Vec<_>>(),
+            ["OLD", "ask", "REPLY"],
+            "⚠⚠ AND THE LINE IS STILL THERE. It was printed correctly and displayed correctly; \
+             only the reflow's reconstruction could lose it, and losing output to a RESIZE is the \
+             worst thing a terminal multiplexer can do quietly",
+        );
+    }
+
     #[test]
     fn hard_linefeed_clears_the_wrapped_flag() {
         let mut em = Emulator::new(4, 3);
@@ -4841,6 +4914,21 @@ mod tests {
         assert!(
             em.screen().wrapped(0),
             "a CR LF inside the resize redraw is a soft wrap"
+        );
+        // ⚠⚠ AND THE ROW STILL CARRIES ITS OWN TEXT. This gate asserted only that the row was
+        // FLAGGED, never what the flag SAID — so it passed while the recorded share was zero and
+        // `AAAA` was being dropped from its own logical line by every reader, this fixture
+        // included. **A gate over a boolean cannot see a wrong number**: the claim is that the
+        // redraw stays ONE logical line, and a line that lost half its content is not that line.
+        assert_eq!(
+            em.screen().row_share_text(0),
+            "AAAA",
+            "the row's share of the continued line is the text it holds",
+        );
+        assert_eq!(
+            em.screen().lines_since(0).partial,
+            "AAAABBBB",
+            "and the two rows read back as the ONE logical line the redraw is repainting",
         );
     }
 

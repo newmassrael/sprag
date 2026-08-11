@@ -1551,6 +1551,25 @@ pub struct LinesSince {
     /// How many complete lines were shed and evicted before this reader asked for them. `0` in the
     /// ordinary case; non-zero means the source outran the retained history.
     pub lost: u64,
+    /// The line the pane is STILL WRITING — everything after the last complete one, empty when
+    /// there is nothing in progress.
+    ///
+    /// # ⚠⚠ Not part of [`lines`](Self::lines), and a consumer must earn the right to use it
+    ///
+    /// This is half a sentence. The child has not said it is finished, so acting on it means acting
+    /// on something that may be about to change — and it is deliberately NOT counted by
+    /// [`next`](Self::next), so a reader that ignores it loses nothing and a reader that takes it
+    /// will be handed it again, whole, once the child ends the line.
+    ///
+    /// **The one case where it IS final is when the child has EXITED**: an unfinished line at EOF
+    /// is unfinished forever, and a consumer that dropped it would silently lose the last thing the
+    /// program said — which for a one-shot tool is usually its entire ANSWER, since a reply need
+    /// not end in a newline. That is the only reading this crate sanctions, and the caller must
+    /// establish the EOF itself; nothing here can.
+    ///
+    /// ⚠ A prompt (`> `) is the ordinary NON-terminal case: it sits here forever and relaying it
+    /// would be relaying furniture. Waiting is the correct answer, and it costs nothing.
+    pub partial: String,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1896,6 +1915,19 @@ impl Screen {
         u16::try_from(self.row_share(row).len()).unwrap_or(u16::MAX)
     }
 
+    /// How many cells row `row` actually HOLDS — up to its last non-blank, ignoring whatever
+    /// continuation flag it currently carries.
+    ///
+    /// ⚠ The difference from [`row_share_len`](Self::row_share_len) is the flag: that one reports
+    /// the row's share of its line AS CURRENTLY RECORDED, and this one reports what is there. It is
+    /// what a writer needs when it is about to RECORD a continuation, because the number it must
+    /// store is how many cells the line put on this row — and the cursor is not that number once a
+    /// CARRIAGE RETURN has moved it back over content that is still present.
+    #[must_use]
+    pub fn row_content_len(&self, row: u16) -> u16 {
+        u16::try_from(line_cells(&self.row_cells(row), None).len()).unwrap_or(u16::MAX)
+    }
+
     /// [`Self::row_share_len`] for scrolled-off line `index` (0 = oldest) — the pair to
     /// [`Self::scrollback_continues`], as [`Self::scrollback_mark`] pairs with [`Self::mark`].
     ///
@@ -1987,10 +2019,12 @@ impl Screen {
             }
         }
 
+        joined.push_str(&self.row_share_text(self.cursor.row));
         LinesSince {
             lines,
             next: at,
             lost,
+            partial: joined.trim_end().to_string(),
         }
     }
 
@@ -3944,6 +3978,45 @@ mod tests {
             "a resize must not rewind the numbering of a screen whose history has been TRIMMED — \
              re-deriving the total from the retained rows loses every evicted line's address, and \
              a reader resuming from its cursor is handed the retained history all over again",
+        );
+    }
+
+    /// ⚠⚠ **A LINE WITH NO NEWLINE AFTER IT IS OFFERED SEPARATELY, NEVER COUNTED.**
+    ///
+    /// A reply need not end in a newline, and for a one-shot tool that unfinished line is usually
+    /// the whole ANSWER. Folding it into [`LinesSince::lines`] would hand consumers half a sentence
+    /// as though the child had finished it; dropping it would silently lose the last thing the
+    /// program said. So it is carried apart, and the cursor does NOT advance past it — a consumer
+    /// that ignores it loses nothing and is handed the line whole once it is terminated.
+    ///
+    /// Three halves: it is offered, it is EXCLUDED from the complete lines and the cursor, and
+    /// terminating it moves it across without duplicating it.
+    #[test]
+    fn an_unterminated_line_is_offered_apart_and_counted_only_once_it_ends() {
+        let mut e = em(20, 3, "done\r\nhalf");
+        let seen = e.screen().lines_since(0);
+        assert_eq!(seen.lines, ["done"], "only what the child finished saying");
+        assert_eq!(
+            seen.partial, "half",
+            "and the line it is still on, offered apart",
+        );
+        let mark = seen.next;
+
+        // ⚠ THE HALF THAT STOPS A CONSUMER BEING FED IT TWICE. A reader that took the partial and
+        // advanced past it would lose the rest of the line; one that took it and did NOT would see
+        // it again — so the cursor must sit BEFORE it, and terminating must yield it once, whole.
+        e.advance(b" of it\r\n");
+        let after = e.screen().lines_since(mark);
+        assert_eq!(
+            after.lines,
+            ["half of it"],
+            "terminating the line hands it over ONCE and entire",
+        );
+        assert_eq!(after.partial, "", "with nothing left in progress");
+        assert_eq!(
+            e.screen().lines_since(after.next).lines,
+            Vec::<String>::new(),
+            "and a caller that is caught up is handed nothing",
         );
     }
 

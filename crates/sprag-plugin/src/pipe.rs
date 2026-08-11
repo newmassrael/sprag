@@ -200,7 +200,21 @@ impl Plugin for Pipe {
         {
             Some(since) => {
                 self.cursor = since.next;
-                (since.lines, since.lost)
+                let mut lines = since.lines;
+                // ⚠⚠ AN UNTERMINATED LAST LINE IS RELAYED ONLY ONCE THE SOURCE HAS EXITED, and the
+                // signal is EOF rather than a quiet period. A line with no newline after it is
+                // something the source has not finished saying — while it is alive that is a
+                // PROMPT as often as an answer, and relaying furniture into a peer is worse than
+                // waiting. Once its child is gone the line is unfinished forever, and dropping it
+                // would silently lose the last thing the source said.
+                //
+                // ⚠ A quiescence timer would answer this too, and would be the scheduling-shaped
+                // predicate this crate keeps paying to remove: the same source would relay or not
+                // depending on how loaded the box was. EOF is a state, not a wait.
+                if !since.partial.is_empty() && panes.pane_eof(self.src) == Some(true) {
+                    lines.push(since.partial);
+                }
+                (lines, since.lost)
             }
             // ⚠ The DEGRADATION, named rather than silent: a host with no output stream is read by
             // comparing its rendering, which cannot see a scrolled-away line.
