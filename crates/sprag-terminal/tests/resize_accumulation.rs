@@ -35,6 +35,17 @@
 //!   input on the line, the exact-fill `CR LF` case. Fixed by treating that as a
 //!   soft wrap during the editor's redraw (`Emulator::in_resize_redraw`).
 //!
+//! ⚠⚠⚠ **THAT LAST ATTRIBUTION IS NOT MEASURED BY THESE GUARDS.** R362 ran all four with
+//! `in_resize_redraw` forced OFF — the epoch never opening — and **all four still passed.** So
+//! whatever keeps them green here (the `Screen::reflowed` cursor anchor of R45/R46, this box's
+//! bash, this sweep's widths never landing on an exact fill), it is not the soft-wrap
+//! reinterpretation, and a change to that mechanism cannot be validated by running these.
+//!
+//! ⚠ The mechanism DOES have a discriminating gate now, and it is deterministic rather than
+//! shell-dependent: `sprag_vt::emulator::tests::resize_redraw_crlf_is_a_soft_wrap` asserts the
+//! widen REJOINS the repainted line, and fails with the epoch disabled. **These four remain as the
+//! end-to-end smoke they were always described as — they are not the mechanism's proof.**
+//!
 //! These need a real `/bin/bash`; they are integration tests, not unit tests.
 //! (Char-agnostic mechanism precision is pinned by the deterministic unit tests in
 //! `sprag-vt`; these are the end-to-end smoke against the real shell.)

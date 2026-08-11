@@ -465,11 +465,28 @@ pub struct Emulator {
     ///   wrapped active line, not just the cursor's row, so the stale tail left by
     ///   the prior width does not survive as a growing leftover in the input.
     ///
-    /// WHY a window and not a purely structural signal: the editor's `CR LF` lands
-    /// MID-row (a premature break, columns short of the margin), so it is
-    /// byte-for-byte indistinguishable from a genuine newline — only the resize
-    /// CONTEXT marks it as a soft wrap. (vte/`gnome-terminal` likewise rely on
-    /// context, not a pending-wrap latch, and likewise show the break until widen.)
+    /// ⚠⚠⚠ **THE WINDOW IS NOT THE WHOLE PREDICATE, AND BELIEVING IT WAS COST TWO DEFECTS.**
+    /// This paragraph used to read *"the editor's `CR LF` lands MID-row (a premature break, columns
+    /// short of the margin), so it is byte-for-byte indistinguishable from a genuine newline — only
+    /// the resize CONTEXT marks it as a soft wrap."* It contradicted the bullet three lines above
+    /// it, which says readline emits the explicit `CR LF` **at a width the line exactly fills** —
+    /// and the code implemented the wrong half. R361 found it recording a row's share as ZERO (the
+    /// `\r` had moved the cursor), which DELETED the row; R362 found the surviving premise welding
+    /// a child's ordinary lines into one (`FIRST\r\nSECOND\r\nTHIRD\r\n` read back as
+    /// `"FIRSTSECONDTHIRD"`, and as `partial`, so a relay delivered nothing at all).
+    ///
+    /// **A soft wrap is a break caused by the WIDTH.** So the window says only *a redraw may be
+    /// happening*; the structural invariant decides — the row must have reached the right margin,
+    /// which is exactly the condition under which readline emits this idiom instead of relying on
+    /// autowrap. The residue is a child that prints exactly `cols` characters and a `CR LF` inside
+    /// the window: the same bytes, and nothing at this layer separates them.
+    ///
+    /// ⚠ The ERASE deviation has no such invariant available — erasing to the end of a line says
+    /// nothing about width — so it is scoped instead by WHO is drawing, and applies only while the
+    /// shell reports `AtPrompt`. See [`Self::edit`].
+    ///
+    /// (vte/`gnome-terminal` likewise rely on context, not a pending-wrap latch, and likewise show
+    /// the break until widen.)
     ///
     /// WHEN it closes (the design that makes a MULTI-BATCH redraw correct — a long
     /// line reflowed narrow can overflow a single PTY read, so the redraw arrives as
@@ -1709,9 +1726,30 @@ impl Emulator {
                 // So record what the row actually HOLDS. The line does continue — that is the
                 // idiom, and widening must rejoin it — but a continuation cannot claim fewer cells
                 // than the row has in it.
-                let soft_wrap = self
-                    .in_resize_redraw
-                    .then(|| self.col.max(self.screen.row_content_len(self.row)));
+                //
+                // ⚠⚠⚠ **AND THE ROW MUST HAVE RUN OUT OF WIDTH, or it is not a continuation at
+                // all.** R361 fixed the VALUE this records and left the PREMISE — *the bytes right
+                // after a resize are a line editor's redraw* — which is a claim about TIME, and it
+                // is false for every child that is not a line editor. Measured: three plain lines
+                // printed into the epoch (`FIRST\r\nSECOND\r\nTHIRD\r\n`) came back from
+                // `lines_since` as the ONE logical line `"FIRSTSECONDTHIRD"`, and as `partial`
+                // rather than `lines`, so a relay reading complete lines delivered NOTHING. In a
+                // multiplexer the trigger is a client ATTACHING.
+                //
+                // A SOFT WRAP IS, BY DEFINITION, A BREAK CAUSED BY THE WIDTH — so a row that never
+                // reached the right margin was not broken by the width and its line feed is a hard
+                // break, epoch or no epoch. That is why the editor's idiom exists at all: readline
+                // emits an explicit `CR LF` only at EXACT-FILL widths, where the content ends on
+                // the last column and it will not rely on autowrap. Anything short of the margin
+                // is somebody's output.
+                //
+                // ⚠ The residue, named and far narrower than the premise it replaces: a child that
+                // prints exactly `cols` characters and a `CR LF` inside the epoch emits the same
+                // bytes as the idiom and is still read as a continuation. Nothing at this layer can
+                // separate those two, and the reading that costs a cosmetic ghost is the one that
+                // does not corrupt a line.
+                let held = self.col.max(self.screen.row_content_len(self.row));
+                let soft_wrap = (self.in_resize_redraw && held >= self.cols).then_some(held);
                 self.screen.set_wrapped_at(self.row, soft_wrap);
                 self.line_feed();
                 // LNM (ANSI mode 20): under new-line mode a line feed also returns the cursor to
@@ -2517,9 +2555,26 @@ impl Emulator {
                 // wrapped line. Clear that line's stale continuation rows too (one
                 // atomic, invariant-safe op on the `Screen`), so the prior width's
                 // tail — which the reprint may only partly cover — does not linger.
-                // Scoped to that exact idiom: only `EraseToEndOfLine`, only during a
-                // redraw (`in_resize_redraw`); a plain erase touches one row.
-                if self.in_resize_redraw && matches!(mode, EraseInLine::EraseToEndOfLine) {
+                //
+                // ⚠⚠⚠ **AND ONLY WHEN THE SHELL SAYS A LINE EDITOR IS THE ONE DRAWING.** EL erases
+                // the ACTIVE LINE in ECMA-48 — one row — so clearing a line's continuation rows is
+                // a deliberate deviation, and it is only right if the actor is about to reprint
+                // them. Measured with the deviation keyed on the epoch alone: a child printed
+                // `AAAAAAAAAABBBB` (its own line, autowrapped), a client attached, the child
+                // repainted its row with `CR ESC[K` — and `BBBB`, which it never asked to erase,
+                // was GONE.
+                //
+                // The line feed above can be narrowed by an invariant of its own (a continuation
+                // means the width ran out). An erase has no such invariant — erasing to the end of
+                // a line says nothing about width — so the only honest narrowing is to know WHO is
+                // drawing, and `OSC 133` is the one signal that says so. Without shell integration
+                // the deviation does not apply: the residue is a stale tail at the old width until
+                // the next redraw, which is cosmetic and transient, against a child's output being
+                // erased, which is neither.
+                if self.in_resize_redraw
+                    && self.screen.shell_state() == ShellState::AtPrompt
+                    && matches!(mode, EraseInLine::EraseToEndOfLine)
+                {
                     self.screen.clear_soft_wrap_continuation(row, g);
                 }
                 // Erasing to the right margin truncates the line, so it no
@@ -3231,8 +3286,10 @@ impl VtPort for Emulator {
         // without forgetting a stop; see [`crate::tabstops`] for the argument and for why Ghostty, a
         // single-window terminal, can afford to reset them here and sprag cannot.
         self.tabs.resize(cols, rows);
-        // The next batch of bytes is the line editor's `SIGWINCH` redraw; apply the
-        // soft-wrap / erase reinterpretations to it (see `in_resize_redraw`). Only
+        // The next batch of bytes MAY be the line editor's `SIGWINCH` redraw, so open the window
+        // in which the soft-wrap / erase reinterpretations are ALLOWED (see `in_resize_redraw`).
+        // ⚠ The window permits; it does not decide — the line feed still needs the row to have run
+        // out of width, and the erase still needs the shell to say a line editor is drawing. Only
         // the MAIN screen runs a line editor; a fullscreen app owns the alt screen.
         self.in_resize_redraw = self.screen.screen_kind() == ScreenKind::Main;
         self.sync_cursor();
@@ -4827,52 +4884,56 @@ mod tests {
         assert!(!em.screen().wrapped(1), "row 1 did not wrap");
     }
 
-    /// ⚠⚠⚠ **A RESIZE USED TO DELETE THE NEXT LINE THE CHILD PRINTED.**
+    /// ⚠⚠⚠ **A RESIZE USED TO DELETE — AND THEN TO WELD TOGETHER — THE LINES THE CHILD PRINTED.**
     ///
-    /// After a resize the emulator opens a redraw epoch in which a LINE FEED is read as a SOFT WRAP
-    /// — the idiom an editor uses to repaint after `SIGWINCH` — recording the cursor's column as
-    /// how many cells the line put on the row it is leaving. A program ending a line the ordinary
-    /// way sends `\r\n`, so the CR has already moved the cursor to the left margin and the column
-    /// recorded was **zero**.
+    /// After a resize the emulator opens a redraw epoch in which a LINE FEED was read as a SOFT
+    /// WRAP: the idiom a line editor uses to repaint after `SIGWINCH`. R361 found that it recorded
+    /// the CURSOR COLUMN as the row's share, which a `\r` had already moved to zero, so the row
+    /// claimed to contribute NOTHING and every reflow rebuilt the line without it — **the row was
+    /// erased, having been printed perfectly.**
     ///
-    /// `continues[r] = Some(0)` says *this row contributes NOTHING to its own logical line*, which
-    /// contradicts the row holding text. Every logical-line reader skipped it, and the next reflow
-    /// rebuilt the line without it — **so the row was erased, by a resize, having been printed
-    /// perfectly.** In a terminal multiplexer the trigger is a client ATTACHING to the session.
+    /// ⚠⚠ **R361 FIXED THE VALUE AND LEFT THE PREMISE**, and this gate locked the premise in by
+    /// demanding a continuation be recorded at all. The premise is a claim about TIME — *the bytes
+    /// right after a resize are a line editor's redraw* — and it is false for every child that is
+    /// not a line editor. Measured with it in place: three ordinary lines printed after a resize
+    /// came back from [`Screen::lines_since`] as the ONE logical line `"FIRSTSECONDTHIRD"`, and as
+    /// `partial` rather than `lines`, so a relay that delivers complete lines delivered NOTHING.
     ///
-    /// Measured end to end before the fix: an agent's reply stood on screen, the next resize
-    /// dropped it, and the adapter published what was left as the model's answer.
+    /// A SOFT WRAP IS A BREAK CAUSED BY THE WIDTH, so a row that never reached the right margin was
+    /// not broken by the width. The child's `\r\n` is a hard break, epoch or no epoch — which is
+    /// both the stronger claim and the simpler one.
     ///
-    /// ⚠ Both halves. The FLAG is checked because that is the state the corruption lives in, and
-    /// the TEXT after a second resize is checked because that is the loss a person would see — a
-    /// fix that cleared the flag but still dropped the row would pass only the first.
+    /// ⚠ Three halves, because each was a different failure: the BREAK is hard, the lines read back
+    /// SEPARATELY (the primitive an agent's reply is captured through), and the text survives a
+    /// second resize (the loss a person would see).
     #[test]
     fn a_line_printed_after_a_resize_survives_the_next_one() {
         let mut e = Emulator::new(40, 8);
         e.advance(b"OLD\r\nask\r\n");
         e.resize(34, 8); // a client attaches — the redraw epoch opens
-        e.advance(b"REPLY\r\n"); // the child ends a line the ordinary way
+        e.advance(b"REPLY\r\nAND MORE\r\n"); // the child ends its lines the ordinary way
 
         assert_eq!(
             e.screen().continues(2),
-            Some(5),
-            "the continuation must record what the row HOLDS. It recorded the CURSOR COLUMN, and \
-             the `\\r` had already moved that to the left margin — so it claimed the row put ZERO \
-             cells on its own line",
+            None,
+            "a row holding five cells of thirty-four did not run out of WIDTH, so its line feed \
+             is a hard break and not a continuation of anything",
         );
         assert_eq!(
-            e.screen().row_share_text(2),
-            "REPLY",
-            "so the row contributes its own text to its own logical line",
+            e.screen().lines_since(0).lines,
+            ["OLD", "ask", "REPLY", "AND MORE"],
+            "⚠⚠ AND THEY READ BACK AS SEPARATE LINES. This is the primitive a relay and an \
+             agent's reply are addressed through; welded into one they arrive as `partial`, which \
+             a consumer that waits for complete lines never takes at all",
         );
 
         e.resize(30, 8); // a second client attaches, and the reflow rebuilds every line
         assert_eq!(
-            (0..3).map(|r| e.screen().row_text(r)).collect::<Vec<_>>(),
-            ["OLD", "ask", "REPLY"],
-            "⚠⚠ AND THE LINE IS STILL THERE. It was printed correctly and displayed correctly; \
-             only the reflow's reconstruction could lose it, and losing output to a RESIZE is the \
-             worst thing a terminal multiplexer can do quietly",
+            (0..4).map(|r| e.screen().row_text(r)).collect::<Vec<_>>(),
+            ["OLD", "ask", "REPLY", "AND MORE"],
+            "⚠⚠ AND THE LINES ARE STILL THERE. They were printed correctly and displayed \
+             correctly; only the reflow's reconstruction could lose them, and losing output to a \
+             RESIZE is the worst thing a terminal multiplexer can do quietly",
         );
     }
 
@@ -4907,10 +4968,16 @@ mod tests {
         // After a resize, the line editor's redraw uses an explicit CR LF to
         // continue a wrapped line at an exact-fill width; treat it as a soft wrap
         // so the redraw stays one logical line (collapses on a later widen).
+        //
+        // ⚠⚠ THE ROW IS FILLED TO THE MARGIN, because that is when readline emits this idiom at
+        // all — it will not rely on autowrap only where the content ends exactly on the last
+        // column. This fixture wrote FOUR cells into a TEN-column row and called it an
+        // exact-fill width, which is how *the bytes after a resize are a redraw* survived as the
+        // premise: nothing here ever asked the question the idiom's own name answers.
         let mut em = Emulator::new(10, 4);
         em.advance(b"x");
         em.resize(10, 4); // arms the redraw window
-        em.advance(b"\rAAAA\r\nBBBB"); // CR, content, CR LF (the wrap idiom), content
+        em.advance(b"\rAAAAAAAAAA\r\nBBBB"); // CR, a FULL row, CR LF (the wrap idiom), content
         assert!(
             em.screen().wrapped(0),
             "a CR LF inside the resize redraw is a soft wrap"
@@ -4922,13 +4989,28 @@ mod tests {
         // redraw stays ONE logical line, and a line that lost half its content is not that line.
         assert_eq!(
             em.screen().row_share_text(0),
-            "AAAA",
+            "AAAAAAAAAA",
             "the row's share of the continued line is the text it holds",
         );
         assert_eq!(
             em.screen().lines_since(0).partial,
-            "AAAABBBB",
+            "AAAAAAAAAABBBB",
             "and the two rows read back as the ONE logical line the redraw is repainting",
+        );
+
+        // ⚠⚠ AND THE SYMPTOM A PERSON REPORTED: widening must REJOIN the repaint into one row.
+        // The bug was screen-recorded — dragging a splitter left a pane stacked with per-width
+        // copies of the prompt — and every gate for it drove a real `/bin/bash` through a resize
+        // storm. Those four pass with this whole epoch DISABLED (measured), so they do not
+        // discriminate on it and the mechanism's value rested on nobody's measurement. Here it is
+        // deterministic: two rows a hard break would leave stacked collapse into the one line the
+        // editor was repainting.
+        em.resize(20, 4);
+        assert_eq!(
+            em.screen().row_text(0),
+            "AAAAAAAAAABBBB",
+            "a widen rejoins the repainted line; read as a hard break the two rows stay stacked, \
+             which IS the ghost accumulation",
         );
     }
 
@@ -4937,10 +5019,11 @@ mod tests {
         // Without a preceding resize, the same CR LF ends the logical line — so
         // ordinary command output keeps its real line breaks.
         let mut em = Emulator::new(10, 4);
-        em.advance(b"AAAA\r\nBBBB");
+        em.advance(b"AAAAAAAAAA\r\nBBBB"); // filled to the margin, and still a hard break
         assert!(
             !em.screen().wrapped(0),
-            "a CR LF in normal output is a hard line break"
+            "a CR LF in normal output is a hard line break — ⚠ FILLED to the margin, so this \
+             pins that the EPOCH is what distinguishes the idiom and an exact fill alone is not",
         );
     }
 
@@ -4950,13 +5033,22 @@ mod tests {
         // reinterpretation falls back to the single batch — a CR LF in a later batch is hard
         // again, because without shell integration a prompt redraw cannot be told apart from a
         // foreground command's output, so the window must not persist.
+        //
+        // ⚠ BOTH ROWS ARE FILLED TO THE MARGIN, so the fill is held CONSTANT and the only thing
+        // that differs between them is which side of the window's close they landed on. A control
+        // that varies two things at once measures neither.
         let mut em = Emulator::new(10, 4);
         em.resize(10, 4);
-        em.advance(b"\rAAAA"); // first batch (the redraw) — window closes after it
-        em.advance(b"BBBB\r\nCCCC"); // a later batch
+        em.advance(b"\rAAAAAAAAAA\r\n"); // batch 1: a full row and the idiom, INSIDE the window
+        em.advance(b"BBBBBBBBBB\r\nCCCC"); // batch 2: the same bytes, after the window closed
         assert!(
-            !em.screen().wrapped(0),
-            "with no shell integration the redraw window closes after one batch"
+            em.screen().wrapped(0),
+            "the first batch IS the redraw, so its exact-fill CR LF continues the line",
+        );
+        assert!(
+            !em.screen().wrapped(1),
+            "with no shell integration the redraw window closes after one batch — the identical \
+             bytes in the next batch are a hard break",
         );
     }
 
@@ -4968,7 +5060,7 @@ mod tests {
         let mut em = Emulator::new(10, 4);
         em.advance(b"\x1b]133;A\x1b\\"); // OSC 133 A: the shell is at a prompt
         em.resize(10, 4); // arms the redraw window
-        em.advance(b"\rAAAA"); // batch 1 of the redraw
+        em.advance(b"\rAAAAAAAAAA"); // batch 1 of the redraw, filled to the margin
         em.advance(b"\r\nBBBB"); // batch 2 — its CR LF is STILL a soft wrap
         assert!(
             em.screen().wrapped(0),
@@ -4984,7 +5076,7 @@ mod tests {
         let mut em = Emulator::new(10, 4);
         em.advance(b"\x1b]133;A\x1b\\"); // at a prompt (the window would otherwise persist)
         em.resize(10, 4);
-        em.advance(b"\rAAAA"); // redraw batch (window persists at a prompt)
+        em.advance(b"\rAAAAAAAAAA"); // redraw batch, filled (window persists at a prompt)
         VtPort::note_input(&mut em); // the user typed / submitted
         em.advance(b"\r\nBBBB"); // output after the submit — a HARD break now
         assert!(
@@ -5001,7 +5093,7 @@ mod tests {
         let mut em = Emulator::new(10, 4);
         em.advance(b"\x1b]133;C\x1b\\"); // the shell is running a command
         em.resize(10, 4);
-        em.advance(b"\rAAAA"); // batch 1 — window closes at its end (not at a prompt)
+        em.advance(b"\rAAAAAAAAAA"); // batch 1, filled — window closes at its end (not at a prompt)
         em.advance(b"\r\nBBBB"); // batch 2 — hard break
         assert!(
             !em.screen().wrapped(0),
@@ -5009,11 +5101,18 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **THE DEVIATION APPLIES WHERE THE TERMINAL KNOWS A LINE EDITOR IS DRAWING.**
+    ///
+    /// The redraw's leading erase-in-line clears the whole wrapped active line, not just the
+    /// cursor's row, so the stale tail of the prior width is gone. ECMA-48's EL erases ONE line, so
+    /// this is a deliberate deviation — right only because what follows reprints the rows it
+    /// cleared. `OSC 133;A` is what says the shell is at a prompt, and therefore that the thing
+    /// about to draw is its line editor; this fixture omitted it and so measured the deviation
+    /// against a screen where nobody had said who was drawing.
     #[test]
     fn resize_redraw_erase_clears_the_wrapped_continuation() {
-        // The redraw's leading erase-in-line clears the whole wrapped active line,
-        // not just the cursor's row, so the stale tail of the prior width is gone.
         let mut em = Emulator::new(4, 4);
+        em.advance(b"\x1b]133;A\x1b\\"); // the shell reports it is at a prompt
         em.advance(b"abcdefgh"); // row0 "abcd" (wrapped) -> row1 "efgh"
         assert_eq!(em.screen().row_text(1), "efgh");
         em.resize(4, 4); // arms the window; cursor anchored to the line top (row 0)
@@ -5022,6 +5121,37 @@ mod tests {
             em.screen().row_text(1),
             "",
             "the wrapped continuation row was cleared too"
+        );
+    }
+
+    /// ⚠⚠⚠ **AND A CHILD THAT REPAINTS ITS OWN ROW DOES NOT LOSE THE REST OF ITS LINE.**
+    ///
+    /// The same bytes as the gate above, on a screen where nothing has said a line editor is
+    /// drawing — which is every non-integrated shell, and every program that repaints a row
+    /// (`\r ESC[K text` is what a progress bar does). Measured before the scoping: the child's own
+    /// `BBBB`, which it never asked to erase and which the terminal was told to leave alone, was
+    /// gone the moment a client attached.
+    ///
+    /// ⚠ This is the CONTROL for the gate above and the two must be read together: identical
+    /// input, one signal different, opposite outcomes. Either alone measures nothing.
+    #[test]
+    fn a_child_repainting_a_row_keeps_the_rest_of_its_own_wrapped_line() {
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"AAAAAAAAAABBBB"); // the child's own long line: row0 full, autowraps to row1
+        em.resize(10, 4); // a client attaches — the epoch opens
+        em.advance(b"\x1b[H\r\x1b[K"); // the child repaints its row: CR + erase to end of LINE
+
+        assert_eq!(
+            em.screen().row_text(0),
+            "",
+            "the row the child DID ask to erase is erased",
+        );
+        assert_eq!(
+            em.screen().row_text(1),
+            "BBBB",
+            "⚠⚠ AND NOTHING MORE. `ESC[K` erases the active LINE — one row — and a terminal that \
+             takes a client attaching as licence to erase further is deleting output nobody asked \
+             it to touch",
         );
     }
 
