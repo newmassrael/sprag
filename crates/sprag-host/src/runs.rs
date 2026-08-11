@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use sprag_plugin::Outcome;
+use sprag_plugin::{Outcome, Progress, ProgressCell};
 
 use crate::external::lock;
 
@@ -50,6 +50,12 @@ struct RunRecord {
     opened_by: Option<u64>,
     state: Arc<Mutex<RunState>>,
     handle: Option<JoinHandle<()>>,
+    /// WHAT THE RUN HAS SPENT SO FAR, shared with the `Driver` that is spending it.
+    ///
+    /// The counters were readable only in the terminal `Outcome`, so a client watching a long run
+    /// could not tell progress from stuck and could not see spend until it was spent — see
+    /// [`sprag_plugin::Progress`].
+    progress: ProgressCell,
     /// The run's cancel flag, shared with its `WorkspacePaneAccess`; setting it
     /// makes the worker's Driver/plugin stop at its next check.
     cancel: Arc<AtomicBool>,
@@ -70,6 +76,32 @@ pub struct RunSummary {
     pub opened_by: Option<u64>,
     /// Where it has got to.
     pub state: RunState,
+    /// What it has spent so far — meaningful while [`state`](Self::state) is
+    /// [`RunState::Running`], and the last reading the driver took once it is not.
+    pub progress: Progress,
+}
+
+/// EVERYTHING A RUN BRINGS WITH IT — the argument list of [`RunRegistry::submit`], as a struct.
+///
+/// A named struct rather than seven positional parameters, and the argument is [`RunSummary`]'s one
+/// level up: a reader at the call site has no way to know from POSITION that the fifth thing is the
+/// worker's join handle and the sixth is where it writes its counters. (Clippy said the same thing
+/// about the arity, which is the cheap version of the same point.)
+pub struct NewRun {
+    /// The id [`RunRegistry::reserve`] gave, and which the worker announces under.
+    pub id: RunId,
+    /// What the run is, in a reader's terms.
+    pub label: String,
+    /// The pane whose occupant asked for it, or [`None`] for a run nobody claims.
+    pub opened_by: Option<u64>,
+    /// Where the worker writes its terminal state.
+    pub state: Arc<Mutex<RunState>>,
+    /// The worker itself.
+    pub handle: JoinHandle<()>,
+    /// Where the driver writes what it has spent so far.
+    pub progress: ProgressCell,
+    /// The flag that asks the run to stop at its next check.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// The registry of background plugin runs. Owned by the host (`serve`),
@@ -81,25 +113,35 @@ pub struct RunRegistry {
 }
 
 impl RunRegistry {
-    /// Register a run — its shared state cell and worker thread — and return a
-    /// fresh monotonic id (never reused).
-    pub fn submit(
-        &mut self,
-        label: String,
-        opened_by: Option<u64>,
-        state: Arc<Mutex<RunState>>,
-        handle: JoinHandle<()>,
-        cancel: Arc<AtomicBool>,
-    ) -> RunId {
+    /// Take the next id WITHOUT registering anything — what a caller needs when the run's worker
+    /// must know its own id before the record exists.
+    ///
+    /// # ⚠ Why this is a separate call and not read back off [`submit`](Self::submit)
+    ///
+    /// The worker thread ANNOUNCES its own end, so it has to close over the id — and it is spawned
+    /// before `submit` can return one. Reading `next_id` and then calling `submit` would take the
+    /// lock twice with a window between them, in which another request's `submit` takes the id this
+    /// one is about to announce under. Reserving is one lock and no window.
+    ///
+    /// An id reserved and never submitted is simply skipped, which costs nothing: ids are monotonic
+    /// and never reused, so a gap in them means only that a run did not start.
+    pub fn reserve(&mut self) -> RunId {
         let id = RunId(self.next_id);
         self.next_id += 1;
+        id
+    }
+
+    /// Register a run under the id [`reserve`](Self::reserve) gave it.
+    pub fn submit(&mut self, run: NewRun) -> RunId {
+        let id = run.id;
         self.runs.push(RunRecord {
             id,
-            label,
-            opened_by,
-            state,
-            handle: Some(handle),
-            cancel,
+            label: run.label,
+            opened_by: run.opened_by,
+            state: run.state,
+            handle: Some(run.handle),
+            progress: run.progress,
+            cancel: run.cancel,
         });
         id
     }
@@ -149,6 +191,7 @@ impl RunRegistry {
                 label: record.label.clone(),
                 opened_by: record.opened_by,
                 state: lock(&record.state).clone(),
+                progress: *lock(&record.progress),
             })
             .collect()
     }
@@ -199,8 +242,20 @@ mod tests {
             };
         });
         let cancel = Arc::new(AtomicBool::new(false));
-        let id = registry.submit("test".to_string(), Some(7), state, handle, cancel);
-        assert_eq!(id, RunId(0));
+        let id = registry.reserve();
+        assert_eq!(
+            registry.submit(NewRun {
+                id,
+                label: "test".to_string(),
+                opened_by: Some(7),
+                state,
+                handle,
+                progress: ProgressCell::default(),
+                cancel,
+            }),
+            RunId(0),
+            "a reserved id is the id the record carries",
+        );
 
         // Join (bounded — the worker is trivial) then observe Done.
         registry.join_all();

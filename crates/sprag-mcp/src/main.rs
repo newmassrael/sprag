@@ -774,7 +774,11 @@ fn tools_list() -> Value {
                     `windows_reordered` (a window changed PLACE in the session's order — the \
                     order `list_windows` lists them in, and the one the window keys walk; it \
                     names no window because a swap of two has two equally true readings, so \
-                    re-read `list_windows`) — each \
+                    re-read `list_windows`), `run_finished` (a bounded loop you started with \
+                    `orchestrate` reached a terminal state — converged, exhausted a guardrail, \
+                    failed, or was cancelled; the `run` key is its id. THIS IS HOW TO WAIT FOR \
+                    YOUR OWN LOOP: waiting costs you one call, and polling `list_runs` costs you \
+                    one per look, which is the expense `orchestrate` exists to save) — each \
                     naming its SUBJECT, not its new value, except the three that MOVE AN ADDRESS: a \
                     rename and a pane's move also carry the one fact no later read could recover. \
                     Follow up with agent_state, pane_processes or list_panes to read the subject a \
@@ -1737,6 +1741,9 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
     if !guardrails.is_empty() {
         action_args.insert("guardrails".to_owned(), Value::Object(guardrails));
     }
+    // ⚠ BEFORE the invoke, never after: a run submitted first can finish first, and an anchor taken
+    // afterwards would sit past its own `run_finished` record — the exact race this exists to close.
+    anchor_change_cursor();
     // WHO ASKED — this server's own pane, never the caller's word for it.
     let mine = own_pane().ok_or_else(|| {
         "orchestrate needs to know which pane you are in, and this process is not inside one — so \
@@ -1830,7 +1837,15 @@ fn render_run(run: &Value) -> String {
     let label = run["label"].as_str().unwrap_or("?");
     let state = &run["state"];
     match state["status"].as_str() {
-        Some("running") => format!("Run {id} ({label}): still running.\n"),
+        // The counters, for the reason the person's renderer prints them: an agent that polls a
+        // long run and sees the same numbers twice has learned it is stuck, and `still running`
+        // could not say that. It also lets an agent see spend BEFORE the budget is gone.
+        Some("running") => format!(
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.\n",
+            state["iterations"].as_u64().unwrap_or_default(),
+            state["cost"].as_u64().unwrap_or_default(),
+            state["unit"].as_str().unwrap_or("steps"),
+        ),
         Some("done") => {
             let outcome = &state["outcome"];
             let reply = state["output"]
@@ -5587,6 +5602,36 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
+/// Where this server has read the change journal up to. `None` until something anchors it, and
+/// the first `wait_for_change` anchors it at the PRESENT: replaying a daemon's whole history to a
+/// caller asking "what happens next" would bury the answer under a backlog it did not ask for.
+static CURSOR: Mutex<Option<u64>> = Mutex::new(None);
+
+/// Anchor the change cursor HERE, if nothing has anchored it yet.
+///
+/// # ⚠⚠ The race this closes, which a level would not have had
+///
+/// `orchestrate` returns the instant the run is submitted, and the run may finish before the agent
+/// gets its next turn. If `wait_for_change` is that agent's FIRST call, its cursor starts after the
+/// `run_finished` record — so it parks on an event that has already fired and waits out its whole
+/// timeout for a run that ended before it looked.
+///
+/// So the tool that starts an asynchronous thing anchors the wait for it. The replay is bounded by
+/// construction — it can only reach back to the moment the caller's own run began, which is exactly
+/// the history that caller asked for.
+///
+/// ⚠ It NEVER moves a cursor that already exists: an agent mid-conversation has records it has not
+/// read yet, and re-anchoring would drop them.
+fn anchor_change_cursor() {
+    let mut cursor = CURSOR.lock().unwrap_or_else(PoisonError::into_inner);
+    if cursor.is_none()
+        && let Ok(answer) = host_call("scene/revision", json!({}))
+        && let Some(revision) = answer["revision"].as_u64()
+    {
+        *cursor = Some(revision);
+    }
+}
+
 /// `wait_for_change`: block until this terminal's shape or an agent's verdict moves, then say what.
 ///
 /// The tool that closes the gap between "an agent can look at other agents" and "an agent can
@@ -5640,11 +5685,6 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
 /// truthful answer to that, and reporting it as a failure would make an agent treat a quiet
 /// terminal as a broken one.
 fn tool_wait_for_change(args: &Value) -> Result<String, String> {
-    /// Where this server has read up to. `None` until the first call, which starts at the present:
-    /// replaying a daemon's whole history to a caller asking "what happens next" would bury the
-    /// answer under a backlog it did not ask for.
-    static CURSOR: Mutex<Option<u64>> = Mutex::new(None);
-
     let timeout = match args.get("timeout_seconds") {
         None => Duration::from_secs(60),
         Some(value) => {
@@ -5848,11 +5888,12 @@ fn render_events(events: &[Value], here: &[PaneInfo], session: &[(String, PaneIn
     for event in events {
         let kind = event["type"].as_str().unwrap_or("?");
         match (
-            event["pane"].as_u64(),
-            event["window"].as_str(),
-            event["session"].as_str(),
+            event[sprag_host::events::Subject::PANE_KEY].as_u64(),
+            event[sprag_host::events::Subject::WINDOW_KEY].as_str(),
+            event[sprag_host::events::Subject::SESSION_KEY].as_str(),
+            event[sprag_host::events::Subject::RUN_KEY].as_u64(),
         ) {
-            (Some(id), _, _) => {
+            (Some(id), _, _, _) => {
                 // Both integers travel: the number is what this surface's tools take, and the id is
                 // what `sprag panes`, the daemon's logs and the user's own CLI call the same pane,
                 // so an agent reporting to a human and a human checking the agent hold one picture.
@@ -5864,8 +5905,14 @@ fn render_events(events: &[Value], here: &[PaneInfo], session: &[(String, PaneIn
                     process_row_subject(id, here, session, &[])
                 ));
             }
-            (_, Some(name), _) => out.push_str(&format!("  {kind}: window {name}\n")),
-            (_, _, Some(name)) => out.push_str(&format!("  {kind}: session {name}\n")),
+            (_, Some(name), _, _) => out.push_str(&format!("  {kind}: window {name}\n")),
+            (_, _, Some(name), _) => out.push_str(&format!("  {kind}: session {name}\n")),
+            // ⚠ THE FOURTH SUBJECT, and it was NOT here when `run_finished` was added — the event
+            // reached the agent with its id dropped, so a caller with two loops in flight was told
+            // one of them had finished and not which. A hand-written match over subject keys is the
+            // list a new subject is left out of; `every_subject_an_event_names_is_rendered_with_it`
+            // is what makes the next one fail instead.
+            (_, _, _, Some(id)) => out.push_str(&format!("  {kind}: run {id}\n")),
             _ => out.push_str(&format!("  {kind}\n")),
         }
     }
@@ -6640,6 +6687,10 @@ mod tests {
                 k if k == sprag_host::events::Subject::PANE_KEY => "list_panes",
                 k if k == sprag_host::events::Subject::WINDOW_KEY => "list_windows",
                 k if k == sprag_host::events::Subject::SESSION_KEY => "list_sessions",
+                // R355b's fourth subject. A run is not part of the containment — it DRIVES panes —
+                // so its reader is the one that answers about runs, and an agent woken by
+                // `run_finished` goes straight there for the outcome.
+                k if k == sprag_host::events::Subject::RUN_KEY => "list_runs",
                 other => panic!(
                     "the event vocabulary names a subject {other:?} that no tool on this surface \
                      reads — an agent told about it has nowhere to go. Add the reader, then name \
@@ -6681,6 +6732,48 @@ mod tests {
             unique.len(),
             3,
             "one tool cannot be three readers: {readers:?}"
+        );
+    }
+
+    /// ⚠⚠ **EVERY SUBJECT AN EVENT NAMES IS RENDERED WITH IT** — the half the reader gate above
+    /// could not see, and a LIVE defect when it was written.
+    ///
+    /// The gate above requires a TOOL that reads each subject. It says nothing about whether the
+    /// agent is told WHICH one, and `render_events` matched three keys by hand: `run_finished`
+    /// arrived, fell to the arm that prints the kind alone, and an agent with two loops in flight
+    /// was told one had finished without being told which. The wait was woken and the answer was
+    /// useless.
+    ///
+    /// Driven off `EventKind::ALL`, so a fifth subject fails here rather than being silently
+    /// dropped — a hand-written match over subject keys is the list a new subject is left out of.
+    #[test]
+    fn every_subject_an_event_names_is_rendered_with_it() {
+        let mut checked = 0;
+        for kind in sprag_host::events::EventKind::ALL {
+            let Some(key) = kind.subject_key() else {
+                continue;
+            };
+            // A subject value of each shape the wire carries — an id for the two numeric keys, a
+            // name for the two string ones. The VALUE is distinctive so its absence is visible.
+            let value = if key == sprag_host::events::Subject::PANE_KEY
+                || key == sprag_host::events::Subject::RUN_KEY
+            {
+                json!(4242)
+            } else {
+                json!("a-distinctive-name")
+            };
+            let line = render_events(&[json!({ "type": kind.wire_str(), key: value })], &[], &[]);
+            assert!(
+                line.contains("4242") || line.contains("a-distinctive-name"),
+                "`{}` names a {key} and the rendering drops it — an agent is told something \
+                 changed and not which: {line:?}",
+                kind.wire_str(),
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 10,
+            "only {checked} kinds carried a subject; this asserted almost nothing",
         );
     }
 

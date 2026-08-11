@@ -6,6 +6,8 @@
 //! enforces the iteration and cost budgets and maps the result onto the
 //! statechart. The plugin owns the behaviour; the Driver owns the lifecycle.
 
+use std::sync::{Arc, Mutex};
+
 use sce_rust_runtime::Engine;
 
 use crate::access::{PaneAccess, PaneError};
@@ -60,7 +62,38 @@ pub struct Driver {
     iterations: u32,
     cost: Option<Cost>,
     failure: Option<PaneError>,
+    progress: Option<ProgressCell>,
 }
+
+/// WHAT A RUN HAS SPENT SO FAR — the counters the [`Driver`] keeps, readable while it is still
+/// keeping them.
+///
+/// # ⚠⚠ Why a running run reporting nothing was a defect and not an omission
+///
+/// The driver counts `iterations` and accumulates [`Cost`] from the first step, and published both
+/// ONLY in the terminal [`Outcome`]. So a client watching a long run could not tell PROGRESS from
+/// STUCK, and **could not see spend until the spending was over** — a strange property for a
+/// feature whose selling point is a typed cost ceiling. The counters existed; they were simply not
+/// readable mid-flight.
+///
+/// The same two facts under the same names as `Outcome`'s, deliberately: a reader that polls this
+/// and then reads the outcome meets one vocabulary, and the last progress a run reports agrees with
+/// the outcome it ends on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Progress {
+    /// How many steps have completed. Zero before the first one returns.
+    pub iterations: u32,
+    /// What has been spent, in the run's own unit — [`None`] until the first step establishes it.
+    pub cost: Option<Cost>,
+}
+
+/// Where a [`Driver`] publishes its [`Progress`], shared with whoever is watching.
+///
+/// A cell rather than a callback, on the same reasoning `runs` is a slot rather than a stream: this
+/// is a LEVEL. A reader that looks twice and sees the same numbers has learned that nothing moved,
+/// which is exactly the question "progress or stuck?" asks — and a missed edge would cost it
+/// nothing.
+pub type ProgressCell = Arc<Mutex<Progress>>;
 
 impl Driver {
     /// A driver bounded by `guardrails`.
@@ -72,6 +105,34 @@ impl Driver {
             iterations: 0,
             cost: None,
             failure: None,
+            progress: None,
+        }
+    }
+
+    /// Publish this run's progress into `cell` as it goes.
+    ///
+    /// Optional because the driver is used without a host — a test, or a fire-and-forget run — and
+    /// a driver that REQUIRED somewhere to report to would make every such caller invent one.
+    #[must_use]
+    pub fn reporting_to(mut self, cell: ProgressCell) -> Self {
+        self.progress = Some(cell);
+        self
+    }
+
+    /// Write the counters out, if anybody is watching.
+    ///
+    /// ⚠ Called after the accumulate and NOT before the step: a reader must never see an iteration
+    /// counted before the work it counts has happened, which is the same ordering rule the run-end
+    /// announcement follows one layer up.
+    fn publish(&self) {
+        if let Some(cell) = &self.progress {
+            let mut held = cell
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *held = Progress {
+                iterations: self.iterations,
+                cost: self.cost,
+            };
         }
     }
 
@@ -103,6 +164,7 @@ impl Driver {
                 Ok(step) => {
                     self.iterations += 1;
                     self.accumulate(step.cost);
+                    self.publish();
                     match step.verdict {
                         Verdict::Converged => OrchestrationEvent::Converge,
                         Verdict::Continue if self.budget_exhausted() => OrchestrationEvent::Exhaust,

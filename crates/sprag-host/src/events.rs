@@ -551,6 +551,29 @@ pub enum Event {
     ///
     /// A reader answers it by re-reading the `windows` slot, whose ARRAY ORDER is the fact.
     WindowsReordered,
+    /// A bounded plugin RUN reached a terminal state — it converged, exhausted a guardrail, failed,
+    /// or was cancelled. `id` is the [`RunId`](crate::runs::RunId).
+    ///
+    /// # ⚠⚠ Why the loop's door was only half a door without this
+    ///
+    /// `orchestrate` exists so an agent does not spend its own turns driving a loop. Until this
+    /// event, the only way for the agent that started one to learn it had finished was to call
+    /// `list_runs` again — **and every one of those calls is a turn**, which is the cost the whole
+    /// feature was built to remove, paid one level up. The CLI had `--wait` and the agent had
+    /// nothing.
+    ///
+    /// # It carries the id and not the outcome, which is this module's standing rule
+    ///
+    /// Every variant here names its SUBJECT and leaves the reader to re-read; the exceptions
+    /// ([`PaneMoved`](Self::PaneMoved), [`WindowRenamed`](Self::WindowRenamed)) carry the one fact
+    /// no slot can answer afterwards. A run's outcome is not such a fact: the registry keeps every
+    /// run it ever held, so `runs` answers *how it ended* whenever the reader gets there. Carrying
+    /// it would be a second copy of the outcome vocabulary on the event stream.
+    ///
+    /// ⚠ **A CANCEL PRODUCES THIS TOO** — `cancelled` is a terminal state. So a client that asked
+    /// for a run to stop learns it HAS stopped from the same event it would have been woken by if
+    /// the run had converged, which is what makes one wait sufficient.
+    RunFinished(u64),
     /// The window's ACTIVE pane moved to this one — tmux `select-pane`, and the pane-level twin of
     /// [`Event::WindowSelected`].
     ///
@@ -622,6 +645,7 @@ impl Event {
             Self::SessionRenamed { .. } => EventKind::SessionRenamed,
             Self::LayoutUpdated => EventKind::LayoutUpdated,
             Self::WindowsReordered => EventKind::WindowsReordered,
+            Self::RunFinished(_) => EventKind::RunFinished,
         }
     }
 
@@ -637,6 +661,7 @@ impl Event {
             | Self::AgentStateChanged(id)
             | Self::PaneJobChanged(id) => Some(Subject::Pane(*id)),
             Self::PaneMoved { pane, .. } => Some(Subject::Pane(*pane)),
+            Self::RunFinished(id) => Some(Subject::Run(*id)),
             Self::WindowCreated(name) | Self::WindowClosed(name) | Self::WindowSelected(name) => {
                 Some(Subject::Window(name.clone()))
             }
@@ -1038,6 +1063,8 @@ sprag_terminal::closed_set! {
         LayoutUpdated,
         /// [`Event::WindowsReordered`].
         WindowsReordered,
+        /// [`Event::RunFinished`].
+        RunFinished,
     }
 }
 
@@ -1071,6 +1098,7 @@ impl EventKind {
             Self::SessionRenamed => "session_renamed",
             Self::LayoutUpdated => "layout_updated",
             Self::WindowsReordered => "windows_reordered",
+            Self::RunFinished => "run_finished",
         }
     }
 
@@ -1115,6 +1143,7 @@ impl EventKind {
             Self::SessionCreated | Self::SessionClosed | Self::SessionRenamed => {
                 Some(Subject::SESSION_KEY)
             }
+            Self::RunFinished => Some(Subject::RUN_KEY),
             // An arrangement is ONE object: see `Event::LayoutUpdated` and
             // `Event::WindowsReordered`, which is the same argument one level up.
             Self::LayoutUpdated | Self::WindowsReordered => None,
@@ -1155,6 +1184,12 @@ pub enum Subject {
     Window(String),
     /// A session, by name.
     Session(String),
+    /// A bounded plugin RUN, by [`RunId`](crate::runs::RunId).
+    ///
+    /// The fourth subject, and the first that is not part of the containment: a run is not inside a
+    /// window and does not hold panes — it DRIVES them, and the panes it drives may be several. So
+    /// it is addressed by its own id, which is what `cancel` takes and what `runs` reports.
+    Run(u64),
 }
 
 impl Subject {
@@ -1164,12 +1199,14 @@ impl Subject {
     pub const WINDOW_KEY: &'static str = "window";
     /// The wire key a session subject rides under.
     pub const SESSION_KEY: &'static str = "session";
+    /// The wire key a run subject rides under — the same word `cancel` takes its argument under.
+    pub const RUN_KEY: &'static str = "run";
 
     /// This subject's value on the wire — an integer id, or a name.
     #[must_use]
     pub fn wire_value(&self) -> Value {
         match self {
-            Self::Pane(id) => Value::from(*id),
+            Self::Pane(id) | Self::Run(id) => Value::from(*id),
             Self::Window(name) | Self::Session(name) => Value::from(name.clone()),
         }
     }
@@ -1181,6 +1218,7 @@ impl Subject {
             Self::Pane(_) => Self::PANE_KEY,
             Self::Window(_) => Self::WINDOW_KEY,
             Self::Session(_) => Self::SESSION_KEY,
+            Self::Run(_) => Self::RUN_KEY,
         }
     }
 }
@@ -2007,6 +2045,7 @@ mod tests {
             },
             EventKind::LayoutUpdated => Event::LayoutUpdated,
             EventKind::WindowsReordered => Event::WindowsReordered,
+            EventKind::RunFinished => Event::RunFinished(7),
         }
     }
 
@@ -2164,6 +2203,12 @@ mod tests {
             (
                 EventKind::WindowsReordered,
                 json!({ "type": "windows_reordered" }),
+            ),
+            // R355b: the fourth SUBJECT, and the first that is not part of the containment — a run
+            // drives panes rather than living in a window, so it rides under its own id.
+            (
+                EventKind::RunFinished,
+                json!({ "type": "run_finished", "run": 7 }),
             ),
         ];
         assert_eq!(

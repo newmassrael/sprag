@@ -4458,3 +4458,198 @@ fn pane_id_named(listing: &str, name: &str) -> u64 {
         .and_then(|id| id.parse().ok())
         .unwrap_or_else(|| panic!("no pane called {name:?} in:\n{listing}"))
 }
+
+/// ⚠⚠ **AN AGENT WAITS FOR ITS OWN LOOP INSTEAD OF POLLING FOR IT** — L3, and the half of the
+/// loop's door that R355 shipped without.
+///
+/// # What this is worth, and why a poll is not the same thing
+///
+/// `orchestrate` exists so an agent does not spend its turns driving a loop. Until a run's end was
+/// an EVENT, the only way for the agent that started one to learn it had finished was to call
+/// `list_runs` again — and for an agent every call is a TURN. The feature saved the turns inside
+/// the loop and charged them back at the end.
+///
+/// The claim is driven the way it is used: start a run, then WAIT — one call, no polling — and
+/// require the wait to report the run by id. The bound is what makes it a claim rather than a
+/// sleep: `wait_for_change` returns when the change lands, so a wait that reported nothing would
+/// fail here with its own timeout rather than passing quietly.
+#[test]
+fn an_agent_waits_for_its_own_loop_to_finish_rather_than_polling() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "waited", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "waited",
+            "stimulus": "echo waited",
+            "max_iterations": 2,
+        }),
+    );
+
+    // ONE call. No `list_runs` in between — the point is that none is needed.
+    let woke = server.call_tool(
+        "wait_for_change",
+        json!({ "kinds": ["run_finished"], "timeout_seconds": 30 }),
+    );
+    assert!(
+        woke.contains("run_finished"),
+        "the wait must report the kind it was asked for: {woke}",
+    );
+    assert!(
+        woke.contains('0'),
+        "and the run it names is the one that was started: {woke}",
+    );
+
+    // ...and the outcome is where the event says to look, which is what makes carrying only the id
+    // the right choice.
+    let ended = server.call_tool("list_runs", json!({}));
+    assert!(
+        ended.contains("exhausted after 2 iterations"),
+        "the run really did finish, at the guardrail the agent asked for: {ended}",
+    );
+}
+
+/// ⚠⚠ **A CANCEL WAKES THE SAME WAIT** — the property that makes one wait sufficient.
+///
+/// `cancelled` is a terminal state, so an agent that asked its loop to stop learns it HAS stopped
+/// from the event it was already parked on. Without this an agent would need a second mechanism for
+/// the case it caused itself, which is the shape `wait_for_change`'s own disjunction exists to
+/// avoid one level down.
+#[test]
+fn a_cancelled_loop_wakes_the_wait_that_was_parked_on_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "stopped", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+    // A ceiling this test will not reach, so what ends the run is provably the cancel.
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "stopped",
+            "stimulus": "sleep 1",
+            "max_iterations": 100,
+        }),
+    );
+    server.wait_for_tool("list_runs", json!({}), "still running");
+
+    server.call_tool("cancel_run", json!({ "run": 0 }));
+    let woke = server.call_tool(
+        "wait_for_change",
+        json!({ "kinds": ["run_finished"], "timeout_seconds": 30 }),
+    );
+    assert!(
+        woke.contains("run_finished"),
+        "a cancel is a terminal state and must wake the same wait: {woke}",
+    );
+    assert!(
+        server
+            .call_tool("list_runs", json!({}))
+            .contains("cancelled"),
+        "and the run ended cancelled, not exhausted",
+    );
+}
+
+/// ⚠⚠ **A RUNNING LOOP SAYS WHAT IT HAS SPENT, BEFORE IT HAS SPENT IT ALL** — L4.
+///
+/// # The question `still running` could not answer
+///
+/// The driver counts iterations and accumulates a typed cost from the first step, and published
+/// both ONLY in the terminal outcome. So an agent watching a long loop could not tell PROGRESS from
+/// STUCK, and could not see spend until the spending was over — which is a strange property for a
+/// feature whose selling point is a cost ceiling.
+///
+/// The claim is driven where it matters: read a run WHILE it is running and require a non-zero
+/// iteration count, then read it again after it ends and require the last progress to AGREE with
+/// the outcome. The second half is what stops the first from being satisfied by a counter that
+/// counts something else.
+#[test]
+fn a_running_loop_reports_its_progress_and_agrees_with_its_own_outcome() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "counted", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+    // A ceiling high enough that this test observes it mid-flight rather than after it.
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "counted",
+            "stimulus": "sleep 1",
+            "max_iterations": 100,
+        }),
+    );
+
+    let mid = server.wait_for_tool("list_runs", json!({}), "still running — 1");
+    assert!(
+        mid.contains("bytes spent so far"),
+        "a running run reports its spend in the run's OWN unit: {mid}",
+    );
+
+    // The AGREEMENT half: cancel it, then require the outcome's numbers to be the ones progress was
+    // reporting. A counter that ran ahead of the work, or lagged behind it, fails here.
+    server.call_tool("cancel_run", json!({ "run": 0 }));
+    let ended = server.wait_for_tool("list_runs", json!({}), "cancelled");
+    let iterations = |text: &str, marker: &str| -> u64 {
+        text.split(marker)
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no count after {marker:?} in {text:?}"))
+    };
+    assert!(
+        iterations(&ended, "cancelled after ") >= iterations(&mid, "still running — "),
+        "the outcome cannot report FEWER iterations than progress already showed:\n{mid}\n{ended}",
+    );
+}
+
+/// ⚠⚠ **A LOOP THAT FINISHES BEFORE THE AGENT LOOKS IS STILL WAITED FOR** — the race that made the
+/// event only half an answer.
+///
+/// `orchestrate` returns the instant the run is submitted, and a short run finishes before the
+/// agent gets its next turn. `wait_for_change` anchors its cursor at the PRESENT on its first call,
+/// so an agent whose first wait comes after the run ended would park on a record already written
+/// and wait out its whole timeout — worse than polling, because it looks like the loop is still
+/// going.
+///
+/// The fixture FORCES the order rather than racing it: the run is driven to completion and OBSERVED
+/// finished through `list_runs` before the wait is ever issued. A wait that only worked when it got
+/// there first would fail here every time.
+#[test]
+fn a_loop_that_ended_before_the_first_wait_is_reported_by_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "already-done", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "already-done",
+            "stimulus": "echo quick",
+            "max_iterations": 1,
+        }),
+    );
+    // THE ORDER, forced: the run is over before anybody waits for it.
+    server.wait_for_tool("list_runs", json!({}), "exhausted");
+
+    let woke = server.call_tool(
+        "wait_for_change",
+        json!({ "kinds": ["run_finished"], "timeout_seconds": 20 }),
+    );
+    assert!(
+        woke.contains("run_finished") && woke.contains("run 0"),
+        "the wait must report a change that landed before it was called, naming the run: {woke}",
+    );
+}

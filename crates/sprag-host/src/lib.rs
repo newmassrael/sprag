@@ -591,6 +591,21 @@ pub fn workspace_scene(
     // plugin-spawned pane feeds the reaper exactly like a mux one without the plugin layer ever
     // learning what the hook does, so no pane category can leave a lingering daemon and the ISP
     // boundary is intact.
+    // WHERE A RUN'S END IS ANNOUNCED, minted here so the plugin surface never learns what a session
+    // is. The scope's name is captured now — the external is a throwaway projection and the worker
+    // outlives it, so the closure owns the name rather than borrowing the scope.
+    //
+    // ⚠ THE SAME OPAQUE-`Fn` DISCIPLINE as the three hooks above, and for a sharper reason here: a
+    // journal is per SESSION and a run is not in one (the registry is the daemon's, the pane pool is
+    // the scope's). What crosses the boundary is a call with a run id in it; which channel that
+    // reaches is this side's business.
+    let plugin_run_end = {
+        let channels = Arc::clone(channels);
+        let session = scope.session().to_owned();
+        Some(Arc::new(move |id: crate::runs::RunId| {
+            channels.announce(&session, vec![events::Event::RunFinished(id.0)]);
+        }) as Arc<dyn Fn(crate::runs::RunId) + Send + Sync>)
+    };
     children.push(Scene::External(
         ExternalNode::new(Box::new(plugins::PluginsExternal::new(
             Arc::clone(workspace),
@@ -598,6 +613,7 @@ pub fn workspace_scene(
             plugin_exit,
             plugin_attention,
             plugin_agents,
+            plugin_run_end,
         )))
         .with_tag(PLUGINS_TAG),
     ));

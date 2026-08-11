@@ -147,6 +147,19 @@ pub struct PluginsExternal {
     /// The router rather than one closure, for the reason [`crate::DaemonShared::attention`] states:
     /// a hook is minted per birth so the reader thread running it takes no lock.
     on_attention: Option<Arc<crate::attention::AttentionRouter>>,
+    /// WHAT TO DO WHEN A RUN ENDS — the daemon's announce, as an opaque `Fn(RunId)`.
+    ///
+    /// # Why the loop's door needed this to be a door at all
+    ///
+    /// `orchestrate` exists so an agent does not spend its turns driving a loop. Without an event,
+    /// the only way to learn a run finished is to ask again — and for an agent every ask is a turn,
+    /// which is the cost the feature removes, paid one level up. So the worker announces.
+    ///
+    /// ⚠ **AN OPAQUE `Fn`, on the exact terms of the three hooks above it.** Announcing means
+    /// naming a SESSION channel, and the session tree is what this surface is deliberately free of
+    /// (Interface Segregation — see [`crate::workspace_scene`]). The scope that built this external
+    /// closed over its own session name; what crosses the boundary is a call with a run id in it.
+    on_run_end: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
     /// The daemon's agent-state memory ([`crate::AgentClock`]), or `None` off a daemon — what lets
     /// a plugin SUPERVISE the agent in a pane instead of guessing from its text.
     ///
@@ -167,12 +180,14 @@ impl PluginsExternal {
         on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
         on_attention: Option<Arc<crate::attention::AttentionRouter>>,
         agents: Option<Arc<crate::AgentClock>>,
+        on_run_end: Option<Arc<dyn Fn(RunId) + Send + Sync>>,
     ) -> Self {
         Self {
             workspace,
             runs,
             on_pane_exit,
             on_attention,
+            on_run_end,
             agents,
         }
     }
@@ -359,14 +374,41 @@ impl PluginsExternal {
                 let router = Arc::clone(router);
                 Arc::new(move || router.signal()) as sprag_plugin::access::AttentionMinter
             }));
+        let on_end = self.on_run_end.clone();
+        // The id BEFORE the thread, because the announcement names it and the worker cannot ask the
+        // registry for its own id without taking the lock the registry is being written under.
+        let id = lock(&self.runs).reserve();
+        // The cell the driver writes its counters into, shared with the registry so `runs` can
+        // answer them while the run is still spending.
+        let progress = sprag_plugin::ProgressCell::default();
+        let worker_progress = Arc::clone(&progress);
         let handle = thread::spawn(move || {
-            let outcome = Driver::new(guardrails).run(plugin.as_plugin(), &access, &run_ctx);
+            let outcome = Driver::new(guardrails).reporting_to(worker_progress).run(
+                plugin.as_plugin(),
+                &access,
+                &run_ctx,
+            );
             // The worker still owns the plugin after the run, so it can read any
             // content the plugin captured (an AI adapter's reply) for the host.
             let output = plugin.as_plugin().captured();
             *lock(&worker_state) = RunState::Done { outcome, output };
+            // ⚠ AFTER the state is written, never before: a client woken by this asks `runs`
+            // immediately, and an announcement that raced the write would answer `running` about a
+            // run the wake said had finished — the client would then park again on an event that
+            // has already fired. The order is the whole correctness of the wake.
+            if let Some(announce) = on_end {
+                announce(id);
+            }
         });
-        lock(&self.runs).submit(label, opened_by, state, handle, cancel)
+        lock(&self.runs).submit(crate::runs::NewRun {
+            id,
+            label,
+            opened_by,
+            state,
+            handle,
+            progress,
+            cancel,
+        })
     }
 }
 
@@ -648,8 +690,21 @@ fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<C
 
 /// Render one run as JSON for `query("runs")`.
 fn run_to_json(run: &RunSummary) -> Value {
+    // ⚠ THE SAME THREE KEYS THE OUTCOME USES (`iterations`, `cost`, `unit`), so a reader that polls
+    // a running run and then reads its outcome meets ONE vocabulary rather than two. A run that has
+    // not finished a step yet answers zero with a null unit, which is the same shape a run that was
+    // cancelled before any step reports — both mean "nothing measured yet".
+    let (cost, unit) = run
+        .progress
+        .cost
+        .map_or((0, None), |c| (c.amount(), Some(c.unit())));
     let state_json = match &run.state {
-        RunState::Running => json!({ "status": "running" }),
+        RunState::Running => json!({
+            "status": "running",
+            "iterations": run.progress.iterations,
+            "cost": cost,
+            "unit": unit,
+        }),
         RunState::Done { outcome, output } => json!({
             "status": "done",
             "outcome": outcome_to_json(outcome),
@@ -1304,6 +1359,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         claim(crate::wire::PLUGINS_GRAMMAR, &mut |action, args| {
             external.invoke(action, args)
@@ -1402,6 +1458,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let mut ask = |opener: u64| {
             external.invoke(
@@ -1441,6 +1498,7 @@ mod tests {
         let mut external = PluginsExternal::new(
             workspace,
             Arc::new(Mutex::new(RunRegistry::default())),
+            None,
             None,
             None,
             None,

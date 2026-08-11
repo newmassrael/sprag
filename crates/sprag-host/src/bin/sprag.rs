@@ -4268,7 +4268,14 @@ fn render_run(run: &Value) -> String {
     let state = &run["state"];
     let head = format!("run {id}  {label}{opener}\n");
     match state["status"].as_str() {
-        Some("running") => format!("{head}  running\n"),
+        // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
+        // showing the same numbers is the answer to that question, and `running` alone was not.
+        Some("running") => format!(
+            "{head}  running — {} iterations, {} {} so far\n",
+            state["iterations"].as_u64().unwrap_or_default(),
+            state["cost"].as_u64().unwrap_or_default(),
+            state["unit"].as_str().unwrap_or("steps"),
+        ),
         Some("done") => {
             let outcome = &state["outcome"];
             let unit = outcome["unit"].as_str().unwrap_or("steps");
