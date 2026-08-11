@@ -109,6 +109,23 @@ pub struct Missing {
     ///
     /// Only the top level of `result` is stripped, which is where an additive key goes.
     pub answer_keys: Vec<String>,
+    /// It answers a key this build also knows, with a DIFFERENT VALUE.
+    ///
+    /// # ⚠⚠ Why a different value belongs beside the absences
+    ///
+    /// The other shapes here all ask *"what happens when the daemon has less than this build
+    /// expects?"*. This one asks the question those cannot reach: **is the client reading this fact
+    /// from the daemon at all, or from a constant it compiled?** No absence can tell those apart,
+    /// because a client using its own constant survives every absence perfectly.
+    ///
+    /// It is the shape a POLICY needs. The agent-facing mouth holds an agent to *the daemon's*
+    /// published guardrail defaults, and says so in its own documentation — but the daemon and the
+    /// mouth are built from the same workspace, so a mouth that had quietly compiled the constant
+    /// in would agree with every real daemon this repository can start. A peer that publishes a
+    /// DIFFERENT ceiling is the only witness that can disagree.
+    ///
+    /// Top level of `result`, like [`answer_keys`](Self::answer_keys).
+    pub answer_values: Vec<(String, Value)>,
 }
 
 impl Missing {
@@ -121,6 +138,7 @@ impl Missing {
             refuses_without_reason: false,
             paths: Vec::new(),
             answer_keys: Vec::new(),
+            answer_values: Vec::new(),
         }
     }
 
@@ -133,6 +151,7 @@ impl Missing {
             refuses_without_reason: false,
             paths: Vec::new(),
             answer_keys: Vec::new(),
+            answer_values: Vec::new(),
         }
     }
 
@@ -145,6 +164,7 @@ impl Missing {
             refuses_without_reason: false,
             paths: Vec::new(),
             answer_keys: Vec::new(),
+            answer_values: Vec::new(),
         }
     }
 
@@ -161,6 +181,7 @@ impl Missing {
             refuses_without_reason: true,
             paths: Vec::new(),
             answer_keys: Vec::new(),
+            answer_values: Vec::new(),
         }
     }
 
@@ -174,6 +195,7 @@ impl Missing {
             refuses_without_reason: false,
             paths: paths.to_vec(),
             answer_keys: Vec::new(),
+            answer_values: Vec::new(),
         }
     }
 
@@ -191,14 +213,39 @@ impl Missing {
             refuses_without_reason: false,
             paths: Vec::new(),
             answer_keys: keys.to_vec(),
+            answer_values: Vec::new(),
         }
     }
 
-    /// `frame` with every key this older daemon does not send taken out of its `result` — the reply
-    /// half of [`refusal`](Self::refusal), and [`None`] when nothing was removed so the pump can
-    /// forward the ORIGINAL bytes rather than a re-serialisation of them.
-    fn stripped(&self, frame: &str) -> Option<String> {
-        if self.answer_keys.is_empty() {
+    /// A daemon that PERFORMS every verb and answers one key with a value this build did not
+    /// choose — the *is the client reading me, or itself?* witness.
+    ///
+    /// See [`answer_values`](Missing::answer_values) for why no absence can ask that question.
+    #[must_use]
+    pub fn answering(fields: &[(&str, Value)]) -> Self {
+        Self {
+            slots: false,
+            actions: false,
+            refuses_without_reason: false,
+            paths: Vec::new(),
+            answer_keys: Vec::new(),
+            answer_values: fields
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                .collect(),
+        }
+    }
+
+    /// `frame` with this older daemon's edits applied to its `result`: keys it does not send taken
+    /// out, keys it answers differently replaced. The reply half of [`refusal`](Self::refusal), and
+    /// [`None`] when nothing changed so the pump can forward the ORIGINAL bytes rather than a
+    /// re-serialisation of them.
+    ///
+    /// ⚠ A REPLACEMENT ONLY REPLACES, never inserts. A peer that added a key the daemon behind it
+    /// did not send would be a NEWER daemon wearing this crate's name, and every sentence this
+    /// module is written in would stop being true of it.
+    fn edited(&self, frame: &str) -> Option<String> {
+        if self.answer_keys.is_empty() && self.answer_values.is_empty() {
             return None;
         }
         let mut reply: Value = serde_json::from_str(frame).ok()?;
@@ -208,7 +255,17 @@ impl Missing {
             .iter()
             .filter(|key| result.remove(key.as_str()).is_some())
             .count();
-        (removed > 0).then(|| reply.to_string())
+        let replaced = self
+            .answer_values
+            .iter()
+            .filter(|(key, value)| {
+                result
+                    .get_mut(key.as_str())
+                    .map(|held| *held = value.clone())
+                    .is_some()
+            })
+            .count();
+        (removed + replaced > 0).then(|| reply.to_string())
     }
 
     /// The reply this peer gives one request, or [`None`] to pass it on / answer it normally.
@@ -447,7 +504,7 @@ fn relay(conn: &Served, upstream: &Path, missing: &Missing) {
             // policy names a key: an untouched frame is forwarded as the bytes that arrived, so a
             // peer with no answer-key policy is byte-transparent (which every other test here
             // depends on).
-            let line = policy.stripped(&line).unwrap_or(line);
+            let line = policy.edited(&line).unwrap_or(line);
             let mut out = pumping.lock().expect("the peer's writer");
             if writeln!(out, "{line}").is_err() {
                 return;
@@ -554,6 +611,68 @@ mod tests {
         assert!(
             answered.is_ok(),
             "a peer missing only slots must not refuse an action: {answered:?}",
+        );
+    }
+
+    /// ⚠⚠ **THE EDITING POLICY, DRIVEN** — same rule as the refusal gate above, applied to the half
+    /// that rewrites a real daemon's reply instead of standing in for one.
+    ///
+    /// Four claims, and the last two are what keep this peer honest about being OLD:
+    ///
+    /// * a key it does not send is REMOVED;
+    /// * a key it answers differently is REPLACED, not removed;
+    /// * a key the daemon behind it never sent is NOT INVENTED — a peer that added one would be a
+    ///   NEWER daemon wearing this crate's name, and every sentence in this module would stop being
+    ///   true of it;
+    /// * a frame the policy does not touch answers [`None`], so the pump forwards the ORIGINAL
+    ///   bytes. Every other test in this workspace that puts a proxy in front of a daemon depends
+    ///   on that byte-transparency.
+    #[test]
+    fn a_peer_edits_exactly_the_answer_keys_its_policy_names() {
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "max_iterations": 100, "max_seconds": 3600, "max_bytes": 65536 },
+        })
+        .to_string();
+
+        let replaced = Missing::answering(&[("max_seconds", json!(5))])
+            .edited(&frame)
+            .expect("a key this peer answers differently is an edit");
+        let result: Value = serde_json::from_str(&replaced).expect("still a frame");
+        assert_eq!(
+            result["result"]["max_seconds"],
+            json!(5),
+            "the peer publishes its OWN value for the key it names: {replaced}",
+        );
+        assert_eq!(
+            result["result"]["max_iterations"],
+            json!(100),
+            "and leaves every other key exactly as the daemon sent it: {replaced}",
+        );
+
+        // ⚠ IT NEVER INVENTS. A key the daemon behind it did not send stays absent, so this peer
+        // can only ever be older than the build it fronts, never newer.
+        assert!(
+            Missing::answering(&[("max_dollars", json!(9))])
+                .edited(&frame)
+                .is_none(),
+            "a replacement that had nothing to replace must not add the key — nor claim an edit",
+        );
+
+        // The two policies compose, and removal is still removal.
+        let mut both = Missing::answer_keys(&["max_bytes".to_owned()]);
+        both.answer_values = vec![("max_iterations".to_owned(), json!(7))];
+        let edited: Value =
+            serde_json::from_str(&both.edited(&frame).expect("two edits")).expect("still a frame");
+        assert!(edited["result"].get("max_bytes").is_none(), "{edited}");
+        assert_eq!(edited["result"]["max_iterations"], json!(7), "{edited}");
+
+        // THE CONTROL: a policy naming nothing edits nothing, so the pump forwards the bytes that
+        // arrived. Without this, "it edits X" would be a claim about every frame.
+        assert!(
+            Missing::actions().edited(&frame).is_none(),
+            "a peer with no answer policy is byte-transparent",
         );
     }
 
