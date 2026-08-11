@@ -207,10 +207,112 @@ pub enum PaneError {
 /// things to tell a caller: the first is about their DEPLOYMENT and the second about their PANE.
 /// Carried as one `None`, a pane that died mid-wait reported the first — a false statement about a
 /// build that was working perfectly.
+/// The names a foreground job's LEADER answers to, and the one place that decides whether it
+/// answers to a given one.
+///
+/// # ⚠⚠ Two names, because the two sources honestly disagree
+///
+/// The KERNEL's name for a process is the basename of the file it exec'd, capped (15 bytes on
+/// Linux, `MAXCOMLEN` on macOS) and rewritable by the process itself. `argv[0]` is what its PARENT
+/// called it. They are different facts and they diverge in ordinary cases, not exotic ones:
+///
+/// * `exec awk` where `/usr/bin/awk` is `mawk` gives a leader the kernel calls `mawk` whose
+///   `argv[0]` is `awk`, and a caller who wrote `awk` is not wrong;
+/// * `/bin/sh` on macOS is `bash`, so the SAME pane, spawned the same way, has a leader the kernel
+///   calls `bash` there and `sh` on Linux.
+///
+/// # ⚠⚠ Why this is a TYPE and not two comparisons
+///
+/// [`ReadyWhen::Runs`] accepted EITHER name — it has to, or a caller would
+/// have to know which spelling their platform packages — while [`PaneDoing::Job`] reported only the
+/// kernel's. So the refusal named a program the caller never launched (`"bash"` for a pane they
+/// opened as `/bin/sh`) and named a DIFFERENT one on each platform, which is how a gate over it came
+/// to assert a shell's spelling and fail on the other runner. Matching and reporting read different
+/// halves of one fact because they were different code. Here they are one type, so they cannot
+/// disagree again.
+///
+/// ⚠ EXACT, never a prefix. A prefix match is a silent merge — `claude` accepting `claude-relay` is
+/// a run that drives the wrong program and reports success.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobLeader {
+    /// What the KERNEL calls it. Always present: every process has one.
+    kernel: String,
+    /// The basename of `argv[0]` — what the leader's parent called it — when it has one.
+    ///
+    /// `None` is a FACT and not a failure: a zombie's argv is released while its entry lives on,
+    /// and a kernel thread never had one. The basename rather than the whole word so that
+    /// `/usr/local/bin/claude` and `claude` are one answer, which is the same rule
+    /// [`launch_args`](../../sprag_host/hooks/fn.launch_args.html) decides an agent by.
+    invoked: Option<String>,
+}
+
+impl JobLeader {
+    /// Read both names off a job's leader.
+    #[must_use]
+    pub fn of(process: &JobProcess) -> Self {
+        Self {
+            kernel: process.name.clone(),
+            invoked: process.argv.first().and_then(|arg0| {
+                std::path::Path::new(arg0)
+                    .file_name()
+                    .map(|base| base.to_string_lossy().into_owned())
+            }),
+        }
+    }
+
+    /// A leader that answers to exactly ONE name.
+    ///
+    /// For a caller holding a name with no process table behind it — and it is deliberately the
+    /// impoverished case rather than the normal one: [`of`](Self::of) is how a real job is read, and
+    /// a leader built here cannot answer to the OTHER spelling because nothing told it one.
+    #[must_use]
+    pub const fn known_as(kernel: String) -> Self {
+        Self {
+            kernel,
+            invoked: None,
+        }
+    }
+
+    /// Whether this leader answers to `want` — **the whole of what `Runs` decides**.
+    #[must_use]
+    pub fn answers_to(&self, want: &str) -> bool {
+        self.kernel == want || self.invoked.as_deref() == Some(want)
+    }
+
+    /// The spelling to LEAD a report with: what the leader was invoked as, else the kernel's name.
+    ///
+    /// `argv[0]` first because it is the caller's own vocabulary — the word they typed or the path
+    /// they launched — and a correction phrased in a word they never wrote is a correction they
+    /// cannot act on. The kernel's name is not dropped; [`Display`](std::fmt::Display) carries it
+    /// whenever the two disagree.
+    #[must_use]
+    pub fn named(&self) -> &str {
+        self.invoked.as_deref().unwrap_or(&self.kernel)
+    }
+}
+
+impl std::fmt::Display for JobLeader {
+    /// The leader as a person reads it inside a failure sentence: `"sh"`, or `"sh" (which the
+    /// kernel calls "bash")` when the two sources disagree.
+    ///
+    /// Both names when they differ, because either is a spelling
+    /// [`ReadyWhen::Runs`] accepts, and a reader handed one of them cannot
+    /// tell whether the other would have worked.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.named())?;
+        match &self.invoked {
+            Some(invoked) if invoked != &self.kernel => {
+                write!(f, " (which the kernel calls {:?})", self.kernel)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneDoing {
-    /// A job owns the pane's terminal; this is its leader's name.
-    Job(String),
+    /// A job owns the pane's terminal; this is the leader it is led by.
+    Job(JobLeader),
     /// The host CAN see the process table and nothing owns this pane's terminal — its child has
     /// exited, or the pane never had one.
     Nothing,
@@ -218,12 +320,28 @@ pub enum PaneDoing {
     Unknown,
 }
 
+impl PaneDoing {
+    /// The job's leader, when a job owns the terminal at all.
+    ///
+    /// The accessor a caller needs to ask the diagnostic a QUESTION — *"is the thing that owns my
+    /// pane the thing I launched?"* — rather than compare it to a spelling. The two other arms are
+    /// absences with no leader to hand back, and they are why this is an `Option` rather than a
+    /// panic.
+    #[must_use]
+    pub const fn leader(&self) -> Option<&JobLeader> {
+        match self {
+            Self::Job(leader) => Some(leader),
+            Self::Nothing | Self::Unknown => None,
+        }
+    }
+}
+
 impl std::fmt::Display for PaneDoing {
     /// The clause this becomes inside a [`PaneError::NeverReady`] sentence. ⚠ Each reads as the
     /// END of *"…, so nothing was injected"*, so each starts mid-sentence by design.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Job(leader) => write!(f, "; its terminal belonged to {leader:?} instead"),
+            Self::Job(leader) => write!(f, "; its terminal belonged to {leader} instead"),
             Self::Nothing => write!(
                 f,
                 "; nothing owned its terminal — the pane's child had gone"
@@ -868,6 +986,48 @@ mod tests {
             .spawn(command, "cat".to_string(), cols, rows)
             .expect("spawn pane");
         workspace
+    }
+
+    /// ⚠⚠ **A LEADER READS AS ONE NAME WHEN ITS TWO AGREE, AND AS BOTH WHEN THEY DO NOT.**
+    ///
+    /// The half of the fix that is about not breaking anything: a leader whose kernel name and
+    /// `argv[0]` say the same thing — which is nearly every process — must read exactly as it did
+    /// when [`PaneDoing::Job`] carried a bare `String`, or every failure sentence an agent has ever
+    /// been shown changes shape for a fact that did not change.
+    ///
+    /// The other half is the correction itself: when they DISAGREE the reader is handed both, in
+    /// the order that puts the caller's own word first. Reading `"cat"` alone was what let a macOS
+    /// caller be told their `/bin/sh` pane belonged to `"bash"`.
+    ///
+    /// ⚠ Driven through [`PaneDoing`]'s own sentence rather than [`JobLeader`]'s, because the
+    /// sentence is the published surface and a `Display` that is right in isolation proves nothing
+    /// about the text that reaches an agent.
+    #[test]
+    fn a_job_reads_as_one_name_when_its_two_agree_and_as_both_when_they_do_not() {
+        let leader = |name: &str, argv: &[&str]| {
+            JobLeader::of(&JobProcess {
+                pid: 11,
+                name: name.to_string(),
+                argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
+            })
+        };
+
+        assert_eq!(
+            PaneDoing::Job(leader("cat", &["cat"])).to_string(),
+            "; its terminal belonged to \"cat\" instead",
+            "the ordinary case is UNCHANGED — one name, spelled once",
+        );
+        assert_eq!(
+            PaneDoing::Job(leader("cat", &[])).to_string(),
+            "; its terminal belonged to \"cat\" instead",
+            "and a job with no argv at all has one name to give, not an empty second one",
+        );
+        assert_eq!(
+            PaneDoing::Job(leader("bash", &["/bin/sh", "-c", "cat | tr a-z A-Z"])).to_string(),
+            "; its terminal belonged to \"sh\" (which the kernel calls \"bash\") instead",
+            "⚠⚠ THE macOS CASE, VERBATIM: the caller launched `/bin/sh` and must be told `sh` \
+             first — and `bash` too, because that is the other spelling `Runs` accepts",
+        );
     }
 
     /// A pane a PLUGIN opens lands in the cgroup its pool's window names.

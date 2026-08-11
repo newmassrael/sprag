@@ -31,3 +31,50 @@
 ///
 /// ⚠ Belongs on the READER, before the `&`: `while read x; do …; done </dev/tty &`.
 pub(crate) const STANDIN_READS_TTY: &str = "</dev/tty";
+
+/// Assert that a readiness barrier REFUSED for `wanted`, and that the job it blames is the one the
+/// pane was LAUNCHED as.
+///
+/// # ⚠⚠ Why not `assert_eq!` against the whole error
+///
+/// That is what these gates did, and it made every one of them assert a PLATFORM's spelling. A pane
+/// spawned as `/bin/sh` is led by a process the kernel calls `sh` on Linux and `bash` on macOS, so a
+/// gate comparing the error to `Job("sh")` passes on one runner and fails on the other — which is
+/// how this workspace found the divergence, one red at a time, after a push.
+///
+/// The spelling was never the claim. The claim is that **the refusal names the program the caller
+/// launched, in the caller's own word** — and [`JobLeader::answers_to`] is what the product itself
+/// decides that with, so a gate written this way measures the product's answer rather than a
+/// distribution's packaging.
+/// ⚠ Takes the FAILURE rather than the outcome, because a barrier's refusal reaches its two callers
+/// in two shapes — `Err` from [`Readiness::reached`](crate::Readiness::reached), and an
+/// `Outcome::failure` from a run — and a gate for either is asking the same question.
+pub(crate) fn refused_naming(
+    failure: Option<&crate::access::PaneError>,
+    wanted: &crate::ReadyWhen,
+    launched_as: &str,
+    why: &str,
+) {
+    let Some(crate::access::PaneError::NeverReady {
+        wanted: asked,
+        instead,
+    }) = failure
+    else {
+        panic!(
+            "{why} — but the barrier did not refuse for a readiness it never reached: {failure:?}"
+        );
+    };
+    assert_eq!(
+        asked, wanted,
+        "{why} — and the refusal hands back the WHOLE question, or a caller cannot tell which of \
+         the kinds they got wrong",
+    );
+    let Some(leader) = instead.leader() else {
+        panic!("{why} — but nothing was reported as owning the pane's terminal: {instead}");
+    };
+    assert!(
+        leader.answers_to(launched_as),
+        "{why} — the refusal blames {leader} on a pane launched as {launched_as:?}, and a \
+         correction phrased in a word the caller never wrote is one they cannot act on",
+    );
+}

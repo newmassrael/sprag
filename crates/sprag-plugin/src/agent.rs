@@ -601,12 +601,10 @@ mod tests {
             OutcomeState::Failed,
             "a pane that never became the tool is a FAILURE of the ask: {outcome:?}",
         );
-        assert_eq!(
-            outcome.failure,
-            Some(PaneError::NeverReady {
-                wanted: ReadyWhen::Runs("claude".to_string()),
-                instead: crate::access::PaneDoing::Job("cat".to_string()),
-            }),
+        crate::testing::refused_naming(
+            outcome.failure.as_ref(),
+            &ReadyWhen::Runs("claude".to_string()),
+            "cat",
             "and it names the question AND what the pane was running instead",
         );
         assert_eq!(

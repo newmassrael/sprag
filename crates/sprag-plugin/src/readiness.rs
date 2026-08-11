@@ -43,7 +43,7 @@ use std::time::Duration;
 use sprag_detect::AgentState;
 use sprag_terminal::PaneId;
 
-use crate::access::{PaneAccess, PaneDoing, PaneError};
+use crate::access::{JobLeader, PaneAccess, PaneDoing, PaneError};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// The bound a readiness wait is given when the caller names none.
@@ -346,7 +346,7 @@ impl Readiness {
             ReadyWhen::Runs(name) => panes
                 .foreground_job()
                 .and_then(|jobs| jobs.pane_foreground_leader(pane))
-                .is_some_and(|leader| leader_is_named(&leader, name)),
+                .is_some_and(|leader| JobLeader::of(&leader).answers_to(name)),
             // ⚠⚠ IDLE AND NAMED, both halves from ONE observation. `Working` is the state `Runs`
             // cannot tell from readiness, which is why this kind exists; `Blocked` is waiting for
             // an answer to its OWN question, where a fresh prompt answers the wrong thing; and an
@@ -469,34 +469,22 @@ impl Readiness {
                 // ⚠ THE ABSENCE OF THE CAPABILITY AND THE ABSENCE OF A JOB ARE DIFFERENT ANSWERS —
                 // one is about this build, the other about this pane. See [`PaneDoing`].
                 instead: panes.foreground_job().map_or(PaneDoing::Unknown, |jobs| {
-                    jobs.pane_foreground_leader(pane)
-                        .map_or(PaneDoing::Nothing, |leader| PaneDoing::Job(leader.name))
+                    jobs.pane_foreground_leader(pane).map_or(
+                        PaneDoing::Nothing,
+                        // ⚠⚠ THE SAME TYPE THE PREDICATE DECIDED WITH. Reporting one of the two
+                        // names it accepts is what named `"bash"` at a caller who launched
+                        // `/bin/sh`, and it differed by platform. See [`JobLeader`].
+                        |leader| PaneDoing::Job(JobLeader::of(&leader)),
+                    )
                 }),
             }),
         }
     }
 }
 
-/// Whether a foreground job's leader answers to `want`.
-///
-/// # ⚠ Two names, because the two sources honestly disagree
-///
-/// The kernel's name for a process is the basename of the FILE it exec'd, capped at 15 bytes and
-/// rewritable by the process itself; `argv[0]` is what its parent called it. `exec awk` on a box
-/// where `/usr/bin/awk` is `mawk` produces a leader named `mawk` whose `argv[0]` is `awk`, and a
-/// caller who wrote `awk` is not wrong. Accepting either is the answer that does not require them
-/// to know which spelling their platform packages.
-///
-/// ⚠ EXACT, never a prefix. A prefix match is a silent merge — `claude` accepting `claude-relay`
-/// is a run that drives the wrong program and reports success.
-fn leader_is_named(leader: &sprag_terminal::JobProcess, want: &str) -> bool {
-    leader.name == want
-        || leader.argv.first().is_some_and(|arg0| {
-            std::path::Path::new(arg0)
-                .file_name()
-                .is_some_and(|base| base == want)
-        })
-}
+// ⚠ WHAT `Runs` DECIDES WITH LIVES ON [`JobLeader`], beside the report that has to agree with it.
+// It was a private function here, and the report was a field read in `access.rs`, which is how the
+// two came to answer differently for the same job.
 
 #[cfg(test)]
 mod tests {
@@ -657,12 +645,10 @@ mod tests {
         );
 
         // HALF 2: working is not waiting.
-        assert_eq!(
-            settled(&access),
-            Err(PaneError::NeverReady {
-                wanted: ReadyWhen::Settles("claude".to_string()),
-                instead: PaneDoing::Job("tr".to_string()),
-            }),
+        crate::testing::refused_naming(
+            settled(&access).as_ref().err(),
+            &ReadyWhen::Settles("claude".to_string()),
+            "tr",
             "an agent that is WORKING is not ready to be typed at, however firmly it owns the \
              terminal",
         );
@@ -762,12 +748,10 @@ mod tests {
             waiting.join().expect("the barrier thread")
         });
 
-        assert_eq!(
-            outcome,
-            Err(PaneError::NeverReady {
-                wanted: ReadyWhen::Prints("BANNER".to_string()),
-                instead: PaneDoing::Job("cat".to_string()),
-            }),
+        crate::testing::refused_naming(
+            outcome.as_ref().err(),
+            &ReadyWhen::Prints("BANNER".to_string()),
+            "cat",
             "text that was on screen when the barrier armed is NOT the pane printing it, however \
              many times the screen is re-laid out under it",
         );
@@ -893,24 +877,107 @@ mod tests {
                 .expect("spawn pane")
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        assert_eq!(
+        crate::testing::refused_naming(
             Readiness::new(
                 Some(ReadyWhen::Runs("tr".to_string())),
                 Some(Duration::from_millis(400)),
             )
-            .reached(&access, pane, &RunContext::uncancellable()),
-            Err(PaneError::NeverReady {
-                wanted: ReadyWhen::Runs("tr".to_string()),
-                instead: PaneDoing::Job("sh".to_string()),
-            }),
+            .reached(&access, pane, &RunContext::uncancellable())
+            .as_ref()
+            .err(),
+            &ReadyWhen::Runs("tr".to_string()),
+            "sh",
             "`tr` is a MEMBER of the job, not its leader — and the failure names the leader, which \
              is what tells a caller they named the wrong end of their pipeline",
         );
     }
 
+    /// ⚠⚠⚠ **THE TWO NAMES DISAGREE ON A REAL PROCESS, AND THE REFUSAL HAS TO CARRY BOTH** — the
+    /// macOS red, forced on the runner that was green.
+    ///
+    /// # What was wrong, and why no gate here could see it
+    ///
+    /// [`ReadyWhen::Runs`] accepts EITHER the kernel's name for the leader or the basename of its
+    /// `argv[0]`, because the two sources honestly disagree and a caller cannot be asked which
+    /// spelling their platform packages. [`PaneDoing::Job`] then reported only the KERNEL's. So a
+    /// refusal named a program the caller never launched, and named a different one per platform:
+    /// `/bin/sh` is `bash` on macOS, so a pane spawned identically was blamed on `"sh"` here and
+    /// `"bash"` there. Every gate in this crate compared the whole error against a literal, so each
+    /// of them had a platform's shell spelling baked in, and the divergence could only ever be
+    /// discovered by pushing.
+    ///
+    /// # Forcing it, rather than waiting for the other runner
+    ///
+    /// `exec -a` gives a process an `argv[0]` unrelated to the file it runs — measured: comm
+    /// `sleep`, `argv[0]` `shim` — which is macOS's `/bin/sh` case exactly, reproduced on Linux and
+    /// true on both. So this gate is not about macOS: it is about a leader whose two names differ,
+    /// which any wrapper, symlink or `busybox`-style multi-call binary produces.
+    ///
+    /// ⚠ REVERT-PROOF: make [`JobLeader::named`] answer the kernel's name and the last assertion
+    /// fails, which is the state the product was in.
+    #[test]
+    fn a_leader_whose_two_names_differ_answers_to_both_and_the_refusal_carries_both() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let pane = {
+            // `exec -a` is bash's, and `/bin/bash` is present on both runners. A shell that lacks
+            // it must FAIL here rather than skip: a gate that quietly does not run is the thing
+            // this round is paying off.
+            let mut command = CommandBuilder::new("/bin/bash");
+            command.arg("-c");
+            command.arg("exec -a shim /bin/cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "shim".to_string(), 20, 4)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let asks = |name: &str, within: Duration| {
+            Readiness::new(Some(ReadyWhen::Runs(name.to_string())), Some(within)).reached(
+                &access,
+                pane,
+                &RunContext::uncancellable(),
+            )
+        };
+
+        assert_eq!(
+            asks("shim", Duration::from_secs(5)),
+            Ok(Reached::Yes),
+            "the name the caller LAUNCHED it under answers — this is the arm that carries macOS, \
+             where the shell a pane is spawned as is not the file the kernel names",
+        );
+        assert_eq!(
+            asks("cat", Duration::from_millis(400)),
+            Ok(Reached::Yes),
+            "and so does the kernel's, for a caller who read it off `ps` — accepting only one of \
+             the two would make the answer depend on which they had looked at",
+        );
+
+        let refused = asks("tr", Duration::from_millis(400));
+        crate::testing::refused_naming(
+            refused.as_ref().err(),
+            &ReadyWhen::Runs("tr".to_string()),
+            "shim",
+            "the refusal is about a leader that DOES answer to what the pane was launched as",
+        );
+        let sentence = refused.expect_err("the barrier refused").to_string();
+        assert!(
+            sentence.contains("\"shim\""),
+            "⚠⚠ THE CALLER'S OWN WORD LEADS THE CORRECTION. Reporting only the kernel's name is \
+             what told a macOS caller their `/bin/sh` pane belonged to \"bash\": {sentence:?}",
+        );
+        assert!(
+            sentence.contains("\"cat\""),
+            "and the kernel's name is not DROPPED either — it is the other spelling `Runs` would \
+             have accepted, and a reader handed one of them cannot tell the other exists: \
+             {sentence:?}",
+        );
+    }
+
     /// ⚠⚠ **THE TWO NAMES A LEADER HAS, AND THE MERGE THAT MUST NOT HAPPEN.**
     ///
-    /// [`leader_is_named`] is where [`ReadyWhen::Runs`] decides, and two of its claims are reachable
+    /// [`JobLeader::answers_to`] is where [`ReadyWhen::Runs`] decides, and two of its claims are reachable
     /// from no pty fixture in this crate: every program the fixtures start (`tr`, `cat`) has a
     /// kernel name equal to its `argv[0]`, so the second arm is never taken and a prefix match would
     /// pass every one of them. Both are ordinary on a real box — `exec awk` where `/usr/bin/awk` is
@@ -927,43 +994,45 @@ mod tests {
     ///    released — still answers by its kernel name rather than panicking on an empty vector.
     #[test]
     fn a_leader_answers_to_its_kernel_name_or_its_argv_basename_and_to_neither_by_prefix() {
-        let leader = |name: &str, argv: &[&str]| JobProcess {
-            pid: 4242,
-            name: name.to_string(),
-            argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
+        let leader = |name: &str, argv: &[&str]| {
+            JobLeader::of(&JobProcess {
+                pid: 4242,
+                name: name.to_string(),
+                argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
+            })
         };
 
         let awk = leader("mawk", &["awk", "{print}"]);
         assert!(
-            leader_is_named(&awk, "mawk"),
+            awk.answers_to("mawk"),
             "the kernel's name for the process answers",
         );
         assert!(
-            leader_is_named(&awk, "awk"),
+            awk.answers_to("awk"),
             "and so does what its parent called it — a caller who wrote `awk` on a box that \
              packages `mawk` is not wrong, and cannot be expected to know",
         );
 
         let absolute = leader("claude", &["/usr/local/bin/claude", "--print"]);
         assert!(
-            leader_is_named(&absolute, "claude"),
+            absolute.answers_to("claude"),
             "an absolute `argv[0]` is matched by its BASENAME, or naming a program would mean \
              knowing where it was installed",
         );
 
         let relay = leader("claude-relay", &["claude-relay"]);
         assert!(
-            !leader_is_named(&relay, "claude"),
+            !relay.answers_to("claude"),
             "⚠⚠ A PREFIX IS NOT A MATCH: `claude` accepting `claude-relay` is a run that drives \
              the wrong program and reports success",
         );
         assert!(
-            !leader_is_named(&leader("cl", &["cl"]), "claude"),
+            !leader("cl", &["cl"]).answers_to("claude"),
             "and neither is the other direction",
         );
 
         assert!(
-            leader_is_named(&leader("cat", &[]), "cat"),
+            leader("cat", &[]).answers_to("cat"),
             "a job with no argv at all — a zombie's is released at exit — still answers by the \
              name the kernel keeps",
         );

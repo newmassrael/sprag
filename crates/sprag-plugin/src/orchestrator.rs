@@ -12,7 +12,7 @@ use std::time::Duration;
 use sprag_terminal::PaneId;
 
 #[cfg(test)]
-use crate::access::PaneDoing;
+use crate::access::{JobLeader, PaneDoing};
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
@@ -832,12 +832,10 @@ mod tests {
             "a pane running `cat` is not ready for `tr`, however many times the word is on its \
              screen: {outcome:?}",
         );
-        assert_eq!(
-            outcome.failure,
-            Some(PaneError::NeverReady {
-                wanted: ReadyWhen::Runs("tr".to_string()),
-                instead: PaneDoing::Job("cat".to_string()),
-            }),
+        crate::testing::refused_naming(
+            outcome.failure.as_ref(),
+            &ReadyWhen::Runs("tr".to_string()),
+            "cat",
             "and the failure NAMES what owned the terminal instead, which is the whole correction \
              for a caller who guessed the program's name wrong",
         );
@@ -928,15 +926,13 @@ mod tests {
             "a pane that never becomes ready is a FAILURE of the run, not a ceiling it reached: \
              {outcome:?}",
         );
-        assert_eq!(
-            outcome.failure,
-            Some(PaneError::NeverReady {
-                wanted: ReadyWhen::Prints("NEVER-PRINTED".to_string()),
-                // ⚠ The pane runs `exec cat`, so `cat` IS the job that owns its terminal — a
-                // caller reading this learns the pane was never going to print, which is the
-                // correction, and it arrives without them reading the screen.
-                instead: PaneDoing::Job("cat".to_string()),
-            }),
+        crate::testing::refused_naming(
+            outcome.failure.as_ref(),
+            &ReadyWhen::Prints("NEVER-PRINTED".to_string()),
+            // ⚠ The pane runs `exec cat`, so `cat` IS the job that owns its terminal — a caller
+            // reading this learns the pane was never going to print, which is the correction, and
+            // it arrives without them reading the screen.
+            "cat",
             "and the cause is typed, carries the QUESTION the caller asked, and names what the \
              pane was running instead",
         );
@@ -966,7 +962,7 @@ mod tests {
             PaneError::Spawn("No such file or directory".to_string()),
             PaneError::NeverReady {
                 wanted: ReadyWhen::Prints("PEER-UP".to_string()),
-                instead: PaneDoing::Job("sh".to_string()),
+                instead: PaneDoing::Job(JobLeader::known_as("sh".to_string())),
             },
         ];
         for error in &every {
@@ -996,7 +992,7 @@ mod tests {
         );
         let never_ready = PaneError::NeverReady {
             wanted: ReadyWhen::Runs("claude".to_string()),
-            instead: PaneDoing::Job("sh".to_string()),
+            instead: PaneDoing::Job(JobLeader::known_as("sh".to_string())),
         }
         .to_string();
         assert!(

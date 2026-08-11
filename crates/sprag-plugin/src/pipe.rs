@@ -33,8 +33,6 @@ use std::time::Duration;
 
 use sprag_terminal::PaneId;
 
-#[cfg(test)]
-use crate::access::PaneDoing;
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
@@ -954,15 +952,13 @@ mod tests {
             OutcomeState::Failed,
             "a destination that never came up FAILS the relay: {outcome:?}",
         );
-        assert_eq!(
-            outcome.failure,
-            Some(PaneError::NeverReady {
-                wanted: ReadyWhen::Prints("NEVER-PRINTED".to_string()),
-                // ⚠ And what the destination WAS running — `exec cat`, so this is the pane's own
-                // program and not a shell that had not started it yet. The diagnostic reaches the
-                // relay's failure too, which is the half a fix applied to one consumer would miss.
-                instead: PaneDoing::Job("cat".to_string()),
-            }),
+        crate::testing::refused_naming(
+            outcome.failure.as_ref(),
+            &ReadyWhen::Prints("NEVER-PRINTED".to_string()),
+            // ⚠ And what the destination WAS running — `exec cat`, so this is the pane's own
+            // program and not a shell that had not started it yet. The diagnostic reaches the
+            // relay's failure too, which is the half a fix applied to one consumer would miss.
+            "cat",
             "and the cause names the question the caller got wrong, and what the pane was doing",
         );
         assert_eq!(
