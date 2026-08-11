@@ -20,7 +20,7 @@ use sprag_terminal::PaneId;
 
 #[cfg(test)]
 use crate::access::PaneDoing;
-use crate::access::{KeyStroke, PaneAccess, PaneError};
+use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
@@ -84,8 +84,9 @@ impl PipeSpec {
 pub struct Pipe {
     src: PaneId,
     dst: PaneId,
-    /// Last-relayed damage generation per source row.
-    consumed: Vec<u64>,
+    /// What each source row HELD when it was last relayed. ⚠ Text and not a damage generation:
+    /// a resize stamps every row, and this decides what to RE-INJECT. See [`RowTrail`].
+    consumed: RowTrail,
     /// The barrier the DESTINATION must clear before anything is typed into it.
     ready: Readiness,
 }
@@ -97,21 +98,13 @@ impl Pipe {
         Self {
             src: spec.src,
             dst: spec.dst,
-            consumed: Vec::new(),
+            consumed: RowTrail::default(),
             ready: Readiness::new(spec.ready_when, spec.ready_within),
         }
     }
 }
 
 impl Pipe {
-    /// Every row's damage generation on `pane`, or empty for a pane that is gone.
-    fn generations(panes: &dyn PaneAccess, pane: PaneId) -> Vec<u64> {
-        panes
-            .pane_rows(pane)
-            .map(|rows| rows.iter().map(|row| row.generation).collect())
-            .unwrap_or_default()
-    }
-
     /// What the destination has shown since `before`, given what was just written to it.
     ///
     /// # ⚠⚠ Why "a row changed" is not delivery
@@ -125,22 +118,14 @@ impl Pipe {
     /// The screen cannot prove a program consumed anything — nothing visible distinguishes `cat`
     /// writing the text back from the pty echoing it. What it CAN say is whether the destination
     /// produced anything OF ITS OWN, and the three answers are three different findings.
-    fn shown(panes: &dyn PaneAccess, pane: PaneId, before: &[u64], written: &str) -> Shown {
-        let Some(rows) = panes.pane_rows(pane) else {
-            return Shown::Nothing;
-        };
-        let changed: Vec<&str> = rows
-            .iter()
-            .enumerate()
-            .filter(|(i, row)| row.generation > before.get(*i).copied().unwrap_or(0))
-            .map(|(_, row)| row.text.trim())
-            .collect();
+    fn shown(panes: &dyn PaneAccess, pane: PaneId, before: &RowTrail, written: &str) -> Shown {
+        let changed = before.fresh(panes, pane);
         if changed.is_empty() {
             return Shown::Nothing;
         }
         if changed
             .iter()
-            .all(|line| line.is_empty() || written.contains(line))
+            .all(|line| line.trim().is_empty() || written.contains(line.trim()))
         {
             return Shown::OwnBytesBack;
         }
@@ -174,27 +159,20 @@ impl Plugin for Pipe {
                 .noting("the run ended while waiting for the destination to be ready"));
         }
 
-        let rows = panes.pane_rows(self.src).unwrap_or_default();
-        if self.consumed.len() < rows.len() {
-            self.consumed.resize(rows.len(), 0);
-        }
-        // Collect the text of rows newly damaged since the last relay, AS LINES.
+        // The source rows whose CONTENT is new since the last relay, AS LINES — and the cursor
+        // advances past them, so nothing is delivered twice.
         //
         // ⚠⚠ A ROW IS A LINE, AND IT HAS TO ARRIVE AS ONE. These were concatenated into a single
         // run-on string and written with no terminator, so a line-oriented destination — `read`,
         // a REPL, anything cooked — never saw a complete line and could not act on the relay at
         // all. Both of this plugin's gates passed anyway, because the pty's echo put the text on
         // the destination's screen and the check was looking at the screen.
-        let mut lines: Vec<String> = Vec::new();
-        for (i, row) in rows.iter().enumerate() {
-            if row.generation > self.consumed[i] {
-                let text = row.text.trim_end();
-                if !text.is_empty() {
-                    lines.push(text.to_string());
-                }
-                self.consumed[i] = row.generation;
-            }
-        }
+        let lines: Vec<String> = self
+            .consumed
+            .take_fresh(panes, self.src)
+            .into_iter()
+            .filter(|line| !line.is_empty())
+            .collect();
         if lines.is_empty() {
             return Ok(
                 Step::new(Cost::Bytes(0), Verdict::Continue).noting("nothing new on the source")
@@ -207,7 +185,7 @@ impl Plugin for Pipe {
         // charged the bytes, and answered `continue` forever. A pipe relaying into a pane that
         // swallows its input is indistinguishable, in every number a run reports, from one that is
         // working — so the failure this plugin exists to have is the failure it could not report.
-        let before = Self::generations(panes, self.dst);
+        let before = RowTrail::mark(panes, self.dst);
         // Each line followed by Enter — the terminator that makes it a line the destination's
         // reader can complete, exactly as the orchestrator terminates its stimulus.
         let mut keys = Vec::new();
@@ -253,6 +231,78 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread::sleep;
     use std::time::{Duration, Instant};
+
+    /// ⚠⚠ **A RESIZE RE-RELAYS THE WHOLE SCREEN** — the same paint-vs-content category error R361
+    /// removed from the readiness barrier, in the plugin where it is worst.
+    ///
+    /// This relay chooses WHICH ROWS TO RE-INJECT by damage generation, and a resize
+    /// (`Screen::reflowed`) stamps every row with a fresh one while the source produces nothing. So
+    /// a client ATTACHING to the session — which is what resizes panes, and the ordinary thing a
+    /// person does — makes the relay type the source's entire visible screen into the destination
+    /// a second time.
+    ///
+    /// **It is a delivery defect, not a cosmetic one**: the destination is a peer that ACTS on what
+    /// it receives, so the duplicate is re-executed, re-prompted or re-answered.
+    ///
+    /// Both halves: the step relays NOTHING (its own note says so) and the destination's screen
+    /// gained no second copy.
+    #[test]
+    fn a_resize_of_the_source_does_not_relay_its_whole_screen_again() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let spawn = |ws: &Arc<Mutex<Workspace>>| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("cat");
+            command.env("TERM", "dumb");
+            ws.lock()
+                .unwrap()
+                .spawn(command, "cat".to_string(), 20, 4)
+                .expect("spawn")
+        };
+        let src = spawn(&workspace);
+        let dst = spawn(&workspace);
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let mut seed = KeyStroke::text("relayme");
+        seed.push(KeyStroke::named("Enter"));
+        let _seeded = access.inject(src, &seed).expect("seed src");
+        assert!(wait_until(&access, src, "relayme"), "source never echoed");
+
+        let mut pipe = Pipe::new(PipeSpec::new(src, dst));
+        let run = RunContext::uncancellable();
+        let _first = pipe.step(&access, &run).expect("the first relay");
+        assert!(
+            wait_until(&access, dst, "relayme"),
+            "the fixture must actually deliver once, or the second half measures nothing",
+        );
+
+        // ⚠ The destination's screen BEFORE the event. Asserted as "unchanged" rather than as a
+        // count, because how many copies ONE delivery leaves is the fixture's business (a `cat`
+        // destination echoes AND copies) and this gate is about what the RESIZE adds.
+        let before = access.pane_collapsed(dst).unwrap_or_default();
+
+        // THE EVENT: a client attaches, so the pane is re-laid out. Nothing is produced.
+        workspace
+            .lock()
+            .unwrap()
+            .resize(src, 18, 4, (0, 0))
+            .expect("resize the source");
+        let after = pipe.step(&access, &run).expect("the step after the resize");
+
+        assert_eq!(
+            after.note.as_deref(),
+            Some("nothing new on the source"),
+            "a RESIZE is not the source producing output — every row's damage generation moved and \
+             not one byte was printed, so the relay must send nothing: {after:?}",
+        );
+        sleep(Duration::from_millis(200));
+        assert_eq!(
+            access.pane_collapsed(dst).unwrap_or_default(),
+            before,
+            "and the destination gained NOTHING — it is a peer that ACTS on what it receives, so a \
+             duplicate line is re-executed, re-prompted or re-answered",
+        );
+    }
 
     /// A workspace with two live `cat` panes, wrapped as pane-access.
     fn two_cat_panes() -> (WorkspacePaneAccess, PaneId, PaneId) {

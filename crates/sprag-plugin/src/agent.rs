@@ -28,7 +28,7 @@ use std::time::Duration;
 use sprag_input::Modifiers;
 use sprag_terminal::PaneId;
 
-use crate::access::{KeyStroke, PaneAccess, PaneError};
+use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
@@ -128,16 +128,15 @@ impl Agent {
         })
     }
 
-    /// Capture the rows damaged since `baseline` — the reply region — joined as
-    /// the response text.
-    fn capture(&self, panes: &dyn PaneAccess, baseline: &[u64]) -> String {
-        let rows = panes.pane_rows(self.pane).unwrap_or_default();
-        rows.iter()
-            .enumerate()
-            .filter(|(i, row)| row.generation > baseline.get(*i).copied().unwrap_or(0))
-            .map(|(_, row)| row.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
+    /// Capture the rows whose CONTENT is new since `baseline` — the reply region — joined as the
+    /// response text.
+    ///
+    /// ⚠⚠ Keyed on the text and not on damage generations, and here that is the difference between
+    /// a reply and a screenshot: this plugin publishes what it captures to the caller AS THE
+    /// MODEL'S ANSWER, and a resize stamps every row — so a client attaching mid-turn made the
+    /// whole screen, prompt and all, come back as the model's reply. See [`RowTrail`].
+    fn capture(&self, panes: &dyn PaneAccess, baseline: &RowTrail) -> String {
+        baseline.fresh(panes, self.pane).join("\n")
     }
 }
 
@@ -152,12 +151,9 @@ impl Plugin for Agent {
             ));
         }
 
-        // Baseline the damage generations before acting, so `capture` isolates
-        // this prompt's reply (and its cooked-mode echo) from prior content.
-        let baseline: Vec<u64> = panes
-            .pane_rows(self.pane)
-            .map(|rows| rows.iter().map(|row| row.generation).collect())
-            .unwrap_or_default();
+        // Baseline what the rows HOLD before acting, so `capture` isolates this prompt's reply
+        // (and its cooked-mode echo) from prior content.
+        let baseline = RowTrail::mark(panes, self.pane);
 
         let cost = panes.inject(self.pane, &self.prompt_keys())?.bytes();
 
@@ -214,6 +210,7 @@ mod tests {
     use crate::testing::STANDIN_READS_TTY;
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     /// A workspace with one pane running `script`, wrapped as pane-access.
     fn sh_access(script: &str, cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
@@ -302,6 +299,82 @@ mod tests {
             !captured.contains("not found") && !captured.contains("SHELL-ATE"),
             "and it must carry no trace of the shell that was there first — a caller reading this \
              as the model's answer would be reading a shell error: {captured:?}",
+        );
+    }
+
+    /// ⚠⚠ **A RESIZE MID-TURN IS NOT THE MODEL SPEAKING** — the worst instance of the
+    /// paint-vs-content error, because what this plugin captures is published AS THE MODEL'S REPLY.
+    ///
+    /// The reply region was *"the rows whose DAMAGE GENERATION moved since the prompt"*, and a
+    /// resize (`Screen::reflowed`) stamps every row. A client ATTACHING to the session mid-turn —
+    /// the ordinary thing a person does — therefore made **the entire screen, banner and shell
+    /// prompt and all, come back to the caller as what the model said**.
+    ///
+    /// The fixture puts text on screen that the model demonstrably did not produce (`OLD-BANNER`,
+    /// printed before the prompt was ever sent), makes the peer slow enough that the resize lands
+    /// inside the turn, and asserts the capture is the REPLY and not the screen.
+    ///
+    /// ⚠ Both halves: the reply is there (so the capture still works at all) and the banner is not
+    /// (so it is a reply and not a screenshot).
+    #[test]
+    fn a_resize_during_a_turn_does_not_become_the_models_reply() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            // OLD-BANNER is on screen BEFORE the prompt, and the peer waits a second before
+            // answering — so the resize below lands between the baseline and the capture.
+            command.arg(
+                "printf 'OLD-BANNER\\n'; exec sh -c 'in=$(cat); sleep 1; echo \"REPLY[$in]\"'",
+            );
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 40, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5)
+            && !access
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains("OLD-BANNER"))
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut agent = Agent::new(pane, AgentSpec::new("ask"));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // Inside the turn: after the prompt's baseline, before the reply lands.
+                std::thread::sleep(Duration::from_millis(300));
+                workspace
+                    .lock()
+                    .unwrap()
+                    .resize(pane, 34, 8, (0, 0))
+                    .expect("a client attaches, so the pane is re-laid out");
+            });
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 2,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .run(&mut agent, &access, &RunContext::uncancellable());
+            assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+        });
+
+        let captured = agent.captured().expect("a captured reply");
+        assert!(
+            captured.contains("REPLY[ask]"),
+            "the reply must still be captured — a fix that captured NOTHING would pass the other \
+             half for the wrong reason: {captured:?}",
+        );
+        assert!(
+            !captured.contains("OLD-BANNER"),
+            "⚠⚠ AND TEXT THE MODEL NEVER PRODUCED MUST NOT BE PUBLISHED AS ITS REPLY — this was \
+             on screen before the prompt was sent, and only a REPAINT could have put it in the \
+             reply region: {captured:?}",
         );
     }
 

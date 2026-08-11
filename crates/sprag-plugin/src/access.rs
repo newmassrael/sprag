@@ -30,6 +30,78 @@ pub struct PaneRow {
     pub text: String,
 }
 
+/// A mark of what a pane's rows HELD, so a later look can say which of them carry new CONTENT.
+///
+/// # ⚠⚠ Why this is not a damage generation, which is what all four callers used
+///
+/// Every plugin in this crate asks one question — *what has this pane produced since I last
+/// looked?* — and all four answered it with [`PaneRow::generation`]. **A damage generation is a
+/// PAINT signal**: it exists so a renderer knows which rows to redraw. Two ordinary events stamp
+/// every row with a fresh one while no program produces a byte:
+///
+/// * a **RESIZE** (`Emulator::resize` → `Screen::reflowed`) — which is what a client ATTACHING to
+///   the session does, in a terminal multiplexer of all products;
+/// * an **OSC PALETTE change** (`repaint_for_palette_change` → `mark_all_dirty`), which many
+///   programs send on startup.
+///
+/// Each caller then reported something false, and the severity ran from cosmetic to dangerous:
+/// [`Pipe`](crate::pipe::Pipe) **RE-RELAYED THE SOURCE'S WHOLE SCREEN** into a peer that acts on
+/// what it receives (measured: 16 bytes sent for a resize that printed nothing);
+/// [`Agent`](crate::agent::Agent) captured the whole screen and published it **AS THE MODEL'S
+/// REPLY**; [`Orchestrator`](crate::orchestrator::Orchestrator) read it as *the peer answered* and
+/// took another turn.
+///
+/// So the question is asked of the CONTENT. A row is fresh when its text differs from what this
+/// mark recorded — which no repaint, palette change or re-render can fake.
+///
+/// ⚠ [`PaneRow::generation`] is still the right answer to a PAINT question, and
+/// [`has_painted`](crate::deliver::has_painted) still asks one. The rule is not *never use it* — it
+/// is **use it for what it is**.
+#[derive(Clone, Debug, Default)]
+pub struct RowTrail(Vec<String>);
+
+impl RowTrail {
+    /// Mark what `pane`'s rows hold right now.
+    #[must_use]
+    pub fn mark(panes: &dyn PaneAccess, pane: PaneId) -> Self {
+        Self(
+            panes
+                .pane_rows(pane)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|row| row.text)
+                .collect(),
+        )
+    }
+
+    /// The rows whose text has CHANGED since this mark, trailing-trimmed, in screen order.
+    ///
+    /// ⚠ A row that changed and changed BACK is not fresh, and neither is a row that reprinted the
+    /// text it already held. Both are indistinguishable from *nothing happened* by any measure a
+    /// screen can offer, and reporting them would be guessing — the safe direction is the one that
+    /// costs a caller a wait rather than a wrong answer.
+    #[must_use]
+    pub fn fresh(&self, panes: &dyn PaneAccess, pane: PaneId) -> Vec<String> {
+        panes
+            .pane_rows(pane)
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, row)| self.0.get(*i).map(String::as_str) != Some(row.text.as_str()))
+            .map(|(_, row)| row.text.trim_end().to_string())
+            .collect()
+    }
+
+    /// The fresh rows, and ADVANCE this mark past them — for a consumer that must not deliver the
+    /// same row twice. See [`fresh`](Self::fresh) for what counts.
+    #[must_use]
+    pub fn take_fresh(&mut self, panes: &dyn PaneAccess, pane: PaneId) -> Vec<String> {
+        let fresh = self.fresh(panes, pane);
+        *self = Self::mark(panes, pane);
+        fresh
+    }
+}
+
 /// A key to inject: a W3C `KeyboardEvent.key` string plus modifiers, encoded
 /// to PTY bytes by [`PaneAccess::inject`] (the sprag-owned encoder, R2.6).
 #[derive(Clone, Debug, PartialEq, Eq)]

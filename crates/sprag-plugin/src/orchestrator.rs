@@ -13,7 +13,7 @@ use sprag_terminal::PaneId;
 
 #[cfg(test)]
 use crate::access::PaneDoing;
-use crate::access::{KeyStroke, PaneAccess, PaneError};
+use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
@@ -51,9 +51,9 @@ pub struct OrchestrationSpec {
 pub struct Orchestrator {
     pane: PaneId,
     spec: OrchestrationSpec,
-    /// Per-row damage generations captured before the last stimulus, so the
-    /// observe-wait keys on *this* step's echo.
-    baseline_generations: Vec<u64>,
+    /// What the pane's rows HELD before the last stimulus, so the observe-wait keys on *this*
+    /// step's reply. ⚠ Text and not damage generations — see [`RowTrail`].
+    baseline: RowTrail,
     /// The barrier this run must clear before it types anything — see [`Readiness`].
     ready: Readiness,
 }
@@ -66,7 +66,7 @@ impl Orchestrator {
             ready: Readiness::new(spec.ready_when.clone(), spec.ready_within),
             pane,
             spec,
-            baseline_generations: Vec::new(),
+            baseline: RowTrail::default(),
         }
     }
 
@@ -97,17 +97,7 @@ impl Orchestrator {
     /// the step's wait: the verdict is judged off the collapsed screen after the
     /// wait either way, so a convergence can be reached late but never lost.
     fn reaction(&self, panes: &dyn PaneAccess) -> Reaction {
-        let Some(rows) = panes.pane_rows(self.pane) else {
-            return Reaction::None;
-        };
-        let changed: Vec<&str> = rows
-            .iter()
-            .enumerate()
-            .filter(|(i, row)| {
-                row.generation > self.baseline_generations.get(*i).copied().unwrap_or(0)
-            })
-            .map(|(_, row)| row.text.trim())
-            .collect();
+        let changed = self.baseline.fresh(panes, self.pane);
         if changed.is_empty() {
             return Reaction::None;
         }
@@ -116,7 +106,7 @@ impl Orchestrator {
         // an answer either.
         if changed
             .iter()
-            .all(|line| line.is_empty() || self.spec.stimulus.contains(line))
+            .all(|line| line.trim().is_empty() || self.spec.stimulus.contains(line.trim()))
         {
             return Reaction::EchoOnly;
         }
@@ -149,11 +139,8 @@ impl Plugin for Orchestrator {
                 .noting("the run ended while waiting for the pane to be ready"));
         }
 
-        // Baseline before acting, so observe() waits for this step's echo.
-        self.baseline_generations = panes
-            .pane_rows(self.pane)
-            .map(|rows| rows.iter().map(|row| row.generation).collect())
-            .unwrap_or_default();
+        // Baseline before acting, so observe() waits for this step's reply.
+        self.baseline = RowTrail::mark(panes, self.pane);
 
         // Act: inject the stimulus + Enter.
         let mut keys = KeyStroke::text(&self.spec.stimulus);
