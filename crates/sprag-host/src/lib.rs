@@ -107,8 +107,8 @@ pub use attach::{
 };
 pub use config::{CONFIG_FILE, ConfigError, UserConfig};
 pub use durability::{
-    load_snapshot, reconnect_command, restore_allowlist, restore_command, save_if_changed,
-    save_snapshot, snapshot_path,
+    load_runs, load_snapshot, reconnect_command, restore_allowlist, restore_command, runs_path,
+    save_if_changed, save_runs_if_changed, save_snapshot, snapshot_path,
 };
 pub use events::{Batch, Event, EventLog, Record};
 pub use history::{

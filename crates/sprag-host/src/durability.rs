@@ -39,6 +39,49 @@ pub fn snapshot_path(socket: &Path) -> PathBuf {
     sprag_state_dir().join(format!("{}.snapshot.json", socket_key(socket)))
 }
 
+/// Where a daemon leaves its RUN LOG for its successor:
+/// `$XDG_STATE_HOME/sprag/<socket-stem>.runs.json`, beside the workspace snapshot and keyed the
+/// same way.
+///
+/// A separate file rather than a section of the snapshot, because a run is a HOST concern and the
+/// snapshot is `sprag_terminal`'s session tree — the boundary the plugin layer is deliberately free
+/// of. Two files also fail independently: a run log this build cannot read costs the run records
+/// and not the panes.
+#[must_use]
+pub fn runs_path(socket: &Path) -> PathBuf {
+    sprag_state_dir().join(format!("{}.runs.json", socket_key(socket)))
+}
+
+/// Write the run log if it differs from `last` — [`save_if_changed`]'s rule for runs.
+///
+/// # Errors
+///
+/// The [`io::Error`] from the write.
+pub fn save_runs_if_changed(
+    path: &Path,
+    runs: &Arc<Mutex<crate::runs::RunRegistry>>,
+    last: &mut Option<crate::runs::RunLog>,
+) -> io::Result<bool> {
+    let log = crate::external::lock(runs).persistable();
+    if last.as_ref() == Some(&log) {
+        return Ok(false);
+    }
+    let body = serde_json::to_vec_pretty(&log)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    write_atomic_private(path, &body)?;
+    *last = Some(log);
+    Ok(true)
+}
+
+/// Read a predecessor's run log, or [`None`] when there is none / it is unreadable.
+///
+/// Unreadable is the SAME answer as absent, on [`load_snapshot`]'s terms: a run record is a
+/// convenience, and a wrong reading of one is worse than not having it.
+#[must_use]
+pub fn load_runs(path: &Path) -> Option<crate::runs::RunLog> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
 /// sprag's persistent state directory: `$XDG_STATE_HOME/sprag`, falling back to
 /// `~/.local/state/sprag` then `/tmp/sprag`. The one derivation, shared by every durable artifact
 /// (the snapshot and the per-pane history files) so they cannot land in two different places.

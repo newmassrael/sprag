@@ -190,6 +190,17 @@ impl HostState {
         self
     }
 
+    /// Use `runs` as this state's run registry instead of the empty one [`Self::new`] built.
+    ///
+    /// What a daemon needs in order to hand its predecessor's run records to the surface that
+    /// serves them: the registry has to exist — and be restored into — before the durability saver
+    /// is spawned, which is earlier than this state is built.
+    #[must_use]
+    pub fn with_runs(mut self, runs: Arc<Mutex<RunRegistry>>) -> Self {
+        self.runs = runs;
+        self
+    }
+
     /// The agent-state memory, cloned for a scene assembly — `None` for a host running no detector.
     #[must_use]
     pub fn agents(&self) -> Option<Arc<crate::AgentClock>> {

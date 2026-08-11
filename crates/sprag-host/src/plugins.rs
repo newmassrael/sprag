@@ -30,7 +30,7 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
-    Agent, AgentSpec, Cost, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec,
+    Agent, AgentSpec, Ceiling, Cost, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec,
     Orchestrator, Outcome, OutcomeState, Pipe, Plugin, ReplyFormat, RunContext,
     WorkspacePaneAccess,
 };
@@ -77,6 +77,46 @@ pub const RUN_CEILING_KEY: &str = "ceiling";
 /// that failed to converge could not be diagnosed at all. ⚠ Compare its length against
 /// `iterations` to tell a truncated journal from a complete one.
 pub const RUN_JOURNAL_KEY: &str = "journal";
+
+sprag_vt::closed_set! {
+    /// WHERE A RUN HAS GOT TO — the `status` word inside a run's `state`.
+    ///
+    /// # ⚠⚠ Why this became a type on the round that added a word to it
+    ///
+    /// The four words were string literals inside `run_to_json`, so the vocabulary a peer decodes
+    /// had no declaration anywhere — and `an_answers_value_space_cannot_widen_under_the_protocol_number`
+    /// pins value spaces by walking each closed set's `ALL`. A vocabulary with no type is invisible
+    /// to it: adding `interrupted` moved a value space a peer fails the WHOLE document on, and the
+    /// pin that exists to catch exactly that could not see it. R353's mouse words were in this state
+    /// in two crates; these were in one renderer.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum RunStatus {
+        /// A worker is still driving the plugin.
+        Running,
+        /// It reached a terminal state; `outcome` says which.
+        Done,
+        /// Its worker panicked (defensive — a plugin step should not).
+        Panicked,
+        /// ⚠ The daemon driving it died. Added at `WIRE_PROTOCOL` 21.
+        Interrupted,
+    }
+}
+
+impl RunStatus {
+    /// This status's word on the wire — the ONE mapping, exhaustive so a fifth cannot reach a
+    /// client without one.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Panicked => "panicked",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+sprag_vt::wire_words!(RunStatus: wire_str);
 
 sprag_vt::closed_set! {
     /// WHICH BUNDLED PLUGIN a `run` names — the `plugin` discriminator's whole vocabulary.
@@ -792,17 +832,29 @@ fn run_to_json(run: &RunSummary) -> Value {
         .map_or((0, None), |c| (c.amount(), Some(c.unit())));
     let state_json = match &run.state {
         RunState::Running => json!({
-            "status": "running",
+            "status": RunStatus::Running.wire_str(),
             "iterations": run.progress.iterations,
             "cost": cost,
             "unit": unit,
         }),
         RunState::Done { outcome, output } => json!({
-            "status": "done",
+            "status": RunStatus::Done.wire_str(),
             "outcome": outcome_to_json(outcome),
             "output": output,
         }),
-        RunState::Panicked(message) => json!({ "status": "panicked", "error": message }),
+        RunState::Panicked(message) => {
+            json!({ "status": RunStatus::Panicked.wire_str(), "error": message })
+        }
+        // ⚠ A FOURTH STATUS WORD, which is why `WIRE_PROTOCOL` moved: `status` is a value space a
+        // peer decodes whole, so an added word is a break no address or shape pin can see (R342).
+        // The counters it reached are still here — what it managed before its daemon died is the
+        // only thing a reader can still learn about it.
+        RunState::Interrupted => json!({
+            "status": RunStatus::Interrupted.wire_str(),
+            "iterations": run.progress.iterations,
+            "cost": cost,
+            "unit": unit,
+        }),
     };
     // `opened_by` is OMITTED for a run nobody claims rather than sent as `null`, the rule
     // `ArgGrammar::to_answer` follows for an absent vocabulary: a reader tells silence from a claim
@@ -844,17 +896,51 @@ fn step_to_json(step: &sprag_plugin::StepRecord) -> Value {
 
 /// Render a plugin [`Outcome`] as JSON (serialization is a host concern, so the
 /// pinion-free substrate stays serde-free).
+/// An outcome's terminal word — the ONE mapping, read by the wire renderer AND by the durable run
+/// log, so a run reloaded from disk cannot come back under a different word than it went out under.
+#[must_use]
+pub fn outcome_word(outcome: &Outcome) -> &'static str {
+    match outcome.state {
+        OutcomeState::Converged => "converged",
+        // ⚠ THE STATE WORD IS UNCHANGED by the ceiling, deliberately: folding the ceiling into the
+        // word (`exhausted_duration`) would change the value space of a key old readers decode
+        // whole, which is a wire break no address or shape pin can see (R342).
+        OutcomeState::Exhausted(_) => "exhausted",
+        OutcomeState::Failed => "failed",
+        OutcomeState::Cancelled => "cancelled",
+    }
+}
+
+/// Which ceiling stopped it, or [`None`] when no ceiling did — [`outcome_word`]'s companion.
+#[must_use]
+pub fn outcome_ceiling(outcome: &Outcome) -> Option<&'static str> {
+    match outcome.state {
+        OutcomeState::Exhausted(ceiling) => Some(ceiling.wire_str()),
+        _ => None,
+    }
+}
+
+/// [`outcome_word`] / [`outcome_ceiling`] READ BACK — how a restored run recovers the state it was
+/// written out under.
+///
+/// ⚠ An unreadable pair answers [`OutcomeState::Failed`] rather than guessing a happier one: a
+/// record this build cannot parse is one it must not report as having converged.
+#[must_use]
+pub fn outcome_from_words(word: Option<&str>, ceiling: Option<&str>) -> OutcomeState {
+    match word {
+        Some("converged") => OutcomeState::Converged,
+        Some("cancelled") => OutcomeState::Cancelled,
+        Some("exhausted") => OutcomeState::Exhausted(match ceiling {
+            Some(word) if word == Ceiling::Cost.wire_str() => Ceiling::Cost,
+            Some(word) if word == Ceiling::Duration.wire_str() => Ceiling::Duration,
+            _ => Ceiling::Iterations,
+        }),
+        _ => OutcomeState::Failed,
+    }
+}
+
 fn outcome_to_json(outcome: &Outcome) -> Value {
-    let (state, ceiling) = match outcome.state {
-        OutcomeState::Converged => ("converged", None),
-        // ⚠ THE STATE WORD IS UNCHANGED and the ceiling rides BESIDE it, deliberately. Folding the
-        // ceiling into the word (`exhausted_duration`) would change the value space of a key old
-        // readers decode whole, which is a wire break no address or shape pin can see (R342). An
-        // added KEY is absent-not-wrong to a reader that has never heard of it.
-        OutcomeState::Exhausted(ceiling) => ("exhausted", Some(ceiling.wire_str())),
-        OutcomeState::Failed => ("failed", None),
-        OutcomeState::Cancelled => ("cancelled", None),
-    };
+    let (state, ceiling) = (outcome_word(outcome), outcome_ceiling(outcome));
     // Cost is self-describing on the wire: the scalar amount plus its unit label
     // (both from `Cost` itself, so the host never names a variant), so a peer
     // reads it without knowing which plugin ran. A `null` unit means no measured

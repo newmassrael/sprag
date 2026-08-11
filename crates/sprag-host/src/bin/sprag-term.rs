@@ -217,7 +217,19 @@ fn main() -> io::Result<()> {
         Arc::clone(&attachments),
         Arc::clone(&channels),
     ));
+    // THE RUN REGISTRY IS BUILT HERE, not by `HostState::new`, because the predecessor's run log
+    // has to be read into it before the saver starts writing over that file.
+    let runs = Arc::new(Mutex::new(sprag_host::runs::RunRegistry::default()));
+    let runs_file = sprag_host::runs_path(&sock);
     if args.daemon {
+        if let Some(log) = sprag_host::load_runs(&runs_file) {
+            // ⚠ Every run in it was driven by a process that is gone. `restore` marks the ones that
+            // were still going as INTERRUPTED and drops their provenance — see `RunRegistry::restore`
+            // for why a restored run must belong to nobody.
+            runs.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .restore(&log);
+        }
         if let Some(snapshot) = load_snapshot(&snap_path) {
             // Run it with the exact-command allowlist (read once from the environment here,
             // injected so the host does not touch it). The reaper needs no gate from this side:
@@ -252,6 +264,7 @@ fn main() -> io::Result<()> {
             snap_path,
             hist_dir,
             hist_limits,
+            Some((runs_file, Arc::clone(&runs))),
         );
     } else {
         host.spawn(
@@ -289,6 +302,7 @@ fn main() -> io::Result<()> {
         manifests,
     );
     let state = HostState::new(host, channels, Some(on_pane_exit))
+        .with_runs(runs)
         .with_attachments(attachments)
         .with_attention(attention)
         .with_agents(agents);
@@ -411,6 +425,7 @@ fn spawn_durability_saver(
     path: PathBuf,
     history_dir: PathBuf,
     history_limits: HistoryLimits,
+    runs: Option<(PathBuf, Arc<Mutex<sprag_host::runs::RunRegistry>>)>,
 ) {
     thread::spawn(move || {
         // `save_if_changed` / `save_histories_if_changed` own the write-if-changed dedup (both
@@ -418,12 +433,25 @@ fn spawn_durability_saver(
         // saved between ticks.
         let mut last: Option<Snapshot> = None;
         let mut last_histories: HashMap<PaneId, SavedHistory> = HashMap::new();
+        let mut last_runs: Option<sprag_host::runs::RunLog> = None;
         loop {
             thread::sleep(SNAPSHOT_INTERVAL);
             if let Err(e) = save_if_changed(&path, &registry, &mut last) {
                 tracing::warn!(
                     target: "sprag_host::durability",
                     "snapshot save to {} failed: {e}",
+                    path.display()
+                );
+            }
+            // ⚠ A THIRD INDEPENDENT HALF. It rides the same tick because there is no reason for a
+            // second timer, and it fails on its own terms: an unwritable run log must not cost the
+            // workspace its shape, exactly as an unwritable history must not.
+            if let Some((path, registry)) = runs.as_ref()
+                && let Err(e) = sprag_host::save_runs_if_changed(path, registry, &mut last_runs)
+            {
+                tracing::warn!(
+                    target: "sprag_host::durability",
+                    "run log save to {} failed: {e}",
                     path.display()
                 );
             }

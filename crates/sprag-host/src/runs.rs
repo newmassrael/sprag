@@ -35,6 +35,19 @@ pub enum RunState {
     },
     /// The worker thread panicked (defensive — a plugin step should not).
     Panicked(String),
+    /// ⚠⚠ THE DAEMON THAT WAS DRIVING THIS RUN DIED. It was `Running` when its process ended, and
+    /// nothing resumed it: a run is a thread over live panes, and neither survives a restart.
+    ///
+    /// # Why a fourth state and not silence
+    ///
+    /// Before it, a restart left `runs` answering *"no runs"* — the same answer as a daemon nobody
+    /// has ever asked for a loop. A person who started a bounded loop, walked away, and came back
+    /// to a restarted daemon could not tell *it finished and the record is gone* from *it never
+    /// ran*. The counters it reached are kept, so what it managed before it died is still readable.
+    ///
+    /// ⚠ It is NOT resumable and does not pretend to be. The pane it drove came back as a plain
+    /// shell (see the restore allowlist) and the agent that asked for it is gone with its process.
+    Interrupted,
 }
 
 struct RunRecord {
@@ -103,6 +116,53 @@ pub struct NewRun {
     /// The flag that asks the run to stop at its next check.
     pub cancel: Arc<AtomicBool>,
 }
+
+/// ONE RUN AS IT SURVIVES ITS DAEMON — the durable mirror of a live run record.
+///
+/// # ⚠⚠ Why the host defines this instead of deriving serde on the plugin types
+///
+/// `sprag-plugin` is deliberately serde-free (*"serialization is a host concern, so the
+/// pinion-free substrate stays serde-free"* — [`crate::plugins`]'s own rule for the wire). The same
+/// rule applies to a FILE: a durable format is a host concern, and deriving it upstream would let a
+/// refactor in the substrate silently change what is on somebody's disk.
+///
+/// It carries what a reader needs to see what the run managed, and nothing that could not survive:
+/// no thread, no cancel flag, no panes.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedRun {
+    /// The id it had, so restored ids are never reissued.
+    pub id: u64,
+    /// What the run was, in a reader's terms.
+    pub label: String,
+    /// How many steps it had completed.
+    pub iterations: u32,
+    /// What it had spent, and in what unit — `None` for a run that took no measured step.
+    pub cost: Option<u64>,
+    /// The unit of [`cost`](Self::cost).
+    pub unit: Option<String>,
+    /// Whether it had already finished. A run still `Running` when the daemon died comes back
+    /// [`RunState::Interrupted`]; one that had finished keeps having finished.
+    pub finished: bool,
+    /// Its rendered terminal state (`"converged"`, `"exhausted"`, …) when `finished`.
+    pub outcome: Option<String>,
+    /// Which ceiling stopped it, when one did.
+    pub ceiling: Option<String>,
+    /// What it captured, when it captured anything.
+    pub output: Option<String>,
+}
+
+/// The versioned file a daemon leaves behind for its successor.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RunLog {
+    /// The format version — [`RUN_LOG_VERSION`] at write time, checked on load.
+    pub version: u32,
+    /// Every run the daemon held, in submit order.
+    pub runs: Vec<PersistedRun>,
+}
+
+/// The run log's format version. A file written by a different one is IGNORED rather than guessed
+/// at: a run record is a convenience, and a wrong reading of one would be worse than its absence.
+pub const RUN_LOG_VERSION: u32 = 1;
 
 /// The registry of background plugin runs. Owned by the host (`serve`),
 /// shared into each per-request `PluginsExternal` via `Arc<Mutex<_>>`.
@@ -178,6 +238,106 @@ impl RunRegistry {
                     *lock(&record.state) = RunState::Panicked("plugin run panicked".to_string());
                 }
             }
+        }
+    }
+
+    /// Every run in the durable shape its successor daemon reads.
+    #[must_use]
+    pub fn persistable(&self) -> RunLog {
+        RunLog {
+            version: RUN_LOG_VERSION,
+            runs: self
+                .snapshot()
+                .iter()
+                .map(|run| {
+                    let (finished, outcome, ceiling, output) = match &run.state {
+                        RunState::Running | RunState::Interrupted => (false, None, None, None),
+                        RunState::Done { outcome, output } => (
+                            true,
+                            Some(crate::plugins::outcome_word(outcome).to_owned()),
+                            crate::plugins::outcome_ceiling(outcome).map(str::to_owned),
+                            output.clone(),
+                        ),
+                        RunState::Panicked(why) => (true, Some(why.clone()), None, None),
+                    };
+                    PersistedRun {
+                        id: run.id.0,
+                        label: run.label.clone(),
+                        iterations: run.progress.iterations,
+                        cost: run.progress.cost.map(sprag_plugin::Cost::amount),
+                        unit: run
+                            .progress
+                            .cost
+                            .map(|c| sprag_plugin::Cost::unit(c).to_owned()),
+                        finished,
+                        outcome,
+                        ceiling,
+                        output,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Take a predecessor daemon's run log into this registry.
+    ///
+    /// # ⚠⚠ Two rules, and both are authority decisions rather than conveniences
+    ///
+    /// 1. **`opened_by` IS DROPPED.** Panes come back across a restart, but a restored pane's
+    ///    OCCUPANT is a plain shell and never the agent that asked. The agent-facing mouth filters
+    ///    `list_runs` by the caller's own pane id, so carrying the provenance would hand a NEW
+    ///    agent booting into restored pane 3 the previous occupant's runs as its own — a hole in
+    ///    the exact policy [`crate::wire::PluginGrammar`] describes. A restored run is nobody's,
+    ///    which is what a run whose asker is gone actually is.
+    /// 2. **THE ID COUNTER IS SEEDED ABOVE THEM.** Ids are monotonic and never reused
+    ///    ([`reserve`](Self::reserve)); a successor that started from zero would mint ids that
+    ///    already name a run in its own list.
+    ///
+    /// A restored run has no thread and no cancel flag: `cancel` finds it and returns true having
+    /// done nothing, which is the honest answer for a run that is already over.
+    pub fn restore(&mut self, log: &RunLog) {
+        if log.version != RUN_LOG_VERSION {
+            return; // a format this build cannot read is worse than no record at all
+        }
+        for saved in &log.runs {
+            let cost = match (saved.cost, saved.unit.as_deref()) {
+                (Some(amount), Some("tokens")) => Some(sprag_plugin::Cost::Tokens(amount)),
+                (Some(amount), Some(_)) => Some(sprag_plugin::Cost::Bytes(amount)),
+                _ => None,
+            };
+            let state = if saved.finished {
+                RunState::Done {
+                    outcome: Outcome {
+                        state: crate::plugins::outcome_from_words(
+                            saved.outcome.as_deref(),
+                            saved.ceiling.as_deref(),
+                        ),
+                        iterations: saved.iterations,
+                        cost,
+                        failure: None,
+                    },
+                    output: saved.output.clone(),
+                }
+            } else {
+                RunState::Interrupted
+            };
+            self.next_id = self.next_id.max(saved.id + 1);
+            self.runs.push(RunRecord {
+                id: RunId(saved.id),
+                label: saved.label.clone(),
+                opened_by: None,
+                state: Arc::new(Mutex::new(state)),
+                handle: None,
+                progress: Arc::new(Mutex::new(Progress {
+                    iterations: saved.iterations,
+                    cost,
+                    // ⚠ THE JOURNAL IS NOT PERSISTED. It is the per-step account of a run that is
+                    // over and unresumable, and keeping it would grow the file with every step of
+                    // every run this daemon ever ran. The totals survive; the steps do not.
+                    journal: Vec::new(),
+                })),
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
         }
     }
 

@@ -2147,6 +2147,150 @@ fn a_killed_daemon_gives_its_panes_back_with_their_scrollback() {
 // went through the portable process table (R343). A gate left on a test after its subject
 // became portable is a claim that the subject is not — and its HELPERS come with it.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-runlog-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+
+    // Daemon A, a pane, and a LONG run against it — long enough that it is certainly still going
+    // when the daemon is killed under it. Its provenance is stamped, so the drop below is a
+    // measurable act and not a property of a run nobody claimed.
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the first daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "path": mux_action_path(NEW_SESSION_ACTION),
+            "args": { "name": "work", "cmd": ["sh", "-c", "stty -echo; exec cat"] },
+        }),
+    )
+    .expect("new_session answers");
+    // `new_session` does not answer a pane id, so the pane is read off the slot that lists them.
+    let pane = conn
+        .call(
+            "scene/query",
+            json!({ "session": "work", "path": mux_action_path(PANES_SLOT) }),
+        )
+        .expect("the pane list answers")
+        .as_array()
+        .and_then(|panes| panes.first().cloned())
+        .and_then(|pane| pane["id"].as_u64())
+        .expect("the session's pane");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "work",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "orchestrator",
+                "pane": pane,
+                "stimulus": "x",
+                "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                "opened_by": pane,
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the run is submitted");
+    drop(conn);
+
+    // Wait on the CONDITION the assertion reads: the run is ON DISK and still running. The save
+    // loop is on a timer, so anything else here would be a race dressed as a wait.
+    //
+    // ⚠⚠ THE FILE IS FOUND UNDER THIS TEST'S OWN STATE DIR, by scanning it. `runs_path` resolves
+    // `XDG_STATE_HOME` in the CALLING process, and this process's is the developer's — so asking it
+    // for the path pointed the wait at a file some other daemon on this machine had written. The
+    // gate passed with the daemon's own write DELETED, which is what a fixture reading somebody
+    // else's file looks like from the inside (R318/R319/R331's rule, one directory along).
+    let runs_dir = state.join("sprag");
+    let live_run_on_disk = || {
+        std::fs::read_dir(&runs_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".runs.json"))
+            .any(|entry| {
+                sprag_host::load_runs(&entry.path()).is_some_and(|log| {
+                    log.runs
+                        .iter()
+                        .any(|run| !run.finished && run.iterations > 0)
+                })
+            })
+    };
+    assert!(
+        wait_for(Duration::from_secs(30), live_run_on_disk),
+        "the daemon never persisted a live run under {}",
+        runs_dir.display(),
+    );
+
+    // THE KILL: outright, so nothing gets to write a tidy terminal state on the way out.
+    let pid = daemon_pid(&sock).expect("the daemon is running");
+    kill_daemon(pid);
+    let _ = std::fs::remove_file(&sock);
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the second daemon never started serving",
+    );
+
+    // ⚠⚠ THE PAYOFF: the successor says the run was INTERRUPTED, where before it said nothing at
+    // all — and "no runs" is the same answer a daemon nobody ever asked for a loop gives.
+    let listed = sprag(&sock, &["runs", "-t", "work"]);
+    assert!(listed.ok, "{}", listed.stderr);
+    assert!(
+        listed.stdout.contains("interrupted"),
+        "a run whose daemon died must be reported as interrupted, not forgotten: {:?}",
+        listed.stdout,
+    );
+    assert!(
+        listed.stdout.contains("run 0"),
+        "and it keeps the id it had, so a person can match it against what they started: {:?}",
+        listed.stdout,
+    );
+
+    // ⚠⚠ AND IT BELONGS TO NOBODY. The pane came back, but its OCCUPANT is a plain shell — never
+    // the agent that asked. Carrying `opened_by` across would hand whoever boots into that pane
+    // next the previous occupant's runs through `list_runs`'s own filter.
+    assert!(
+        !listed.stdout.contains("asked for by pane"),
+        "a restored run must claim no opener, or the agent-facing filter inherits it: {:?}",
+        listed.stdout,
+    );
+    drop(guard);
+}
+
+/// ⚠⚠ **A RUN WHOSE DAEMON DIED IS ACCOUNTED FOR** — the record that used to vanish with the
+/// process that was keeping it.
+///
+/// Before this, a restart left `runs` answering *"no runs"*, which is the SAME answer a daemon
+/// nobody has ever asked for a loop gives. A person who started a bounded loop, walked away, and
+/// came back to a restarted daemon could not tell *it finished and the record is gone* from *it
+/// never ran*.
+///
+/// ⚠ The run is deliberately LONG (a hundred thousand iterations against a pane that never prints
+/// its sentinel), so it is certainly still going when the daemon is SIGKILLed under it — an outright
+/// kill, so nothing gets to write a tidy terminal state on the way out. The wait before the kill is
+/// on the CONDITION the assertion reads — the run is on disk AND unfinished — because the save loop
+/// is on a timer.
+///
+/// ⚠⚠ The second half is the authority one and is why this is not just serialization: `opened_by`
+/// must NOT come back. Panes survive a restart, but a restored pane's OCCUPANT is a plain shell and
+/// never the agent that asked, so carrying the provenance would hand whoever boots into that pane
+/// next the previous occupant's runs through `list_runs`'s own filter.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn a_pane_that_survived_a_reboot_can_still_ask_for_a_person() {
     let sock = socket_path();
     let state = std::env::temp_dir().join(format!(

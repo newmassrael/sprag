@@ -493,7 +493,26 @@ impl ScopeAsk {
 ///   client encoded a mouse button and the host decoded it, in two crates, with nothing comparing
 ///   the lists. They read one array now, which is also why an OLD client is refused rather than
 ///   quietly mismatched: the handshake is at the daemon's door.
-pub const WIRE_PROTOCOL: u32 = 20;
+/// * **21** — a run can be `interrupted`. A daemon leaves its RUN LOG for its successor, and a run
+///   that was still going when its process died comes back under a fourth `status` word instead of
+///   vanishing (R357).
+///
+///   ⚠ **THE SECOND BUMP FROM A VALUE SPACE** (version 18 was the first). `state.status` on the
+///   plugin host's `runs` slot answered `running` | `done` | `panicked`, and a peer that decodes a
+///   closed set WHOLE fails the entire document on a word it has never seen — no address moves and
+///   no shape moves, so neither the address pin nor the shape pin can see it.
+///
+///   What earned it is not the file. Persistence on its own is invisible on the wire: a successor
+///   daemon could have reported restored runs as `done` and broken nothing. It would also have been
+///   a LIE — a run killed mid-flight did not finish — and the whole reason to keep the record is
+///   that *"no runs"* and *"the daemon that was running yours died"* are different answers a person
+///   acts on differently. The honest word is what costs the number.
+///
+///   ⚠ The restored run's `opened_by` is DROPPED rather than carried, which is an authority
+///   decision and not a serialization gap: panes come back across a restart but a restored pane's
+///   OCCUPANT is a plain shell, so carrying the provenance would hand a NEW agent the previous
+///   occupant's runs through `list_runs`'s own filter. See `RunRegistry::restore`.
+pub const WIRE_PROTOCOL: u32 = 21;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

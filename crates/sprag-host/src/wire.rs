@@ -6567,7 +6567,11 @@ mod tests {
             // R353: and again, for a published FORM's SHAPE (`action_grammar`'s `{form, args}`).
             // Neither of the two enums a peer decodes whole gained or lost a word, which is exactly
             // what this re-stamp says.
-            20,
+            // ⚠⚠ R357 IS THE FIRST RE-STAMP THIS PIN EARNED ITSELF: `run_status` joined the list
+            // (a fourth word, `interrupted`) AND joined this pin at all. Its four words lived as
+            // string literals inside `run_to_json` until then, so the vocabulary had no `ALL` to
+            // walk and this gate — the one written for exactly this break — was blind to it.
+            21,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -6584,6 +6588,11 @@ mod tests {
                 "unmeasured:nothing_enforced",
                 "unmeasured:not_placed",
                 "unmeasured:refused",
+                // ⚠ R357: the run status, and the fourth word is the one that cost the number.
+                "run_status:running",
+                "run_status:done",
+                "run_status:panicked",
+                "run_status:interrupted",
                 "unmeasured:gone",
             ],
         );
@@ -6616,6 +6625,16 @@ mod tests {
                     word(&serde_json::to_value(reason).expect("render"))
                 )
             }))
+            // ⚠⚠ THE RUN STATUS, which was invisible to this pin until R357 gave it a type. The two
+            // above are serde enums and render through serde; this one is a hand-written renderer's
+            // vocabulary, so it joins through its OWN words — which is the point: a value space with
+            // no declaration cannot be pinned, and `interrupted` was added to a set a peer decodes
+            // whole with nothing here able to notice.
+            .chain(
+                crate::plugins::RunStatus::WIRE_WORDS
+                    .iter()
+                    .map(|word| format!("run_status:{word}")),
+            )
             .collect();
         let mut pinned: Vec<String> = PINNED_VALUES.1.iter().map(|n| (*n).to_owned()).collect();
         served.sort_unstable();
@@ -6668,7 +6687,10 @@ mod tests {
     #[test]
     fn a_published_value_space_cannot_widen_under_the_protocol_number() {
         const PINNED_WORDS: (u32, &[&str]) = (
-            20,
+            // R357: the number moved for an ANSWER's value space (`status` gained `interrupted`),
+            // with every PUBLISHED (argument) vocabulary unchanged — the two are different lists
+            // and this pin holds the request half.
+            21,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7152,7 +7174,9 @@ mod tests {
     /// slot's answer changed shape under a name that did not move. The added name would not have
     /// justified the bump; the changed value did.
     const PINNED_SURFACE: (u32, &[&str]) = (
-        20,
+        // R357: the number moved for a VALUE SPACE (`status` gained `interrupted`), with every
+        // address unchanged — which is what this re-stamp says and what this pin cannot see.
+        21,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
