@@ -78,9 +78,10 @@ impl Plugin for Orchestrator {
         let cost = panes.inject(self.pane, &keys)?.bytes();
 
         // Perceive, then judge against the collapsed (wrap-safe) screen text.
-        // If cancelled mid-observe, don't judge — return Continue so the
-        // Driver's loop-top ends the run Cancelled (not a spurious Converged).
-        if self.observe(panes, run) == Waited::Cancelled {
+        // If the RUN ended mid-observe — cancelled, or out of time — don't judge:
+        // return Continue so the Driver's loop top decides the terminal state,
+        // rather than a spurious Converged off a screen nobody finished reading.
+        if self.observe(panes, run) == Waited::Stopped {
             return Ok(Step {
                 cost: Cost::Bytes(cost),
                 verdict: Verdict::Continue,
@@ -108,7 +109,7 @@ impl Plugin for Orchestrator {
 mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
-    use crate::driver::{Driver, Guardrails, OutcomeState};
+    use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
 
@@ -151,9 +152,10 @@ mod tests {
             Guardrails {
                 max_iterations: 3,
                 max_cost: None,
+                max_duration: None,
             },
         );
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         assert_eq!(outcome.iterations, 3);
         assert!(outcome.failure.is_none());
     }
@@ -174,6 +176,7 @@ mod tests {
             Guardrails {
                 max_iterations: 10,
                 max_cost: None,
+                max_duration: None,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Converged);
@@ -202,6 +205,7 @@ mod tests {
             Guardrails {
                 max_iterations: 10,
                 max_cost: None,
+                max_duration: None,
             },
         );
         assert_eq!(outcome.state, OutcomeState::Converged);
@@ -223,9 +227,10 @@ mod tests {
             Guardrails {
                 max_iterations: u32::MAX,
                 max_cost: Some(Cost::Bytes(12)),
+                max_duration: None,
             },
         );
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Cost));
         assert!(
             matches!(outcome.cost, Some(Cost::Bytes(n)) if n >= 12),
             "cost: {:?}",

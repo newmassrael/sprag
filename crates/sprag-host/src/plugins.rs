@@ -10,9 +10,12 @@
 //! * `query("plugins")` → the available plugin set.
 //!
 //! Runs are guardrail-bounded by construction: a `run` always gets the default
-//! iteration ceiling (the liveness floor) plus the plugin's default cost ceiling
-//! in its unit, never unbounded — loop safety is first-class. (A print-mode Text
-//! dialogue accumulates `Tokens(0)`, so iterations are its sole effective bound.)
+//! iteration ceiling (the liveness floor), the default WALL-CLOCK deadline, and
+//! the plugin's default cost ceiling in its unit — never unbounded, on any of the
+//! three axes, because loop safety is first-class. (A print-mode Text dialogue
+//! accumulates `Tokens(0)`, so its cost ceiling never binds and the other two are
+//! its effective bounds.) Whichever binds first ends the run, and the outcome says
+//! WHICH.
 //! Target panes are validated at submit time, so a typo is a synchronous
 //! `Rejected`, not an async `Failed`.
 
@@ -63,6 +66,11 @@ const RUN_ID_KEY: &str = "id";
 /// The answer key carrying the pane whose occupant asked for a run — absent for a run nobody
 /// claims, on [`sprag_terminal::Pane::opened_by`]'s terms.
 const RUN_OPENED_BY_KEY: &str = "opened_by";
+/// The answer key naming WHICH GUARDRAIL exhausted a run — absent unless one did.
+///
+/// Its vocabulary is [`sprag_plugin::Ceiling`]'s own words, so the host never spells a variant and
+/// a fourth ceiling reaches the wire by being added to that type.
+pub const RUN_CEILING_KEY: &str = "ceiling";
 
 sprag_vt::closed_set! {
     /// WHICH BUNDLED PLUGIN a `run` names — the `plugin` discriminator's whole vocabulary.
@@ -131,6 +139,26 @@ pub const DEFAULT_MAX_BYTES: u64 = 64 * 1024;
 /// This ceiling exists to stop a single pathological high-token turn; tune it to
 /// the model's pricing if a dollar-aware bound is ever needed.
 pub const DEFAULT_MAX_TOKENS: u64 = 200_000;
+
+/// THE DEFAULT WALL-CLOCK CEILING for a run that names none, in seconds — one hour.
+///
+/// Never absent, on [`DEFAULT_MAX_ITERATIONS`]'s exact terms: a run this daemon starts is bounded
+/// in time whether or not the caller thought about time, because the README makes loop safety
+/// first-class and a bound you have to remember is a bound somebody forgets.
+///
+/// # Why an hour, and why it is a backstop rather than the primary bound
+///
+/// The two per-step ceilings bite first for every plugin this build ships. A byte-relay run does
+/// its hundred iterations in seconds. A dialogue's turn is bounded by
+/// [`sprag_plugin::run::DEFAULT_REPLY_TIMEOUT`] at two minutes, so an hour is
+/// roughly thirty full-length turns — beyond any dialogue the iteration ceiling allows to be slow.
+/// What an hour catches is the case neither of the others can see: a run whose steps have stopped
+/// making progress but have not stopped, which counts no iterations and spends nothing while it
+/// holds a pane.
+///
+/// It is a CEILING as well as a default at the agent-facing mouth, so raising it for an agent is
+/// the person's to do — see `tool_orchestrate`.
+pub const DEFAULT_MAX_SECONDS: u64 = 3600;
 
 /// The plugin host as a pinion `External`: starts background plugin runs over
 /// the shared [`Workspace`] and reports their outcomes as scene-as-data.
@@ -520,6 +548,7 @@ impl ExternalIntrospect for PluginsExternal {
             // spells it, so a client that reads a ceiling here can send it back without a mapping.
             GUARDRAIL_DEFAULTS_SLOT => Some(IntrospectValue::Json(json!({
                 "max_iterations": DEFAULT_MAX_ITERATIONS,
+                "max_seconds": DEFAULT_MAX_SECONDS,
                 "max_bytes": DEFAULT_MAX_BYTES,
                 "max_tokens": DEFAULT_MAX_TOKENS,
             }))),
@@ -629,12 +658,23 @@ fn parse_reply_format(
     }
 }
 
-/// Read the optional `guardrails` sub-object. `max_iterations` defaults to
-/// [`DEFAULT_MAX_ITERATIONS`] (always present — the liveness floor). The cost
+/// Read the optional `guardrails` sub-object — the THREE ceilings a run is bounded
+/// by, each defaulted so an omitted one is still a bound.
+///
+/// `max_iterations` defaults to [`DEFAULT_MAX_ITERATIONS`] and `max_seconds` to
+/// [`DEFAULT_MAX_SECONDS`] (both always present — the liveness floor). The cost
 /// bound is self-describing: `max_bytes` xor `max_tokens` in the plugin's unit
 /// (omitted → the plugin's default ceiling). NB a `Tokens(0)`-only run (a
 /// print-mode Text dialogue) accumulates no measured cost, so its cost ceiling
-/// never binds and `max_iterations` is its sole effective bound — by design.
+/// never binds and the other two are its effective bounds — by design.
+///
+/// ⚠⚠ **A KEY THIS OBJECT DOES NOT DECLARE IS A MALFORMED REQUEST**, which is not
+/// how the rest of this wire treats an unknown key. The asymmetry is the whole
+/// point and it is stated on
+/// [`guardrail_fields`](crate::wire::PluginGrammar::guardrail_fields): ignoring
+/// an ordinary argument makes a verb do LESS than asked and the caller can see
+/// that in the result; ignoring a BOUND makes the run do more, without limit, and
+/// answers success.
 fn parse_guardrails(
     map: &Map<String, Value>,
     default_cost: Cost,
@@ -643,11 +683,30 @@ fn parse_guardrails(
         return Ok(Guardrails {
             max_iterations: DEFAULT_MAX_ITERATIONS,
             max_cost: Some(default_cost),
+            max_duration: Some(Duration::from_secs(DEFAULT_MAX_SECONDS)),
         });
     };
     let Value::Object(g) = value else {
         return Err(InvokeError::TypeMismatch);
     };
+    // AGAINST THE PUBLICATION, not against a list kept here: the keys this parser honours and the
+    // keys the grammar advertises are one set, so neither can grow without the other.
+    let declared = crate::wire::PluginGrammar::guardrail_fields(default_cost.unit());
+    if let Some(unknown) = g
+        .keys()
+        .find(|key| !declared.iter().any(|field| field.name == key.as_str()))
+    {
+        return Err(refused(format!(
+            "{unknown:?} is not a guardrail of a run that spends {}. It takes: {}. A bound this \
+             daemon does not know would have been ignored, and an ignored bound is not a bound.",
+            default_cost.unit(),
+            declared
+                .iter()
+                .map(|field| field.name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        )));
+    }
     let max_iterations = match g.get("max_iterations") {
         None => DEFAULT_MAX_ITERATIONS,
         Some(v) => v
@@ -655,9 +714,14 @@ fn parse_guardrails(
             .and_then(|n| u32::try_from(n).ok())
             .ok_or(InvokeError::TypeMismatch)?,
     };
+    let max_seconds = match g.get("max_seconds") {
+        None => DEFAULT_MAX_SECONDS,
+        Some(v) => v.as_u64().ok_or(InvokeError::TypeMismatch)?,
+    };
     Ok(Guardrails {
         max_iterations,
         max_cost: parse_max_cost(g, default_cost)?,
+        max_duration: Some(Duration::from_secs(max_seconds)),
     })
 }
 
@@ -729,11 +793,15 @@ fn run_to_json(run: &RunSummary) -> Value {
 /// Render a plugin [`Outcome`] as JSON (serialization is a host concern, so the
 /// pinion-free substrate stays serde-free).
 fn outcome_to_json(outcome: &Outcome) -> Value {
-    let state = match outcome.state {
-        OutcomeState::Converged => "converged",
-        OutcomeState::Exhausted => "exhausted",
-        OutcomeState::Failed => "failed",
-        OutcomeState::Cancelled => "cancelled",
+    let (state, ceiling) = match outcome.state {
+        OutcomeState::Converged => ("converged", None),
+        // ⚠ THE STATE WORD IS UNCHANGED and the ceiling rides BESIDE it, deliberately. Folding the
+        // ceiling into the word (`exhausted_duration`) would change the value space of a key old
+        // readers decode whole, which is a wire break no address or shape pin can see (R342). An
+        // added KEY is absent-not-wrong to a reader that has never heard of it.
+        OutcomeState::Exhausted(ceiling) => ("exhausted", Some(ceiling.wire_str())),
+        OutcomeState::Failed => ("failed", None),
+        OutcomeState::Cancelled => ("cancelled", None),
     };
     // Cost is self-describing on the wire: the scalar amount plus its unit label
     // (both from `Cost` itself, so the host never names a variant), so a peer
@@ -742,13 +810,21 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
     let (cost, unit) = outcome
         .cost
         .map_or((0, None), |c| (c.amount(), Some(c.unit())));
-    json!({
+    let mut answer = json!({
         "state": state,
         "iterations": outcome.iterations,
         "cost": cost,
         "unit": unit,
         "failure": outcome.failure.as_ref().map(|e| format!("{e:?}")),
-    })
+    });
+    // WHICH CEILING, present only when there was one — so the key's presence is itself the claim,
+    // the rule `run_to_json` follows for `opened_by`. `exhausted` with no ceiling beside it told a
+    // caller to change something without saying what, and the three ceilings have three different
+    // remedies.
+    if let Some(ceiling) = ceiling {
+        answer[RUN_CEILING_KEY] = json!(ceiling);
+    }
+    answer
 }
 
 #[cfg(test)]
@@ -1413,10 +1489,11 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            40,
-            "one probe per declared argument of every FORM, nesting included: eight for an \
-             orchestrator, seven for a pipe, nine for an agent, fifteen for a dialogue, and one to \
-             cancel",
+            44,
+            "one probe per declared argument of every FORM, nesting included: nine for an \
+             orchestrator, eight for a pipe, ten for an agent, sixteen for a dialogue, and one to \
+             cancel — one more per run form than before the DURATION ceiling, which is what makes \
+             `max_seconds` a bound this daemon reads rather than a word it publishes",
         );
     }
 
@@ -1433,8 +1510,9 @@ mod tests {
                 crate::wire::PLUGINS_GRAMMAR
             )
             .count_or_panic(),
-            8,
-            "one per nested field of every form: two guardrail fields on each of the four run forms",
+            12,
+            "one per nested field of every form: THREE guardrail fields on each of the four run \
+             forms, since a run is bounded in steps, in spend and in time",
         );
     }
 
@@ -1512,6 +1590,153 @@ mod tests {
             0,
             "every verb this surface serves takes arguments, so the claim drives nothing — and the \
              number is what says so",
+        );
+    }
+
+    /// A live plugin host over one pane, and its registry — the fixture the two duration gates
+    /// share. The registry is handed back because a run's ending is read off it.
+    fn host_with_a_pane() -> (PluginsExternal, Arc<Mutex<RunRegistry>>, PaneId) {
+        let (workspace, pane) = pane_painting("");
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let external =
+            PluginsExternal::new(workspace, Arc::clone(&registry), None, None, None, None);
+        (external, registry, pane)
+    }
+
+    /// Poll the registry until run `id` has left `running`, and answer its rendered JSON.
+    ///
+    /// Bounded well above the ceiling under test, so a run that IGNORED its deadline fails here
+    /// with a timeout rather than hanging the suite.
+    fn ended(registry: &Arc<Mutex<RunRegistry>>, id: u64, within: Duration) -> Value {
+        let start = Instant::now();
+        loop {
+            let entry = {
+                let mut held = lock(registry);
+                held.sweep();
+                held.snapshot()
+                    .iter()
+                    .find(|run| run.id.0 == id)
+                    .map(run_to_json)
+            };
+            if let Some(entry) = &entry
+                && entry["state"]["status"] != json!("running")
+            {
+                return entry.clone();
+            }
+            assert!(
+                start.elapsed() < within,
+                "run {id} was still running after {:?}: {entry:?}",
+                start.elapsed(),
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// ⚠⚠ **A RUN ASKED TO STOP AFTER A SECOND STOPS AFTER A SECOND** — the wire half of the
+    /// duration ceiling, end to end through the verb a client actually calls.
+    ///
+    /// The iteration ceiling is put out of reach (a hundred thousand steps this pane will never
+    /// take) so that the ONLY bound that can end this run is the clock. Before the ceiling existed
+    /// the same call was answered `Ok` and bounded by iterations instead — which is the exact
+    /// failure this gate is shaped around: not a refusal, an ANSWER OF SUCCESS over a bound nobody
+    /// applied.
+    ///
+    /// ⚠ The `ceiling` key is the second half and not a decoration. A run that stopped at a second
+    /// and reported only `exhausted` would be indistinguishable, to every reader on this wire, from
+    /// one that ran out of turns.
+    #[test]
+    fn a_run_asked_to_stop_after_a_second_stops_at_the_clock_and_says_so() {
+        let (mut external, registry, pane) = host_with_a_pane();
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                    "guardrails": { "max_iterations": 100_000, "max_seconds": 1 },
+                })),
+            )
+            .expect("a run bounded in time is a well-formed run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+
+        let took = Instant::now();
+        let entry = ended(
+            &registry,
+            u64::try_from(id).expect("a run id is not negative"),
+            Duration::from_secs(20),
+        );
+        let outcome = &entry["state"]["outcome"];
+
+        assert_eq!(
+            outcome["state"],
+            json!("exhausted"),
+            "a run out of time is exhausted by a guardrail, not converged or failed: {entry:?}",
+        );
+        assert_eq!(
+            outcome[RUN_CEILING_KEY],
+            json!("duration"),
+            "and the guardrail it names is the CLOCK — the iteration ceiling was a hundred \
+             thousand and this pane never took a hundred thousand steps: {entry:?}",
+        );
+        assert!(
+            took.elapsed() < Duration::from_secs(10),
+            "it must stop near the second it was given, not at some other bound: {:?}",
+            took.elapsed(),
+        );
+    }
+
+    /// ⚠⚠ **A BOUND THIS DAEMON DOES NOT KNOW IS REFUSED, WHERE EVERY OTHER UNKNOWN KEY ON THIS
+    /// WIRE IS IGNORED** — and the asymmetry is the claim, so both halves are driven here.
+    ///
+    /// Ignoring an ordinary argument makes a verb do LESS than it was asked, and the caller can see
+    /// that in the result. Ignoring a bound makes the run do MORE — without limit — and answers
+    /// success. `guardrails: {"max_secnods": 5}` was a run with no time ceiling, no way to find
+    /// out, and a typo for a cause.
+    ///
+    /// ⚠ THE CONTROL is the same call with the key spelled right: it must be ACCEPTED. Without it
+    /// this gate would also pass over a parser that refused every guardrail object there is.
+    #[test]
+    fn a_guardrail_this_daemon_does_not_know_is_refused_rather_than_ignored() {
+        let (mut external, _registry, pane) = host_with_a_pane();
+        let mut ask = |guardrails: Value| {
+            external.invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "guardrails": guardrails,
+                })),
+            )
+        };
+
+        let refused = ask(json!({ "max_secnods": 5 }))
+            .expect_err("a bound this daemon cannot honour must not be answered with success");
+        let said = format!("{refused:?}");
+        assert!(
+            said.contains("max_secnods") && said.contains("max_seconds"),
+            "the refusal names the key it did not know AND what it takes instead, or a caller \
+             cannot fix a typo from it: {said}",
+        );
+
+        // THE CONTROL — the same shape, spelled as the grammar publishes it.
+        assert!(
+            ask(json!({ "max_seconds": 5 })).is_ok(),
+            "the declared spelling must be accepted, or the refusal above is about guardrails in \
+             general rather than about an unknown one",
+        );
+
+        // ⚠ AND THE REFUSAL IS PER UNIT, because the published forms are: a byte-relay plugin is
+        // not offered `max_tokens`, so naming one is naming a bound that cannot guard this run.
+        let wrong_unit = ask(json!({ "max_tokens": 5 }))
+            .expect_err("a token bound is not a guardrail of a run that spends bytes");
+        assert!(
+            format!("{wrong_unit:?}").contains("bytes"),
+            "and it says which unit this run spends: {wrong_unit:?}",
         );
     }
 }

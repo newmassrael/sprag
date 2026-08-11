@@ -127,9 +127,11 @@ impl Plugin for Agent {
 
         let cost = panes.inject(self.pane, &self.prompt_keys())?.bytes();
 
-        // If cancelled mid-wait, don't converge or record a partial reply —
-        // return Continue so the Driver's loop-top ends the run Cancelled.
-        if self.await_reply(panes, run) == Waited::Cancelled {
+        // If the RUN ended mid-wait — cancelled, or out of time — don't converge
+        // or record a partial reply. Return Continue so the Driver's loop top
+        // decides the terminal state, which is the only place that knows whether
+        // it was a cancel or the duration ceiling.
+        if self.await_reply(panes, run) == Waited::Stopped {
             return Ok(Step {
                 cost: Cost::Bytes(cost),
                 verdict: Verdict::Continue,
@@ -154,7 +156,7 @@ impl Plugin for Agent {
 mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
-    use crate::driver::{Driver, Guardrails, Outcome, OutcomeState};
+    use crate::driver::{Ceiling, Driver, Guardrails, Outcome, OutcomeState};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
 
@@ -177,6 +179,7 @@ mod tests {
         Driver::new(Guardrails {
             max_iterations: 4,
             max_cost: None,
+            max_duration: None,
         })
         .run(agent, access, &RunContext::uncancellable())
     }
@@ -214,6 +217,67 @@ mod tests {
         assert!(captured.contains("two:x"), "captured: {captured:?}");
     }
 
+    /// ⚠⚠ **THE RUN'S DEADLINE REACHES INSIDE A STEP**, which is the only thing that makes it a
+    /// bound at all.
+    ///
+    /// The peer never exits, so `await_reply` waits out `spec.timeout` in full. Both halves drive
+    /// that same peer and differ only in whether the run is timed:
+    ///
+    /// * The CONTROL has no deadline. Its step runs its own four-second timeout to the end, the
+    ///   agent captures whatever is on screen and converges — which is the behaviour a per-turn
+    ///   timeout is FOR, and it is unchanged.
+    /// * The SUBJECT is given three hundred milliseconds. It must come back an order of magnitude
+    ///   sooner, and it must come back `Exhausted(Duration)`.
+    ///
+    /// ⚠ A deadline enforced only at the Driver's loop top would make both halves take four
+    /// seconds and both assertions about ELAPSED time fail — which is why the timing is asserted
+    /// and not just the outcome. The two are the same claim read two ways: the run stopped because
+    /// of the clock, and it stopped WHEN the clock said.
+    #[test]
+    fn a_runs_deadline_cuts_a_step_that_is_still_inside_its_own_timeout() {
+        // `exec cat` holds its pty open forever, and `eof: false` means no Ctrl-D is sent to end
+        // it — so nothing but a bound can end this wait.
+        let timed = |deadline: Option<Duration>| {
+            let (access, pane) = sh_access("exec cat", 40, 6);
+            let mut spec = AgentSpec::new("ping");
+            spec.eof = false;
+            spec.timeout = Duration::from_secs(4);
+            let mut agent = Agent::new(pane, spec);
+            let start = std::time::Instant::now();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 100,
+                max_cost: None,
+                max_duration: deadline,
+            })
+            .run(&mut agent, &access, &RunContext::uncancellable());
+            (outcome, start.elapsed())
+        };
+
+        let (control, control_took) = timed(None);
+        assert_eq!(
+            control.state,
+            OutcomeState::Converged,
+            "an untimed run rides its own per-turn timeout out and converges on what it saw",
+        );
+        assert!(
+            control_took >= Duration::from_secs(3),
+            "the control must actually have waited its step out, or the subject below is being \
+             compared against nothing; it took {control_took:?}",
+        );
+
+        let (subject, subject_took) = timed(Some(Duration::from_millis(300)));
+        assert_eq!(
+            subject.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "a run out of time is exhausted by the DURATION ceiling, and says so",
+        );
+        assert!(
+            subject_took < Duration::from_secs(2),
+            "the deadline must end the wait that is in flight, not merely stop the next step \
+             being taken — this run took {subject_took:?} against a step timeout of 4s",
+        );
+    }
+
     /// The genuine AI↔AI proof: drive a real `claude -p` pane and capture its
     /// answer. Ignored by default — it needs the `claude` CLI, network, and
     /// auth, and is non-deterministic. Run manually:
@@ -239,6 +303,7 @@ mod tests {
         let outcome = Driver::new(Guardrails {
             max_iterations: 2,
             max_cost: None,
+            max_duration: None,
         })
         .run(&mut agent, &access, &RunContext::uncancellable());
 

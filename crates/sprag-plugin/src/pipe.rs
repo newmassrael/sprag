@@ -71,7 +71,7 @@ impl Plugin for Pipe {
 mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
-    use crate::driver::{Driver, Guardrails, OutcomeState};
+    use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::thread::sleep;
@@ -128,9 +128,10 @@ mod tests {
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
             max_cost: None,
+            max_duration: None,
         })
         .run(&mut pipe, &access, &RunContext::uncancellable());
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
 
         // The destination received the relayed text (its echo is async).
         assert!(

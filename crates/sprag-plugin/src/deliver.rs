@@ -126,8 +126,9 @@ pub enum Delivered {
     /// Every attempt was written and none of them ever appeared. The bytes went to the pty; the
     /// program behind it did not show them.
     Unconfirmed { attempts: u32, written: Written },
-    /// The run was cancelled part-way. Nothing is claimed about what the pane holds.
-    Cancelled { attempts: u32, written: Written },
+    /// THE RUN ENDED part-way — cancelled, or out of time. Nothing is claimed about what the pane
+    /// holds. Which of the two it was is the [`crate::run::RunContext`]'s to answer.
+    Stopped { attempts: u32, written: Written },
 }
 
 impl Delivered {
@@ -143,7 +144,7 @@ impl Delivered {
         match self {
             Self::Confirmed { written, .. }
             | Self::Unconfirmed { written, .. }
-            | Self::Cancelled { written, .. } => written,
+            | Self::Stopped { written, .. } => written,
         }
     }
 }
@@ -175,8 +176,8 @@ pub fn deliver(
     let mut attempts = 0_u32;
 
     for _ in 0..spec.attempts.max(1) {
-        if run.cancelled() {
-            return Ok(Delivered::Cancelled {
+        if run.stopped() {
+            return Ok(Delivered::Stopped {
                 attempts,
                 written: Written::of(written),
             });
@@ -184,8 +185,8 @@ pub fn deliver(
         attempts += 1;
         written += panes.inject(pane, &keys)?.bytes();
         match await_text(panes, run, pane, needle, spec.echo_timeout) {
-            Seen::Cancelled => {
-                return Ok(Delivered::Cancelled {
+            Seen::Stopped => {
+                return Ok(Delivered::Stopped {
                     attempts,
                     written: Written::of(written),
                 });
@@ -233,10 +234,20 @@ pub fn has_painted(panes: &dyn PaneAccess, pane: PaneId) -> bool {
 enum Seen {
     Yes,
     No,
-    Cancelled,
+    /// The run ended under it — cancelled, or past its deadline.
+    Stopped,
 }
 
-/// Wait, bounded and cancellable, for `needle` to appear on the pane.
+/// Wait, bounded by `timeout` AND by the run's own deadline, for `needle` to appear on the pane.
+///
+/// ⚠⚠ **THE SECOND BOUNDED WAIT IN THIS CRATE**, and it is here rather than routed through
+/// [`poll_until`](crate::run::poll_until) because it needs a THREE-way predicate: a pane that has
+/// gone away can never show anything, and saying so at once is not the same answer as "not yet".
+/// What it must not have of its own is the STOP condition — a wait that knew about cancellation and
+/// not about the deadline would let a delivery outlive a run that is over, which is exactly the
+/// hole the deadline was added to close. So both waits ask
+/// [`RunContext::stopped`](crate::run::RunContext::stopped), which is the one definition of
+/// *the run is over*.
 fn await_text(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -246,8 +257,8 @@ fn await_text(
 ) -> Seen {
     let start = std::time::Instant::now();
     loop {
-        if run.cancelled() {
-            return Seen::Cancelled;
+        if run.stopped() {
+            return Seen::Stopped;
         }
         // An unknown pane can never show anything, and saying so at once beats spending the whole
         // grace on it — the caller's next `inject` will report `UnknownPane` properly.
@@ -595,7 +606,7 @@ mod tests {
         .expect("no error");
         assert_eq!(
             outcome,
-            Delivered::Cancelled {
+            Delivered::Stopped {
                 attempts: 1,
                 written: Written::of(5),
             },
@@ -610,6 +621,60 @@ mod tests {
             panes.injected.lock().expect("the log").len(),
             1,
             "no submit and no retry after the cancel",
+        );
+    }
+
+    /// ⚠⚠ **A RUN OUT OF TIME ENDS THIS WAIT TOO** — the second bounded wait in this crate, held to
+    /// the same stop condition as the first.
+    ///
+    /// A delivery's `echo_timeout` is its own affair and this fixture's peer never echoes, so
+    /// without the run's deadline the two attempts would each ride that timeout out in full. The
+    /// timings are the claim: the deadline is a tenth of one attempt's grace, so a delivery that
+    /// consulted only the cancel flag would take some multiple of `grace` and this would fail on
+    /// elapsed time even though the outcome looked right.
+    ///
+    /// ⚠ THE CONTROL comes first and must be SLOW: an untimed run really does spend both attempts,
+    /// so the subject below is being compared against a wait that genuinely happens.
+    #[test]
+    fn a_run_out_of_time_ends_a_delivery_that_is_still_waiting_for_its_echo() {
+        let grace = Duration::from_millis(400);
+        let attempt = |deadline: Option<Duration>| {
+            let panes = Recorder {
+                text: String::new(), // never shows the text, so only a bound can end the wait
+                hidden_reads: Mutex::new(0),
+                injected: Mutex::new(Vec::new()),
+                cancel_on_read: None,
+            };
+            let mut spec = Delivery::new();
+            spec.echo_timeout = grace;
+            spec.attempts = 2;
+            let run = RunContext::uncancellable().deadline_in(deadline);
+            let start = std::time::Instant::now();
+            let outcome = deliver(&panes, &run, PaneId(1), "hello", &spec).expect("no error");
+            (outcome, start.elapsed())
+        };
+
+        let (control, control_took) = attempt(None);
+        assert!(
+            matches!(control, Delivered::Unconfirmed { attempts: 2, .. }),
+            "an untimed delivery spends every attempt it was given: {control:?}",
+        );
+        assert!(
+            control_took >= grace,
+            "and it really waited — otherwise the subject below is compared against nothing: \
+             {control_took:?}",
+        );
+
+        let (subject, subject_took) = attempt(Some(Duration::from_millis(40)));
+        assert!(
+            matches!(subject, Delivered::Stopped { attempts: 1, .. }),
+            "a run out of time stops the delivery where it stands, charged for the one injection \
+             it had already made: {subject:?}",
+        );
+        assert!(
+            subject_took < grace,
+            "and it stops INSIDE the wait rather than after it: {subject_took:?} against a \
+             per-attempt grace of {grace:?}",
         );
     }
 
@@ -661,7 +726,7 @@ mod tests {
         .expect("no error");
         assert_eq!(
             outcome,
-            Delivered::Cancelled {
+            Delivered::Stopped {
                 attempts: 0,
                 written: Written::of(0),
             },

@@ -3901,8 +3901,9 @@ fn show_grammar(args: Vec<String>) -> io::Result<()> {
     // until R355. Two readers of one answer is the shape this whole surface exists to remove, and
     // the second one had already gone wrong: it printed a nested argument's TYPE and never its
     // fields, so `guardrails object optional` was the entire truth an operator got about the
-    // iteration ceiling and the cost ceiling — the affirmative silence the nesting was added to
-    // end, printed by the verb whose job is to end it.
+    // ceilings inside it — the affirmative silence the nesting was added to end, printed by the
+    // verb whose job is to end it. (Two ceilings then, three now: the set it would have hidden has
+    // grown since, which is what an undescribed object costs over time.)
     let surface =
         sprag_rpc::read_surface(&answer).map_err(|error| bad_input(&format!("{error}")))?;
     let mut surface = surface;
@@ -4283,8 +4284,13 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {} after {} iterations, {} {unit}{}\n{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}\n{output}",
                 outcome["state"].as_str().unwrap_or("?"),
+                // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
+                // same reason: `exhausted` names a class of ending and not the bound to change.
+                outcome[sprag_host::plugins::RUN_CEILING_KEY]
+                    .as_str()
+                    .map_or_else(String::new, |ceiling| format!(" ({ceiling})")),
                 outcome["iterations"].as_u64().unwrap_or_default(),
                 outcome["cost"].as_u64().unwrap_or_default(),
                 outcome["failure"]
@@ -4298,11 +4304,12 @@ fn render_run(run: &Value) -> String {
 
 /// Park until run `id` leaves `running`, then answer its entry.
 ///
-/// ⚠ NO DEADLINE OF ITS OWN, deliberately. A run is bounded by ITS guardrails — the iteration
-/// ceiling and the cost ceiling it was started with — so a waiter that gave up early would be
-/// inventing a second, weaker bound and reporting a run as unfinished that the daemon is still
-/// correctly running. The bound belongs to the run; the wait belongs to the person, who has a
-/// keyboard.
+/// ⚠ NO DEADLINE OF ITS OWN, deliberately — and the run now HAS one, which makes the argument
+/// stronger rather than obsolete. A run is bounded by ITS guardrails: the iteration ceiling, the
+/// cost ceiling, and the wall-clock deadline it was started with. A waiter that gave up early would
+/// be inventing a second, weaker bound and reporting a run as unfinished that the daemon is still
+/// correctly running — and it would now be a duplicate of a bound the run already carries. The
+/// bound belongs to the run; the wait belongs to the person, who has a keyboard.
 fn wait_for_run(conn: &mut HostConn, session: Option<&str>, id: u64) -> io::Result<Value> {
     loop {
         let answer = query_slot(

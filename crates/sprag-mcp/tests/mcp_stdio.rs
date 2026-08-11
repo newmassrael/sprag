@@ -4299,9 +4299,11 @@ fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
 
     let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
     assert!(
-        ended.contains("exhausted after 3 iterations"),
-        "THE GUARDRAIL BOUND IT: the agent asked for three turns and got three, where this \
-         daemon's own default is {}. {ended}",
+        ended.contains("exhausted — it ran out of iterations after 3 iterations"),
+        "THE GUARDRAIL BOUND IT, AND SAID WHICH ONE: the agent asked for three turns and got \
+         three, where this daemon's own default is {}. The named ceiling is the other half — an \
+         agent told only `exhausted` cannot tell the turn ceiling it chose from the wall-clock \
+         deadline it inherited, and the two have different remedies. {ended}",
         sprag_host::plugins::DEFAULT_MAX_ITERATIONS,
     );
     assert!(
@@ -4387,6 +4389,125 @@ fn an_agent_may_tighten_a_guardrail_and_never_loosen_one() {
     );
     let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
     assert!(ended.contains("after 2 iterations"), "{ended}");
+}
+
+/// ⚠⚠ **THE CLAMP HELD A CEILING IT WAS NEVER TAUGHT** — the payoff of a mouth whose arguments are
+/// DERIVED from the daemon's publication rather than written down in it.
+///
+/// `max_seconds` is a guardrail this build added. Not one line of the clamp mentions it: the rule
+/// is *any published argument whose name the daemon also publishes a default for is a ceiling*, so
+/// a bound that reached the grammar reached the authority policy in the same compile. That is the
+/// property the whole publication surface was built for, and until this argument existed nothing
+/// had ever added a ceiling to test it with.
+///
+/// ⚠ This gate says the ceiling EXISTS and binds; it cannot say the number came from the daemon,
+/// because this daemon and this binary are one build and agree by construction. That half is
+/// [`the_ceiling_an_agent_is_held_to_is_the_daemons_and_not_this_binarys`](self)'s, against a peer
+/// that publishes a different one.
+///
+/// ⚠ AND THE OTHER HALF: a run under the ceiling is honoured AND ends by the clock it named, with
+/// the ceiling that stopped it in the answer. Without that, this gate would pass over a surface
+/// that refused every `max_seconds` there is.
+#[test]
+fn an_agent_is_held_to_a_time_ceiling_the_clamp_was_never_told_about() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "clock", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+
+    let ceiling = sprag_host::plugins::DEFAULT_MAX_SECONDS;
+    let refused = server.call_tool_error(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "clock",
+            "stimulus": "x",
+            "max_seconds": ceiling + 1,
+        }),
+    );
+    assert!(
+        refused.contains("max_seconds") && refused.contains(&format!("at most {ceiling}")),
+        "a time bound above this daemon's own is refused naming the ceiling, exactly as the other \
+         two are, with no rule of its own: {refused}",
+    );
+
+    // THE OTHER HALF — under the ceiling, and the clock is what ends it.
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "clock",
+            "stimulus": "x",
+            "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+            "max_iterations": 100,
+            "max_seconds": 1,
+        }),
+    );
+    let ended = server.wait_for_tool("list_runs", json!({}), "exhausted");
+    assert!(
+        ended.contains("it ran out of duration"),
+        "an agent is told WHICH ceiling stopped its loop, and here it is the clock rather than \
+         the hundred turns it also asked for — three ceilings with three different remedies, and \
+         `exhausted` alone names none of them: {ended}",
+    );
+}
+
+/// ⚠⚠ **THE CEILING AN AGENT IS HELD TO IS THE DAEMON'S, NOT THIS BINARY'S** — the load-bearing
+/// claim under the whole authority policy, and until now it was only a comment.
+///
+/// `guardrail_defaults` says it reads the daemon *"though this binary could see both"*, because a
+/// number compiled into a separately-built client is a different number the day the two are not the
+/// same build. Nothing drove it — and nothing COULD, with the tools this workspace had: every
+/// daemon a test can start is built from these same constants, so a mouth that had quietly compiled
+/// `DEFAULT_MAX_SECONDS` in would agree with every one of them. **An absence cannot ask this
+/// question**; a client using its own constant survives every absence perfectly.
+///
+/// So the witness is a peer that PUBLISHES A DIFFERENT CEILING (`sprag_peer::Missing::answering`,
+/// added for this): a real daemon behind it, one key of one answer replaced. Sixty seconds is far
+/// under this build's own hour and far over the peer's five.
+///
+/// ⚠ Two controls, because one refusal proves little: four seconds is ACCEPTED (so five is a bound
+/// and not a ban), and `max_iterations: 60` is ACCEPTED (so the mouth re-read the whole slot from
+/// the daemon rather than special-casing the key the peer moved).
+#[test]
+fn the_ceiling_an_agent_is_held_to_is_the_daemons_and_not_this_binarys() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let peer = sprag_peer::OldDaemon::proxying(
+        &socket_path(),
+        &sock,
+        sprag_peer::Missing::answering(&[("max_seconds", json!(5))]),
+    );
+    let mut server = McpServer::spawn_in_pane(peer.sock(), 0);
+    server.call_tool(
+        "open_pane",
+        json!({ "name": "skew", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+    );
+
+    let ask = |guardrail: &str, value: u64| {
+        json!({
+            "plugin": "orchestrator",
+            "pane": "skew",
+            "stimulus": "x",
+            guardrail: value,
+        })
+    };
+
+    // Sixty seconds is over the ceiling THIS DAEMON publishes, which is five.
+    let refused = server.call_tool_error("orchestrate", ask("max_seconds", 60));
+    assert!(
+        refused.contains("at most 5"),
+        "the mouth must hold the agent to the number the daemon answered. Reading its own \
+         compiled default ({}) would have let sixty through: {refused}",
+        sprag_host::plugins::DEFAULT_MAX_SECONDS,
+    );
+
+    // CONTROL: under the peer's ceiling is honoured, so five is a bound and not a ban.
+    server.call_tool("orchestrate", ask("max_seconds", 4));
+    // CONTROL: the ceiling the peer did NOT move still binds where it always did, so the mouth read
+    // the whole published slot rather than one key it was taught about.
+    server.call_tool("orchestrate", ask("max_iterations", 60));
 }
 
 /// ⚠⚠ **AN AGENT SEES AND CANCELS ITS OWN RUNS, AND NOBODY ELSE'S** — the answer to *whose runs are
@@ -4509,8 +4630,9 @@ fn an_agent_waits_for_its_own_loop_to_finish_rather_than_polling() {
     // the right choice.
     let ended = server.call_tool("list_runs", json!({}));
     assert!(
-        ended.contains("exhausted after 2 iterations"),
-        "the run really did finish, at the guardrail the agent asked for: {ended}",
+        ended.contains("exhausted — it ran out of iterations after 2 iterations"),
+        "the run really did finish, at the guardrail the agent asked for — and it names which \
+         ceiling that was: {ended}",
     );
 }
 

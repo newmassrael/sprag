@@ -7809,8 +7809,13 @@ fn daemon_with_one_pane(label: &str) -> (DaemonGuard, PathBuf, u64) {
 /// that verb, driven as a person drives it: the shipped binary, a real daemon, a real pane.
 ///
 /// The number is the claim. `--max-iterations 2` against a daemon whose own default is 100 must
-/// come back `exhausted after 2 iterations` — a run that ignored the guardrail would report a
-/// different number and fail here with it.
+/// come back `exhausted (iterations) after 2 iterations` — a run that ignored the guardrail would
+/// report a different number and fail here with it.
+///
+/// ⚠ And the WORD IN THE BRACKET is a second claim, on the daemon's other two ceilings: this run
+/// was stopped by the one the person named, not by the wall-clock deadline or the cost ceiling it
+/// silently inherited. Before the outcome carried which ceiling, those three endings were one
+/// word and a person could not tell them apart.
 #[test]
 fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
     let (_guard, sock, pane) = daemon_with_one_pane("orchestrate");
@@ -7834,7 +7839,9 @@ fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
     );
     assert!(started.ok, "the run was refused: {}", started.stderr);
     assert!(
-        started.stdout.contains("exhausted after 2 iterations"),
+        started
+            .stdout
+            .contains("exhausted (iterations) after 2 iterations"),
         "THE GUARDRAIL BOUND IT, at the number the person asked for rather than this daemon's \
          default of {}: {}",
         sprag_host::plugins::DEFAULT_MAX_ITERATIONS,
@@ -7854,6 +7861,57 @@ fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
         listed.stdout.contains("run 0") && listed.stdout.contains("exhausted"),
         "runs reports the finished run: {}",
         listed.stdout,
+    );
+}
+
+/// ⚠⚠ **A FLAG NOBODY WROTE IN THIS BINARY** — the publication surface paying out for an argument
+/// that did not exist when the door was built.
+///
+/// R355 proved the CLI FOLLOWS the daemon's grammar by RENAMING an argument in the daemon and
+/// watching the untouched CLI refuse the old spelling. This is the other direction, and the one
+/// that matters more: a guardrail ADDED to the daemon's grammar is reachable from the command line
+/// with **no edit to any CLI source file at all**. `sprag orchestrate` contains no string
+/// `max_seconds`; it asks the daemon what a run takes and offers what it is told.
+///
+/// The claim would be hollow without the run actually being bounded by it, so all three legs are
+/// here: the flag is ACCEPTED, the run ends at the CLOCK (its iteration ceiling is a hundred
+/// thousand steps this pane will never take), and the person's own renderer NAMES which ceiling
+/// stopped it.
+#[test]
+fn a_person_bounds_a_loop_in_time_with_a_flag_this_binary_never_spells() {
+    let (_guard, sock, pane) = daemon_with_one_pane("clockwork");
+    let pane = pane.to_string();
+
+    let started = sprag(
+        &sock,
+        &[
+            "orchestrate",
+            "orchestrator",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--stimulus",
+            "echo timed",
+            "--sentinel",
+            "A SENTINEL THIS PANE NEVER PRINTS",
+            "--max-iterations",
+            "100000",
+            "--max-seconds",
+            "1",
+            "--wait",
+        ],
+    );
+    assert!(
+        started.ok,
+        "the daemon publishes max_seconds, so the CLI offers --max-seconds: {}",
+        started.stderr,
+    );
+    assert!(
+        started.stdout.contains("exhausted (duration)"),
+        "THE CLOCK BOUND IT, and the person is told so: the iteration ceiling was a hundred \
+         thousand and nothing else could have ended this run. {}",
+        started.stdout,
     );
 }
 

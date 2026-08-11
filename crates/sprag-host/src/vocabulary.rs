@@ -1571,7 +1571,8 @@ mod tests {
             // question and a wronger one (it describes the raw wire's verbs, not the agent's tools).
             // R355: three more served, and this is the mouth they matter most on — an agent that
             // wanted a bounded loop against a sibling had to hand-roll one in its own turns,
-            // without the iteration ceiling, the typed cost ceiling or the cancel flag that exist.
+            // without the iteration ceiling, the typed cost ceiling, the wall-clock deadline or
+            // the cancel flag that exist.
             (36, 7, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",

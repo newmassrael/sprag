@@ -233,7 +233,7 @@ mod tests {
             // A trivial "run" that completes immediately.
             *lock(&worker_state) = RunState::Done {
                 outcome: Outcome {
-                    state: sprag_plugin::OutcomeState::Exhausted,
+                    state: sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Iterations),
                     iterations: 0,
                     cost: None,
                     failure: None,

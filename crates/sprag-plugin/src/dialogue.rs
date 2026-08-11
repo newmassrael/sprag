@@ -266,10 +266,11 @@ impl Plugin for Dialogue {
             panes.pane_eof(id).unwrap_or(true)
         });
 
-        // If cancelled mid-turn, record nothing (no junk partial turn) and
-        // return Continue with the spend committed so far; the Driver's loop-top
-        // ends the run Cancelled. The guard closes the pane on this return.
-        if waited == Waited::Cancelled {
+        // If the RUN ended mid-turn — cancelled, or out of time — record nothing
+        // (no junk partial turn) and return Continue with the spend committed so
+        // far; the Driver's loop top decides which terminal state it was. The
+        // guard closes the pane on this return.
+        if waited == Waited::Stopped {
             return Ok(Step {
                 // Token-denominated plugin: a cancelled turn has no measured
                 // token spend (Tokens(0)); the run ends Cancelled at the loop top.
@@ -453,7 +454,7 @@ fn decode_claude_json(panes: &dyn PaneAccess, id: PaneId) -> DecodedTurn {
 mod tests {
     use super::*;
     use crate::access::{KeyStroke, PaneRow, WorkspacePaneAccess, Written};
-    use crate::driver::{Driver, Guardrails, Outcome, OutcomeState};
+    use crate::driver::{Ceiling, Driver, Guardrails, Outcome, OutcomeState};
     use sprag_terminal::Workspace;
     use std::sync::{Arc, Mutex};
 
@@ -558,6 +559,7 @@ mod tests {
             Guardrails {
                 max_iterations: max_turns,
                 max_cost: None,
+                max_duration: None,
             },
         )
     }
@@ -569,7 +571,7 @@ mod tests {
         let spec = DialogueSpec::new(count_fake(), count_fake(), "count upward");
         let (_ws, outcome, transcript) = run(spec, 3);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         assert_eq!(outcome.iterations, 3);
         let t = transcript.expect("a transcript");
         // Labels alternate, and the reported line-counts strictly increase
@@ -616,7 +618,7 @@ mod tests {
         spec.rows = 4;
         let (_ws, outcome, transcript) = run(spec, 1);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         let t = transcript.expect("a transcript");
         // The reply is kept verbatim (newline-separated), so the scrolled-off
         // line 5 appears as its own line; "\n5\n" can't match "15"/"25"/"50".
@@ -636,7 +638,7 @@ mod tests {
         spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 2);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         // Two turns × (30 + 20) tokens — proof the Driver accumulates real
         // tokens (a byte count would differ from the render_prompt length).
         assert_eq!(
@@ -663,10 +665,11 @@ mod tests {
             Guardrails {
                 max_iterations: 100,
                 max_cost: Some(Cost::Tokens(50)),
+                max_duration: None,
             },
         );
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Cost));
         assert_eq!(
             outcome.iterations, 1,
             "one turn must exhaust the 50-token budget"
@@ -691,7 +694,7 @@ mod tests {
 
         assert_eq!(
             outcome.state,
-            OutcomeState::Exhausted,
+            OutcomeState::Exhausted(Ceiling::Iterations),
             "must not Fail on bad JSON"
         );
         let t = transcript.expect("a transcript");
@@ -720,7 +723,7 @@ mod tests {
         spec.endpoints[0].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 1);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         // Real usage tokens (7 + 3) still bill the cost, even with no result text.
         assert_eq!(
             outcome.cost,
@@ -755,7 +758,7 @@ mod tests {
         spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 4);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         let t = transcript.expect("a transcript");
         let a_fresh = t.find("A: fresh").expect("A's first turn must be fresh");
         let a_resumed = t.find("A: resumed").expect("A's later turn must resume");
@@ -784,7 +787,7 @@ mod tests {
         spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 5);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         let t = transcript.expect("a transcript");
         assert_eq!(
             t.matches("A: ok").count(),
@@ -827,7 +830,7 @@ mod tests {
         spec.timeout = Duration::from_millis(60);
         let (workspace, outcome, _transcript) = run(spec, 1);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         assert!(
             workspace.lock().unwrap().panes().is_empty(),
             "a timed-out turn leaked its pane"
@@ -860,6 +863,7 @@ mod tests {
             let outcome = Driver::new(Guardrails {
                 max_iterations: 100,
                 max_cost: None,
+                max_duration: None,
             })
             .run(&mut dialogue, &access, &run_ctx);
             (outcome, dialogue.captured())
@@ -919,6 +923,7 @@ mod tests {
         let outcome = Driver::new(Guardrails {
             max_iterations: 3,
             max_cost: None,
+            max_duration: None,
         })
         .run(&mut dialogue, &NoPanes, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Failed);
@@ -959,7 +964,7 @@ mod tests {
         spec.endpoints[1].format = ReplyFormat::ClaudeJson;
         let (_ws, outcome, transcript) = run(spec, 4);
 
-        assert_eq!(outcome.state, OutcomeState::Exhausted);
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         // Real token cost accumulated over the turns (the round's whole point).
         eprintln!(
             "two_real_claudes_converse: real token cost = {:?}",

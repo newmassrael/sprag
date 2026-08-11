@@ -3,10 +3,18 @@
 //! Owns the SCE/SCXML statechart (`orchestration.scxml`: idle → running →
 //! converged/exhausted/failed) and the guardrails, and runs any [`Plugin`] to a
 //! terminal [`Outcome`]. Each microstep is one `Plugin::step`; the Driver
-//! enforces the iteration and cost budgets and maps the result onto the
-//! statechart. The plugin owns the behaviour; the Driver owns the lifecycle.
+//! enforces the iteration, cost and DURATION budgets and maps the result onto
+//! the statechart. The plugin owns the behaviour; the Driver owns the lifecycle.
+//!
+//! Two of the three ceilings are decided between steps, from counters the Driver
+//! keeps. The third cannot be: a run out of time may be INSIDE a step that will
+//! not return for minutes, so the deadline is armed into the [`RunContext`] and
+//! every bounded wait a plugin makes consults it.
+//!
+//! [`RunContext`]: crate::run::RunContext
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use sce_rust_runtime::Engine;
 
@@ -17,16 +25,102 @@ use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, Orchestr
 
 /// The termination guardrails every plugin run is bounded by (first-class
 /// safety per the README — an AI control loop must not run unbounded).
+///
+/// THREE independent ceilings, ANDed: whichever binds first ends the run, and
+/// the outcome names which one it was ([`Ceiling`]). They are independent
+/// because they answer three different questions a person asks about a loop —
+/// *how many times?*, *how much?*, and *for how long?* — and no two of them can
+/// stand in for each other. An iteration ceiling cannot bound a run whose single
+/// step blocks; a cost ceiling cannot bound a run whose steps are free (a
+/// print-mode dialogue reports `Tokens(0)` every turn).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Guardrails {
     /// Stop after this many steps.
     pub max_iterations: u32,
     /// Stop once the accumulated step cost reaches this bound. `None` leaves cost
-    /// unbounded (only [`max_iterations`](Self::max_iterations) applies). The
+    /// unbounded (the other two ceilings still apply). The
     /// bound's unit is the run's cost currency — every step the plugin reports
     /// shares it (see [`Cost`]) — so the Driver compares
     /// like with like and never sums bytes against tokens.
     pub max_cost: Option<Cost>,
+    /// STOP ONCE THIS MUCH WALL-CLOCK TIME HAS PASSED since the run began.
+    /// `None` leaves the run untimed.
+    ///
+    /// # ⚠⚠ Why the other two ceilings do not already cover this
+    ///
+    /// Both of them bound the run per STEP: `max_iterations` counts steps that
+    /// COMPLETED, and `max_cost` sums what completed steps spent. Neither can see
+    /// a step that is still running — so a run of 100 iterations against a peer
+    /// that answers slowly is bounded at 100 × that peer's own reply timeout,
+    /// a number nobody chose and no caller can read off the request. The only
+    /// bound expressible in the units a person actually reasons in — *"not more
+    /// than five minutes on this"* — was missing.
+    ///
+    /// ⚠ It is DISTINCT from the per-turn `timeout_ms` an `agent` or `dialogue`
+    /// takes: that bounds ONE reply and then the loop takes another turn. This
+    /// bounds the loop.
+    ///
+    /// The [`Driver`] arms it into the [`RunContext`] as an instant
+    /// ([`RunContext::deadline_in`]), which is what carries it into the waits
+    /// inside a step; a ceiling checked only between steps would be no ceiling
+    /// at all for a run stuck inside one.
+    ///
+    /// [`RunContext`]: crate::run::RunContext
+    /// [`RunContext::deadline_in`]: crate::run::RunContext::deadline_in
+    pub max_duration: Option<Duration>,
+}
+
+/// WHICH GUARDRAIL STOPPED A RUN — the reason an [`OutcomeState::Exhausted`] carries.
+///
+/// # ⚠⚠ Why an exhausted run that does not say which ceiling is barely an answer
+///
+/// `exhausted` alone tells a caller to change something without telling it WHAT. The three
+/// ceilings have three different remedies — give it more turns, give it more budget, give it more
+/// time — and with a third one added, guessing gets a third harder. Worse, a caller cannot even
+/// infer it by comparing the counters against what it asked for: the ceilings it did not name came
+/// from the DAEMON's defaults, so a run stopped by a default is stopped by a number the caller
+/// never saw.
+///
+/// # ⚠ Why it names the CONCEPT and not the argument that sets it
+///
+/// `duration`, not `max_seconds`. The obvious alternative — answer the knob the caller would turn —
+/// breaks on `Cost`, which is set by `max_bytes` on a byte-relay run and `max_tokens` on a
+/// dialogue: one ceiling, two argument names, chosen by the plugin. A concept per ceiling is the
+/// only naming that is one-to-one, and the `unit` key already beside it says which knob a `cost`
+/// answer means.
+///
+/// # ⚠ Why this is deliberately NOT a published vocabulary
+///
+/// The other closed sets on this wire are ARGUMENT vocabularies: a client picks a word from them,
+/// so publishing what is admissible is the difference between a call it can build and one it has
+/// to guess. This is an ANSWER word, and no peer decodes it into a closed type — both renderers
+/// take the string and print it. So a fourth ceiling is additive here in the strongest sense: an
+/// old reader shows a word it has never seen and is not wrong. Giving it a `WIRE_WORDS` nobody
+/// reads would be a constant the product does not enforce, which this project has removed twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ceiling {
+    /// [`Guardrails::max_iterations`] — the run took all the steps it was allowed.
+    Iterations,
+    /// [`Guardrails::max_cost`] — the run spent all it was allowed, in its own unit.
+    Cost,
+    /// [`Guardrails::max_duration`] — the run ran out of wall-clock time.
+    Duration,
+}
+
+impl Ceiling {
+    /// This ceiling's word on the wire — the ONE place the variant → name mapping lives, so the
+    /// host never spells a `Ceiling` variant ([`Cost::unit`]'s rule, one level up).
+    ///
+    /// Exhaustive, so a ceiling added to the type cannot reach the wire without a word: there is no
+    /// hand-written list for it to be left out of.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Iterations => "iterations",
+            Self::Cost => "cost",
+            Self::Duration => "duration",
+        }
+    }
 }
 
 /// Which terminal statechart state a run reached.
@@ -34,8 +128,12 @@ pub struct Guardrails {
 pub enum OutcomeState {
     /// A plugin step returned [`Verdict::Converged`].
     Converged,
-    /// A guardrail (iteration or cost budget) stopped the run.
-    Exhausted,
+    /// A GUARDRAIL stopped the run, and which one.
+    ///
+    /// The [`Ceiling`] is carried rather than reported beside it so that an exhausted outcome
+    /// which does not say what exhausted it cannot be constructed — the same reasoning that put
+    /// the unit inside [`Cost`] instead of next to it.
+    Exhausted(Ceiling),
     /// A plugin step failed.
     Failed,
     /// The run was cancelled (the host raised the cancel signal).
@@ -63,6 +161,13 @@ pub struct Driver {
     cost: Option<Cost>,
     failure: Option<PaneError>,
     progress: Option<ProgressCell>,
+    /// Which ceiling raised [`OrchestrationEvent::Exhaust`], recorded AT the raise.
+    ///
+    /// Recorded rather than re-derived at the end, because a deadline that passed one instant
+    /// after the decision would make a re-derivation disagree with the decision that was actually
+    /// taken. [`Driver::exhaust`] is the only writer, so the statechart cannot reach its
+    /// `exhausted` state without one.
+    exhausted_by: Option<Ceiling>,
 }
 
 /// WHAT A RUN HAS SPENT SO FAR — the counters the [`Driver`] keeps, readable while it is still
@@ -106,6 +211,7 @@ impl Driver {
             cost: None,
             failure: None,
             progress: None,
+            exhausted_by: None,
         }
     }
 
@@ -138,6 +244,10 @@ impl Driver {
 
     /// Drive `plugin` over `panes` until a terminal state, reporting the
     /// [`Outcome`].
+    ///
+    /// ⚠ The context the PLUGIN sees is not the one handed in: the run's deadline
+    /// is armed here, at the one moment "when does this run end?" has a single
+    /// answer every wait underneath can share.
     #[must_use]
     pub fn run(
         mut self,
@@ -145,6 +255,7 @@ impl Driver {
         panes: &dyn PaneAccess,
         run: &RunContext,
     ) -> Outcome {
+        let run = &run.deadline_in(self.guardrails.max_duration);
         self.engine.initialize();
         self.engine.process_event(OrchestrationEvent::Start);
         // `running` is the only non-final state in the loop.
@@ -156,6 +267,17 @@ impl Driver {
                 self.engine.process_event(OrchestrationEvent::Cancel);
                 continue;
             }
+            // ⚠ THE DEADLINE IS CHECKED BEFORE THE STEP, NOT AFTER IT. Checked
+            // after, a run whose remaining time is a millisecond would still
+            // start a step that may take minutes, and the ceiling would be
+            // advisory. Checked before, the run's LAST step is the last one that
+            // began in time — and the waits inside it are bounded by the same
+            // deadline, so it cannot outlive it by more than a poll interval.
+            if run.expired() {
+                let event = self.exhaust(Ceiling::Duration);
+                self.engine.process_event(event);
+                continue;
+            }
             let event = match plugin.step(panes, run) {
                 Err(error) => {
                     self.failure = Some(error);
@@ -165,16 +287,25 @@ impl Driver {
                     self.iterations += 1;
                     self.accumulate(step.cost);
                     self.publish();
-                    match step.verdict {
-                        Verdict::Converged => OrchestrationEvent::Converge,
-                        Verdict::Continue if self.budget_exhausted() => OrchestrationEvent::Exhaust,
-                        Verdict::Continue => OrchestrationEvent::Continue,
+                    match (step.verdict, self.budget_exhausted()) {
+                        (Verdict::Converged, _) => OrchestrationEvent::Converge,
+                        (Verdict::Continue, Some(ceiling)) => self.exhaust(ceiling),
+                        (Verdict::Continue, None) => OrchestrationEvent::Continue,
                     }
                 }
             };
             self.engine.process_event(event);
         }
         self.outcome()
+    }
+
+    /// Record WHICH ceiling ended the run and answer the event that ends it.
+    ///
+    /// The single writer of [`exhausted_by`](Self::exhausted_by), so the recorded reason and the
+    /// statechart transition cannot be raised apart from one another.
+    fn exhaust(&mut self, ceiling: Ceiling) -> OrchestrationEvent {
+        self.exhausted_by = Some(ceiling);
+        OrchestrationEvent::Exhaust
     }
 
     /// Add this step's cost to the running total, establishing the run's unit on
@@ -194,20 +325,35 @@ impl Driver {
         });
     }
 
-    fn budget_exhausted(&self) -> bool {
+    /// Which per-step ceiling this run has reached, if any.
+    ///
+    /// ⚠ Answers a [`Ceiling`] rather than a bool so the caller cannot raise the exhaustion without
+    /// also saying what caused it. The DURATION ceiling is not asked here: it is not a property of
+    /// a completed step, and the loop top is where a run out of time must stop.
+    fn budget_exhausted(&self) -> Option<Ceiling> {
         if self.iterations >= self.guardrails.max_iterations {
-            return true;
+            return Some(Ceiling::Iterations);
         }
-        matches!(
-            (self.cost, self.guardrails.max_cost),
-            (Some(acc), Some(max)) if acc.reaches(max)
-        )
+        match (self.cost, self.guardrails.max_cost) {
+            (Some(acc), Some(max)) if acc.reaches(max) => Some(Ceiling::Cost),
+            _ => None,
+        }
     }
 
     fn outcome(self) -> Outcome {
         let state = match self.engine.get_current_state() {
             OrchestrationState::Converged => OutcomeState::Converged,
-            OrchestrationState::Exhausted => OutcomeState::Exhausted,
+            OrchestrationState::Exhausted => OutcomeState::Exhausted(
+                // `exhaust` is the only producer of the event that reaches this state, and it
+                // always records. A miss would mean the statechart reached `exhausted` by some
+                // path nobody wrote — scream in debug; in release name the ceiling that bounds
+                // EVERY run (`max_iterations` is never optional), which is the least wrong answer
+                // available and still true of any run that got here.
+                self.exhausted_by.unwrap_or_else(|| {
+                    debug_assert!(false, "a run exhausted without recording which ceiling");
+                    Ceiling::Iterations
+                }),
+            ),
             OrchestrationState::Cancelled => OutcomeState::Cancelled,
             // Failed, or any state the loop left unexpectedly.
             _ => OutcomeState::Failed,
@@ -267,6 +413,7 @@ mod tests {
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
             max_cost: None,
+            max_duration: None,
         })
         .run(&mut FailingPlugin, &NoPanes, &RunContext::uncancellable());
         assert_eq!(outcome.state, OutcomeState::Failed);
@@ -282,6 +429,7 @@ mod tests {
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
             max_cost: None,
+            max_duration: None,
         })
         .run(&mut FailingPlugin, &NoPanes, &RunContext::new(cancel));
         assert_eq!(outcome.state, OutcomeState::Cancelled);

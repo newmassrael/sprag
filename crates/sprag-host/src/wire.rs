@@ -581,8 +581,9 @@ impl InlineGrammar {
 /// selects the plugin: a byte-relay form offers `max_bytes`, the dialogue form offers `max_tokens`,
 /// and there is no alternation left to describe.
 ///
-/// ⚠ The residue: `max_iterations` and the form's own cost key are each optional and can be given
-/// together, which is true. What is NOT published is the DEFAULT each takes when omitted — that is
+/// ⚠ The residue: `max_iterations`, `max_seconds` and the form's own cost key are each optional and
+/// can be given together, which is true — they are three independent axes and not an alternation.
+/// What is NOT published is the DEFAULT each takes when omitted — that is
 /// the `guardrail_defaults` slot, because a default is a fact about this daemon rather than about
 /// the request's shape.
 pub struct PluginGrammar;
@@ -594,12 +595,27 @@ impl PluginGrammar {
     /// COST bound is not.
     const MAX_ITERATIONS: ArgGrammar = ArgGrammar::open("max_iterations", "int").optional();
 
+    /// The WALL-CLOCK bound every form of `run` accepts — the run's deadline, in seconds.
+    ///
+    /// Beside [`MAX_ITERATIONS`](Self::MAX_ITERATIONS) and shared by all four forms for the same
+    /// reason: time, like the loop count, is unit-free where the COST bound is not — a second is a
+    /// second whether the run spends bytes or tokens.
+    ///
+    /// ⚠ **SECONDS, where the per-turn `timeout_ms` beside it is MILLISECONDS**, and the two are
+    /// different scales because they bound different things. `timeout_ms` bounds ONE reply, and a
+    /// caller tuning it is thinking about how long a model takes to answer. This bounds the whole
+    /// LOOP, and a caller setting it is saying *"do not spend more than ten minutes on this"* —
+    /// a sentence with no millisecond in it. Spelling the unit into both names is what keeps a
+    /// reader of the published grammar from having to guess which scale a bare number is in.
+    const MAX_SECONDS: ArgGrammar = ArgGrammar::open("max_seconds", "int").optional();
+
     /// The guardrail object a BYTE-RELAY form takes — `orchestrator`, `pipe` and `agent` all spend
     /// injected PTY bytes.
     const GUARDRAILS_BYTES: ArgGrammar = ArgGrammar::nested(
         "guardrails",
         &[
             Self::MAX_ITERATIONS,
+            Self::MAX_SECONDS,
             ArgGrammar::open("max_bytes", "int").optional(),
         ],
     )
@@ -611,10 +627,35 @@ impl PluginGrammar {
         "guardrails",
         &[
             Self::MAX_ITERATIONS,
+            Self::MAX_SECONDS,
             ArgGrammar::open("max_tokens", "int").optional(),
         ],
     )
     .optional();
+
+    /// The keys a `guardrails` object of `run` may carry, in the unit a given plugin spends.
+    ///
+    /// # ⚠⚠ Why the PARSER reads the publication instead of listing these again
+    ///
+    /// An unknown key inside `guardrails` was accepted and ignored, which for a BOUND is the worst
+    /// answer there is: every other argument that is ignored makes the verb do LESS than it was
+    /// asked, and a bound that is ignored makes the run do MORE — unboundedly more, silently, with
+    /// a success reply. `guardrails: {"max_secnods": 5}` was a run with no time ceiling and no way
+    /// to find out.
+    ///
+    /// So [`parse_guardrails`](crate::plugins) refuses a key that is not declared here, and reads
+    /// the declaration rather than a list of its own: R352's rule that the predicate the parser
+    /// applies and the vocabulary the surface publishes must be ONE thing, or the publication is an
+    /// affirmative false statement the first time they drift.
+    #[must_use]
+    pub fn guardrail_fields(unit: &str) -> &'static [ArgGrammar] {
+        let declared = if unit == sprag_plugin::Cost::Tokens(0).unit() {
+            &Self::GUARDRAILS_TOKENS
+        } else {
+            &Self::GUARDRAILS_BYTES
+        };
+        declared.fields
+    }
 
     /// WHO ASKED for this run — the pane whose occupant wants it, on
     /// [`sprag_terminal::Pane::opened_by`]'s exact terms.
@@ -7520,8 +7561,8 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            driven, 8,
-            "the nested fields this crate's wire publishes: two guardrail fields on each of the \
+            driven, 12,
+            "the nested fields this crate's wire publishes: THREE guardrail fields on each of the \
              plugin host's four run forms, and nothing on the multiplexer or a pane",
         );
     }

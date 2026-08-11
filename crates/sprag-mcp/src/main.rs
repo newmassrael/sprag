@@ -1446,6 +1446,7 @@ const NOT_A_PANE: &[&str] = &[
     "rows",
     "opened_by",
     "max_iterations",
+    "max_seconds",
     "max_bytes",
     "max_tokens",
 ];
@@ -1603,6 +1604,12 @@ fn argument_help(name: &str) -> &'static str {
             "Stop after this many turns. It may only be LOWER than this daemon's \
              default, never higher — the ceiling is the person's to raise."
         }
+        "max_seconds" => {
+            "Stop after this many seconds of wall-clock time, whatever the run is doing — the \
+             bound to set when what you care about is not spending the afternoon on it. It is \
+             separate from timeout_ms, which bounds ONE turn and then lets the loop take another. \
+             Lower than the default only."
+        }
         "max_bytes" => "Stop after injecting this many bytes. Lower than the default only.",
         "max_tokens" => "Stop after this many model tokens. Lower than the default only.",
         _ => "See `sprag show-grammar run` for what this daemon says about this argument.",
@@ -1615,7 +1622,8 @@ fn orchestrate_description() -> String {
     let mut text = String::from(
         "Run a BOUNDED loop against panes and get a run id back immediately. This is what you \
          should use instead of hand-rolling a drive-and-wait loop in your own turns: the platform \
-         enforces an iteration ceiling, a cost ceiling in the run's own unit, and a cancel flag, \
+         enforces an iteration ceiling, a cost ceiling in the run's own unit, a wall-clock \
+         deadline, and a cancel flag, \
          and it ends a turn on the agent's MEASURED state rather than on a timer. Your loop has \
          none of that. It returns at once — poll list_runs for the outcome. Every pane it touches \
          must be one YOU opened. Forms:",
@@ -1763,9 +1771,10 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
         .as_u64()
         .ok_or_else(|| "the daemon's answer was not a run id".to_owned())?;
     Ok(format!(
-        "Run {id} started. It is bounded: it stops at its iteration ceiling or its cost ceiling, \
-         whichever binds first. Call list_runs for the outcome — it is still there when you look, \
-         even if the run finished while you were doing something else.\n"
+        "Run {id} started. It is bounded: it stops at its iteration ceiling, its cost ceiling or \
+         its wall-clock deadline, whichever binds first — and when it stops it says WHICH of them \
+         it was. Call list_runs for the outcome — it is still there when you look, even if the run \
+         finished while you were doing something else.\n"
     ))
 }
 
@@ -1852,8 +1861,17 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {} after {} iterations, {} {}.{}\n{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}\n{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
+                // ⚠ WHICH CEILING, because the three have three different remedies and an agent
+                // told only `exhausted` has to guess which one to change. It is also the fact an
+                // agent cannot derive: the ceilings it did not name came from the daemon's
+                // defaults, so a run stopped by a default was stopped by a number it never saw.
+                outcome[sprag_host::plugins::RUN_CEILING_KEY]
+                    .as_str()
+                    .map_or_else(String::new, |ceiling| {
+                        format!(" — it ran out of {ceiling}")
+                    }),
                 outcome["iterations"].as_u64().unwrap_or_default(),
                 outcome["cost"].as_u64().unwrap_or_default(),
                 outcome["unit"].as_str().unwrap_or("steps"),
@@ -6912,9 +6930,9 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 9,
+            seen, 10,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, cols, \
-             rows, max_iterations, max_bytes and max_tokens",
+             rows, max_iterations, max_seconds, max_bytes and max_tokens",
         );
         // ⚠ AND THE EXEMPTION LIST IS PRUNED TOO — an entry naming an argument no form publishes
         // any more is a stale decision, which is the half R353's exemption rule adds.
