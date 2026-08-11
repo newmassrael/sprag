@@ -118,19 +118,48 @@ mod tests {
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
 
-    /// A workspace with one live `cat` pane, wrapped as pane-access.
-    fn cat_access(cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
+    /// A workspace with one pane running `script`, wrapped as pane-access.
+    fn sh_access(script: &str, cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
         let workspace = Arc::new(Mutex::new(Workspace::new((cols, rows))));
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
-        command.arg("cat");
+        command.arg(script);
         command.env("TERM", "dumb");
         let id = workspace
             .lock()
             .unwrap()
-            .spawn(command, "cat".to_string(), cols, rows)
+            .spawn(command, "sh".to_string(), cols, rows)
             .expect("spawn pane");
         (WorkspacePaneAccess::new(workspace), id)
+    }
+
+    /// A workspace with one live `cat` pane, wrapped as pane-access.
+    fn cat_access(cols: u16, rows: u16) -> (WorkspacePaneAccess, PaneId) {
+        sh_access("cat", cols, rows)
+    }
+
+    /// What a pane that cannot react runs: echo off, a readiness marker, then a reader that
+    /// discards. The marker is the load-bearing part — see [`await_ready`].
+    const DEAF: &str = "stty -echo; printf DEAF-READY; exec cat >/dev/null";
+
+    /// Block until the deaf pane has finished starting up.
+    ///
+    /// ⚠⚠ WITHOUT THIS THE PANE IS NOT YET DEAF WHEN THE RUN BEGINS. A pane is spawned with the
+    /// pty's default echo ON, and the shell needs a moment to reach its `stty`; a run that starts
+    /// driving in that window has its FIRST stimulus echoed back and reads a pane that cannot hear
+    /// it as one that reacted. That is not a slow machine to be waited out — it is the run racing
+    /// the pane's own startup, and the marker is how the race is settled rather than survived.
+    fn await_ready(access: &WorkspacePaneAccess, pane: PaneId) {
+        let waited = poll_until(
+            &RunContext::uncancellable(),
+            Duration::from_secs(10),
+            || {
+                access
+                    .pane_collapsed(pane)
+                    .is_some_and(|text| text.contains("DEAF-READY"))
+            },
+        );
+        assert_eq!(waited, Waited::Ready, "the deaf pane never came up");
     }
 
     fn run(
@@ -240,6 +269,78 @@ mod tests {
             matches!(outcome.cost, Some(Cost::Bytes(n)) if n >= 12),
             "cost: {:?}",
             outcome.cost
+        );
+    }
+
+    /// ⚠⚠ **A PANE THAT CANNOT REACT PUTS A FLOOR UNDER EVERY STEP**, which is the only thing that
+    /// lets a gate ask WHICH ceiling stopped a run without racing the machine it runs on.
+    ///
+    /// Against a pane that echoes, a step ends the instant the echo lands, so a run's turn count
+    /// is a function of how fast the box is: the same one-second run took 97 turns here and would
+    /// take a different number anywhere else. Deaf, every step waits [`OBSERVE_TIMEOUT`] out in
+    /// full, so the turns a timed run can fit are arithmetic — and a slower box only makes the
+    /// floor higher, never lower.
+    ///
+    /// Both halves are asserted because either alone is a weaker claim than it reads as:
+    ///
+    /// * The pane really is DEAF — the step notes say so. Without this the run below could be
+    ///   ending by the clock for the ordinary reason, and the floor this gate is about would be
+    ///   absent with nothing to notice it.
+    /// * The turns it fitted are FAR below the iteration ceiling it also asked for, so `duration`
+    ///   is the only ceiling that was ever in reach.
+    #[test]
+    fn a_deaf_pane_floors_every_step_so_the_clock_is_the_only_ceiling_in_reach() {
+        // `stty -echo` stops the kernel echoing the injection; the reader discards what it reads.
+        // Once ready, nothing this run does can reach the screen.
+        let (access, pane) = sh_access(DEAF, 20, 4);
+        await_ready(&access, pane);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("A SENTINEL THIS PANE NEVER PRINTS".to_string()),
+            },
+        );
+        let cell = crate::driver::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(1_200)),
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(&mut orch, &access, &crate::run::RunContext::uncancellable());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "a hundred turns were on offer and the clock is what ran out",
+        );
+        let notes: Vec<String> = cell
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        assert!(
+            !notes.iter().any(|note| note.contains("the pane reacted")),
+            "no step may have found this pane reacting, or the floor this gate rests on is not \
+             there: {notes:?}; the pane shows {:?}",
+            access.pane_collapsed(pane),
+        );
+        assert_eq!(
+            notes.last().map(String::as_str),
+            Some("the run ended while watching for the pane to react"),
+            "AND THE LAST STEP IS ONE THE CLOCK CUT MID-OBSERVE — the deadline reaching inside a \
+             step, which is the whole difference between this ceiling and the two that are decided \
+             between them. A run whose final step ran its observe out in full would end by the \
+             same `duration` and prove only the loop top: {notes:?}",
+        );
+        assert!(
+            outcome.iterations <= 4,
+            "a step floored at {OBSERVE_TIMEOUT:?} cannot fit more than a handful into 1.2s — \
+             {} turns says the floor is missing",
+            outcome.iterations,
         );
     }
 }

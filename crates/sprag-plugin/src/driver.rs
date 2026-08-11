@@ -316,18 +316,13 @@ impl Driver {
             // Cancel is checked before each step (and again by the plugin's own
             // wait loops mid-step), so a cancel ends the run promptly without
             // running another step.
-            if run.cancelled() {
-                self.engine.process_event(OrchestrationEvent::Cancel);
-                continue;
-            }
             // ⚠ THE DEADLINE IS CHECKED BEFORE THE STEP, NOT AFTER IT. Checked
             // after, a run whose remaining time is a millisecond would still
             // start a step that may take minutes, and the ceiling would be
             // advisory. Checked before, the run's LAST step is the last one that
             // began in time — and the waits inside it are bounded by the same
             // deadline, so it cannot outlive it by more than a poll interval.
-            if run.expired() {
-                let event = self.exhaust(Ceiling::Duration);
+            if let Some(event) = self.ended_from_outside(run) {
                 self.engine.process_event(event);
                 continue;
             }
@@ -341,16 +336,50 @@ impl Driver {
                     self.accumulate(step.cost);
                     self.record(&step);
                     self.publish();
-                    match (step.verdict, self.budget_exhausted()) {
-                        (Verdict::Converged, _) => OrchestrationEvent::Converge,
-                        (Verdict::Continue, Some(ceiling)) => self.exhaust(ceiling),
-                        (Verdict::Continue, None) => OrchestrationEvent::Continue,
+                    match step.verdict {
+                        // A step that saw the goal SAW IT. A stop or a deadline arriving in the
+                        // same instant does not un-reach it, and the plugins hand back `Continue`
+                        // rather than a verdict off a screen nobody finished reading precisely so
+                        // that a `Converged` reaching here is a real one.
+                        Verdict::Converged => OrchestrationEvent::Converge,
+                        // ⚠⚠ THE RUN'S OWN END OUTRANKS THE TALLY, and asking in the other order
+                        // was two defects: a person's stop mid-turn reported as `exhausted —
+                        // iterations`, and a deadline that curtailed the last permitted turn
+                        // reported the same. Both told the reader to raise a guardrail that would
+                        // have bought the run nothing, about work that never finished.
+                        Verdict::Continue => match self.ended_from_outside(run) {
+                            Some(event) => event,
+                            None => match self.budget_exhausted() {
+                                Some(ceiling) => self.exhaust(ceiling),
+                                None => OrchestrationEvent::Continue,
+                            },
+                        },
                     }
                 }
             };
             self.engine.process_event(event);
         }
         self.outcome()
+    }
+
+    /// How the run ended FROM OUTSIDE its own logic — a person raised the cancel, or the clock ran
+    /// out — or [`None`] while it is still allowed to run.
+    ///
+    /// ⚠⚠ THE ONE AUTHORITY on that question, consulted at the loop top AND after every
+    /// unconverged step. Split across the two sites it was answered at only one of them, and the
+    /// other decided the run's fate from step counters that have never heard of a cancel: the two
+    /// ways a run ends from outside were invisible to the arithmetic that got to answer first.
+    ///
+    /// ⚠ Cancel is asked before the deadline at both sites, so a person's stop beats a clock that
+    /// ran out in the same instant — a cancel is somebody's decision and an exhaustion is nobody's.
+    fn ended_from_outside(&mut self, run: &RunContext) -> Option<OrchestrationEvent> {
+        if run.cancelled() {
+            return Some(OrchestrationEvent::Cancel);
+        }
+        if run.expired() {
+            return Some(self.exhaust(Ceiling::Duration));
+        }
+        None
     }
 
     /// Record WHICH ceiling ended the run and answer the event that ends it.
@@ -426,9 +455,10 @@ mod tests {
     use super::*;
     use crate::access::{KeyStroke, PaneRow, Written};
     use crate::plugin::Step;
+    use crate::run::poll_until;
     use sprag_terminal::PaneId;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A plugin whose step always fails — to pin the Driver's Err -> Failed
     /// mapping deterministically, no threads or PTY.
@@ -527,6 +557,124 @@ mod tests {
             held.journal.first().map(|first| first.iteration),
             Some(steps - u32::try_from(JOURNAL_LIMIT).expect("fits") + 1),
             "the oldest kept step is exactly the limit back from the newest",
+        );
+    }
+
+    /// A plugin whose step CANNOT end on its own — it waits on a predicate that never holds,
+    /// under a local bound far past any deadline a test arms. The shape of a real turn a model is
+    /// still thinking about when the clock runs out, with none of a PTY's timing.
+    ///
+    /// The only way out is [`RunContext::stopped`], so every gate built on it measures the
+    /// deadline reaching INSIDE a step and nothing else — no machine-speed race can end it early.
+    struct Blocking {
+        /// Raised by the step itself on the iteration named, standing in for a person hitting
+        /// stop while a turn is in flight.
+        cancel_on: Option<(u32, Arc<AtomicBool>)>,
+        stepped: u32,
+    }
+    impl Plugin for Blocking {
+        fn step(&mut self, _panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
+            self.stepped += 1;
+            if let Some((at, flag)) = &self.cancel_on
+                && self.stepped == *at
+            {
+                flag.store(true, Ordering::Release);
+            }
+            let waited = poll_until(run, Duration::from_secs(600), || false);
+            Ok(Step::new(Cost::Bytes(1), Verdict::Continue).noting(format!("{waited:?}")))
+        }
+    }
+
+    /// ⚠⚠ **THE DEADLINE REACHES INSIDE A STEP** — the load-bearing half of the duration ceiling,
+    /// and until now NO test armed `max_duration` at all.
+    ///
+    /// The step here can only end by the run's own clock: its local bound is ten minutes and its
+    /// predicate never holds. So a run that ends at all proves the deadline reached the wait, and
+    /// the iteration ceiling is left far away so that `Duration` is the only ceiling in reach.
+    #[test]
+    fn a_run_out_of_time_inside_a_step_ends_by_the_clock_and_says_so() {
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1_000,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(50)),
+        })
+        .run(
+            &mut Blocking {
+                cancel_on: None,
+                stepped: 0,
+            },
+            &NoPanes,
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "a step that cannot return on its own ended, so the deadline reached the wait inside \
+             it — and the ceiling the run names is the clock",
+        );
+    }
+
+    /// ⚠⚠ **THE CLOCK THAT CURTAILED A STEP OUTRANKS THE TALLY THAT TOPPED OUT** — when the
+    /// deadline passes inside the run's LAST permitted turn, both ceilings are true at once and
+    /// only one of them is a useful thing to tell a caller.
+    ///
+    /// The step here is cut off mid-flight by the clock, and returns as the iteration count
+    /// reaches its max. Answering `iterations` says *"you got your turn, ask for more"* about a
+    /// turn that never finished — and raising `max_iterations` would not buy the run one more
+    /// second. The ceiling that stopped WORK IN FLIGHT is the one that stopped the run; a tally
+    /// reached on the way out is a coincidence of arithmetic.
+    #[test]
+    fn the_clock_that_curtailed_a_step_outranks_the_tally_that_topped_out() {
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(50)),
+        })
+        .run(
+            &mut Blocking {
+                cancel_on: None,
+                stepped: 0,
+            },
+            &NoPanes,
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "the deadline is what ended the only step this run was allowed, so it is what the run \
+             ran out of — `iterations` here is a remedy that would buy nothing",
+        );
+    }
+
+    /// ⚠⚠ **A PERSON'S STOP IS NEVER REPORTED AS A BUDGET** — a cancel raised while the run's last
+    /// permitted turn is in flight.
+    ///
+    /// The loop top asks about cancel BEFORE the ceilings, so every cancel that lands between
+    /// steps is answered `cancelled`. The one that lands INSIDE a step was decided somewhere else
+    /// entirely — by the post-step tally, which had never been told cancel exists. A person who
+    /// hit stop being told the run ran out of turns is a lie about who ended it, and it points the
+    /// reader at a guardrail to raise when nothing was exhausted at all.
+    #[test]
+    fn a_person_who_stops_the_last_permitted_turn_is_not_told_it_ran_out() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: None,
+        })
+        .run(
+            &mut Blocking {
+                cancel_on: Some((1, Arc::clone(&cancel))),
+                stepped: 0,
+            },
+            &NoPanes,
+            &RunContext::new(cancel),
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Cancelled,
+            "the run was stopped by a person mid-turn; the iteration count reaching its max on the \
+             way out does not make that an exhaustion",
         );
     }
 
