@@ -112,6 +112,76 @@ pub const CELLS_FIELD: SchemaField = SchemaField::parametric("cells.<offset>", "
 /// The pane-input external query slot: the pane's full output text (scrollback +
 /// visible).
 pub const FULL_TEXT_SLOT: &str = "full_text";
+/// The pane-input external query slot: the pane's output as the LOGICAL LINES THE CHILD WROTE —
+/// a JSON array of strings, one per line however the terminal's width broke it
+/// ([`Screen::full_lines`](sprag_vt::Screen::full_lines)).
+///
+/// # ⚠⚠ Why this is an ADDRESS OF ITS OWN and not a shape [`FULL_TEXT_SLOT`] grew
+///
+/// The two answer different questions about the same pane and both are wanted. `read_pane`
+/// publishes *"what a human sees in that pane"* and must keep reporting where the terminal broke
+/// each line; anything reasoning about CONTENT — a marker, a model's reply, text to relay — must
+/// not have the width in its answer, because **the width belongs to whichever client attached** and
+/// two readers of the same output would otherwise disagree without either being able to tell.
+///
+/// ⚠ An ARRAY, not a string with newlines in it. A `\n` inside [`FULL_TEXT_SLOT`] can be the
+/// program's or the terminal's and nothing says which — the ambiguity this address exists to
+/// remove. Handing back a joined string would put it straight back.
+///
+/// ⚠ ADDITIVE: a new address earns no [`WIRE_PROTOCOL`] bump (the rule is written on that constant
+/// — *"the added addresses … are additive on their own and would not have earned a bump; the
+/// changed value did"*), and [`FULL_TEXT_SLOT`] is untouched, so every existing client keeps the
+/// answer it has always read.
+pub const FULL_LINES_SLOT: &str = "full_lines";
+sprag_vt::closed_set! {
+    /// WHOSE LINE BREAKS a pane read reports — the choice between [`FULL_TEXT_SLOT`] and
+    /// [`FULL_LINES_SLOT`], named so a caller says which they mean instead of guessing.
+    ///
+    /// ⚠⚠ A CLOSED SET rather than a boolean, so the published `enum` is DERIVED from the type and
+    /// a third source of line breaks (a raw byte capture, say) cannot be added without every
+    /// surface that walks this list seeing it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum LineBreaks {
+        /// Where the TERMINAL broke each line at the width it had — what a person sees in the
+        /// pane, and the answer every existing caller has always been given.
+        #[default]
+        Screen,
+        /// Where the PROGRAM ended each line — what the child actually wrote, with the width taken
+        /// out of the answer.
+        Program,
+    }
+}
+
+impl LineBreaks {
+    /// The published word for this choice — the single spelling, which the tool schema's `enum` is
+    /// generated from.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Program => "program",
+        }
+    }
+
+    /// The choice a published word names, or `None` for a word this build does not know.
+    ///
+    /// ⚠ Derived by walking [`Self::ALL`] rather than by a second `match`, which is the shape that
+    /// let `AgentState` publish three words and decode them in a hand-written list beside it.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.wire_str() == word)
+    }
+
+    /// The pane-input slot that answers this question.
+    #[must_use]
+    pub const fn slot(self) -> &'static str {
+        match self {
+            Self::Screen => FULL_TEXT_SLOT,
+            Self::Program => FULL_LINES_SLOT,
+        }
+    }
+}
+
 /// The pane-input external query slot: the producer's DECCKM (application cursor
 /// keys) mode.
 pub const CURSOR_KEYS_SLOT: &str = "application_cursor_keys";
@@ -238,6 +308,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(FRAMES_SLOT, "int"),
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
     SchemaField::new(FULL_TEXT_SLOT, "string"),
+    SchemaField::new(FULL_LINES_SLOT, "array"),
     SchemaField::new(LAST_COMMAND_SLOT, "object"),
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
@@ -7249,6 +7320,7 @@ mod tests {
             "find.<needle>",
             "focus",
             "frames",
+            "full_lines",
             "full_text",
             "grant_pane",
             "grid_work",
@@ -7540,6 +7612,56 @@ mod tests {
         assert!(
             !skipped.is_empty(),
             "the fixture reaches the parametric families too, or the skip rule is about nothing",
+        );
+    }
+
+    /// ⚠⚠ **EVERY PUBLISHED LINE-BREAK WORD ROUND-TRIPS, AND EACH NAMES ITS OWN ADDRESS.**
+    ///
+    /// Walks [`LineBreaks::ALL`] rather than the two words, so a third source of line breaks is
+    /// covered the day it is declared — and it is the arm a hand-written check leaves out, because
+    /// the DEFAULT path is what every existing caller drives and an explicitly-sent `screen` is
+    /// what nothing does.
+    ///
+    /// The distinctness half is the one that matters: two words naming the same slot would publish
+    /// a choice that changes nothing, and every caller who read the description and asked for the
+    /// other answer would get the first with no error to tell them.
+    #[test]
+    fn every_published_line_break_word_round_trips_and_names_its_own_slot() {
+        for kind in LineBreaks::ALL {
+            assert_eq!(
+                LineBreaks::from_wire(kind.wire_str()),
+                Some(kind),
+                "{kind:?} publishes a word its own parser does not take back",
+            );
+        }
+        assert_eq!(
+            LineBreaks::from_wire("sideways"),
+            None,
+            "and a word the vocabulary does not publish is refused rather than defaulted — a \
+             default here would answer a question the caller did not ask",
+        );
+
+        let slots: std::collections::BTreeSet<&str> =
+            LineBreaks::ALL.iter().map(|kind| kind.slot()).collect();
+        assert_eq!(
+            slots.len(),
+            LineBreaks::ALL.len(),
+            "each choice must name a DIFFERENT address, or the argument is a promise the surface \
+             does not keep: {slots:?}",
+        );
+        assert!(
+            slots
+                .iter()
+                .all(|slot| PANE_SCHEMA.iter().any(|field| field.path == *slot)),
+            "and every address it names is one the pane surface actually DECLARES — an argument \
+             pointing at an address nobody serves is a tool that fails only when somebody uses \
+             it: {slots:?}",
+        );
+        assert_eq!(
+            LineBreaks::default().slot(),
+            FULL_TEXT_SLOT,
+            "⚠ THE DEFAULT IS THE ANSWER EVERY EXISTING CALLER HAS ALWAYS HAD. A new default would \
+             re-answer every call that was written before this argument existed",
         );
     }
 

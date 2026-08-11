@@ -67,9 +67,9 @@ use base64::engine::general_purpose::STANDARD;
 
 use crate::wire::{
     ACTION_GRAMMAR_SLOT, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT,
-    CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD,
-    KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_GRAMMAR, PANE_SCHEMA,
-    PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
+    CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_LINES_SLOT, FULL_TEXT_SLOT,
+    IMAGE_DATA_FIELD, KEY_ACTION, LAST_COMMAND_SLOT, LINKS_SLOT, MOUSE_ACTION, PANE_GRAMMAR,
+    PANE_SCHEMA, PASTE_ACTION, PROMPT_MARKS_SLOT, REGEX_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -511,6 +511,12 @@ impl ExternalIntrospect for SpragPaneExternal {
             FULL_TEXT_SLOT => Some(IntrospectValue::Text(
                 self.pty.with_screen(Screen::full_text),
             )),
+            // The same pane as the LOGICAL LINES the child wrote — the content answer, where
+            // `full_text` is the rendered one. An array because a `\n` in a joined string cannot
+            // say whether the program or the terminal put it there.
+            FULL_LINES_SLOT => Some(IntrospectValue::Json(json!(
+                self.pty.with_screen(Screen::full_lines)
+            ))),
             // The last command sliced from the OSC 133 marks (scrollback + visible). `Null`
             // (present-but-empty) when no command has run under shell integration — the
             // agent then falls back to `full_text`, exactly as a malformed `cells.<off>` is

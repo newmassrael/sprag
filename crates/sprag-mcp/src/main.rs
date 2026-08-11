@@ -126,8 +126,8 @@ use sprag_host::vocabulary::{Agent, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLOSE_ACTION, DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW,
-    ENDED_KEY, EVENTS_WAIT_METHOD, FULL_TEXT_SLOT, GRANT_PANE_ACTION, JOIN_PANE_ACTION, JoinAsk,
-    KEY_ACTION, KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, MOVE_PANE_ACTION,
+    ENDED_KEY, EVENTS_WAIT_METHOD, GRANT_PANE_ACTION, JOIN_PANE_ACTION, JoinAsk, KEY_ACTION,
+    KILL_WINDOW_ACTION, LAST_COMMAND_SLOT, LAYOUT_SLOT, LINKS_SLOT, LineBreaks, MOVE_PANE_ACTION,
     NEW_WINDOW_ACTION, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire, PaneResourcesWire,
     RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
     ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
@@ -575,6 +575,18 @@ fn tools_list() -> Value {
                             "type": "integer",
                             "minimum": 1,
                             "description": "If set, return only the last N non-empty-trimmed lines."
+                        },
+                        "line_breaks": {
+                            "type": "string",
+                            "enum": LineBreaks::ALL.map(LineBreaks::wire_str),
+                            "description": "Whose line breaks you want. `screen` (default) \
+                                breaks where the terminal wrapped each line at the pane's \
+                                current width — what a person sees. `program` breaks where the \
+                                child ended each line, so a sentence the width split arrives \
+                                whole. Use `program` whenever you are reasoning about the TEXT \
+                                (matching a phrase, quoting a reply, relaying output): the pane's \
+                                width is set by whoever attached a client to it, not by you, so \
+                                a `screen` read of the same output can differ between two calls."
                         }
                     },
                     "required": ["pane"],
@@ -4094,14 +4106,37 @@ fn own_pane() -> Option<u64> {
 
 fn tool_read_pane(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
+    // ⚠ WHICH ADDRESS, decided by the caller's own word. The two slots answer different questions
+    // about the same pane — where the TERMINAL broke the lines, and where the PROGRAM did — and a
+    // reader that cannot say which it wants gets the pane's current width baked into its answer.
+    let breaks = match args.get("line_breaks").and_then(Value::as_str) {
+        None => LineBreaks::default(),
+        Some(word) => LineBreaks::from_wire(word).ok_or_else(|| {
+            format!(
+                "line_breaks must be one of {:?}, not {word:?}",
+                LineBreaks::ALL.map(LineBreaks::wire_str),
+            )
+        })?,
+    };
     let value = host_call(
         "scene/query",
-        pane_params(&pane, pane_input_path(pane.id(), FULL_TEXT_SLOT)),
+        pane_params(&pane, pane_input_path(pane.id(), breaks.slot())),
     )?;
-    let text = value
-        .as_str()
-        .ok_or("the host did not return pane text")?
-        .to_owned();
+    let text = match breaks {
+        LineBreaks::Screen => value
+            .as_str()
+            .ok_or("the host did not return pane text")?
+            .to_owned(),
+        // The array is joined for a text-only tool result, and the join is UNAMBIGUOUS precisely
+        // because the caller asked for it: every newline below is one the program wrote.
+        LineBreaks::Program => value
+            .as_array()
+            .ok_or("the host did not return pane lines")?
+            .iter()
+            .map(|line| line.as_str().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
     match args.get("tail_lines").and_then(Value::as_u64) {
         Some(n) => Ok(last_n_lines(&text, n as usize)),
         None => Ok(text),

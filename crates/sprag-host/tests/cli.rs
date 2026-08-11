@@ -4428,6 +4428,58 @@ fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
 /// `cat`'s line-buffered read, so it writes the line back and a SECOND copy appears. One assertion
 /// therefore separates "the text arrived" from "the keystroke arrived", which a single combined
 /// send could not. (The same mechanism `sprag run`'s test relies on, read in the other direction.)
+/// ⚠⚠⚠ **BOTH MOUTHS OFFER THE SAME CHOICE, FROM THE SAME VOCABULARY.**
+///
+/// `capture-pane`'s doc promised the shell and the `read_pane` tool see *"one definition of what a
+/// pane's output IS rather than two"* — and that promise went false the moment the tool grew a
+/// `line_breaks` argument the shell did not have. A grammar change is every mouth, and the one that
+/// gets left behind is the one nobody is holding a test on.
+///
+/// Five columns, so `TOOL UP` breaks at its SPACE: `screen` reports where the terminal broke it and
+/// `program` reports the line the child wrote. Both in one test, because either alone is a claim
+/// about a reading rather than about the choice.
+#[test]
+fn capture_pane_offers_the_screens_line_breaks_or_the_programs() {
+    let (_host, sock) = spawn_host_sized(5, 4, &["sh", "-c", "printf 'TOOL UP\\n'; exec cat"]);
+    wait_for_pane_text(&sock, "TOOL");
+
+    let rendered = sprag(&sock, &["capture-pane", "0"]);
+    assert!(rendered.ok, "capture-pane succeeded: {}", rendered.stderr);
+    assert!(
+        !rendered.stdout.contains("TOOL UP"),
+        "THE FIXTURE CHECK AND THE CONTROL: five columns really broke the line, and the default \
+         still describes the screen: {:?}",
+        rendered.stdout,
+    );
+
+    let written = sprag(&sock, &["capture-pane", "0", "--line-breaks", "program"]);
+    assert!(written.ok, "--line-breaks program: {}", written.stderr);
+    assert!(
+        written.stdout.contains("TOOL UP"),
+        "⚠⚠ THE LINE THE CHILD WROTE, at the shell mouth too — a script piping this into a \
+         matcher was matching against the width of whoever attached a client: {:?}",
+        written.stdout,
+    );
+    assert_eq!(
+        sprag(&sock, &["capture-pane", "0", "--line-breaks", "screen"]).stdout,
+        rendered.stdout,
+        "and naming the default explicitly is the default — the arm nothing else drives",
+    );
+
+    let refused = sprag(&sock, &["capture-pane", "0", "--line-breaks", "sideways"]);
+    assert!(
+        !refused.ok && refused.stderr.contains("sideways"),
+        "a word the vocabulary does not publish is refused NAMING what was sent: {:?}",
+        refused.stderr,
+    );
+    let bare = sprag(&sock, &["capture-pane", "0", "--line-breaks"]);
+    assert!(
+        !bare.ok && bare.stderr.contains("needs a value"),
+        "and the flag with nothing after it is refused rather than silently defaulting: {:?}",
+        bare.stderr,
+    );
+}
+
 #[test]
 fn send_keys_reaches_the_child_and_capture_pane_reads_it_back() {
     let (_host, sock) = spawn_host();

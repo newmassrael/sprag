@@ -1598,6 +1598,51 @@ fn an_agent_finds_and_waits_for_a_needle_the_pane_broke_at_its_edge() {
     );
 }
 
+/// ⚠⚠⚠ **AND THE AGENT CAN NOW ASK FOR THE TEXT THE PROGRAM WROTE**, which until this round it
+/// could not.
+///
+/// The gate above pins that `read_pane` reports the ROW break, because its published description
+/// promises *"what a human sees in that pane"* and a capture that quietly rejoined lines would stop
+/// describing the screen. That left an agent reasoning about CONTENT with no address at all: the
+/// pane's width is set by whoever attached a client to it, so the same output read twice could
+/// differ and nothing in either answer said so. `find_in_pane` answered on the written axis and
+/// `read_pane` on the rendered one, and there was no way to ask the first question of a whole pane.
+///
+/// `line_breaks` names WHOSE breaks the caller wants. Both answers are asserted in one test,
+/// because either alone is a claim about a single reading rather than about the distinction.
+#[test]
+fn an_agent_reads_a_pane_by_the_screens_line_breaks_or_by_the_programs() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], (20, 6));
+    let mut server = McpServer::spawn(&sock);
+    let marker = "the-build-is-done-now-ok";
+
+    server.call_tool("write_pane", json!({ "pane": 1, "text": marker }));
+    // Twice, for the reason the gate above gives: the echo first, then the child's own write.
+    let rendered =
+        server.wait_for_tool_count("read_pane", json!({ "pane": 1 }), "the-build-is-", 2);
+    assert!(
+        !rendered.contains(marker),
+        "THE CONTROL AND THE FIXTURE CHECK: the pane really broke the marker, and the default \
+         read still describes the screen: {rendered:?}",
+    );
+
+    let written = server.call_tool("read_pane", json!({ "pane": 1, "line_breaks": "program" }));
+    assert!(
+        written.contains(marker),
+        "⚠⚠ THE SAME PANE, THE LINE THE PROGRAM WROTE. Without this an agent quoting a pane back \
+         to a model, or matching a phrase in it, was reading the width of somebody else's \
+         window: {written:?}",
+    );
+
+    let refused =
+        server.call_tool_error("read_pane", json!({ "pane": 1, "line_breaks": "sideways" }));
+    assert!(
+        refused.contains("line_breaks") && refused.contains("sideways"),
+        "and a word the vocabulary does not publish is refused NAMING BOTH the argument and what \
+         was sent, rather than falling back to a default the caller did not choose: {refused:?}",
+    );
+}
+
 /// **R292 deleted the two re-call helpers that used to live here**, and their absence is the claim.
 ///
 /// `wait_until_quiet` re-called the tool until an answer said the terminal was quiet, and

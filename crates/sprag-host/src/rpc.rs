@@ -2961,6 +2961,59 @@ mod tests {
         assert_eq!(cmd["running"], false, "{resp}");
     }
 
+    /// ⚠⚠⚠ **THE TWO ADDRESSES ANSWER THE SAME PANE'S TEXT ON DIFFERENT AXES, OVER THE REAL WIRE**
+    /// — and the SKEW the surface pin asks for, made into a test rather than left to a person.
+    ///
+    /// `full_text` is what a person sees: the terminal's line breaks at the pane's current width.
+    /// `full_lines` is what the CHILD WROTE. The width belongs to whichever client attached, so a
+    /// reader reasoning about content must be able to ask for an answer without it — and until
+    /// this address existed, no external agent could.
+    ///
+    /// **THE SKEW, BOTH WAYS.** An OLD client is unaffected: it never names this address and
+    /// `full_text` is untouched, which the second assertion pins by reading it in the same call.
+    /// A NEW client against an OLD daemon names an address that daemon does not serve — the same
+    /// thing as naming an address NOBODY serves, which is what the third assertion drives. It must
+    /// be REFUSED rather than answered `null`: a null would read as *"this pane produced nothing"*,
+    /// and a client cannot tell that from *"your daemon is older than your client."*
+    #[test]
+    fn the_written_lines_and_the_rendered_text_are_two_addresses_over_the_wire() {
+        // Five columns, and a marker whose SPACE is where the width breaks it.
+        let state = host_with(r"printf 'TOOL UP\n'", 5, 4);
+        wait_for_pane0_eof(&state);
+
+        let lines = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":1,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/full_lines"}}"#,
+        );
+        assert_eq!(
+            lines["result"],
+            serde_json::json!(["TOOL UP"]),
+            "an ARRAY of the lines the child wrote — one entry, because the child wrote one line \
+             and the pane's width is not part of the answer: {lines}",
+        );
+
+        let text = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":2,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/full_text"}}"#,
+        );
+        assert_eq!(
+            text["result"], "TOOL\nUP",
+            "and the rendered address is UNCHANGED, so every client that has ever read it keeps \
+             the answer it has always had: {text}",
+        );
+
+        let absent = serve_one(
+            &state,
+            r#"{"jsonrpc":"2.0","id":3,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/full_paragraphs"}}"#,
+        );
+        assert!(
+            absent.get("error").is_some() && absent.get("result").is_none(),
+            "⚠⚠ AN ADDRESS THE DAEMON DOES NOT SERVE IS REFUSED, NOT ANSWERED EMPTY — which is \
+             what a NEW client asking an OLD daemon for `full_lines` gets, and the reason adding \
+             an address needs no protocol bump: {absent}",
+        );
+    }
+
     #[test]
     fn prompt_marks_query_lists_the_childs_prompt_positions() {
         // Two prompt cycles from the child; the prompt_marks slot lists the logical row

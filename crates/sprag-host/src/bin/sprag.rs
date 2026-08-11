@@ -76,7 +76,8 @@
 //! sprag resize-pane [-t SESSION] [PANE] -x COLS -y ROWS  resize a pane's PTY + emulator
 //! sprag resize-pane [-t SESSION] [PANE] -L|-R|-U|-D [N]  move the boundary beside a pane
 //! sprag send-keys [-t SESSION] PANE [-l] KEY…     send W3C key names (or, with -l, literal text)
-//! sprag capture-pane [-t SESSION] PANE [-p]       print a pane's retained output to stdout
+//! sprag capture-pane [-t SESSION] PANE [-p] [--line-breaks screen|program]
+//!                                                 print a pane's retained output to stdout
 //! sprag agent [-t SESSION] [PANE]                 what the AI agent in each pane is doing
 //! sprag report-agent STATE [--pane PANE] [--source S]  say what the agent in a pane is DOING
 //!                          [--name AGENT] [--seq N]  (the pane defaults to $SPRAG_PANE)
@@ -187,11 +188,11 @@ use sprag_host::vocabulary::{self, Verb};
 use sprag_host::window::SizeRequest;
 use sprag_host::wire::{
     ACTION_GRAMMAR_SLOT, AGENT_MANIFESTS_SLOT, BREAK_PANE_ACTION, CLIENTS_SLOT, CLOSE_ACTION,
-    DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW, ENDED_KEY, FULL_TEXT_SLOT, GRANT_PANE_ACTION,
-    JOIN_PANE_ACTION, KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT,
-    MOVE_PANE_ACTION, MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION,
-    PATTERN_PARAM, PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
+    DISPLAY_MESSAGE_ACTION, DOCTOR_WINDOW, ENDED_KEY, GRANT_PANE_ACTION, JOIN_PANE_ACTION,
+    KEY_ACTION, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, LineBreaks, MOVE_PANE_ACTION,
+    MOVE_WINDOW_ACTION, MoveWindowAsk, NEEDLE_PARAM, NEW_SESSION_ACTION, NEW_WINDOW_ACTION,
+    PANE_PARAM, PANE_WAIT_OUTPUT_METHOD, PANES_SLOT, PASTE_ACTION, PATTERN_PARAM,
+    PaneProcessesWire, PaneResourcesWire, RELEASE_AGENT_ACTION, RENAME_PANE_ACTION,
     RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION, RESIZE_ACTION,
     RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
@@ -5421,19 +5422,42 @@ fn parse_key_token(token: &str) -> io::Result<(String, (bool, bool, bool))> {
 /// flag costs a tmux user nothing and claims nothing false — what would be false is accepting the
 /// buffer-naming `-b`, which is therefore not accepted.
 ///
-/// The text is the host's [`FULL_TEXT_SLOT`], the same read the `read_pane` MCP tool makes, so an
-/// agent and a shell see one definition of what a pane's output IS rather than two.
+/// `--line-breaks screen|program` says WHOSE line breaks the output carries: `screen` (the default)
+/// where the terminal wrapped each line at the pane's current width, `program` where the child
+/// ended it. The width is set by whoever attached a client, so anything piping this into a matcher
+/// wants `program` — otherwise the same pane's output differs between two runs and neither says so.
+///
+/// ⚠⚠ **THE MOUTHS AGREE, and this doc used to promise that while one of them had grown a second
+/// answer.** It said the text is *"the same read the `read_pane` MCP tool makes, so an agent and a
+/// shell see one definition of what a pane's output IS rather than two"* — true until `read_pane`
+/// learned `line_breaks` and this had not. The word, its values and the address each names are
+/// [`LineBreaks`]'s, spelled once for both mouths.
 fn capture_pane(args: Vec<String>) -> io::Result<()> {
     let bad = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
     let (session, rest) = scope_and_rest(args, "capture-pane")?;
     let mut pane: Option<String> = None;
+    let mut breaks = LineBreaks::default();
+    let mut want_breaks = false;
     for arg in rest {
         match arg.as_str() {
+            _ if want_breaks => {
+                want_breaks = false;
+                breaks = LineBreaks::from_wire(&arg).ok_or_else(|| {
+                    bad(format!(
+                        "capture-pane: --line-breaks must be one of {:?}, not {arg:?}",
+                        LineBreaks::ALL.map(LineBreaks::wire_str),
+                    ))
+                })?;
+            }
+            "--line-breaks" => want_breaks = true,
             // tmux's "print to stdout", which is the only thing this can do; see the doc above.
             "-p" | "--print" => {}
             _ if pane.is_none() => pane = Some(arg),
             other => return Err(bad(format!("capture-pane: unexpected argument {other:?}"))),
         }
+    }
+    if want_breaks {
+        return Err(bad("capture-pane: --line-breaks needs a value".to_owned()));
     }
     let pane = pane.ok_or_else(|| bad("capture-pane needs a pane id or NAME".to_owned()))?;
     let mut conn = connect_scoped(session.as_deref())?;
@@ -5447,10 +5471,29 @@ fn capture_pane(args: Vec<String>) -> io::Result<()> {
         site_params(
             session.as_deref(),
             &site,
-            pane_input_path(site.id, FULL_TEXT_SLOT),
+            pane_input_path(site.id, breaks.slot()),
         ),
     )?;
-    let text = answer.as_str().unwrap_or_default();
+    // ⚠ The two addresses answer in two SHAPES — a string and an array of lines — because a `\n`
+    // inside a joined string cannot say whether the program or the terminal put it there. Joined
+    // here for stdout, and unambiguously so: the caller named which breaks they wanted.
+    let joined;
+    let text = match breaks {
+        LineBreaks::Screen => answer.as_str().unwrap_or_default(),
+        LineBreaks::Program => {
+            joined = answer
+                .as_array()
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .map(|line| line.as_str().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            &joined
+        }
+    };
     print!("{text}");
     if !text.is_empty() && !text.ends_with('\n') {
         println!();
