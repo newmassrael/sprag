@@ -403,13 +403,21 @@ fn decode_reply(format: ReplyFormat, panes: &dyn PaneAccess, id: PaneId) -> Deco
     }
 }
 
-/// The rendered full-output text of a fresh per-turn pane (scrollback +
-/// visible), trimmed. Nothing was injected, so the screen holds only the
-/// endpoint's output; a reply longer than the pane is captured whole (R16).
+/// The full output of a fresh per-turn pane as the LOGICAL LINES the endpoint wrote, trimmed.
+/// Nothing was injected, so the screen holds only the endpoint's output; a reply longer than the
+/// pane is captured whole (R16).
+///
+/// ⚠⚠ **THIS READ THE RENDERED GRID, AND THE FUNCTION BELOW IT SAYS WHY THAT IS WRONG** — *"the
+/// grid would corrupt the wrapped single-line envelope (it inserts a `\n` at every wrap and
+/// trailing-trims each row)"*. That was written for the JSON path, which routed around it; the
+/// PLAIN-TEXT path went on publishing a model's reply with a newline injected at every wrap and the
+/// space at each break eaten. **A hazard known well enough to be worked around in one caller was
+/// still live in the one beside it.**
 fn capture_text(panes: &dyn PaneAccess, id: PaneId) -> String {
     panes
-        .pane_full_text(id)
+        .pane_full_lines(id)
         .unwrap_or_default()
+        .join("\n")
         .trim()
         .to_string()
 }
@@ -571,6 +579,45 @@ mod tests {
                 max_duration: None,
             },
         )
+    }
+
+    /// ⚠⚠⚠ **A REPLY LONGER THAN THE PANE CAME BACK WITH A NEWLINE IN THE MIDDLE OF A SENTENCE.**
+    ///
+    /// A per-turn pane is narrow, and an endpoint's plain-text answer is prose. Read through the
+    /// RENDERED grid, every wrap became a `\n` and the space at each break was trimmed away — so
+    /// what this published as the endpoint's words was not what the endpoint said, and the next
+    /// turn passed the corrupted text back as history.
+    ///
+    /// ⚠⚠ The hazard was KNOWN: [`decode_json`]'s doc, one function below the capture, says the
+    /// grid *"would corrupt the wrapped single-line envelope (it inserts a `\n` at every wrap and
+    /// trailing-trims each row)"* and reads raw bytes to avoid it. **The plain-text path beside it
+    /// was never moved.** A fix applied to one consumer is not a fix.
+    ///
+    /// The fixture's reply is 31 characters into a 16-column pane. Measured with the grid read in
+    /// place, the capture was `"the build is don\ne and it passed"` — **a newline inside a word**,
+    /// because a wrap falls where the width runs out and not where the language does.
+    #[test]
+    fn a_reply_wider_than_the_pane_is_captured_as_the_endpoint_said_it() {
+        let said = "the build is done and it passed";
+        let endpoint = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            format!("printf '%s' '{said}'"),
+            "_".to_string(),
+        ];
+        let mut spec = DialogueSpec::new(endpoint.clone(), endpoint, "go");
+        spec.cols = 16;
+        spec.rows = 6;
+
+        let (_ws, _outcome, transcript) = run(spec, 1);
+
+        let t = transcript.expect("a transcript");
+        assert!(
+            t.contains(said),
+            "⚠⚠ THE ENDPOINT'S OWN SENTENCE, whole. Through the grid this came back broken at \
+             every wrap with the space at each break eaten, and that text is what the next turn \
+             was handed as history: {t:?}",
+        );
     }
 
     #[test]

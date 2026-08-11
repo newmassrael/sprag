@@ -5014,6 +5014,90 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **THE TEXT VIEW AND THE SEARCH ARE DOCUMENTED AS THE SAME AXIS AND ANSWERED
+    /// DIFFERENTLY.**
+    ///
+    /// [`Screen::full_text`] calls itself *"the SINGLE definition of the pane's text"* and built
+    /// its answer out of [`Screen::row_text`] — one output line per ROW. [`Screen::find`] scans
+    /// LOGICAL lines. Measured on one pane: `find` reported a match for a phrase that `full_text`
+    /// did not contain, because the width had broken the phrase at its SPACE and a row's trailing
+    /// blank is trimmed.
+    ///
+    /// An agent reads a sibling pane through this text and searches it through that one, so it
+    /// could be told a phrase was there and then not find it. **And the width is not the reader's:
+    /// whichever client attached decides it**, so two readers of the same output got different
+    /// text and neither could tell.
+    #[test]
+    fn the_text_view_and_the_search_answer_on_the_same_axis() {
+        let mut em = Emulator::new(5, 4);
+        em.advance(b"TOOL UP\r\n"); // five columns: the line breaks at the SPACE
+
+        assert!(
+            (0..em.screen().rows()).any(|row| em.screen().wrapped(row)),
+            "the fixture must wrap or it says nothing",
+        );
+        assert_eq!(
+            em.screen().find("TOOL UP").matches.len(),
+            1,
+            "the search finds the phrase, because it reads what the child wrote",
+        );
+        assert_eq!(
+            em.screen().full_lines(),
+            ["TOOL UP"],
+            "⚠⚠ AND SO MUST THE TEXT VIEW. One entry per LOGICAL line — the single reader that \
+             served both contracts answered \"TOOL\\nUP\" to this question, which does not \
+             contain the phrase the search had just found",
+        );
+        assert_eq!(
+            em.screen().full_text(),
+            "TOOL\nUP",
+            "⚠ while the RENDERED view keeps the break, because `read_pane` promises \"what a \
+             human sees in that pane\" — the two answers are different questions, and the defect \
+             was one function answering both",
+        );
+    }
+
+    /// ⚠⚠⚠ **A LINE WHOSE FIRST ROW SCROLLED OFF LOST ITS FRONT, SILENTLY.**
+    ///
+    /// A wrapped logical line spans the scrollback and the visible grid the moment its first row
+    /// scrolls off — which is what happens to every wrapped line as a pane fills, not an edge case.
+    /// [`Screen::lines_since`] reset its accumulator at that boundary, threw the scrollback share
+    /// away and emitted the visible remainder as though it were the whole line.
+    ///
+    /// Measured: a child printed `AAAAAAA` into a five-column pane and, one scroll later, the
+    /// reader answered `["AA"]` — **with `lost` at zero**, so a consumer that checks for a reported
+    /// gap saw none. [`Pipe`] relays that as the source's line and [`Agent`] publishes it as the
+    /// model's reply.
+    ///
+    /// [`Pipe`]: https://docs.rs/sprag-plugin
+    /// [`Agent`]: https://docs.rs/sprag-plugin
+    #[test]
+    fn a_line_whose_first_row_scrolled_off_is_still_delivered_whole() {
+        let mut em = Emulator::new(5, 2);
+        em.advance(b"AAAAAAA\r\n"); // 7 chars: row0 "AAAAA" wraps into "AA", then the CR LF scrolls
+
+        assert!(
+            em.screen().scrollback_len() > 0,
+            "the fixture must have scrolled or it says nothing",
+        );
+        let since = em.screen().lines_since(0);
+        assert_eq!(
+            since.lines,
+            ["AAAAAAA"],
+            "the line the child wrote, whole — half of it being in history is the terminal's \
+             business and not the reader's",
+        );
+        assert_eq!(
+            since.lost, 0,
+            "and nothing was lost, which is exactly why dropping it silently was the danger",
+        );
+        assert_eq!(
+            em.screen().full_lines(),
+            ["AAAAAAA"],
+            "and the text view crosses the same boundary the same way",
+        );
+    }
+
     #[test]
     fn normal_crlf_outside_a_redraw_is_a_hard_break() {
         // Without a preceding resize, the same CR LF ends the logical line — so
@@ -5269,6 +5353,12 @@ mod tests {
             "ab世\n世",
             "and it must leave the pad column blank before the widen",
         );
+        assert_eq!(
+            em.screen().full_lines(),
+            ["ab世世"],
+            "⚠ and the LINE reader already answers without the pad, before any resize — the \
+             failure to watch for is \"ab世 世\", a space injected into the user's text",
+        );
         em.resize(9, 3);
         assert_eq!(
             em.screen().full_text(),
@@ -5287,6 +5377,14 @@ mod tests {
         em.advance(b"ab    cdef");
         assert!(em.screen().wrapped(0), "the fixture must wrap");
         assert_eq!(em.screen().full_text(), "ab\ncdef");
+        assert_eq!(
+            em.screen().full_lines(),
+            ["ab    cdef"],
+            "⚠⚠ FOUR PRINTED SPACES ARE CONTENT AND THE LINE READER KEEPS THEM AT THE BREAK. The \
+             RENDERED view trims a row's tail, which is a display convention; a reader that meant \
+             the CHILD'S TEXT and used it performed exactly the silent rewrite this test's own \
+             doc warns a bad fix would",
+        );
         em.resize(12, 3);
         assert_eq!(
             em.screen().full_text(),

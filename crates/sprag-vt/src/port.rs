@@ -2011,7 +2011,15 @@ impl Screen {
 
         // The visible half: rows ABOVE the cursor's, which the child has moved past. The cursor's
         // own line is unfinished, and a run that continues into it is unfinished with it.
-        joined.clear();
+        //
+        // ⚠⚠⚠ **`joined` IS NOT CLEARED HERE, AND CLEARING IT DROPPED THE FRONT OF A LINE.** A
+        // logical line SPANS the two halves whenever its first row has scrolled off while its
+        // continuation is still on the grid — which is what happens to every wrapped line as the
+        // pane fills, not an edge case. Resetting the accumulator threw the scrollback share away
+        // and emitted the visible remainder as if it were the whole line. Measured: a child
+        // printed `AAAAAAA` into a five-column pane and, one scroll later, this reader answered
+        // `["AA"]` — **with `lost` at zero, so nothing said anything was missing.** A relay
+        // delivered `AA` as the source's line and an agent published it as the model's reply.
         for row in 0..self.cursor.row.min(self.rows) {
             joined.push_str(&self.row_share_text(row));
             if self.continues(row).is_none() {
@@ -2113,13 +2121,24 @@ impl Screen {
         self.scrollback.len()
     }
 
-    /// The pane's full output text: scrolled-off lines (scrollback) then the
-    /// visible rows, trailing empty lines stripped, joined by `"\n"`.
+    /// The pane's full output text AS A PERSON SEES IT: scrolled-off lines (scrollback) then the
+    /// visible ROWS, trailing empty lines stripped, joined by `"\n"`.
     ///
-    /// This is the SINGLE definition of "the pane's text" — both the in-process
-    /// capture path (`sprag_plugin`) and the RPC `full_text` query read it, so
-    /// the system has one notion of screen text (the `Screen` is the single
-    /// source; this and the visible-grid projection are two views of it).
+    /// # ⚠⚠ This is the RENDERED view, and [`Self::full_lines`] is the other one
+    ///
+    /// A ROW is where the terminal broke a line at the width it had. This reports those breaks,
+    /// because that is what the surface built on it promises: the `read_pane` tool says *"what a
+    /// human sees in that pane."* A caller that wants what the CHILD WROTE — one entry per logical
+    /// line, no width in the answer — wants [`Self::full_lines`], which is the axis [`Self::find`]
+    /// and [`Self::lines_since`] already answer on.
+    ///
+    /// ⚠ The two were ONE function, and it was serving both contracts at once. That is why
+    /// `sprag_plugin`'s [`Dialogue`] captured a model's reply through the grid — its own doc, one
+    /// function below the call, says the grid *"would corrupt the wrapped single-line envelope (it
+    /// inserts a `\n` at every wrap and trailing-trims each row)"* — and worked around it for the
+    /// JSON path only. **A reader with two contracts has none.**
+    ///
+    /// [`Dialogue`]: https://docs.rs/sprag-plugin
     #[must_use]
     pub fn full_text(&self) -> String {
         let mut lines: Vec<String> = self.scrollback_rows().collect();
@@ -2130,6 +2149,51 @@ impl Screen {
             lines.pop();
         }
         lines.join("\n")
+    }
+
+    /// The pane's full output as the LOGICAL LINES THE CHILD WROTE — scrollback then the visible
+    /// grid, one entry per line however the width broke it, trailing empty lines stripped.
+    ///
+    /// # ⚠⚠⚠ Why this exists beside [`Self::full_text`]
+    ///
+    /// The width belongs to whichever client attached, so a rendered answer is not reproducible
+    /// between two readers of the same output — and every question about CONTENT (does this text
+    /// contain my marker, what did the model reply, what should I relay) is a question the width
+    /// must not be able to change. Measured on a five-column pane printing `TOOL UP`:
+    /// [`Self::find`] reported one match and `full_text` answered `"TOOL\nUP"`, which does not
+    /// contain the phrase at all — the two are documented as the same axis and were not.
+    ///
+    /// ⚠ ONE accumulator across BOTH halves: a logical line spans them whenever its first row has
+    /// scrolled off while its continuation is still on the grid, which is what happens to every
+    /// wrapped line as a pane fills. [`Self::lines_since`] reset its own accumulator there and
+    /// dropped the scrollback share — the FRONT of the line — with `lost` still reporting zero.
+    #[must_use]
+    pub fn full_lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut joined = String::new();
+        for index in 0..self.scrollback.len() {
+            joined.push_str(&cells_text(line_cells(
+                &self.scrollback[index].cells,
+                self.scrollback[index].continues,
+            )));
+            if self.scrollback_continues(index).is_none() {
+                lines.push(std::mem::take(&mut joined).trim_end().to_string());
+            }
+        }
+        for row in 0..self.rows {
+            joined.push_str(&self.row_share_text(row));
+            if self.continues(row).is_none() {
+                lines.push(std::mem::take(&mut joined).trim_end().to_string());
+            }
+        }
+        // A line still open at the last row is text the pane holds, so it is text this returns.
+        if !joined.is_empty() {
+            lines.push(std::mem::take(&mut joined).trim_end().to_string());
+        }
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        lines
     }
 
     /// The pane's retained output encoded as REPLAYABLE terminal bytes — the durable form of this
@@ -4193,6 +4257,13 @@ mod tests {
             screen.full_text(),
             "abcdefghijklmnopqrst\nuvwxyz",
             "the RENDERED view still carries the row break — it describes the screen, not the text",
+        );
+        assert_eq!(
+            screen.full_lines(),
+            ["abcdefghijklmnopqrstuvwxyz"],
+            "⚠⚠ AND THE LINE VIEW ANSWERS ON THE SEARCH'S AXIS. Both claims are true and they were \
+             one function: a reader that describes the screen and a reader that reports what the \
+             child wrote cannot be the same reader, and the caller picks by what it promises",
         );
     }
 

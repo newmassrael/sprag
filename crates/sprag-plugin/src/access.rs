@@ -415,6 +415,29 @@ pub trait PaneAccess {
     /// only), this captures output longer than the grid — a scrolled AI reply.
     fn pane_full_text(&self, id: PaneId) -> Option<String>;
 
+    /// The pane's full output as the LOGICAL LINES THE CHILD WROTE — one entry per line however
+    /// the width broke it. `None` if no pane has that id.
+    ///
+    /// # ⚠⚠ The CONTENT question, where [`pane_full_text`](Self::pane_full_text) is the RENDERED one
+    ///
+    /// Same pane, same output, two answers, and which one a caller wants is decided by what the
+    /// caller PROMISES its own reader. `read_pane` promises *"what a human sees in that pane"* and
+    /// takes the rendered one. Anything that publishes a model's words, matches a marker or relays
+    /// to a peer is asking about CONTENT — and **the width belongs to whichever client attached**,
+    /// so a rendered answer makes those depend on somebody else's window size.
+    ///
+    /// Defaults to the rendered text SPLIT BACK into lines, so a host that has not implemented it
+    /// degrades to the old answer rather than to nothing — named as a degradation, exactly as the
+    /// no-stream fallbacks in this crate are.
+    fn pane_full_lines(&self, id: PaneId) -> Option<Vec<String>> {
+        Some(
+            self.pane_full_text(id)?
+                .lines()
+                .map(ToOwned::to_owned)
+                .collect(),
+        )
+    }
+
     /// Inject `keys` into the pane, returning what was WRITTEN to its pseudoterminal.
     ///
     /// **Success is not delivery.** [`Written`] says so in its name and its docs say why; a caller
@@ -833,6 +856,10 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.with_screen(Screen::full_text))
+    }
+
+    fn pane_full_lines(&self, id: PaneId) -> Option<Vec<String>> {
+        Some(self.handle(id)?.with_screen(Screen::full_lines))
     }
 
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
