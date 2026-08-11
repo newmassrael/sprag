@@ -909,8 +909,21 @@ fn tools_list() -> Value {
                         },
                         "cwd": {
                             "type": "string",
-                            "description": "Directory the new shell starts in. Defaults to \
+                            "description": "Directory the new pane starts in. Defaults to \
                                 this server's own working directory."
+                        },
+                        "cmd": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Run THIS program in the pane instead of a shell, as \
+                                a list: [\"python3\", \"-i\"]. Prefer it whenever you know what \
+                                you are going to drive. A pane that runs a shell has to be told \
+                                what to start by typing, and a pane ECHOES what is typed at it — \
+                                so anything you send before the program is up goes to the shell, \
+                                which runs it as a command, and a readiness marker can be \
+                                satisfied by the echo of your own command line instead of by the \
+                                program. With cmd there is no shell and no echo: the pane is the \
+                                program from the first byte."
                         }
                     },
                     "additionalProperties": false
@@ -1484,6 +1497,39 @@ struct RunArgument {
     ty: &'static str,
     /// Every word any form admits for it, or empty for an open value.
     words: Vec<&'static str>,
+    /// The nested argument this one is a FIELD of, or `None` for a top-level one — and `None` too
+    /// for a field this surface FLATTENS, see [`is_a_unit`].
+    ///
+    /// ⚠⚠ CARRIED, because losing it loses the argument. This surface flattens the wire's nesting
+    /// and puts each field back on the way out, and the putting-back was keyed by a HARD-CODED
+    /// `guardrails` — so the second nested argument this wire grew (`ready_when`) was flattened,
+    /// never re-assembled, and reached the daemon as two loose keys with its parent nowhere. The
+    /// barrier an agent asked for would simply not have been applied. Derived from the grammar now,
+    /// so a third nested argument works without an edit.
+    parent: Option<&'static str>,
+    /// Whether a well-formed call may leave this field out — needed to publish a nested object's
+    /// own `required` list.
+    optional: bool,
+}
+
+/// Whether a nested argument is a UNIT — an object whose fields only mean anything TOGETHER —
+/// rather than a bag of independent knobs.
+///
+/// # ⚠⚠ Why this surface flattens one and not the other
+///
+/// This tool has always flattened the wire's nesting: an agent sends `max_iterations`, not
+/// `guardrails: {max_iterations}`, and the CLI beside it offers `--max-iterations` for the same
+/// reason. That is lossless for `guardrails`, whose three bounds are each optional and each mean
+/// exactly what they mean alone.
+///
+/// It is NOT lossless for a nested argument whose fields are required together. Flattening
+/// `ready_when` would put a bare `match` in a flat namespace — a word with no context — and would
+/// let an agent send one half of a pair that means nothing without the other. So a unit is
+/// published as the object it is, and the rule is read off the grammar (**are any of its fields
+/// required?**) rather than from a list of names, so the next nested argument is classified by what
+/// it IS.
+fn is_a_unit(arg: &sprag_rpc::ArgGrammar) -> bool {
+    !arg.fields.is_empty() && arg.fields.iter().any(|field| !field.optional)
 }
 
 /// Every argument of every `run` form, nesting flattened, minus the one the agent may not send.
@@ -1496,8 +1542,13 @@ struct RunArgument {
 fn orchestrate_arguments() -> Vec<RunArgument> {
     let mut out: Vec<RunArgument> = Vec::new();
     for form in run_forms() {
-        for arg in form.args {
-            for arg in std::iter::once(arg).chain(arg.fields) {
+        for top in form.args {
+            let carried = is_a_unit(top).then_some(top.name);
+            let fields = top.fields.iter().map(|field| (carried, field));
+            for (parent, arg) in std::iter::once((None, top)).chain(fields) {
+                // The PARENT is not an argument in its own right here — it is published by its
+                // fields, which carry its name. Emitting it too would offer an agent an empty
+                // object beside the one that has the fields in it.
                 if arg.name == OPENED_BY || !arg.fields.is_empty() {
                     continue;
                 }
@@ -1514,6 +1565,8 @@ fn orchestrate_arguments() -> Vec<RunArgument> {
                         name: arg.name,
                         ty: arg.ty,
                         words: words.to_vec(),
+                        parent,
+                        optional: arg.optional,
                     }),
                 }
             }
@@ -1558,7 +1611,31 @@ fn orchestrate_schema() -> Value {
             schema.insert("description".to_owned(), json!(argument_help(arg.name)));
             Value::Object(schema)
         };
-        properties.insert(arg.name.to_owned(), schema);
+        match arg.parent {
+            // A FIELD goes inside its parent's object, and the parent carries its own `required`
+            // list — which is how "these two only mean anything together" reaches an agent as a
+            // rule its client can check, rather than as a sentence it has to read.
+            Some(parent) => {
+                let nest = properties.entry(parent.to_owned()).or_insert_with(|| {
+                    json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false,
+                        "description": argument_help(parent),
+                    })
+                });
+                nest["properties"][arg.name] = schema;
+                if !arg.optional
+                    && let Some(required) = nest["required"].as_array_mut()
+                {
+                    required.push(json!(arg.name));
+                }
+            }
+            None => {
+                properties.insert(arg.name.to_owned(), schema);
+            }
+        }
     }
     json!({
         "type": "object",
@@ -1602,15 +1679,23 @@ fn argument_help(name: &str) -> &'static str {
              run goes to its iteration ceiling."
         }
         "ready_when" => {
-            "WAIT for this to appear on the pane before typing anything (orchestrator, pipe, \
-             agent). A \
-             pane you just opened is running a SHELL, and the program you mean to drive starts a \
-             moment later — a run that begins in that window feeds the shell, which runs your \
-             stimulus as a command. Name something the program PRINTS when it is up (its prompt, \
-             its banner), not a word from the command line you typed to start it: a pane echoes \
-             that, so it is already on screen before the program exists. If it never appears the \
-             run stops and says so. For a pipe this is the DESTINATION's, which is the pane you \
-             are typing into."
+            "WAIT for the pane to be ready before typing anything into it (orchestrator, pipe, \
+             agent). A pane you just opened is running a SHELL, and the program you mean to drive \
+             starts a moment later — a run that begins in that window feeds the shell, which runs \
+             your text as a command. For a pipe this is the DESTINATION's; for an agent, getting \
+             it wrong means the shell's `command not found` comes back to you AS THE MODEL'S REPLY."
+        }
+        "match" => {
+            "WHICH QUESTION your marker is asking, and there is no safe default. `prints` means \
+             the pane must PRINT the marker after the run starts — use it when you just started \
+             the program, because a pane echoes the command line you typed and a marker found in \
+             that echo would let the run type into the shell. `shows` means the marker is on the \
+             screen already — use it for a program that is ALREADY running and sitting at its \
+             prompt, which will print nothing more until you feed it."
+        }
+        "marker" => {
+            "The text that means ready — the program's own prompt or banner. Pick something the \
+             PROGRAM prints, not a word from the command line you typed to start it."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
@@ -1706,23 +1791,63 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
              running in, which is what makes list_runs and cancel_run answer about your own runs."
         ));
     }
+    // ⚠ WHAT A CALLER MAY NAME AT THE TOP is the flat arguments plus the UNIT parents — a unit's
+    // FIELDS are named inside it, never beside it, which is the whole reason it stays an object.
+    // Derived from the same `parent` the schema is built from, so the two cannot disagree about
+    // what this tool accepts.
+    let top_level: Vec<&str> = known
+        .iter()
+        .filter(|arg| arg.parent.is_none())
+        .map(|arg| arg.name)
+        .chain(known.iter().filter_map(|arg| arg.parent))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    // ⚠⚠ A UNIT MUST ARRIVE AS AN OBJECT, and this refusal is the whole point of the shape. Read
+    // field-by-field, a caller who sent the PRE-BUMP `"ready_when": "READY-OK"` had every field
+    // simply not found — so the barrier was DROPPED and the run started without it, reporting
+    // success. That is the silent reinterpretation the object shape exists to prevent, reappearing
+    // one layer above the daemon that refuses it correctly.
+    for arg in &known {
+        let Some(parent) = arg.parent else { continue };
+        match object.get(parent) {
+            None | Some(Value::Object(_)) => {}
+            Some(other) => {
+                return Err(format!(
+                    "'{parent}' is an object here, not {other}. It takes {{{}}} — every field, \
+                     because they only mean anything together. Call tools/list for the schema.",
+                    known
+                        .iter()
+                        .filter(|field| field.parent == Some(parent))
+                        .map(|field| field.name)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ));
+            }
+        }
+    }
     for key in object.keys() {
-        if !known.iter().any(|arg| arg.name == key) {
+        if !top_level.contains(&key.as_str()) {
             return Err(format!(
                 "'{key}' is not an argument of orchestrate. It takes: {}",
-                known
-                    .iter()
-                    .map(|arg| arg.name)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                top_level.join(", "),
             ));
         }
     }
 
     let ceilings = guardrail_defaults()?;
-    let mut guardrails = serde_json::Map::new();
+    // ⚠⚠ ONE NEST PER DECLARED PARENT, built from the grammar rather than from a name typed here.
+    // This was a single `guardrails` map, so the wire's SECOND nested argument was flattened on the
+    // way in and never re-assembled on the way out — an agent's readiness barrier would have
+    // reached the daemon as two loose keys with no parent, and the run would have driven with no
+    // barrier at all while reporting nothing wrong.
+    let mut nests: serde_json::Map<String, Value> = serde_json::Map::new();
     for arg in &known {
-        let Some(value) = object.get(arg.name) else {
+        // A field is read from inside its parent, exactly as the schema publishes it.
+        let Some(value) = arg.parent.map_or_else(
+            || object.get(arg.name),
+            |parent| object.get(parent).and_then(|nest| nest.get(arg.name)),
+        ) else {
             continue;
         };
         // A PANE argument resolves through this surface's own addressing and must be the agent's.
@@ -1752,7 +1877,12 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
                     arg.name,
                 ));
             }
-            guardrails.insert(arg.name.to_owned(), json!(asked));
+            nests
+                .entry(arg.parent.unwrap_or("guardrails").to_owned())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+                .expect("a nest is an object")
+                .insert(arg.name.to_owned(), json!(asked));
             continue;
         }
         // ⚠⚠ FAIL CLOSED ON AN UNCLASSIFIED NUMBER. Every `int` this daemon publishes is either a
@@ -1774,10 +1904,22 @@ fn tool_orchestrate(args: &Value) -> Result<String, String> {
                 arg.name,
             ));
         }
-        action_args.insert(arg.name.to_owned(), value.clone());
+        match arg.parent {
+            Some(parent) => {
+                nests
+                    .entry(parent.to_owned())
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                    .as_object_mut()
+                    .expect("a nest is an object")
+                    .insert(arg.name.to_owned(), value.clone());
+            }
+            None => {
+                action_args.insert(arg.name.to_owned(), value.clone());
+            }
+        }
     }
-    if !guardrails.is_empty() {
-        action_args.insert("guardrails".to_owned(), Value::Object(guardrails));
+    for (parent, nest) in nests {
+        action_args.insert(parent, nest);
     }
     // ⚠ BEFORE the invoke, never after: a run submitted first can finish first, and an anchor taken
     // afterwards would sit past its own `run_finished` record — the exact race this exists to close.
@@ -4328,6 +4470,24 @@ fn tool_open_pane(args: &Value) -> Result<String, String> {
             ));
         };
         spawn_args["cwd"] = json!(dir);
+    }
+    // ⚠⚠ THE PROGRAM ITSELF, when the caller knows it. The daemon's spawn has taken an argv all
+    // along and this tool did not offer it, so every agent-opened pane was a SHELL and every loop
+    // against one had to start its program by TYPING — which is the whole reason an echo can
+    // satisfy a readiness marker, and why an agent prompt could come back as `sh: not found`.
+    match args.get("cmd") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(argv)) => {
+            if argv.is_empty() || !argv.iter().all(Value::is_string) {
+                return Err(
+                    "'cmd' is the program and its arguments as a non-empty list of strings, e.g. \
+                     [\"python3\", \"-i\"]."
+                        .to_owned(),
+                );
+            }
+            spawn_args["cmd"] = Value::Array(argv.clone());
+        }
+        Some(other) => return Err(format!("'cmd' must be a list of strings, not {other}")),
     }
     let id = host_call_kinded(
         "scene/invoke",
@@ -7082,6 +7242,32 @@ mod tests {
         }
     }
 
+    /// ⚠⚠ **A UNIT'S FIELDS ARE CARRIED WITH THEIR PARENT, A BAG'S ARE NOT** — the classification
+    /// the schema and the call builder both read, asserted once so they cannot silently agree on
+    /// the wrong answer.
+    #[test]
+    fn a_units_fields_keep_their_parent_and_a_bags_do_not() {
+        let known = orchestrate_arguments();
+        let parent_of = |name: &str| {
+            known
+                .iter()
+                .find(|arg| arg.name == name)
+                .unwrap_or_else(|| panic!("{name} is published"))
+                .parent
+        };
+        assert_eq!(
+            parent_of("match"),
+            Some("ready_when"),
+            "the readiness barrier's fields only mean anything together, so they stay inside it",
+        );
+        assert_eq!(parent_of("marker"), Some("ready_when"));
+        assert_eq!(
+            parent_of("max_iterations"),
+            None,
+            "a guardrail means what it means alone, and agents already send it flat",
+        );
+    }
+
     /// ⚠⚠ **EVERY ARGUMENT THIS TOOL OFFERS SAYS WHAT IT IS FOR, IN THE AGENT'S TERMS.**
     ///
     /// [`argument_help`] is a per-name table with a catch-all arm, which is the shape a new thing
@@ -7136,8 +7322,11 @@ mod tests {
             .as_object()
             .expect("an object of arguments");
         for form in run_forms() {
-            for arg in form.args {
-                for arg in std::iter::once(arg).chain(arg.fields) {
+            for top in form.args {
+                // Same rule the schema is built by: a UNIT keeps its parent, a bag is flattened.
+                let carried = is_a_unit(top).then_some(top.name);
+                let fields = top.fields.iter().map(|field| (carried, field));
+                for (parent, arg) in std::iter::once((None, top)).chain(fields) {
                     if !arg.fields.is_empty() {
                         continue; // the parent is offered by its fields
                     }
@@ -7148,12 +7337,35 @@ mod tests {
                         );
                         continue;
                     }
-                    assert!(
-                        properties.contains_key(arg.name),
-                        "the daemon publishes {:?} and the tool does not offer it, so an agent \
-                         cannot send an argument this build's own wire takes",
-                        arg.name,
+                    // ⚠⚠ A FIELD MUST BE OFFERED INSIDE ITS DECLARED PARENT, not merely somewhere.
+                    // The looser check — "the name appears" — is what let this surface flatten a
+                    // nested argument, drop the parent on the way back out, and pass: `ready_when`
+                    // would have been advertised as two loose keys and its barrier silently never
+                    // applied.
+                    let offered = parent.map_or_else(
+                        || properties.get(arg.name),
+                        |parent| properties.get(parent)?.get("properties")?.get(arg.name),
                     );
+                    assert!(
+                        offered.is_some(),
+                        "the daemon publishes {:?}{} and the tool does not offer it there, so an \
+                         agent cannot send an argument this build's own wire takes",
+                        arg.name,
+                        parent.map_or(String::new(), |p| format!(" inside {p:?}")),
+                    );
+                    // And a field the grammar REQUIRES is published as required, so a client that
+                    // validates knows the two only mean anything together.
+                    if let Some(parent) = parent
+                        && !arg.optional
+                    {
+                        assert!(
+                            properties[parent]["required"]
+                                .as_array()
+                                .is_some_and(|req| req.contains(&json!(arg.name))),
+                            "{:?} is required inside {parent:?} and the schema does not say so",
+                            arg.name,
+                        );
+                    }
                 }
             }
         }
@@ -7164,14 +7376,24 @@ mod tests {
             json!(sprag_host::plugins::PluginName::WIRE_WORDS),
         );
         assert_eq!(schema["required"], json!(["plugin"]));
-        // THE CONTROL: the walk above is not vacuous — it really did visit the nested guardrail
-        // fields, which is where the loop's whole safety story lives.
+        // THE CONTROL: the walk above is not vacuous — it really did visit the nested fields, which
+        // is where the loop's whole safety story lives. ⚠ They are published INSIDE their parent,
+        // which is the shape the daemon takes; a flat spelling here was how the second nested
+        // argument came to be dropped on the way out.
         for bound in ["max_iterations", "max_bytes", "max_tokens"] {
             assert!(
                 properties.contains_key(bound),
-                "{bound} is a nested field of the published grammar and must reach the agent",
+                "{bound} is a nested field of the published grammar and must reach the agent — \
+                 FLATTENED, because a guardrail means what it means on its own and agents already \
+                 call this tool that way",
             );
         }
+        assert!(
+            properties["ready_when"]["properties"]
+                .get("match")
+                .is_some(),
+            "and so must the readiness barrier's own question",
+        );
     }
 
     /// ⚠⚠ **AN AGENT CANNOT SAY WHO ASKED FOR A RUN** — the authority decision, driven.

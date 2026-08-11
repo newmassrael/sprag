@@ -13,7 +13,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::readiness::{Reached, Readiness};
+use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// How long a step waits for the pane to react before judging on the current
@@ -34,7 +34,7 @@ pub struct OrchestrationSpec {
     /// [`Readiness`], which is where this barrier lives and why it exists. `None`
     /// starts driving immediately, which is right for a pane already running the
     /// program.
-    pub ready_when: Option<String>,
+    pub ready_when: Option<ReadyWhen>,
     /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
     /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
     ///
@@ -395,7 +395,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: Some("PEER-SAW ping".to_string()),
-                ready_when: Some("PEER-UP".to_string()),
+                ready_when: Some(ReadyWhen::Prints("PEER-UP".to_string())),
                 ready_within: None,
             },
         );
@@ -428,6 +428,138 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **THE ECHO OF THE COMMAND THAT STARTED THE PROGRAM IS NOT THE PROGRAM COMING UP.**
+    ///
+    /// A pane echoes what is typed at it, so the command line a caller used to START the tool is on
+    /// screen before the tool exists — and a marker matched against the whole screen finds it
+    /// there. Measured against this fixture with the old whole-screen match: the barrier cleared in
+    /// 50 MILLISECONDS and the run spent both turns on the shell, screen
+    /// `…printf "TOOL-UP\n"; exec cat'$ pingATE pingpingATE ping` — the stand-in ate both and the
+    /// peer never saw a word.
+    ///
+    /// [`ReadyWhen::Prints`] is what refuses it: the barrier baselines the pane's damage
+    /// generations on its first look and only reads rows that moved past it, so text that was
+    /// already there is not evidence. Both halves, because a barrier that never let go would
+    /// satisfy the first: nothing may be eaten, AND the peer must receive the stimulus afterwards.
+    #[test]
+    fn the_echo_of_the_command_that_started_the_program_is_not_the_program_coming_up() {
+        let (access, pane) = sh_access("exec sh", 80, 10);
+        // The caller starts the tool by TYPING it — the ordinary shape, and the shape R358 measured
+        // eight gates driving. Its command line MENTIONS the banner, because the caller wrote both.
+        let started = format!(
+            "sh -c 'while read e; do echo \"ATE $e\"; done {STANDIN_READS_TTY} & sleep 2; \
+             kill $! 2>/dev/null; printf \"TOOL-UP\\n\"; \
+             exec sh -c \"while read l; do echo PEER-SAW \\$l; done\"'"
+        );
+        let mut typed = KeyStroke::text(&started);
+        typed.push(KeyStroke::named("Enter"));
+        let _typed = access.inject(pane, &typed).expect("start the tool");
+        // ⚠ WAIT FOR THE ECHO TO LAND, which is what makes this the case under test rather than a
+        // race. A pty echo is asynchronous: the caller's own command line reaches the grid some
+        // moments after the write, and a barrier that armed in between would see it as output
+        // produced AFTER arming — see the note on the residue in [`ReadyWhen::Prints`].
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5)
+            && !access
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains("TOOL-UP"))
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            access
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains("TOOL-UP")),
+            "the fixture needs the caller's command line — marker and all — ON SCREEN before the \
+             run starts, or this gate is not measuring the echo at all",
+        );
+
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("PEER-SAW ping".to_string()),
+                ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
+                ready_within: Some(Duration::from_secs(10)),
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 3,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(20)),
+            },
+        );
+
+        let screen = access.pane_collapsed(pane).unwrap_or_default();
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the run waited for the tool to PRINT its banner and then drove it: {screen:?}",
+        );
+        assert!(
+            !screen.contains("ATE ping"),
+            "the barrier passed on the ECHO of the command line rather than on the program: \
+             {screen:?}",
+        );
+    }
+
+    /// ⚠⚠ **AND `shows` IS NOT THE SAME BUG KEPT AROUND** — it is the answer to the other question,
+    /// and it is the ONLY answer there.
+    ///
+    /// A program already running has already said everything it is going to say until it is fed.
+    /// This pane prints its prompt and then goes quiet; a barrier demanding NEW output would wait
+    /// for ever against it, which is why the whole-screen match had to stay reachable rather than
+    /// be tightened away.
+    ///
+    /// The pause is what makes this measure anything: the banner is over and done with before the
+    /// run looks, so a `Prints` barrier here would have nothing to find.
+    #[test]
+    fn a_program_already_at_its_prompt_is_ready_by_what_it_shows() {
+        let (access, pane) = sh_access(
+            "printf 'REPL-READY\n'; exec sh -c 'while read l; do echo \"GOT $l\"; done'",
+            40,
+            8,
+        );
+        // Wait for the banner to be OVER, so nothing new arrives after the barrier arms.
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5)
+            && !access
+                .pane_collapsed(pane)
+                .is_some_and(|t| t.contains("REPL-READY"))
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("GOT ping".to_string()),
+                ready_when: Some(ReadyWhen::Shows("REPL-READY".to_string())),
+                ready_within: Some(Duration::from_millis(500)),
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 3,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(20)),
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "a pane whose program is already at its prompt is ready by what it SHOWS — demanding \
+             new output would wait for a line this program will never print unasked: {outcome:?}",
+        );
+    }
+
     /// ⚠⚠ **A READINESS THAT NEVER COMES STOPS THE RUN AND SAYS WHAT IT WAITED FOR** — the other
     /// half, and the one that decides whether the argument is a bound or a hope.
     ///
@@ -442,7 +574,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: None,
-                ready_when: Some("NEVER-PRINTED".to_string()),
+                ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
                 ready_within: None,
             },
         );
@@ -494,7 +626,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: None,
-                ready_when: Some("NEVER-PRINTED".to_string()),
+                ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
                 ready_within: Some(Duration::from_millis(200)),
             },
         );
@@ -663,7 +795,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: Some("A SENTINEL THIS PANE NEVER PRINTS".to_string()),
-                ready_when: Some("DEAF-READY".to_string()),
+                ready_when: Some(ReadyWhen::Prints("DEAF-READY".to_string())),
                 ready_within: None,
             },
         );

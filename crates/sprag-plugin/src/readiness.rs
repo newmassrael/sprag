@@ -67,42 +67,165 @@ pub enum Reached {
     RunEnded,
 }
 
-/// A pane's readiness barrier: what it must SHOW before a plugin types into it, and how long the
-/// plugin will wait for that.
+/// WHICH QUESTION a readiness marker is asking — the distinction the argument used to hide.
+///
+/// # ⚠⚠ Why one needle cannot answer both
+///
+/// A marker match over the pane's text answers *"is this text here?"*, and that same observation
+/// means two opposite things depending on what the caller is doing:
+///
+/// * **They just started the program.** Text that was ALREADY on the screen when the run began is
+///   no evidence at all — and the most likely such text is the ECHO OF THE COMMAND LINE THAT
+///   STARTED THE PROGRAM, which a pty puts on screen before the program exists. Measured: a pane
+///   told to wait for `TOOL-UP` passed the barrier in 50 MILLISECONDS against
+///   `…printf "TOOL-UP\n"; exec cat'$ ping ATE ping…` — the run spent both its turns on the shell
+///   and the peer never saw a word.
+/// * **They are pointing at a program already running.** A REPL sitting at its prompt has that
+///   prompt on screen and will print nothing further until it is fed. Here the text already being
+///   there is exactly the evidence, and demanding NEW output would wait forever.
+///
+/// These are not degrees of the same evidence — they are different KINDS, in the sense
+/// [`Authority`](crate::access::Authority) means it, and nothing in the marker itself says which.
+/// **Only the caller knows**, so the type makes them say. A single string could not, which is why
+/// the wire value changed shape rather than gaining a default nobody chose.
+///
+/// ⚠ Whichever they pick, a marker that cannot appear in a command line (a prompt, `>>> `) is
+/// safer than a word they typed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadyWhen {
+    /// Ready once the marker appears in output the pane produces **after the barrier arms**.
+    ///
+    /// The answer for *"I just started it"*, and echo-proof for anything typed before the run: the
+    /// barrier baselines every row's damage generation on its first look and only reads rows that
+    /// moved past it. Wrap-safe — the moved rows are joined the way
+    /// [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed) joins the screen, so a marker
+    /// the pane wrapped is still found.
+    ///
+    /// # ⚠ The residue this does NOT close, measured rather than assumed
+    ///
+    /// A pty echo is ASYNCHRONOUS. If a caller writes the starting command and begins the run in
+    /// the same breath, the echo can reach the grid AFTER the barrier armed — and then it is new
+    /// output by every test this can apply, because the plugin never saw that input and has
+    /// nothing to compare it against. Measured: the first form of this gate raced exactly that way
+    /// and read `ATE ping` with `Prints` in force.
+    ///
+    /// So this closes the hazard for text that had ARRIVED — a stale banner, a previous run's
+    /// output, a command line already on screen — and leaves a window of milliseconds for a caller
+    /// who starts the program and the run together. **The structural answer to that window is not
+    /// to have a shell in the pane at all**: a pane opened running the program directly is never
+    /// typed into, so there is no echo to mistake. That is a
+    /// [`PaneLifecycle`](crate::access::PaneLifecycle) question, not this one's.
+    Prints(String),
+    /// Ready once the marker is on the screen **now**, wherever it came from.
+    ///
+    /// The answer for *"it is already running"* — a REPL at its prompt, which will print nothing
+    /// more until it is fed. This is the older behaviour, and it is the one that can be satisfied
+    /// by an echo, so it is opt-in rather than the default.
+    Shows(String),
+}
+
+impl ReadyWhen {
+    /// The two words a caller may spell, in this type's own order.
+    ///
+    /// Published to every mouth from here rather than retyped as literals, so a third kind reaches
+    /// the wire in the compile that adds it.
+    pub const WIRE_WORDS: &'static [&'static str] = &["prints", "shows"];
+
+    /// The kind named by `word`, or `None` for a word outside the closed set.
+    ///
+    /// ⚠ A caller who sends something else has made a MALFORMED request, not a rejected one —
+    /// R353's rule, and the reason this returns an `Option` for the parser to turn into the wire's
+    /// own grammar refusal rather than a friendly sentence.
+    #[must_use]
+    pub fn parse(word: &str, marker: String) -> Option<Self> {
+        match word {
+            "prints" => Some(Self::Prints(marker)),
+            "shows" => Some(Self::Shows(marker)),
+            _ => None,
+        }
+    }
+
+    /// The word this kind is spelled as on the wire.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Prints(_) => "prints",
+            Self::Shows(_) => "shows",
+        }
+    }
+
+    /// The text the pane must carry.
+    #[must_use]
+    pub fn marker(&self) -> &str {
+        match self {
+            Self::Prints(marker) | Self::Shows(marker) => marker,
+        }
+    }
+}
+
+/// A pane's readiness barrier: what it must show before a plugin types into it, which question
+/// that is asking ([`ReadyWhen`]), and how long the plugin will wait.
 ///
 /// Latched — the wait happens once and every later step drives straight away, so a run pays for
 /// this on its first step only.
 #[derive(Clone, Debug)]
 pub struct Readiness {
-    /// What the pane must show. `None` starts driving immediately, which is right for a pane
-    /// already running the program.
-    ///
-    /// ⚠ **PICK SOMETHING THE PROGRAM SAYS, NOT SOMETHING YOU TYPED.** This is matched against the
-    /// pane's text, and a pane echoes the command line that STARTED the program — so a marker that
-    /// appears in that command line is already on screen before the program exists, and the wait
-    /// ends at once against nothing. A prompt or a banner is safe; the word you typed is not.
-    marker: Option<String>,
+    /// What the pane must show, and which question it answers. `None` starts driving immediately,
+    /// which is right for a pane the caller knows is already running the program.
+    when: Option<ReadyWhen>,
     /// How long to wait for it. See [`DEFAULT_READY_TIMEOUT`] for why this is the caller's.
     within: Duration,
+    /// Every row's damage generation when this barrier ARMED, for [`ReadyWhen::Prints`].
+    ///
+    /// Captured on the first look rather than at construction, because that is the moment the
+    /// question is first asked and the only one a `PaneAccess` is in hand for. `None` until then.
+    armed_at: Option<Vec<u64>>,
     /// Whether the marker has been seen. Latched.
     seen: bool,
 }
 
 impl Readiness {
-    /// A barrier for `marker`, waiting `within` (defaulting to [`DEFAULT_READY_TIMEOUT`]).
+    /// A barrier for `when`, waiting `within` (defaulting to [`DEFAULT_READY_TIMEOUT`]).
     ///
-    /// A `None` marker is a barrier that is already down: the caller is saying the pane is running
-    /// what they mean to drive.
+    /// A `None` condition is a barrier that is already down: the caller is saying the pane is
+    /// running what they mean to drive.
     #[must_use]
-    pub fn new(marker: Option<String>, within: Option<Duration>) -> Self {
+    pub fn new(when: Option<ReadyWhen>, within: Option<Duration>) -> Self {
         Self {
-            seen: marker.is_none(),
-            marker,
+            seen: when.is_none(),
+            when,
             within: within.unwrap_or(DEFAULT_READY_TIMEOUT),
+            armed_at: None,
         }
     }
 
-    /// Wait (once, then latched) for `pane` to show the marker.
+    /// Whether `pane` satisfies this barrier right now.
+    fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
+        match &self.when {
+            None => true,
+            Some(ReadyWhen::Shows(marker)) => panes
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains(marker.as_str())),
+            Some(ReadyWhen::Prints(marker)) => {
+                let Some(rows) = panes.pane_rows(pane) else {
+                    return false;
+                };
+                let armed = self.armed_at.as_deref().unwrap_or_default();
+                // The rows that MOVED since arming, joined the way the whole screen is joined, so a
+                // marker the pane wrapped across two fresh rows is still found. A row that did not
+                // move is not evidence — that is the entire point of this kind.
+                let printed: String = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, row)| row.generation > armed.get(*i).copied().unwrap_or(0))
+                    .map(|(_, row)| row.text.trim_end())
+                    .collect();
+                printed.contains(marker.as_str())
+            }
+        }
+    }
+
+    /// Wait (once, then latched) for `pane` to satisfy the barrier.
     ///
     /// # Errors
     ///
@@ -124,18 +247,28 @@ impl Readiness {
         if self.seen {
             return Ok(Reached::Yes);
         }
-        let marker = self.marker.as_deref().unwrap_or_default();
-        match poll_until(run, self.within, || {
-            panes
-                .pane_collapsed(pane)
-                .is_some_and(|text| text.contains(marker))
-        }) {
+        // ⚠ ARM BEFORE THE FIRST LOOK, never before. Everything on the screen at this instant is
+        // what `Prints` refuses to count, and this is the first moment a pane is in hand to read
+        // it from.
+        if self.armed_at.is_none() {
+            self.armed_at = Some(
+                panes
+                    .pane_rows(pane)
+                    .map(|rows| rows.iter().map(|row| row.generation).collect())
+                    .unwrap_or_default(),
+            );
+        }
+        match poll_until(run, self.within, || self.satisfied(panes, pane)) {
             Waited::Ready => {
                 self.seen = true;
                 Ok(Reached::Yes)
             }
             Waited::Stopped => Ok(Reached::RunEnded),
-            Waited::TimedOut => Err(PaneError::NeverReady(marker.to_string())),
+            Waited::TimedOut => Err(PaneError::NeverReady(
+                self.when
+                    .as_ref()
+                    .map_or_else(String::new, |when| when.marker().to_string()),
+            )),
         }
     }
 }

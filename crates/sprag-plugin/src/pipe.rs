@@ -20,7 +20,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::readiness::{Reached, Readiness};
+use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// How long a relay waits for its destination to show ANY change before reporting that it showed
@@ -58,7 +58,7 @@ pub struct PipeSpec {
     /// was still a shell ate two relayed lines (`SHELL-ATE relayme`) while the peer that came up a
     /// second later saw nothing, and the run reported the same bytes, the same `continue` and the
     /// same `exhausted` a working relay reports.
-    pub ready_when: Option<String>,
+    pub ready_when: Option<ReadyWhen>,
     /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
     /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
     pub ready_within: Option<Duration>,
@@ -515,7 +515,7 @@ mod tests {
         assert!(wait_until(&access, src, "relayme"), "source never echoed");
 
         let spec = PipeSpec {
-            ready_when: Some("PEER-UP".to_string()),
+            ready_when: Some(ReadyWhen::Prints("PEER-UP".to_string())),
             ..PipeSpec::new(src, dst)
         };
         let _outcome = Driver::new(Guardrails {
@@ -572,7 +572,9 @@ mod tests {
         assert!(wait_until(&access, src, "relayme"), "source never echoed");
 
         let spec = PipeSpec {
-            ready_when: Some("A MARKER THIS PANE NEVER PRINTS".to_string()),
+            ready_when: Some(ReadyWhen::Prints(
+                "A MARKER THIS PANE NEVER PRINTS".to_string(),
+            )),
             // ⚠ FAR ABOVE the run's clock, so the run's deadline is provably what ends the wait
             // rather than the barrier's own bound — that ending is the OTHER arm.
             ready_within: Some(Duration::from_secs(300)),
@@ -648,7 +650,7 @@ mod tests {
         assert!(wait_until(&access, src, "relayme"), "source never echoed");
 
         let spec = PipeSpec {
-            ready_when: Some("NEVER-PRINTED".to_string()),
+            ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
             ready_within: Some(Duration::from_millis(200)),
             ..PipeSpec::new(src, dst)
         };

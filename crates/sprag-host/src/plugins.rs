@@ -31,8 +31,8 @@ use pinion_core::external::{
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
     Agent, AgentSpec, Ceiling, Cost, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec,
-    Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin, ReplyFormat, RunContext,
-    WorkspacePaneAccess,
+    Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin, ReadyWhen, ReplyFormat,
+    RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -357,7 +357,7 @@ impl PluginsExternal {
                 self.require_pane(pane)?;
                 let stimulus = require_str(map, "stimulus")?.to_string();
                 let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
-                let ready_when = opt_str(map, "ready_when")?.map(str::to_string);
+                let ready_when = opt_ready_when(map)?;
                 let ready_within = opt_millis(map, "ready_timeout_ms")?;
                 let label = format!("orchestrator pane={}", pane.0);
                 let spec = OrchestrationSpec {
@@ -379,7 +379,7 @@ impl PluginsExternal {
                 let spec = PipeSpec {
                     src,
                     dst,
-                    ready_when: opt_str(map, "ready_when")?.map(str::to_string),
+                    ready_when: opt_ready_when(map)?,
                     ready_within: opt_millis(map, "ready_timeout_ms")?,
                 };
                 Ok((
@@ -398,7 +398,7 @@ impl PluginsExternal {
                 if let Some(timeout) = opt_millis(map, "timeout_ms")? {
                     spec.timeout = timeout;
                 }
-                spec.ready_when = opt_str(map, "ready_when")?.map(str::to_string);
+                spec.ready_when = opt_ready_when(map)?;
                 spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
                 let label = format!("agent pane={}", pane.0);
                 Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
@@ -708,6 +708,34 @@ impl PluginKind {
 /// converted the same way wherever it is named. A present-but-not-a-number value is a MALFORMED
 /// request rather than a silently ignored one — the class R358 closed for argument NAMES, held
 /// here for their values.
+/// Read the optional `ready_when` barrier — an object naming WHICH QUESTION its marker asks.
+///
+/// # ⚠⚠ A bare string is REFUSED, deliberately
+///
+/// This argument was a needle, and the needle was matched against the whole screen — satisfied by
+/// text that was already there, most often the ECHO OF THE COMMAND LINE THAT STARTED THE PROGRAM.
+/// Reading an old caller's string as either of the two kinds would answer their question with the
+/// other one and never say so, which is the silent-reinterpretation failure the wire refuses
+/// everywhere else. The shape is what moved, so `WIRE_PROTOCOL` moved with it (21 → 22) and a
+/// pre-bump call meets a grammar refusal at the door.
+///
+/// A word outside [`ReadyWhen::WIRE_WORDS`] is MALFORMED rather than rejected — R353's rule, and
+/// what lets a completeness probe SEE that the vocabulary is closed.
+fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeError> {
+    let Some(value) = map.get("ready_when") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value.as_object().ok_or(InvokeError::TypeMismatch)?;
+    let matched = require_str(object, "match")?;
+    let marker = require_str(object, "marker")?.to_string();
+    ReadyWhen::parse(matched, marker)
+        .ok_or(InvokeError::TypeMismatch)
+        .map(Some)
+}
+
 fn opt_millis(map: &Map<String, Value>, key: &str) -> Result<Option<Duration>, InvokeError> {
     match map.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1623,9 +1651,10 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            8,
+            14,
             "one call per published word: the ONE plugin word that selects each of the four forms, \
-             and the two reply formats on each of a dialogue's two endpoints",
+             the two reply formats on each of a dialogue's two endpoints, and the readiness \
+             barrier's two `match` words on each of the three plugins that inject",
         );
     }
 
@@ -1662,13 +1691,12 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            50,
-            "one probe per declared argument of every FORM, nesting included: ELEVEN for an \
-             orchestrator, TEN for a pipe, TWELVE for an agent, sixteen for a dialogue, and one \
-             to cancel. ⚠ The newest five are the READINESS BARRIER, on each of the THREE plugins \
-             that inject: a relay was measured feeding a pane whose peer did not exist yet, and \
-             an agent prompt was measured coming back as the shell's `not found`. A dialogue has \
-             none because it passes its prompt as argv and injects nothing",
+            56,
+            "one probe per declared argument of every FORM, nesting included: THIRTEEN for an \
+             orchestrator, TWELVE for a pipe, FOURTEEN for an agent, sixteen for a dialogue, and \
+             one to cancel. ⚠ Eleven are the READINESS BARRIER on the THREE plugins that inject, \
+             each carrying `ready_when` AND its two nested fields: a marker alone could not say \
+             whether text already on the screen is evidence, so the value became an object",
         );
     }
 
@@ -1685,9 +1713,10 @@ mod tests {
                 crate::wire::PLUGINS_GRAMMAR
             )
             .count_or_panic(),
-            12,
+            18,
             "one per nested field of every form: THREE guardrail fields on each of the four run \
-             forms, since a run is bounded in steps, in spend and in time",
+             forms, since a run is bounded in steps, in spend and in time, PLUS the readiness \
+             barrier's `match` and `marker` on each of the three that inject",
         );
     }
 
@@ -1829,7 +1858,10 @@ mod tests {
                     "plugin": "orchestrator",
                     "pane": pane.0,
                     "stimulus": "x",
-                    "ready_when": "A MARKER THIS PANE NEVER PRINTS",
+                    "ready_when": {
+                        "match": "prints",
+                        "marker": "A MARKER THIS PANE NEVER PRINTS",
+                    },
                     "ready_timeout_ms": 200,
                     // Far above the readiness bound, so neither ceiling can be what ends this.
                     "guardrails": { "max_iterations": 100_000, "max_seconds": 60 },

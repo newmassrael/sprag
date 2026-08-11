@@ -167,14 +167,26 @@ fn call_built_from_the_grammar(
         return as_the_wire_delivers_it(&probe);
     }
     let mut map = Map::new();
-    // A NESTED field is varied inside a parent object holding nothing else, so exactly one value is
-    // under test here too. The parent is optional on every form that has one, which is why it does
-    // not otherwise appear: a call that omits it is well-formed, and adding it would vary two things.
+    // A NESTED field is varied inside its parent, which carries the probe and NOTHING ELSE the
+    // grammar does not demand. The parent itself is optional on every form that has one, which is
+    // why it does not otherwise appear: a call that omits it is well-formed, and adding it would
+    // vary two things.
+    //
+    // ⚠⚠ ITS REQUIRED SIBLINGS ARE FILLED, exactly as a top-level required argument is. The first
+    // form of this walker left them out, on the premise that a parent's fields are independently
+    // omittable — true of `guardrails`, whose three fields are each optional, and false the moment
+    // a nested object carried two fields that only mean anything TOGETHER. It then built a call the
+    // published grammar calls ill-formed, watched the daemon refuse it, and reported the daemon as
+    // constraining an argument it had declared open. **A probe that sends an incomplete call is
+    // measuring its own filler.**
     if let Some(parent) = vary.parent {
-        map.insert(
-            parent.name.to_owned(),
-            Value::Object(Map::from_iter([(vary.arg.name.to_owned(), probe.clone())])),
-        );
+        let mut nest = Map::from_iter([(vary.arg.name.to_owned(), probe.clone())]);
+        for field in parent.fields {
+            if field.name != vary.arg.name && !field.optional {
+                nest.insert(field.name.to_owned(), filler_for(field));
+            }
+        }
+        map.insert(parent.name.to_owned(), Value::Object(nest));
     }
     for arg in form.args {
         if vary.parent.is_none() && arg.name == vary.arg.name {
@@ -182,40 +194,44 @@ fn call_built_from_the_grammar(
         } else if vary.parent.is_some_and(|parent| parent.name == arg.name) {
             // Already inserted above, carrying the probe.
         } else if !arg.optional {
-            map.insert(
-                arg.name.to_owned(),
-                match (arg.words, arg.ty) {
-                    // A vocabulary supplies its own filler. The FIRST word, arbitrarily: this
-                    // argument is not the one under test, and every word of it is driven by its own
-                    // turn through the loop.
-                    (Some(words), _) => Value::from(words[0]),
-                    // ⚠ ONE, NOT ZERO, AND THE FILLER IS A CLAIM TOO. Zero is a legal pane id and an
-                    // ILLEGAL dimension — `resize_window` refuses a zero-column rectangle as
-                    // malformed — so a zero filler made this harness report `resize_window`'s
-                    // `window` as constrained when what the daemon had rejected was the filler beside
-                    // it. One is admissible in every int argument these verbs take.
-                    (None, "int") => Value::from(1),
-                    (None, "bool") => Value::from(false),
-                    // ⚠ AN ARGV, and the program is chosen rather than invented: `/bin/echo` is on
-                    // both platforms this project ships to (R352b swept them after a doctest spawned
-                    // a `/bin/true` macOS does not have) and it exits at once. The first REQUIRED
-                    // array on this wire is a dialogue's endpoint, and the filler table had no arm
-                    // for one — the plugin surface's checks found that on their first run.
-                    (None, "array") => Value::from(vec![Value::from("/bin/echo")]),
-                    // ⚠ NO ARM FOR A REQUIRED OBJECT, deliberately: every object argument on this
-                    // wire today is optional (`guardrails`), so an arm for one would be a fallback
-                    // nothing drives — wrong the first time it ran, and R318's rule. The first
-                    // required object falls to the string filler below and fails NAMING the argument,
-                    // which is exactly how the missing array arm was found.
-                    //
-                    // A window NAME the fixture does not hold: it parses, which is all this filler
-                    // has to do, and it cannot collide with a real window.
-                    (None, _) => Value::from("filler-not-a-window"),
-                },
-            );
+            map.insert(arg.name.to_owned(), filler_for(arg));
         }
     }
     IntrospectValue::Json(Value::Object(map))
+}
+
+/// A value that PARSES for an argument not under test, so exactly one thing is being varied.
+///
+/// One home, because the walker needs it at the top level and inside a nested object, and two
+/// tables would have drifted the first time an arm was added to one of them.
+fn filler_for(arg: &ArgGrammar) -> Value {
+    match (arg.words, arg.ty) {
+        // A vocabulary supplies its own filler. The FIRST word, arbitrarily: this argument is not
+        // the one under test, and every word of it is driven by its own turn through the loop.
+        (Some(words), _) => Value::from(words[0]),
+        // ⚠ ONE, NOT ZERO, AND THE FILLER IS A CLAIM TOO. Zero is a legal pane id and an ILLEGAL
+        // dimension — `resize_window` refuses a zero-column rectangle as malformed — so a zero
+        // filler made this harness report `resize_window`'s `window` as constrained when what the
+        // daemon had rejected was the filler beside it. One is admissible in every int argument
+        // these verbs take.
+        (None, "int") => Value::from(1),
+        (None, "bool") => Value::from(false),
+        // ⚠ AN ARGV, and the program is chosen rather than invented: `/bin/echo` is on both
+        // platforms this project ships to (R352b swept them after a doctest spawned a `/bin/true`
+        // macOS does not have) and it exits at once. The first REQUIRED array on this wire is a
+        // dialogue's endpoint, and the filler table had no arm for one — the plugin surface's
+        // checks found that on their first run.
+        (None, "array") => Value::from(vec![Value::from("/bin/echo")]),
+        // ⚠ NO ARM FOR A REQUIRED OBJECT, deliberately: every object argument on this wire today is
+        // optional (`guardrails`, `ready_when`), so an arm for one would be a fallback nothing
+        // drives — wrong the first time it ran, and R318's rule. The first required object falls to
+        // the string filler below and fails NAMING the argument, which is exactly how the missing
+        // array arm was found.
+        //
+        // A window NAME the fixture does not hold: it parses, which is all this filler has to do,
+        // and it cannot collide with a real window.
+        (None, _) => Value::from("filler-not-a-window"),
+    }
 }
 
 /// ⚠⚠ **EVERY WORD THE WIRE PUBLISHES IS A WORD THE DAEMON ACCEPTS** — the write half of the discovery

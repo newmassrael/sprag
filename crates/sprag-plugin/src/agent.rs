@@ -30,7 +30,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
-use crate::readiness::{Reached, Readiness};
+use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
 
 /// What the agent asks and how long it waits for the answer.
@@ -60,7 +60,7 @@ pub struct AgentSpec {
     /// a prompt of *"summarise the repo"* came back as
     /// `"summarise the repo\n$ sh: 1: summarise: not found\n$"`, with nothing in
     /// the outcome, the cost or the note to say it was not a reply.
-    pub ready_when: Option<String>,
+    pub ready_when: Option<ReadyWhen>,
     /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
     /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
     pub ready_within: Option<Duration>,
@@ -280,7 +280,7 @@ mod tests {
         let mut agent = Agent::new(
             pane,
             AgentSpec {
-                ready_when: Some("TOOL-UP".to_string()),
+                ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
                 ..AgentSpec::new("summarise the repo")
             },
         );
@@ -314,7 +314,9 @@ mod tests {
         let mut agent = Agent::new(
             pane,
             AgentSpec {
-                ready_when: Some("A MARKER THIS PANE NEVER PRINTS".to_string()),
+                ready_when: Some(ReadyWhen::Prints(
+                    "A MARKER THIS PANE NEVER PRINTS".to_string(),
+                )),
                 // ⚠ FAR ABOVE the run's clock, so the RUN's deadline is provably what ends the
                 // wait rather than the barrier's own bound — that ending is the other arm.
                 ready_within: Some(Duration::from_secs(300)),

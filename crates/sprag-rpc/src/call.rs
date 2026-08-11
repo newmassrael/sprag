@@ -541,7 +541,23 @@ impl PublishedForm {
         for (arg, parent) in &offered {
             let mut given = flags.iter().filter(|flag| same_name(&flag.name, &arg.name));
             let Some(first) = given.next() else {
-                if !arg.optional {
+                // ⚠⚠ A FIELD OF AN OPTIONAL PARENT IS ONLY REQUIRED ONCE THE PARENT IS BEING
+                // BUILT. Flattening dropped that: the first nested argument whose fields are
+                // required TOGETHER (`ready_when`, whose `match` and `marker` mean nothing apart)
+                // made both of them mandatory on every call of the verb — `sprag orchestrate`
+                // refused a run that named no readiness barrier at all. It never showed on
+                // `guardrails`, whose three fields are each optional, so nothing in the flattening
+                // had ever been asked this question.
+                //
+                // Required WITH the parent is still enforced: a caller who gives one field of a
+                // unit and not the other is missing it, which is the case below.
+                let parent_absent = parent.is_some_and(|parent| {
+                    parent.optional
+                        && !parent.fields.iter().any(|field| {
+                            flags.iter().any(|flag| same_name(&flag.name, &field.name))
+                        })
+                });
+                if !arg.optional && !parent_absent {
                     missing.push(arg.name.clone());
                 }
                 continue;
@@ -1041,6 +1057,55 @@ mod tests {
     /// is the whole reason a client reads its grammar off a socket instead of compiling it in.
     /// Guessing there would send a call the daemon refuses and report the refusal as if the
     /// caller's arguments were wrong.
+    /// ⚠⚠ **A FIELD OF AN OPTIONAL PARENT IS REQUIRED WITH IT, NOT WITHOUT IT.**
+    ///
+    /// Flattening a nested argument gives every field its own flag, and the first version of that
+    /// read each field's `optional` on its own. That is right for a BAG whose fields are each
+    /// optional (`guardrails`) and wrong for a UNIT whose fields are required together: it made
+    /// `--match` and `--marker` mandatory on every `sprag orchestrate` call, so a run that named no
+    /// readiness barrier at all was refused. Measured — three CLI gates failed on it.
+    ///
+    /// Three claims, because the middle one is what a looser fix would lose: absent parent is fine,
+    /// HALF a parent is not, and a whole parent builds the nested object.
+    #[test]
+    fn a_field_of_an_optional_parent_is_required_only_once_the_parent_is_named() {
+        const UNIT: &[ArgGrammar] = &[
+            ArgGrammar::open("pane", "int"),
+            ArgGrammar::nested(
+                "ready_when",
+                &[
+                    ArgGrammar::one_of("match", "string", &["prints", "shows"]),
+                    ArgGrammar::open("marker", "string"),
+                ],
+            )
+            .optional(),
+        ];
+        let answer = Value::from(vec![CallForm::object(UNIT).to_answer()]);
+        let forms = PublishedForm::read_all(&answer, "the fixture").expect("the fixture reads");
+
+        let none = build_call(&forms, &flags(&[("pane", "1")]))
+            .expect("a call that names no barrier is complete");
+        assert!(
+            none.get("ready_when").is_none(),
+            "and it carries no empty parent: {none:?}",
+        );
+
+        let half = build_call(&forms, &flags(&[("pane", "1"), ("match", "prints")]))
+            .expect_err("half a unit is not a unit");
+        assert!(
+            matches!(&half, FillError::Missing { names } if names.iter().any(|n| n == "marker")),
+            "a caller who named one field must be told which one is missing: {half:?}",
+        );
+
+        let whole = build_call(
+            &forms,
+            &flags(&[("pane", "1"), ("match", "prints"), ("marker", "UP")]),
+        )
+        .expect("a whole unit builds");
+        assert_eq!(whole["ready_when"]["match"], json!("prints"));
+        assert_eq!(whole["ready_when"]["marker"], json!("UP"));
+    }
+
     #[test]
     fn forms_that_cannot_be_told_apart_are_reported_rather_than_guessed_between() {
         const ONE: &[ArgGrammar] = &[ArgGrammar::open("pane", "int")];

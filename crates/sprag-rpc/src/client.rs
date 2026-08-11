@@ -512,7 +512,29 @@ impl ScopeAsk {
 ///   decision and not a serialization gap: panes come back across a restart but a restored pane's
 ///   OCCUPANT is a plain shell, so carrying the provenance would hand a NEW agent the previous
 ///   occupant's runs through `list_runs`'s own filter. See `RunRegistry::restore`.
-pub const WIRE_PROTOCOL: u32 = 21;
+/// * **22** — `ready_when` says WHICH QUESTION its marker is asking. A run's readiness barrier
+///   answered `{"ready_when": "TOOL-UP"}` and answers `{"ready_when": {"match": "prints"|"shows",
+///   "marker": "TOOL-UP"}}` on all three of the plugins that inject (R359b).
+///
+///   ⚠ **THE SECOND BUMP FROM A VALUE THAT CHANGED SHAPE** (version 20 was the first, an array to
+///   an object). A string became an object, so an old caller's value is refused at the door rather
+///   than read as one of the two meanings — which is the entire reason the shape moved.
+///
+///   What earned it is that ONE NEEDLE COULD NOT ANSWER BOTH QUESTIONS, and answering the wrong
+///   one is silent. A marker matched against the whole screen is satisfied by text that was
+///   already there, and the likeliest such text is THE ECHO OF THE COMMAND LINE THAT STARTED THE
+///   PROGRAM — a pty puts it on screen before the program exists. Measured: a run told to wait for
+///   `TOOL-UP` cleared the barrier in 50 MILLISECONDS against the echo of
+///   `printf "TOOL-UP\n"; exec cat`, spent both its turns on the shell that was still there, and
+///   the peer never saw a word.
+///
+///   The old meaning could not simply be tightened, because it is RIGHT for the other question: a
+///   REPL already sitting at its prompt has that prompt on screen and will print nothing more
+///   until it is fed, so demanding new output would wait for ever. The two are different KINDS and
+///   nothing in the marker says which — **only the caller knows, so the type makes them say.**
+///   A default would have re-answered every existing call silently, which is the failure this
+///   whole ceiling exists to prevent.
+pub const WIRE_PROTOCOL: u32 = 22;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

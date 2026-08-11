@@ -723,13 +723,29 @@ impl PluginGrammar {
         forms
     };
 
+    /// The readiness barrier, on every form whose plugin INJECTS.
+    ///
+    /// ⚠ An OBJECT and not a needle, and `match` is REQUIRED inside it. A marker on its own cannot
+    /// say whether text already on the screen is evidence — for a program the caller just started
+    /// it is not (the likeliest such text is the ECHO of the command line that started it), and for
+    /// a REPL already at its prompt it is the only evidence there will be. See
+    /// [`ReadyWhen`](sprag_plugin::ReadyWhen); the words come from that type, never from literals.
+    pub const READY_WHEN: ArgGrammar = ArgGrammar::nested(
+        "ready_when",
+        &[
+            ArgGrammar::one_of("match", "string", sprag_plugin::ReadyWhen::WIRE_WORDS),
+            ArgGrammar::open("marker", "string"),
+        ],
+    )
+    .optional();
+
     /// `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
     pub const ORCHESTRATOR_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::ORCHESTRATOR),
         ArgGrammar::open("pane", "int"),
         ArgGrammar::open("stimulus", "string"),
         ArgGrammar::open("sentinel", "string").optional(),
-        ArgGrammar::open("ready_when", "string").optional(),
+        Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
@@ -744,7 +760,7 @@ impl PluginGrammar {
         Self::selected_by(Self::PIPE),
         ArgGrammar::open("src", "int"),
         ArgGrammar::open("dst", "int"),
-        ArgGrammar::open("ready_when", "string").optional(),
+        Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
@@ -757,7 +773,7 @@ impl PluginGrammar {
         ArgGrammar::open("prompt", "string"),
         ArgGrammar::open("eof", "bool").optional(),
         ArgGrammar::open("timeout_ms", "int").optional(),
-        ArgGrammar::open("ready_when", "string").optional(),
+        Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
@@ -6581,7 +6597,9 @@ mod tests {
             // (a fourth word, `interrupted`) AND joined this pin at all. Its four words lived as
             // string literals inside `run_to_json` until then, so the vocabulary had no `ALL` to
             // walk and this gate — the one written for exactly this break — was blind to it.
-            21,
+            // R359b: re-stamped for a REQUEST value that changed shape (`ready_when`); neither
+            // enum a peer decodes whole moved, which is what this says.
+            22,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -6700,7 +6718,9 @@ mod tests {
             // R357: the number moved for an ANSWER's value space (`status` gained `interrupted`),
             // with every PUBLISHED (argument) vocabulary unchanged — the two are different lists
             // and this pin holds the request half.
-            21,
+            // ⚠⚠ R359b IS A RE-STAMP THIS PIN EARNED ITSELF: `run` gained a nested `ready_when`
+            // whose `match` is a closed set (`prints` | `shows`), so the request half DID widen.
+            22,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7184,9 +7204,11 @@ mod tests {
     /// slot's answer changed shape under a name that did not move. The added name would not have
     /// justified the bump; the changed value did.
     const PINNED_SURFACE: (u32, &[&str]) = (
-        // R357: the number moved for a VALUE SPACE (`status` gained `interrupted`), with every
-        // address unchanged — which is what this re-stamp says and what this pin cannot see.
-        21,
+        // R359b: the number moved for a VALUE THAT CHANGED SHAPE (`ready_when`, a string to an
+        // object naming WHICH QUESTION its marker asks), with every ADDRESS unchanged — which is
+        // what this re-stamp says and what this pin cannot see. R357 re-stamped it for a value
+        // SPACE (`status` gained `interrupted`), also invisible here.
+        22,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -7620,7 +7642,7 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            driven, 12,
+            driven, 18,
             "the nested fields this crate's wire publishes: THREE guardrail fields on each of the \
              plugin host's four run forms, and nothing on the multiplexer or a pane",
         );

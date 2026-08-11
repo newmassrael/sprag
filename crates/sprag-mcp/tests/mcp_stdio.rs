@@ -4275,26 +4275,28 @@ fn a_tool_that_is_not_there_says_which_kind_of_absence_it_is() {
 /// the whole thing the way an agent would: open a pane, type the program's start line, and
 /// orchestrate with `ready_when` naming what the program prints when it is up.
 ///
-/// ⚠ THE MARKER IS ONE THE PROGRAM COMPOSES (`READY-%s` formats to `READY-OK`), never one that
-/// appears in the line that was typed. A pane echoes the command that started the program, so a
-/// marker visible in that command is on screen BEFORE the program exists and the wait ends at once
-/// against nothing — the hazard is on `ready_when`'s own doc, and this gate would not notice it if
-/// it fell into it.
+/// ⚠⚠ **THE MARKER IS COMPOSED (`READY-%s` → `READY-OK`) SO IT IS NOT IN THE LINE THE AGENT TYPED**,
+/// and that is a caller responsibility this gate honours rather than tests. A pane echoes what is
+/// typed at it; `match: "prints"` refuses text that was ALREADY on the screen when the run armed,
+/// which the plugin's own gate proves deterministically — but the echo lands ASYNCHRONOUSLY, so a
+/// caller who writes the starting command and begins a run in the same breath races it. There is
+/// no wait that closes that race, and this gate does not pretend otherwise. **The answer is not to
+/// have a shell in the pane**, which is what the `cmd` gate below drives.
 #[test]
 fn an_agent_names_what_ready_looks_like_and_the_loop_waits_for_it() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
     server.call_tool("open_pane", json!({ "name": "slow" }));
-    // ⚠ THE STAND-IN MUST EAT WHAT IT IS GIVEN, and for longer than this run can take unaided.
-    // A pane that merely SLEEPS does not discriminate: a stimulus injected early sits in the pty
-    // buffer and the peer reads it when it starts, so the run converges either way — measured, on
-    // the first version of this gate, by mutating `ready_when` to a no-op and watching it pass.
-    // Three seconds is twice what three turns floored at the observe timeout can span.
+    // ⚠⚠ THE STAND-IN MUST EAT WHAT IT IS GIVEN, and `</dev/tty` is what makes it. A background
+    // job of a non-interactive shell reads stdin from /dev/null, so without that redirection the
+    // stand-in consumes nothing: an early stimulus would sit in the pty buffer, the peer would read
+    // it when it started, and the run would converge either way. Three seconds is twice what three
+    // turns floored at the observe timeout can span.
     server.call_tool(
         "write_pane",
         json!({
             "pane": "slow",
-            "text": "while read early; do echo \"SHELL-ATE $early\"; done & sleep 3; \
+            "text": "while read early; do echo \"SHELL-ATE $early\"; done </dev/tty & sleep 3; \
                      kill $! 2>/dev/null; printf 'READY-%s\\n' OK; exec sh -c 'while read l; do \
                      echo \"PEER-SAW $l\"; done'",
         }),
@@ -4305,7 +4307,7 @@ fn an_agent_names_what_ready_looks_like_and_the_loop_waits_for_it() {
             "plugin": "orchestrator",
             "pane": "slow",
             "stimulus": "ping",
-            "ready_when": "READY-OK",
+            "ready_when": { "match": "prints", "marker": "READY-OK" },
             "sentinel": "PEER-SAW ping",
             "max_iterations": 3,
         }),
@@ -4315,16 +4317,13 @@ fn an_agent_names_what_ready_looks_like_and_the_loop_waits_for_it() {
         ended.contains("the sentinel appeared"),
         "the run waited for the peer to come up and then drove it to its sentinel: {ended}",
     );
-    // ⚠ AND THE STAND-IN WAS NEVER FED. It names everything it eats, so a single `SHELL-ATE` is a
-    // turn the run spent before the peer existed.
     let seen = server.call_tool("read_pane", json!({ "pane": "slow" }));
     assert!(
         seen.contains("PEER-SAW ping"),
         "the peer itself must have seen the stimulus: {seen}",
     );
     // ⚠ `SHELL-ATE ping`, not bare `SHELL-ATE` — the pane echoes the command line that STARTED the
-    // stand-in, and that line contains the bare marker. Asserting on it would be this gate falling
-    // into the hazard `ready_when`'s own doc warns about, and it did on the first attempt.
+    // stand-in, and that line contains the bare word.
     assert!(
         !seen.contains("SHELL-ATE ping"),
         "nothing may have been typed while the pane was still the stand-in shell: {seen}",
@@ -4333,6 +4332,101 @@ fn an_agent_names_what_ready_looks_like_and_the_loop_waits_for_it() {
         ended.contains("after 1 iterations"),
         "and ONE turn was enough, because none was spent on the shell that was there first: \
          {ended}",
+    );
+}
+
+/// ⚠⚠ **AN AGENT THAT NAMES A MARKER MUST SAY WHICH QUESTION IT IS ASKING** — the readiness value
+/// is an object, and the shape a caller wrote before the bump is refused rather than guessed at.
+///
+/// Reading the old string as either kind would answer a caller's question with the other one and
+/// never say so. `WIRE_PROTOCOL` moved for exactly this (21 → 22), so the refusal is the contract.
+#[test]
+fn a_readiness_barrier_that_does_not_say_which_question_it_asks_is_refused() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool("open_pane", json!({ "name": "target" }));
+    // The PRE-BUMP spelling: a bare needle, with no word for what it is matched against.
+    let refused = server.call_tool_error(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "target",
+            "stimulus": "ping",
+            "ready_when": "READY-OK",
+            "max_iterations": 1,
+        }),
+    );
+    assert!(
+        !refused.is_empty(),
+        "a run must not start from a readiness barrier this daemon cannot read",
+    );
+    // And a word outside the closed set is refused too — a vocabulary that accepted anything would
+    // make the published `enum` an affirmative false statement.
+    let bad_word = server.call_tool_error(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "target",
+            "stimulus": "ping",
+            "ready_when": { "match": "appears", "marker": "READY-OK" },
+            "max_iterations": 1,
+        }),
+    );
+    assert!(
+        !bad_word.is_empty(),
+        "`appears` is not one of the two questions this daemon answers",
+    );
+}
+
+/// ⚠⚠ **AN AGENT CAN OPEN A PANE THAT IS THE PROGRAM, NOT A SHELL RUNNING IT** — the structural
+/// answer to the echo, and the one that removes the hazard instead of detecting it.
+///
+/// The daemon's spawn has taken an argv all along; this tool did not offer it, so every
+/// agent-opened pane was a shell and every loop had to start its program by TYPING into one. That
+/// is what puts a command line on the screen for a readiness marker to match, and what let an
+/// agent prompt come back as `sh: not found`. With `cmd` there is nothing to echo: the pane is the
+/// program from its first byte.
+#[test]
+fn an_agent_opens_a_pane_that_is_the_program_rather_than_a_shell_running_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool(
+        "open_pane",
+        json!({
+            "name": "tool",
+            // Announces itself, then answers each line — a stand-in for a REPL, started WITHOUT a
+            // shell, so nothing it is told to wait for can appear before it exists.
+            "cmd": ["/bin/sh", "-c", "printf 'TOOL-UP\n'; while read l; do echo \"TOOL-SAW $l\"; done"],
+        }),
+    );
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "tool",
+            "stimulus": "ping",
+            // ⚠⚠ `shows`, AND THAT IS THE POINT. On a pane opened with `cmd` there is no shell and
+            // no echo, so the ONLY thing that can put this text on the screen is the program — and
+            // then "is it there?" is both safe and the only question that always terminates. With
+            // `prints` the caller would be racing their own program's banner: it is printed the
+            // instant the pane is born, so a run that starts a moment later waits for a line that
+            // has already been said. Measured, on the first form of this gate.
+            "ready_when": { "match": "shows", "marker": "TOOL-UP" },
+            "sentinel": "TOOL-SAW ping",
+            "max_iterations": 3,
+        }),
+    );
+    let ended = server.wait_for_tool("list_runs", json!({}), "converged");
+    assert!(
+        ended.contains("the sentinel appeared"),
+        "the run drove the program the pane IS: {ended}",
+    );
+    // ⚠ AND NO SHELL EVER SAW THE STIMULUS — there was no shell. A pane opened the old way would
+    // have `sh:` somewhere on it the moment a stimulus arrived early.
+    let seen = server.call_tool("read_pane", json!({ "pane": "tool" }));
+    assert!(
+        !seen.contains("not found"),
+        "nothing was run as a shell command: {seen}",
     );
 }
 
