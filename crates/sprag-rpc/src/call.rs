@@ -1068,6 +1068,54 @@ mod tests {
         );
     }
 
+    /// **A PUBLICATION THIS BUILD CANNOT READ NAMES WHAT IT CHOKED ON** — the two arms a malformed
+    /// answer takes, driven rather than left to the day a daemon sends one.
+    ///
+    /// The failure this guards against is a client that GUESSES past a shape it does not recognise:
+    /// it would build a call the daemon refuses and report the daemon's refusal as if the caller's
+    /// argument were wrong. So a grammar that is not a grammar is said, and the message names the
+    /// key or the kind — which is the whole difference between a bug report and a shrug.
+    #[test]
+    fn a_publication_that_is_not_one_says_which_part_it_choked_on() {
+        // NOT SHAPED: the answer is a scalar where an object belongs.
+        let error = PublishedForm::read(&json!(7), "a form").expect_err("a number is not a form");
+        assert!(
+            matches!(&error, GrammarError::NotShaped { found, .. } if *found == "number"),
+            "{error:?}",
+        );
+        assert!(error.to_string().contains("number"), "{error}");
+
+        // MISSING KEY: the shape is right and a key the publication always carries is absent.
+        let error = PublishedForm::read(&json!({"form": "object"}), "a form")
+            .expect_err("a form without its arguments");
+        assert!(
+            matches!(&error, GrammarError::MissingKey { key, .. } if *key == CallForm::ARGS_KEY),
+            "{error:?}",
+        );
+        assert!(error.to_string().contains(CallForm::ARGS_KEY), "{error}");
+
+        // ...and one level down, where an ARGUMENT is missing the key that says it may be omitted —
+        // the arm a reader of `optional` depends on and the one a hand-written probe forgets.
+        let error = PublishedForm::read(
+            &json!({"form": "object", "args": [{"name": "pane", "type": "int"}]}),
+            "a form",
+        )
+        .expect_err("an argument that does not say whether it is optional");
+        assert!(
+            matches!(&error, GrammarError::MissingKey { key, .. } if *key == ArgGrammar::OPTIONAL_KEY),
+            "{error:?}",
+        );
+
+        // THE CONTROL: the same shapes, complete, read without complaint — so the three refusals
+        // above are about what is MISSING and not about the reader refusing everything.
+        let whole = PublishedForm::read(
+            &CallForm::object(FIRST).to_answer(),
+            "this build's own publication",
+        )
+        .expect("a complete publication reads");
+        assert_eq!(whole.args.len(), FIRST.len());
+    }
+
     /// A form this build cannot read is SAID, not guessed past.
     #[test]
     fn a_form_shape_this_build_does_not_know_is_named() {
