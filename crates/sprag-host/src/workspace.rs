@@ -8549,10 +8549,11 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            91,
+            100,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb: 31 across the seven ask-backed verbs and 55 across the \
-             eighteen declared inline",
+             per form rather than per verb: 31 across the seven ask-backed verbs and 64 across the \
+             twenty declared inline (R355b described `resize` and `grant_pane`, exempted as nested \
+             values and flat all along)",
         );
     }
 

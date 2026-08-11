@@ -7678,8 +7678,10 @@ fn the_cli_prints_how_to_call_the_verbs_the_daemon_publishes() {
         .collect();
     assert_eq!(
         verbs.len(),
-        25,
-        "the multiplexer publishes twenty-five of its twenty-eight verbs: {verbs:?}",
+        27,
+        "the multiplexer publishes twenty-seven of its twenty-eight verbs — `resize` and \
+         `grant_pane` were exempted as NESTED values and are flat (R355b), leaving `set_layout`'s \
+         arrangement tree as the only one whose reason survived being re-derived: {verbs:?}",
     );
 }
 

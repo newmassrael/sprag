@@ -5296,7 +5296,7 @@ impl Smoke {
                 return Ok(value);
             }
             if Instant::now() >= deadline {
-                return Err("timed out".to_owned());
+                return Err(format!("timed out{}", machine_pressure()));
             }
             std::thread::sleep(POLL);
         }
@@ -5645,6 +5645,49 @@ fn notify_calls_by(state: &Path, pid: u32) -> Vec<Vec<String>> {
 }
 
 /// Wait for `path` to exist — the socket bind race between spawning a server and connecting to it.
+/// WHAT THE MACHINE WAS SHORT OF, read at the moment a wait gave up.
+///
+/// # ⚠⚠ Three smoke checks fail only under load, and `timed out` could not say why
+///
+/// `8 reads of a NUMBER`, `the ring parks on the highest docked pane` and `prefix C-Right` have
+/// each failed on a busy box and passed on an idle one, and the failure said `timed out` — five
+/// words with no cause and no remedy, which is R343's rule (*a gate that cannot say what it saw
+/// costs a reproduce cycle*) on this project's longest-running flake. Two rounds of CPU
+/// oversubscription did not reproduce it, so *"the box was busy"* was as far as anybody got.
+///
+/// This is the reading that narrows it: the kernel's own pressure-stall accounting for all three
+/// resources, at the instant the deadline elapsed. `full` is the interesting row — it is the share
+/// of the window in which NOTHING on the machine could make progress on that resource, which is
+/// exactly the condition a settle is starved by and exactly what a CPU-only experiment cannot
+/// create for io or memory.
+///
+/// ⚠ **IT READS THE MACHINE, NOT THIS PROCESS**, and that is deliberate: the box runs workloads
+/// that are not this suite's, which is the standing explanation for these failures and the thing a
+/// per-process number would hide.
+///
+/// ⚠ A kernel without pressure accounting answers `NotAccounted` in every row rather than zero, so
+/// a reader can tell *"nothing was stalled"* from *"this kernel does not say"* — the distinction
+/// [`Pressure::NONE`](sprag_terminal::Pressure) exists for. Off Linux there is no such file and
+/// this adds nothing to the message, which is honest: the instrument has nothing to report.
+fn machine_pressure() -> String {
+    let mut rows = Vec::new();
+    for resource in ["cpu", "io", "memory"] {
+        let pressure =
+            sprag_terminal::Pressure::read(Path::new(&format!("/proc/pressure/{resource}")));
+        if pressure != sprag_terminal::Pressure::NONE {
+            rows.push(format!(
+                "{resource} some={:?} full={:?}",
+                pressure.some, pressure.full
+            ));
+        }
+    }
+    if rows.is_empty() {
+        String::new()
+    } else {
+        format!(" — the machine at that instant: {}", rows.join("; "))
+    }
+}
+
 fn wait_for_path(path: &Path) -> io::Result<()> {
     let deadline = Instant::now() + PATIENCE;
     while !path.exists() {
@@ -5988,5 +6031,63 @@ impl Report {
             println!("  FAILED: {failure}");
         }
         ExitCode::from(u8::try_from(self.failed.len()).unwrap_or(u8::MAX))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠⚠ **THE INSTRUMENT IS A CLAIM, SO IT IS PROBED** — R351's rule, whose first two instruments
+    /// were false.
+    ///
+    /// [`machine_pressure`] exists to turn `timed out` into a diagnosis, and an instrument that
+    /// answered nothing, or answered the same thing everywhere, would leave the flake exactly where
+    /// it was while looking like progress. Two halves:
+    ///
+    /// * on a kernel that ACCOUNTS, it names all three resources and both rows — so a failure
+    ///   message can distinguish a machine stalled on io from one stalled on cpu, which is the
+    ///   distinction two rounds of CPU oversubscription could not make;
+    /// * where there is no accounting it says NOTHING rather than zero, because a zero would read
+    ///   as "nothing was stalled" about a kernel that never looked.
+    ///
+    /// ⚠ The second half is the CONTROL and it is what makes the first non-vacuous: a function that
+    /// returned a constant would pass the first assertion and fail this one.
+    ///
+    /// ⚠⚠ **COMPOSITION COVER, stated rather than implied** (R327): what this does NOT drive is
+    /// `wait_for` CALLING it. That path needs a live GUI and a deadline that elapses, and the
+    /// recorded fix for exactly this — take the deadline as a parameter so the timeout can be
+    /// driven in 50 ms (R345) — would change a helper every check in this binary waits through. The
+    /// call site is one line with one caller; the reading it produces is what is held here.
+    #[test]
+    fn the_pressure_instrument_reports_what_the_kernel_accounts_and_is_silent_when_it_does_not() {
+        // A path no kernel serves — the absence arm, forced rather than waited for.
+        assert_eq!(
+            sprag_terminal::Pressure::read(Path::new("/proc/pressure/no-such-resource")),
+            sprag_terminal::Pressure::NONE,
+            "an unreadable pressure file must read as NOT ACCOUNTED, not as calm",
+        );
+
+        let said = machine_pressure();
+        if Path::new("/proc/pressure/cpu").exists() {
+            for resource in ["cpu", "io", "memory"] {
+                assert!(
+                    said.contains(resource),
+                    "this kernel accounts pressure and the instrument did not name {resource}: \
+                     {said:?}",
+                );
+            }
+            assert!(
+                said.contains("some=") && said.contains("full="),
+                "BOTH rows, because `full` is the one that says nothing on the machine could make \
+                 progress — the condition a settle is actually starved by: {said:?}",
+            );
+        } else {
+            assert!(
+                said.is_empty(),
+                "a kernel with no pressure accounting must add nothing to the message rather than \
+                 reporting zeros: {said:?}",
+            );
+        }
     }
 }

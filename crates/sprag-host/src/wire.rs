@@ -408,6 +408,44 @@ impl InlineGrammar {
     pub const RELEASE_AGENT: &'static [CallForm] =
         &[CallForm::object(&[ArgGrammar::open(AGENT_ID_KEY, "int")])];
 
+    /// [`RESIZE_ACTION`] — the pane a display client is telling the host it is showing at.
+    ///
+    /// # ⚠⚠ It was EXEMPTED as a nested value and it is FLAT
+    ///
+    /// `SURFACES` listed this among the three verbs that publish nothing, with the reason *"a
+    /// client's cell metrics"* — a nested object the flat grammar could not describe. Reading the
+    /// parser says otherwise: it takes five keys, none of them an object, and the grammar that has
+    /// existed since R352 describes it exactly. **A filing's own diagnosis is a claim** (R337), and
+    /// this one was inherited through three rounds without anybody re-deriving it.
+    ///
+    /// The two `cell_*` keys are the display's font metric, optional because a headless client has
+    /// none — and their absence has a MEANING (leave the pane's last-known geometry alone), which
+    /// is why `ArgGrammar::optional`'s doc says optional never means unimportant.
+    pub const RESIZE: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::open(AGENT_ID_KEY, "int"),
+        ArgGrammar::open(SPAWN_COLS_KEY, "int"),
+        ArgGrammar::open(SPAWN_ROWS_KEY, "int"),
+        ArgGrammar::open("cell_width", "int").optional(),
+        ArgGrammar::open("cell_height", "int").optional(),
+    ])];
+
+    /// [`GRANT_PANE_ACTION`] — what ONE pane is allowed of the machine.
+    ///
+    /// Exempted as *"a share object"* on [`RESIZE`](Self::RESIZE)'s terms, and flat for the same
+    /// reason: three optional numbers beside a pane, no object anywhere.
+    ///
+    /// ⚠ **THE GRAMMAR CANNOT SAY "AT LEAST ONE OF THESE"** and the daemon refuses a grant that
+    /// sets nothing — deliberately, because a grant with no settings is somebody who meant
+    /// something and typed it wrong. That is a semantic rule rather than a shape, so it stays where
+    /// it can be stated in words: publishing all three as required would be false, and there is no
+    /// form-level alternation that means "any non-empty subset".
+    pub const GRANT_PANE: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int"),
+        ArgGrammar::open("share", "int").optional(),
+        ArgGrammar::open("memory", "int").optional(),
+        ArgGrammar::open("processes", "int").optional(),
+    ])];
+
     /// [`RENAME_PANE_ACTION`] — a pane, and what to call it. An absent name CLEARS.
     pub const RENAME_PANE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int"),
@@ -912,6 +950,16 @@ pub const MUX_GRAMMAR: &[ActionGrammar] = &[
         from_ask: false,
     },
     ActionGrammar {
+        action: RESIZE_ACTION,
+        forms: InlineGrammar::RESIZE,
+        from_ask: false,
+    },
+    ActionGrammar {
+        action: GRANT_PANE_ACTION,
+        forms: InlineGrammar::GRANT_PANE,
+        from_ask: false,
+    },
+    ActionGrammar {
         action: RENAME_SESSION_ACTION,
         forms: InlineGrammar::RENAME_SESSION,
         from_ask: false,
@@ -1062,7 +1110,11 @@ pub const SURFACES: &[WireSurface] = &[
         // useless — the affirmative-noise cousin of the affirmative false statement this whole
         // surface exists to avoid. pinion's `SchemaArg` cannot express a nested grammar either, so
         // this is a shape neither side has met and one to design rather than bolt on.
-        undescribed: &[SET_LAYOUT_ACTION, RESIZE_ACTION, GRANT_PANE_ACTION],
+        // ⚠ ONE LEFT, and it is the only one whose reason survived being re-derived: `set_layout`
+        // takes an arrangement TREE — recursive without a bound, so a declaration would have to
+        // describe a grammar rather than a key list. `resize` and `grant_pane` were exempted beside
+        // it as nested values and are FLAT (see `InlineGrammar::RESIZE`); they publish now.
+        undescribed: &[SET_LAYOUT_ACTION],
     },
     WireSurface {
         name: "a pane's input",
@@ -6565,6 +6617,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/close:",
                 "sprag_workspace/sprag_mux/display_message:severity=note,warn,alert",
                 "sprag_workspace/sprag_mux/drop_file:",
+                "sprag_workspace/sprag_mux/grant_pane:",
                 "sprag_workspace/sprag_mux/join_pane:",
                 "sprag_workspace/sprag_mux/kill_session:",
                 "sprag_workspace/sprag_mux/kill_window:",
@@ -6577,6 +6630,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/rename_session:",
                 "sprag_workspace/sprag_mux/rename_window:",
                 "sprag_workspace/sprag_mux/report_agent:state=working,blocked,idle",
+                "sprag_workspace/sprag_mux/resize:",
                 "sprag_workspace/sprag_mux/resize_pane:dir=left,right,up,down",
                 "sprag_workspace/sprag_mux/resize_window:from=largest,smallest,latest",
                 "sprag_workspace/sprag_mux/select_pane:dir=left,right,up,down",
