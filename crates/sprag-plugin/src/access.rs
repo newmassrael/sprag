@@ -1048,6 +1048,56 @@ mod tests {
         workspace
     }
 
+    /// ⚠⚠ **THE DEGRADATION ARM OF [`PaneAccess::pane_full_lines`], which no production host takes.**
+    ///
+    /// The trait's default splits the RENDERED text back into lines, so a host that has not
+    /// implemented the reader answers the old way rather than answering nothing — and a caller
+    /// asking for content on such a host gets the width baked in, which is the degradation and not
+    /// an equivalent.
+    ///
+    /// Gated here because [`WorkspacePaneAccess`] overrides it, so the default is product code
+    /// **nothing else in this crate builds** — the shape this workspace has now paid for four times
+    /// (`RowTrail`'s no-stream fallback, two plugin degradation arms, and the echo strip on the
+    /// same path).
+    #[test]
+    fn a_host_that_implements_only_the_rendered_text_still_answers_for_lines() {
+        struct RenderedOnly;
+        impl PaneAccess for RenderedOnly {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(true)
+            }
+            // ⚠ HONOURS THE ID, because the absence half below is exactly what the default's `?`
+            // is for — a fake that answers for every id cannot measure it.
+            fn pane_full_text(&self, id: PaneId) -> Option<String> {
+                (id == PaneId(1)).then(|| "first\nsecond".to_string())
+            }
+            fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<Written, PaneError> {
+                Ok(Written::of(0))
+            }
+        }
+
+        assert_eq!(
+            RenderedOnly.pane_full_lines(PaneId(1)),
+            Some(vec!["first".to_string(), "second".to_string()]),
+            "the default answers from what the host does implement, rather than refusing",
+        );
+        assert_eq!(
+            RenderedOnly.pane_full_lines(PaneId(9)),
+            None,
+            "and an unknown pane is still an absence, not an empty list — a caller cannot tell \
+             `there is no such pane` from `it said nothing` if those collapse",
+        );
+    }
+
     /// ⚠⚠ **A LEADER READS AS ONE NAME WHEN ITS TWO AGREE, AND AS BOTH WHEN THEY DO NOT.**
     ///
     /// The half of the fix that is about not breaking anything: a leader whose kernel name and

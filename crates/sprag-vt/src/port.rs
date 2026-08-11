@@ -2187,9 +2187,11 @@ impl Screen {
             }
         }
         // A line still open at the last row is text the pane holds, so it is text this returns.
-        if !joined.is_empty() {
-            lines.push(std::mem::take(&mut joined).trim_end().to_string());
-        }
+        // ⚠ UNCONDITIONAL, because `if !joined.is_empty()` was an arm nothing could build: a row
+        // only continues into the row BELOW it, so the last row's flag is set at the instant the
+        // wrap scrolls it away and never while it is last. The strip below already removes an
+        // empty tail, so the guard bought a branch and no behaviour.
+        lines.push(std::mem::take(&mut joined).trim_end().to_string());
         while lines.last().is_some_and(String::is_empty) {
             lines.pop();
         }
