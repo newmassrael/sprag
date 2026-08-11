@@ -51,17 +51,70 @@ impl Orchestrator {
         }
     }
 
-    /// Wait (bounded, cancellable) for any row's damage `generation` to advance
-    /// past the pre-stimulus baseline.
+    /// Wait (bounded, cancellable) for the PEER to answer — a row whose damage
+    /// `generation` has advanced past the pre-stimulus baseline AND that carries
+    /// something other than the stimulus this step just typed.
     fn observe(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
         poll_until(run, OBSERVE_TIMEOUT, || {
-            panes.pane_rows(self.pane).is_some_and(|rows| {
-                rows.iter().enumerate().any(|(i, row)| {
-                    row.generation > self.baseline_generations.get(i).copied().unwrap_or(0)
-                })
-            })
+            self.reaction(panes) == Reaction::Answered
         })
     }
+
+    /// What the pane has done since this step's baseline.
+    ///
+    /// # ⚠⚠ Why the ECHO had to stop counting as a reaction
+    ///
+    /// A pty in cooked mode echoes what is injected before the program behind it
+    /// has read a byte. Keying the wait on "any row changed" therefore ended EVERY
+    /// step in microseconds against EVERY ordinary pane: the screen was judged
+    /// before the peer had said anything, no sentinel was there, and the loop took
+    /// another turn — re-prompting a peer that was still answering the last one. A
+    /// peer replying in 200ms, well inside one step's [`OBSERVE_TIMEOUT`], was
+    /// measured burning all three of a run's turns in 30 MILLISECONDS and reported
+    /// `exhausted`. `max_iterations` was bounding a loop that had never once
+    /// waited for a reply.
+    ///
+    /// ⚠ It FAILS SAFE. A real answer misread as an echo only costs the rest of
+    /// the step's wait: the verdict is judged off the collapsed screen after the
+    /// wait either way, so a convergence can be reached late but never lost.
+    fn reaction(&self, panes: &dyn PaneAccess) -> Reaction {
+        let Some(rows) = panes.pane_rows(self.pane) else {
+            return Reaction::None;
+        };
+        let changed: Vec<&str> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, row)| {
+                row.generation > self.baseline_generations.get(*i).copied().unwrap_or(0)
+            })
+            .map(|(_, row)| row.text.trim())
+            .collect();
+        if changed.is_empty() {
+            return Reaction::None;
+        }
+        // A changed row is the ECHO when what it holds is a piece of what was just typed — the
+        // `contains` covers a stimulus the pane wrapped across rows. A blank row is no evidence of
+        // an answer either.
+        if changed
+            .iter()
+            .all(|line| line.is_empty() || self.spec.stimulus.contains(line))
+        {
+            return Reaction::EchoOnly;
+        }
+        Reaction::Answered
+    }
+}
+
+/// What a pane has done since a step's baseline — the three cases a step must tell apart, because
+/// two of them are the same absence of an answer with different remedies.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Reaction {
+    /// Nothing on the pane changed at all: the peer is not listening, or is not there.
+    None,
+    /// Only the stimulus came back — the terminal's own echo, not the peer.
+    EchoOnly,
+    /// Something the peer produced.
+    Answered,
 }
 
 impl Plugin for Orchestrator {
@@ -103,8 +156,17 @@ impl Plugin for Orchestrator {
         // that is.
         let note = match (seen, verdict) {
             (_, Verdict::Converged) => "the sentinel appeared".to_string(),
-            (Waited::TimedOut, _) => "the pane did not react to the stimulus at all".to_string(),
-            _ => "the pane reacted; no sentinel yet".to_string(),
+            // The two ways a step can end with no answer are different findings with different
+            // remedies: a pane showing NOTHING is one nobody is listening on, while one that
+            // echoed and said no more is a peer that heard and did not reply.
+            (Waited::TimedOut, _) => match self.reaction(panes) {
+                Reaction::Answered => "the pane answered as the step's wait ran out".to_string(),
+                Reaction::EchoOnly => {
+                    "the stimulus was echoed back and THE PEER SAID NOTHING".to_string()
+                }
+                Reaction::None => "the pane did not react to the stimulus at all".to_string(),
+            },
+            _ => "the peer answered; no sentinel yet".to_string(),
         };
         Ok(Step::new(Cost::Bytes(cost), verdict).noting(note))
     }
@@ -269,6 +331,57 @@ mod tests {
             matches!(outcome.cost, Some(Cost::Bytes(n)) if n >= 12),
             "cost: {:?}",
             outcome.cost
+        );
+    }
+
+    /// ⚠⚠ **A PEER THAT ANSWERS IS WAITED FOR; ITS OWN ECHO IS NOT AN ANSWER.**
+    ///
+    /// A pty in cooked mode echoes what is injected before the program has read a byte of it. If
+    /// that echo satisfies the observe-wait, then EVERY turn against EVERY ordinary pane ends in
+    /// microseconds, the screen is judged before the peer has said anything, and the loop takes
+    /// another turn — spamming a peer that was already thinking. `max_iterations` then bounds a
+    /// run that never waited for one reply.
+    ///
+    /// The peer here answers in 200ms, comfortably inside one step's [`OBSERVE_TIMEOUT`]. A loop
+    /// that waits for its peer converges on the FIRST turn. A loop that races its own echo burns
+    /// all three turns before the answer lands and reports `exhausted` about a peer that replied.
+    #[test]
+    fn a_turn_waits_for_the_peer_and_not_for_the_echo_of_what_it_typed() {
+        // Reads a line, thinks, then answers. The kernel echoes the injected line long before the
+        // `sleep` is over, which is exactly the difference under test.
+        let (access, pane) = sh_access(
+            "while read line; do sleep 0.2; echo PEER-REPLIED; done",
+            40,
+            8,
+        );
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("PEER-REPLIED".to_string()),
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 3,
+                max_cost: None,
+                max_duration: None,
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the peer answers well inside one step's observe timeout, so a loop that waits for it \
+             converges; this run gave up after {} turns against a peer that was replying",
+            outcome.iterations,
+        );
+        assert_eq!(
+            outcome.iterations, 1,
+            "and it converges on the FIRST turn — a second turn means the first was judged on a \
+             screen holding nothing but the echo of what it had just typed, and the peer was \
+             prompted again while it was still answering",
         );
     }
 

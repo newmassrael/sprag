@@ -65,6 +65,52 @@ impl Pipe {
             .map(|rows| rows.iter().map(|row| row.generation).collect())
             .unwrap_or_default()
     }
+
+    /// What the destination has shown since `before`, given what was just written to it.
+    ///
+    /// # ⚠⚠ Why "a row changed" is not delivery
+    ///
+    /// **A pty echoes what is written to it whether or not any program ever reads a byte.** So a
+    /// destination running `sleep` — nothing reading, nothing consuming — showed the relayed text
+    /// straight back and this plugin called it *"the destination reacted"*. That is a delivery
+    /// claim with the KERNEL behind it rather than the peer, in the one plugin whose entire job is
+    /// delivery: R357 taught it to look at where it delivered, and this is what it was looking at.
+    ///
+    /// The screen cannot prove a program consumed anything — nothing visible distinguishes `cat`
+    /// writing the text back from the pty echoing it. What it CAN say is whether the destination
+    /// produced anything OF ITS OWN, and the three answers are three different findings.
+    fn shown(panes: &dyn PaneAccess, pane: PaneId, before: &[u64], written: &str) -> Shown {
+        let Some(rows) = panes.pane_rows(pane) else {
+            return Shown::Nothing;
+        };
+        let changed: Vec<&str> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, row)| row.generation > before.get(*i).copied().unwrap_or(0))
+            .map(|(_, row)| row.text.trim())
+            .collect();
+        if changed.is_empty() {
+            return Shown::Nothing;
+        }
+        if changed
+            .iter()
+            .all(|line| line.is_empty() || written.contains(line))
+        {
+            return Shown::OwnBytesBack;
+        }
+        Shown::Output
+    }
+}
+
+/// What a destination showed after a relay — see [`Pipe::shown`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shown {
+    /// Nothing changed on it at all.
+    Nothing,
+    /// Only the relayed text came back, which the pty does on its own.
+    OwnBytesBack,
+    /// Something the destination produced.
+    Output,
 }
 
 impl Plugin for Pipe {
@@ -73,19 +119,29 @@ impl Plugin for Pipe {
         if self.consumed.len() < rows.len() {
             self.consumed.resize(rows.len(), 0);
         }
-        // Collect the text of rows newly damaged since the last relay.
-        let mut relayed = String::new();
+        // Collect the text of rows newly damaged since the last relay, AS LINES.
+        //
+        // ⚠⚠ A ROW IS A LINE, AND IT HAS TO ARRIVE AS ONE. These were concatenated into a single
+        // run-on string and written with no terminator, so a line-oriented destination — `read`,
+        // a REPL, anything cooked — never saw a complete line and could not act on the relay at
+        // all. Both of this plugin's gates passed anyway, because the pty's echo put the text on
+        // the destination's screen and the check was looking at the screen.
+        let mut lines: Vec<String> = Vec::new();
         for (i, row) in rows.iter().enumerate() {
             if row.generation > self.consumed[i] {
-                relayed.push_str(&row.text);
+                let text = row.text.trim_end();
+                if !text.is_empty() {
+                    lines.push(text.to_string());
+                }
                 self.consumed[i] = row.generation;
             }
         }
-        if relayed.is_empty() {
+        if lines.is_empty() {
             return Ok(
                 Step::new(Cost::Bytes(0), Verdict::Continue).noting("nothing new on the source")
             );
         }
+        let relayed = lines.join("\n");
 
         // ⚠⚠ WATCH THE DESTINATION REACT. This plugin's whole job is delivery and it was the one
         // that never looked at where it delivered: it read the source, wrote the destination,
@@ -93,21 +149,35 @@ impl Plugin for Pipe {
         // swallows its input is indistinguishable, in every number a run reports, from one that is
         // working — so the failure this plugin exists to have is the failure it could not report.
         let before = Self::generations(panes, self.dst);
-        let cost = panes.inject(self.dst, &KeyStroke::text(&relayed))?.bytes();
+        // Each line followed by Enter — the terminator that makes it a line the destination's
+        // reader can complete, exactly as the orchestrator terminates its stimulus.
+        let mut keys = Vec::new();
+        for line in &lines {
+            keys.extend(KeyStroke::text(line));
+            keys.push(KeyStroke::named("Enter"));
+        }
+        let cost = panes.inject(self.dst, &keys)?.bytes();
         let reacted = poll_until(run, REACTION_TIMEOUT, || {
-            Self::generations(panes, self.dst)
-                .iter()
-                .enumerate()
-                .any(|(i, now)| *now > before.get(i).copied().unwrap_or(0))
+            Self::shown(panes, self.dst, &before, &relayed) == Shown::Output
         });
 
         // The pipe never self-terminates; the Driver's guardrails bind it.
         Ok(
             Step::new(Cost::Bytes(cost), Verdict::Continue).noting(match reacted {
-                Waited::Ready => format!("relayed {cost} bytes; the destination reacted"),
-                Waited::TimedOut => {
-                    format!("relayed {cost} bytes and THE DESTINATION SHOWED NOTHING")
-                }
+                Waited::Ready => format!("relayed {cost} bytes; the destination answered"),
+                // ⚠ The wait ran out with no output of the destination's own — and WHICH of the
+                // two silences it was is the difference between a pane nobody is reading and one
+                // whose reader said nothing back.
+                Waited::TimedOut => match Self::shown(panes, self.dst, &before, &relayed) {
+                    Shown::Output => format!("relayed {cost} bytes; the destination answered late"),
+                    Shown::OwnBytesBack => format!(
+                        "relayed {cost} bytes and ONLY THOSE BYTES CAME BACK — the pty echoes \
+                         them whether or not anything read them"
+                    ),
+                    Shown::Nothing => {
+                        format!("relayed {cost} bytes and THE DESTINATION SHOWED NOTHING")
+                    }
+                },
                 Waited::Stopped => format!("relayed {cost} bytes; the run ended"),
             }),
         )
@@ -244,12 +314,18 @@ mod tests {
             notes.join(" | ")
         };
 
-        // THE CONTROL FIRST — a destination that echoes. If this did not say "reacted", the
-        // subject below would be measuring a check that never passes for anyone.
-        let heard = relay_into("cat");
+        // THE CONTROL FIRST — a destination that answers with something of ITS OWN. If this did
+        // not say so, the subjects below would be measuring a check that never passes for anyone.
+        //
+        // ⚠ It used to be plain `cat`, asserted to read as "reacted". That was the false
+        // confidence itself: nothing on screen distinguishes `cat` writing the text back from the
+        // pty echoing it, so the control was passing on the kernel's work. A destination that
+        // PREFIXES what it reads produces a line that is not the relayed text, which is the only
+        // evidence a screen can carry that a program read anything.
+        let heard = relay_into("while read line; do echo \"DST-SAW $line\"; done");
         assert!(
-            heard.contains("the destination reacted"),
-            "a live echoing destination must read as reacting: {heard}",
+            heard.contains("the destination answered"),
+            "a destination that produces output of its own must read as answering: {heard}",
         );
 
         // THE SUBJECT — a destination that consumes its input and prints nothing.
@@ -258,6 +334,18 @@ mod tests {
             deaf.contains("THE DESTINATION SHOWED NOTHING"),
             "a relay into a pane that shows nothing must say so — no number in the outcome can: \
              {deaf}",
+        );
+
+        // ⚠⚠ THE THIRD CASE, AND THE ONE THAT MATTERS MOST: echo ON, and NOTHING READING. The
+        // pty echoes what is written to it whether or not a program ever reads a byte, so a
+        // destination running `sleep` shows the relayed text back exactly as a working one does.
+        // Reading that as delivery is the same blindness R357 removed, one layer in — the check
+        // was watching the kernel rather than the peer.
+        let unread = relay_into("sleep 5");
+        assert!(
+            !unread.contains("the destination reacted"),
+            "nothing in this pane has read a byte — the text on screen is the pty's own echo, and \
+             calling it a reaction is a delivery claim with nothing behind it: {unread}",
         );
     }
 

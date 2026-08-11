@@ -4380,7 +4380,11 @@ fn open_echo_pane(server: &mut McpServer, name: &str) {
     server.call_tool("open_pane", json!({ "name": name }));
     server.call_tool(
         "write_pane",
-        json!({ "pane": name, "text": "printf ECHO-READY; exec cat" }),
+        // ⚠ The marker ENDS ITS ROW. Without the newline the cursor stays on it, the first
+        // stimulus is echoed onto the same row, and the row then reads as neither the marker nor
+        // the stimulus — which the orchestrator correctly judges to be output of the pane's own.
+        // A fixture that manufactures an answer would hide exactly the silence it is here to show.
+        json!({ "pane": name, "text": "printf 'ECHO-READY\\n'; exec cat" }),
     );
     server.wait_for_tool_count("read_pane", json!({ "pane": name }), "ECHO-READY", 2);
 }
@@ -4442,10 +4446,16 @@ fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
             "every step the run took is in the journal, and step {turn} is missing: {ended}",
         );
     }
+    // ⚠⚠ AND THE ACCOUNT IS SPECIFIC ABOUT WHAT CAME BACK. This pane runs `cat`: it parrots the
+    // stimulus and produces nothing of its own — and NOTHING ON A SCREEN can tell `cat` writing
+    // the text back from the pty echoing it, because they render identically. So the honest
+    // account is that the peer said nothing, which is a different finding from a pane that showed
+    // nothing at all and different again from one that answered. A journal that called this
+    // "reacted" was reporting the kernel's work as the peer's.
     assert!(
-        ended.contains("the pane reacted") || ended.contains("did not react"),
-        "and each line carries the PLUGIN's account of that step, which is the only place the \
-         difference between a pane that is listening and one that is not can appear: {ended}",
+        ended.contains("THE PEER SAID NOTHING"),
+        "each line carries the PLUGIN's account of that step, which is the only place the \
+         difference between a peer that answered and one that merely echoed can appear: {ended}",
     );
     assert!(
         ended.contains("bytes"),
