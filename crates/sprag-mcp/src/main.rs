@@ -1442,6 +1442,7 @@ const PANE_ARGUMENTS: &[&str] = &["pane", "src", "dst"];
 /// argument needs no ownership check, which is true of every number that is not a pane.
 const NOT_A_PANE: &[&str] = &[
     "timeout_ms",
+    "ready_timeout_ms",
     "cols",
     "rows",
     "opened_by",
@@ -1583,17 +1584,39 @@ fn argument_help(name: &str) -> &'static str {
              pane's output into another's input; `dialogue` runs two commands against each other, \
              turn by turn."
         }
+        "pane" => {
+            "Which pane to drive, as a number from list_panes (orchestrator, agent). It must be a \
+             pane YOU opened — this tool refuses a run against anyone else's."
+        }
+        "src" => {
+            "The pane whose new output is READ and relayed (pipe). It is only read, never typed \
+             into. Must be a pane you opened."
+        }
+        "dst" => {
+            "The pane the relayed output is TYPED INTO (pipe). This is the one ready_when is \
+             about, since it is the pane being written to. Must be a pane you opened."
+        }
         "stimulus" => "The text typed into the pane each iteration (orchestrator).",
         "sentinel" => {
             "Stop as soon as this appears on the pane (orchestrator). Without it the \
              run goes to its iteration ceiling."
         }
         "ready_when" => {
-            "WAIT for this to appear on the pane before typing anything (orchestrator). A pane you \
-             just opened is running a SHELL, and the program you mean to drive starts a moment \
-             later — a run that begins in that window feeds the shell, which runs your stimulus as \
-             a command. Name something the program prints when it is up (its prompt, its banner) \
-             and no turn is spent before it. If it never appears the run stops and says so."
+            "WAIT for this to appear on the pane before typing anything (orchestrator, pipe, \
+             agent). A \
+             pane you just opened is running a SHELL, and the program you mean to drive starts a \
+             moment later — a run that begins in that window feeds the shell, which runs your \
+             stimulus as a command. Name something the program PRINTS when it is up (its prompt, \
+             its banner), not a word from the command line you typed to start it: a pane echoes \
+             that, so it is already on screen before the program exists. If it never appears the \
+             run stops and says so. For a pipe this is the DESTINATION's, which is the pane you \
+             are typing into."
+        }
+        "ready_timeout_ms" => {
+            "How long to wait for ready_when before giving up on the pane (default two minutes). \
+             Set it to what you know about the program you are starting — a REPL is up in \
+             milliseconds, a cold agent takes seconds. Running out is a FAILURE naming the marker, \
+             which is a different answer from the run running out of time."
         }
         "prompt" => "What to say to the agent in the pane (agent).",
         "eof" => "Send end-of-input after the prompt (agent), for a command that reads until EOF.",
@@ -7042,9 +7065,10 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 10,
-            "the int arguments of every published run form: pane, src, dst, timeout_ms, cols, \
-             rows, max_iterations, max_seconds, max_bytes and max_tokens",
+            seen, 11,
+            "the int arguments of every published run form: pane, src, dst, timeout_ms, \
+             ready_timeout_ms, cols, rows, max_iterations, max_seconds, max_bytes and max_tokens \
+             — MERGED across the forms, so the agent form's readiness pair adds no new name",
         );
         // ⚠ AND THE EXEMPTION LIST IS PRUNED TOO — an entry naming an argument no form publishes
         // any more is a stale decision, which is the half R353's exemption rule adds.
@@ -7056,6 +7080,47 @@ mod tests {
                 "{name:?} is classified here and no run form publishes it",
             );
         }
+    }
+
+    /// ⚠⚠ **EVERY ARGUMENT THIS TOOL OFFERS SAYS WHAT IT IS FOR, IN THE AGENT'S TERMS.**
+    ///
+    /// [`argument_help`] is a per-name table with a catch-all arm, which is the shape a new thing
+    /// is silently left out of: an argument added to a run form upstream reaches this schema
+    /// automatically — that is the point of deriving it — and arrives carrying *"see
+    /// `sprag show-grammar run`"*, an instruction an agent driving this tool cannot follow. It is
+    /// published, it is callable, and nothing says what it does.
+    ///
+    /// Derived from the FORMS rather than from a list of names, so the omission is what fails: the
+    /// round that adds an argument writes its sentence or this gate is red. That is the only kind
+    /// of check that can see an omission (R352), and it is why the fallback arm stays — it is
+    /// reachable for a MALFORMED name, never for a published one.
+    #[test]
+    fn every_published_run_argument_says_what_it_is_for() {
+        let fallback = argument_help("a name no form publishes");
+        let mut checked = 0;
+        for arg in orchestrate_arguments() {
+            if arg.name == OPENED_BY {
+                continue; // Never offered to an agent — see the gate below.
+            }
+            checked += 1;
+            let help = argument_help(arg.name);
+            assert_ne!(
+                help, fallback,
+                "the run argument {:?} is published with no sentence of its own — an agent is \
+                 offered a key and told to go read a CLI's output to find out what it does",
+                arg.name,
+            );
+            assert!(
+                help.len() > 20,
+                "and {:?}'s sentence has to say something: {help:?}",
+                arg.name,
+            );
+        }
+        assert!(
+            checked >= 18,
+            "every argument of every run form should have been walked; only {checked} were, so \
+             this gate is looking at a shorter grammar than the one the daemon publishes",
+        );
     }
 
     /// ⚠⚠ **THE `orchestrate` SCHEMA IS THE WIRE'S OWN GRAMMAR, MINUS THE ONE ARGUMENT AN AGENT
