@@ -1949,6 +1949,74 @@ fn tool_cancel_run(args: &Value) -> Result<String, String> {
     ))
 }
 
+/// The refusal for a call carrying an argument the tool's own published schema does not declare,
+/// or [`None`] when every argument is one this tool takes.
+///
+/// # ⚠⚠ Why a swallowed argument is worse than a refused one
+///
+/// Every tool on this surface publishes `additionalProperties: false` — and until this function
+/// existed, not one of them enforced it. A call carrying `cmd`, or `max_second`, or any other name
+/// the tool does not read was answered SUCCESS with that argument dropped on the floor. The caller
+/// is an agent: it asked for something, was told the call worked, and got a different thing done.
+/// It has no way to find out, because the answer describes what happened and not what was asked.
+///
+/// The cost is not hypothetical. This workspace's own time-ceiling gate passed `cmd` to
+/// `open_pane` — a tool that has never had a `cmd` argument — and spent every round since driving a
+/// login shell while its name said `cat`. That is the benign shape. The malign one is on the
+/// orchestration verbs, where a mistyped ceiling (`max_second` for `max_seconds`) means a run the
+/// caller believes is bounded and the daemon bounds only by its own defaults: an ignored BOUND
+/// makes the loop do MORE, silently, and answers success — the class R356 closed for the wire's
+/// `guardrails` and this mouth never got.
+///
+/// # ⚠ Why it is derived from the roster rather than written down
+///
+/// The predicate is read off [`tools_list`] — the very publication the client reads — so a tool
+/// added later, or an argument added to an existing one, is covered the moment it is published,
+/// and no hand-kept list can be the one a new thing is left out of. It also makes the published
+/// `additionalProperties: false` a TRUE statement about this server rather than a decoration:
+/// the schema is the authority, and the door now asks it.
+///
+/// A tool whose schema does NOT close its argument set is left alone — the declaration is what
+/// asks to be enforced, so this can never be stricter than what the caller was told.
+fn undeclared_argument(name: &str, args: &Value) -> Option<String> {
+    let roster = tools_list();
+    let tool = roster["tools"]
+        .as_array()?
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some(name))?;
+    let schema = &tool["inputSchema"];
+    if schema.get("additionalProperties") != Some(&json!(false)) {
+        return None;
+    }
+    let declared = schema["properties"].as_object()?;
+    let undeclared: Vec<&String> = args
+        .as_object()?
+        .keys()
+        .filter(|key| !declared.contains_key(*key))
+        .collect();
+    let (first, rest) = undeclared.split_first()?;
+    let named = if rest.is_empty() {
+        format!("{first:?} is not an argument")
+    } else {
+        let all: Vec<String> = undeclared.iter().map(|key| format!("{key:?}")).collect();
+        format!("{} are not arguments", all.join(", "))
+    };
+    let mut takes: Vec<&str> = declared.keys().map(String::as_str).collect();
+    takes.sort_unstable();
+    // The refusal names what the tool DOES take, because a caller that guessed an argument name
+    // needs the right one and not just the news that it guessed. A tool with no arguments at all
+    // says that outright rather than offering an empty list.
+    let offer = if takes.is_empty() {
+        format!("{name} takes no arguments")
+    } else {
+        format!("{name} takes: {}", takes.join(", "))
+    };
+    Some(format!(
+        "{named} {name} takes, so the call was refused rather than run with it ignored. {offer}. \
+         Call tools/list for the full schema.",
+    ))
+}
+
 /// Dispatch a `tools/call`, wrapping the outcome into MCP `content`. A tool-level
 /// failure is `isError: true` text (business error), NOT a JSON-RPC protocol error.
 fn handle_tools_call(message: &Value) -> Value {
@@ -1960,6 +2028,12 @@ fn handle_tools_call(message: &Value) -> Value {
         .pointer("/params/arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    if let Some(refusal) = undeclared_argument(name, &args) {
+        return json!({
+            "content": [{ "type": "text", "text": format!("Error: {refusal}") }],
+            "isError": true
+        });
+    }
     let outcome = match name {
         "list_panes" => tool_list_panes(),
         "list_windows" => tool_list_windows(),

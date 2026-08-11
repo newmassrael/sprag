@@ -3275,10 +3275,14 @@ fn an_agent_closes_and_renames_only_the_windows_it_opened() {
     server.call_tool("open_window", json!({ "name": "mine" }));
 
     for verb in ["close_window", "rename_window"] {
-        let refused = server.call_tool_error(
-            verb,
-            json!({ "window": theirs.clone(), "name": "whatever" }),
-        );
+        // Each verb driven with the arguments IT takes. One shared `{window, name}` was only ever
+        // possible because `close_window` swallowed the `name` it does not declare — the defect
+        // [`every_tool_that_publishes_a_closed_argument_set_enforces_it`](self) closed.
+        let mut args = json!({ "window": theirs.clone() });
+        if verb == "rename_window" {
+            args["name"] = json!("whatever");
+        }
+        let refused = server.call_tool_error(verb, args);
         assert!(
             refused.contains(&format!(
                 "window {theirs} was opened by a person, not by you"
@@ -3843,7 +3847,12 @@ fn a_tool_against_an_older_daemon_says_so() {
             }
             "send_keys" => json!({ "pane": 1, "keys": ["Enter"] }),
             "write_pane" => json!({ "pane": 1, "text": "x" }),
-            "open_pane" => json!({ "dir": "right" }),
+            // Nothing at all: it takes a `name` and a `cwd` and neither is needed to reach the
+            // wire. It was driven with `dir` — `resize_pane`'s argument, which `open_pane` has
+            // never had — for as long as this table has existed, and the tool ran anyway with it
+            // dropped. What made that possible is the defect
+            // [`every_tool_that_publishes_a_closed_argument_set_enforces_it`](self) closed.
+            "open_pane" => json!({}),
             "display_message" => json!({ "message": "hi" }),
             "find_in_pane" => json!({ "pane": 1, "needle": "x" }),
             "regex_in_pane" => json!({ "pane": 1, "pattern": "x" }),
@@ -4258,7 +4267,123 @@ fn a_tool_that_is_not_there_says_which_kind_of_absence_it_is() {
     );
 }
 
+/// ⚠⚠ **AN ARGUMENT THIS SURFACE DOES NOT TAKE IS REFUSED, NOT SWALLOWED** — the other half of a
+/// typo, and the half every tool here PUBLISHED and none of them enforced.
+///
+/// A misspelled TOOL name has been an answer an agent can act on since R323. A misspelled ARGUMENT
+/// was answered `success` with the argument dropped: every one of these tools declares
+/// `additionalProperties: false` and nothing ever read that declaration, so the schema a client is
+/// handed was an affirmative false statement about what the door accepts.
+///
+/// # ⚠ It cost this file a gate, which is how it was found
+///
+/// The time-ceiling gate below opened its pane with a `cmd` argument. `open_pane` has never had
+/// one — it runs a shell, always — so the pane it drove was a login shell and the test's own
+/// account of what it was measuring was wrong from the day it was written. Nothing said so,
+/// because the call worked.
+///
+/// The shape that matters is the same defect on the loop's own verbs: `max_second` for
+/// `max_seconds` is one keystroke, and swallowed it means a run the caller believes it bounded and
+/// the daemon bounds only by its defaults. An ignored ceiling makes the loop do MORE, silently,
+/// and answers success.
+///
+/// # Why it walks the roster and fails closed
+///
+/// The subject is the PUBLICATION, so the gate reads the same publication a client does and holds
+/// every tool that closes its argument set to having closed it. A tool added later is covered the
+/// day it appears; one that publishes a closed set and does not enforce it fails here BY NAME. The
+/// count at the end is what makes a tool that quietly stopped being checked impossible to miss.
+#[test]
+fn every_tool_that_publishes_a_closed_argument_set_enforces_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    let roster = server.request("tools/list", json!({}));
+    let tools = roster["result"]["tools"]
+        .as_array()
+        .expect("the roster is a list")
+        .clone();
+    let mut checked: Vec<String> = Vec::new();
+    for tool in &tools {
+        let name = tool["name"]
+            .as_str()
+            .expect("every tool is named")
+            .to_owned();
+        // The DECLARATION is what asks to be enforced: a tool that leaves its argument set open is
+        // not held to a closed one, so this can never be stricter than what the caller was told.
+        if tool["inputSchema"]["additionalProperties"] != json!(false) {
+            continue;
+        }
+        // The bogus argument ALONE, so a tool that refuses it cannot be doing anything else: no
+        // required argument is present, and a tool that ran anyway would answer about its own
+        // missing arguments instead. Nothing here reaches a pane.
+        let refused = server.call_tool_error(&name, json!({ "no_such_argument": 1 }));
+        assert!(
+            refused.contains("no_such_argument"),
+            "{name} publishes a closed argument set and swallowed one outside it — an agent that \
+             mistypes an argument is told the call worked and never learns what it actually did: \
+             {refused}",
+        );
+        assert!(
+            refused.contains(&format!("{name} takes")),
+            "and the refusal must hand back the arguments it DOES take, or a caller that guessed \
+             is left guessing again: {refused}",
+        );
+        checked.push(name);
+    }
+    assert_eq!(
+        checked.len(),
+        tools.len(),
+        "every tool this server serves closes its argument set, so every one of them is checked \
+         here; {} of {} were: the ones missing are {:?}",
+        checked.len(),
+        tools.len(),
+        tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap_or_default())
+            .filter(|name| !checked.iter().any(|done| done == name))
+            .collect::<Vec<_>>(),
+    );
+
+    // THE CONTROL. Every assertion above is satisfied by a server that refuses EVERYTHING, which
+    // would be a worse defect wearing this gate's colours.
+    let accepted = server.call_tool("read_pane", json!({ "pane": 1 }));
+    assert!(
+        !accepted.starts_with("Error:"),
+        "a call made only of declared arguments still goes through: {accepted}",
+    );
+}
+
 // ----- the orchestration loop's door (R355) -----
+
+/// Open a pane of this agent's own that ECHOES what is injected into it and RUNS nothing, and
+/// return once it is one.
+///
+/// # ⚠⚠ Why the loop's gates cannot just ask for the pane they want
+///
+/// `open_pane` runs a SHELL. It takes a `name` and a `cwd` and has never taken a command — so the
+/// eight gates that asked it for `["/bin/sh", "-c", "exec cat"]` were driving a login shell, and
+/// every stimulus they injected was EXECUTED by it rather than echoed back. Nothing said so,
+/// because the argument was swallowed whole (the defect
+/// [`every_tool_that_publishes_a_closed_argument_set_enforces_it`](self) closed).
+///
+/// The difference is not cosmetic. A drive loop's fixture must react to a stimulus without acting
+/// on it: against a shell, `stimulus: "sleep 1"` is a real second of sleeping per turn and
+/// `"echo bounded"` is a command whose output is indistinguishable from the echo the orchestrator
+/// is watching for. So the shell is replaced, by the one means this surface offers — typing.
+///
+/// ⚠ The marker is waited for TWICE. The first `ECHO-READY` is the shell echoing the line as it is
+/// typed; only the second is `printf` having RUN, which is the instant the pane is `cat`. A run
+/// started on the first sighting would have its opening turns eaten by a shell that is still
+/// starting up.
+fn open_echo_pane(server: &mut McpServer, name: &str) {
+    server.call_tool("open_pane", json!({ "name": name }));
+    server.call_tool(
+        "write_pane",
+        json!({ "pane": name, "text": "printf ECHO-READY; exec cat" }),
+    );
+    server.wait_for_tool_count("read_pane", json!({ "pane": name }), "ECHO-READY", 2);
+}
 
 /// ⚠⚠ **AN AGENT CAN ASK FOR A BOUNDED LOOP, AND THE BOUND IS THE PLATFORM'S** — the whole of L2, at
 /// the mouth it was missing from.
@@ -4278,10 +4403,7 @@ fn a_tool_that_is_not_there_says_which_kind_of_absence_it_is() {
 fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
-    server.call_tool(
-        "open_pane",
-        json!({ "name": "loop-target", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut server, "loop-target");
 
     let started = server.call_tool(
         "orchestrate",
@@ -4375,10 +4497,7 @@ fn an_agent_cannot_loop_a_pane_it_does_not_own() {
 fn an_agent_may_tighten_a_guardrail_and_never_loosen_one() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
-    server.call_tool(
-        "open_pane",
-        json!({ "name": "budget", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut server, "budget");
 
     let ceiling = sprag_host::plugins::DEFAULT_MAX_ITERATIONS;
     let refused = server.call_tool_error(
@@ -4431,17 +4550,32 @@ fn an_agent_may_tighten_a_guardrail_and_never_loosen_one() {
 fn an_agent_is_held_to_a_time_ceiling_the_clamp_was_never_told_about() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
+    // A DEAF pane, made one the only way this surface can: `open_pane` runs a SHELL — it has no
+    // `cmd` argument and never had one — so the shell is told to go deaf. `stty -echo` stops the
+    // kernel echoing what is injected and the reader discards what it reads, so once this line has
+    // run, nothing this run does can reach the screen. See the second half for why the gate needs
+    // a pane that cannot react rather than one that reacts fast.
+    server.call_tool("open_pane", json!({ "name": "deaf" }));
     server.call_tool(
-        "open_pane",
-        json!({ "name": "clock", "cmd": ["/bin/sh", "-c", "exec cat"] }),
+        "write_pane",
+        json!({
+            "pane": "deaf",
+            "text": "stty -echo; printf DEAF-READY; exec cat >/dev/null",
+        }),
     );
+    // ⚠ AND IT IS NOT DEAF UNTIL IT SAYS SO. Until that line has RUN, the pane is an ordinary
+    // shell with echo on, and a run that starts driving in that window has its first stimulus
+    // echoed back — a pane that cannot hear it, read as one that reacted. TWICE is the
+    // load-bearing count: the first `DEAF-READY` is the shell echoing the line as it is typed, and
+    // only the second is `printf` running, which is the instant echo is actually off.
+    server.wait_for_tool_count("read_pane", json!({ "pane": "deaf" }), "DEAF-READY", 2);
 
     let ceiling = sprag_host::plugins::DEFAULT_MAX_SECONDS;
     let refused = server.call_tool_error(
         "orchestrate",
         json!({
             "plugin": "orchestrator",
-            "pane": "clock",
+            "pane": "deaf",
             "stimulus": "x",
             "max_seconds": ceiling + 1,
         }),
@@ -4453,11 +4587,22 @@ fn an_agent_is_held_to_a_time_ceiling_the_clamp_was_never_told_about() {
     );
 
     // THE OTHER HALF — under the ceiling, and the clock is what ends it.
+    //
+    // ⚠⚠ THE PANE MUST BE ONE THAT CANNOT REACT, and this gate was RED IN CI for wanting the
+    // opposite. Against a pane that echoes, a step ends as soon as the echo lands, so which
+    // ceiling binds is a race between the box's speed and the second on the clock: this machine
+    // took just over a second to run the hundred turns and read `duration`, and CI's took under
+    // one and read `iterations`. A gate that asks which of two ceilings fired must make the other
+    // one UNREACHABLE, not merely slower.
+    //
+    // Deaf, it is arithmetic instead: every step waits out the orchestrator's own half-second
+    // observe timeout, so a one-second run can complete two or three turns and NEVER a hundred —
+    // on any machine, since a slower box only makes the floor higher.
     server.call_tool(
         "orchestrate",
         json!({
             "plugin": "orchestrator",
-            "pane": "clock",
+            "pane": "deaf",
             "stimulus": "x",
             "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
             "max_iterations": 100,
@@ -4470,6 +4615,15 @@ fn an_agent_is_held_to_a_time_ceiling_the_clamp_was_never_told_about() {
         "an agent is told WHICH ceiling stopped its loop, and here it is the clock rather than \
          the hundred turns it also asked for — three ceilings with three different remedies, and \
          `exhausted` alone names none of them: {ended}",
+    );
+    // ⚠ AND THE GATE CHECKS ITS OWN PREMISE. If the pane ever reacted — `stty` missing, echo back
+    // on, a shell that writes something — the floor under each step would be gone and the half
+    // above would be back to racing the clock, passing or failing by how fast the box is. The
+    // journal says which pane this actually ran against, so the race cannot come back unnoticed.
+    assert!(
+        ended.contains("the pane did not react to the stimulus at all"),
+        "this run must have driven a DEAF pane, or it is not the deadline being measured but the \
+         speed of this machine: {ended}",
     );
 }
 
@@ -4499,10 +4653,7 @@ fn the_ceiling_an_agent_is_held_to_is_the_daemons_and_not_this_binarys() {
         sprag_peer::Missing::answering(&[("max_seconds", json!(5))]),
     );
     let mut server = McpServer::spawn_in_pane(peer.sock(), 0);
-    server.call_tool(
-        "open_pane",
-        json!({ "name": "skew", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut server, "skew");
 
     let ask = |guardrail: &str, value: u64| {
         json!({
@@ -4543,10 +4694,7 @@ fn the_ceiling_an_agent_is_held_to_is_the_daemons_and_not_this_binarys() {
 fn one_agents_runs_are_invisible_to_another() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut first = McpServer::spawn_in_pane(&sock, 0);
-    first.call_tool(
-        "open_pane",
-        json!({ "name": "firsts", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut first, "firsts");
     first.call_tool(
         "orchestrate",
         json!({
@@ -4617,10 +4765,7 @@ fn pane_id_named(listing: &str, name: &str) -> u64 {
 fn an_agent_waits_for_its_own_loop_to_finish_rather_than_polling() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
-    server.call_tool(
-        "open_pane",
-        json!({ "name": "waited", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut server, "waited");
     server.call_tool(
         "orchestrate",
         json!({
@@ -4665,10 +4810,7 @@ fn an_agent_waits_for_its_own_loop_to_finish_rather_than_polling() {
 fn a_cancelled_loop_wakes_the_wait_that_was_parked_on_it() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
-    server.call_tool(
-        "open_pane",
-        json!({ "name": "stopped", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut server, "stopped");
     // A ceiling this test will not reach, so what ends the run is provably the cancel.
     server.call_tool(
         "orchestrate",
@@ -4715,10 +4857,7 @@ fn a_cancelled_loop_wakes_the_wait_that_was_parked_on_it() {
 fn a_running_loop_reports_its_progress_and_agrees_with_its_own_outcome() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
-    server.call_tool(
-        "open_pane",
-        json!({ "name": "counted", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut server, "counted");
     // A ceiling high enough that this test observes it mid-flight rather than after it.
     server.call_tool(
         "orchestrate",
@@ -4769,10 +4908,7 @@ fn a_running_loop_reports_its_progress_and_agrees_with_its_own_outcome() {
 fn a_loop_that_ended_before_the_first_wait_is_reported_by_it() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
     let mut server = McpServer::spawn_in_pane(&sock, 0);
-    server.call_tool(
-        "open_pane",
-        json!({ "name": "already-done", "cmd": ["/bin/sh", "-c", "exec cat"] }),
-    );
+    open_echo_pane(&mut server, "already-done");
     server.call_tool(
         "orchestrate",
         json!({
