@@ -101,20 +101,26 @@ pub enum ReadyWhen {
     /// [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed) joins the screen, so a marker
     /// the pane wrapped is still found.
     ///
-    /// # ⚠ The residue this does NOT close, measured rather than assumed
+    /// # ⚠⚠ AND THE PANE'S OWN ECHO IS DISCOUNTED, whenever it lands
     ///
-    /// A pty echo is ASYNCHRONOUS. If a caller writes the starting command and begins the run in
-    /// the same breath, the echo can reach the grid AFTER the barrier armed — and then it is new
-    /// output by every test this can apply, because the plugin never saw that input and has
-    /// nothing to compare it against. Measured: the first form of this gate raced exactly that way
-    /// and read `ATE ping` with `Prints` in force.
+    /// The generation baseline alone left a RACE, and it was measured rather than reasoned about: a
+    /// pty echo is asynchronous, so a caller who writes the starting command and begins the run in
+    /// the same breath can have the echo reach the grid AFTER the barrier armed. It is then new
+    /// output by every test a screen can apply — and the barrier cleared on it, spending the run's
+    /// turns on the shell that was still there. **The same call converged or drove into a shell
+    /// depending on scheduling.**
     ///
-    /// So this closes the hazard for text that had ARRIVED — a stale banner, a previous run's
-    /// output, a command line already on screen — and leaves a window of milliseconds for a caller
-    /// who starts the program and the run together. **The structural answer to that window is not
-    /// to have a shell in the pane at all**: a pane opened running the program directly is never
-    /// typed into, so there is no echo to mistake. That is a
-    /// [`PaneLifecycle`](crate::access::PaneLifecycle) question, not this one's.
+    /// So the pane REMEMBERS what was written into it
+    /// ([`PaneInputEcho`](crate::access::PaneInputEcho)), and a marker found in that text is
+    /// refused as evidence outright. The race is not narrowed, it is REMOVED: the answer is the
+    /// same whichever side of the arming the echo falls on, and it no longer depends on how loaded
+    /// the machine is.
+    ///
+    /// ⚠ **A MARKER THAT APPEARS IN WHAT YOU TYPED CAN THEREFORE NEVER BE EVIDENCE**, and the run
+    /// ends [`NeverReady`](crate::access::PaneError::NeverReady) naming it rather than driving
+    /// something that was never listening. That is the honest answer to an ambiguous marker, and it
+    /// is deterministic — which the alternative was not. Pick a marker the program prints, or open
+    /// the pane running the program (`open_pane`'s `cmd`) so there is no echo at all.
     Prints(String),
     /// Ready once the marker is on the screen **now**, wherever it came from.
     ///
@@ -211,6 +217,32 @@ impl Readiness {
                     return false;
                 };
                 let armed = self.armed_at.as_deref().unwrap_or_default();
+                // ⚠⚠ WHAT WAS TYPED AT THE PANE IS NOT WHAT THE PANE SAID. The pty echoes it, and
+                // on the grid the echo is ordinary output — so a row carrying a piece of the
+                // caller's own input is dropped before anything is read. This is the same rule
+                // `Orchestrator::reaction` applies to its own stimulus, asked of input this plugin
+                // did not write, which is only possible because the PANE remembers it.
+                //
+                // ⚠ Absent the capability the discount cannot be applied, and the fallback is the
+                // generation baseline alone — weaker, and the reason `input_echo` returning `None`
+                // is documented as a degradation rather than a default.
+                let typed = panes
+                    .input_echo()
+                    .and_then(|echo| echo.pane_recent_input(pane))
+                    .unwrap_or_default();
+                // ⚠⚠ A MARKER THAT IS IN WHAT WAS TYPED AT THE PANE IS NOT EVIDENCE, EVER. The pty
+                // echoes input, and on the grid that echo is ordinary output — so the marker has
+                // two possible authors and nothing on the screen says which. Refusing it here is
+                // what makes the answer DETERMINISTIC: the alternative was to hope the echo had
+                // already landed before the barrier armed, and the same call then converged or fed
+                // the shell depending on scheduling.
+                //
+                // ⚠ Checked against the MARKER rather than by dropping echoing ROWS. Dropping rows
+                // depends on where the terminal happened to wrap and on whether a prompt shares
+                // the line, which is the same non-determinism one step further in.
+                if typed.contains(marker.as_str()) {
+                    return false;
+                }
                 // The rows that MOVED since arming, joined the way the whole screen is joined, so a
                 // marker the pane wrapped across two fresh rows is still found. A row that did not
                 // move is not evidence — that is the entire point of this kind.

@@ -36,6 +36,33 @@ pub use crate::command::CommandBuilder;
 /// holds the emulator lock), so the writer is shared the same way.
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+/// The bytes most recently WRITTEN INTO a pane, shared so every writer records into one trail.
+///
+/// See [`ECHO_TRAIL_CAP`] for why a pane keeps this at all.
+type SharedEchoTrail = Arc<Mutex<Vec<u8>>>;
+
+/// How much recently-written input a pane remembers, for telling its own ECHO apart from what the
+/// program in it actually said.
+///
+/// Public because the two `echo_trail` readers are, and a bound a caller cannot see is a bound
+/// they cannot reason about: a command line longer than this is remembered only in part.
+///
+/// # ⚠⚠ Why a pane has to remember what was typed at it
+///
+/// **A pseudoterminal echoes what is written to it, and that echo is indistinguishable from
+/// program output once it reaches the grid.** Everything downstream that has to know *did the
+/// program say this, or is this my own input coming back?* has so far answered it by comparing
+/// against what THAT CALLER had just written — which works only for a caller that did the writing
+/// (`Orchestrator::reaction`, `Pipe::shown`). A run that must wait for a program somebody ELSE
+/// started has nothing to compare against, and the answer it reached depended on whether the echo
+/// happened to land before or after it started looking. **A predicate whose answer depends on
+/// scheduling is not a predicate.**
+///
+/// So the pane keeps the trail, every writer feeds it, and the question becomes answerable by
+/// anyone. Bounded because it is unbounded input otherwise; generous against the thing it exists to
+/// recognise, which is a command line somebody typed or pasted.
+pub const ECHO_TRAIL_CAP: usize = 8 * 1024;
+
 /// Upper bound on the raw-output capture buffer ([`RawCapture`]). Generous
 /// enough for a large structured envelope (a `claude -p --output-format json`
 /// reply with a code-block `result` is a few KiB to tens of KiB), bounded so a
@@ -276,6 +303,8 @@ pub struct PanePty {
     tty: Option<PathBuf>,
     exit: SharedExit,
     writer: SharedWriter,
+    /// What has recently been written INTO this pane — see [`ECHO_TRAIL_CAP`].
+    echo_trail: SharedEchoTrail,
     emulator: Arc<Mutex<Emulator>>,
     raw_output: SharedRawCapture,
     eof: Arc<AtomicBool>,
@@ -572,6 +601,7 @@ impl PanePty {
             tty,
             exit,
             writer,
+            echo_trail: Arc::new(Mutex::new(Vec::new())),
             emulator,
             raw_output,
             eof,
@@ -868,7 +898,16 @@ impl PanePty {
     ///
     /// Returns an IO error if the write to the master fails.
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        write_input(&self.emulator, &self.writer, bytes)
+        write_input(&self.emulator, &self.writer, &self.echo_trail, bytes)
+    }
+
+    /// What has recently been written INTO this pane — the trail that lets a reader tell the
+    /// pane's own ECHO from what the program in it said. See [`ECHO_TRAIL_CAP`].
+    ///
+    /// Lossy UTF-8, because it is compared against SCREEN TEXT and the screen is text.
+    #[must_use]
+    pub fn echo_trail(&self) -> String {
+        String::from_utf8_lossy(&lock(&self.echo_trail)).into_owned()
     }
 
     /// A cloneable [`PanePtyHandle`] sharing this pty's emulator and
@@ -880,6 +919,7 @@ impl PanePty {
         PanePtyHandle {
             emulator: Arc::clone(&self.emulator),
             writer: Arc::clone(&self.writer),
+            echo_trail: Arc::clone(&self.echo_trail),
             raw_output: Arc::clone(&self.raw_output),
             clipboard_answered: Arc::clone(&self.clipboard_answered),
         }
@@ -974,6 +1014,8 @@ impl PanePty {
 pub struct PanePtyHandle {
     emulator: Arc<Mutex<Emulator>>,
     writer: SharedWriter,
+    /// Shared with the owning [`PanePty`] — see [`ECHO_TRAIL_CAP`].
+    echo_trail: SharedEchoTrail,
     raw_output: SharedRawCapture,
     /// Shared OSC 52 answered-query high-water mark — see [`PanePty::clipboard_answered`]. The
     /// host answers a read query through this handle, so the exactly-once arbitration lives here.
@@ -1024,7 +1066,13 @@ impl PanePtyHandle {
     ///
     /// Returns an IO error if the write to the master fails.
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        write_input(&self.emulator, &self.writer, bytes)
+        write_input(&self.emulator, &self.writer, &self.echo_trail, bytes)
+    }
+
+    /// What has recently been written INTO this pane — see [`PanePty::echo_trail`].
+    #[must_use]
+    pub fn echo_trail(&self) -> String {
+        String::from_utf8_lossy(&lock(&self.echo_trail)).into_owned()
     }
 
     /// Admit ONE client's answer to OSC 52 read query `seq`, writing `reply` to the PTY only if
@@ -1228,9 +1276,21 @@ fn write_shared(writer: &SharedWriter, bytes: &[u8]) -> io::Result<()> {
 fn write_input(
     emulator: &Arc<Mutex<Emulator>>,
     writer: &SharedWriter,
+    trail: &SharedEchoTrail,
     bytes: &[u8],
 ) -> io::Result<()> {
     lock(emulator).note_input();
+    // ⚠ RECORDED BEFORE THE WRITE, so the trail can never be behind an echo that has already come
+    // back. This is the ONE place a pane's input is written, which is what makes the trail complete
+    // — a second write path would be a second answer that can drift.
+    {
+        let mut trail = lock(trail);
+        trail.extend_from_slice(bytes);
+        let over = trail.len().saturating_sub(ECHO_TRAIL_CAP);
+        if over > 0 {
+            trail.drain(..over);
+        }
+    }
     write_shared(writer, bytes)
 }
 

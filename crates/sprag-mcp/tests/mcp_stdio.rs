@@ -4275,13 +4275,16 @@ fn a_tool_that_is_not_there_says_which_kind_of_absence_it_is() {
 /// the whole thing the way an agent would: open a pane, type the program's start line, and
 /// orchestrate with `ready_when` naming what the program prints when it is up.
 ///
-/// ⚠⚠ **THE MARKER IS COMPOSED (`READY-%s` → `READY-OK`) SO IT IS NOT IN THE LINE THE AGENT TYPED**,
-/// and that is a caller responsibility this gate honours rather than tests. A pane echoes what is
-/// typed at it; `match: "prints"` refuses text that was ALREADY on the screen when the run armed,
-/// which the plugin's own gate proves deterministically — but the echo lands ASYNCHRONOUSLY, so a
-/// caller who writes the starting command and begins a run in the same breath races it. There is
-/// no wait that closes that race, and this gate does not pretend otherwise. **The answer is not to
-/// have a shell in the pane**, which is what the `cmd` gate below drives.
+/// ⚠⚠ **NO WAIT BETWEEN THE WRITE AND THE RUN, AND THAT IS THE CLAIM.** A pty echo is asynchronous,
+/// so this is exactly the case that used to be decided by scheduling: the agent hands the daemon a
+/// command line and starts a run in the same breath, with the echo of that line still in flight.
+/// An earlier form of this gate needed a sleep to pass, which is the product asking the caller to
+/// paper over its own race.
+///
+/// The marker is COMPOSED (`READY-%s` → `READY-OK`) so it cannot appear in the typed line at all —
+/// the shape a caller should reach for, and the one the barrier can answer by construction. A
+/// marker that IS in the typed line is refused outright and named; the plugin's own gate drives
+/// both halves of that.
 #[test]
 fn an_agent_names_what_ready_looks_like_and_the_loop_waits_for_it() {
     let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);

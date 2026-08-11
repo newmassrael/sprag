@@ -428,58 +428,106 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **THE ECHO OF THE COMMAND THAT STARTED THE PROGRAM IS NOT THE PROGRAM COMING UP.**
+    /// ⚠⚠ **A MARKER YOU TYPED IS NEVER EVIDENCE, AND THE ANSWER DOES NOT DEPEND ON TIMING.**
     ///
-    /// A pane echoes what is typed at it, so the command line a caller used to START the tool is on
-    /// screen before the tool exists — and a marker matched against the whole screen finds it
-    /// there. Measured against this fixture with the old whole-screen match: the barrier cleared in
-    /// 50 MILLISECONDS and the run spent both turns on the shell, screen
-    /// `…printf "TOOL-UP\n"; exec cat'$ pingATE pingpingATE ping` — the stand-in ate both and the
-    /// peer never saw a word.
+    /// A pane echoes the command line that started the program, so a marker appearing in that line
+    /// is on screen before the program exists — and the echo is ordinary output once it reaches the
+    /// grid. Under the whole-screen match the barrier cleared on it in 50 MILLISECONDS and the run
+    /// spent every turn on the shell (`…exec cat'$ pingATE pingpingATE ping`).
     ///
-    /// [`ReadyWhen::Prints`] is what refuses it: the barrier baselines the pane's damage
-    /// generations on its first look and only reads rows that moved past it, so text that was
-    /// already there is not evidence. Both halves, because a barrier that never let go would
-    /// satisfy the first: nothing may be eaten, AND the peer must receive the stimulus afterwards.
+    /// The generation baseline alone did not close it, it only moved the failure: the echo arrives
+    /// ASYNCHRONOUSLY, so whether it counted as "produced after arming" depended on scheduling.
+    /// **The same call converged or fed the shell depending on how the machine was loaded.**
+    ///
+    /// So the pane remembers what was written into it and such a marker is refused outright. The
+    /// run ends `NeverReady` NAMING it — an ambiguous marker answered honestly and identically
+    /// every time — instead of driving something that was never listening.
+    ///
+    /// ⚠ BOTH HALVES START THE RUN THE SAME WAY AND DIFFER ONLY IN THE WAIT, which is the point:
+    /// the echo having landed or not must not change the answer.
     #[test]
-    fn the_echo_of_the_command_that_started_the_program_is_not_the_program_coming_up() {
-        let (access, pane) = sh_access("exec sh", 80, 10);
-        // The caller starts the tool by TYPING it — the ordinary shape, and the shape R358 measured
-        // eight gates driving. Its command line MENTIONS the banner, because the caller wrote both.
+    fn a_marker_that_is_in_what_the_caller_typed_is_never_evidence() {
+        // The command line MENTIONS the banner, because the caller wrote both.
         let started = format!(
             "sh -c 'while read e; do echo \"ATE $e\"; done {STANDIN_READS_TTY} & sleep 2; \
-             kill $! 2>/dev/null; printf \"TOOL-UP\\n\"; \
-             exec sh -c \"while read l; do echo PEER-SAW \\$l; done\"'"
+             kill $! 2>/dev/null; printf \"TOOL-UP\\n\"; exec cat'"
+        );
+        let drive = |wait_for_the_echo: bool| {
+            let (access, pane) = sh_access("exec sh", 80, 10);
+            let mut typed = KeyStroke::text(&started);
+            typed.push(KeyStroke::named("Enter"));
+            let _typed = access.inject(pane, &typed).expect("start the tool");
+            if wait_for_the_echo {
+                let start = std::time::Instant::now();
+                while start.elapsed() < Duration::from_secs(5)
+                    && !access
+                        .pane_collapsed(pane)
+                        .is_some_and(|text| text.contains("TOOL-UP"))
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            let mut orch = Orchestrator::new(
+                pane,
+                OrchestrationSpec {
+                    stimulus: "ping".to_string(),
+                    sentinel: None,
+                    ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
+                    ready_within: Some(Duration::from_millis(400)),
+                },
+            );
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 3,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .run(&mut orch, &access, &RunContext::uncancellable());
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            (outcome, screen)
+        };
+
+        for waited in [true, false] {
+            let (outcome, screen) = drive(waited);
+            assert_eq!(
+                outcome.failure,
+                Some(PaneError::NeverReady("TOOL-UP".to_string())),
+                "an ambiguous marker is refused and NAMED, whether or not its echo had landed \
+                 (waited: {waited}): {screen:?}",
+            );
+            assert!(
+                !screen.contains("ATE ping"),
+                "and NOTHING was typed at the stand-in that was still there (waited: {waited}): \
+                 {screen:?}",
+            );
+        }
+    }
+
+    /// ⚠⚠ **AND A MARKER THE PROGRAM COMPOSES CONVERGES WITH NO WAIT AT ALL** — the other half,
+    /// and the one that says the remedy above is not simply "refuse everything".
+    ///
+    /// The banner here is assembled by the program (`printf "PEER-%s" UP`), so it cannot appear in
+    /// the line the caller typed and the echo cannot be mistaken for it — by CONSTRUCTION, not by
+    /// timing. The run starts in the same breath as the write, with no quiescing and no sleep, and
+    /// still waits for the peer rather than for its own echo.
+    #[test]
+    fn a_marker_the_program_composes_needs_no_wait_before_the_run() {
+        let (access, pane) = sh_access("exec sh", 80, 10);
+        let started = format!(
+            "sh -c 'while read e; do echo \"ATE $e\"; done {STANDIN_READS_TTY} & sleep 2; \
+             kill $! 2>/dev/null; printf \"PEER-%s\\n\" UP; \
+             exec sh -c \"while read l; do echo SAW \\$l; done\"'"
         );
         let mut typed = KeyStroke::text(&started);
         typed.push(KeyStroke::named("Enter"));
         let _typed = access.inject(pane, &typed).expect("start the tool");
-        // ⚠ WAIT FOR THE ECHO TO LAND, which is what makes this the case under test rather than a
-        // race. A pty echo is asynchronous: the caller's own command line reaches the grid some
-        // moments after the write, and a barrier that armed in between would see it as output
-        // produced AFTER arming — see the note on the residue in [`ReadyWhen::Prints`].
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(5)
-            && !access
-                .pane_collapsed(pane)
-                .is_some_and(|text| text.contains("TOOL-UP"))
-        {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            access
-                .pane_collapsed(pane)
-                .is_some_and(|text| text.contains("TOOL-UP")),
-            "the fixture needs the caller's command line — marker and all — ON SCREEN before the \
-             run starts, or this gate is not measuring the echo at all",
-        );
+        // ⚠ NO WAIT, deliberately — the echo of the line above is still in flight.
 
         let mut orch = Orchestrator::new(
             pane,
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
-                sentinel: Some("PEER-SAW ping".to_string()),
-                ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
+                sentinel: Some("SAW ping".to_string()),
+                ready_when: Some(ReadyWhen::Prints("PEER-UP".to_string())),
                 ready_within: Some(Duration::from_secs(10)),
             },
         );
@@ -492,17 +540,15 @@ mod tests {
                 max_duration: Some(Duration::from_secs(20)),
             },
         );
-
         let screen = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !screen.contains("ATE ping"),
+            "no turn may be spent on the stand-in that was still there: {screen:?}",
+        );
         assert_eq!(
             outcome.state,
             OutcomeState::Converged,
-            "the run waited for the tool to PRINT its banner and then drove it: {screen:?}",
-        );
-        assert!(
-            !screen.contains("ATE ping"),
-            "the barrier passed on the ECHO of the command line rather than on the program: \
-             {screen:?}",
+            "and the peer is driven once it exists: {screen:?}",
         );
     }
 

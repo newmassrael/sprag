@@ -190,6 +190,43 @@ pub trait PaneAccess {
     fn supervision(&self) -> Option<&dyn PaneSupervision> {
         None
     }
+
+    /// The pane's *echo trail* — what has recently been WRITTEN INTO it — if this host records
+    /// one. `None` by default, on the same terms as the other three sub-surfaces: only a consumer
+    /// that must tell a pane's own echo from what the program said asks for it.
+    ///
+    /// ⚠ A `None` here is *"this build cannot tell echo from output"*, and a consumer of it must
+    /// degrade in the SAFE direction rather than assume everything it sees is the program's.
+    fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
+        None
+    }
+}
+
+/// Pane *echo trail*: the text recently written INTO a pane, for telling the pane's own echo from
+/// what the program in it actually said. Reached via [`PaneAccess::input_echo`].
+///
+/// # ⚠⚠ Why this is a capability and not a caller's own bookkeeping
+///
+/// **A pseudoterminal echoes what is written to it, and on the grid that echo is
+/// indistinguishable from program output.** Two plugins already answer *"is this my own input
+/// coming back?"* by comparing against what THEY just wrote — [`Orchestrator::reaction`] and
+/// [`Pipe::shown`] — and that works because they did the writing.
+///
+/// A readiness barrier cannot do that. It waits for a program SOMEBODY ELSE started, and the text
+/// it must not be fooled by is the command line that caller typed. Without a record of it, the
+/// barrier's answer depended on whether the echo happened to reach the grid before or after the
+/// barrier started looking: **the same call converged or drove into a shell depending on
+/// scheduling.** Measured, and no amount of waiting closes it — which is why the fact had to
+/// become a capability the pane offers rather than a caller's private note.
+///
+/// [`Orchestrator::reaction`]: crate::orchestrator::Orchestrator
+/// [`Pipe::shown`]: crate::pipe::Pipe
+pub trait PaneInputEcho {
+    /// The text recently written into `id`, or `None` for a pane nobody knows.
+    ///
+    /// Bounded and lossy-UTF-8 by construction — it is compared against SCREEN TEXT, and the
+    /// screen is text.
+    fn pane_recent_input(&self, id: PaneId) -> Option<String>;
 }
 
 /// Which authority a pane's [`AgentState`] came from, and so how much it is worth.
@@ -476,6 +513,10 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self)
     }
 
+    fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
+        Some(self)
+    }
+
     fn supervision(&self) -> Option<&dyn PaneSupervision> {
         // Gated on the reader rather than answered unconditionally: a surface with no detector
         // behind it must say so, or every pane on a host that never looked reads as "not an agent".
@@ -488,6 +529,12 @@ impl PaneAccess for WorkspacePaneAccess {
 impl PaneSupervision for WorkspacePaneAccess {
     fn pane_agent_state(&self, id: PaneId) -> Option<AgentObservation> {
         (self.agent_state.as_ref()?)(id)
+    }
+}
+
+impl PaneInputEcho for WorkspacePaneAccess {
+    fn pane_recent_input(&self, id: PaneId) -> Option<String> {
+        Some(self.handle(id)?.echo_trail())
     }
 }
 
@@ -685,6 +732,45 @@ mod tests {
             .inject(PaneId(999), &KeyStroke::text("x"))
             .unwrap_err();
         assert_eq!(err, PaneError::UnknownPane(PaneId(999)));
+    }
+
+    /// ⚠⚠ **A PANE REMEMBERS WHAT WAS WRITTEN INTO IT**, which is the only thing that lets a
+    /// reader tell the pane's own echo from what the program in it said.
+    #[test]
+    fn a_pane_remembers_what_was_written_into_it() {
+        let workspace = cat_workspace(40, 8);
+        let pane = lock(&workspace).panes()[0].id();
+        let access = WorkspacePaneAccess::new(workspace);
+        assert_eq!(
+            access
+                .input_echo()
+                .expect("this host records a trail")
+                .pane_recent_input(pane)
+                .as_deref(),
+            Some(""),
+            "a pane nobody has written to has an empty trail, not a missing one",
+        );
+        let mut typed = KeyStroke::text("HELLO-TRAIL");
+        typed.push(KeyStroke::named("Enter"));
+        let _written = access.inject(pane, &typed).expect("write");
+        let trail = access
+            .input_echo()
+            .expect("this host records a trail")
+            .pane_recent_input(pane)
+            .expect("a live pane has a trail");
+        assert!(
+            trail.contains("HELLO-TRAIL"),
+            "what was typed has to be in the trail, or nothing downstream can recognise its \
+             echo: {trail:?}",
+        );
+        assert!(
+            access
+                .input_echo()
+                .expect("recorded")
+                .pane_recent_input(PaneId(9999))
+                .is_none(),
+            "and a pane nobody knows has no trail at all",
+        );
     }
 
     #[test]
