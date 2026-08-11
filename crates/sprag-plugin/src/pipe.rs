@@ -349,6 +349,72 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **A RELAY CUT OFF BY THE RUN'S CLOCK SAYS SO, RATHER THAN BLAMING THE DESTINATION** —
+    /// the branch a mutation proved no test in this workspace built.
+    ///
+    /// A step whose reaction-wait is ended by the deadline has learned NOTHING about where it
+    /// delivered: the destination was given no chance to answer. Reporting that as
+    /// `THE DESTINATION SHOWED NOTHING` would put a real finding — the one this plugin exists to
+    /// report — on a pane that was never asked. The two are told apart, and only the clock's
+    /// answer is honest about who ran out.
+    #[test]
+    fn a_relay_the_clock_cut_short_does_not_blame_the_destination() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let spawn = |script: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "peer".to_string(), 20, 4)
+                .expect("spawn")
+        };
+        let src = spawn("cat");
+        // Deaf, so the wait can only end by a bound — and the run's is the shorter of the two.
+        let dst = spawn("stty -echo; cat >/dev/null");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let mut seed = KeyStroke::text("relayme");
+        seed.push(KeyStroke::named("Enter"));
+        let _seeded = access.inject(src, &seed).expect("seed src");
+        assert!(wait_until(&access, src, "relayme"), "source never echoed");
+
+        let journal = Arc::new(Mutex::new(sprag_plugin_progress()));
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            // Shorter than REACTION_TIMEOUT, so the run's clock is provably what ends the wait.
+            max_duration: Some(Duration::from_millis(150)),
+        })
+        .reporting_to(Arc::clone(&journal))
+        .run(
+            &mut Pipe::new(src, dst),
+            &access,
+            &RunContext::uncancellable(),
+        );
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Duration));
+        let notes = journal
+            .lock()
+            .unwrap()
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            notes.contains("the run ended"),
+            "the step must say the RUN ended, not that the destination was silent — it was never \
+             given the time to speak: {notes}",
+        );
+        assert!(
+            !notes.contains("SHOWED NOTHING") && !notes.contains("ONLY THOSE BYTES"),
+            "and it must not report a finding about a destination it cut off: {notes}",
+        );
+    }
+
     /// The journal cell a `Driver` reports into, spelled once for the test above.
     fn sprag_plugin_progress() -> crate::driver::Progress {
         crate::driver::Progress::default()

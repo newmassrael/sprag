@@ -729,6 +729,7 @@ impl PluginGrammar {
         ArgGrammar::open("pane", "int"),
         ArgGrammar::open("stimulus", "string"),
         ArgGrammar::open("sentinel", "string").optional(),
+        ArgGrammar::open("ready_when", "string").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);

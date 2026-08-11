@@ -4267,6 +4267,75 @@ fn a_tool_that_is_not_there_says_which_kind_of_absence_it_is() {
     );
 }
 
+/// ⚠⚠ **AN AGENT CAN SAY WHAT READY LOOKS LIKE, AND NO TURN IS SPENT BEFORE IT** — the loop's
+/// answer to the one thing every caller of it does first: open a pane and start something in it.
+///
+/// A pane is born a SHELL. The program an agent means to drive starts a moment later, and a run
+/// that begins in that window feeds the shell — which runs the stimulus as a command. This drives
+/// the whole thing the way an agent would: open a pane, type the program's start line, and
+/// orchestrate with `ready_when` naming what the program prints when it is up.
+///
+/// ⚠ THE MARKER IS ONE THE PROGRAM COMPOSES (`READY-%s` formats to `READY-OK`), never one that
+/// appears in the line that was typed. A pane echoes the command that started the program, so a
+/// marker visible in that command is on screen BEFORE the program exists and the wait ends at once
+/// against nothing — the hazard is on `ready_when`'s own doc, and this gate would not notice it if
+/// it fell into it.
+#[test]
+fn an_agent_names_what_ready_looks_like_and_the_loop_waits_for_it() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    server.call_tool("open_pane", json!({ "name": "slow" }));
+    // ⚠ THE STAND-IN MUST EAT WHAT IT IS GIVEN, and for longer than this run can take unaided.
+    // A pane that merely SLEEPS does not discriminate: a stimulus injected early sits in the pty
+    // buffer and the peer reads it when it starts, so the run converges either way — measured, on
+    // the first version of this gate, by mutating `ready_when` to a no-op and watching it pass.
+    // Three seconds is twice what three turns floored at the observe timeout can span.
+    server.call_tool(
+        "write_pane",
+        json!({
+            "pane": "slow",
+            "text": "while read early; do echo \"SHELL-ATE $early\"; done & sleep 3; \
+                     kill $! 2>/dev/null; printf 'READY-%s\\n' OK; exec sh -c 'while read l; do \
+                     echo \"PEER-SAW $l\"; done'",
+        }),
+    );
+    server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "slow",
+            "stimulus": "ping",
+            "ready_when": "READY-OK",
+            "sentinel": "PEER-SAW ping",
+            "max_iterations": 3,
+        }),
+    );
+    let ended = server.wait_for_tool("list_runs", json!({}), "converged");
+    assert!(
+        ended.contains("the sentinel appeared"),
+        "the run waited for the peer to come up and then drove it to its sentinel: {ended}",
+    );
+    // ⚠ AND THE STAND-IN WAS NEVER FED. It names everything it eats, so a single `SHELL-ATE` is a
+    // turn the run spent before the peer existed.
+    let seen = server.call_tool("read_pane", json!({ "pane": "slow" }));
+    assert!(
+        seen.contains("PEER-SAW ping"),
+        "the peer itself must have seen the stimulus: {seen}",
+    );
+    // ⚠ `SHELL-ATE ping`, not bare `SHELL-ATE` — the pane echoes the command line that STARTED the
+    // stand-in, and that line contains the bare marker. Asserting on it would be this gate falling
+    // into the hazard `ready_when`'s own doc warns about, and it did on the first attempt.
+    assert!(
+        !seen.contains("SHELL-ATE ping"),
+        "nothing may have been typed while the pane was still the stand-in shell: {seen}",
+    );
+    assert!(
+        ended.contains("after 1 iterations"),
+        "and ONE turn was enough, because none was spent on the shell that was there first: \
+         {ended}",
+    );
+}
+
 /// ⚠⚠ **AN ARGUMENT THIS SURFACE DOES NOT TAKE IS REFUSED, NOT SWALLOWED** — the other half of a
 /// typo, and the half every tool here PUBLISHED and none of them enforced.
 ///

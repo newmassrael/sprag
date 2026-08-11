@@ -1588,6 +1588,13 @@ fn argument_help(name: &str) -> &'static str {
             "Stop as soon as this appears on the pane (orchestrator). Without it the \
              run goes to its iteration ceiling."
         }
+        "ready_when" => {
+            "WAIT for this to appear on the pane before typing anything (orchestrator). A pane you \
+             just opened is running a SHELL, and the program you mean to drive starts a moment \
+             later — a run that begins in that window feeds the shell, which runs your stimulus as \
+             a command. Name something the program prints when it is up (its prompt, its banner) \
+             and no turn is spent before it. If it never appears the run stops and says so."
+        }
         "prompt" => "What to say to the agent in the pane (agent).",
         "eof" => "Send end-of-input after the prompt (agent), for a command that reads until EOF.",
         "timeout_ms" => "How long one turn may take before the run gives up on it.",

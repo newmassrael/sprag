@@ -101,6 +101,29 @@ pub enum PaneError {
     /// Spawning a pane failed: no [`PaneLifecycle`] support, an empty argv, or
     /// the pseudoterminal/child could not start (the cause message).
     Spawn(String),
+    /// The pane never showed what a run was told to wait for before driving it
+    /// (the text that never appeared).
+    NeverReady(String),
+}
+
+impl std::fmt::Display for PaneError {
+    /// ⚠⚠ THE SENTENCE AN AGENT READS. A run's failure is published as this text, and it was
+    /// `format!("{e:?}")` — a Rust variant name and its debug payload, `Write("Broken pipe (os
+    /// error 32)")`, reaching the one reader who cannot look up what a variant means. That is the
+    /// leak R283 measured on the CLI, standing on the loop's own answer.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownPane(id) => write!(f, "there is no pane {}", id.0),
+            Self::Encode(key) => write!(f, "the key {key:?} has no bytes to send to a terminal"),
+            Self::Write(why) => write!(f, "writing to the pane failed: {why}"),
+            Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),
+            Self::NeverReady(marker) => write!(
+                f,
+                "the pane never showed {marker:?}, which this run was told to wait for before \
+                 driving it, so nothing was injected"
+            ),
+        }
+    }
 }
 
 /// The plugin extension API: a plugin's view of the core's panes.

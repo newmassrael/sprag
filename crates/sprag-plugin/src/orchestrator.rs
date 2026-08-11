@@ -29,6 +29,29 @@ pub struct OrchestrationSpec {
     /// Convergence condition: succeed once the pane's collapsed text contains
     /// this. `None` runs until a guardrail.
     pub sentinel: Option<String>,
+    /// What the pane must SHOW before the first stimulus is injected. `None`
+    /// starts driving immediately, which is right for a pane already running.
+    ///
+    /// # ⚠⚠ Why a loop needs this at all
+    ///
+    /// A pane is not ready when it is OPEN. It is born running a shell with the
+    /// pty's default echo on, and the program a caller means to drive — `claude`,
+    /// a REPL, a test runner — starts some time after that. A run that begins in
+    /// that window injects into whatever is there: the shell EXECUTES the stimulus
+    /// as a command, or the kernel echoes it and nothing reads it. Either way the
+    /// turns are spent, the guardrails count them, and the peer never saw a word.
+    ///
+    /// The remedy cannot be a sleep — how long a program takes to come up is not
+    /// a number a caller knows. It is a thing the pane SAYS: a prompt, a banner,
+    /// a marker the caller printed on purpose. So the caller names it and the run
+    /// waits for it, bounded by the run's own deadline like every other wait here.
+    ///
+    /// ⚠ **PICK SOMETHING THE PROGRAM SAYS, NOT SOMETHING YOU TYPED.** This is
+    /// matched against the pane's text, and a pane echoes the command line that
+    /// STARTED the program — so a marker that appears in that command line is
+    /// already on screen before the program exists, and the wait ends at once
+    /// against nothing. A prompt or a banner is safe; the word you typed is not.
+    pub ready_when: Option<String>,
 }
 
 /// A fixed-stimulus drive plugin over one pane.
@@ -38,6 +61,9 @@ pub struct Orchestrator {
     /// Per-row damage generations captured before the last stimulus, so the
     /// observe-wait keys on *this* step's echo.
     baseline_generations: Vec<u64>,
+    /// Whether [`OrchestrationSpec::ready_when`] has been seen. Latched, so the
+    /// wait happens once and every later step drives straight away.
+    ready: bool,
 }
 
 impl Orchestrator {
@@ -45,10 +71,32 @@ impl Orchestrator {
     #[must_use]
     pub fn new(pane: PaneId, spec: OrchestrationSpec) -> Self {
         Self {
+            ready: spec.ready_when.is_none(),
             pane,
             spec,
             baseline_generations: Vec::new(),
         }
+    }
+
+    /// Wait for the pane to show [`OrchestrationSpec::ready_when`], or answer
+    /// [`Waited::Ready`] at once when no readiness was named.
+    ///
+    /// ⚠ The local bound is [`DEFAULT_REPLY_TIMEOUT`] — the same number this crate
+    /// already means by *"long enough for a peer to do something"* — rather than a
+    /// new constant nobody chose. The bound that matters is the RUN's, which
+    /// `poll_until` consults: a readiness that never arrives ends the run by its
+    /// own clock, not by a number invented here.
+    ///
+    /// [`DEFAULT_REPLY_TIMEOUT`]: crate::run::DEFAULT_REPLY_TIMEOUT
+    fn await_ready(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
+        let Some(marker) = self.spec.ready_when.as_deref() else {
+            return Waited::Ready;
+        };
+        poll_until(run, crate::run::DEFAULT_REPLY_TIMEOUT, || {
+            panes
+                .pane_collapsed(self.pane)
+                .is_some_and(|text| text.contains(marker))
+        })
     }
 
     /// Wait (bounded, cancellable) for the PEER to answer — a row whose damage
@@ -119,6 +167,29 @@ enum Reaction {
 
 impl Plugin for Orchestrator {
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
+        // ⚠⚠ NOT ONE BYTE UNTIL THE PANE IS READY. Injecting into a pane whose program has not
+        // started is spending a turn on the shell that is still there — see
+        // [`OrchestrationSpec::ready_when`]. Latched, so this costs nothing after the first step.
+        if !self.ready {
+            match self.await_ready(panes, run) {
+                Waited::Ready => self.ready = true,
+                // The run ended waiting — cancelled, or out of time. Nothing was injected, so
+                // nothing is charged; the Driver's loop top says which of the two it was.
+                Waited::Stopped => {
+                    return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
+                        .noting("the run ended while waiting for the pane to be ready"));
+                }
+                // The pane never showed it. Driving on would inject into whatever IS there and
+                // report turns against a peer that was never listening, so the run stops and says
+                // exactly what it was waiting for.
+                Waited::TimedOut => {
+                    return Err(PaneError::NeverReady(
+                        self.spec.ready_when.clone().unwrap_or_default(),
+                    ));
+                }
+            }
+        }
+
         // Baseline before acting, so observe() waits for this step's echo.
         self.baseline_generations = panes
             .pane_rows(self.pane)
@@ -204,26 +275,6 @@ mod tests {
     /// discards. The marker is the load-bearing part — see [`await_ready`].
     const DEAF: &str = "stty -echo; printf DEAF-READY; exec cat >/dev/null";
 
-    /// Block until the deaf pane has finished starting up.
-    ///
-    /// ⚠⚠ WITHOUT THIS THE PANE IS NOT YET DEAF WHEN THE RUN BEGINS. A pane is spawned with the
-    /// pty's default echo ON, and the shell needs a moment to reach its `stty`; a run that starts
-    /// driving in that window has its FIRST stimulus echoed back and reads a pane that cannot hear
-    /// it as one that reacted. That is not a slow machine to be waited out — it is the run racing
-    /// the pane's own startup, and the marker is how the race is settled rather than survived.
-    fn await_ready(access: &WorkspacePaneAccess, pane: PaneId) {
-        let waited = poll_until(
-            &RunContext::uncancellable(),
-            Duration::from_secs(10),
-            || {
-                access
-                    .pane_collapsed(pane)
-                    .is_some_and(|text| text.contains("DEAF-READY"))
-            },
-        );
-        assert_eq!(waited, Waited::Ready, "the deaf pane never came up");
-    }
-
     fn run(
         access: &WorkspacePaneAccess,
         plugin: &mut Orchestrator,
@@ -240,6 +291,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: None,
+                ready_when: None,
             },
         );
         let outcome = run(
@@ -264,6 +316,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: Some("ping".to_string()),
+                ready_when: None,
             },
         );
         let outcome = run(
@@ -293,6 +346,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "abcdef".to_string(),
                 sentinel: Some("abcdef".to_string()),
+                ready_when: None,
             },
         );
         let outcome = run(
@@ -315,6 +369,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(), // "ping" + Enter = 5 bytes/step
                 sentinel: None,
+                ready_when: None,
             },
         );
         let outcome = run(
@@ -331,6 +386,106 @@ mod tests {
             matches!(outcome.cost, Some(Cost::Bytes(n)) if n >= 12),
             "cost: {:?}",
             outcome.cost
+        );
+    }
+
+    /// ⚠⚠ **A PANE IS NOT READY WHEN IT IS OPEN**, and a run told what ready looks like spends no
+    /// turn before it.
+    ///
+    /// The pane here is born a shell and becomes the peer a second later — the ordinary shape of
+    /// *open a pane, start `claude` in it, drive it*. A run that starts immediately injects into
+    /// the SHELL, which executes the stimulus as a command; by the time the peer exists its turns
+    /// are gone and the guardrails have counted them.
+    ///
+    /// Both halves, because either alone is weak: the run must CONVERGE (so the wait ended and the
+    /// driving worked), and the STAND-IN SHELL must never have been fed — it says so itself.
+    ///
+    /// ⚠ THE FIXTURE HAD TO BE REBUILT TO MEASURE ANYTHING. Its first form let the pane merely
+    /// SLEEP before becoming the peer, and a mutation that ignored `ready_when` entirely still
+    /// passed it: nothing consumed the early stimulus, so it sat in the pty buffer and the peer
+    /// read it when it started. A pane that is not ready has to be one that EATS what it is given,
+    /// which is what a real shell does with a stimulus meant for something else.
+    #[test]
+    fn a_run_told_what_ready_looks_like_injects_nothing_before_it() {
+        // A stand-in shell that consumes and NAMES anything typed at it, for two seconds — longer
+        // than this run can take unaided (two turns, each floored by the 500ms observe). Then it
+        // is killed, the peer announces itself and `exec`s, so what answers afterwards is
+        // unambiguously the peer.
+        let (access, pane) = sh_access(
+            "while read early; do echo \"SHELL-ATE $early\"; done & sleep 2; kill $! 2>/dev/null; \
+             printf 'PEER-UP\\n'; exec sh -c 'while read l; do echo \"PEER-SAW $l\"; done'",
+            40,
+            8,
+        );
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: Some("PEER-SAW ping".to_string()),
+                ready_when: Some("PEER-UP".to_string()),
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 2,
+                max_cost: None,
+                max_duration: None,
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the run waited for the peer to come up and then drove it",
+        );
+        let screen = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !screen.contains("SHELL-ATE"),
+            "NOTHING may have been injected while the pane was still the stand-in shell — every \
+             `SHELL-ATE` is a turn the run spent on a peer that did not exist yet: {screen:?}",
+        );
+    }
+
+    /// ⚠⚠ **A READINESS THAT NEVER COMES STOPS THE RUN AND SAYS WHAT IT WAITED FOR** — the other
+    /// half, and the one that decides whether the argument is a bound or a hope.
+    ///
+    /// Driving on would inject into whatever IS there and report turns against a peer that was
+    /// never listening. The run fails instead, naming the text, in a sentence rather than a Rust
+    /// variant.
+    #[test]
+    fn a_readiness_that_never_comes_ends_the_run_naming_what_it_waited_for() {
+        let (access, pane) = sh_access("exec cat", 20, 4);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: None,
+                ready_when: Some("NEVER-PRINTED".to_string()),
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(300)),
+        })
+        .run(&mut orch, &access, &RunContext::uncancellable());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Duration),
+            "the run's own clock is what bounds waiting to be ready — not a number the plugin \
+             invented, and not the turn ceiling",
+        );
+        assert_eq!(
+            outcome.iterations, 1,
+            "and it spent ONE step doing it rather than burning the turn budget against a pane \
+             that was never ready",
+        );
+        assert_eq!(
+            access.pane_collapsed(pane).unwrap_or_default().trim(),
+            "",
+            "not one byte was injected into a pane that never became ready",
         );
     }
 
@@ -359,6 +514,7 @@ mod tests {
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: Some("PEER-REPLIED".to_string()),
+                ready_when: None,
             },
         );
         let outcome = run(
@@ -406,12 +562,14 @@ mod tests {
         // `stty -echo` stops the kernel echoing the injection; the reader discards what it reads.
         // Once ready, nothing this run does can reach the screen.
         let (access, pane) = sh_access(DEAF, 20, 4);
-        await_ready(&access, pane);
+        // ⚠ The readiness barrier is the PRODUCT's now (`ready_when`, below) rather than a helper
+        // this test kept to itself — so the gate drives the same wait a caller gets.
         let mut orch = Orchestrator::new(
             pane,
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: Some("A SENTINEL THIS PANE NEVER PRINTS".to_string()),
+                ready_when: Some("DEAF-READY".to_string()),
             },
         );
         let cell = crate::driver::ProgressCell::default();

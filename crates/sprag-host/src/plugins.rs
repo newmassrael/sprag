@@ -357,8 +357,13 @@ impl PluginsExternal {
                 self.require_pane(pane)?;
                 let stimulus = require_str(map, "stimulus")?.to_string();
                 let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
+                let ready_when = opt_str(map, "ready_when")?.map(str::to_string);
                 let label = format!("orchestrator pane={}", pane.0);
-                let spec = OrchestrationSpec { stimulus, sentinel };
+                let spec = OrchestrationSpec {
+                    stimulus,
+                    sentinel,
+                    ready_when,
+                };
                 Ok((
                     PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
                     label,
@@ -953,7 +958,9 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
         "iterations": outcome.iterations,
         "cost": cost,
         "unit": unit,
-        "failure": outcome.failure.as_ref().map(|e| format!("{e:?}")),
+        // ⚠ THE SENTENCE, not the variant. This was `format!("{e:?}")` — `Write("Broken pipe (os
+        // error 32)")` reaching an agent, which is R283's leak on the loop's own answer.
+        "failure": outcome.failure.as_ref().map(ToString::to_string),
     });
     // WHICH CEILING, present only when there was one — so the key's presence is itself the claim,
     // the rule `run_to_json` follows for `opened_by`. `exhausted` with no ceiling beside it told a
@@ -1608,9 +1615,9 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            6,
-            "one probe per open string argument of every form: an orchestrator's stimulus and \
-             sentinel, an agent's prompt, and a dialogue's seed and two labels",
+            7,
+            "one probe per open string argument of every form: an orchestrator's stimulus, \
+             sentinel and ready_when, an agent's prompt, and a dialogue's seed and two labels",
         );
     }
 
@@ -1627,9 +1634,10 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            44,
-            "one probe per declared argument of every FORM, nesting included: nine for an \
-             orchestrator, eight for a pipe, ten for an agent, sixteen for a dialogue, and one to \
+            45,
+            "one probe per declared argument of every FORM, nesting included: TEN for an \
+             orchestrator (`ready_when` is the newest), eight for a pipe, ten for an agent, \
+             sixteen for a dialogue, and one to \
              cancel — one more per run form than before the DURATION ceiling, which is what makes \
              `max_seconds` a bound this daemon reads rather than a word it publishes",
         );
