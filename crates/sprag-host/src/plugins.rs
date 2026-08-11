@@ -1651,10 +1651,11 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            14,
+            17,
             "one call per published word: the ONE plugin word that selects each of the four forms, \
              the two reply formats on each of a dialogue's two endpoints, and the readiness \
-             barrier's two `match` words on each of the three plugins that inject",
+             barrier's THREE `match` words on each of the three plugins that inject — the third \
+             being `runs`, which asks the pane's terminal rather than its screen",
         );
     }
 

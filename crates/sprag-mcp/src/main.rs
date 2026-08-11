@@ -1686,16 +1686,21 @@ fn argument_help(name: &str) -> &'static str {
              it wrong means the shell's `command not found` comes back to you AS THE MODEL'S REPLY."
         }
         "match" => {
-            "WHICH QUESTION your marker is asking, and there is no safe default. `prints` means \
-             the pane must PRINT the marker after the run starts — use it when you just started \
-             the program, because a pane echoes the command line you typed and a marker found in \
-             that echo would let the run type into the shell. `shows` means the marker is on the \
-             screen already — use it for a program that is ALREADY running and sitting at its \
-             prompt, which will print nothing more until you feed it."
+            "WHICH QUESTION your marker is asking, and there is no safe default. `runs` is the one \
+             to PREFER: the marker is a PROGRAM NAME, and the pane is ready when that program owns \
+             its terminal — no screen reading, so nothing you type can fake it, and it is the only \
+             one that works for a program which prints nothing until you speak to it. `prints` \
+             means the pane must PRINT the marker after the run starts — use it when you just \
+             started the program, because a pane echoes the command line you typed and a marker \
+             found in that echo would let the run type into the shell. `shows` means the marker is \
+             on the screen already — use it for a program that is ALREADY running and sitting at \
+             its prompt, which will print nothing more until you feed it."
         }
         "marker" => {
-            "The text that means ready — the program's own prompt or banner. Pick something the \
-             PROGRAM prints, not a word from the command line you typed to start it."
+            "What means ready, read as whatever `match` says it is. Under `runs` it is the \
+             PROGRAM's name (`claude`, `python`) — the name it is invoked by is fine. Under \
+             `prints` or `shows` it is TEXT the pane carries: pick the program's own prompt or \
+             banner, never a word from the command line you typed to start it."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
@@ -1711,8 +1716,21 @@ fn argument_help(name: &str) -> &'static str {
         "endpoint_b" => "The command line of the second speaker, as a list (dialogue).",
         "label_a" => "What to call the first speaker in the transcript (dialogue).",
         "label_b" => "What to call the second speaker in the transcript (dialogue).",
-        "format_a" => "How to read the first speaker's reply (dialogue).",
-        "format_b" => "How to read the second speaker's reply (dialogue).",
+        // ⚠ BOTH NAME THEIR WORDS. These published a closed set and described none of it — an agent
+        // reading the tool was told the argument existed and not what it could say, so the token
+        // accounting below was unreachable in practice. Found by the gate that requires every
+        // published word to appear in its own description.
+        "format_a" => {
+            "How to read the first speaker's reply (dialogue). `text` takes the whole rendered \
+             pane as the reply and counts no tokens. `claude_json` reads a \
+             `claude -p --output-format json` envelope from the pane's RAW output — the reply is \
+             its `result` and the cost is the real billed tokens; it falls back to text if the \
+             envelope does not parse, so it never breaks a run."
+        }
+        "format_b" => {
+            "How to read the second speaker's reply (dialogue) — same two words as `format_a`: \
+             `text` for a print-mode tool, `claude_json` for a JSON envelope with real token costs."
+        }
         "cols" => "How wide the panes a dialogue spawns are.",
         "rows" => "How tall the panes a dialogue spawns are.",
         "max_iterations" => {
@@ -7387,6 +7405,29 @@ mod tests {
                  FLATTENED, because a guardrail means what it means on its own and agents already \
                  call this tool that way",
             );
+        }
+        // ⚠⚠ AND EVERY WORD OF A CLOSED SET REACHES THE PROSE, not just the `enum`. An agent picks
+        // by reading the description; a word published in the machine-readable list and missing
+        // from the sentence beside it is a choice the agent will not know it has. `runs` — the one
+        // readiness kind that does not read the screen — was added to `match` and the `match`
+        // description still described two, which is the R335 hand-written-list shape wearing prose.
+        //
+        // Derived from the GRAMMAR's own word arrays, so this covers every closed set the wire
+        // grows, not the one that prompted it.
+        for form in run_forms() {
+            for top in form.args {
+                for arg in std::iter::once(top).chain(top.fields.iter()) {
+                    let said = argument_help(arg.name);
+                    for word in arg.words.unwrap_or_default() {
+                        assert!(
+                            said.contains(*word),
+                            "{:?} publishes {word:?} as a legal value and its description never \
+                             mentions it, so an agent reading the tool cannot choose it: {said:?}",
+                            arg.name,
+                        );
+                    }
+                }
+            }
         }
         assert!(
             properties["ready_when"]["properties"]

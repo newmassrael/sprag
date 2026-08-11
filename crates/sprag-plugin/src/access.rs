@@ -15,9 +15,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
-    Attention, CommandBuilder, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput, Workspace,
+    Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput,
+    Workspace, foreground_leader_of,
 };
 use sprag_vt::Screen;
+
+use crate::readiness::ReadyWhen;
 
 /// One screen row: its damage `generation` paired with its (trailing-trimmed)
 /// text, read in a single locked snapshot so the two never tear.
@@ -101,9 +104,26 @@ pub enum PaneError {
     /// Spawning a pane failed: no [`PaneLifecycle`] support, an empty argv, or
     /// the pseudoterminal/child could not start (the cause message).
     Spawn(String),
-    /// The pane never showed what a run was told to wait for before driving it
-    /// (the text that never appeared).
-    NeverReady(String),
+    /// A run's readiness barrier gave up: the pane never answered the question the caller asked,
+    /// so nothing was injected.
+    NeverReady {
+        /// The whole question, not just its marker.
+        ///
+        /// ⚠ The three [`ReadyWhen`] kinds fail for three DIFFERENT reasons — a marker that was
+        /// never printed, a screen that never carried it, a program that never took the terminal —
+        /// and a caller handed only the marker back cannot tell which of the three they got wrong.
+        wanted: ReadyWhen,
+        /// What owned the pane's terminal instead, when this host can see the process table.
+        ///
+        /// The diagnostic half, and the reason a wrong guess costs one run rather than an
+        /// afternoon: *"you waited for `claude` and this pane's terminal belonged to `sh`"* is
+        /// the whole correction, in the sentence that reports the failure.
+        ///
+        /// ⚠ `None` means **this host has no process view**, and nothing else — it is answered for
+        /// all three kinds, because *what was actually running* diagnoses a marker that never
+        /// printed just as well as a name that never matched.
+        instead: Option<String>,
+    },
 }
 
 impl std::fmt::Display for PaneError {
@@ -117,11 +137,18 @@ impl std::fmt::Display for PaneError {
             Self::Encode(key) => write!(f, "the key {key:?} has no bytes to send to a terminal"),
             Self::Write(why) => write!(f, "writing to the pane failed: {why}"),
             Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),
-            Self::NeverReady(marker) => write!(
-                f,
-                "the pane never showed {marker:?}, which this run was told to wait for before \
-                 driving it, so nothing was injected"
-            ),
+            Self::NeverReady { wanted, instead } => {
+                write!(
+                    f,
+                    "the pane never {}, which this run was told to wait for before driving it, so \
+                     nothing was injected",
+                    wanted.describe(),
+                )?;
+                match instead {
+                    Some(leader) => write!(f, "; its terminal belonged to {leader:?} instead"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
@@ -200,6 +227,52 @@ pub trait PaneAccess {
     fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
         None
     }
+
+    /// The pane's *foreground job* — WHICH PROGRAM owns its terminal — if this host can see the
+    /// process table. `None` by default, on the same terms as the other four sub-surfaces.
+    ///
+    /// ⚠ A `None` here is *"this build cannot say what a pane is running"*, and a consumer of it
+    /// must fail in the SAFE direction: [`ReadyWhen::Runs`] treats it as not-ready rather than as
+    /// ready, because the alternative is typing at whatever is there.
+    fn foreground_job(&self) -> Option<&dyn PaneForegroundJob> {
+        None
+    }
+}
+
+/// Pane *foreground job*: which program owns a pane's terminal right now. Reached via
+/// [`PaneAccess::foreground_job`].
+///
+/// # ⚠⚠ Why a readiness question had to leave the screen entirely
+///
+/// Three rounds of this crate's history are one predicate being narrowed: *has the program in this
+/// pane started yet?*, asked of the SCREEN. The screen cannot answer it, and each fix moved the
+/// failure rather than removing it.
+///
+/// * A whole-screen match said yes to **the echo of the command line that started the program** —
+///   text that is on screen before the program exists.
+/// * A damage-generation baseline made that echo count only if it landed after the barrier armed,
+///   and a pty's echo is ASYNCHRONOUS: the same call converged or fed the shell depending on how
+///   loaded the machine was.
+/// * Refusing any marker found in the pane's own echo trail made the answer deterministic — and
+///   left a caller with **no way at all to wait for a program that prints nothing on startup**,
+///   which is most REPLs, most relays, and any tool that speaks only when spoken to.
+///
+/// The last one is not a gap in the fix; it is the shape of the question. **A silent program has
+/// no marker, so no predicate over its output can ever fire.** Meanwhile the operating system has
+/// known the answer the whole time: a shell hands its terminal to the job it runs
+/// (`tcsetpgrp`) and takes it back when that job ends. That fact is not text, cannot be echoed,
+/// cannot be printed by a program pretending to be another, and does not depend on when a byte
+/// reached a grid.
+///
+/// So this asks it. [`ReadyWhen::Runs`] is the only readiness kind that never reads the screen, and
+/// it is the one to prefer.
+pub trait PaneForegroundJob {
+    /// The LEADER of `id`'s foreground job, or `None` for a pane nobody knows, a pane whose child
+    /// has exited, or a terminal no job owns.
+    ///
+    /// The leader rather than every member, because this is polled: see
+    /// [`foreground_leader_of`] for what that costs and what it therefore cannot answer.
+    fn pane_foreground_leader(&self, id: PaneId) -> Option<JobProcess>;
 }
 
 /// Pane *echo trail*: the text recently written INTO a pane, for telling the pane's own echo from
@@ -517,6 +590,10 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self)
     }
 
+    fn foreground_job(&self) -> Option<&dyn PaneForegroundJob> {
+        Some(self)
+    }
+
     fn supervision(&self) -> Option<&dyn PaneSupervision> {
         // Gated on the reader rather than answered unconditionally: a surface with no detector
         // behind it must say so, or every pane on a host that never looked reads as "not an agent".
@@ -535,6 +612,20 @@ impl PaneSupervision for WorkspacePaneAccess {
 impl PaneInputEcho for WorkspacePaneAccess {
     fn pane_recent_input(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.echo_trail())
+    }
+}
+
+impl PaneForegroundJob for WorkspacePaneAccess {
+    /// ⚠ THE PID IS TAKEN UNDER THE LOCK AND THE SYSCALLS RUN OUTSIDE IT — the `let` binding ends
+    /// the guard's temporary before the read. R291 measured the other order on the settle sweep: a
+    /// concurrent reader's median went from +0.8 us to +687 us and its p99 to +41.8 ms, because a
+    /// holder doing I/O under the lock every client wake wants is a convoy. This is polled every
+    /// [`POLL_INTERVAL`](crate::run::POLL_INTERVAL), which is exactly that shape.
+    fn pane_foreground_leader(&self, id: PaneId) -> Option<JobProcess> {
+        let pid = lock(&self.workspace)
+            .pane(id)
+            .and_then(|pane| pane.pty().pid())?;
+        foreground_leader_of(pid)
     }
 }
 

@@ -128,6 +128,48 @@ pub enum ReadyWhen {
     /// more until it is fed. This is the older behaviour, and it is the one that can be satisfied
     /// by an echo, so it is opt-in rather than the default.
     Shows(String),
+    /// Ready once the program named here OWNS THE PANE'S TERMINAL. **Prefer this one.**
+    ///
+    /// # ⚠⚠ The only kind that does not read the screen, and the only one a silent program has
+    ///
+    /// The two kinds above are predicates over TEXT, and a program that prints nothing on startup
+    /// emits no text to predicate over. There is no marker to name for `cat`, for a REPL launched
+    /// `--quiet`, for a relay that speaks only when spoken to — so for that whole class the barrier
+    /// had no usable answer at all, and a caller's realistic options were to guess a sleep or to
+    /// drive a pane that might still be a shell.
+    ///
+    /// This asks the operating system instead. A shell hands its terminal to the job it runs and
+    /// takes it back when that job ends; the pane's terminal therefore NAMES what is running in it,
+    /// with no screen involved. That fact:
+    ///
+    /// * **cannot be echoed** — it is not text, so no amount of typing the word can satisfy it, and
+    ///   the whole echo hazard the two kinds above spend their documentation on does not arise;
+    /// * **does not depend on scheduling** — it is a state, not an event that may or may not have
+    ///   landed on a grid before the barrier armed;
+    /// * **works for a program that never prints**, which is the case that has no other answer;
+    /// * **is the same value either way a pane was made** — a pane opened running the program
+    ///   (`open_pane`'s `cmd`) matches from birth, and a shell typed into matches when the program
+    ///   starts. One spelling, both shapes.
+    ///
+    /// # What the name is matched against
+    ///
+    /// The job LEADER's kernel name, or the basename of its `argv[0]` — either, because the two
+    /// honestly disagree and a caller should not have to know which. `exec awk …` on a Debian box
+    /// is a leader whose kernel name is `mawk` and whose `argv[0]` is `awk`; a program that rewrote
+    /// its own argv still has its kernel name; a name longer than 15 bytes is truncated in the
+    /// kernel's copy and intact in `argv[0]`.
+    ///
+    /// Matched EXACTLY, never as a prefix: a prefix match is a silent merge, and `claude` matching
+    /// `claude-relay` is a run driving the wrong program while reporting success.
+    ///
+    /// ⚠ A leader is not every process of the job — `cargo build | less` is led by `cargo`. See
+    /// [`foreground_leader_of`](sprag_terminal::foreground_leader_of).
+    ///
+    /// ⚠ On a host that cannot see the process table
+    /// ([`PaneAccess::foreground_job`] is `None`) this
+    /// is never satisfied, and the run ends [`NeverReady`](crate::access::PaneError::NeverReady)
+    /// rather than typing into whatever is there.
+    Runs(String),
 }
 
 impl ReadyWhen {
@@ -135,7 +177,7 @@ impl ReadyWhen {
     ///
     /// Published to every mouth from here rather than retyped as literals, so a third kind reaches
     /// the wire in the compile that adds it.
-    pub const WIRE_WORDS: &'static [&'static str] = &["prints", "shows"];
+    pub const WIRE_WORDS: &'static [&'static str] = &["prints", "shows", "runs"];
 
     /// The kind named by `word`, or `None` for a word outside the closed set.
     ///
@@ -147,6 +189,7 @@ impl ReadyWhen {
         match word {
             "prints" => Some(Self::Prints(marker)),
             "shows" => Some(Self::Shows(marker)),
+            "runs" => Some(Self::Runs(marker)),
             _ => None,
         }
     }
@@ -157,14 +200,31 @@ impl ReadyWhen {
         match self {
             Self::Prints(_) => "prints",
             Self::Shows(_) => "shows",
+            Self::Runs(_) => "runs",
         }
     }
 
-    /// The text the pane must carry.
+    /// The text the pane must carry — or, for [`Runs`](Self::Runs), the program it must be running.
     #[must_use]
     pub fn marker(&self) -> &str {
         match self {
-            Self::Prints(marker) | Self::Shows(marker) => marker,
+            Self::Prints(marker) | Self::Shows(marker) | Self::Runs(marker) => marker,
+        }
+    }
+
+    /// This question as the PAST-TENSE clause of a sentence about a pane that never answered it —
+    /// `printed "UP"`, `showed ">>> "`, `ran "claude"`.
+    ///
+    /// ⚠ The reason [`PaneError::NeverReady`] carries the
+    /// whole kind rather than the marker alone. Its sentence is what an agent reads when a run
+    /// fails, and *"the pane never showed `claude`"* is false of two of the three kinds — one waits
+    /// for text to be PRINTED and one for a program to be RUNNING, neither of which is showing.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Prints(marker) => format!("printed {marker:?}"),
+            Self::Shows(marker) => format!("showed {marker:?}"),
+            Self::Runs(name) => format!("ran {name:?}"),
         }
     }
 }
@@ -205,14 +265,17 @@ impl Readiness {
         }
     }
 
-    /// Whether `pane` satisfies this barrier right now.
-    fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
-        match &self.when {
-            None => true,
-            Some(ReadyWhen::Shows(marker)) => panes
+    /// Whether `pane` satisfies `when` right now.
+    fn satisfied(&self, when: &ReadyWhen, panes: &dyn PaneAccess, pane: PaneId) -> bool {
+        match when {
+            ReadyWhen::Runs(name) => panes
+                .foreground_job()
+                .and_then(|jobs| jobs.pane_foreground_leader(pane))
+                .is_some_and(|leader| leader_is_named(&leader, name)),
+            ReadyWhen::Shows(marker) => panes
                 .pane_collapsed(pane)
                 .is_some_and(|text| text.contains(marker.as_str())),
-            Some(ReadyWhen::Prints(marker)) => {
+            ReadyWhen::Prints(marker) => {
                 let Some(rows) = panes.pane_rows(pane) else {
                     return false;
                 };
@@ -279,6 +342,16 @@ impl Readiness {
         if self.seen {
             return Ok(Reached::Yes);
         }
+        // ⚠ A BARRIER WITH NO CONDITION IS ALREADY DOWN, and saying so HERE is what keeps the
+        // failure below honest. `seen` is set from `when.is_none()` at construction, so this arm is
+        // unreachable in practice — but taking the condition out of the `Option` now means the
+        // `NeverReady` error cannot be constructed without one. The alternative was a fabricated
+        // empty marker for a case that cannot happen, which is a false sentence waiting for a
+        // refactor to make it reachable.
+        let Some(when) = self.when.clone() else {
+            self.seen = true;
+            return Ok(Reached::Yes);
+        };
         // ⚠ ARM BEFORE THE FIRST LOOK, never before. Everything on the screen at this instant is
         // what `Prints` refuses to count, and this is the first moment a pane is in hand to read
         // it from.
@@ -290,24 +363,51 @@ impl Readiness {
                     .unwrap_or_default(),
             );
         }
-        match poll_until(run, self.within, || self.satisfied(panes, pane)) {
+        match poll_until(run, self.within, || self.satisfied(&when, panes, pane)) {
             Waited::Ready => {
                 self.seen = true;
                 Ok(Reached::Yes)
             }
             Waited::Stopped => Ok(Reached::RunEnded),
-            Waited::TimedOut => Err(PaneError::NeverReady(
-                self.when
-                    .as_ref()
-                    .map_or_else(String::new, |when| when.marker().to_string()),
-            )),
+            // ⚠ THE DIAGNOSTIC IS READ AT THE MOMENT OF FAILURE, not carried from arming: what a
+            // caller needs is what the pane was doing when the wait gave up. One read, on the way
+            // out of a run that is already over.
+            Waited::TimedOut => Err(PaneError::NeverReady {
+                wanted: when,
+                instead: panes
+                    .foreground_job()
+                    .and_then(|jobs| jobs.pane_foreground_leader(pane))
+                    .map(|leader| leader.name),
+            }),
         }
     }
+}
+
+/// Whether a foreground job's leader answers to `want`.
+///
+/// # ⚠ Two names, because the two sources honestly disagree
+///
+/// The kernel's name for a process is the basename of the FILE it exec'd, capped at 15 bytes and
+/// rewritable by the process itself; `argv[0]` is what its parent called it. `exec awk` on a box
+/// where `/usr/bin/awk` is `mawk` produces a leader named `mawk` whose `argv[0]` is `awk`, and a
+/// caller who wrote `awk` is not wrong. Accepting either is the answer that does not require them
+/// to know which spelling their platform packages.
+///
+/// ⚠ EXACT, never a prefix. A prefix match is a silent merge — `claude` accepting `claude-relay`
+/// is a run that drives the wrong program and reports success.
+fn leader_is_named(leader: &sprag_terminal::JobProcess, want: &str) -> bool {
+    leader.name == want
+        || leader.argv.first().is_some_and(|arg0| {
+            std::path::Path::new(arg0)
+                .file_name()
+                .is_some_and(|base| base == want)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sprag_terminal::JobProcess;
 
     /// ⚠⚠ **EVERY WORD THE VOCABULARY PUBLISHES IS ONE THE PARSER READS, AND BACK.**
     ///
@@ -334,13 +434,141 @@ mod tests {
         }
         assert_eq!(
             ReadyWhen::WIRE_WORDS.len(),
-            2,
-            "the two questions a marker can ask: whether the pane PRINTS it after the run arms, \
-             or whether it SHOWS it already",
+            3,
+            "the three questions a readiness marker can ask: whether the pane PRINTS it after the \
+             run arms, whether it SHOWS it already, or whether the pane's terminal belongs to a \
+             job that RUNS it — the last of which is not a question about the screen at all",
         );
         assert!(
             ReadyWhen::parse("appears", "MARK".to_string()).is_none(),
             "and a word outside the set is refused, or the published `enum` is a false statement",
+        );
+    }
+
+    /// ⚠⚠ **THE TWO NAMES A LEADER HAS, AND THE MERGE THAT MUST NOT HAPPEN.**
+    ///
+    /// [`leader_is_named`] is where [`ReadyWhen::Runs`] decides, and two of its claims are reachable
+    /// from no pty fixture in this crate: every program the fixtures start (`tr`, `cat`) has a
+    /// kernel name equal to its `argv[0]`, so the second arm is never taken and a prefix match would
+    /// pass every one of them. Both are ordinary on a real box — `exec awk` where `/usr/bin/awk` is
+    /// `mawk` is exactly the disagreement, and it is a packaging decision the caller cannot see.
+    ///
+    /// Four claims, each a different way to get this wrong:
+    ///
+    /// 1. the KERNEL name answers;
+    /// 2. `argv[0]`'s BASENAME answers when the kernel name disagrees — the `mawk`/`awk` case, and
+    ///    the reason a caller is not asked which spelling their distribution chose;
+    /// 3. a PREFIX does not answer, in either direction. `claude` accepting `claude-relay` is a run
+    ///    driving the wrong program and reporting success, which is worse than never starting;
+    /// 4. a job with NO argv at all — a kernel thread, a zombie whose argv the kernel has already
+    ///    released — still answers by its kernel name rather than panicking on an empty vector.
+    #[test]
+    fn a_leader_answers_to_its_kernel_name_or_its_argv_basename_and_to_neither_by_prefix() {
+        let leader = |name: &str, argv: &[&str]| JobProcess {
+            pid: 4242,
+            name: name.to_string(),
+            argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
+        };
+
+        let awk = leader("mawk", &["awk", "{print}"]);
+        assert!(
+            leader_is_named(&awk, "mawk"),
+            "the kernel's name for the process answers",
+        );
+        assert!(
+            leader_is_named(&awk, "awk"),
+            "and so does what its parent called it — a caller who wrote `awk` on a box that \
+             packages `mawk` is not wrong, and cannot be expected to know",
+        );
+
+        let absolute = leader("claude", &["/usr/local/bin/claude", "--print"]);
+        assert!(
+            leader_is_named(&absolute, "claude"),
+            "an absolute `argv[0]` is matched by its BASENAME, or naming a program would mean \
+             knowing where it was installed",
+        );
+
+        let relay = leader("claude-relay", &["claude-relay"]);
+        assert!(
+            !leader_is_named(&relay, "claude"),
+            "⚠⚠ A PREFIX IS NOT A MATCH: `claude` accepting `claude-relay` is a run that drives \
+             the wrong program and reports success",
+        );
+        assert!(
+            !leader_is_named(&leader("cl", &["cl"]), "claude"),
+            "and neither is the other direction",
+        );
+
+        assert!(
+            leader_is_named(&leader("cat", &[]), "cat"),
+            "a job with no argv at all — a zombie's is released at exit — still answers by the \
+             name the kernel keeps",
+        );
+    }
+
+    /// ⚠⚠ **A HOST THAT CANNOT SEE THE PROCESS TABLE FAILS THE RUN RATHER THAN DRIVING IT** — the
+    /// arm every pty gate in this crate skips, because the production access implements the
+    /// capability and therefore never builds the absence.
+    ///
+    /// [`PaneAccess::foreground_job`] defaults to `None`, and that default is what a port to a
+    /// platform with no process table would land on. A capability that is missing has exactly two
+    /// possible readings and only one of them is safe: *"cannot tell, so assume ready"* types into
+    /// whatever is there, which is the whole failure the barrier exists to prevent. **The safe
+    /// direction is documented on the trait and, until this gate, was asserted nowhere** — the
+    /// same shape the echo trail's own absence still owes, and not one worth owing twice.
+    ///
+    /// Two halves: the run FAILS (not converges), and the failure's `instead` is `None` — the arm
+    /// of the sentence that says *this build cannot say what the pane was running*, which is a
+    /// different message from naming a program and is otherwise built by nothing.
+    #[test]
+    fn a_host_that_cannot_see_the_process_table_is_never_ready_to_run_a_program() {
+        /// A pane that exists, shows nothing, and whose host has NO process view — every
+        /// capability left at its default, which is the point.
+        struct NoProcessView;
+        impl PaneAccess for NoProcessView {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                panic!("⚠⚠ NOT ONE BYTE may be injected into a pane this host cannot vouch for");
+            }
+        }
+
+        let mut ready = Readiness::new(
+            Some(ReadyWhen::Runs("claude".to_string())),
+            Some(Duration::from_millis(120)),
+        );
+        let failed = ready
+            .reached(&NoProcessView, PaneId(1), &RunContext::uncancellable())
+            .expect_err("a host that cannot see the process table can never confirm the program");
+        assert_eq!(
+            failed,
+            PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("claude".to_string()),
+                instead: None,
+            },
+            "and it says so by having NO answer for what ran instead, rather than inventing one",
+        );
+        assert!(
+            !failed.to_string().contains("instead"),
+            "so the sentence simply omits that clause rather than reading `belonged to None`: {}",
+            failed,
         );
     }
 }

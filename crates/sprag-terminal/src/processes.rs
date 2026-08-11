@@ -126,6 +126,49 @@ pub struct JobProcess {
     pub argv: Vec<String>,
 }
 
+/// The LEADER of the foreground job on `pid`'s controlling terminal — the process a shell hands
+/// the terminal to when it runs something, and takes back from when that thing ends.
+///
+/// # Why this exists BESIDE the sampler, rather than as a call into it
+///
+/// [`PaneProcessSampler`] answers *what is every pane running* and pays one full pass over the
+/// process table to do it, because a job's members can only be found by indexing the whole table by
+/// group. That is the right cost for a question asked once per client poll about eight panes.
+///
+/// It is the wrong cost for a PREDICATE. A plugin's readiness barrier (`ReadyWhen::Runs`, in
+/// `sprag-plugin` — named rather than linked, because this crate is BELOW that one and a link
+/// upward would invert the dependency it documents) asks *does this one pane's terminal belong to
+/// `claude` yet* every 10 ms for up to two minutes; answering that with a table walk would be some
+/// thousands of passes over every process on the box to learn one name.
+///
+/// So this reads the LEADER only, in two `stat`-sized reads and no walk at all: a process group's
+/// id IS its leader's pid, which is the whole reason the number is addressable. A shell running
+/// `claude` makes `claude` that leader; `cargo build | less` makes `cargo` it.
+///
+/// # What it therefore does NOT answer
+///
+/// * **Not every process in the job** — `less` in that pipeline is a member, not the leader, and
+///   nothing here will name it. A caller who needs the membership wants the sampler, which is why
+///   both exist and why this returns the same [`JobProcess`] type rather than a second one.
+/// * **`None` when the leader has already exited but the group lives on** (its other members keep
+///   it), and when the platform exposes no process table at all. Both are absences a caller must
+///   already handle — the same honest `None` [`crate::foreground_pgid_of`] answers.
+///
+/// ⚠ **NOT PLATFORM-GATED, and that is load-bearing rather than incidental.** Everything here goes
+/// through [`crate::procfs`], which reads `/proc` on Linux and `proc_pidinfo`/`KERN_PROCARGS2` on
+/// macOS. A readiness condition that silently never fired on one of the two platforms sprag builds
+/// for would be worse than the defect it was written to remove.
+#[must_use]
+pub fn foreground_leader_of(pid: u32) -> Option<JobProcess> {
+    let pgid = crate::pane_pty::foreground_pgid_of(pid)?;
+    let stat = crate::procfs::stat(pgid)?;
+    Some(JobProcess {
+        pid: pgid,
+        name: stat.comm,
+        argv: argv(pgid),
+    })
+}
+
 /// A whole [`PaneProcessSampler`] reading: every pane's processes, and how old the reading is.
 ///
 /// One age for the whole reading because one `/proc` pass produces it all — see
@@ -489,6 +532,31 @@ mod tests {
             sleep.argv,
             vec!["sleep", "300"],
             "with the arguments the user typed, unjoined",
+        );
+
+        // ⚠⚠ **TWO READERS OF ONE FACT, AND THEY MUST AGREE.** [`foreground_leader_of`] answers
+        // *what owns this pane's terminal* in two `stat`-sized reads because a readiness barrier
+        // polls it every 10 ms; the sampler above answers the same question with a full pass over
+        // the process table because it also wants the job's MEMBERSHIP. Two routes to one fact is
+        // the R347 shape — the one where nothing compares them and they drift until a caller gets
+        // two answers from the same daemon about the same pane.
+        //
+        // Asserted HERE rather than in a gate of its own, because this fixture has already paid to
+        // build the state that makes the question interesting: a job that is NOT the pane's child.
+        let leader = foreground_leader_of(running.shell_pid.expect("a live child"))
+            .expect("the cheap reader answers wherever the sampler does");
+        assert_eq!(
+            leader.pid, job.pgid,
+            "the leader the barrier reads IS the group the sampler reports — a process group's id \
+             is its leader's pid, which is the whole reason one `stat` can stand in for the walk",
+        );
+        assert!(
+            job.processes
+                .iter()
+                .any(|p| p.pid == leader.pid && p.name == leader.name && p.argv == leader.argv),
+            "and it is one of the members the sampler found, named and argv'd identically: \
+             {leader:?} is not in {:?}",
+            job.processes,
         );
     }
 

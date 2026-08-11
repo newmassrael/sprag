@@ -233,6 +233,33 @@ mod tests {
     /// discards. The marker is the load-bearing part — see [`await_ready`].
     const DEAF: &str = "stty -echo; printf DEAF-READY; exec cat >/dev/null";
 
+    /// A silent program's argv, and the ONE readiness spec both ways of reaching it are driven
+    /// with.
+    ///
+    /// ⚠⚠ **THE SYMMETRY IS THE CLAIM, SO IT IS A SHARED FUNCTION RATHER THAN A SENTENCE.** Two
+    /// gates below start this program two entirely different ways — a shell that is typed at until
+    /// it `exec`s, and a pane OPENED running it (`open_pane`'s `cmd`, reached here through
+    /// [`PaneLifecycle::spawn`]) — and both converge on this identical value. A prose claim that
+    /// one value serves both shapes is a claim; a value neither gate can vary is the fact.
+    ///
+    /// `tr` is the fixture because it is `cat` with a witness: silent until fed, then provably
+    /// itself, because `PING` is not a spelling the pty's echo of `ping` can produce.
+    const SILENT_PROGRAM: [&str; 3] = ["tr", "a-z", "A-Z"];
+
+    fn drive_the_silent_program() -> OrchestrationSpec {
+        OrchestrationSpec {
+            stimulus: "ping".to_string(),
+            sentinel: Some("PING".to_string()),
+            // No marker at all: the pane's TERMINAL says what is running in it.
+            ready_when: Some(ReadyWhen::Runs(SILENT_PROGRAM[0].to_string())),
+            // ⚠ BOUNDED, though both fixtures are ready well inside it. Left unbounded this
+            // inherits the two-MINUTE default, so a mutation that makes the barrier never clear
+            // costs the suite two minutes to report what it can report in fifteen seconds. A
+            // gate's failing path has a running time too.
+            ready_within: Some(Duration::from_secs(15)),
+        }
+    }
+
     fn run(
         access: &WorkspacePaneAccess,
         plugin: &mut Orchestrator,
@@ -488,11 +515,18 @@ mod tests {
 
         for waited in [true, false] {
             let (outcome, screen) = drive(waited);
-            assert_eq!(
-                outcome.failure,
-                Some(PaneError::NeverReady("TOOL-UP".to_string())),
+            // ⚠ `instead` is deliberately NOT asserted here: this fixture's pane is mid-`exec` at
+            // the moment the barrier gives up, so the job that owns its terminal is the starting
+            // shell or the program it became depending on the clock. Pinning it would make a
+            // diagnostic field decide a gate about REFUSING AN ECHO, which is a different claim.
+            assert!(
+                matches!(
+                    &outcome.failure,
+                    Some(PaneError::NeverReady { wanted, .. })
+                        if wanted == &ReadyWhen::Prints("TOOL-UP".to_string()),
+                ),
                 "an ambiguous marker is refused and NAMED, whether or not its echo had landed \
-                 (waited: {waited}): {screen:?}",
+                 (waited: {waited}): {outcome:?} {screen:?}",
             );
             assert!(
                 !screen.contains("ATE ping"),
@@ -606,6 +640,220 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **A PROGRAM THAT PRINTS NOTHING IS WAITED FOR BY WHAT OWNS THE TERMINAL** — the case the
+    /// two screen kinds cannot answer at all, and the reason [`ReadyWhen::Runs`] exists.
+    ///
+    /// The fixture is the ordinary AI-loop shape with one change that removes every marker: the
+    /// program that finally comes up **says nothing when it starts**. `tr` is `cat` with a witness
+    /// — silent until fed, then provably itself, because `PING` is not a spelling the pty's echo of
+    /// `ping` can produce. Most things this drives are in that class (a REPL launched quiet, a
+    /// relay, any tool that speaks only when spoken to), and for all of them `Prints` waits for a
+    /// line that will never come and `Shows` has nothing to look for but the caller's own echo.
+    ///
+    /// **THREE HALVES, and the first is the control that makes the other two mean anything:**
+    ///
+    /// 1. the pane produces NOTHING between the stand-in dying and the program being ready — so the
+    ///    set of markers a caller could have named is empty, and this is a gap in the QUESTION
+    ///    rather than a marker chosen badly;
+    /// 2. the stand-in was never fed — every `ATE` is a turn spent on a shell;
+    /// 3. the run CONVERGED, so the wait ended and the driving worked.
+    ///
+    /// ⚠ MUTATION-MEASURED, and the order of the last two is what the measurement bought. With the
+    /// `Runs` arm answering `true` unconditionally the run drives the stand-in, which is half 2;
+    /// with it answering `false` the pane is never ready, nothing is ever injected and only half 3
+    /// can see it. **Asserted screen-first for that reason** — the reverse order was tried and half
+    /// 3 fired on BOTH mutations, hiding the more specific diagnosis behind a generic one.
+    #[test]
+    fn a_program_that_prints_nothing_is_ready_when_it_owns_the_terminal() {
+        // The stand-in eats for two seconds — longer than this run takes unaided — then `exec`s a
+        // program that prints NOT ONE BYTE until it is spoken to.
+        let (access, pane) = sh_access(
+            &format!(
+                "while read early; do echo \"ATE $early\"; done {STANDIN_READS_TTY} & \
+                 sleep 2; kill $! 2>/dev/null; exec tr a-z A-Z"
+            ),
+            40,
+            8,
+        );
+        // ⚠ HALF 1, THE CONTROL — read BEFORE the run, while the stand-in is still there. A silent
+        // program cannot be waited for by anything that reads the screen, and this is that claim
+        // measured rather than asserted: the pane is blank now and stays blank until it is driven.
+        assert_eq!(
+            access.pane_collapsed(pane).unwrap_or_default().trim(),
+            "",
+            "the fixture's program must print NOTHING on startup, or this gate is about a marker \
+             the caller chose badly rather than about a program that has none",
+        );
+        let mut orch = Orchestrator::new(pane, drive_the_silent_program());
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 6,
+                max_cost: None,
+                max_duration: None,
+            },
+        );
+        let screen = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !screen.contains("ATE"),
+            "NOTHING may have been injected while the pane's terminal still belonged to the \
+             stand-in shell — every `ATE` is a turn the run spent on a program that had not \
+             started: {screen:?}",
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "the run waited for the program to take the terminal and then drove it: {outcome:?}",
+        );
+    }
+
+    /// ⚠⚠ **A PANE OPENED RUNNING THE PROGRAM IS READY BY THE SAME VALUE, WITH NO WINDOW AT ALL.**
+    ///
+    /// `open_pane` has taken a `cmd` since the daemon's argv path was fixed, and NOTHING PREFERRED
+    /// IT: every loop gate in this workspace opened a shell and typed into it, which is how the
+    /// echo hazard got three rounds of attention. This is the other shape, and the point is that it
+    /// needs no new spelling — [`drive_the_silent_program`] is shared with the gate above verbatim,
+    /// so the two cannot drift into two answers.
+    ///
+    /// **Opening the pane running the program is the shape to prefer**, and the reason is visible
+    /// here rather than argued: there is no shell to be typed at, so there is no window in which an
+    /// injection can be eaten, and no echo of a starting command line for a marker to be confused
+    /// with. The barrier is not a wait — it is a confirmation that the pane is what the caller
+    /// asked for. A `Prints` marker could not make that claim at all: the program says nothing, so
+    /// on this shape it would wait out its bound and fail.
+    ///
+    /// ⚠ THE THIRD HALF IS THE ONE THAT MAKES THIS MORE THAN A CONVERGENCE TEST. A run that
+    /// converged might still have waited seconds for a barrier it should have cleared at once, so
+    /// the elapsed time is asserted too — well under the 500ms floor one observe step costs, which
+    /// is the cheapest bound that could not be met by accident.
+    #[test]
+    fn a_pane_opened_running_the_program_is_ready_by_the_same_value() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let access = WorkspacePaneAccess::new(workspace);
+        let argv: Vec<String> = SILENT_PROGRAM.iter().map(|a| (*a).to_string()).collect();
+        let pane = access
+            .lifecycle()
+            .expect("this access spawns panes")
+            .spawn(&argv, 40, 8)
+            .expect("open a pane RUNNING the program, rather than a shell to type it into");
+
+        let mut ready = crate::readiness::Readiness::new(
+            drive_the_silent_program().ready_when,
+            drive_the_silent_program().ready_within,
+        );
+        let started = std::time::Instant::now();
+        let reached = ready
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a pane opened running the program is ready for it");
+        assert_eq!(
+            reached,
+            crate::readiness::Reached::Yes,
+            "the pane IS the program — the barrier confirms it rather than waiting for it",
+        );
+
+        let mut orch = Orchestrator::new(pane, drive_the_silent_program());
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 6,
+                max_cost: None,
+                max_duration: None,
+            },
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "and driving it works, off the identical spec the shell-and-type gate uses: \
+             {outcome:?}",
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a pane that is ALREADY the program must not be waited for — this shape has no \
+             starting window, and paying one would mean the barrier is watching the wrong thing",
+        );
+    }
+
+    /// ⚠⚠ **NO AMOUNT OF TYPING THE NAME MAKES A PANE READY** — the discriminator against both
+    /// screen kinds, and the structural claim [`ReadyWhen::Runs`] is worth having for.
+    ///
+    /// `Shows` is satisfied by any text on the pane, and the pty puts the caller's own command line
+    /// there before the program exists; `Prints` had to grow an echo trail, a damage baseline and a
+    /// refusal rule to survive the same input, and still answers only for programs that speak.
+    /// This kind is not a better predicate over the screen — it does not read the screen, so the
+    /// hazard is not narrowed, it is ABSENT.
+    ///
+    /// The fixture types the name as LOUDLY as a pane can carry it: as a command that echoes it
+    /// back, so it is both in what was typed AND in what the program printed, freshly, after the
+    /// barrier armed. `Shows` would clear on it and so would `Prints`.
+    ///
+    /// ⚠ The pane runs `cat`, so the barrier's answer is *"a job named `tr` never owned this
+    /// terminal"* — and the failure NAMES what did, which is the correction a caller who guessed
+    /// the wrong program name needs.
+    #[test]
+    fn typing_a_program_name_at_a_pane_never_makes_it_ready() {
+        let (access, pane) = sh_access("exec cat", 40, 8);
+        // `cat` echoes: after this the word is in the echo trail AND on the screen as fresh output.
+        let mut typed = KeyStroke::text("tr");
+        typed.push(KeyStroke::named("Enter"));
+        let _typed = access.inject(pane, &typed).expect("type the name");
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5)
+            && access
+                .pane_collapsed(pane)
+                .unwrap_or_default()
+                .matches("tr")
+                .count()
+                < 2
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            access
+                .pane_collapsed(pane)
+                .unwrap_or_default()
+                .matches("tr")
+                .count()
+                >= 2,
+            "the fixture must get the name onto the screen TWICE — the pty's echo and the \
+             program's copy — or it has not put the screen kinds in a position to be fooled",
+        );
+
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: None,
+                ready_when: Some(ReadyWhen::Runs("tr".to_string())),
+                ready_within: Some(Duration::from_millis(300)),
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_cost: None,
+            // Far longer than the readiness bound, so the RUN's clock provably cannot end this.
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .run(&mut orch, &access, &RunContext::uncancellable());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "a pane running `cat` is not ready for `tr`, however many times the word is on its \
+             screen: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.failure,
+            Some(PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("tr".to_string()),
+                instead: Some("cat".to_string()),
+            }),
+            "and the failure NAMES what owned the terminal instead, which is the whole correction \
+             for a caller who guessed the program's name wrong",
+        );
+    }
+
     /// ⚠⚠ **A READINESS THAT NEVER COMES STOPS THE RUN AND SAYS WHAT IT WAITED FOR** — the other
     /// half, and the one that decides whether the argument is a bound or a hope.
     ///
@@ -693,8 +941,15 @@ mod tests {
         );
         assert_eq!(
             outcome.failure,
-            Some(PaneError::NeverReady("NEVER-PRINTED".to_string())),
-            "and the cause is typed and carries the marker the caller named",
+            Some(PaneError::NeverReady {
+                wanted: ReadyWhen::Prints("NEVER-PRINTED".to_string()),
+                // ⚠ The pane runs `exec cat`, so `cat` IS the job that owns its terminal — a
+                // caller reading this learns the pane was never going to print, which is the
+                // correction, and it arrives without them reading the screen.
+                instead: Some("cat".to_string()),
+            }),
+            "and the cause is typed, carries the QUESTION the caller asked, and names what the \
+             pane was running instead",
         );
         assert_eq!(
             access.pane_collapsed(pane).unwrap_or_default().trim(),
@@ -720,7 +975,10 @@ mod tests {
             PaneError::Encode("F13".to_string()),
             PaneError::Write("Broken pipe (os error 32)".to_string()),
             PaneError::Spawn("No such file or directory".to_string()),
-            PaneError::NeverReady("PEER-UP".to_string()),
+            PaneError::NeverReady {
+                wanted: ReadyWhen::Prints("PEER-UP".to_string()),
+                instead: Some("sh".to_string()),
+            },
         ];
         for error in &every {
             let said = error.to_string();
@@ -747,12 +1005,22 @@ mod tests {
                 .contains("Broken pipe (os error 32)"),
             "the cause the operating system gave must reach the reader",
         );
+        let never_ready = PaneError::NeverReady {
+            wanted: ReadyWhen::Runs("claude".to_string()),
+            instead: Some("sh".to_string()),
+        }
+        .to_string();
         assert!(
-            PaneError::NeverReady("PEER-UP".to_string())
-                .to_string()
-                .contains("PEER-UP"),
+            never_ready.contains("claude"),
             "a readiness that never came must name what it waited for, or the caller cannot tell \
-             which marker they got wrong",
+             which marker they got wrong: {never_ready:?}",
+        );
+        // ⚠⚠ AND WHAT THE PANE WAS DOING INSTEAD, which is the half that turns a two-minute
+        // mystery into a correction. A caller who waited for `claude` against a pane still sitting
+        // at a shell learns BOTH facts from one sentence.
+        assert!(
+            never_ready.contains("sh"),
+            "and what owned the terminal instead: {never_ready:?}",
         );
         assert!(
             PaneError::UnknownPane(PaneId(7)).to_string().contains('7'),

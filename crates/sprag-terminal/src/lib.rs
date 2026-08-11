@@ -70,6 +70,7 @@ pub use pane_pty::{
 };
 pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,
+    foreground_leader_of,
 };
 pub use registry::{
     Ended, KillOutcome, Located, LocatedWindow, OrderStep, PaneKillOutcome, PaneMoveError,

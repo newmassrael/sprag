@@ -730,6 +730,18 @@ impl PluginGrammar {
     /// it is not (the likeliest such text is the ECHO of the command line that started it), and for
     /// a REPL already at its prompt it is the only evidence there will be. See
     /// [`ReadyWhen`](sprag_plugin::ReadyWhen); the words come from that type, never from literals.
+    ///
+    /// ⚠⚠ **`marker` MEANS WHATEVER `match` SAYS IT MEANS**, and one of the three words makes it
+    /// not a screen needle at all: under `runs` it is a PROGRAM NAME, matched against the job that
+    /// owns the pane's terminal, with no screen read. That is the word to prefer — it is the only
+    /// one a program that prints nothing on startup can be waited for by, and no amount of typing
+    /// the name can satisfy it.
+    ///
+    /// ⚠ **`runs` was added to `match` WITHOUT a `WIRE_PROTOCOL` bump, and that is the rule rather
+    /// than an oversight**: R342 settled that widening an argument's VALUE SPACE is not what earns
+    /// one. Nothing a pre-`runs` client sends changes meaning, and a client that sends `runs` to a
+    /// daemon without it meets an ordinary grammar refusal at the door — the words are published
+    /// here, so it can ask first.
     pub const READY_WHEN: ArgGrammar = ArgGrammar::nested(
         "ready_when",
         &[

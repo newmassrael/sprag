@@ -669,8 +669,14 @@ mod tests {
         );
         assert_eq!(
             outcome.failure,
-            Some(PaneError::NeverReady("NEVER-PRINTED".to_string())),
-            "and the cause names the marker the caller got wrong",
+            Some(PaneError::NeverReady {
+                wanted: ReadyWhen::Prints("NEVER-PRINTED".to_string()),
+                // ⚠ And what the destination WAS running — `exec cat`, so this is the pane's own
+                // program and not a shell that had not started it yet. The diagnostic reaches the
+                // relay's failure too, which is the half a fix applied to one consumer would miss.
+                instead: Some("cat".to_string()),
+            }),
+            "and the cause names the question the caller got wrong, and what the pane was doing",
         );
         assert_eq!(
             access.pane_collapsed(dst).unwrap_or_default().trim(),
