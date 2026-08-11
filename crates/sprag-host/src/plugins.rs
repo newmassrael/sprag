@@ -1687,6 +1687,39 @@ mod tests {
             "it must stop near the second it was given, not at some other bound: {:?}",
             took.elapsed(),
         );
+
+        // ⚠ AND THE COST CEILING'S OWN WORD, driven to the wire rather than asserted at the type.
+        // `iterations` reaches it through both mouths' end-to-end gates and `duration` through the
+        // block above; without this the third word would be the one no test ever spelled — and a
+        // ceiling that reaches an agent under the wrong name is worse than one that reaches it
+        // under none.
+        let spent = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+                    "guardrails": { "max_iterations": 100_000, "max_bytes": 1 },
+                })),
+            )
+            .expect("a run bounded in bytes is a well-formed run");
+        let IntrospectValue::Int(spent) = spent else {
+            panic!("a run answers its id: {spent:?}");
+        };
+        let entry = ended(
+            &registry,
+            u64::try_from(spent).expect("a run id is not negative"),
+            Duration::from_secs(20),
+        );
+        assert_eq!(
+            entry["state"]["outcome"][RUN_CEILING_KEY],
+            json!("cost"),
+            "the SPEND ceiling names itself `cost` — the concept, not `max_bytes` the knob, \
+             because the same ceiling is set by `max_tokens` on a run that spends tokens and one \
+             answer cannot be two argument names: {entry:?}",
+        );
     }
 
     /// ⚠⚠ **A BOUND THIS DAEMON DOES NOT KNOW IS REFUSED, WHERE EVERY OTHER UNKNOWN KEY ON THIS

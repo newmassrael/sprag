@@ -676,6 +676,17 @@ mod tests {
             "and it stops INSIDE the wait rather than after it: {subject_took:?} against a \
              per-attempt grace of {grace:?}",
         );
+
+        // ⚠ THE OTHER STOP CHECK — the one at the RETRY loop's top, which the two readings above
+        // never reach because their deadline expires inside the first wait. A run already out of
+        // time when the delivery is asked for must write NOTHING: an expired run that still gets
+        // one injection in is a run writing to somebody's pane after it was over.
+        let (already_over, _) = attempt(Some(Duration::ZERO));
+        assert!(
+            matches!(already_over, Delivered::Stopped { attempts: 0, .. }),
+            "a delivery asked for by a run that is already over makes no attempt at all: \
+             {already_over:?}",
+        );
     }
 
     /// A prompt box that BREAKS the text across its border is still confirmable — on a fragment.
