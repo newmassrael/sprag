@@ -2169,6 +2169,46 @@ mod tests {
     /// logical line far longer than the grid width — exactly the case the
     /// rendered screen mangles (wrap `\n` injection + trailing-trim). This is
     /// why structured output is read from the source stream, not the grid.
+    /// ⚠⚠ **A PANE'S ECHO TRAIL IS THE SAME TRAIL THROUGH THE OWNER AND THROUGH A HANDLE.**
+    ///
+    /// The two are one `Arc`, and the gate is here because forgetting to clone it into
+    /// [`PanePty::handle`] compiles: the handle would start its own empty trail, every writer that
+    /// reaches a pane through a handle — which is every host-side writer — would record into a
+    /// trail nobody reads, and the readiness barrier downstream would silently stop recognising
+    /// echo. Same shape as the `raw_output` pair below, for the same reason.
+    #[test]
+    fn the_echo_trail_is_one_trail_through_the_owner_and_through_a_handle() {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("cat");
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        assert_eq!(
+            pty.echo_trail(),
+            "",
+            "a pane nobody wrote to has an empty trail"
+        );
+
+        pty.write(b"TYPED-AT-THE-OWNER\r").expect("write");
+        assert!(
+            pty.echo_trail().contains("TYPED-AT-THE-OWNER"),
+            "the owner records what is written through it: {:?}",
+            pty.echo_trail(),
+        );
+        assert_eq!(
+            pty.handle().echo_trail(),
+            pty.echo_trail(),
+            "and a handle reads the SAME trail, not one of its own",
+        );
+
+        pty.handle().write(b"TYPED-AT-A-HANDLE\r").expect("write");
+        let trail = pty.echo_trail();
+        assert!(
+            trail.contains("TYPED-AT-THE-OWNER") && trail.contains("TYPED-AT-A-HANDLE"),
+            "and a write through EITHER seam lands in it: {trail:?}",
+        );
+    }
+
     #[test]
     fn raw_output_captures_a_wrapping_line_byte_for_byte() {
         // A 300-char single line with no trailing newline, on a 20-col pane:

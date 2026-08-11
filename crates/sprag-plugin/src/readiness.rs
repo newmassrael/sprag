@@ -304,3 +304,43 @@ impl Readiness {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠⚠ **EVERY WORD THE VOCABULARY PUBLISHES IS ONE THE PARSER READS, AND BACK.**
+    ///
+    /// [`ReadyWhen::WIRE_WORDS`] is what the wire advertises as this argument's closed set, and
+    /// [`ReadyWhen::parse`] is what the daemon reads it with. They are two spellings of one
+    /// vocabulary, and R353 measured that shape going wrong in this workspace already — a mouse
+    /// encoder and its decoder, each documented as the other's twin, with nothing comparing the
+    /// lists. Driven from `WIRE_WORDS` rather than from a literal here, so a third kind added to
+    /// the type fails this the moment its word is published without a parser arm.
+    ///
+    /// ⚠ [`word`](ReadyWhen::word) is the reader this gate exists to give the vocabulary: without
+    /// it the type could publish a word it cannot spell back, which is how the two lists drift.
+    #[test]
+    fn every_published_readiness_word_round_trips_through_the_parser() {
+        for word in ReadyWhen::WIRE_WORDS {
+            let parsed = ReadyWhen::parse(word, "MARK".to_string())
+                .unwrap_or_else(|| panic!("{word:?} is published and the parser refuses it"));
+            assert_eq!(
+                parsed.word(),
+                *word,
+                "and it must spell back the word it was read from",
+            );
+            assert_eq!(parsed.marker(), "MARK", "carrying the caller's marker");
+        }
+        assert_eq!(
+            ReadyWhen::WIRE_WORDS.len(),
+            2,
+            "the two questions a marker can ask: whether the pane PRINTS it after the run arms, \
+             or whether it SHOWS it already",
+        );
+        assert!(
+            ReadyWhen::parse("appears", "MARK".to_string()).is_none(),
+            "and a word outside the set is refused, or the published `enum` is a false statement",
+        );
+    }
+}
