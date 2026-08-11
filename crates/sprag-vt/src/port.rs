@@ -1972,6 +1972,11 @@ impl Screen {
     /// yielded — a consumer that acted on half a line would act on something the child had not
     /// finished saying.
     ///
+    /// ⚠ **There is deliberately no second spelling of *"how many lines has it produced"***. It is
+    /// [`LinesSince::next`], and a `lines_produced()` convenience existed here briefly with NO
+    /// caller — publishing a second way to ask one question is how the two answers come to differ.
+    /// Pass `u64::MAX` to mark without taking anything.
+    ///
     /// ⚠⚠ **AND A LOSS IS REPORTED, NOT HIDDEN.** Scrollback is bounded, so a reader that stays
     /// away longer than the history is deep cannot be given what it missed. [`LinesSince::lost`] is
     /// how many lines that was. **The alternative is the one this project keeps paying for**: a
@@ -2026,13 +2031,6 @@ impl Screen {
             lost,
             partial: joined.trim_end().to_string(),
         }
-    }
-
-    /// How many complete logical lines this screen has produced in its life — the address just past
-    /// its newest complete line. See [`lines_since`](Self::lines_since).
-    #[must_use]
-    pub fn lines_produced(&self) -> u64 {
-        self.lines_since(u64::MAX).next
     }
 
     /// The scrolled-off lines as TEXT (oldest first) — the MAIN screen's history

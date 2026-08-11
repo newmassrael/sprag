@@ -366,6 +366,74 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **A HOST WITH NO OUTPUT STREAM STILL CAPTURES A REPLY** — the degradation arm, which no
+    /// gate built.
+    ///
+    /// [`PaneAccess::output_lines`] is optional, so a build without it falls back to comparing the
+    /// RENDERING ([`RowTrail`]). That fallback is named as a degradation — it cannot see a line
+    /// that scrolled away — and a degradation that returned NOTHING would not be one: this adapter
+    /// publishes what it captures as the model's answer, so an empty capture is a silent failure
+    /// wearing the shape of a reply.
+    ///
+    /// ⚠ Both halves: the reply comes back, and the text that was on the pane BEFORE the prompt
+    /// does not — a fallback that returned the whole screen would pass the first alone.
+    #[test]
+    fn a_host_with_no_output_stream_still_captures_by_the_rendering() {
+        /// A pane that answers when typed at, with every optional capability at its default.
+        struct NoStream(Mutex<Vec<String>>);
+        impl PaneAccess for NoStream {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(self.0.lock().unwrap().join(""))
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|text| crate::access::PaneRow {
+                            generation: 1,
+                            text: text.clone(),
+                        })
+                        .collect(),
+                )
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(true)
+            }
+            fn pane_full_text(&self, id: PaneId) -> Option<String> {
+                self.pane_collapsed(id)
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                self.0.lock().unwrap().push("REPLY-BY-ROWS".to_string());
+                Ok(crate::access::Written::of(4))
+            }
+        }
+
+        let access = NoStream(Mutex::new(vec!["banner".to_string()]));
+        let mut agent = Agent::new(PaneId(1), AgentSpec::new("ask"));
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(5)),
+        })
+        .run(&mut agent, &access, &RunContext::uncancellable());
+        assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+        assert_eq!(
+            agent.captured().as_deref(),
+            Some("REPLY-BY-ROWS"),
+            "the fallback must return the reply — and only the reply: `banner` was on the pane \
+             before the prompt and is not part of what the model said",
+        );
+    }
+
     /// ⚠⚠ **A REPLY LONGER THAN THE PANE IS TALL IS CAPTURED WHOLE** — what only an addressed
     /// reply region can do, and the residue the row-keyed capture carried.
     ///

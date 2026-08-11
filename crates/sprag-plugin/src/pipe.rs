@@ -289,6 +289,130 @@ mod tests {
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
+    /// ⚠⚠ **A GAP IN THE SOURCE IS REPORTED, NOT SWALLOWED** — the arm a real pty cannot be made
+    /// to build on demand, and the one whose absence would be invisible.
+    ///
+    /// Retained history is bounded, so a source that outruns it between two steps has lines this
+    /// relay can never deliver. **A silent gap is indistinguishable from a quiet source**: every
+    /// number the run publishes — bytes, iterations, the verdict — is identical whether the relay
+    /// delivered everything or a fraction. The count is the only thing that says which.
+    #[test]
+    fn a_source_that_outran_its_history_is_reported_as_a_gap() {
+        /// A host whose stream reports lines AND a loss.
+        struct Lossy;
+        impl PaneAccess for Lossy {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1), PaneId(2)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                Some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Lossy {
+            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+                Some(sprag_vt::LinesSince {
+                    lines: vec!["survived".to_string()],
+                    next: 10,
+                    lost: 3,
+                    partial: String::new(),
+                })
+            }
+        }
+
+        let step = Pipe::new(PipeSpec::new(PaneId(1), PaneId(2)))
+            .step(&Lossy, &RunContext::uncancellable())
+            .expect("the relay");
+        let said = step.note.unwrap_or_default();
+        assert!(
+            said.contains('3') && said.contains("LOST"),
+            "the step must say HOW MANY lines the source outran — without it a partial relay \
+             reports exactly what a complete one reports: {said:?}",
+        );
+    }
+
+    /// ⚠⚠ **A HOST WITH NO OUTPUT STREAM STILL RELAYS, BY THE RENDERING** — this plugin's own
+    /// degradation arm.
+    ///
+    /// Gated HERE as well as in [`crate::agent`] because it is a different call site in a different
+    /// plugin: *"the same code is tested elsewhere"* is the reasoning R351 caught being wrong when
+    /// a shared path stopped being shared. A relay that silently delivered NOTHING on such a host
+    /// would report the same `continue` and the same zero bytes a quiet source produces.
+    #[test]
+    fn a_host_with_no_output_stream_still_relays_by_the_rendering() {
+        /// A source that holds one line and a destination that records what it is given, with
+        /// every optional capability at its default.
+        struct NoStream(Mutex<Vec<String>>);
+        impl PaneAccess for NoStream {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1), PaneId(2)]
+            }
+            fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+                (id == PaneId(1)).then(|| "from-the-source".to_string())
+            }
+            fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(match id {
+                    PaneId(1) => vec![crate::access::PaneRow {
+                        generation: 1,
+                        text: "from-the-source".to_string(),
+                    }],
+                    _ => Vec::new(),
+                })
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn pane_full_text(&self, id: PaneId) -> Option<String> {
+                self.pane_collapsed(id)
+            }
+            fn inject(
+                &self,
+                id: PaneId,
+                keys: &[KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                assert_eq!(id, PaneId(2), "only the DESTINATION is typed into");
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(keys.iter().map(|k| k.key.as_str()).collect());
+                Ok(crate::access::Written::of(1))
+            }
+        }
+
+        let access = NoStream(Mutex::new(Vec::new()));
+        let mut pipe = Pipe::new(PipeSpec::new(PaneId(1), PaneId(2)));
+        let step = pipe
+            .step(&access, &RunContext::uncancellable())
+            .expect("the relay");
+        assert!(
+            step.cost.amount() > 0,
+            "a host without the stream must still relay, or the degradation is an outage: {step:?}",
+        );
+        assert_eq!(
+            access.0.lock().unwrap().first().map(String::as_str),
+            Some("from-the-sourceEnter"),
+            "and it delivers the source's line, terminated",
+        );
+    }
+
     /// ⚠⚠ **A LINE THAT SCROLLED AWAY IS STILL RELAYED** — what only an output STREAM can do, and
     /// the reason this plugin stopped reading the grid.
     ///
