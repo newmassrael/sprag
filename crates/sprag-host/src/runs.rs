@@ -384,6 +384,55 @@ impl Drop for RunRegistry {
 mod tests {
     use super::*;
 
+    /// ⚠⚠ **EVERY TERMINAL STATE SURVIVES THE ROUND TRIP THROUGH ITS OWN WORDS** — the property
+    /// the run log rests on, over the whole type rather than the one case the reboot gate drives.
+    ///
+    /// `a_run_whose_daemon_died_is_reported_as_interrupted_and_belongs_to_nobody` drives a run that
+    /// was STILL GOING, which never touches this path: a run that had FINISHED comes back through
+    /// `outcome_from_words`, and nothing was reading it back. A writer that quotes and a reader
+    /// that unquotes are stated as inverses (R350's rule) — here that is an equality over
+    /// `Ceiling`'s three arms and the four states, so a fifth of either fails this rather than
+    /// silently reloading as something else.
+    #[test]
+    fn every_outcome_survives_the_round_trip_through_its_own_words() {
+        use sprag_plugin::{Ceiling, OutcomeState};
+        let every = [
+            OutcomeState::Converged,
+            OutcomeState::Cancelled,
+            OutcomeState::Failed,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            OutcomeState::Exhausted(Ceiling::Cost),
+            OutcomeState::Exhausted(Ceiling::Duration),
+        ];
+        for state in every {
+            let outcome = Outcome {
+                state,
+                iterations: 3,
+                cost: None,
+                failure: None,
+            };
+            let read_back = crate::plugins::outcome_from_words(
+                Some(crate::plugins::outcome_word(&outcome)),
+                crate::plugins::outcome_ceiling(&outcome),
+            );
+            assert_eq!(
+                read_back, state,
+                "a {state:?} written to the run log must come back as itself",
+            );
+        }
+
+        // ⚠ AND AN UNREADABLE PAIR IS `Failed`, never a happier guess: a record this build cannot
+        // parse must not be reported as having converged.
+        assert_eq!(
+            crate::plugins::outcome_from_words(Some("a word from a newer build"), None),
+            OutcomeState::Failed,
+        );
+        assert_eq!(
+            crate::plugins::outcome_from_words(None, None),
+            OutcomeState::Failed,
+        );
+    }
+
     #[test]
     fn submit_sweep_join_lifecycle() {
         let mut registry = RunRegistry::default();

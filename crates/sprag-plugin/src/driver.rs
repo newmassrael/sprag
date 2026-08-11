@@ -475,6 +475,61 @@ mod tests {
         assert_eq!(outcome.failure, Some(PaneError::UnknownPane(PaneId(0))));
     }
 
+    /// ⚠⚠ **A LONG RUN'S JOURNAL IS BOUNDED, AND ITS TOTAL IS NOT** — the branch every run under
+    /// sixty-four steps skips, which is every run any other gate in this workspace drives.
+    ///
+    /// A journal that grew with the run would make a hundred-thousand-iteration loop's memory grow
+    /// with it, and one that silently truncated would leave a reader unable to tell a complete
+    /// account from a clipped one. Both halves are asserted: the LAST steps are what is kept (the
+    /// end of a run is what *"why did it not converge?"* is asked about), and `iterations` still
+    /// counts every step, which is how the two are told apart.
+    #[test]
+    fn a_journal_keeps_its_last_steps_and_never_loses_the_count() {
+        struct Counting(u32);
+        impl Plugin for Counting {
+            fn step(
+                &mut self,
+                _panes: &dyn PaneAccess,
+                _run: &RunContext,
+            ) -> Result<Step, PaneError> {
+                self.0 += 1;
+                Ok(Step::new(Cost::Bytes(1), Verdict::Continue).noting(format!("step {}", self.0)))
+            }
+        }
+
+        let steps = u32::try_from(JOURNAL_LIMIT).expect("the limit fits a step count") + 10;
+        let cell = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: steps,
+            max_cost: None,
+            max_duration: None,
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(&mut Counting(0), &NoPanes, &RunContext::uncancellable());
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
+        assert_eq!(
+            outcome.iterations, steps,
+            "the TOTAL counts every step, which is what makes a clipped journal detectable",
+        );
+        let held = cell.lock().expect("the progress cell");
+        assert_eq!(
+            held.journal.len(),
+            JOURNAL_LIMIT,
+            "the journal is bounded, or a long run's memory grows with it",
+        );
+        assert_eq!(
+            held.journal.last().and_then(|last| last.note.clone()),
+            Some(format!("step {steps}")),
+            "and it keeps the LAST steps: the end of a run is what its journal is read for",
+        );
+        assert_eq!(
+            held.journal.first().map(|first| first.iteration),
+            Some(steps - u32::try_from(JOURNAL_LIMIT).expect("fits") + 1),
+            "the oldest kept step is exactly the limit back from the newest",
+        );
+    }
+
     #[test]
     fn driver_ends_cancelled_without_running_a_step() {
         // The plugin would fail if stepped, but a pre-raised cancel pre-empts
