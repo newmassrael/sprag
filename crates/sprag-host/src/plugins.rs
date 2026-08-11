@@ -107,6 +107,28 @@ sprag_vt::closed_set! {
 }
 
 impl PluginName {
+    /// HOW TO CALL THIS PLUGIN — the `run` form that selects it.
+    ///
+    /// # ⚠⚠ Why the form belongs to the type and not to a list beside it
+    ///
+    /// The four forms were a hand-written array in [`crate::wire::PluginGrammar`], and the type's
+    /// doc above claimed a variant *"reaches the wire in the compile that adds it"*. That was true
+    /// of the WORD and false of the form: a fifth plugin would have been published as a legal
+    /// `plugin` value with nothing anywhere saying what to send it, and every gate over that table
+    /// would have passed, because a gate over a declaration cannot see one nobody made.
+    ///
+    /// Exhaustive, so the compiler asks the question instead. `PluginGrammar::RUN` is now a
+    /// projection of `ALL` through this.
+    #[must_use]
+    pub const fn form(self) -> sprag_rpc::CallForm {
+        match self {
+            Self::Orchestrator => crate::wire::PluginGrammar::ORCHESTRATOR_FORM,
+            Self::Pipe => crate::wire::PluginGrammar::PIPE_FORM,
+            Self::Agent => crate::wire::PluginGrammar::AGENT_FORM,
+            Self::Dialogue => crate::wire::PluginGrammar::DIALOGUE_FORM,
+        }
+    }
+
     /// This plugin's word in a `run` request's `plugin`.
     #[must_use]
     pub const fn wire_str(self) -> &'static str {

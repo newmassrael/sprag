@@ -697,56 +697,81 @@ impl PluginGrammar {
     /// [`RUN_ACTION`](crate::plugins::RUN_ACTION) — one form per bundled plugin, in
     /// [`PluginName::ALL`](crate::plugins::PluginName) order so a form added to the type is a form
     /// this table has to decide about.
-    pub const RUN: &'static [CallForm] = &[
-        // `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
-        CallForm::object(&[
-            Self::selected_by(Self::ORCHESTRATOR),
-            ArgGrammar::open("pane", "int"),
-            ArgGrammar::open("stimulus", "string"),
-            ArgGrammar::open("sentinel", "string").optional(),
-            Self::OPENED_BY,
-            Self::GUARDRAILS_BYTES,
-        ]),
-        // `pipe` — relay one pane's output into another's input.
-        CallForm::object(&[
-            Self::selected_by(Self::PIPE),
-            ArgGrammar::open("src", "int"),
-            ArgGrammar::open("dst", "int"),
-            Self::OPENED_BY,
-            Self::GUARDRAILS_BYTES,
-        ]),
-        // `agent` — prompt the agent in a pane and collect its reply.
-        CallForm::object(&[
-            Self::selected_by(Self::AGENT),
-            ArgGrammar::open("pane", "int"),
-            ArgGrammar::open("prompt", "string"),
-            ArgGrammar::open("eof", "bool").optional(),
-            ArgGrammar::open("timeout_ms", "int").optional(),
-            Self::OPENED_BY,
-            Self::GUARDRAILS_BYTES,
-        ]),
-        // `dialogue` — two endpoints against each other, turn by turn. It spawns its OWN panes, which
-        // is why it names argv templates instead of a pane.
-        CallForm::object(&[
-            Self::selected_by(Self::DIALOGUE),
-            ArgGrammar::open("endpoint_a", "array"),
-            ArgGrammar::open("endpoint_b", "array"),
-            ArgGrammar::open("seed", "string"),
-            ArgGrammar::open("label_a", "string").optional(),
-            ArgGrammar::open("label_b", "string").optional(),
-            // The two reply formats, published from `ReplyFormat`'s own words — two string literals
-            // inside the host's parser until R353.
-            ArgGrammar::one_of("format_a", "string", &sprag_plugin::ReplyFormat::WIRE_WORDS)
-                .optional(),
-            ArgGrammar::one_of("format_b", "string", &sprag_plugin::ReplyFormat::WIRE_WORDS)
-                .optional(),
-            ArgGrammar::open("cols", "int").optional(),
-            ArgGrammar::open("rows", "int").optional(),
-            ArgGrammar::open("timeout_ms", "int").optional(),
-            Self::OPENED_BY,
-            Self::GUARDRAILS_TOKENS,
-        ]),
-    ];
+    /// [`RUN_ACTION`](crate::plugins::RUN_ACTION)'s forms, ONE PER BUNDLED PLUGIN, projected from
+    /// [`PluginName::ALL`](crate::plugins::PluginName) rather than written out.
+    ///
+    /// # ⚠⚠ Why this is a projection and not the array it used to be
+    ///
+    /// The four forms were a hand-written list beside a four-variant type, and the type's own doc
+    /// claimed *"adding a variant reaches the wire in the compile that adds it"*. That was true of
+    /// the plugin's WORD — published from `WIRE_WORDS` — and false of the thing a client actually
+    /// needs, which is how to CALL it. A fifth plugin would have been advertised as a legal
+    /// `plugin` value by a surface that said nothing about its arguments, and every gate here would
+    /// have passed: they walk the forms that exist.
+    ///
+    /// [`PluginName::form`](crate::plugins::PluginName::form) is an exhaustive match, so a variant
+    /// added to the type does not compile until somebody says how to call it. **The omission is
+    /// unrepresentable rather than checked** — the shape R352 asks for, since a gate over a
+    /// declaration cannot see one that was never made.
+    pub const RUN: &'static [CallForm] = &{
+        let mut forms = [CallForm::object(&[]); crate::plugins::PluginName::ALL.len()];
+        let mut at = 0;
+        while at < crate::plugins::PluginName::ALL.len() {
+            forms[at] = crate::plugins::PluginName::ALL[at].form();
+            at += 1;
+        }
+        forms
+    };
+
+    /// `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
+    pub const ORCHESTRATOR_FORM: CallForm = CallForm::object(&[
+        Self::selected_by(Self::ORCHESTRATOR),
+        ArgGrammar::open("pane", "int"),
+        ArgGrammar::open("stimulus", "string"),
+        ArgGrammar::open("sentinel", "string").optional(),
+        Self::OPENED_BY,
+        Self::GUARDRAILS_BYTES,
+    ]);
+
+    /// `pipe` — relay one pane's output into another's input.
+    pub const PIPE_FORM: CallForm = CallForm::object(&[
+        Self::selected_by(Self::PIPE),
+        ArgGrammar::open("src", "int"),
+        ArgGrammar::open("dst", "int"),
+        Self::OPENED_BY,
+        Self::GUARDRAILS_BYTES,
+    ]);
+
+    /// `agent` — prompt the agent in a pane and collect its reply.
+    pub const AGENT_FORM: CallForm = CallForm::object(&[
+        Self::selected_by(Self::AGENT),
+        ArgGrammar::open("pane", "int"),
+        ArgGrammar::open("prompt", "string"),
+        ArgGrammar::open("eof", "bool").optional(),
+        ArgGrammar::open("timeout_ms", "int").optional(),
+        Self::OPENED_BY,
+        Self::GUARDRAILS_BYTES,
+    ]);
+
+    /// `dialogue` — two endpoints against each other, turn by turn. It spawns its OWN panes, which
+    /// is why it names argv templates instead of a pane.
+    pub const DIALOGUE_FORM: CallForm = CallForm::object(&[
+        Self::selected_by(Self::DIALOGUE),
+        ArgGrammar::open("endpoint_a", "array"),
+        ArgGrammar::open("endpoint_b", "array"),
+        ArgGrammar::open("seed", "string"),
+        ArgGrammar::open("label_a", "string").optional(),
+        ArgGrammar::open("label_b", "string").optional(),
+        // The two reply formats, published from `ReplyFormat`'s own words — two string literals
+        // inside the host's parser until R353.
+        ArgGrammar::one_of("format_a", "string", &sprag_plugin::ReplyFormat::WIRE_WORDS).optional(),
+        ArgGrammar::one_of("format_b", "string", &sprag_plugin::ReplyFormat::WIRE_WORDS).optional(),
+        ArgGrammar::open("cols", "int").optional(),
+        ArgGrammar::open("rows", "int").optional(),
+        ArgGrammar::open("timeout_ms", "int").optional(),
+        Self::OPENED_BY,
+        Self::GUARDRAILS_TOKENS,
+    ]);
 
     /// [`CANCEL_ACTION`](crate::plugins::CANCEL_ACTION) — the run to stop.
     pub const CANCEL: &'static [CallForm] = &[CallForm::object(&[ArgGrammar::open("id", "int")])];
