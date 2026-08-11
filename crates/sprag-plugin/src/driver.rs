@@ -19,7 +19,7 @@ use std::time::Duration;
 use sce_rust_runtime::Engine;
 
 use crate::access::{PaneAccess, PaneError};
-use crate::plugin::{Cost, Plugin, Verdict};
+use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::run::RunContext;
 use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
 
@@ -161,6 +161,8 @@ pub struct Driver {
     cost: Option<Cost>,
     failure: Option<PaneError>,
     progress: Option<ProgressCell>,
+    /// What each step did, bounded to the last [`JOURNAL_LIMIT`].
+    journal: Vec<StepRecord>,
     /// Which ceiling raised [`OrchestrationEvent::Exhaust`], recorded AT the raise.
     ///
     /// Recorded rather than re-derived at the end, because a deadline that passed one instant
@@ -184,12 +186,45 @@ pub struct Driver {
 /// The same two facts under the same names as `Outcome`'s, deliberately: a reader that polls this
 /// and then reads the outcome meets one vocabulary, and the last progress a run reports agrees with
 /// the outcome it ends on.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Progress {
     /// How many steps have completed. Zero before the first one returns.
     pub iterations: u32,
     /// What has been spent, in the run's own unit — [`None`] until the first step establishes it.
     pub cost: Option<Cost>,
+    /// THE LAST [`JOURNAL_LIMIT`] STEPS, oldest first.
+    ///
+    /// See [`StepRecord`] for why a run that reports only its total is not diagnosable.
+    pub journal: Vec<StepRecord>,
+}
+
+/// HOW MANY STEPS A RUN REMEMBERS.
+///
+/// A bound rather than the whole history, because a run may take as many steps as its iteration
+/// ceiling allows and this is held in memory for the life of the daemon. The LAST ones are kept
+/// because the question a journal is read to answer — *why did it not converge?* — is asked about
+/// the end of a run. ⚠ The TOTAL is never lost: `iterations` counts every step, so a reader can
+/// always tell a truncated journal from a complete one by comparing the two.
+pub const JOURNAL_LIMIT: usize = 64;
+
+/// WHAT ONE STEP DID — one entry of a run's journal.
+///
+/// # ⚠⚠ Why a run's total was not enough
+///
+/// A finished run said how many steps it took, what it spent, and which ceiling stopped it. For the
+/// one question a bounded loop is actually debugged with — *what happened in there?* — it said
+/// nothing at all, so `exhausted after 100 iterations` was the whole account of a hundred acts on
+/// somebody's pane. The counters existed per step and were summed away.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StepRecord {
+    /// Which step this was, counting from one.
+    pub iteration: u32,
+    /// What this step alone spent (not the running total).
+    pub cost: Cost,
+    /// What it decided.
+    pub verdict: Verdict,
+    /// The plugin's own line about it, if it had one — see [`Step::note`](crate::plugin::Step::note).
+    pub note: Option<String>,
 }
 
 /// Where a [`Driver`] publishes its [`Progress`], shared with whoever is watching.
@@ -211,6 +246,7 @@ impl Driver {
             cost: None,
             failure: None,
             progress: None,
+            journal: Vec::new(),
             exhausted_by: None,
         }
     }
@@ -238,8 +274,25 @@ impl Driver {
             *held = Progress {
                 iterations: self.iterations,
                 cost: self.cost,
+                journal: self.journal.clone(),
             };
         }
+    }
+
+    /// Record what a step did, keeping the last [`JOURNAL_LIMIT`].
+    ///
+    /// ⚠ The step's OWN cost, not the running total: a journal of totals could not answer *"which
+    /// step was the expensive one?"*, which is the question a cost ceiling makes people ask.
+    fn record(&mut self, step: &Step) {
+        if self.journal.len() == JOURNAL_LIMIT {
+            self.journal.remove(0);
+        }
+        self.journal.push(StepRecord {
+            iteration: self.iterations,
+            cost: step.cost,
+            verdict: step.verdict,
+            note: step.note.clone(),
+        });
     }
 
     /// Drive `plugin` over `panes` until a terminal state, reporting the
@@ -286,6 +339,7 @@ impl Driver {
                 Ok(step) => {
                     self.iterations += 1;
                     self.accumulate(step.cost);
+                    self.record(&step);
                     self.publish();
                     match (step.verdict, self.budget_exhausted()) {
                         (Verdict::Converged, _) => OrchestrationEvent::Converge,

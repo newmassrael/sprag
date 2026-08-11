@@ -271,12 +271,14 @@ impl Plugin for Dialogue {
         // far; the Driver's loop top decides which terminal state it was. The
         // guard closes the pane on this return.
         if waited == Waited::Stopped {
-            return Ok(Step {
-                // Token-denominated plugin: a cancelled turn has no measured
-                // token spend (Tokens(0)); the run ends Cancelled at the loop top.
-                cost: Cost::Tokens(0),
-                verdict: Verdict::Continue,
-            });
+            // Token-denominated plugin: a stopped turn has no measured token spend
+            // (Tokens(0)); the run's terminal state is the loop top's to decide.
+            return Ok(
+                Step::new(Cost::Tokens(0), Verdict::Continue).noting(format!(
+                    "turn {}: the run ended before {label} replied",
+                    self.turn
+                )),
+            );
         }
 
         // Decode the reply + real cost + session id while the pane is still
@@ -306,10 +308,17 @@ impl Plugin for Dialogue {
         self.turn += 1;
 
         // Never self-converges; the Driver's iteration/cost budget is the cap.
-        Ok(Step {
-            cost: decoded.cost,
-            verdict: Verdict::Continue,
-        })
+        // ⚠ The note names the SPEAKER and the reply's size: a dialogue that stopped converging is
+        // read by looking for the turn one side went quiet, and a run that reports only its token
+        // total cannot show that.
+        Ok(Step::new(decoded.cost, Verdict::Continue).noting(format!(
+            "turn {}: {} replied with {} characters",
+            self.turn - 1,
+            self.history.last().map_or("?", |turn| turn.label.as_str()),
+            self.history
+                .last()
+                .map_or(0, |turn| turn.text.chars().count()),
+        )))
     }
 
     fn captured(&self) -> Option<String> {

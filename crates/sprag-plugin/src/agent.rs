@@ -132,19 +132,19 @@ impl Plugin for Agent {
         // decides the terminal state, which is the only place that knows whether
         // it was a cancel or the duration ceiling.
         if self.await_reply(panes, run) == Waited::Stopped {
-            return Ok(Step {
-                cost: Cost::Bytes(cost),
-                verdict: Verdict::Continue,
-            });
+            return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
+                .noting("the run ended while waiting for the reply; nothing captured"));
         }
-        self.response = Some(self.capture(panes, &baseline));
+        let reply = self.capture(panes, &baseline);
+        // ⚠ THE LENGTH IS THE DIAGNOSTIC. A peer that never answered and one that answered are the
+        // same `converged` with the same cost, and an EMPTY capture is what a prompt the peer
+        // swallowed looks like from out here.
+        let note = format!("captured a {}-character reply", reply.chars().count());
+        self.response = Some(reply);
 
         // One-shot: one prompt, one captured reply, then converge. The Driver's
         // guardrails still bound it; `timeout` (above) bounds a non-exiting peer.
-        Ok(Step {
-            cost: Cost::Bytes(cost),
-            verdict: Verdict::Converged,
-        })
+        Ok(Step::new(Cost::Bytes(cost), Verdict::Converged).noting(note))
     }
 
     fn captured(&self) -> Option<String> {

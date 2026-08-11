@@ -191,7 +191,7 @@ impl RunRegistry {
                 label: record.label.clone(),
                 opened_by: record.opened_by,
                 state: lock(&record.state).clone(),
-                progress: *lock(&record.progress),
+                progress: lock(&record.progress).clone(),
             })
             .collect()
     }

@@ -71,6 +71,12 @@ const RUN_OPENED_BY_KEY: &str = "opened_by";
 /// Its vocabulary is [`sprag_plugin::Ceiling`]'s own words, so the host never spells a variant and
 /// a fourth ceiling reaches the wire by being added to that type.
 pub const RUN_CEILING_KEY: &str = "ceiling";
+/// The answer key carrying WHAT EACH STEP DID — the last [`sprag_plugin::JOURNAL_LIMIT`] of them.
+///
+/// A run reported its total and its terminal state and nothing about the steps between, so a loop
+/// that failed to converge could not be diagnosed at all. ⚠ Compare its length against
+/// `iterations` to tell a truncated journal from a complete one.
+pub const RUN_JOURNAL_KEY: &str = "journal";
 
 sprag_vt::closed_set! {
     /// WHICH BUNDLED PLUGIN a `run` names — the `plugin` discriminator's whole vocabulary.
@@ -783,9 +789,33 @@ fn run_to_json(run: &RunSummary) -> Value {
         RUN_ID_KEY: run.id.0,
         "label": run.label,
         "state": state_json,
+        // ⚠ THE JOURNAL SITS BESIDE THE STATE, NOT INSIDE IT, because it is the one fact that
+        // means the same thing whether the run is still going or over: these are the steps it
+        // took. Nesting it under `running` would have made a finished run's account vanish at
+        // exactly the moment somebody wants to read it.
+        RUN_JOURNAL_KEY: run.progress.journal.iter().map(step_to_json).collect::<Vec<_>>(),
     });
     if let Some(opener) = run.opened_by {
         entry[RUN_OPENED_BY_KEY] = json!(opener);
+    }
+    entry
+}
+
+/// Render one journal entry as JSON.
+///
+/// The step's OWN cost with its own unit, so a reader can find the expensive step rather than only
+/// the total — and the plugin's `note` verbatim, which the host does not interpret (the Driver does
+/// not either; see [`sprag_plugin::Step::note`]). A step with nothing to say OMITS the key, the
+/// rule `run_to_json` follows for `opened_by`: absence is silence, not an empty claim.
+fn step_to_json(step: &sprag_plugin::StepRecord) -> Value {
+    let mut entry = json!({
+        "iteration": step.iteration,
+        "cost": step.cost.amount(),
+        "unit": step.cost.unit(),
+        "verdict": step.verdict.wire_str(),
+    });
+    if let Some(note) = &step.note {
+        entry["note"] = json!(note);
     }
     entry
 }

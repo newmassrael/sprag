@@ -1840,6 +1840,35 @@ fn own_runs() -> Result<Vec<Value>, String> {
         .unwrap_or_default())
 }
 
+/// THE STEPS A RUN TOOK, as an agent reads them — empty when it has taken none.
+///
+/// ⚠ Why an agent gets this and not only the totals: `exhausted after 100 iterations` tells an
+/// agent its loop failed and nothing about WHY, so its only next move is to run the loop again and
+/// watch — which is the turn-by-turn watching `orchestrate` exists to remove. The journal is what
+/// makes a failed loop diagnosable without re-running it.
+fn render_journal(run: &Value) -> String {
+    let Some(steps) = run[sprag_host::plugins::RUN_JOURNAL_KEY].as_array() else {
+        return String::new();
+    };
+    if steps.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("  What its steps did:\n");
+    for step in steps {
+        out.push_str(&format!(
+            "    {}. {} {} — {}{}\n",
+            step["iteration"].as_u64().unwrap_or_default(),
+            step["cost"].as_u64().unwrap_or_default(),
+            step["unit"].as_str().unwrap_or("steps"),
+            step["verdict"].as_str().unwrap_or("?"),
+            step["note"]
+                .as_str()
+                .map_or_else(String::new, |note| format!(": {note}")),
+        ));
+    }
+    out
+}
+
 /// One run as an agent reads it.
 fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
@@ -1850,10 +1879,11 @@ fn render_run(run: &Value) -> String {
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
         // could not say that. It also lets an agent see spend BEFORE the budget is gone.
         Some("running") => format!(
-            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.\n",
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
+            render_journal(run),
         ),
         Some("done") => {
             let outcome = &state["outcome"];
@@ -1861,7 +1891,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}\n{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -1878,6 +1908,7 @@ fn render_run(run: &Value) -> String {
                 outcome["failure"]
                     .as_str()
                     .map_or_else(String::new, |why| format!(" It failed: {why}.")),
+                render_journal(run),
             )
         }
         _ => format!(

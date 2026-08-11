@@ -20,6 +20,20 @@ pub enum Verdict {
     Converged,
 }
 
+impl Verdict {
+    /// This verdict's word in a run's published journal — the ONE place the variant → name mapping
+    /// lives, so the host never spells a `Verdict` variant ([`Cost::unit`]'s rule).
+    ///
+    /// Exhaustive, so a third verdict cannot reach the wire without a word.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Converged => "converged",
+        }
+    }
+}
+
 /// A typed cost quantity — what a [`Step`] spent, with its UNIT in the type.
 ///
 /// A run drives exactly one plugin, and a plugin reports the SAME unit every
@@ -101,7 +115,12 @@ impl Cost {
 }
 
 /// What a [`Plugin::step`] did and decided.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠ NOT `Copy`, because of [`note`](Self::note) — and the field is worth that. A run reported its
+/// total spend and its terminal state and NOTHING about the steps in between, so a loop that failed
+/// to converge could not be diagnosed at all: an agent or a person looking at
+/// `exhausted after 100 iterations` had no way to ask what the seventh one did.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
     /// What this step spent on the peer, as a typed [`Cost`]: injected/argv bytes
     /// for the byte-relay plugins, real billed tokens for an AI adapter. A run
@@ -111,6 +130,41 @@ pub struct Step {
     /// the liveness guarantee, so a cost-free turn cannot loop forever.
     pub cost: Cost,
     pub verdict: Verdict,
+    /// ONE LINE ABOUT WHAT THIS STEP DID, in the plugin's own terms, or [`None`] when it has
+    /// nothing to add beyond its cost and verdict.
+    ///
+    /// The [`Driver`] never reads it — it records it into the run's journal and the host publishes
+    /// it. That keeps the Driver content-agnostic exactly as [`Plugin::captured`] does, and it is
+    /// why this is a plain string rather than a type the substrate would have to understand: what
+    /// is worth saying about a step is the plugin's business, and a `pipe` that relayed into a pane
+    /// which never showed the text is the case that proves it — nothing in `cost` or `verdict` can
+    /// carry that fact.
+    ///
+    /// ⚠ Keep it SHORT and per-step. It is retained for the last [`JOURNAL_LIMIT`] steps of a live
+    /// run, so a note that grew with the transcript would make a long run's memory grow with it.
+    ///
+    /// [`Driver`]: crate::driver::Driver
+    /// [`JOURNAL_LIMIT`]: crate::driver::JOURNAL_LIMIT
+    pub note: Option<String>,
+}
+
+impl Step {
+    /// A step that spent `cost`, decided `verdict`, and has nothing to add.
+    #[must_use]
+    pub const fn new(cost: Cost, verdict: Verdict) -> Self {
+        Self {
+            cost,
+            verdict,
+            note: None,
+        }
+    }
+
+    /// The same step, with one line for the run's journal.
+    #[must_use]
+    pub fn noting(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
 }
 
 /// A control plugin driven over the [`PaneAccess`] extension API.

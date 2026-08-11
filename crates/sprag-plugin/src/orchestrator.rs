@@ -81,11 +81,10 @@ impl Plugin for Orchestrator {
         // If the RUN ended mid-observe — cancelled, or out of time — don't judge:
         // return Continue so the Driver's loop top decides the terminal state,
         // rather than a spurious Converged off a screen nobody finished reading.
-        if self.observe(panes, run) == Waited::Stopped {
-            return Ok(Step {
-                cost: Cost::Bytes(cost),
-                verdict: Verdict::Continue,
-            });
+        let seen = self.observe(panes, run);
+        if seen == Waited::Stopped {
+            return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
+                .noting("the run ended while watching for the pane to react"));
         }
         let observed = panes.pane_collapsed(self.pane).unwrap_or_default();
         let verdict = if self
@@ -98,10 +97,16 @@ impl Plugin for Orchestrator {
         } else {
             Verdict::Continue
         };
-        Ok(Step {
-            cost: Cost::Bytes(cost),
-            verdict,
-        })
+        // ⚠ A STIMULUS THE PANE NEVER REACTED TO IS THE FINDING, and it is invisible in the
+        // outcome: the step costs the same bytes and reads `continue` either way, so a hundred
+        // iterations against a pane that is not listening look exactly like a hundred against one
+        // that is.
+        let note = match (seen, verdict) {
+            (_, Verdict::Converged) => "the sentinel appeared".to_string(),
+            (Waited::TimedOut, _) => "the pane did not react to the stimulus at all".to_string(),
+            _ => "the pane reacted; no sentinel yet".to_string(),
+        };
+        Ok(Step::new(Cost::Bytes(cost), verdict).noting(note))
     }
 }
 

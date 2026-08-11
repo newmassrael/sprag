@@ -4255,11 +4255,30 @@ fn runs(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
-/// One run as a person reads it: what it is, who asked for it, and where it got to.
+/// THE STEPS A RUN TOOK, one per line — the account a person reads to find where a loop went wrong.
 ///
-/// The OPENER is printed because it is the fact that makes a shared daemon legible — a person
-/// looking at a list of runs wants to know which of them an agent started, and that is exactly the
-/// provenance the agent-facing mouth keeps agents to.
+/// A column layout rather than the agent's prose, on the split every other pair of renderers here
+/// keeps: a person scans a hundred rows for the odd one out, and an agent reads sentences.
+fn render_journal(run: &Value) -> String {
+    let Some(steps) = run[sprag_host::plugins::RUN_JOURNAL_KEY].as_array() else {
+        return String::new();
+    };
+    steps
+        .iter()
+        .map(|step| {
+            format!(
+                "    {:>4}  {:>8} {:<7} {:<9} {}\n",
+                step["iteration"].as_u64().unwrap_or_default(),
+                step["cost"].as_u64().unwrap_or_default(),
+                step["unit"].as_str().unwrap_or("steps"),
+                step["verdict"].as_str().unwrap_or("?"),
+                step["note"].as_str().unwrap_or(""),
+            )
+        })
+        .collect()
+}
+
+/// One run as a person reads it: what it is, who asked for it, and where it got to.
 fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
     let label = run["label"].as_str().unwrap_or("?");
@@ -4272,10 +4291,11 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far\n",
+            "{head}  running — {} iterations, {} {} so far\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
+            render_journal(run),
         ),
         Some("done") => {
             let outcome = &state["outcome"];
@@ -4284,7 +4304,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}\n{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -4296,6 +4316,7 @@ fn render_run(run: &Value) -> String {
                 outcome["failure"]
                     .as_str()
                     .map_or_else(String::new, |why| format!("\n  failed: {why}")),
+                render_journal(run),
             )
         }
         _ => format!("{head}  {}\n", state["status"].as_str().unwrap_or("?")),

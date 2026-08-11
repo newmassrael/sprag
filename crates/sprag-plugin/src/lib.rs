@@ -54,7 +54,10 @@ pub use access::{
 pub use agent::{Agent, AgentSpec};
 pub use deliver::{Delivered, Delivery, deliver, has_painted};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
-pub use driver::{Ceiling, Driver, Guardrails, Outcome, OutcomeState, Progress, ProgressCell};
+pub use driver::{
+    Ceiling, Driver, Guardrails, JOURNAL_LIMIT, Outcome, OutcomeState, Progress, ProgressCell,
+    StepRecord,
+};
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::Pipe;
 pub use plugin::{Cost, Plugin, Step, Verdict};

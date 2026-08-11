@@ -4306,6 +4306,25 @@ fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
          deadline it inherited, and the two have different remedies. {ended}",
         sprag_host::plugins::DEFAULT_MAX_ITERATIONS,
     );
+
+    // ⚠⚠ AND WHAT THE THREE TURNS ACTUALLY DID. A total tells an agent its loop failed and gives
+    // it nothing to act on but running the loop again and watching — which is the turn-by-turn
+    // watching `orchestrate` exists to remove. One line per step, from the plugin's own words.
+    assert!(
+        ended.contains("What its steps did:"),
+        "a finished run accounts for its steps, not only its total: {ended}",
+    );
+    for turn in 1..=3 {
+        assert!(
+            ended.contains(&format!("    {turn}. ")),
+            "every step the run took is in the journal, and step {turn} is missing: {ended}",
+        );
+    }
+    assert!(
+        ended.contains("the pane reacted") || ended.contains("did not react"),
+        "and each line carries the PLUGIN's account of that step, which is the only place the \
+         difference between a pane that is listening and one that is not can appear: {ended}",
+    );
     assert!(
         ended.contains("bytes"),
         "and the cost is reported in the run's OWN unit, which is what stops a byte budget from \
