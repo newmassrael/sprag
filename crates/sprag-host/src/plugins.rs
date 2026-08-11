@@ -37,7 +37,8 @@ use sprag_plugin::{
 use sprag_terminal::{PaneId, Workspace};
 
 use crate::external::{
-    as_object, lock, opt_dim, opt_str, refused, require_pane_id, require_str, rpc_external_impl,
+    as_object, declined, lock, opt_dim, opt_str, refused, require_pane_id, require_str,
+    rpc_external_impl,
 };
 use crate::runs::{RunId, RunRegistry, RunState, RunSummary};
 
@@ -392,8 +393,8 @@ impl PluginsExternal {
                 self.require_pane(pane)?;
                 let prompt = require_str(map, "prompt")?.to_string();
                 let mut spec = AgentSpec::new(prompt);
-                if let Some(v) = map.get("eof") {
-                    spec.eof = v.as_bool().ok_or(InvokeError::TypeMismatch)?;
+                if !declined(map, "eof") {
+                    spec.eof = map["eof"].as_bool().ok_or(InvokeError::TypeMismatch)?;
                 }
                 if let Some(timeout) = opt_millis(map, "timeout_ms")? {
                     spec.timeout = timeout;
@@ -722,13 +723,12 @@ impl PluginKind {
 /// A word outside [`ReadyWhen::WIRE_WORDS`] is MALFORMED rather than rejected — R353's rule, and
 /// what lets a completeness probe SEE that the vocabulary is closed.
 fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeError> {
-    let Some(value) = map.get("ready_when") else {
-        return Ok(None);
-    };
-    if value.is_null() {
+    if declined(map, "ready_when") {
         return Ok(None);
     }
-    let object = value.as_object().ok_or(InvokeError::TypeMismatch)?;
+    let object = map["ready_when"]
+        .as_object()
+        .ok_or(InvokeError::TypeMismatch)?;
     let matched = require_str(object, "match")?;
     let marker = require_str(object, "marker")?.to_string();
     ReadyWhen::parse(matched, marker)
@@ -737,12 +737,12 @@ fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeE
 }
 
 fn opt_millis(map: &Map<String, Value>, key: &str) -> Result<Option<Duration>, InvokeError> {
-    match map.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => Ok(Some(Duration::from_millis(
-            value.as_u64().ok_or(InvokeError::TypeMismatch)?,
-        ))),
+    if declined(map, key) {
+        return Ok(None);
     }
+    Ok(Some(Duration::from_millis(
+        map[key].as_u64().ok_or(InvokeError::TypeMismatch)?,
+    )))
 }
 
 fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<String>, InvokeError> {
@@ -807,14 +807,17 @@ fn parse_guardrails(
     map: &Map<String, Value>,
     default_cost: Cost,
 ) -> Result<Guardrails, InvokeError> {
-    let Some(value) = map.get("guardrails") else {
+    // ⚠ DECLINED, not merely absent — see [`declined`](crate::external::declined). A client whose
+    // language serialises an absent optional as `null` sends `"guardrails": null` on every
+    // unguarded run, and answering `TypeMismatch` there refuses a well-formed call.
+    if declined(map, "guardrails") {
         return Ok(Guardrails {
             max_iterations: DEFAULT_MAX_ITERATIONS,
             max_cost: Some(default_cost),
             max_duration: Some(Duration::from_secs(DEFAULT_MAX_SECONDS)),
         });
-    };
-    let Value::Object(g) = value else {
+    }
+    let Value::Object(g) = &map["guardrails"] else {
         return Err(InvokeError::TypeMismatch);
     };
     // AGAINST THE PUBLICATION, not against a list kept here: the keys this parser honours and the
@@ -835,16 +838,19 @@ fn parse_guardrails(
                 .join(", "),
         )));
     }
-    let max_iterations = match g.get("max_iterations") {
-        None => DEFAULT_MAX_ITERATIONS,
-        Some(v) => v
+    // ⚠ The SAME declined rule inside the nest. A nested optional is an optional.
+    let max_iterations = if declined(g, "max_iterations") {
+        DEFAULT_MAX_ITERATIONS
+    } else {
+        g["max_iterations"]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
-            .ok_or(InvokeError::TypeMismatch)?,
+            .ok_or(InvokeError::TypeMismatch)?
     };
-    let max_seconds = match g.get("max_seconds") {
-        None => DEFAULT_MAX_SECONDS,
-        Some(v) => v.as_u64().ok_or(InvokeError::TypeMismatch)?,
+    let max_seconds = if declined(g, "max_seconds") {
+        DEFAULT_MAX_SECONDS
+    } else {
+        g["max_seconds"].as_u64().ok_or(InvokeError::TypeMismatch)?
     };
     Ok(Guardrails {
         max_iterations,
@@ -860,7 +866,13 @@ fn parse_guardrails(
 /// [`InvokeError`] (a misloaded spend guardrail is a submit-time error, never a
 /// silently looser-by-a-factor bound).
 fn parse_max_cost(g: &Map<String, Value>, default_cost: Cost) -> Result<Option<Cost>, InvokeError> {
-    let bound = match (g.get("max_bytes"), g.get("max_tokens")) {
+    // ⚠⚠ A DECLINED KEY IS NOT A GIVEN ONE, and here that is load-bearing rather than tidy: the
+    // XOR below refuses BOTH-given, so a client declining one unit with `null` would have been told
+    // it had named two cost units when it had named one.
+    let bound = match (
+        (!declined(g, "max_bytes")).then(|| &g["max_bytes"]),
+        (!declined(g, "max_tokens")).then(|| &g["max_tokens"]),
+    ) {
         (Some(_), Some(_)) => {
             return Err(refused(
                 "max_bytes and max_tokens were both given: a run has one cost unit",
@@ -1651,11 +1663,12 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            17,
+            20,
             "one call per published word: the ONE plugin word that selects each of the four forms, \
              the two reply formats on each of a dialogue's two endpoints, and the readiness \
-             barrier's THREE `match` words on each of the three plugins that inject — the third \
-             being `runs`, which asks the pane's terminal rather than its screen",
+             barrier's FOUR `match` words on each of the three plugins that inject — the last two \
+             being `runs` and `settles`, which ask the pane's terminal and its supervisor rather \
+             than its screen",
         );
     }
 
@@ -1687,6 +1700,26 @@ mod tests {
     /// not see before it learned to walk them**. `max_iterations` and each form's cost key are now
     /// each driven at the wrong type inside their parent, which is what turns the nested grammar
     /// from a published claim into a held one.
+    /// ⚠⚠ **EVERY OPTIONAL ARGUMENT OF THIS SURFACE MAY BE DECLINED AS `null`** — the class a
+    /// hand-written check cannot close, because it is the arguments nobody thought about that are
+    /// wrong.
+    ///
+    /// Found live: `sentinel: null` answered `TypeMismatch` while `ready_when: null` and
+    /// `ready_timeout_ms: null` did not, so the SAME request was well-formed or malformed depending
+    /// on which optional the client declined. A client whose language serialises absence as `null`
+    /// — most of them — could not start an orchestrator run at all without a sentinel.
+    #[test]
+    fn an_optional_argument_of_a_run_may_be_declined_as_null() {
+        assert_eq!(
+            grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
+                .count_or_panic(),
+            36,
+            "one probe per OPTIONAL declared argument of every form, nesting included — required \
+             ones are deliberately not driven, because `null` for something the grammar demands is \
+             malformed rather than declined",
+        );
+    }
+
     #[test]
     fn a_declared_argument_is_one_the_plugin_host_reads() {
         assert_eq!(
@@ -1835,6 +1868,54 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// ⚠⚠ **AN EXPLICIT `null` IS AN OMISSION, NOT A MALFORMED VALUE** — the arm the conformance
+    /// walk cannot reach, and which was asserted nowhere.
+    ///
+    /// That walk drives every declared argument at the WRONG TYPE to prove the parser refuses it,
+    /// so it reaches [`InvokeError::TypeMismatch`] for a string where an int belongs. `null` is the
+    /// one value that must NOT be refused: a client serialising an absent optional from a language
+    /// where absence IS `null` — which is most of them — sends it on every call, and a daemon that
+    /// answered `TypeMismatch` would reject well-formed runs from an entire class of client.
+    ///
+    /// ⚠ Both spellings, in one call: the two `*_ms` bounds and the barrier itself. `ready_when`
+    /// carries the rule too, and it is the one that matters most — a nested UNIT read as malformed
+    /// rather than absent is a run refused for declining an optional feature.
+    #[test]
+    fn an_explicitly_null_optional_reads_as_absent_rather_than_malformed() {
+        let (mut external, registry, pane) = host_with_a_pane();
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "sentinel": null,
+                    "ready_when": null,
+                    "ready_timeout_ms": null,
+                    "guardrails": { "max_iterations": 1, "max_seconds": 5 },
+                })),
+            )
+            .expect(
+                "an optional spelled `null` is one the caller declined — refusing it would reject \
+                 every client whose language serialises absence that way",
+            );
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        // ⚠ AND IT REALLY RAN. A parse that accepted `null` and then quietly built a different spec
+        // would pass the line above; the run has to reach an ending of its own.
+        let entry = ended(
+            &registry,
+            u64::try_from(id).expect("a run id is not negative"),
+            Duration::from_secs(20),
+        );
+        assert!(
+            entry["state"]["outcome"]["state"].is_string(),
+            "the run built from the declined optionals ran to an ending of its own: {entry:?}",
+        );
     }
 
     /// ⚠⚠ **THE `failure` A CLIENT READS IS A SENTENCE ABOUT THE PANE, NOT A RUST VARIANT** — the

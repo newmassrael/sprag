@@ -109,21 +109,55 @@ pub enum PaneError {
     NeverReady {
         /// The whole question, not just its marker.
         ///
-        /// ⚠ The three [`ReadyWhen`] kinds fail for three DIFFERENT reasons — a marker that was
-        /// never printed, a screen that never carried it, a program that never took the terminal —
-        /// and a caller handed only the marker back cannot tell which of the three they got wrong.
+        /// ⚠ The four [`ReadyWhen`] kinds fail for four DIFFERENT reasons — a marker that was never
+        /// printed, a screen that never carried it, a program that never took the terminal, an
+        /// agent that never came to rest — and a caller handed only the marker back cannot tell
+        /// which of the four they got wrong.
         wanted: ReadyWhen,
-        /// What owned the pane's terminal instead, when this host can see the process table.
+        /// What the pane was doing instead.
         ///
         /// The diagnostic half, and the reason a wrong guess costs one run rather than an
         /// afternoon: *"you waited for `claude` and this pane's terminal belonged to `sh`"* is
-        /// the whole correction, in the sentence that reports the failure.
-        ///
-        /// ⚠ `None` means **this host has no process view**, and nothing else — it is answered for
-        /// all three kinds, because *what was actually running* diagnoses a marker that never
-        /// printed just as well as a name that never matched.
-        instead: Option<String>,
+        /// the whole correction, in the sentence that reports the failure. Answered for every
+        /// kind, because *what was actually running* diagnoses a marker that never printed just as
+        /// well as a name that never matched.
+        instead: PaneDoing,
     },
+}
+
+/// What a pane was doing when a readiness barrier gave up — the diagnostic half of
+/// [`PaneError::NeverReady`].
+///
+/// # ⚠⚠ Three states, because an `Option<String>` spelled two of them the same
+///
+/// *"This build cannot see the process table"* and *"this pane's child has exited"* are opposite
+/// things to tell a caller: the first is about their DEPLOYMENT and the second about their PANE.
+/// Carried as one `None`, a pane that died mid-wait reported the first — a false statement about a
+/// build that was working perfectly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaneDoing {
+    /// A job owns the pane's terminal; this is its leader's name.
+    Job(String),
+    /// The host CAN see the process table and nothing owns this pane's terminal — its child has
+    /// exited, or the pane never had one.
+    Nothing,
+    /// This host has no view of the process table at all, so it cannot say.
+    Unknown,
+}
+
+impl std::fmt::Display for PaneDoing {
+    /// The clause this becomes inside a [`PaneError::NeverReady`] sentence. ⚠ Each reads as the
+    /// END of *"…, so nothing was injected"*, so each starts mid-sentence by design.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Job(leader) => write!(f, "; its terminal belonged to {leader:?} instead"),
+            Self::Nothing => write!(
+                f,
+                "; nothing owned its terminal — the pane's child had gone"
+            ),
+            Self::Unknown => Ok(()),
+        }
+    }
 }
 
 impl std::fmt::Display for PaneError {
@@ -144,10 +178,7 @@ impl std::fmt::Display for PaneError {
                      nothing was injected",
                     wanted.describe(),
                 )?;
-                match instead {
-                    Some(leader) => write!(f, "; its terminal belonged to {leader:?} instead"),
-                    None => Ok(()),
-                }
+                write!(f, "{instead}")
             }
         }
     }

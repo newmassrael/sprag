@@ -115,24 +115,48 @@ pub fn require_str<'a>(map: &'a Map<String, Value>, key: &str) -> Result<&'a str
         .ok_or(InvokeError::TypeMismatch)
 }
 
-/// An optional string field: `None` if absent, `Err` if present but not a string.
-pub fn opt_str<'a>(map: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>, InvokeError> {
-    match map.get(key) {
-        None => Ok(None),
-        Some(value) => value.as_str().map(Some).ok_or(InvokeError::TypeMismatch),
-    }
+/// Whether `key` is DECLINED — absent, or present as an explicit `null`.
+///
+/// # ⚠⚠ An explicit `null` is an omission, and this wire used to disagree with itself about it
+///
+/// Most languages serialise an absent optional as `null`: an untouched `Option` in a struct, a
+/// `None` in Python, an unset field in TypeScript's `JSON.stringify` of an explicitly-null
+/// property. A client written that way sends `"sentinel": null` on every call it declines to use a
+/// sentinel on.
+///
+/// Two readers of this wire already treated that as absence (`opt_millis`, `opt_ready_when`) and
+/// the general ones did not — so the SAME request was well-formed or `TypeMismatch` depending on
+/// which argument the client happened to decline. **Measured: a run declining `sentinel`,
+/// `ready_when` and `ready_timeout_ms` together was refused outright**, and the refusal named
+/// nothing a caller could act on.
+///
+/// One predicate, shared by every optional reader here, so the answer cannot differ per argument.
+/// ⚠ It is deliberately NOT applied to [`require_str`] and the other required readers: `null` for
+/// something the grammar demands is a malformed request, and reading it as absence would turn a
+/// missing required argument into a different, later error.
+pub(crate) fn declined(map: &Map<String, Value>, key: &str) -> bool {
+    map.get(key).is_none_or(Value::is_null)
 }
 
-/// An optional positive `u16` dimension: `None` if absent, `Err` if present but
-/// not a positive `u16`.
-pub fn opt_dim(map: &Map<String, Value>, key: &str) -> Result<Option<u16>, InvokeError> {
-    match map.get(key) {
-        None => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .and_then(|n| u16::try_from(n).ok())
-            .filter(|&n| n > 0)
-            .map(Some)
-            .ok_or(InvokeError::TypeMismatch),
+/// An optional string field: `None` if absent or explicitly `null`, `Err` if
+/// present but not a string.
+pub fn opt_str<'a>(map: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>, InvokeError> {
+    if declined(map, key) {
+        return Ok(None);
     }
+    map[key].as_str().map(Some).ok_or(InvokeError::TypeMismatch)
+}
+
+/// An optional positive `u16` dimension: `None` if absent or explicitly `null`,
+/// `Err` if present but not a positive `u16`.
+pub fn opt_dim(map: &Map<String, Value>, key: &str) -> Result<Option<u16>, InvokeError> {
+    if declined(map, key) {
+        return Ok(None);
+    }
+    map[key]
+        .as_u64()
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|&n| n > 0)
+        .map(Some)
+        .ok_or(InvokeError::TypeMismatch)
 }

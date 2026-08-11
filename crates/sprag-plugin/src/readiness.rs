@@ -40,9 +40,10 @@
 
 use std::time::Duration;
 
+use sprag_detect::AgentState;
 use sprag_terminal::PaneId;
 
-use crate::access::{PaneAccess, PaneError};
+use crate::access::{PaneAccess, PaneDoing, PaneError};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// The bound a readiness wait is given when the caller names none.
@@ -95,11 +96,21 @@ pub enum Reached {
 pub enum ReadyWhen {
     /// Ready once the marker appears in output the pane produces **after the barrier arms**.
     ///
-    /// The answer for *"I just started it"*, and echo-proof for anything typed before the run: the
-    /// barrier baselines every row's damage generation on its first look and only reads rows that
-    /// moved past it. Wrap-safe — the moved rows are joined the way
-    /// [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed) joins the screen, so a marker
-    /// the pane wrapped is still found.
+    /// The answer for *"I just started it"*: the barrier counts how many times the marker is
+    /// already on the collapsed screen when it arms, and clears only once there are MORE. Wrap-safe
+    /// — the screen is joined the way [`pane_collapsed`](crate::access::PaneAccess::pane_collapsed)
+    /// joins it, so a marker the pane wrapped is one occurrence at any width.
+    ///
+    /// ⚠⚠ **A COUNT, and not each row's DAMAGE GENERATION, which is what this was.** A damage
+    /// generation is a PAINT signal — it tells a renderer which rows to redraw — and a RESIZE
+    /// (`Screen::reflowed`) or an OSC PALETTE change (`mark_all_dirty`) stamps every row with a
+    /// fresh one while no program prints anything. Measured: a pane whose screen already carried
+    /// the marker cleared this barrier **the instant anybody resized**, which in a terminal
+    /// multiplexer is what every attaching client does.
+    ///
+    /// ⚠ The residue: text scrolling OFF lowers the count, so a marker that was on screen, scrolled
+    /// away and was then printed afresh may not exceed its baseline. A false NEGATIVE — the safe
+    /// direction — and [`Runs`](Self::Runs) has no such arithmetic.
     ///
     /// # ⚠⚠ AND THE PANE'S OWN ECHO IS DISCOUNTED, whenever it lands
     ///
@@ -170,6 +181,47 @@ pub enum ReadyWhen {
     /// is never satisfied, and the run ends [`NeverReady`](crate::access::PaneError::NeverReady)
     /// rather than typing into whatever is there.
     Runs(String),
+    /// Ready once the AGENT named here is **at rest and waiting for input**. The strongest of the
+    /// four, and the one to prefer when the pane runs an agent this host can supervise.
+    ///
+    /// # ⚠⚠ Owning the terminal is not the same as listening
+    ///
+    /// [`Runs`](Self::Runs) clears the moment a program takes the pane's terminal, which for a
+    /// cold agent is seconds before it will answer anything: the model is still starting, and a
+    /// prompt sent into that window is typed at something that has not finished reading its own
+    /// configuration. `Runs` is the honest answer to *has it started*, and callers kept needing the
+    /// next question — *has it started AND stopped again, waiting for me*.
+    ///
+    /// One condition answers both halves, because an
+    /// [`AgentObservation`](crate::access::AgentObservation) carries WHICH agent alongside what it
+    /// is doing. So this is not a composition of two barriers; it is the barrier the supervisor was
+    /// already able to answer and nothing asked it for.
+    ///
+    /// # What counts as ready, and what deliberately does not
+    ///
+    /// [`Idle`](sprag_detect::AgentState::Idle) — *at rest, waiting for input it has not asked
+    /// for* — and nothing else.
+    ///
+    /// * **`Working` is not ready**, which is the entire point: it is the state `Runs` cannot
+    ///   distinguish from readiness.
+    /// * ⚠ **`Blocked` is not ready either, and that is a decision rather than an omission.** A
+    ///   blocked agent is waiting for an ANSWER TO ITS OWN QUESTION, and a fresh prompt sent there
+    ///   answers the wrong thing — often into a numbered menu, where it selects. A caller who means
+    ///   to answer a blocked agent is supervising it, not waiting to start.
+    /// * **An observation that names no agent is not ready**, however idle it looks: two panes at
+    ///   rest are not evidence about WHICH program is at rest, and this kind's whole value is that
+    ///   it names one.
+    ///
+    /// ⚠ **The evidence may be a SCREEN RULE rather than the agent's own report**
+    /// ([`Authority`](crate::access::Authority)), and this accepts either. That is a real trade and
+    /// not an oversight: a scraped answer is APPROXIMATE, but it is deterministic — it is not the
+    /// scheduling-dependent ambiguity the other kinds' documentation is about — and refusing it
+    /// would leave a caller whose agent does not self-report with no way to ask this question at
+    /// all. [`Runs`](Self::Runs) is the exact-but-weaker alternative, and it is one word away.
+    ///
+    /// ⚠ On a host with no detector at all ([`PaneAccess::supervision`] is `None`) this is never
+    /// satisfied, on the same terms as [`Runs`](Self::Runs).
+    Settles(String),
 }
 
 impl ReadyWhen {
@@ -177,19 +229,30 @@ impl ReadyWhen {
     ///
     /// Published to every mouth from here rather than retyped as literals, so a third kind reaches
     /// the wire in the compile that adds it.
-    pub const WIRE_WORDS: &'static [&'static str] = &["prints", "shows", "runs"];
+    pub const WIRE_WORDS: &'static [&'static str] = &["prints", "shows", "runs", "settles"];
 
     /// The kind named by `word`, or `None` for a word outside the closed set.
     ///
     /// ⚠ A caller who sends something else has made a MALFORMED request, not a rejected one —
     /// R353's rule, and the reason this returns an `Option` for the parser to turn into the wire's
     /// own grammar refusal rather than a friendly sentence.
+    ///
+    /// ⚠⚠ **AN EMPTY MARKER IS REFUSED**, because it is a different wrong answer in each kind and
+    /// none of them is what a caller meant: `""` is on every screen, so [`Shows`](Self::Shows)
+    /// clears instantly and the barrier is a no-op that LOOKS like a barrier; no process is named
+    /// `""`, so [`Runs`](Self::Runs) can never clear; and counting occurrences of `""` is
+    /// arithmetic on nothing. The type is `String` and the argument admits fewer values than the
+    /// type — R352's shape, and the fix is one predicate the parser and the publication share.
     #[must_use]
     pub fn parse(word: &str, marker: String) -> Option<Self> {
+        if marker.is_empty() {
+            return None;
+        }
         match word {
             "prints" => Some(Self::Prints(marker)),
             "shows" => Some(Self::Shows(marker)),
             "runs" => Some(Self::Runs(marker)),
+            "settles" => Some(Self::Settles(marker)),
             _ => None,
         }
     }
@@ -201,6 +264,7 @@ impl ReadyWhen {
             Self::Prints(_) => "prints",
             Self::Shows(_) => "shows",
             Self::Runs(_) => "runs",
+            Self::Settles(_) => "settles",
         }
     }
 
@@ -208,7 +272,10 @@ impl ReadyWhen {
     #[must_use]
     pub fn marker(&self) -> &str {
         match self {
-            Self::Prints(marker) | Self::Shows(marker) | Self::Runs(marker) => marker,
+            Self::Prints(marker)
+            | Self::Shows(marker)
+            | Self::Runs(marker)
+            | Self::Settles(marker) => marker,
         }
     }
 
@@ -225,6 +292,7 @@ impl ReadyWhen {
             Self::Prints(marker) => format!("printed {marker:?}"),
             Self::Shows(marker) => format!("showed {marker:?}"),
             Self::Runs(name) => format!("ran {name:?}"),
+            Self::Settles(agent) => format!("settled as {agent:?}, at rest and waiting for input"),
         }
     }
 }
@@ -243,9 +311,16 @@ pub struct Readiness {
     within: Duration,
     /// Every row's damage generation when this barrier ARMED, for [`ReadyWhen::Prints`].
     ///
+    /// How many times the marker was ALREADY on the collapsed screen when this barrier armed, for
+    /// [`ReadyWhen::Prints`].
+    ///
     /// Captured on the first look rather than at construction, because that is the moment the
     /// question is first asked and the only one a `PaneAccess` is in hand for. `None` until then.
-    armed_at: Option<Vec<u64>>,
+    ///
+    /// ⚠ A COUNT, and not each row's damage generation, which is what this was. See the comment in
+    /// [`satisfied`](Self::satisfied): a generation says a row was REPAINTED, and a resize repaints
+    /// every one of them.
+    armed_at: Option<usize>,
     /// Whether the marker has been seen. Latched.
     seen: bool,
 }
@@ -272,14 +347,23 @@ impl Readiness {
                 .foreground_job()
                 .and_then(|jobs| jobs.pane_foreground_leader(pane))
                 .is_some_and(|leader| leader_is_named(&leader, name)),
+            // ⚠⚠ IDLE AND NAMED, both halves from ONE observation. `Working` is the state `Runs`
+            // cannot tell from readiness, which is why this kind exists; `Blocked` is waiting for
+            // an answer to its OWN question, where a fresh prompt answers the wrong thing; and an
+            // observation naming no agent is not evidence about WHICH program is at rest.
+            ReadyWhen::Settles(agent) => panes
+                .supervision()
+                .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                .is_some_and(|seen| {
+                    seen.state == AgentState::Idle && seen.agent.as_deref() == Some(agent.as_str())
+                }),
             ReadyWhen::Shows(marker) => panes
                 .pane_collapsed(pane)
                 .is_some_and(|text| text.contains(marker.as_str())),
             ReadyWhen::Prints(marker) => {
-                let Some(rows) = panes.pane_rows(pane) else {
+                let Some(text) = panes.pane_collapsed(pane) else {
                     return false;
                 };
-                let armed = self.armed_at.as_deref().unwrap_or_default();
                 // ⚠⚠ WHAT WAS TYPED AT THE PANE IS NOT WHAT THE PANE SAID. The pty echoes it, and
                 // on the grid the echo is ordinary output — so a row carrying a piece of the
                 // caller's own input is dropped before anything is read. This is the same rule
@@ -287,8 +371,8 @@ impl Readiness {
                 // did not write, which is only possible because the PANE remembers it.
                 //
                 // ⚠ Absent the capability the discount cannot be applied, and the fallback is the
-                // generation baseline alone — weaker, and the reason `input_echo` returning `None`
-                // is documented as a degradation rather than a default.
+                // arming count alone — weaker, and the reason `input_echo` returning `None` is
+                // documented as a degradation rather than a default.
                 let typed = panes
                     .input_echo()
                     .and_then(|echo| echo.pane_recent_input(pane))
@@ -306,16 +390,25 @@ impl Readiness {
                 if typed.contains(marker.as_str()) {
                     return false;
                 }
-                // The rows that MOVED since arming, joined the way the whole screen is joined, so a
-                // marker the pane wrapped across two fresh rows is still found. A row that did not
-                // move is not evidence — that is the entire point of this kind.
-                let printed: String = rows
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, row)| row.generation > armed.get(*i).copied().unwrap_or(0))
-                    .map(|(_, row)| row.text.trim_end())
-                    .collect();
-                printed.contains(marker.as_str())
+                // ⚠⚠ MORE OCCURRENCES THAN WHEN THE BARRIER ARMED — counted over the whole
+                // collapsed screen, never over rows a DAMAGE GENERATION says were repainted.
+                //
+                // A damage generation is a PAINT signal: it exists so a renderer knows what to
+                // redraw. Two ordinary events stamp every row with a fresh one while no program
+                // prints anything — a RESIZE (`Screen::reflowed`, which is what every attaching
+                // client causes, in a terminal multiplexer of all products) and an OSC PALETTE
+                // change (`mark_all_dirty`, which many programs send on startup). Answering *did
+                // the pane print this* with it cleared the barrier on text that was already there.
+                //
+                // A count is immune to both, and to the re-wrap between them: the screen is
+                // collapsed the way [`PaneAccess::pane_collapsed`] joins it, so a marker the pane
+                // wrapped is ONE occurrence at either width.
+                //
+                // ⚠ The residue, stated rather than smoothed over: text scrolling off LOWERS the
+                // count, so a marker that was on screen twice, scrolled away and was then printed
+                // afresh does not exceed its baseline. That is a false NEGATIVE — the safe
+                // direction — and [`ReadyWhen::Runs`] is the kind that has no such arithmetic.
+                text.matches(marker.as_str()).count() > self.armed_at.unwrap_or(0)
             }
         }
     }
@@ -352,15 +445,14 @@ impl Readiness {
             self.seen = true;
             return Ok(Reached::Yes);
         };
-        // ⚠ ARM BEFORE THE FIRST LOOK, never before. Everything on the screen at this instant is
-        // what `Prints` refuses to count, and this is the first moment a pane is in hand to read
-        // it from.
+        // ⚠ ARM BEFORE THE FIRST LOOK, never before. Every occurrence of the marker on the screen
+        // at this instant is one `Prints` refuses to count, and this is the first moment a pane is
+        // in hand to read them from.
         if self.armed_at.is_none() {
             self.armed_at = Some(
                 panes
-                    .pane_rows(pane)
-                    .map(|rows| rows.iter().map(|row| row.generation).collect())
-                    .unwrap_or_default(),
+                    .pane_collapsed(pane)
+                    .map_or(0, |text| text.matches(when.marker()).count()),
             );
         }
         match poll_until(run, self.within, || self.satisfied(&when, panes, pane)) {
@@ -374,10 +466,12 @@ impl Readiness {
             // out of a run that is already over.
             Waited::TimedOut => Err(PaneError::NeverReady {
                 wanted: when,
-                instead: panes
-                    .foreground_job()
-                    .and_then(|jobs| jobs.pane_foreground_leader(pane))
-                    .map(|leader| leader.name),
+                // ⚠ THE ABSENCE OF THE CAPABILITY AND THE ABSENCE OF A JOB ARE DIFFERENT ANSWERS —
+                // one is about this build, the other about this pane. See [`PaneDoing`].
+                instead: panes.foreground_job().map_or(PaneDoing::Unknown, |jobs| {
+                    jobs.pane_foreground_leader(pane)
+                        .map_or(PaneDoing::Nothing, |leader| PaneDoing::Job(leader.name))
+                }),
             }),
         }
     }
@@ -407,7 +501,9 @@ fn leader_is_named(leader: &sprag_terminal::JobProcess, want: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sprag_terminal::JobProcess;
+    use crate::access::WorkspacePaneAccess;
+    use sprag_terminal::{CommandBuilder, JobProcess, Workspace};
+    use std::sync::{Arc, Mutex};
 
     /// ⚠⚠ **EVERY WORD THE VOCABULARY PUBLISHES IS ONE THE PARSER READS, AND BACK.**
     ///
@@ -434,14 +530,381 @@ mod tests {
         }
         assert_eq!(
             ReadyWhen::WIRE_WORDS.len(),
-            3,
-            "the three questions a readiness marker can ask: whether the pane PRINTS it after the \
-             run arms, whether it SHOWS it already, or whether the pane's terminal belongs to a \
-             job that RUNS it — the last of which is not a question about the screen at all",
+            4,
+            "the four questions a readiness marker can ask, in increasing strength: whether the \
+             pane PRINTS it after the run arms, whether it SHOWS it already, whether the pane's \
+             terminal belongs to a job that RUNS it, or whether the agent SETTLES as it and waits \
+             — and only the first two are questions about the screen",
         );
         assert!(
             ReadyWhen::parse("appears", "MARK".to_string()).is_none(),
             "and a word outside the set is refused, or the published `enum` is a false statement",
+        );
+        // ⚠⚠ AND AN EMPTY MARKER, IN EVERY KIND — driven from the published words rather than
+        // spot-checked on one, because the reason differs per kind and the refusal must not.
+        // `Shows("")` is the dangerous one: every screen contains `""`, so the barrier clears
+        // instantly while LOOKING like a barrier the caller asked for.
+        for word in ReadyWhen::WIRE_WORDS {
+            assert!(
+                ReadyWhen::parse(word, String::new()).is_none(),
+                "{word:?} with an empty marker is a MALFORMED request, not a barrier: the \
+                 argument admits fewer values than its `String` type",
+            );
+            // ⚠⚠ AND EVERY KIND CAN SAY ITS OWN FAILURE. `describe` is what
+            // `PaneError::NeverReady`'s sentence is built from, and it is an exhaustive match —
+            // so a fifth kind compiles the moment it is added and would reach an agent with
+            // whatever clause its author wrote. Driven from the published words so each arm is
+            // BUILT here rather than trusted.
+            let said = ReadyWhen::parse(word, "MARK".to_string())
+                .expect("published")
+                .describe();
+            assert!(
+                said.contains("MARK") && said.starts_with(char::is_lowercase),
+                "{word:?} must describe itself as a past-tense clause naming the marker — it is \
+                 read after \"the pane never \": {said:?}",
+            );
+        }
+    }
+
+    /// ⚠⚠ **OWNING THE TERMINAL IS NOT LISTENING** — the gap [`ReadyWhen::Runs`] cannot close, and
+    /// the reason [`ReadyWhen::Settles`] exists.
+    ///
+    /// A cold agent takes its pane's terminal seconds before it will answer anything. `Runs` clears
+    /// at the first instant — correctly, because *has it started* is the question it answers — and a
+    /// caller who meant *is it waiting for me* has been driving a starting program ever since.
+    ///
+    /// **The discriminator is the SAME PANE AT THE SAME MOMENT**, asked both ways. The supervisor
+    /// reports `Working` (the agent is up, thinking) and the fixture asserts:
+    ///
+    /// 1. `Runs("tr")` IS satisfied — the program owns the terminal, which is true and not enough;
+    /// 2. `Settles("claude")` is NOT — it is working, not waiting;
+    /// 3. and once the same supervisor reports `Idle`, `Settles` clears.
+    ///
+    /// Half 1 is what makes this a discriminator rather than a restatement: without it the gate
+    /// would prove only that a made-up condition is unsatisfied.
+    ///
+    /// ⚠ `Blocked` gets its own half, because it is the arm most likely to be "fixed" into
+    /// readiness by someone reading only the state name. A blocked agent is waiting for an answer
+    /// to ITS OWN question — a prompt sent there answers the wrong thing, and into a numbered menu
+    /// it SELECTS.
+    #[test]
+    fn a_program_that_owns_the_terminal_is_not_yet_an_agent_that_is_listening() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec tr a-z A-Z");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 40, 8)
+                .expect("spawn pane")
+        };
+        // The supervisor this host installs, driven by the test rather than by a screen rule — the
+        // question here is what the BARRIER does with an observation, not how one is derived.
+        let reported = Arc::new(Mutex::new((
+            AgentState::Working,
+            Some("claude".to_string()),
+        )));
+        let source = {
+            let reported = Arc::clone(&reported);
+            Arc::new(move |_id: PaneId| {
+                let (state, agent) = reported.lock().unwrap().clone();
+                Some(crate::access::AgentObservation {
+                    state,
+                    agent,
+                    authority: crate::access::Authority::Reported {
+                        source: "test".to_string(),
+                    },
+                    seq: 1,
+                    asking: None,
+                })
+            })
+        };
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+
+        let settled = |access: &WorkspacePaneAccess| {
+            Readiness::new(
+                Some(ReadyWhen::Settles("claude".to_string())),
+                Some(Duration::from_millis(150)),
+            )
+            .reached(access, pane, &RunContext::uncancellable())
+        };
+
+        // ⚠ HALF 1, THE CONTROL: the weaker question is ALREADY satisfied at this instant.
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5)
+            && Readiness::new(
+                Some(ReadyWhen::Runs("tr".to_string())),
+                Some(Duration::from_millis(50)),
+            )
+            .reached(&access, pane, &RunContext::uncancellable())
+            .is_err()
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            Readiness::new(
+                Some(ReadyWhen::Runs("tr".to_string())),
+                Some(Duration::from_millis(200)),
+            )
+            .reached(&access, pane, &RunContext::uncancellable()),
+            Ok(Reached::Yes),
+            "the program owns the terminal — so this gate is about the DIFFERENCE between the two \
+             questions, not about a pane that never came up",
+        );
+
+        // HALF 2: working is not waiting.
+        assert_eq!(
+            settled(&access),
+            Err(PaneError::NeverReady {
+                wanted: ReadyWhen::Settles("claude".to_string()),
+                instead: PaneDoing::Job("tr".to_string()),
+            }),
+            "an agent that is WORKING is not ready to be typed at, however firmly it owns the \
+             terminal",
+        );
+
+        // HALF 3: blocked is waiting for an answer to its own question, which is not this.
+        *reported.lock().unwrap() = (AgentState::Blocked, Some("claude".to_string()));
+        assert!(
+            settled(&access).is_err(),
+            "a BLOCKED agent is waiting for an answer to its own question — a fresh prompt sent \
+             there answers the wrong thing, and into a numbered menu it selects",
+        );
+
+        // HALF 4: an idle observation that names no agent says nothing about WHICH is at rest.
+        *reported.lock().unwrap() = (AgentState::Idle, None);
+        assert!(
+            settled(&access).is_err(),
+            "an observation that names no agent is not evidence about which program is at rest",
+        );
+
+        // HALF 5: named and idle.
+        *reported.lock().unwrap() = (AgentState::Idle, Some("claude".to_string()));
+        assert_eq!(
+            settled(&access),
+            Ok(Reached::Yes),
+            "the agent the caller named is at rest and waiting for input — NOW drive it",
+        );
+    }
+
+    /// ⚠⚠ **A REPAINT IS NOT A PRINT, AND A RESIZE REPAINTS EVERY ROW.**
+    ///
+    /// [`ReadyWhen::Prints`] baselined each row's DAMAGE GENERATION and counted a row as evidence
+    /// once that number moved past the baseline. A damage generation is a PAINT signal — it exists
+    /// so a renderer knows which rows to redraw — and answering a CONTENT question with it is the
+    /// category error this gate names. Two ordinary things stamp every row with a fresh generation
+    /// without a program printing anything:
+    ///
+    /// * **a RESIZE** (`Emulator::resize` → `Screen::reflowed(cols, rows, g)`), which is what every
+    ///   client attaching to a session does — in a terminal multiplexer, of all products;
+    /// * **an OSC palette change** (`repaint_for_palette_change` → `mark_all_dirty`), which many
+    ///   programs send on startup.
+    ///
+    /// So a pane whose screen ALREADY carried the marker — a word from an earlier command, a
+    /// banner, anything the caller did not type and the echo trail therefore never saw — cleared the
+    /// barrier the instant anybody resized. The run then drove whatever was there.
+    ///
+    /// ⚠ This fixture uses a REAL pty and a REAL resize rather than a hand-built row list, because
+    /// the claim is about what the emulator does, and a double asserting my own belief about that
+    /// would be the gate believing itself.
+    #[test]
+    fn a_repaint_of_text_that_was_already_there_is_not_the_pane_printing_it() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            // ⚠ The marker is printed BY THE PROGRAM and never typed at the pane, so the echo trail
+            // does not cover it — this is the half R359c's fix cannot reach.
+            command.arg("printf 'BANNER\\n'; exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 40, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5)
+            && !access
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains("BANNER"))
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            access
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains("BANNER")),
+            "the fixture must get the marker on screen BEFORE the barrier arms, or it is not \
+             asking this question at all",
+        );
+
+        let mut ready = Readiness::new(
+            Some(ReadyWhen::Prints("BANNER".to_string())),
+            Some(Duration::from_millis(600)),
+        );
+        let outcome = std::thread::scope(|scope| {
+            let waiting =
+                scope.spawn(|| ready.reached(&access, pane, &RunContext::uncancellable()));
+            // Let the barrier ARM (it baselines on its first look), then resize — which is what an
+            // attaching client does, and what re-stamps every row.
+            std::thread::sleep(Duration::from_millis(120));
+            workspace
+                .lock()
+                .unwrap()
+                .resize(pane, 30, 8, (0, 0))
+                .expect("resize the pane");
+            waiting.join().expect("the barrier thread")
+        });
+
+        assert_eq!(
+            outcome,
+            Err(PaneError::NeverReady {
+                wanted: ReadyWhen::Prints("BANNER".to_string()),
+                instead: PaneDoing::Job("cat".to_string()),
+            }),
+            "text that was on screen when the barrier armed is NOT the pane printing it, however \
+             many times the screen is re-laid out under it",
+        );
+    }
+
+    /// ⚠⚠ **A PANE WHOSE CHILD HAS GONE SAYS SO, RATHER THAN BLAMING THE BUILD** — the third
+    /// [`PaneDoing`] arm, and the reason that field stopped being an `Option`.
+    ///
+    /// A host that CAN see the process table and finds no job owning the terminal has learned
+    /// something about the PANE. Spelled as the same `None` that means *this build has no process
+    /// view*, it told the caller their deployment was blind when it was working perfectly.
+    #[test]
+    fn a_pane_whose_child_has_exited_is_reported_as_nothing_owning_its_terminal() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exit 0");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 20, 4)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) && access.pane_eof(pane) != Some(true) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            access.pane_eof(pane),
+            Some(true),
+            "the fixture's child must be GONE, or this is not the arm being built",
+        );
+
+        let failed = Readiness::new(
+            Some(ReadyWhen::Runs("claude".to_string())),
+            Some(Duration::from_millis(120)),
+        )
+        .reached(&access, pane, &RunContext::uncancellable())
+        .expect_err("a pane with no child can never come to run anything");
+        assert_eq!(
+            failed,
+            PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("claude".to_string()),
+                instead: PaneDoing::Nothing,
+            },
+            "the host CAN see the process table and there is no job — that is a fact about the \
+             PANE, and it must not read as a blind build",
+        );
+        assert!(
+            failed.to_string().contains("the pane's child had gone"),
+            "and the sentence says which: {failed}",
+        );
+    }
+
+    /// ⚠⚠ **A HOST WITH NO ECHO TRAIL LOSES ONE DISCOUNT, NOT THE WHOLE BARRIER** — the degradation
+    /// [`PaneAccess::input_echo`] documents, and which no gate built.
+    ///
+    /// `input_echo` returning `None` costs [`ReadyWhen::Prints`] its refusal of a marker the caller
+    /// TYPED. It must not also cost the arming count, or a pane that already showed the marker
+    /// would clear the barrier on a host that merely cannot see its own echo — the two protections
+    /// are independent and only one of them is a capability.
+    #[test]
+    fn a_host_with_no_echo_trail_still_refuses_a_marker_that_was_already_on_screen() {
+        /// Every optional capability at its default, and a screen that never changes.
+        struct NoEchoTrail;
+        impl PaneAccess for NoEchoTrail {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some("BANNER at rest".to_string())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(false)
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some("BANNER at rest".to_string())
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[crate::access::KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                panic!("⚠⚠ NOT ONE BYTE — the marker was on screen before the barrier armed");
+            }
+        }
+        assert!(
+            Readiness::new(
+                Some(ReadyWhen::Prints("BANNER".to_string())),
+                Some(Duration::from_millis(120)),
+            )
+            .reached(&NoEchoTrail, PaneId(1), &RunContext::uncancellable())
+            .is_err(),
+            "the arming COUNT is not a capability and must protect a host that has no echo trail",
+        );
+    }
+
+    /// ⚠⚠ **A JOB'S LEADER IS NOT EVERY PROCESS IN IT** — the documented limit of
+    /// [`ReadyWhen::Runs`], measured rather than left as prose.
+    ///
+    /// `cat | tr` is ONE job of two processes led by the shell that started them, so a caller who
+    /// names `tr` is naming a member and not the leader. The honest answer is that the barrier does
+    /// not clear — and the failure NAMES the leader, which is exactly what tells the caller they
+    /// asked about the wrong end of a pipeline.
+    #[test]
+    fn a_pipeline_is_led_by_its_shell_and_naming_a_member_does_not_clear() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("cat | tr a-z A-Z");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 20, 4)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        assert_eq!(
+            Readiness::new(
+                Some(ReadyWhen::Runs("tr".to_string())),
+                Some(Duration::from_millis(400)),
+            )
+            .reached(&access, pane, &RunContext::uncancellable()),
+            Err(PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("tr".to_string()),
+                instead: PaneDoing::Job("sh".to_string()),
+            }),
+            "`tr` is a MEMBER of the job, not its leader — and the failure names the leader, which \
+             is what tells a caller they named the wrong end of their pipeline",
         );
     }
 
@@ -561,9 +1024,21 @@ mod tests {
             failed,
             PaneError::NeverReady {
                 wanted: ReadyWhen::Runs("claude".to_string()),
-                instead: None,
+                instead: PaneDoing::Unknown,
             },
             "and it says so by having NO answer for what ran instead, rather than inventing one",
+        );
+        // ⚠ THE SIBLING CAPABILITY, SAME RULE. `supervision()` is `None` on this double too, and a
+        // host that cannot supervise must not conclude that an agent has settled — the safe
+        // direction is the same one, and it is the arm a second capability makes easy to forget.
+        assert!(
+            Readiness::new(
+                Some(ReadyWhen::Settles("claude".to_string())),
+                Some(Duration::from_millis(120)),
+            )
+            .reached(&NoProcessView, PaneId(1), &RunContext::uncancellable())
+            .is_err(),
+            "a host with no detector cannot say an agent is at rest, so it must not type at one",
         );
         assert!(
             !failed.to_string().contains("instead"),

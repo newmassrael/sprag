@@ -18,6 +18,8 @@ use std::time::Duration;
 
 use sprag_terminal::PaneId;
 
+#[cfg(test)]
+use crate::access::PaneDoing;
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
@@ -674,7 +676,7 @@ mod tests {
                 // ⚠ And what the destination WAS running — `exec cat`, so this is the pane's own
                 // program and not a shell that had not started it yet. The diagnostic reaches the
                 // relay's failure too, which is the half a fix applied to one consumer would miss.
-                instead: Some("cat".to_string()),
+                instead: PaneDoing::Job("cat".to_string()),
             }),
             "and the cause names the question the caller got wrong, and what the pane was doing",
         );

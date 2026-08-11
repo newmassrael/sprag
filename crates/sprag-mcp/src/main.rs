@@ -1686,21 +1686,26 @@ fn argument_help(name: &str) -> &'static str {
              it wrong means the shell's `command not found` comes back to you AS THE MODEL'S REPLY."
         }
         "match" => {
-            "WHICH QUESTION your marker is asking, and there is no safe default. `runs` is the one \
-             to PREFER: the marker is a PROGRAM NAME, and the pane is ready when that program owns \
-             its terminal — no screen reading, so nothing you type can fake it, and it is the only \
-             one that works for a program which prints nothing until you speak to it. `prints` \
-             means the pane must PRINT the marker after the run starts — use it when you just \
-             started the program, because a pane echoes the command line you typed and a marker \
-             found in that echo would let the run type into the shell. `shows` means the marker is \
-             on the screen already — use it for a program that is ALREADY running and sitting at \
-             its prompt, which will print nothing more until you feed it."
+            "WHICH QUESTION your marker is asking, and there is no safe default. `settles` is the \
+             STRONGEST and the one to prefer when the pane runs an AI agent: the marker is the \
+             agent's name, and the pane is ready when that agent is at rest WAITING FOR YOU — not \
+             merely started. `runs` is next: the marker is a PROGRAM NAME and the pane is ready \
+             when that program owns its terminal; no screen reading, so nothing you type can fake \
+             it, and it is the only one that works for a program which prints nothing until you \
+             speak to it. ⚠ `runs` clears the moment a cold agent takes the terminal, seconds \
+             before it will answer — that is what `settles` is for. `prints` means the pane must \
+             PRINT the marker after the run starts — use it when you just started the program, \
+             because a pane echoes the command line you typed and a marker found in that echo \
+             would let the run type into the shell. `shows` means the marker is on the screen \
+             already — use it for a program that is ALREADY running and sitting at its prompt, \
+             which will print nothing more until you feed it."
         }
         "marker" => {
-            "What means ready, read as whatever `match` says it is. Under `runs` it is the \
-             PROGRAM's name (`claude`, `python`) — the name it is invoked by is fine. Under \
-             `prints` or `shows` it is TEXT the pane carries: pick the program's own prompt or \
-             banner, never a word from the command line you typed to start it."
+            "What means ready, read as whatever `match` says it is. Under `settles` it is the \
+             AGENT's name as list_panes reports it. Under `runs` it is the PROGRAM's name \
+             (`claude`, `python`) — the name it is invoked by is fine. Under `prints` or `shows` \
+             it is TEXT the pane carries: pick the program's own prompt or banner, never a word \
+             from the command line you typed to start it. It may never be empty."
         }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \

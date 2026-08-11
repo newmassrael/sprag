@@ -1320,6 +1320,18 @@ mod tests {
             );
 
             assert_eq!(
+                sprag_conformance::an_optional_argument_may_be_declined_as_null(
+                    table,
+                    &mut |action, args| surface.invoke(action, args)
+                )
+                .findings,
+                Vec::<String>::new(),
+                "⚠⚠ AN OPTIONAL ARGUMENT SPELLED `null` IS ONE THE CALLER DECLINED — asked of \
+                 THIS surface too, because a client whose language serialises absence that way \
+                 calls every verb of every surface that way",
+            );
+
+            assert_eq!(
                 sprag_conformance::a_declared_argument_is_one_the_daemon_reads(
                     table,
                     &mut |action, args| surface.invoke(action, args)

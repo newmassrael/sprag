@@ -68,7 +68,9 @@ use sprag_terminal::{
 
 use crate::attach::ClientSize;
 use crate::bump_on_dirty;
-use crate::external::{as_object, lock, opt_dim, refused, require_pane_id, rpc_external_impl};
+use crate::external::{
+    as_object, declined, lock, opt_dim, refused, require_pane_id, rpc_external_impl,
+};
 use crate::notify::ChannelRegistry;
 use crate::scope::SessionScope;
 
@@ -600,12 +602,17 @@ impl WorkspaceExternal {
     /// ([`default_pane_command`](crate::config::default_pane_command)); `cols`/`rows` left `None` take
     /// the pool's default size at spawn.
     fn parse_spawn(map: &Map<String, Value>) -> Result<SpawnSpec, InvokeError> {
-        let (command, label) = match map.get("cmd") {
-            // The user's `default-command`, falling through to `$SHELL` — one resolver for every
-            // birth, so a setting cannot be honoured by some spawn paths and not others.
-            None => crate::config::default_pane_command(),
-            Some(Value::Array(argv)) => build_command(argv)?,
-            Some(_) => return Err(InvokeError::TypeMismatch),
+        // ⚠ A DECLINED `cmd` — absent, or an explicit `null` from a client whose language
+        // serialises absence that way — takes the user's `default-command`, falling through to
+        // `$SHELL`. One resolver for every birth, so a setting cannot be honoured by some spawn
+        // paths and not others.
+        let (command, label) = if declined(map, "cmd") {
+            crate::config::default_pane_command()
+        } else {
+            match &map["cmd"] {
+                Value::Array(argv) => build_command(argv)?,
+                _ => return Err(InvokeError::TypeMismatch),
+            }
         };
         Ok(SpawnSpec {
             command,
@@ -1574,10 +1581,13 @@ impl WorkspaceExternal {
     /// [`on_pane_exit`]: Self::on_pane_exit
     fn new_session(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
-        let name = match map.get("name") {
-            None => None,
-            Some(Value::String(name)) => Some(name.as_str()),
-            Some(_) => return Err(InvokeError::TypeMismatch),
+        let name = if declined(map, "name") {
+            None
+        } else {
+            match &map["name"] {
+                Value::String(name) => Some(name.as_str()),
+                _ => return Err(InvokeError::TypeMismatch),
+            }
         };
         // VALIDATE the birth spec BEFORE creating anything, so a malformed `cmd`/`cols`/`rows` is
         // rejected with no session built — uniform with the `spawn` action and with `name` above.
@@ -1752,10 +1762,13 @@ impl WorkspaceExternal {
     /// and the person's window would grow a pane nobody asked for.
     fn new_window(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
-        let name = match map.get("name") {
-            None => None,
-            Some(Value::String(name)) => Some(name.as_str()),
-            Some(_) => return Err(InvokeError::TypeMismatch),
+        let name = if declined(map, "name") {
+            None
+        } else {
+            match &map["name"] {
+                Value::String(name) => Some(name.as_str()),
+                _ => return Err(InvokeError::TypeMismatch),
+            }
         };
         let born = self.parse_window_birth(map)?;
         // Validate the birth spec BEFORE creating anything (uniform with `new_session`).
@@ -2254,10 +2267,13 @@ impl WorkspaceExternal {
     fn break_pane(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
         let pane = require_pane_id(map, "pane")?;
-        let name = match map.get("name") {
-            None => None,
-            Some(Value::String(name)) => Some(name.as_str()),
-            Some(_) => return Err(InvokeError::TypeMismatch),
+        let name = if declined(map, "name") {
+            None
+        } else {
+            match &map["name"] {
+                Value::String(name) => Some(name.as_str()),
+                _ => return Err(InvokeError::TypeMismatch),
+            }
         };
         // HOW THE NEW WINDOW IS BORN, through the SAME parse `new_window` uses. A break creates a
         // window, so the two facts a window's birth carries belong here too — and going through one
@@ -8539,6 +8555,24 @@ mod tests {
             "one probe per open string argument of every form — the window and pane NAMES are most \
              of them, plus the two anchors a move may name, a working directory on each spawning \
              verb, a message's text and audience, a report's source and name, and a dropped path",
+        );
+    }
+
+    /// ⚠⚠ **AN OPTIONAL ARGUMENT OF THIS SURFACE MAY BE DECLINED AS `null`** — the same claim the
+    /// run surface makes, asked of the surface with the most arguments.
+    ///
+    /// It is asked HERE as well as there because the defect was never about one verb: a client
+    /// whose language serialises an absent optional as `null` calls every verb that way, and this
+    /// surface is where most of the verbs are.
+    #[test]
+    fn an_optional_argument_of_this_surface_may_be_declined_as_null() {
+        assert_eq!(
+            mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
+                .count_or_panic(),
+            61,
+            "one probe per OPTIONAL declared argument of every form — required ones are not \
+             driven, because `null` for something the grammar demands is malformed rather than \
+             declined",
         );
     }
 

@@ -398,6 +398,52 @@ pub fn a_declared_argument_is_one_the_daemon_reads(
     driven
 }
 
+/// ⚠⚠ **AN OPTIONAL ARGUMENT SPELLED `null` IS ONE THE CALLER DECLINED** — every optional argument
+/// on every form, because the alternative is a rule that holds for the arguments somebody
+/// remembered.
+///
+/// Most languages serialise an absent optional as `null`: an untouched `Option` field, a Python
+/// `None`, a TypeScript property explicitly set to null. A client written that way sends `null` for
+/// every optional it declines, on every call — so a reader that answers
+/// [`InvokeError::TypeMismatch`] there refuses well-formed requests from an entire class of client,
+/// and refuses them for declining an optional feature.
+///
+/// **Measured before this existed: two readers of this wire took `null` as absence and the general
+/// ones did not**, so the same request was well-formed or malformed depending on WHICH optional the
+/// client happened to decline. That is the shape a hand-written check cannot close — it is the
+/// arguments nobody thought about that are wrong — so this is driven from the declarations.
+///
+/// ⚠ REQUIRED arguments are deliberately not driven: `null` for something the grammar demands is a
+/// malformed request, and reading it as absence would turn a missing required argument into a
+/// different and later error.
+#[must_use]
+pub fn an_optional_argument_may_be_declined_as_null(
+    table: &'static [ActionGrammar],
+    invoke: Invoke<'_>,
+) -> Driven {
+    let mut driven = Driven::default();
+    for verb in table {
+        for form in verb.forms {
+            for vary in declared(form).into_iter().filter(|vary| vary.arg.optional) {
+                let call = call_built_from_the_grammar(form, &vary, Value::Null);
+                let answer = invoke(verb.action, call.clone());
+                if matches!(answer, Err(InvokeError::TypeMismatch)) {
+                    driven.findings.push(format!(
+                        "`{}` REFUSES `null` FOR ITS OPTIONAL `{}` as a type mismatch, so a client \
+                         whose language serialises an absent optional as `null` cannot call this \
+                         verb at all while declining that argument. Sending {call:?} answered \
+                         {answer:?}.",
+                        verb.action,
+                        vary.path(),
+                    ));
+                }
+                driven.count += 1;
+            }
+        }
+    }
+    driven
+}
+
 /// ⚠⚠ **A NULLARY FORM IS A VERB THAT NEEDS NOTHING** — the claim the other three cannot make, because
 /// they walk arguments and this form has none.
 ///

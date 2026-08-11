@@ -48,7 +48,7 @@ use sprag_input::{KeyEdge, Modifiers, MouseButton, MouseEventKind, MouseInput};
 use sprag_terminal::PanePtyHandle;
 use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
-use crate::external::{refused, rpc_external_impl};
+use crate::external::{declined, refused, rpc_external_impl};
 use crate::host::PaneScrollFacts;
 
 /// The refusal every write to a pane's terminal shares: the bytes were formed and the child would
@@ -706,12 +706,15 @@ fn parse_key_args(args: &IntrospectValue) -> Result<Option<(String, Modifiers)>,
             // had no definition the pane surface could publish. ⚠ A `state` PRESENT at the wrong
             // JSON type is refused rather than read as a press: `and_then(Value::as_str)` folded
             // `{"state": 4}` into the `None` arm, so a malformed edge was injected as a keystroke.
-            let edge = match map.get("state") {
-                None => KeyEdge::Down,
-                Some(Value::String(word)) => {
-                    KeyEdge::from_wire(word).ok_or(InvokeError::TypeMismatch)?
+            let edge = if declined(map, "state") {
+                KeyEdge::Down
+            } else {
+                match &map["state"] {
+                    Value::String(word) => {
+                        KeyEdge::from_wire(word).ok_or(InvokeError::TypeMismatch)?
+                    }
+                    _ => return Err(InvokeError::TypeMismatch),
                 }
-                Some(_) => return Err(InvokeError::TypeMismatch),
             };
             if !edge.injects() {
                 return Ok(None);
@@ -781,11 +784,17 @@ fn parse_modifier_flags(
     map: &serde_json::Map<String, Value>,
     with_super: bool,
 ) -> Result<Modifiers, InvokeError> {
+    // ⚠ DECLINED means `false`, and declined includes an explicit `null`: a client whose language
+    // serialises an absent optional that way is not holding the modifier, and refusing the call
+    // would make every one of its keystrokes malformed. A flag present at any OTHER wrong type is
+    // still refused — that is the coercion this parser exists to have stopped doing.
     let flag = |name: &str| -> Result<bool, InvokeError> {
-        match map.get(name) {
-            None => Ok(false),
-            Some(Value::Bool(held)) => Ok(*held),
-            Some(_) => Err(InvokeError::TypeMismatch),
+        if declined(map, name) {
+            return Ok(false);
+        }
+        match &map[name] {
+            Value::Bool(held) => Ok(*held),
+            _ => Err(InvokeError::TypeMismatch),
         }
     };
     Ok(Modifiers {
@@ -1317,6 +1326,25 @@ mod tests {
     /// so `{"key": "a", "ctrl": 1}` injected an UNMODIFIED `a` and answered success — while `col` and
     /// `row`, two lines away in the same file, refused a malformed value. R330's odd-one-out rule and
     /// R352b's `report_agent` defect, in the parser a keystroke goes through.
+    /// ⚠⚠ **AN OPTIONAL ARGUMENT OF THE INPUT SURFACE MAY BE DECLINED AS `null`** — the third
+    /// surface asked, because the defect was never about one verb: a client whose language
+    /// serialises an absent optional as `null` calls EVERY verb that way.
+    #[test]
+    fn an_optional_argument_of_the_pane_surface_may_be_declined_as_null() {
+        let (_workspace, mut external) = surface();
+        assert_eq!(
+            sprag_conformance::an_optional_argument_may_be_declined_as_null(
+                crate::wire::PANE_GRAMMAR,
+                &mut |action, args| external.invoke(action, args)
+            )
+            .count_or_panic(),
+            8,
+            "one probe per OPTIONAL declared argument of every form — required ones are not \
+             driven, because `null` for something the grammar demands is malformed rather than \
+             declined",
+        );
+    }
+
     #[test]
     fn a_declared_argument_is_one_the_pane_reads() {
         let (_workspace, mut external) = surface();

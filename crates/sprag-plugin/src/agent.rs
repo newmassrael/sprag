@@ -305,6 +305,60 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **A PANE THAT NEVER COMES UP FAILS THE ASK AND NAMES WHAT WAS THERE** — this plugin's own
+    /// `NeverReady` arm, which had no gate of its own.
+    ///
+    /// It was registered rather than built, on the reasoning that the other two injecting plugins
+    /// build the identical `Readiness` path — which is exactly the argument R351 caught being wrong
+    /// when a shared path stopped being shared. **And this plugin is the one where the arm matters
+    /// most**: its failure mode is a WRONG ANSWER, not a missing one. Without the barrier it hands
+    /// a shell's `command not found` back to a peer AS THE MODEL'S REPLY, so *"the pane never came
+    /// up"* must reach the caller as a failure rather than as a captured reply.
+    ///
+    /// Three halves, and the last is the one the other plugins' gates cannot make: the run FAILED,
+    /// the cause is typed and names both the question and what was running instead, and **nothing
+    /// was captured** — because a captured anything here would be published as what the model said.
+    #[test]
+    fn an_agent_whose_pane_never_becomes_ready_fails_and_captures_nothing() {
+        let (access, pane) = sh_access("exec cat", 40, 8);
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                ready_when: Some(ReadyWhen::Runs("claude".to_string())),
+                ready_within: Some(Duration::from_millis(200)),
+                ..AgentSpec::new("summarise the repo")
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_cost: None,
+            // ⚠ FAR LONGER than the readiness bound, so the run's own clock provably cannot be
+            // what ends this — that is the neighbouring gate, and it reaches a different arm.
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .run(&mut agent, &access, &RunContext::uncancellable());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "a pane that never became the tool is a FAILURE of the ask: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.failure,
+            Some(PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("claude".to_string()),
+                instead: crate::access::PaneDoing::Job("cat".to_string()),
+            }),
+            "and it names the question AND what the pane was running instead",
+        );
+        assert_eq!(
+            agent.captured(),
+            None,
+            "⚠⚠ AND NOTHING WAS CAPTURED — anything here is published to the caller as THE \
+             MODEL'S REPLY, which is this plugin's whole reason for taking the barrier",
+        );
+    }
+
     /// ⚠⚠ **A RUN THAT ENDS WHILE WAITING TO BE LET IN ASKS NOTHING AND CHARGES NOTHING** — and
     /// says which of the two it was doing, because "nothing was asked" and "asked, no reply" are
     /// opposite instructions to whoever reads the journal.
