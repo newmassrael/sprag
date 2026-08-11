@@ -18,14 +18,16 @@
 //! so "settle after the first change" would converge on the echo. A `timeout`
 //! bounds the wait so a tool that never exits cannot hang the run.
 //!
-//! Known limitations (deferred, in the spirit of [`crate::pipe`]'s): the captured text is the pane
-//! delta since the prompt, so it includes the prompt's own cooked-mode echo; and a reply that
-//! scrolls past the screen loses the scrolled-off rows.
+//! ⚠⚠ This paragraph has now been WRONG TWICE, which is what a limitations note left to age looks
+//! like. It said *"the projection has no scrollback yet"* years after `sprag-vt` retained history;
+//! corrected, it then said the delta was *"still row-keyed ([`RowTrail`]), repaint-proof but not
+//! scroll-proof"* while the code beside it already addressed the reply by LINE NUMBER. Both
+//! readings survived because nothing drives a doc.
 //!
-//! ⚠ That last one used to say *"the projection has no scrollback yet"*, and it had been false for
-//! a long time — `sprag-vt` retains history and [`crate::pipe`] now reads it by line number. The
-//! same move is available here and is not made yet: this adapter's delta is still row-keyed
-//! ([`RowTrail`]), which is repaint-proof but not scroll-proof.
+//! What is true, and gated: the reply is the pane's LOGICAL LINES since the prompt's address, with
+//! this run's own cooked-mode echo removed by exact match (`without_own_echo`) and with lines the
+//! retained history evicted REPORTED as a count rather than dropped. The remaining residue is named
+//! on those two items and nowhere else.
 
 use std::time::Duration;
 
@@ -167,22 +169,31 @@ impl Agent {
     ///
     /// ⚠ [`RowTrail`] remains the fallback for a host with no output stream — repaint-proof, not
     /// scroll-proof, and named as a degradation rather than an equivalent.
-    fn capture(&self, panes: &dyn PaneAccess, baseline: &Baseline) -> String {
+    fn capture(&self, panes: &dyn PaneAccess, baseline: &Baseline) -> Captured {
         match baseline {
             Baseline::Line(cursor) => {
                 let Some(since) = panes
                     .output_lines()
                     .and_then(|stream| stream.pane_lines_since(self.pane, *cursor))
                 else {
-                    return String::new();
+                    return Captured::default();
                 };
                 let mut lines = since.lines;
                 if !since.partial.is_empty() {
                     lines.push(since.partial);
                 }
-                lines.join("\n")
+                Captured {
+                    text: without_own_echo(lines, &self.spec.prompt).join("\n"),
+                    lost: since.lost,
+                }
             }
-            Baseline::Rows(trail) => trail.fresh(panes, self.pane).join("\n"),
+            Baseline::Rows(trail) => Captured {
+                text: without_own_echo(trail.fresh(panes, self.pane), &self.spec.prompt).join("\n"),
+                // ⚠ A rendering comparison cannot report a loss it cannot see — a scrolled-away
+                // row is simply not there to be counted. `0` here means UNKNOWN, and it is the
+                // degradation this fallback is already named as, not a claim of completeness.
+                lost: 0,
+            },
         }
     }
 
@@ -202,6 +213,61 @@ impl Agent {
                 |since| Baseline::Line(since.next),
             )
     }
+}
+
+/// The reply, and what could not be in it.
+///
+/// Two fields because a run that answers `converged` with an *"n-character reply"* says the same
+/// thing whether the pane's retained history held every line or evicted the first half of the
+/// model's answer. **A truncated reply is worse than a missing one, because nothing in it says it
+/// is truncated** — this adapter's own doc argued exactly that about the scrolling case and then
+/// discarded the field that reports it, while [`crate::pipe`], reading the same stream, put its
+/// loss in every note. One reader of a hazard is not a reader of it.
+#[derive(Default)]
+struct Captured {
+    /// The reply as it is published to the caller.
+    text: String,
+    /// Complete lines the retained history evicted before this capture read them — `0` in the
+    /// ordinary case. See [`sprag_vt::LinesSince::lost`].
+    lost: u64,
+}
+
+/// Drop the leading lines that are exactly the prompt THIS run typed.
+///
+/// # ⚠⚠ Why the caller's own words came back as the model's
+///
+/// A pty in cooked mode echoes what is injected, and on the grid that echo is ordinary output — so
+/// the first logical line after the prompt's address is the prompt itself. Measured: a run that
+/// asked `"summarise the repo"` published `"summarise the repo\nREPLY[summarise the repo]"` to its
+/// caller **as the model's answer**. A peer that acts on what it receives acts on a sentence sprag
+/// typed.
+///
+/// # ⚠⚠ EXACT and LEADING, and it stops at the first line that is neither
+///
+/// The alternative — waiting for the echo and marking after it — is the scheduling-shaped predicate
+/// R359c paid to remove: a pty echo is asynchronous, so the same call would strip it or not
+/// depending on how loaded the box was. What this run TYPED is known exactly, so the comparison is
+/// exact, and the failure direction is chosen: a program that renders input its own way (`> ping`,
+/// a REPL's re-draw) matches nothing and keeps every line. **Deleting a line of an answer is worse
+/// than leaving a line that was not one**, because only the first is unrecoverable.
+///
+/// ⚠ The residue, named: a program with its echo OFF whose reply's first line is byte-identical to
+/// the prompt loses that line. It needs the echo to be absent AND the model to open by quoting the
+/// question exactly, and the safe reading of the pair does not exist — one of them has to lose.
+fn without_own_echo(lines: Vec<String>, prompt: &str) -> Vec<String> {
+    let mut lines = lines.into_iter();
+    let mut kept: Vec<String> = Vec::new();
+    let mut echo = prompt.split('\n').peekable();
+    for line in lines.by_ref() {
+        if echo.peek() == Some(&line.as_str()) {
+            echo.next();
+            continue;
+        }
+        kept.push(line);
+        break;
+    }
+    kept.extend(lines);
+    kept
 }
 
 impl Plugin for Agent {
@@ -236,6 +302,7 @@ impl Plugin for Agent {
                 .noting("the run ended while waiting for the reply; nothing captured"));
         }
         let reply = self.capture(panes, &baseline);
+        let text = reply.text;
         // ⚠ THE LENGTH IS THE DIAGNOSTIC. A peer that never answered and one that answered are the
         // same `converged` with the same cost, and an EMPTY capture is what a prompt the peer
         // swallowed looks like from out here.
@@ -244,8 +311,8 @@ impl Plugin for Agent {
         // which is what makes a capture complete; when the per-turn timeout runs out instead, the
         // text is whatever happened to be on screen mid-reply. Both were reported with the same
         // sentence, so a truncated capture was indistinguishable from a whole one.
-        let characters = reply.chars().count();
-        let note = if waited == Waited::TimedOut {
+        let characters = text.chars().count();
+        let mut note = if waited == Waited::TimedOut {
             format!(
                 "the peer had not finished after {:?}; captured the {characters} characters on \
                  screen, which may be a PARTIAL reply",
@@ -254,7 +321,19 @@ impl Plugin for Agent {
         } else {
             format!("captured a {characters}-character reply")
         };
-        self.response = Some(reply);
+        // ⚠⚠ A HOLE IN THE ANSWER IS REPORTED, NEVER SWALLOWED. The pane's retained history is
+        // bounded, so a reply that outran it between the prompt and the read has lines nothing can
+        // recover — and a silent gap is indistinguishable from a model that said less. This is the
+        // half [`crate::pipe`] already reported and this adapter, whose text is published AS THE
+        // MODEL'S ANSWER, dropped.
+        if reply.lost > 0 {
+            note.push_str(&format!(
+                "; {} EARLIER LINES ARE MISSING FROM IT — the reply outran the pane's retained \
+                 history",
+                reply.lost,
+            ));
+        }
+        self.response = Some(text);
 
         // One-shot: one prompt, one captured reply, then converge. The Driver's
         // guardrails still bound it; `timeout` (above) bounds a non-exiting peer.
@@ -309,8 +388,163 @@ mod tests {
         let outcome = run(&access, &mut agent);
 
         assert_eq!(outcome.state, OutcomeState::Converged);
-        let captured = agent.captured().expect("a captured reply");
-        assert!(captured.contains("REPLY[ping]"), "captured: {captured:?}");
+        // ⚠ EQUALITY. This read `contains("REPLY[ping]")` and passed for as long as the capture
+        // carried the prompt's own echo welded to its front: a containment check cannot see what a
+        // capture has TOO MUCH of, and too much is the shape that publishes sprag's words as a
+        // model's.
+        assert_eq!(agent.captured().expect("a captured reply"), "REPLY[ping]",);
+    }
+
+    /// ⚠⚠⚠ **WHAT THIS RUN TYPED IS NOT WHAT THE MODEL SAID**, and it was published as if it were.
+    ///
+    /// A pty in cooked mode echoes an injection, and on the grid that echo is ordinary output — so
+    /// the first logical line after the prompt's address is the prompt. Measured before the fix:
+    /// `"summarise the repo\nREPLY[summarise the repo]"` reached the caller as the agent's answer.
+    /// A relay hands that to a peer that ACTS on what it receives, so sprag's own words become an
+    /// instruction somebody follows.
+    ///
+    /// ⚠ EQUALITY, not `contains`. The gate beside this one asserted `contains("REPLY[ping]")` and
+    /// passed throughout — a capture with the prompt welded to its front contains the reply too.
+    /// **A containment check cannot see what a capture has too much of.**
+    #[test]
+    fn a_reply_is_what_the_peer_said_and_not_the_prompt_this_run_typed() {
+        let (access, pane) = sh_access("in=$(cat); echo \"REPLY[$in]\"", 40, 6);
+        let mut agent = Agent::new(pane, AgentSpec::new("summarise the repo"));
+
+        let outcome = run(&access, &mut agent);
+
+        assert_eq!(outcome.state, OutcomeState::Converged);
+        assert_eq!(
+            agent.captured().expect("a captured reply"),
+            "REPLY[summarise the repo]",
+            "the whole capture is the peer's answer — the prompt's own echo is this run's, and \
+             publishing it makes sprag's words a model's",
+        );
+    }
+
+    /// ⚠⚠ **AND A LINE THAT IS NOT THE ECHO IS KEPT, however much it looks like one.**
+    ///
+    /// The other direction of the same rule, and the one that decides which way the fix fails. A
+    /// program with its echo OFF that RENDERS the input its own way — `> ping`, every REPL — must
+    /// keep that line: it is the peer's output, and deleting a line of an answer is unrecoverable
+    /// while leaving one that was not an answer is merely noise.
+    ///
+    /// The fixture turns the pty's echo off, so the only text on the pane is the program's.
+    #[test]
+    fn a_program_that_renders_the_prompt_its_own_way_keeps_that_line() {
+        let (access, pane) = sh_access(
+            "stty -echo; in=$(cat); echo \"> $in\"; echo \"REPLY[$in]\"",
+            40,
+            6,
+        );
+        let mut agent = Agent::new(pane, AgentSpec::new("ping"));
+
+        let outcome = run(&access, &mut agent);
+
+        assert_eq!(outcome.state, OutcomeState::Converged);
+        assert_eq!(
+            agent.captured().expect("a captured reply"),
+            "> ping\nREPLY[ping]",
+            "an EXACT leading match is the echo and nothing else is — a program's own rendering \
+             of the prompt is output, and stripping it would delete an answer's first line",
+        );
+    }
+
+    /// ⚠⚠ **A HOLE IN THE ANSWER IS REPORTED** — the field [`crate::pipe`] reads and this adapter
+    /// dropped.
+    ///
+    /// The pane's retained history is bounded, so a reply that outran it has lines nothing can
+    /// recover. Both cases answered `converged` with the same *"captured an n-character reply"*,
+    /// which makes a truncated model answer indistinguishable from a short one — the exact
+    /// confusion this adapter's own `capture` doc argues against, two paragraphs above the code
+    /// that discarded `lost`.
+    ///
+    /// Driven through a stream that REPORTS a loss, because a bounded history cannot be overrun on
+    /// demand without making the gate a scrolling fixture rather than a claim about the report.
+    #[test]
+    fn a_reply_that_outran_the_pane_s_history_says_how_much_is_missing() {
+        struct Lossy;
+        impl PaneAccess for Lossy {
+            fn pane_ids(&self) -> Vec<PaneId> {
+                vec![PaneId(1)]
+            }
+            fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+                Some(Vec::new())
+            }
+            fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+                Some(true)
+            }
+            fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+                Some(String::new())
+            }
+            fn inject(
+                &self,
+                _id: PaneId,
+                _keys: &[KeyStroke],
+            ) -> Result<crate::access::Written, PaneError> {
+                Ok(crate::access::Written::of(1))
+            }
+            fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+                Some(self)
+            }
+        }
+        impl crate::access::PaneOutputLines for Lossy {
+            fn pane_lines_since(&self, _id: PaneId, _cursor: u64) -> Option<sprag_vt::LinesSince> {
+                Some(sprag_vt::LinesSince {
+                    lines: vec!["the tail of the answer".to_string()],
+                    next: 10,
+                    lost: 7,
+                    partial: String::new(),
+                })
+            }
+        }
+
+        let step = Agent::new(PaneId(1), AgentSpec::new("ping"))
+            .step(&Lossy, &RunContext::uncancellable())
+            .expect("the turn");
+        let said = step.note.unwrap_or_default();
+        assert!(
+            said.contains('7') && said.contains("MISSING"),
+            "the turn must say HOW MANY lines of the answer it never saw, or a truncated reply is \
+             published as a whole one: {said:?}",
+        );
+    }
+
+    /// The three cases [`without_own_echo`] decides, without a pty in the way.
+    #[test]
+    fn an_echo_is_dropped_only_where_it_leads_and_only_where_it_matches() {
+        let lines = |all: &[&str]| all.iter().map(|l| (*l).to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            without_own_echo(lines(&["ask", "answer"]), "ask"),
+            lines(&["answer"]),
+            "the leading echo of a one-line prompt",
+        );
+        assert_eq!(
+            without_own_echo(lines(&["one", "two", "answer"]), "one\ntwo"),
+            lines(&["answer"]),
+            "and of a prompt with newlines in it, line for line",
+        );
+        assert_eq!(
+            without_own_echo(lines(&["answer", "ask"]), "ask"),
+            lines(&["answer", "ask"]),
+            "⚠⚠ NOT A LINE THAT MERELY EQUALS THE PROMPT — only the LEADING one is the echo, and \
+             a model that quotes the question mid-answer is quoting it",
+        );
+        assert_eq!(
+            without_own_echo(lines(&["ask"]), "ask"),
+            Vec::<String>::new(),
+            "a peer that answered nothing leaves an EMPTY capture, which is the diagnostic the \
+             step's character count exists to publish — not a capture of this run's own prompt",
+        );
+        assert_eq!(
+            without_own_echo(lines(&["answer"]), ""),
+            lines(&["answer"]),
+            "and a prompt with nothing in it consumes nothing",
+        );
     }
 
     /// ⚠⚠ **AN AGENT RUN AGAINST A PANE THAT IS STILL A SHELL MUST NOT REPORT THE SHELL'S OUTPUT
