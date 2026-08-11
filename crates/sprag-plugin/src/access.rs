@@ -977,10 +977,29 @@ fn read_rows(screen: &Screen) -> Vec<PaneRow> {
         .collect()
 }
 
-/// Collapsed screen text: trailing-trimmed rows joined without separators, so
-/// a sentinel the terminal wrapped across rows still matches.
+/// Collapsed screen text: each row's SHARE OF ITS LOGICAL LINE, joined without separators, so a
+/// sentinel the terminal wrapped across rows still matches.
+///
+/// # ⚠⚠⚠ Why the share and not the row's text
+///
+/// This joined `Screen::row_text`, and that reader's own doc says it cannot be joined that way:
+/// *"it trims a continuing row's trailing blanks, which are interior to the line, and it keeps the
+/// pad a wide cluster left at the margin, which is not in the line at all. Both halves have cost
+/// this project a defect."* The warning was written and the wrong reader stayed here — under
+/// [`ReadyWhen::Prints`], whose own doc promises the join is *"wrap-safe … at any width."*
+///
+/// Measured: a pane five columns wide printing `TOOL UP` wraps after the SPACE, so the rows are
+/// `"TOOL "` and `"UP"`; trimmed and joined they read **`"TOOLUP"`**, and a barrier waiting for
+/// `TOOL UP` never clears. The width is not the caller's to choose — **a client attaching at
+/// another size decides it** — so the same run, the same program and the same marker succeed or
+/// hang depending on somebody else's window.
+///
+/// [`Screen::row_share_text`] is the reader that exists for exactly this, and it is what
+/// [`Screen::lines_since`] already joins. One rule, one place.
 fn read_collapsed(screen: &Screen) -> String {
-    (0..screen.rows()).map(|row| screen.row_text(row)).collect()
+    (0..screen.rows())
+        .map(|row| screen.row_share_text(row))
+        .collect()
 }
 
 #[cfg(test)]

@@ -975,6 +975,63 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **A MARKER THE PANE'S WIDTH WRAPPED AT A SPACE STOPPED MATCHING** — and the width is
+    /// not the caller's to choose.
+    ///
+    /// [`ReadyWhen::Prints`] promises the join is *"wrap-safe … so a marker the pane wrapped is one
+    /// occurrence at any width"*, and the join was `Screen::row_text`, whose own doc says it cannot
+    /// be joined that way — it trims a continuing row's trailing blanks, and those blanks are
+    /// INTERIOR to the line. Measured: five columns, `TOOL UP` wraps after the SPACE, the rows are
+    /// `"TOOL "` and `"UP"`, and the barrier matched against `"TOOLUP"`.
+    ///
+    /// So a run against the same program with the same marker succeeded or hung **on the width of
+    /// somebody else's window** — a client attaching at another size is what sets it, which is the
+    /// same trigger as every other defect this front has paid.
+    ///
+    /// ⚠ Both halves: what the barrier READS, and what the barrier DOES. A join that is right in
+    /// isolation proves nothing about a wait that has to end.
+    ///
+    /// ⚠ `row_text`'s doc names a SECOND hazard — the pad a wide cluster leaves at the margin — and
+    /// it is deliberately NOT asserted here: measured through this surface, both readers answer
+    /// `"ABCD한EF"`, because a trailing pad is trimmed away either way. **An assertion that passes
+    /// with the defect in place is not a gate**, and writing one would have made this look like it
+    /// covered a half it cannot reach.
+    #[test]
+    fn a_marker_the_width_wrapped_at_a_space_still_matches() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((5, 4))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            // Five columns: `TOOL ` fills the row and `UP` lands on the next, so the space is a
+            // continuing row's trailing blank — the exact cell `row_text` throws away.
+            command.arg("printf 'TOOL UP\\n'; exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 5, 4)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        assert_eq!(
+            Readiness::new(
+                Some(ReadyWhen::Shows("TOOL UP".to_string())),
+                Some(Duration::from_secs(5)),
+            )
+            .reached(&access, pane, &RunContext::uncancellable()),
+            Ok(Reached::Yes),
+            "the marker is on the pane; that the terminal broke the line inside it is the \
+             terminal's business and not the caller's",
+        );
+        assert_eq!(
+            access.pane_collapsed(pane).unwrap_or_default().trim_end(),
+            "TOOL UP",
+            "and the collapsed read is what the child WROTE — a row's share of its logical line, \
+             not a row's rendering with its interior blanks trimmed away",
+        );
+    }
+
     /// ⚠⚠ **THE TWO NAMES A LEADER HAS, AND THE MERGE THAT MUST NOT HAPPEN.**
     ///
     /// [`JobLeader::answers_to`] is where [`ReadyWhen::Runs`] decides, and two of its claims are reachable
