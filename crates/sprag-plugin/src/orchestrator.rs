@@ -1032,6 +1032,18 @@ mod tests {
                 "a diagnostic that does not continue the sentence it is appended to reads as two \
                  fragments: {clause:?}",
             );
+            // ⚠⚠ AND THE ACCESSOR AGREES WITH THE SENTENCE. `PaneDoing::leader` is how a caller
+            // asks the diagnostic a QUESTION instead of comparing it to a spelling, so an arm
+            // whose clause names a program that owned the terminal must hand that program over,
+            // and one whose clause names none must hand over nothing. Two ways of saying the same
+            // fact drifting apart is precisely what put a macOS caller's `/bin/sh` pane in the
+            // sentence as `"bash"`.
+            assert_eq!(
+                doing.leader().is_some(),
+                clause.contains("belonged to"),
+                "the sentence and the accessor disagree about whether a program owned the \
+                 terminal: {clause:?}",
+            );
             let whole = PaneError::NeverReady {
                 wanted: ReadyWhen::Runs("claude".to_string()),
                 instead: doing.clone(),

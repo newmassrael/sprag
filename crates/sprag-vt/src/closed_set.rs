@@ -199,6 +199,15 @@ mod tests {
             Errno(i32) = (13),
             /// Two of them.
             Pair(u8, u8) = (1, 2),
+            /// NAMED fields, each with its own doc — the shape this could not declare, which is
+            /// why `sprag_plugin::PaneError` had no `ALL` and the gate over the sentence an agent
+            /// reads walked five literals instead.
+            Named {
+                /// Which one.
+                which: u8,
+                /// And whether it said so.
+                said: bool,
+            } = { which: 3, said: true },
         }
     }
 
@@ -211,11 +220,23 @@ mod tests {
     fn a_variant_that_carries_something_is_still_in_all() {
         assert_eq!(
             Mixed::ALL,
-            [Mixed::Silent, Mixed::Errno(13), Mixed::Pair(1, 2)],
+            [
+                Mixed::Silent,
+                Mixed::Errno(13),
+                Mixed::Pair(1, 2),
+                // ⚠ THE VALUE, field for field, not the length. `ALL.len() == 4` passes for an
+                // expansion that put the wrong field in the wrong slot or defaulted one whose
+                // sample was dropped — and a set whose inhabitant is silently not the one its
+                // author wrote is a ratchet driving something nobody chose.
+                Mixed::Named {
+                    which: 3,
+                    said: true,
+                },
+            ],
         );
         assert_eq!(
             Mixed::ALL.len(),
-            3,
+            4,
             "counted from the variant list, as ever"
         );
     }

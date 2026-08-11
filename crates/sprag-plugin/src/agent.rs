@@ -646,7 +646,13 @@ mod tests {
                 _id: PaneId,
                 _keys: &[KeyStroke],
             ) -> Result<crate::access::Written, PaneError> {
-                self.0.lock().unwrap().push("REPLY-BY-ROWS".to_string());
+                // ⚠ THE ECHO FIRST, because a pty in cooked mode puts it there before the program
+                // has read a byte. A fake that skips it makes the degradation arm look cleaner
+                // than the hosts that actually take it — and left `without_own_echo` on this path
+                // built by nothing, which is how the same defect comes back through the fallback.
+                let mut screen = self.0.lock().unwrap();
+                screen.push("ask".to_string());
+                screen.push("REPLY-BY-ROWS".to_string());
                 Ok(crate::access::Written::of(4))
             }
         }
@@ -664,7 +670,8 @@ mod tests {
             agent.captured().as_deref(),
             Some("REPLY-BY-ROWS"),
             "the fallback must return the reply — and only the reply: `banner` was on the pane \
-             before the prompt and is not part of what the model said",
+             before the prompt and `ask` is this run's own echo, and neither is what the model \
+             said",
         );
     }
 
