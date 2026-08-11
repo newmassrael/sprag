@@ -13,6 +13,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
+use crate::readiness::{Reached, Readiness};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// How long a step waits for the pane to react before judging on the current
@@ -29,29 +30,19 @@ pub struct OrchestrationSpec {
     /// Convergence condition: succeed once the pane's collapsed text contains
     /// this. `None` runs until a guardrail.
     pub sentinel: Option<String>,
-    /// What the pane must SHOW before the first stimulus is injected. `None`
-    /// starts driving immediately, which is right for a pane already running.
-    ///
-    /// # ⚠⚠ Why a loop needs this at all
-    ///
-    /// A pane is not ready when it is OPEN. It is born running a shell with the
-    /// pty's default echo on, and the program a caller means to drive — `claude`,
-    /// a REPL, a test runner — starts some time after that. A run that begins in
-    /// that window injects into whatever is there: the shell EXECUTES the stimulus
-    /// as a command, or the kernel echoes it and nothing reads it. Either way the
-    /// turns are spent, the guardrails count them, and the peer never saw a word.
-    ///
-    /// The remedy cannot be a sleep — how long a program takes to come up is not
-    /// a number a caller knows. It is a thing the pane SAYS: a prompt, a banner,
-    /// a marker the caller printed on purpose. So the caller names it and the run
-    /// waits for it, bounded by the run's own deadline like every other wait here.
-    ///
-    /// ⚠ **PICK SOMETHING THE PROGRAM SAYS, NOT SOMETHING YOU TYPED.** This is
-    /// matched against the pane's text, and a pane echoes the command line that
-    /// STARTED the program — so a marker that appears in that command line is
-    /// already on screen before the program exists, and the wait ends at once
-    /// against nothing. A prompt or a banner is safe; the word you typed is not.
+    /// What the pane must SHOW before the first stimulus is injected — see
+    /// [`Readiness`], which is where this barrier lives and why it exists. `None`
+    /// starts driving immediately, which is right for a pane already running the
+    /// program.
     pub ready_when: Option<String>,
+    /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
+    /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
+    ///
+    /// The caller's, because how long a program takes to start is the thing that
+    /// varies most between the programs this drives — `cat` is instant, an agent
+    /// takes seconds, a cold test runner minutes — and the caller who names the
+    /// marker is exactly the one who knows.
+    pub ready_within: Option<Duration>,
 }
 
 /// A fixed-stimulus drive plugin over one pane.
@@ -61,9 +52,8 @@ pub struct Orchestrator {
     /// Per-row damage generations captured before the last stimulus, so the
     /// observe-wait keys on *this* step's echo.
     baseline_generations: Vec<u64>,
-    /// Whether [`OrchestrationSpec::ready_when`] has been seen. Latched, so the
-    /// wait happens once and every later step drives straight away.
-    ready: bool,
+    /// The barrier this run must clear before it types anything — see [`Readiness`].
+    ready: Readiness,
 }
 
 impl Orchestrator {
@@ -71,32 +61,11 @@ impl Orchestrator {
     #[must_use]
     pub fn new(pane: PaneId, spec: OrchestrationSpec) -> Self {
         Self {
-            ready: spec.ready_when.is_none(),
+            ready: Readiness::new(spec.ready_when.clone(), spec.ready_within),
             pane,
             spec,
             baseline_generations: Vec::new(),
         }
-    }
-
-    /// Wait for the pane to show [`OrchestrationSpec::ready_when`], or answer
-    /// [`Waited::Ready`] at once when no readiness was named.
-    ///
-    /// ⚠ The local bound is [`DEFAULT_REPLY_TIMEOUT`] — the same number this crate
-    /// already means by *"long enough for a peer to do something"* — rather than a
-    /// new constant nobody chose. The bound that matters is the RUN's, which
-    /// `poll_until` consults: a readiness that never arrives ends the run by its
-    /// own clock, not by a number invented here.
-    ///
-    /// [`DEFAULT_REPLY_TIMEOUT`]: crate::run::DEFAULT_REPLY_TIMEOUT
-    fn await_ready(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
-        let Some(marker) = self.spec.ready_when.as_deref() else {
-            return Waited::Ready;
-        };
-        poll_until(run, crate::run::DEFAULT_REPLY_TIMEOUT, || {
-            panes
-                .pane_collapsed(self.pane)
-                .is_some_and(|text| text.contains(marker))
-        })
     }
 
     /// Wait (bounded, cancellable) for the PEER to answer — a row whose damage
@@ -168,26 +137,14 @@ enum Reaction {
 impl Plugin for Orchestrator {
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
         // ⚠⚠ NOT ONE BYTE UNTIL THE PANE IS READY. Injecting into a pane whose program has not
-        // started is spending a turn on the shell that is still there — see
-        // [`OrchestrationSpec::ready_when`]. Latched, so this costs nothing after the first step.
-        if !self.ready {
-            match self.await_ready(panes, run) {
-                Waited::Ready => self.ready = true,
-                // The run ended waiting — cancelled, or out of time. Nothing was injected, so
-                // nothing is charged; the Driver's loop top says which of the two it was.
-                Waited::Stopped => {
-                    return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
-                        .noting("the run ended while waiting for the pane to be ready"));
-                }
-                // The pane never showed it. Driving on would inject into whatever IS there and
-                // report turns against a peer that was never listening, so the run stops and says
-                // exactly what it was waiting for.
-                Waited::TimedOut => {
-                    return Err(PaneError::NeverReady(
-                        self.spec.ready_when.clone().unwrap_or_default(),
-                    ));
-                }
-            }
+        // started is spending a turn on the shell that is still there — see [`Readiness`], which
+        // owns this barrier and the `NeverReady` failure. Latched, so it costs nothing after the
+        // first step.
+        if self.ready.reached(panes, self.pane, run)? == Reached::RunEnded {
+            // Nothing was injected, so nothing is charged; the Driver's loop top says which of the
+            // two ways the run ended it was.
+            return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
+                .noting("the run ended while waiting for the pane to be ready"));
         }
 
         // Baseline before acting, so observe() waits for this step's echo.
@@ -248,6 +205,7 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState};
+    use crate::testing::STANDIN_READS_TTY;
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
 
@@ -292,6 +250,7 @@ mod tests {
                 stimulus: "ping".to_string(),
                 sentinel: None,
                 ready_when: None,
+                ready_within: None,
             },
         );
         let outcome = run(
@@ -317,6 +276,7 @@ mod tests {
                 stimulus: "ping".to_string(),
                 sentinel: Some("ping".to_string()),
                 ready_when: None,
+                ready_within: None,
             },
         );
         let outcome = run(
@@ -347,6 +307,7 @@ mod tests {
                 stimulus: "abcdef".to_string(),
                 sentinel: Some("abcdef".to_string()),
                 ready_when: None,
+                ready_within: None,
             },
         );
         let outcome = run(
@@ -370,6 +331,7 @@ mod tests {
                 stimulus: "ping".to_string(), // "ping" + Enter = 5 bytes/step
                 sentinel: None,
                 ready_when: None,
+                ready_within: None,
             },
         );
         let outcome = run(
@@ -400,11 +362,19 @@ mod tests {
     /// Both halves, because either alone is weak: the run must CONVERGE (so the wait ended and the
     /// driving worked), and the STAND-IN SHELL must never have been fed — it says so itself.
     ///
-    /// ⚠ THE FIXTURE HAD TO BE REBUILT TO MEASURE ANYTHING. Its first form let the pane merely
-    /// SLEEP before becoming the peer, and a mutation that ignored `ready_when` entirely still
-    /// passed it: nothing consumed the early stimulus, so it sat in the pty buffer and the peer
-    /// read it when it started. A pane that is not ready has to be one that EATS what it is given,
-    /// which is what a real shell does with a stimulus meant for something else.
+    /// ⚠⚠ THE FIXTURE HAD TO BE REBUILT TWICE, AND THE SECOND TIME IS WHY IT MEASURES ANYTHING.
+    /// Its first form let the pane merely SLEEP before becoming the peer, and a mutation that
+    /// ignored `ready_when` entirely still passed: nothing consumed the early stimulus, so it sat
+    /// in the pty buffer and the peer read it when it started. A pane that is not ready has to be
+    /// one that EATS what it is given, which is what a real shell does with a stimulus meant for
+    /// something else.
+    ///
+    /// The second form said `while read early; …&` and **still ate nothing**, for a reason no
+    /// reading of it shows: a background job of a NON-INTERACTIVE shell gets its stdin from
+    /// `/dev/null`, so the stand-in was reading end-of-file while the injection sat in the pty
+    /// exactly as before. Both halves passed for the same reason they had passed before the first
+    /// rebuild. [`STANDIN_READS_TTY`] is what fixes it — reopening the controlling terminal is the
+    /// only way a background reader here can be given the pane's own input.
     #[test]
     fn a_run_told_what_ready_looks_like_injects_nothing_before_it() {
         // A stand-in shell that consumes and NAMES anything typed at it, for two seconds — longer
@@ -412,8 +382,11 @@ mod tests {
         // is killed, the peer announces itself and `exec`s, so what answers afterwards is
         // unambiguously the peer.
         let (access, pane) = sh_access(
-            "while read early; do echo \"SHELL-ATE $early\"; done & sleep 2; kill $! 2>/dev/null; \
-             printf 'PEER-UP\\n'; exec sh -c 'while read l; do echo \"PEER-SAW $l\"; done'",
+            &format!(
+                "while read early; do echo \"SHELL-ATE $early\"; done {STANDIN_READS_TTY} & \
+                 sleep 2; kill $! 2>/dev/null; printf 'PEER-UP\\n'; \
+                 exec sh -c 'while read l; do echo \"PEER-SAW $l\"; done'"
+            ),
             40,
             8,
         );
@@ -423,13 +396,21 @@ mod tests {
                 stimulus: "ping".to_string(),
                 sentinel: Some("PEER-SAW ping".to_string()),
                 ready_when: Some("PEER-UP".to_string()),
+                ready_within: None,
             },
         );
+        // ⚠ WHICH OF THE TWO ASSERTIONS BELOW FIRES DEPENDS ON THE STAND-IN, and both were
+        // measured against a run with the barrier removed. A stand-in that ANSWERS (this one names
+        // what it ate) ends each observe at once, so a barrier-less run burns every turn in
+        // milliseconds and never reaches the peer — the CONVERGED half fails, in 70ms. A stand-in
+        // that merely swallows would floor each step instead, the run would outlive it, and the
+        // SHELL-ATE half is what catches it. Keep both: they are the same defect seen from the two
+        // ends, and neither covers the other.
         let outcome = run(
             &access,
             &mut orch,
             Guardrails {
-                max_iterations: 2,
+                max_iterations: 6,
                 max_cost: None,
                 max_duration: None,
             },
@@ -462,6 +443,7 @@ mod tests {
                 stimulus: "ping".to_string(),
                 sentinel: None,
                 ready_when: Some("NEVER-PRINTED".to_string()),
+                ready_within: None,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -486,6 +468,117 @@ mod tests {
             access.pane_collapsed(pane).unwrap_or_default().trim(),
             "",
             "not one byte was injected into a pane that never became ready",
+        );
+    }
+
+    /// ⚠⚠ **A PANE THAT NEVER COMES UP FAILS THE RUN AND NAMES WHAT IT WAITED FOR** — the arm that
+    /// had no test at all, and could not have had one until the wait's bound became the caller's.
+    ///
+    /// The gate above ends by the RUN's clock, which is a different finding: *the run was out of
+    /// time* says nothing about the pane. This one is *this pane never came up*, and it is the
+    /// answer a caller needs, because it is the one that names the marker they got wrong.
+    ///
+    /// ⚠ It was unreachable rather than untested. `ready_within` was hard-wired to two minutes, so
+    /// any gate short enough to run had a run deadline shorter than the readiness bound, and
+    /// [`Waited::Stopped`] won every time — `NeverReady` was constructed in one place and read by
+    /// nothing. A bound the CALLER names is what makes the arm reachable in 200ms, and it is also
+    /// the right product answer: how long a program takes to start is the caller's knowledge.
+    ///
+    /// The three halves are three different claims: the run FAILED (not exhausted), it carries the
+    /// TYPED cause naming the marker, and NOTHING was injected into the pane that never came up.
+    #[test]
+    fn a_pane_that_never_becomes_ready_fails_the_run_and_names_the_marker() {
+        let (access, pane) = sh_access("exec cat", 20, 4);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: None,
+                ready_when: Some("NEVER-PRINTED".to_string()),
+                ready_within: Some(Duration::from_millis(200)),
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 5,
+            max_cost: None,
+            // ⚠ FAR LONGER than the readiness bound, so the run's own clock provably cannot be
+            // what ends this — that is the other gate, and it reaches a different arm.
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .run(&mut orch, &access, &RunContext::uncancellable());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "a pane that never becomes ready is a FAILURE of the run, not a ceiling it reached: \
+             {outcome:?}",
+        );
+        assert_eq!(
+            outcome.failure,
+            Some(PaneError::NeverReady("NEVER-PRINTED".to_string())),
+            "and the cause is typed and carries the marker the caller named",
+        );
+        assert_eq!(
+            access.pane_collapsed(pane).unwrap_or_default().trim(),
+            "",
+            "not one byte was injected into a pane that never became ready",
+        );
+    }
+
+    /// ⚠⚠ **THE FAILURE AN AGENT READS IS A SENTENCE**, and not one of these five had a gate.
+    ///
+    /// A run's `failure` is published to its caller as this text
+    /// ([`plugins.rs`](../../sprag_host/plugins/index.html) does `.map(ToString::to_string)`), and
+    /// it was `format!("{e:?}")` until R358 — `Write("Broken pipe (os error 32)")`, a Rust variant
+    /// name and its debug payload, reaching the one reader who cannot look up what a variant means.
+    ///
+    /// The fix had no test, so a reverted `to_string()` would have broken nothing and the leak
+    /// would have come back unnoticed. Derived from a list of every variant rather than spot-
+    /// checked, so a SIXTH variant added with a debug-shaped sentence fails here.
+    #[test]
+    fn every_pane_failure_reads_as_a_sentence_rather_than_a_rust_variant() {
+        let every = [
+            PaneError::UnknownPane(PaneId(7)),
+            PaneError::Encode("F13".to_string()),
+            PaneError::Write("Broken pipe (os error 32)".to_string()),
+            PaneError::Spawn("No such file or directory".to_string()),
+            PaneError::NeverReady("PEER-UP".to_string()),
+        ];
+        for error in &every {
+            let said = error.to_string();
+            let debug = format!("{error:?}");
+            assert_ne!(
+                said, debug,
+                "the published text is the DEBUG form, which is the leak itself",
+            );
+            // A variant name is `CamelCase` with no space; a sentence has spaces and starts lower.
+            assert!(
+                said.contains(' ') && said.starts_with(char::is_lowercase),
+                "a failure an agent reads must be prose, not {said:?}",
+            );
+            assert!(
+                !said.contains('(') || !said.contains("::"),
+                "and must not carry a Rust path: {said:?}",
+            );
+        }
+        // The PAYLOAD has to survive into the sentence, or the prose is prose about nothing — this
+        // is the half that a "polite" catch-all message would silently fail.
+        assert!(
+            PaneError::Write("Broken pipe (os error 32)".to_string())
+                .to_string()
+                .contains("Broken pipe (os error 32)"),
+            "the cause the operating system gave must reach the reader",
+        );
+        assert!(
+            PaneError::NeverReady("PEER-UP".to_string())
+                .to_string()
+                .contains("PEER-UP"),
+            "a readiness that never came must name what it waited for, or the caller cannot tell \
+             which marker they got wrong",
+        );
+        assert!(
+            PaneError::UnknownPane(PaneId(7)).to_string().contains('7'),
+            "and an unknown pane must name the id that was asked for",
         );
     }
 
@@ -515,6 +608,7 @@ mod tests {
                 stimulus: "ping".to_string(),
                 sentinel: Some("PEER-REPLIED".to_string()),
                 ready_when: None,
+                ready_within: None,
             },
         );
         let outcome = run(
@@ -570,6 +664,7 @@ mod tests {
                 stimulus: "ping".to_string(),
                 sentinel: Some("A SENTINEL THIS PANE NEVER PRINTS".to_string()),
                 ready_when: Some("DEAF-READY".to_string()),
+                ready_within: None,
             },
         );
         let cell = crate::driver::ProgressCell::default();

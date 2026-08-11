@@ -30,6 +30,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
+use crate::readiness::{Reached, Readiness};
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
 
 /// What the agent asks and how long it waits for the answer.
@@ -44,6 +45,25 @@ pub struct AgentSpec {
     /// Overall bound on the reply wait. On timeout the agent converges with
     /// whatever it captured (possibly nothing) rather than hanging.
     pub timeout: Duration,
+    /// What the pane must SHOW before the prompt is injected — see [`Readiness`].
+    /// `None` prompts immediately, which is right for a pane already running the
+    /// tool.
+    ///
+    /// # ⚠⚠ Why this adapter needs it MOST
+    ///
+    /// The pane is the CALLER'S, and this plugin types a prompt into it and then
+    /// hands whatever came back to a peer as *the agent's reply*. Prompted while
+    /// the pane is still a shell, the shell runs the prompt as a command AND the
+    /// trailing Ctrl-D ([`eof`](Self::eof)) makes it EXIT — which is exactly the
+    /// completion signal this adapter waits for. So the run CONVERGES, reports
+    /// success, and publishes the shell's error as the model's answer. Measured:
+    /// a prompt of *"summarise the repo"* came back as
+    /// `"summarise the repo\n$ sh: 1: summarise: not found\n$"`, with nothing in
+    /// the outcome, the cost or the note to say it was not a reply.
+    pub ready_when: Option<String>,
+    /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
+    /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
+    pub ready_within: Option<Duration>,
 }
 
 impl AgentSpec {
@@ -54,6 +74,8 @@ impl AgentSpec {
             prompt: prompt.into(),
             eof: true,
             timeout: DEFAULT_REPLY_TIMEOUT,
+            ready_when: None,
+            ready_within: None,
         }
     }
 }
@@ -64,6 +86,8 @@ pub struct Agent {
     spec: AgentSpec,
     /// The reply captured this run, surfaced through [`Plugin::captured`].
     response: Option<String>,
+    /// The barrier the pane must clear before it is prompted — see [`Readiness`].
+    ready: Readiness,
 }
 
 impl Agent {
@@ -71,6 +95,7 @@ impl Agent {
     #[must_use]
     pub fn new(pane: PaneId, spec: AgentSpec) -> Self {
         Self {
+            ready: Readiness::new(spec.ready_when.clone(), spec.ready_within),
             pane,
             spec,
             response: None,
@@ -118,6 +143,15 @@ impl Agent {
 
 impl Plugin for Agent {
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
+        // ⚠⚠ NOT ONE BYTE UNTIL THE PANE IS THE TOOL — see [`AgentSpec::ready_when`], which is
+        // where the measured failure is written down. Latched, so it costs nothing after the first
+        // step (and this adapter is one-shot anyway).
+        if self.ready.reached(panes, self.pane, run)? == Reached::RunEnded {
+            return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(
+                "the run ended while waiting for the pane to be ready; nothing was asked",
+            ));
+        }
+
         // Baseline the damage generations before acting, so `capture` isolates
         // this prompt's reply (and its cooked-mode echo) from prior content.
         let baseline: Vec<u64> = panes
@@ -131,7 +165,13 @@ impl Plugin for Agent {
         // or record a partial reply. Return Continue so the Driver's loop top
         // decides the terminal state, which is the only place that knows whether
         // it was a cancel or the duration ceiling.
-        if self.await_reply(panes, run) == Waited::Stopped {
+
+        let waited = self.await_reply(panes, run);
+        // If the RUN ended mid-wait — cancelled, or out of time — don't converge
+        // or record a partial reply. Return Continue so the Driver's loop top
+        // decides the terminal state, which is the only place that knows whether
+        // it was a cancel or the duration ceiling.
+        if waited == Waited::Stopped {
             return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
                 .noting("the run ended while waiting for the reply; nothing captured"));
         }
@@ -139,7 +179,21 @@ impl Plugin for Agent {
         // ⚠ THE LENGTH IS THE DIAGNOSTIC. A peer that never answered and one that answered are the
         // same `converged` with the same cost, and an EMPTY capture is what a prompt the peer
         // swallowed looks like from out here.
-        let note = format!("captured a {}-character reply", reply.chars().count());
+        //
+        // ⚠⚠ AND SO IS WHETHER THE PEER FINISHED. This adapter converges on the child EXITING,
+        // which is what makes a capture complete; when the per-turn timeout runs out instead, the
+        // text is whatever happened to be on screen mid-reply. Both were reported with the same
+        // sentence, so a truncated capture was indistinguishable from a whole one.
+        let characters = reply.chars().count();
+        let note = if waited == Waited::TimedOut {
+            format!(
+                "the peer had not finished after {:?}; captured the {characters} characters on \
+                 screen, which may be a PARTIAL reply",
+                self.spec.timeout,
+            )
+        } else {
+            format!("captured a {characters}-character reply")
+        };
         self.response = Some(reply);
 
         // One-shot: one prompt, one captured reply, then converge. The Driver's
@@ -157,6 +211,7 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, Outcome, OutcomeState};
+    use crate::testing::STANDIN_READS_TTY;
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
 
@@ -195,6 +250,168 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Converged);
         let captured = agent.captured().expect("a captured reply");
         assert!(captured.contains("REPLY[ping]"), "captured: {captured:?}");
+    }
+
+    /// ⚠⚠ **AN AGENT RUN AGAINST A PANE THAT IS STILL A SHELL MUST NOT REPORT THE SHELL'S OUTPUT
+    /// AS THE MODEL'S REPLY** — the worst shape this defect takes, because it is a WRONG ANSWER
+    /// rather than a missing one.
+    ///
+    /// The subject half is what a caller gets today with no barrier, and it is not a hang or a
+    /// failure: the shell runs the prompt as a command, the trailing Ctrl-D makes it EXIT, and
+    /// exiting is precisely the completion signal this adapter converges on. So the run reports
+    /// SUCCESS and hands back `"summarise the repo\n$ sh: 1: summarise: not found\n$"` as the
+    /// agent's answer. Nothing in the state, the cost or the note says otherwise.
+    ///
+    /// With the barrier the run waits for the tool to announce itself and asks the TOOL, so the
+    /// captured text is the tool's. Both halves against the same pane script, because the claim is
+    /// about the barrier and not about the fixture.
+    #[test]
+    fn an_agent_waits_for_the_tool_rather_than_prompting_the_shell_that_is_still_there() {
+        // A pane that is a shell for a moment and then becomes the "tool": it announces itself and
+        // execs a one-shot that reads until EOF and answers. The stand-in shell EATS what it is
+        // given (see `STANDIN_READS_TTY`) — an un-eaten prompt would sit in the pty and be read by
+        // the tool anyway, and this gate would pass without a barrier.
+        let script = format!(
+            "while read early; do echo \"SHELL-ATE $early\"; done {STANDIN_READS_TTY} & \
+             sleep 1; kill $! 2>/dev/null; printf 'TOOL-UP\\n'; \
+             exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'"
+        );
+        let (access, pane) = sh_access(&script, 40, 8);
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                ready_when: Some("TOOL-UP".to_string()),
+                ..AgentSpec::new("summarise the repo")
+            },
+        );
+
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 4,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(20)),
+        })
+        .run(&mut agent, &access, &RunContext::uncancellable());
+
+        assert_eq!(outcome.state, OutcomeState::Converged);
+        let captured = agent.captured().expect("a captured reply");
+        assert!(
+            captured.contains("REPLY[summarise the repo]"),
+            "the reply must be the TOOL's: {captured:?}",
+        );
+        assert!(
+            !captured.contains("not found") && !captured.contains("SHELL-ATE"),
+            "and it must carry no trace of the shell that was there first — a caller reading this \
+             as the model's answer would be reading a shell error: {captured:?}",
+        );
+    }
+
+    /// ⚠⚠ **A RUN THAT ENDS WHILE WAITING TO BE LET IN ASKS NOTHING AND CHARGES NOTHING** — and
+    /// says which of the two it was doing, because "nothing was asked" and "asked, no reply" are
+    /// opposite instructions to whoever reads the journal.
+    #[test]
+    fn an_agent_whose_run_ends_before_the_pane_is_ready_asks_nothing() {
+        let (access, pane) = sh_access("exec cat", 40, 8);
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                ready_when: Some("A MARKER THIS PANE NEVER PRINTS".to_string()),
+                // ⚠ FAR ABOVE the run's clock, so the RUN's deadline is provably what ends the
+                // wait rather than the barrier's own bound — that ending is the other arm.
+                ready_within: Some(Duration::from_secs(300)),
+                ..AgentSpec::new("summarise the repo")
+            },
+        );
+        let cell = crate::driver::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(200)),
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(&mut agent, &access, &RunContext::uncancellable());
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Duration));
+        let said = cell
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            said.contains("nothing was asked"),
+            "the step must say the prompt was never sent, not that a reply never came: {said}",
+        );
+        assert_eq!(
+            outcome.cost,
+            Some(Cost::Bytes(0)),
+            "nothing was injected, so nothing is charged: {outcome:?}",
+        );
+        assert!(
+            agent.captured().is_none(),
+            "and a run that asked nothing has captured no reply: {:?}",
+            agent.captured(),
+        );
+        assert_eq!(
+            access.pane_collapsed(pane).unwrap_or_default().trim(),
+            "",
+            "and the pane is untouched",
+        );
+    }
+
+    /// ⚠⚠ **A CAPTURE TAKEN BECAUSE TIME RAN OUT SAYS SO** — it may be half a sentence.
+    ///
+    /// This adapter converges on the child EXITING, which is what makes a capture complete: every
+    /// byte the peer produced is on the screen by then. When the per-turn timeout ends the wait
+    /// instead, the text is whatever was on screen mid-reply — and both were reported with the
+    /// same sentence, so a truncated capture was indistinguishable from a whole one by anything a
+    /// run publishes.
+    #[test]
+    fn a_capture_taken_because_the_turn_ran_out_of_time_is_marked_as_possibly_partial() {
+        // Answers, then stays alive — so the reply IS on screen but EOF never comes.
+        let (access, pane) = sh_access("echo PARTIAL-REPLY; exec cat", 40, 8);
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                eof: false,
+                timeout: Duration::from_millis(300),
+                ..AgentSpec::new("x")
+            },
+        );
+        let cell = crate::driver::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 2,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(20)),
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(&mut agent, &access, &RunContext::uncancellable());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Converged,
+            "a per-turn timeout still converges with what it has — that behaviour is deliberate \
+             and unchanged; what was missing is saying so",
+        );
+        let notes: Vec<String> = cell
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect();
+        let said = notes.join(" | ");
+        assert!(
+            said.contains("PARTIAL"),
+            "a capture the clock cut short must be marked as possibly partial: {said}",
+        );
+        assert!(
+            agent
+                .captured()
+                .is_some_and(|reply| reply.contains("PARTIAL-REPLY")),
+            "and it still captures what the peer did say",
+        );
     }
 
     #[test]

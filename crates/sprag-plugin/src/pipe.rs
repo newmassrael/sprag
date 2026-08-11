@@ -20,6 +20,7 @@ use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
+use crate::readiness::{Reached, Readiness};
 use crate::run::{RunContext, Waited, poll_until};
 
 /// How long a relay waits for its destination to show ANY change before reporting that it showed
@@ -37,22 +38,65 @@ use crate::run::{RunContext, Waited, poll_until};
 /// is microseconds when the peer is reading.
 const REACTION_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// What a relay is pointed at, and what its destination must SHOW before it is typed into.
+///
+/// A spec rather than two bare ids, matching every other plugin here, because the barrier below is
+/// the destination's business and belongs beside the destination.
+#[derive(Clone, Debug)]
+pub struct PipeSpec {
+    /// The pane whose new output is relayed.
+    pub src: PaneId,
+    /// The pane it is relayed INTO.
+    pub dst: PaneId,
+    /// What `dst` must show before the first relay — see
+    /// [`Readiness`]. `None` relays immediately.
+    ///
+    /// # ⚠⚠ A relay is MORE exposed to this than a drive loop, not less
+    ///
+    /// This plugin's destination is a pane **somebody else prepared** — that is the whole shape of
+    /// a relay — and it had no barrier at all until R359 measured one being fed. A destination that
+    /// was still a shell ate two relayed lines (`SHELL-ATE relayme`) while the peer that came up a
+    /// second later saw nothing, and the run reported the same bytes, the same `continue` and the
+    /// same `exhausted` a working relay reports.
+    pub ready_when: Option<String>,
+    /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
+    /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
+    pub ready_within: Option<Duration>,
+}
+
+impl PipeSpec {
+    /// Relay `src` into `dst` with no readiness barrier — for a destination already running what
+    /// it is meant to be running.
+    #[must_use]
+    pub const fn new(src: PaneId, dst: PaneId) -> Self {
+        Self {
+            src,
+            dst,
+            ready_when: None,
+            ready_within: None,
+        }
+    }
+}
+
 /// Relays the source pane's new output into the destination pane.
 pub struct Pipe {
     src: PaneId,
     dst: PaneId,
     /// Last-relayed damage generation per source row.
     consumed: Vec<u64>,
+    /// The barrier the DESTINATION must clear before anything is typed into it.
+    ready: Readiness,
 }
 
 impl Pipe {
-    /// Relay `src`'s output into `dst`.
+    /// Relay according to `spec`.
     #[must_use]
-    pub fn new(src: PaneId, dst: PaneId) -> Self {
+    pub fn new(spec: PipeSpec) -> Self {
         Self {
-            src,
-            dst,
+            src: spec.src,
+            dst: spec.dst,
             consumed: Vec::new(),
+            ready: Readiness::new(spec.ready_when, spec.ready_within),
         }
     }
 }
@@ -115,6 +159,19 @@ enum Shown {
 
 impl Plugin for Pipe {
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
+        // ⚠⚠ NOT ONE BYTE INTO A DESTINATION THAT IS NOT READY — see [`PipeSpec::ready_when`]. The
+        // source is only READ, so it needs no barrier; the destination is typed into, and it is the
+        // one this plugin does not own. Latched, so it costs nothing after the first step.
+        //
+        // ⚠ Before the source is READ, deliberately. Whatever the source produces while this waits
+        // is still newly-damaged when the wait ends, so a relay that had to wait for its
+        // destination delivers what arrived meanwhile rather than losing it — reading first would
+        // consume those rows against a destination not ready to be given them.
+        if self.ready.reached(panes, self.dst, run)? == Reached::RunEnded {
+            return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
+                .noting("the run ended while waiting for the destination to be ready"));
+        }
+
         let rows = panes.pane_rows(self.src).unwrap_or_default();
         if self.consumed.len() < rows.len() {
             self.consumed.resize(rows.len(), 0);
@@ -189,6 +246,7 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState};
+    use crate::testing::STANDIN_READS_TTY;
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::thread::sleep;
@@ -241,7 +299,7 @@ mod tests {
         );
 
         // The pipe never converges; the iteration budget binds it.
-        let mut pipe = Pipe::new(src, dst);
+        let mut pipe = Pipe::new(PipeSpec::new(src, dst));
         let outcome = Driver::new(Guardrails {
             max_iterations: 5,
             max_cost: None,
@@ -299,7 +357,7 @@ mod tests {
             })
             .reporting_to(Arc::clone(&journal))
             .run(
-                &mut Pipe::new(src, dst),
+                &mut Pipe::new(PipeSpec::new(src, dst)),
                 &access,
                 &RunContext::uncancellable(),
             );
@@ -390,7 +448,7 @@ mod tests {
         })
         .reporting_to(Arc::clone(&journal))
         .run(
-            &mut Pipe::new(src, dst),
+            &mut Pipe::new(PipeSpec::new(src, dst)),
             &access,
             &RunContext::uncancellable(),
         );
@@ -412,6 +470,210 @@ mod tests {
         assert!(
             !notes.contains("SHOWED NOTHING") && !notes.contains("ONLY THOSE BYTES"),
             "and it must not report a finding about a destination it cut off: {notes}",
+        );
+    }
+
+    /// ⚠⚠ **A RELAY DOES NOT TYPE INTO A DESTINATION WHOSE PEER DOES NOT EXIST YET**, and this
+    /// plugin had no barrier at all until it was measured being fed.
+    ///
+    /// A relay's destination is by construction a pane SOMEBODY ELSE prepared, which makes it more
+    /// exposed to this than the drive loop that got the barrier first — and the failure is silent
+    /// in every number a run reports: same bytes charged, same `continue`, same `exhausted`. Run
+    /// against this fixture without the barrier, the destination's stand-in shell ate the relay
+    /// twice (`"relaymerelaymeSHELL-ATE relaymeSHELL-ATE relayme"`) and the peer that came up a
+    /// second later never saw a word of it.
+    ///
+    /// Both halves, because either alone is weak: the stand-in must not have been fed, AND the peer
+    /// must have received the relay — a barrier that simply never let go would satisfy the first.
+    #[test]
+    fn a_relay_does_not_feed_a_destination_that_is_still_a_shell() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let spawn = |script: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "peer".to_string(), 40, 8)
+                .expect("spawn")
+        };
+        let src = spawn("cat");
+        // The destination is a stand-in shell that EATS and NAMES anything typed at it, then
+        // becomes the peer — the ordinary shape of "open a pane, start the tool in it, relay".
+        let dst = spawn(&format!(
+            "while read early; do echo \"SHELL-ATE $early\"; done {STANDIN_READS_TTY} & \
+             sleep 2; kill $! 2>/dev/null; printf 'PEER-UP\\n'; \
+             exec sh -c 'while read l; do echo \"PEER-SAW $l\"; done'"
+        ));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let mut seed = KeyStroke::text("relayme");
+        seed.push(KeyStroke::named("Enter"));
+        let _seeded = access.inject(src, &seed).expect("seed src");
+        assert!(wait_until(&access, src, "relayme"), "source never echoed");
+
+        let spec = PipeSpec {
+            ready_when: Some("PEER-UP".to_string()),
+            ..PipeSpec::new(src, dst)
+        };
+        let _outcome = Driver::new(Guardrails {
+            max_iterations: 6,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(10)),
+        })
+        .run(&mut Pipe::new(spec), &access, &RunContext::uncancellable());
+
+        assert!(
+            wait_until(&access, dst, "PEER-SAW relayme"),
+            "the peer must have received the relay once it was up: {:?}",
+            access.pane_collapsed(dst),
+        );
+        // ⚠ WAIT FOR THE EVIDENCE. The stand-in shell's `echo` is asynchronous, so reading the
+        // screen the instant the run returns races it and reports "clean" over a pane that was fed
+        // — the first form of this gate passed for exactly that reason.
+        let screen = access.pane_collapsed(dst).unwrap_or_default();
+        assert!(
+            !screen.contains("SHELL-ATE"),
+            "the relay fed a pane whose peer did not exist yet — every SHELL-ATE is output this \
+             relay handed to a program that was about to be killed: {screen:?}",
+        );
+    }
+
+    /// ⚠⚠ **A RELAY THE CLOCK CUT OFF WHILE WAITING TO BE LET IN SAYS THAT, AND CHARGES NOTHING.**
+    ///
+    /// The other ending of the barrier, and a different finding from both of its neighbours: not
+    /// *the destination never came up* (that is a failure naming the marker) and not *the
+    /// destination said nothing* (that is about a pane which was actually given something). Here
+    /// the relay never wrote a byte, so a note blaming the destination would be a report about a
+    /// pane this run never spoke to, and any cost charged would be for bytes that do not exist.
+    #[test]
+    fn a_relay_whose_run_ends_while_waiting_to_be_let_in_charges_nothing_and_blames_nobody() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let spawn = |script: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "peer".to_string(), 20, 4)
+                .expect("spawn")
+        };
+        let src = spawn("cat");
+        let dst = spawn("exec cat");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let mut seed = KeyStroke::text("relayme");
+        seed.push(KeyStroke::named("Enter"));
+        let _seeded = access.inject(src, &seed).expect("seed src");
+        assert!(wait_until(&access, src, "relayme"), "source never echoed");
+
+        let spec = PipeSpec {
+            ready_when: Some("A MARKER THIS PANE NEVER PRINTS".to_string()),
+            // ⚠ FAR ABOVE the run's clock, so the run's deadline is provably what ends the wait
+            // rather than the barrier's own bound — that ending is the OTHER arm.
+            ready_within: Some(Duration::from_secs(300)),
+            ..PipeSpec::new(src, dst)
+        };
+        let journal = Arc::new(Mutex::new(sprag_plugin_progress()));
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(200)),
+        })
+        .reporting_to(Arc::clone(&journal))
+        .run(&mut Pipe::new(spec), &access, &RunContext::uncancellable());
+
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Duration));
+        let notes = journal
+            .lock()
+            .unwrap()
+            .journal
+            .iter()
+            .filter_map(|step| step.note.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            notes.contains("waiting for the destination to be ready"),
+            "the step must say it never got in, not anything about a relay it did not make: \
+             {notes}",
+        );
+        assert!(
+            !notes.contains("SHOWED NOTHING") && !notes.contains("ONLY THOSE BYTES"),
+            "and it must not report a finding about a destination it never wrote to: {notes}",
+        );
+        assert_eq!(
+            outcome.cost,
+            Some(Cost::Bytes(0)),
+            "nothing was injected, so nothing is charged: {outcome:?}",
+        );
+        assert_eq!(
+            access.pane_collapsed(dst).unwrap_or_default().trim(),
+            "",
+            "and the destination is untouched",
+        );
+    }
+
+    /// ⚠⚠ **A DESTINATION THAT NEVER COMES UP FAILS THE RUN AND NAMES THE MARKER**, rather than
+    /// relaying into whatever is there.
+    ///
+    /// The relay's counterpart of the orchestrator's arm, and a different answer from its
+    /// neighbour above: *the destination never came up* is about the PANE and names what the
+    /// caller got wrong, while *the run ran out of time* is about the run and says nothing about
+    /// the pane. A relay that guessed between them would send the caller after the wrong thing.
+    #[test]
+    fn a_destination_that_never_becomes_ready_fails_the_relay_and_names_the_marker() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let spawn = |script: &str| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "peer".to_string(), 20, 4)
+                .expect("spawn")
+        };
+        let src = spawn("cat");
+        let dst = spawn("exec cat");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let mut seed = KeyStroke::text("relayme");
+        seed.push(KeyStroke::named("Enter"));
+        let _seeded = access.inject(src, &seed).expect("seed src");
+        assert!(wait_until(&access, src, "relayme"), "source never echoed");
+
+        let spec = PipeSpec {
+            ready_when: Some("NEVER-PRINTED".to_string()),
+            ready_within: Some(Duration::from_millis(200)),
+            ..PipeSpec::new(src, dst)
+        };
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            // Far above the barrier's bound, so the run's clock provably is not what ended this.
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .run(&mut Pipe::new(spec), &access, &RunContext::uncancellable());
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Failed,
+            "a destination that never came up FAILS the relay: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.failure,
+            Some(PaneError::NeverReady("NEVER-PRINTED".to_string())),
+            "and the cause names the marker the caller got wrong",
+        );
+        assert_eq!(
+            access.pane_collapsed(dst).unwrap_or_default().trim(),
+            "",
+            "and not one byte was relayed into it",
         );
     }
 

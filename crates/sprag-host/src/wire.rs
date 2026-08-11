@@ -730,15 +730,22 @@ impl PluginGrammar {
         ArgGrammar::open("stimulus", "string"),
         ArgGrammar::open("sentinel", "string").optional(),
         ArgGrammar::open("ready_when", "string").optional(),
+        ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
 
     /// `pipe` — relay one pane's output into another's input.
+    ///
+    /// ⚠ It takes the SAME readiness barrier the orchestrator does, and needs it more: a relay's
+    /// destination is a pane somebody else prepared. See
+    /// [`PipeSpec::ready_when`](sprag_plugin::PipeSpec::ready_when).
     pub const PIPE_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::PIPE),
         ArgGrammar::open("src", "int"),
         ArgGrammar::open("dst", "int"),
+        ArgGrammar::open("ready_when", "string").optional(),
+        ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -750,6 +757,8 @@ impl PluginGrammar {
         ArgGrammar::open("prompt", "string"),
         ArgGrammar::open("eof", "bool").optional(),
         ArgGrammar::open("timeout_ms", "int").optional(),
+        ArgGrammar::open("ready_when", "string").optional(),
+        ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);

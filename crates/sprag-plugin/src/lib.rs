@@ -43,9 +43,12 @@ pub mod driver;
 pub mod orchestrator;
 pub mod pipe;
 pub mod plugin;
+pub mod readiness;
 pub mod reply;
 pub mod run;
 pub(crate) mod session;
+#[cfg(test)]
+pub(crate) mod testing;
 
 pub use access::{
     AgentObservation, AgentStateSource, Authority, KeyStroke, PaneAccess, PaneError, PaneLifecycle,
@@ -59,7 +62,8 @@ pub use driver::{
     StepRecord,
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
-pub use pipe::Pipe;
+pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{Cost, Plugin, Step, Verdict};
+pub use readiness::{DEFAULT_READY_TIMEOUT, Reached, Readiness};
 pub use reply::{AgentReply, parse_claude_json};
 pub use run::{RunContext, Waited, poll_until};

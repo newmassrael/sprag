@@ -31,7 +31,7 @@ use pinion_core::external::{
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
     Agent, AgentSpec, Ceiling, Cost, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec,
-    Orchestrator, Outcome, OutcomeState, Pipe, Plugin, ReplyFormat, RunContext,
+    Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin, ReplyFormat, RunContext,
     WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
@@ -358,11 +358,13 @@ impl PluginsExternal {
                 let stimulus = require_str(map, "stimulus")?.to_string();
                 let sentinel = opt_str(map, "sentinel")?.map(str::to_string);
                 let ready_when = opt_str(map, "ready_when")?.map(str::to_string);
+                let ready_within = opt_millis(map, "ready_timeout_ms")?;
                 let label = format!("orchestrator pane={}", pane.0);
                 let spec = OrchestrationSpec {
                     stimulus,
                     sentinel,
                     ready_when,
+                    ready_within,
                 };
                 Ok((
                     PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
@@ -374,8 +376,14 @@ impl PluginsExternal {
                 let dst = require_pane_id(map, "dst")?;
                 self.require_pane(src)?;
                 self.require_pane(dst)?;
+                let spec = PipeSpec {
+                    src,
+                    dst,
+                    ready_when: opt_str(map, "ready_when")?.map(str::to_string),
+                    ready_within: opt_millis(map, "ready_timeout_ms")?,
+                };
                 Ok((
-                    PluginKind::Pipe(Pipe::new(src, dst)),
+                    PluginKind::Pipe(Pipe::new(spec)),
                     format!("pipe {}->{}", src.0, dst.0),
                 ))
             }
@@ -387,10 +395,11 @@ impl PluginsExternal {
                 if let Some(v) = map.get("eof") {
                     spec.eof = v.as_bool().ok_or(InvokeError::TypeMismatch)?;
                 }
-                if let Some(v) = map.get("timeout_ms") {
-                    spec.timeout =
-                        Duration::from_millis(v.as_u64().ok_or(InvokeError::TypeMismatch)?);
+                if let Some(timeout) = opt_millis(map, "timeout_ms")? {
+                    spec.timeout = timeout;
                 }
+                spec.ready_when = opt_str(map, "ready_when")?.map(str::to_string);
+                spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
                 let label = format!("agent pane={}", pane.0);
                 Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
             }
@@ -419,10 +428,13 @@ impl PluginsExternal {
                 let (default_cols, default_rows) = lock(&self.workspace).default_size();
                 spec.cols = opt_dim(map, "cols")?.unwrap_or(default_cols);
                 spec.rows = opt_dim(map, "rows")?.unwrap_or(default_rows);
-                if let Some(v) = map.get("timeout_ms") {
-                    spec.timeout =
-                        Duration::from_millis(v.as_u64().ok_or(InvokeError::TypeMismatch)?);
+                if let Some(timeout) = opt_millis(map, "timeout_ms")? {
+                    spec.timeout = timeout;
                 }
+                // ⚠ NO readiness barrier here, and the absence is measured rather than an
+                // oversight: a dialogue passes each turn's prompt as an ARGV ARGUMENT of the pane
+                // it spawns for that turn and never injects a byte, so there is no window in which
+                // a shell could be typed into. The three plugins that DO inject all take one.
                 let label = format!(
                     "dialogue {}<->{}",
                     spec.endpoints[0].argv.first().map_or("?", String::as_str),
@@ -690,6 +702,21 @@ impl PluginKind {
 /// A required argv array (`["program", "args"…]`) of strings, non-empty.
 /// A missing/non-array value is a [`InvokeError::TypeMismatch`]; an empty array
 /// is a [`InvokeError::Rejected`] (an endpoint needs at least its program).
+/// Read an optional millisecond duration argument.
+///
+/// One spelling for the three `*_ms` arguments a run form takes, so a bound named on the wire is
+/// converted the same way wherever it is named. A present-but-not-a-number value is a MALFORMED
+/// request rather than a silently ignored one — the class R358 closed for argument NAMES, held
+/// here for their values.
+fn opt_millis(map: &Map<String, Value>, key: &str) -> Result<Option<Duration>, InvokeError> {
+    match map.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => Ok(Some(Duration::from_millis(
+            value.as_u64().ok_or(InvokeError::TypeMismatch)?,
+        ))),
+    }
+}
+
 fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<String>, InvokeError> {
     match map.get(key) {
         Some(Value::Array(items)) => {
@@ -1615,9 +1642,10 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            7,
+            9,
             "one probe per open string argument of every form: an orchestrator's stimulus, \
-             sentinel and ready_when, an agent's prompt, and a dialogue's seed and two labels",
+             sentinel and ready_when, a PIPE's ready_when, an agent's prompt and ready_when, and \
+             a dialogue's seed and two labels",
         );
     }
 
@@ -1634,12 +1662,13 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            45,
-            "one probe per declared argument of every FORM, nesting included: TEN for an \
-             orchestrator (`ready_when` is the newest), eight for a pipe, ten for an agent, \
-             sixteen for a dialogue, and one to \
-             cancel — one more per run form than before the DURATION ceiling, which is what makes \
-             `max_seconds` a bound this daemon reads rather than a word it publishes",
+            50,
+            "one probe per declared argument of every FORM, nesting included: ELEVEN for an \
+             orchestrator, TEN for a pipe, TWELVE for an agent, sixteen for a dialogue, and one \
+             to cancel. ⚠ The newest five are the READINESS BARRIER, on each of the THREE plugins \
+             that inject: a relay was measured feeding a pane whose peer did not exist yet, and \
+             an agent prompt was measured coming back as the shell's `not found`. A dialogue has \
+             none because it passes its prompt as argv and injects nothing",
         );
     }
 
@@ -1776,6 +1805,71 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// ⚠⚠ **THE `failure` A CLIENT READS IS A SENTENCE ABOUT THE PANE, NOT A RUST VARIANT** — the
+    /// wire half, and the half that decides whether the fix R358 made is worth anything.
+    ///
+    /// This key was `format!("{e:?}")`, so a failed run published `Write("Broken pipe (os error
+    /// 32)")` to an agent that has no way to look up what `Write` is. The remedy — a `Display`
+    /// impl, published with `ToString::to_string` — had a gate nowhere, so reverting one call
+    /// would have broken nothing and the leak would have come straight back.
+    ///
+    /// Driven through the readiness failure because it is the one a caller can provoke on purpose:
+    /// a marker the pane never prints, with `ready_timeout_ms` short enough that the RUN's clock is
+    /// provably not what ended it. Three claims: the run FAILED, the text names the marker, and it
+    /// does not read as Rust.
+    #[test]
+    fn a_failed_run_publishes_a_sentence_about_the_pane_rather_than_a_rust_variant() {
+        let (mut external, registry, pane) = host_with_a_pane();
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "ready_when": "A MARKER THIS PANE NEVER PRINTS",
+                    "ready_timeout_ms": 200,
+                    // Far above the readiness bound, so neither ceiling can be what ends this.
+                    "guardrails": { "max_iterations": 100_000, "max_seconds": 60 },
+                })),
+            )
+            .expect("a run that names a readiness barrier is a well-formed run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let entry = ended(
+            &registry,
+            u64::try_from(id).expect("a run id is not negative"),
+            Duration::from_secs(20),
+        );
+        let outcome = &entry["state"]["outcome"];
+
+        assert_eq!(
+            outcome["state"],
+            json!("failed"),
+            "a pane that never becomes ready FAILS the run — it is not a ceiling the run reached, \
+             and a client that read `exhausted` here would go looking for a budget it never hit: \
+             {entry:?}",
+        );
+        let said = outcome["failure"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a failed run publishes its cause as text: {entry:?}"));
+        assert!(
+            said.contains("A MARKER THIS PANE NEVER PRINTS"),
+            "and the text names what the run waited for, which is the only thing that tells the \
+             caller WHICH marker they got wrong: {said:?}",
+        );
+        assert!(
+            said.contains(' ') && said.starts_with(char::is_lowercase),
+            "it has to read as prose to the agent that receives it, not as a Rust variant and its \
+             debug payload: {said:?}",
+        );
+        assert!(
+            !said.contains("NeverReady"),
+            "the variant name is the leak itself: {said:?}",
+        );
     }
 
     /// ⚠⚠ **A RUN ASKED TO STOP AFTER A SECOND STOPS AFTER A SECOND** — the wire half of the
