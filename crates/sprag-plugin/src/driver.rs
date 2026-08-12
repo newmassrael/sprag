@@ -190,8 +190,12 @@ impl std::fmt::Display for Stopped {
             Self::Job(signalled) => write!(f, "the run's own job was {signalled}"),
             Self::Nothing => f.write_str("the run had no job of its own running"),
             Self::Unreached(why) => write!(f, "the run's own job is still running: {why}"),
+            // ⚠ The SAME phrase as the arm above, deliberately: the two reach a caller for
+            // different reasons and leave them in the same position, and a reader scanning for
+            // *is my work still going?* must not have to know two spellings of yes.
             Self::Unsupported => f.write_str(
-                "the run's own job may still be running: this host cannot stop a pane's job",
+                "the run's own job is still running for all anybody here can tell: this host \
+                 cannot stop a pane's job",
             ),
         }
     }
@@ -800,9 +804,8 @@ mod tests {
             outcome
                 .stopped
                 .as_ref()
-                .is_some_and(|stopped| stopped.to_string().contains("may still be running")),
-            "and the sentence must say the work may still be running, which is the part they act \
-             on",
+                .is_some_and(|stopped| stopped.to_string().contains("still running")),
+            "and the sentence must say the work is still running, which is the part they act on",
         );
     }
 
@@ -835,6 +838,70 @@ mod tests {
              person is working in, and an unrelated timeout must not reach into them",
         );
         assert_eq!(outcome.stopped, Some(Stopped::Nothing));
+    }
+
+    /// ⚠⚠ **EVERY WAY A RUN'S WORK CAN END READS AS ITS OWN SENTENCE**, and the two that mean the
+    /// work is STILL RUNNING say so in words.
+    ///
+    /// Driven from [`Stopped::ALL`], so a fifth arm is covered the day it is declared — the reason
+    /// this type is a `closed_set!` at all, and the difference between a vocabulary with a ratchet
+    /// and one with a hand-written list of four beside it.
+    ///
+    /// ⚠ The DISTINCTNESS is the half a per-arm check cannot make. A single polite sentence would
+    /// satisfy every shape claim here while telling four outcomes apart from none — and two of these
+    /// four are the ones a caller has to act on.
+    #[test]
+    fn every_end_of_a_runs_work_reads_as_its_own_sentence() {
+        let every = Stopped::ALL;
+        let distinct: std::collections::BTreeSet<String> =
+            every.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            distinct.len(),
+            every.len(),
+            "two endings read as the SAME sentence, so a caller cannot tell them apart: \
+             {distinct:?}",
+        );
+        for stopped in &every {
+            let said = stopped.to_string();
+            assert_ne!(
+                said,
+                format!("{stopped:?}"),
+                "the published text is the DEBUG form, which is the leak itself",
+            );
+            assert!(
+                said.contains(' ') && said.starts_with(char::is_lowercase),
+                "an answer an agent reads must be prose, not {said:?}",
+            );
+        }
+        // ⚠⚠ AND THE TWO THAT LEAVE WORK BEHIND MUST SAY SO. This is the whole point of the type:
+        // a caller whose stop did not land is the one who has a peer still spending their money,
+        // and a sentence that reported the failure without that fact would be a diagnostic about
+        // the past rather than a warning about the present.
+        for leftover in [
+            Stopped::Unreached(PaneError::NotStopped(Unstopped::Unseen)),
+            Stopped::Unsupported,
+        ] {
+            let said = leftover.to_string();
+            assert!(
+                said.contains("still running"),
+                "{leftover:?} must tell the caller their work is still going: {said:?}",
+            );
+        }
+        // And the two that do NOT must not scare somebody into looking for work that is over.
+        for settled in [
+            Stopped::Job(Signalled {
+                stop: Stop::Interrupt,
+                pgid: 4711,
+                leader: None,
+            }),
+            Stopped::Nothing,
+        ] {
+            assert!(
+                !settled.to_string().contains("still running"),
+                "{settled:?} must not read as a warning: {}",
+                settled,
+            );
+        }
     }
 
     /// A plugin whose step always fails — to pin the Driver's Err -> Failed

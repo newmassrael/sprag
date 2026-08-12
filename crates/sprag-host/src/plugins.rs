@@ -78,6 +78,15 @@ pub const RUN_CEILING_KEY: &str = "ceiling";
 /// that failed to converge could not be diagnosed at all. ⚠ Compare its length against
 /// `iterations` to tell a truncated journal from a complete one.
 pub const RUN_JOURNAL_KEY: &str = "journal";
+/// The answer key carrying WHAT BECAME OF THE WORK a run had going — absent unless the run was CUT
+/// SHORT (cancelled, or out of time), which are the only endings that can land while a step is
+/// still blocked on a peer this run set going.
+///
+/// ⚠⚠ Its presence is itself the claim, the rule [`RUN_CEILING_KEY`] follows. A `cancelled` outcome
+/// with no answer here is consistent with two opposite states of the world — the work stopped, or
+/// the work is still running and still spending — and the one a caller must act on is the second.
+/// Its text is [`sprag_plugin::Stopped`]'s own sentence, so the host never spells a variant.
+pub const RUN_STOPPED_KEY: &str = "stopped";
 
 sprag_vt::closed_set! {
     /// WHERE A RUN HAS GOT TO — the `status` word inside a run's `state`.
@@ -1035,6 +1044,11 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
     // remedies.
     if let Some(ceiling) = ceiling {
         answer[RUN_CEILING_KEY] = json!(ceiling);
+    }
+    // AND WHAT BECAME OF THE WORK, present only for a run that was cut short — see
+    // `RUN_STOPPED_KEY`. The SENTENCE and not the variant, for the reason `failure` above is one.
+    if let Some(stopped) = &outcome.stopped {
+        answer[RUN_STOPPED_KEY] = json!(stopped.to_string());
     }
     answer
 }
@@ -2040,6 +2054,29 @@ mod tests {
             took.elapsed() < Duration::from_secs(10),
             "it must stop near the second it was given, not at some other bound: {:?}",
             took.elapsed(),
+        );
+        // ⚠⚠ AND WHAT BECAME OF THE WORK reaches the wire beside it. A run out of time ends while a
+        // step may still be blocked on the peer it set going, so `exhausted — duration` alone is
+        // consistent with the work having stopped AND with it running on; a caller cannot act on
+        // that. This key is the difference, and the ORCHESTRATOR names its pane
+        // (`Plugin::driving`), so a run against one must carry it.
+        let stopped = outcome[RUN_STOPPED_KEY]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !stopped.is_empty(),
+            "a run cut short must say what became of its work, or `exhausted` is half an answer: \
+             {entry:?}",
+        );
+        assert!(
+            stopped.contains(' ') && stopped.starts_with(char::is_lowercase),
+            "and it reads as prose to the agent that receives it, not as a Rust variant: \
+             {stopped:?}",
+        );
+        assert!(
+            !stopped.contains("Stopped") && !stopped.contains("Signalled"),
+            "the variant name is the leak itself: {stopped:?}",
         );
 
         // ⚠ AND THE COST CEILING'S OWN WORD, driven to the wire rather than asserted at the type.

@@ -60,7 +60,7 @@ pub use deliver::{Delivered, Delivery, deliver, has_painted};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use driver::{
     Ceiling, Driver, Guardrails, JOURNAL_LIMIT, Outcome, OutcomeState, Progress, ProgressCell,
-    StepRecord,
+    StepRecord, Stopped,
 };
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::{Pipe, PipeSpec};
