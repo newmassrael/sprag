@@ -5855,13 +5855,25 @@ fn a_hooks_report_does_not_outlive_an_agent_the_pane_did_not_spawn() {
     // The agent: a job at the shell's prompt, so it is one level below the pane's own child.
     assert!(sprag(&sock, &["send-keys", "0", "-l", "sleep 300"]).ok);
     assert!(sprag(&sock, &["send-keys", "0", "Enter"]).ok);
+    // ⚠⚠ WAIT FOR THE JOB, NOT FOR THE ECHO. This waited until `sleep 300` appeared on the SCREEN,
+    // and a pty echoes what was typed before the shell has forked anything — the same distinction
+    // the readiness barrier draws between `ReadyWhen::Prints` and `ReadyWhen::Runs`, and the one
+    // this project has paid for repeatedly. `sprag processes` reads the PROCESS TABLE, so this
+    // waits for the thing the rest of the test is about.
+    //
+    // ⚠⚠⚠ THIS DID NOT FIX THE FAILURE IT WAS WRITTEN FOR, and saying so is the point. Under
+    // whole-workspace load on another machine this test still fails, and instrumenting it there
+    // showed why: `send-keys C-c` puts the byte on the tty — the screen shows the `^C` echo — and
+    // NO SIGINT follows. The job is still alive, in its own process group, still foreground
+    // (`pid == pgid`, state `S+`), and the daemon still names it as the pane's job. So the agent
+    // report under test is CORRECT and it is this fixture's premise that fails. See the debt
+    // register: what `send-keys C-c` guarantees is an open product question, not a flake.
     assert!(
         wait_for(Duration::from_secs(10), || {
-            sprag(&sock, &["capture-pane", "0"])
-                .stdout
-                .contains("sleep 300")
+            sprag(&sock, &["processes"]).stdout.contains("sleep")
         }),
-        "the shell echoed the command, so it has taken it",
+        "the shell FORKED the job, so there is something for the hook to bind to: {}",
+        sprag(&sock, &["processes"]).stdout,
     );
 
     // The hook fires the way the agent's own config makes it fire: a payload on stdin, the pane from
