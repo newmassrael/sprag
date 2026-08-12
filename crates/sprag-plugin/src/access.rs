@@ -16,7 +16,7 @@ use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
     Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput,
-    Workspace, foreground_leader_of,
+    Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
 };
 use sprag_vt::LinesSince;
 use sprag_vt::Screen;
@@ -207,6 +207,13 @@ pub enum PaneError {
         wanted: ReadyWhen::Shows(String::new()),
         instead: PaneDoing::Unknown,
     },
+    /// ⚠ A STOP WAS NOT DELIVERED, so the pane's job is STILL RUNNING — and why.
+    ///
+    /// Distinct from every other arm here because the others describe something that did not
+    /// happen; this one also describes something that is still happening. A run cancelled at its
+    /// deadline whose stop failed has left work on somebody's machine, and *"cancelled"* on its own
+    /// would tell them the opposite.
+    NotStopped(Unstopped) = (Unstopped::Unseen),
 }
 }
 
@@ -385,6 +392,12 @@ impl std::fmt::Display for PaneError {
                 )?;
                 write!(f, "{instead}")
             }
+            Self::NotStopped(why) => {
+                write!(
+                    f,
+                    "the pane's job was not stopped, and is still running: {why}"
+                )
+            }
         }
     }
 }
@@ -507,6 +520,18 @@ pub trait PaneAccess {
     fn output_lines(&self) -> Option<&dyn PaneOutputLines> {
         None
     }
+
+    /// The pane's *job control* — the ability to STOP what its terminal belongs to. `None` by
+    /// default, on the same terms as the other six sub-surfaces.
+    ///
+    /// ⚠ A consumer without it has NO safe fallback, and that asymmetry is why this is its own
+    /// capability rather than an assumed one. Every other absence here degrades to reading
+    /// something less exact; this one degrades to writing `0x03` and hoping, which is not a
+    /// degradation of stopping a job — it is a different act with a different outcome. A run that
+    /// cannot reach this must report that it could not stop its work rather than pretend it did.
+    fn job_control(&self) -> Option<&dyn PaneJobControl> {
+        None
+    }
 }
 
 /// Pane *output stream*: the complete logical lines a pane has produced, addressed by a number
@@ -568,6 +593,88 @@ pub trait PaneForegroundJob {
     /// The leader rather than every member, because this is polled: see
     /// [`foreground_leader_of`] for what that costs and what it therefore cannot answer.
     fn pane_foreground_leader(&self, id: PaneId) -> Option<JobProcess>;
+}
+
+/// STOPPING a pane's foreground job — the WRITE half of what [`PaneForegroundJob`] reads. Reached
+/// via [`PaneAccess::job_control`].
+///
+/// # ⚠⚠⚠ Why [`inject`](PaneAccess::inject) was not already this
+///
+/// A plugin CAN write `0x03` into a pane, and until this existed that was the only stop it had. It
+/// is not one. The byte becomes a `SIGINT` only if the terminal's line discipline is willing —
+/// `stty -isig`, a full-screen editor, any program that took the terminal raw, and the byte is
+/// ordinary input — and it goes to whichever group owns the terminal at the instant the kernel
+/// processes it, which is not necessarily the one the plugin meant. **Measured: a pane running
+/// `stty -isig; sleep 300` echoes `^C` and keeps sleeping.** See
+/// [`sprag_terminal::stop`](../../sprag_terminal/stop/index.html) for the whole measurement.
+///
+/// So a bounded run could not keep its own promise. `max_duration` stopped the DRIVER on time and
+/// left the peer's turn running — the loop's door closed on a room that was still occupied — and no
+/// amount of care inside the loop could fix it, because the missing thing was an address, not a
+/// policy. This is that address.
+///
+/// # Why it is a separate capability and not a method on [`PaneAccess`]
+///
+/// Interface segregation, the same reason [`RunContext`](crate::run::RunContext) is not bolted onto
+/// this trait: a plugin that only READS panes must not depend on the ability to signal the programs
+/// in them, and a host that cannot signal (a projection, a replay, a remote view) must be able to
+/// say so by not offering the capability rather than by returning a lie.
+pub trait PaneJobControl {
+    /// Send `stop` to the job that owns `id`'s terminal, and say what received it.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError::UnknownPane`] for a pane nobody knows, and [`PaneError::NotStopped`] when
+    /// there was no group to signal or the kernel refused — ⚠ in which case the work is STILL
+    /// RUNNING, which is the whole reason this answers instead of returning nothing.
+    fn pane_stop_job(&self, id: PaneId, stop: Stop) -> Result<Signalled, PaneError>;
+}
+
+/// WHAT A STOP REACHED, as a plugin's caller reads it.
+///
+/// [`sprag_terminal::StoppedJob`] with its leader read through [`JobLeader`] — the same two-name
+/// reading every other report on this surface uses, so a stop and a readiness refusal name one
+/// program the same way. A report that spelled the leader differently from the barrier that had
+/// been waiting for it would be two vocabularies for one fact, which is the defect `JobLeader`
+/// exists to have removed once.
+///
+/// [`sprag_terminal::StoppedJob`]: ../../sprag_terminal/stop/struct.StoppedJob.html
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signalled {
+    /// Which request was delivered.
+    pub stop: Stop,
+    /// The process GROUP that received it.
+    pub pgid: u32,
+    /// The names its leader answers to, or `None` when the group's leader has already gone and its
+    /// other members keep the group alive — an absence with its own meaning, not a failure.
+    pub leader: Option<JobLeader>,
+}
+
+impl Signalled {
+    /// Read a terminal-layer answer as this one.
+    #[must_use]
+    pub fn of(job: &StoppedJob) -> Self {
+        Self {
+            stop: job.stop,
+            pgid: job.pgid,
+            leader: job.leader.as_ref().map(JobLeader::of),
+        }
+    }
+}
+
+impl std::fmt::Display for Signalled {
+    /// The clause a run's outcome carries: *`interrupted "claude" (process group 4711)`*.
+    ///
+    /// ⚠ The GROUP is printed and not only the name, because the name is a courtesy and the group
+    /// is the address — it is what a person types into `kill` when they want to check, and a report
+    /// that named only a program leaves them nothing to verify with.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.stop)?;
+        match &self.leader {
+            Some(leader) => write!(f, " {leader} (process group {})", self.pgid),
+            None => write!(f, " process group {}", self.pgid),
+        }
+    }
 }
 
 /// Pane *echo trail*: the text recently written INTO a pane, for telling the pane's own echo from
@@ -897,6 +1004,10 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self)
     }
 
+    fn job_control(&self) -> Option<&dyn PaneJobControl> {
+        Some(self)
+    }
+
     fn supervision(&self) -> Option<&dyn PaneSupervision> {
         // Gated on the reader rather than answered unconditionally: a surface with no detector
         // behind it must say so, or every pane on a host that never looked reads as "not an agent".
@@ -921,6 +1032,30 @@ impl PaneInputEcho for WorkspacePaneAccess {
 impl PaneOutputLines for WorkspacePaneAccess {
     fn pane_lines_since(&self, id: PaneId, cursor: u64) -> Option<LinesSince> {
         Some(self.handle(id)?.lines_since(cursor))
+    }
+}
+
+impl PaneJobControl for WorkspacePaneAccess {
+    /// ⚠ THE PID IS TAKEN UNDER THE LOCK AND THE SIGNAL IS SENT OUTSIDE IT, for the reason the
+    /// reader below states — and here it matters twice, because this is called from a run that is
+    /// being cancelled, which is exactly when a client is also asking the workspace for the run's
+    /// state.
+    ///
+    /// ⚠⚠ A pane whose child has been REAPED reads `None` for its pid — the gate
+    /// [`PanePty::pid`](../../sprag_terminal/pane_pty/struct.PanePty.html#method.pid) already
+    /// applies — and that is reported as [`Unstopped::Gone`] rather than as an unknown pane: the
+    /// pane is still there, its program is not, and telling a caller their pane does not exist when
+    /// it does would send them looking in the wrong place.
+    fn pane_stop_job(&self, id: PaneId, stop: Stop) -> Result<Signalled, PaneError> {
+        let pid = {
+            let workspace = lock(&self.workspace);
+            let pane = workspace.pane(id).ok_or(PaneError::UnknownPane(id))?;
+            pane.pty().pid()
+        };
+        let pid = pid.ok_or(PaneError::NotStopped(Unstopped::Gone))?;
+        sprag_terminal::stop_foreground_job(pid, stop)
+            .map(|job| Signalled::of(&job))
+            .map_err(PaneError::NotStopped)
     }
 }
 
@@ -1046,6 +1181,153 @@ mod tests {
             .spawn(command, "cat".to_string(), cols, rows)
             .expect("spawn pane");
         workspace
+    }
+
+    /// Poll `ready` until it holds or `within` elapses, answering whether it ever did.
+    fn until(within: Duration, mut ready: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < within {
+            if ready() {
+                return true;
+            }
+            sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// ⚠⚠⚠ **THE STOP REACHES THROUGH THE EXTENSION API, AND WHAT AN INJECTION CANNOT REACH.**
+    ///
+    /// The pane runs `stty -isig; exec sleep 300`, so its terminal has been told to make no signals
+    /// out of input — the condition a plugin can neither see nor prevent, and the one that makes a
+    /// written `0x03` a stop in name only.
+    ///
+    /// The CONTROL is the extension API's own [`PaneAccess::inject`] carrying `Ctrl-C`: the pane
+    /// echoes `^C`, so the byte was processed, and the job runs on. The SUBJECT is
+    /// [`PaneJobControl::pane_stop_job`] on the same pane in the same test, which ends it — and
+    /// **names it**, which the injection could not have done even had it worked, because a write
+    /// reports bytes and not consequences.
+    ///
+    /// ⚠ Driven through `&dyn PaneAccess` rather than the concrete type: what a plugin holds is the
+    /// trait object, so a capability reachable only from `WorkspacePaneAccess` would be one no
+    /// plugin can use — the exact shape [`PaneAccess::job_control`] exists to make impossible.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_plugin_can_stop_a_job_its_own_ctrl_c_would_only_have_been_echoed_at() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 6))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("stty -isig; exec sleep 300");
+        command.env("TERM", "dumb");
+        lock(&workspace)
+            .spawn(command, "sleep".to_string(), 40, 6)
+            .expect("spawn pane");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let panes: &dyn PaneAccess = &access;
+        let pane = panes.pane_ids()[0];
+        let jobs = panes
+            .foreground_job()
+            .expect("this host reads the job table");
+
+        assert!(
+            until(Duration::from_secs(10), || jobs
+                .pane_foreground_leader(pane)
+                .is_some_and(|job| job.name == "sleep")),
+            "the fixture never reached its job, so nothing below measures anything",
+        );
+
+        // ⚠ The W3C key is `"c"` with CONTROL held, which is what every surface's `C-c` becomes —
+        // the encoder turns that pair into the byte 0x03. Spelling it `"Ctrl+c"` is not a key name
+        // and is refused at the encoder, which is the API working as designed.
+        let written = panes
+            .inject(
+                pane,
+                &[KeyStroke {
+                    key: "c".to_string(),
+                    mods: Modifiers {
+                        ctrl: true,
+                        ..Modifiers::default()
+                    },
+                }],
+            )
+            .expect("the write itself succeeds — that is the point");
+        assert_eq!(
+            written,
+            Written::of(1),
+            "and it wrote the one byte a Ctrl-C is, so what follows is about that byte's fate \
+             rather than about an encoder that sent nothing",
+        );
+        assert!(
+            until(Duration::from_secs(10), || panes
+                .pane_collapsed(pane)
+                .is_some_and(|screen| screen.contains("^C"))),
+            "⚠ THE CONTROL'S PREMISE: the terminal must ECHO the byte, or the job surviving says \
+             only that the byte had not arrived",
+        );
+        assert!(
+            jobs.pane_foreground_leader(pane)
+                .is_some_and(|job| job.name == "sleep"),
+            "⚠⚠ THE CONTROL: a plugin's own Ctrl-C was written, echoed, and stopped nothing",
+        );
+
+        let control = panes
+            .job_control()
+            .expect("this host can signal a pane's job");
+        let signalled = control
+            .pane_stop_job(pane, Stop::Interrupt)
+            .expect("the group is signalled");
+        assert!(
+            signalled
+                .leader
+                .as_ref()
+                .is_some_and(|leader| leader.answers_to("sleep")),
+            "⚠ the report names the job the way a readiness refusal would — through the SAME \
+             two-name reading, or a stop and a barrier would spell one program two ways: \
+             {signalled}",
+        );
+        assert!(
+            until(Duration::from_secs(10), || jobs
+                .pane_foreground_leader(pane)
+                .is_none()),
+            "⚠⚠ THE SUBJECT: the signal ended the job the injection could not",
+        );
+    }
+
+    /// A pane that is REAL and whose program has GONE is refused for that reason, and a pane that
+    /// does not exist is refused for the other.
+    ///
+    /// ⚠ The two are different corrections — *your program finished* sends somebody to their
+    /// scrollback, *there is no such pane* sends them to their pane list — and collapsing them was
+    /// the temptation here, because both arrive at the same `?`.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_finished_program_and_a_pane_that_never_existed_are_refused_differently() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 6))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("exit 0");
+        command.env("TERM", "dumb");
+        lock(&workspace)
+            .spawn(command, "gone".to_string(), 40, 6)
+            .expect("spawn pane");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let panes: &dyn PaneAccess = &access;
+        let pane = panes.pane_ids()[0];
+        let control = panes
+            .job_control()
+            .expect("this host can signal a pane's job");
+
+        assert!(
+            until(Duration::from_secs(10), || matches!(
+                control.pane_stop_job(pane, Stop::Interrupt),
+                Err(PaneError::NotStopped(Unstopped::Gone)),
+            )),
+            "a pane whose child was reaped has nothing to stop, and says so about the PROGRAM",
+        );
+        assert_eq!(
+            control.pane_stop_job(PaneId(4242), Stop::Interrupt),
+            Err(PaneError::UnknownPane(PaneId(4242))),
+            "and a pane nobody knows is a different correction entirely",
+        );
     }
 
     /// ⚠⚠ **THE DEGRADATION ARM OF [`PaneAccess::pane_full_lines`], which no production host takes.**

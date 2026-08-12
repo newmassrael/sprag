@@ -52,8 +52,8 @@ pub(crate) mod testing;
 
 pub use access::{
     AgentObservation, AgentStateSource, Authority, JobLeader, KeyStroke, PaneAccess, PaneDoing,
-    PaneError, PaneForegroundJob, PaneInputEcho, PaneLifecycle, PaneOutputLines, PaneRawCapture,
-    PaneRow, PaneSupervision, RowTrail, WorkspacePaneAccess, Written,
+    PaneError, PaneForegroundJob, PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOutputLines,
+    PaneRawCapture, PaneRow, PaneSupervision, RowTrail, Signalled, WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
 pub use deliver::{Delivered, Delivery, deliver, has_painted};
