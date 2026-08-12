@@ -23,6 +23,21 @@
 //! contracts, ten addresses served and never declared — and the remedy is always the same: **give
 //! the concept ONE definition and make the caller say which one they mean.**
 //!
+//! # ⚠ Why the orchestrator's rule is named here and not yet MOVED here
+//!
+//! The first two are the same predicate over the same evidence, so collapsing them is a rename and
+//! nothing else. The third is not: *"the pane produced output that is not the echo"* needs context
+//! a turn has to carry — where this turn's output starts (a
+//! [`RowTrail`](crate::access::RowTrail) marked BEFORE the injection) and what was typed, so the
+//! terminal's echo of it can be discounted. [`Exits`](DoneWhen::Exits) needs neither.
+//!
+//! Whether that context belongs in each variant's PAYLOAD or in a uniform per-turn evaluator (the
+//! shape [`Readiness`](crate::readiness::Readiness) uses for its latched state) is a decision that
+//! should not be made from ONE example. The next variant settles it: an agent-at-rest rule needs a
+//! NAME and no baseline, and a marker rule needs a marker and no baseline — two more shapes, and
+//! then the right signature is a reading rather than a guess. Moving the orchestrator first would
+//! fix the API from the single case least like the others.
+//!
 //! # ⚠⚠ Why the hard-coded rule is not merely untidy
 //!
 //! *"The child exited"* is a ONE-SHOT TOOL's completion. A long-lived interactive peer — the whole
