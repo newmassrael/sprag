@@ -868,6 +868,7 @@ impl PluginGrammar {
         ArgGrammar::open("pane", "int"),
         ArgGrammar::open("prompt", "string"),
         ArgGrammar::open("eof", "bool").optional(),
+        ArgGrammar::open("shows_prompt", "bool").optional(),
         ArgGrammar::open("timeout_ms", "int").optional(),
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
@@ -6751,7 +6752,11 @@ mod tests {
             // walk and this gate — the one written for exactly this break — was blind to it.
             // R359b: re-stamped for a REQUEST value that changed shape (`ready_when`); neither
             // enum a peer decodes whole moved, which is what this says.
-            22,
+            // R364: re-stamped for an ADDED REQUEST ARGUMENT (`shows_prompt`, which buys a
+            // guarantee whose absence is indistinguishable from it holding). No ANSWER word moved
+            // — what an unconfirmed delivery says reaches a caller as a step's NOTE, which is free
+            // text by design and so has no value space to widen.
+            23,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -6872,7 +6877,10 @@ mod tests {
             // and this pin holds the request half.
             // ⚠⚠ R359b IS A RE-STAMP THIS PIN EARNED ITSELF: `run` gained a nested `ready_when`
             // whose `match` is a closed set (`prints` | `shows`), so the request half DID widen.
-            22,
+            // R364: re-stamped for an ADDED REQUEST ARGUMENT (`shows_prompt` on the agent
+            // form). An argument NAME is not a published VALUE space — this pin holds the words a
+            // client picks a value from — so nothing here moved, which is what this says.
+            23,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7361,7 +7369,10 @@ mod tests {
         // object naming WHICH QUESTION its marker asks), with every ADDRESS unchanged — which is
         // what this re-stamp says and what this pin cannot see. R357 re-stamped it for a value
         // SPACE (`status` gained `interrupted`), also invisible here.
-        22,
+        // R364: re-stamped for an ADDED REQUEST ARGUMENT (`shows_prompt`), with every ADDRESS
+        // unchanged. An argument lives inside a form this pin does not walk, which is exactly the
+        // blind spot named above and the reason the argument grammar has ratchets of its own.
+        23,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

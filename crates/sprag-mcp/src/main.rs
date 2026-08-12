@@ -1764,6 +1764,13 @@ fn argument_help(name: &str) -> &'static str {
         }
         "prompt" => "What to say to the agent in the pane (agent).",
         "eof" => "Send end-of-input after the prompt (agent), for a command that reads until EOF.",
+        "shows_prompt" => {
+            "Whether the pane's program SHOWS a prompt typed at it before it is submitted (agent). \
+             True for an interactive agent with a prompt box: the prompt is then re-typed until it \
+             appears and Enter is pressed only after that, so a prompt the program swallowed while \
+             starting up is asked again instead of lost. Leave it off for a one-shot command that \
+             renders nothing, where a second attempt would arrive as a second prompt."
+        }
         "timeout_ms" => "How long one turn may take before the run gives up on it.",
         "seed" => "The first message, given to endpoint A (dialogue).",
         "endpoint_a" => "The command line of the first speaker, as a list (dialogue).",

@@ -534,7 +534,28 @@ impl ScopeAsk {
 ///   nothing in the marker says which — **only the caller knows, so the type makes them say.**
 ///   A default would have re-answered every existing call silently, which is the failure this
 ///   whole ceiling exists to prevent.
-pub const WIRE_PROTOCOL: u32 = 22;
+/// * **23** — an `agent` run can say its peer SHOWS the prompt typed at it, and so be DELIVERED to
+///   rather than written at (`shows_prompt` on `sprag_host::wire::AGENT_FORM`, R364). The ELEVENTH
+///   bump caused by an added ARGUMENT, and it is version 17's failure exactly: the request is
+///   accepted, the run converges, and the answer is byte-identical either way.
+///
+///   What earned it is that the argument buys a GUARANTEE and its absence is indistinguishable
+///   from the guarantee holding. A pre-R364 daemon writes the prompt, its Enter and its Ctrl-D in
+///   one injection and never looks — so a peer that discards what is typed at it while its own
+///   input layer finishes starting is submitted to, end-of-input'd, and answers the empty question
+///   it was left with. Measured: `REPLY[]` published to the caller **as the model's answer**, with
+///   nothing in the outcome, the cost or the note to say the peer had never been asked. That is the
+///   exact failure the caller sends this key to prevent.
+///
+///   ⚠ **And the silence is now load-bearing in the other direction too.** A new daemon that could
+///   not confirm a delivery says so in the step's note; a client that has learned to read that
+///   caveat reads its ABSENCE as *confirmed*, and an old daemon never writes one. So the quiet
+///   half is not just a withheld guarantee, it is a false one.
+///
+///   The other direction is refused by number for version 12's reason: an old client never sends
+///   the key, and a new daemon treats its absence as the behaviour it already had — the write, not
+///   the delivery, which is what a one-shot peer that renders nothing needs.
+pub const WIRE_PROTOCOL: u32 = 23;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

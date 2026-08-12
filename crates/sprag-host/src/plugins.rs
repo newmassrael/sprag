@@ -405,6 +405,11 @@ impl PluginsExternal {
                 if !declined(map, "eof") {
                     spec.eof = map["eof"].as_bool().ok_or(InvokeError::TypeMismatch)?;
                 }
+                if !declined(map, "shows_prompt") {
+                    spec.shows_the_prompt = map["shows_prompt"]
+                        .as_bool()
+                        .ok_or(InvokeError::TypeMismatch)?;
+                }
                 if let Some(timeout) = opt_millis(map, "timeout_ms")? {
                     spec.timeout = timeout;
                 }
@@ -1727,7 +1732,7 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            36,
+            37,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
              malformed rather than declined",
@@ -1739,9 +1744,9 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            56,
+            57,
             "one probe per declared argument of every FORM, nesting included: THIRTEEN for an \
-             orchestrator, TWELVE for a pipe, FOURTEEN for an agent, sixteen for a dialogue, and \
+             orchestrator, TWELVE for a pipe, FIFTEEN for an agent, sixteen for a dialogue, and \
              one to cancel. ⚠ Eleven are the READINESS BARRIER on the THREE plugins that inject, \
              each carrying `ready_when` AND its two nested fields: a marker alone could not say \
              whether text already on the screen is evidence, so the value became an object",
