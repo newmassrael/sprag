@@ -578,18 +578,63 @@ fn query_windows(conn: &mut HostConn) -> io::Result<Vec<WindowInfo>> {
 /// re-reads it whenever the scene moves — a new / killed session bumps the revision), under one
 /// lock. Mirrored, not fetched on demand, for the same reason the windows list is: the paint path
 /// must make no socket call.
-type SessionsMirror = Arc<Mutex<Vec<SessionInfo>>>;
+type SessionsMirror = Arc<Mutex<Sessions>>;
+
+/// The mirrored session list, plus WHERE THIS CLIENT'S OWN ROW STOOD in it.
+///
+/// # ⚠⚠ Why a list alone could not answer the question a destroy asks it
+///
+/// [`list_neighbour`] counts from the row that died, and until R367 the only thing holding that row
+/// was the list itself — so the walk worked exactly as long as the mirror had not been refreshed
+/// past it. It is refreshed at the END of every wake, by a registry-wide read that does NOT fail
+/// when this client's session dies (that is [`store_sessions`]' whole point, and it is deliberate).
+/// So a kill landing between a wake's scoped reads and its sessions re-read leaves the mirror
+/// holding the survivors and NOT the row the person was standing on, and the next wake's refusal
+/// then asks for a neighbour of a row nothing remembers.
+///
+/// R345 measured the harm that answer causes and named it: **a client detaching past a live session
+/// throws a person out of the multiplexer**. It fixed the mirror being too STALE to see the
+/// survivor; this is the same harm through the opposite door — the mirror too FRESH to see the
+/// anchor — and it reached CI as the same unattributable 45-second timeout.
+///
+/// The anchor is the fix because it is the one fact that cannot be re-derived: the survivors are
+/// still readable from the daemon at any time, and where a destroyed row STOOD is readable from
+/// nowhere once the list has moved on. A client knows it continuously while it is attached, which
+/// is exactly when it costs nothing to record.
+#[derive(Debug, Default)]
+struct Sessions {
+    /// The list as of the last read — what a switcher sidebar draws.
+    list: Vec<SessionInfo>,
+    /// The index THIS CLIENT'S OWN session held in the last list that still carried it, or `None`
+    /// for a client that has never seen itself in one.
+    ///
+    /// Kept across a refresh that drops the row, and only across that: any list still holding this
+    /// client's session re-derives it, so a switch moves it and a rename cannot strand it. `None`
+    /// is left honest rather than defaulted to zero — *"this client never had a place"* and *"it
+    /// stood at the top"* are different claims, and only the second one may be counted from.
+    anchor: Option<usize>,
+}
 
 /// Lock the mirrored session list, poison-tolerant (see [`lock_cache`] for the discipline).
-fn lock_sessions(sessions: &Mutex<Vec<SessionInfo>>) -> MutexGuard<'_, Vec<SessionInfo>> {
+fn lock_sessions(sessions: &Mutex<Sessions>) -> MutexGuard<'_, Sessions> {
     sessions.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Replace the mirrored session list — the ONE place it is written, shared by the poll thread and
 /// a switch's own re-boot. Unconditional (like [`store_windows`]): the list carries no revision,
 /// so any brief backward move heals on the next wake.
-fn store_sessions(sessions: &Mutex<Vec<SessionInfo>>, list: Vec<SessionInfo>) {
-    *lock_sessions(sessions) = list;
+///
+/// `viewing` is the session this client is attached to, and it is what makes the write more than an
+/// assignment: a list that still holds that name re-derives the [`Sessions::anchor`], and a list
+/// that has dropped it KEEPS the one already there. The asymmetry is the whole point — a
+/// registry-wide read succeeds while this client's own session is being destroyed, so the refresh
+/// that erases the row is exactly the refresh that must not erase the memory of where it was.
+fn store_sessions(sessions: &Mutex<Sessions>, list: Vec<SessionInfo>, viewing: &str) {
+    let mut held = lock_sessions(sessions);
+    if let Some(at) = list.iter().position(|session| session.name == viewing) {
+        held.anchor = Some(at);
+    }
+    held.list = list;
 }
 
 /// Read every session off the wire (the registry-wide `sessions` slot) — the ONE place it is
@@ -1038,14 +1083,33 @@ enum Successor {
 ///   attach that fails, and a failed follow detaches, so a corpse in the mirror costs the person
 ///   the live session behind it.
 ///
-/// `None` is left for the one case that has no answer: `killed` is not in the order at all (nothing
-/// to anchor on), or the walk finds no survivor. Both are honest detaches.
+/// ## ⚠⚠⚠ And a mirror refreshed PAST the row is not a mirror without one — R367
+///
+/// The paragraph above says only `seen` can supply the anchor, and that was read for two rounds as
+/// *"the list either holds `killed` or nothing does"*. It does not follow. The mirror is rewritten
+/// at the end of every wake by a read that keeps succeeding while this client's own session dies
+/// ([`Sessions`] carries the measurement), so the list can lose the row while the client is still
+/// standing on it — and the answer this function gave then was a DETACH, past whatever survivors
+/// the daemon was serving. That is R345's harm exactly, reached from the other side.
+///
+/// So the anchor is taken from the mirror's [`Sessions::anchor`] when the row itself is gone, and
+/// the row is SPLICED BACK where it stood before the walk runs. Putting it back rather than
+/// special-casing the walk is what keeps the two cases one algorithm: `next` is still the row after
+/// it and `previous` still the row before it, wrapping identically, and the `alive` filter still
+/// refuses to name it because `now` does not hold it. A walk taught to step from a GAP would have to decide
+/// what `next` means with nothing there, and that decision is exactly the one the splice makes
+/// once, visibly.
+///
+/// `None` is left for the cases that genuinely have no answer: `killed` is in neither the order nor
+/// the remembered anchor (a client that never saw itself in a list — nothing to count from), or the
+/// walk finds no survivor. Both are honest detaches.
 ///
 /// The step loop stops one short of a full lap, so it can never name `killed` itself — which also
 /// means the same-list callers (planning a kill they are about to perform, where `now` still holds
 /// `killed`) are unaffected.
 fn list_neighbour(
     seen: &[SessionInfo],
+    anchor: Option<usize>,
     now: &[SessionInfo],
     killed: &str,
     step: isize,
@@ -1053,7 +1117,7 @@ fn list_neighbour(
     let alive = |name: &str| now.iter().any(|session| session.name == name);
     // What the person saw, then whatever the daemon has gained since — one order, so the walk is a
     // single wrapping index and the appended rows are reachable at the end of a lap.
-    let order: Vec<&str> = seen
+    let mut order: Vec<&str> = seen
         .iter()
         .map(|session| session.name.as_str())
         .chain(
@@ -1062,7 +1126,19 @@ fn list_neighbour(
                 .filter(|name| !seen.iter().any(|session| session.name == *name)),
         )
         .collect();
-    let here = order.iter().position(|name| *name == killed)? as isize;
+    let here = match order.iter().position(|name| *name == killed) {
+        Some(at) => at,
+        None => {
+            // The mirror has been refreshed past this client's own row. Put it back where the
+            // person last saw it, and the walk below is unchanged. The bound is `<= len` because an
+            // anchor one past the end is a row that stood LAST — `insert` accepts exactly that, and
+            // anything beyond it is a memory no order can host, which is a detach.
+            let at = anchor.filter(|at| *at <= order.len())?;
+            order.insert(at, killed);
+            at
+        }
+    };
+    let here = here as isize;
     let len = order.len() as isize;
     (1..len)
         .map(|lap| order[(here + step * lap).rem_euclid(len) as usize])
@@ -1120,6 +1196,7 @@ fn first_free_other(list: &[SessionInfo], killed: &str) -> Option<String> {
 fn destroy_successor(
     policy: DetachOnDestroy,
     seen: &[SessionInfo],
+    anchor: Option<usize>,
     now: &[SessionInfo],
     killed: &str,
 ) -> Successor {
@@ -1127,18 +1204,17 @@ fn destroy_successor(
         DetachOnDestroy::Detach => Successor::Detach,
         DetachOnDestroy::Off => Successor::LastViewed {
             unattached: false,
-            fallback: list_neighbour(seen, now, killed, 1),
+            fallback: list_neighbour(seen, anchor, now, killed, 1),
         },
         DetachOnDestroy::NoDetached => Successor::LastViewed {
             unattached: true,
             fallback: first_free_other(now, killed),
         },
         DetachOnDestroy::Next => {
-            list_neighbour(seen, now, killed, 1).map_or(Successor::Detach, Successor::Named)
+            list_neighbour(seen, anchor, now, killed, 1).map_or(Successor::Detach, Successor::Named)
         }
-        DetachOnDestroy::Previous => {
-            list_neighbour(seen, now, killed, -1).map_or(Successor::Detach, Successor::Named)
-        }
+        DetachOnDestroy::Previous => list_neighbour(seen, anchor, now, killed, -1)
+            .map_or(Successor::Detach, Successor::Named),
     }
 }
 
@@ -1838,7 +1914,11 @@ impl WireHost {
         let windows: WindowsMirror = Arc::new(Mutex::new(window_list));
         // EVERY session, mirrored for the switcher sidebar — booted like the window list and for the
         // same reason (a switcher draws it and must never fetch it from the paint path).
-        let sessions: SessionsMirror = Arc::new(Mutex::new(query_sessions(&mut conn)?));
+        // Booted through the same write the poll thread uses, so the ANCHOR is set from the boot
+        // list rather than left `None` until the first wake — a client killed between attaching and
+        // its first wake would otherwise have no place to count from.
+        let sessions: SessionsMirror = Arc::new(Mutex::new(Sessions::default()));
+        store_sessions(&sessions, query_sessions(&mut conn)?, &session);
         // The sidebar's SAMPLED half. Best-effort, unlike the list above: a client that cannot read
         // it draws every row without its subtitle, which is a poorer sidebar and a working one — the
         // same degradation the window size takes, and for the same reason (nothing a client paints
@@ -2105,7 +2185,10 @@ impl WireHost {
             window_size,
         };
         store_windows(&self.windows, window_list);
-        store_sessions(&self.sessions, session_list);
+        // The session we have just landed in, so the anchor moves WITH the switch — the row this
+        // client stands on is the new one from here, and a stale anchor would count a later destroy
+        // from where the person used to be.
+        store_sessions(&self.sessions, session_list, &session);
         if let Some(reading) = activity {
             store_activity(&self.activity, reading);
         }
@@ -2460,9 +2543,15 @@ impl WireHost {
     /// one had, so a transient failure is no worse than the old floor and never turns a switch
     /// policy into a detach.
     fn plan_successor(&self, killed: &str) -> Successor {
-        let seen = self.sessions();
+        // Both halves of the mirror under ONE lock: the list and the place this client's row held
+        // in it are answers to the same instant, and reading them separately would let a wake land
+        // between and pair an order with an anchor from a different one.
+        let (seen, anchor) = {
+            let held = lock_sessions(&self.sessions);
+            (held.list.clone(), held.anchor)
+        };
         let now = self.live_sessions().unwrap_or_else(|| seen.clone());
-        destroy_successor(detach_on_destroy(), &seen, &now, killed)
+        destroy_successor(detach_on_destroy(), &seen, anchor, &now, killed)
     }
 
     /// Every session as of NOW, read on this client's own connection — or [`None`] when the daemon
@@ -2493,8 +2582,9 @@ impl WireHost {
 
     fn refresh_sessions(&self) {
         let mut conn = self.conn.borrow_mut();
+        let viewing = lock_session(&self.session).clone();
         match query_sessions(&mut conn) {
-            Ok(list) => store_sessions(&self.sessions, list),
+            Ok(list) => store_sessions(&self.sessions, list, &viewing),
             Err(error) => tracing::debug!(
                 target: "sprag_gui::wire",
                 %error,
@@ -3245,7 +3335,7 @@ impl HostClient for WireHost {
     /// The mirrored session list — a lock and a clone, never a socket call, so the paint path can
     /// draw the switcher every frame (see `SessionsMirror`).
     fn sessions(&self) -> Vec<SessionInfo> {
-        lock_sessions(&self.sessions).clone()
+        lock_sessions(&self.sessions).list.clone()
     }
 
     /// The mirrored activity, AGED FORWARD to now — a lock and a clone, never a socket call, for the
@@ -4794,8 +4884,17 @@ fn spawn_poll(
                 // (this client's `new_session`, another client's, the `sprag` CLI) reaches the
                 // switcher sidebar. Registry-wide, so it does not detach on a scope refusal the way
                 // the scoped reads above do — a transient failure just keeps the last-known list.
+                //
+                // ⚠⚠ THAT TOLERANCE IS ALSO WHY THIS WRITE CARRIES THE NAME. This read keeps
+                // succeeding through the destruction of the session the scoped reads above are
+                // about, so it is the one line in the loop that can erase the row this client is
+                // standing on — and [`store_sessions`] holds the anchor precisely across it (R367).
+                // The name is re-read here rather than taken from the wake's earlier `query_session`
+                // because that one is best-effort: a wake that failed to refresh it must still
+                // anchor against the last name this client actually believes it is on.
+                let viewing = lock_session(&session).clone();
                 match query_sessions(&mut conn) {
-                    Ok(list) => store_sessions(&sessions, list),
+                    Ok(list) => store_sessions(&sessions, list, &viewing),
                     Err(error) => tracing::debug!(
                         target: "sprag_gui::wire",
                         %error,
@@ -5017,8 +5116,13 @@ mod tests {
     /// right fixture for every claim about the POLICY — which session each value picks — because a
     /// disagreement would only obscure it. The claim about WHICH list answers which question needs
     /// the two to differ, so it calls the two-list form directly.
+    ///
+    /// NO ANCHOR, deliberately: every claim about the policy is made by a list that still HOLDS the
+    /// row that died, which is the only state a client planning its own kill can be in. Passing one
+    /// would let the remembered-place path stand in for the ordinary walk, and then a regression in
+    /// the ordinary walk would read green here.
     fn plan(policy: DetachOnDestroy, list: &[SessionInfo], killed: &str) -> Successor {
-        destroy_successor(policy, list, list, killed)
+        destroy_successor(policy, list, None, list, killed)
     }
 
     /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
@@ -5252,7 +5356,7 @@ mod tests {
         let now = attached_list(&[("beta", 1), ("gamma", 0)]);
 
         assert_eq!(
-            destroy_successor(DetachOnDestroy::NoDetached, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::NoDetached, &seen, None, &now, "alpha"),
             Successor::LastViewed {
                 unattached: true,
                 fallback: Some("gamma".to_owned()),
@@ -5276,7 +5380,7 @@ mod tests {
         // anchor. `next` from `alpha` is the row below it — a question the fresh list cannot answer
         // at all, since `alpha` is not in it.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::Next, &seen, None, &now, "alpha"),
             Successor::Named("beta".to_owned()),
             "next counts from the row that died, which only the mirror still has",
         );
@@ -5321,17 +5425,17 @@ mod tests {
         let now = session_list(&["beta"]);
 
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::Previous, &seen, None, &now, "alpha"),
             Successor::Named("beta".to_owned()),
             "`previous` must reach a live session the mirror had not heard of, not detach",
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::Next, &seen, None, &now, "alpha"),
             Successor::Named("beta".to_owned()),
             "...and so must `next`: one walk, one candidate list",
         );
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Off, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::Off, &seen, None, &now, "alpha"),
             Successor::LastViewed {
                 unattached: false,
                 fallback: Some("beta".to_owned()),
@@ -5344,7 +5448,7 @@ mod tests {
         let seen = session_list(&["alpha", "beta", "gamma"]);
         let now = session_list(&["gamma", "beta"]);
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::Next, &seen, None, &now, "alpha"),
             Successor::Named("beta".to_owned()),
             "the row below alpha is beta, whatever order the daemon happens to list them in",
         );
@@ -5353,7 +5457,7 @@ mod tests {
         // only a wrapping step can tell an order of three from the same three with the daemon's two
         // stuck on the end.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Previous, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::Previous, &seen, None, &now, "alpha"),
             Successor::Named("gamma".to_owned()),
             "wrapping backwards lands on the last row the person saw, not on a repeat of it",
         );
@@ -5363,7 +5467,7 @@ mod tests {
         let seen = session_list(&["alpha", "dead", "beta"]);
         let now = session_list(&["beta"]);
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &seen, &now, "alpha"),
+            destroy_successor(DetachOnDestroy::Next, &seen, None, &now, "alpha"),
             Successor::Named("beta".to_owned()),
             "the neighbour is the next row that still EXISTS",
         );
@@ -5371,23 +5475,134 @@ mod tests {
         // ...and when nothing in either list is still there, a detach is the honest answer. The
         // control for the row above: the skip must run out rather than wrap forever.
         assert_eq!(
-            destroy_successor(DetachOnDestroy::Next, &seen, &session_list(&[]), "alpha"),
+            destroy_successor(
+                DetachOnDestroy::Next,
+                &seen,
+                None,
+                &session_list(&[]),
+                "alpha"
+            ),
             Successor::Detach,
             "no live session anywhere is the one case a switch policy has to leave on",
         );
 
-        // A mirror this client never got a list into cannot say where `alpha` stood, so there is no
-        // row to count from and a detach is the honest answer — the same arm as a name already off
-        // the list, reached from the other side.
+        // A mirror this client never got a list into AND no remembered place cannot say where
+        // `alpha` stood, so there is no row to count from and a detach is the honest answer — the
+        // same arm as a name already off the list, reached from the other side.
+        //
+        // ⚠ It is the `None` that carries this now, not the empty list: R367 made a mirror WITHOUT
+        // the row a case with an answer, so the claim here is about a client with no place at all.
         assert_eq!(
             destroy_successor(
                 DetachOnDestroy::Next,
                 &session_list(&[]),
+                None,
                 &session_list(&["beta"]),
                 "alpha",
             ),
             Successor::Detach,
             "no anchor is no neighbour, however much the daemon is serving",
+        );
+    }
+
+    /// **THE GATE FOR R367: a mirror refreshed PAST the row that died still counts from where the
+    /// person stood.**
+    ///
+    /// # The measurement this opened on
+    ///
+    /// CI run `31639410510`, `every_switch_policy_moves_the_terminal_client`, `detach-on-destroy =
+    /// "previous"`: `client: EXITED ExitStatus(unix_wait_status(0))` with the status trail holding
+    /// only `[0] 0:0*` — the client left the multiplexer without ever painting the survivor. That
+    /// is R345's signature exactly, and R345's fix is intact: this is the same harm through the
+    /// opposite door. There, the mirror was too STALE to see the session to land in; here it is too
+    /// FRESH to hold the row to count from, because the sessions re-read that erases it keeps
+    /// succeeding while the scoped reads that detect the loss are still failing.
+    ///
+    /// `a_wake_that_outlives_its_session_keeps_the_place_the_person_stood` drives the shipped poll
+    /// loop into that state; this decides what the state MEANS.
+    ///
+    /// REVERT-PROOF: drop the splice (return `None` when the row is gone) and every row below
+    /// detaches — which is the shipped defect. Splice at `0` instead of the anchor and the
+    /// three-session rows name the wrong neighbour in both directions. Keep the splice but let the
+    /// anchor default to `0` when it is `None` and the sibling test above stops distinguishing a
+    /// client with no place from one that stood at the top.
+    #[test]
+    fn a_switch_policy_counts_from_where_the_person_stood_after_the_mirror_moved_past_it() {
+        // THE CI FAILURE, in the smallest world that holds it: two sessions, the mirror already
+        // refreshed to the survivor alone, and this client still standing on the one that died.
+        let seen = session_list(&["beta"]);
+        let now = session_list(&["beta"]);
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Previous, &seen, Some(0), &now, "alpha"),
+            Successor::Named("beta".to_owned()),
+            "`previous` must not leave the multiplexer past a live session",
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, Some(0), &now, "alpha"),
+            Successor::Named("beta".to_owned()),
+            "...and neither must `next`: one walk, one anchor",
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Off, &seen, Some(0), &now, "alpha"),
+            Successor::LastViewed {
+                unattached: false,
+                fallback: Some("beta".to_owned()),
+            },
+            "`off` means do not leave if there is somewhere to go, and there is",
+        );
+
+        // THE PLACE IS WHAT IS REMEMBERED, NOT MERELY THAT THERE WAS ONE. Three sessions, the
+        // person standing in the MIDDLE, and the mirror refreshed to the two survivors: `next` and
+        // `previous` must still disagree, and disagree the way the person's own sidebar read.
+        let seen = session_list(&["alpha", "beta", "gamma"]);
+        let now = session_list(&["alpha", "gamma"]);
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, Some(1), &now, "beta"),
+            Successor::Named("gamma".to_owned()),
+            "the row below the gap beta left is gamma",
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Previous, &seen, Some(1), &now, "beta"),
+            Successor::Named("alpha".to_owned()),
+            "and the row above it is alpha — a policy that lost its place would pick either",
+        );
+
+        // THE ROW THAT STOOD LAST is the boundary case the splice has to accept: an anchor of
+        // `len` is a person who was on the bottom row, and `previous` from there wraps to the row
+        // above while `next` wraps to the top.
+        let seen = session_list(&["alpha", "beta"]);
+        let now = session_list(&["alpha", "beta"]);
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Previous, &seen, Some(2), &now, "gamma"),
+            Successor::Named("beta".to_owned()),
+            "the row above the bottom is the one before it",
+        );
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, Some(2), &now, "gamma"),
+            Successor::Named("alpha".to_owned()),
+            "...and below the bottom wraps to the top",
+        );
+
+        // AN ANCHOR NO ORDER CAN HOST is a memory, not a place — a detach, like no anchor at all.
+        // Without the bound this is a panic inside a client's reconcile.
+        assert_eq!(
+            destroy_successor(DetachOnDestroy::Next, &seen, Some(9), &now, "gamma"),
+            Successor::Detach,
+            "an anchor past the end of the order names no row a person could have been on",
+        );
+
+        // ...and a remembered place is still no reason to land on a corpse: the anchor says WHERE
+        // to count from, never WHAT is alive. With no survivor anywhere the answer is a detach.
+        assert_eq!(
+            destroy_successor(
+                DetachOnDestroy::Next,
+                &session_list(&[]),
+                Some(0),
+                &session_list(&[]),
+                "alpha",
+            ),
+            Successor::Detach,
+            "a place to count from is not a session to go to",
         );
     }
 
@@ -5588,7 +5803,7 @@ mod tests {
             Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Sessions::default())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
             Arc::new(Mutex::new(None)),
@@ -5613,6 +5828,170 @@ mod tests {
     /// the wire condition a client meets when its SESSION is killed while the daemon serves on
     /// for others (`HostConn::call` maps the error object to [`io::ErrorKind::Other`], which
     /// [`detach_reason`] reads as "session gone"). It counts the requests it received and stops
+    /// A connected [`HostConn`] whose server serves ONE COMPLETE WAKE whose session list has
+    /// already dropped `viewing`, and refuses everything after it — the production window R367 was
+    /// measured in.
+    ///
+    /// # What this reproduces, and why nothing cheaper does
+    ///
+    /// The kill lands between a wake's SCOPED reads and its registry-wide sessions re-read. The
+    /// scoped reads of that wake all succeeded (they ran before the kill), and the sessions read is
+    /// registry-wide, so it succeeds AFTER it and answers the survivors alone. The wake therefore
+    /// completes normally and leaves the mirror holding a list this client is not in. Only the NEXT
+    /// wake meets the refusal that flags the loss — by which time the row to count from is gone.
+    ///
+    /// Every earlier fixture in this file refuses from the first or second request, so the mirror
+    /// never gets written at all and the anchor question cannot arise. That is why they were all
+    /// green through the defect.
+    ///
+    /// The replies are the minimum shapes each read decodes: an empty window and pane list, a
+    /// default arrangement, no arbitrated size, no message. `attached` is 1 on the survivor because
+    /// a real one has a client in it — nothing here reads it, and a fixture that writes 0 into a
+    /// field production never sees is a fixture drifting from the thing it stands for.
+    fn a_wake_that_drops_us_then_refuses(
+        tag: &str,
+        viewing: &str,
+        survivors: &[&str],
+    ) -> (HostConn, JoinHandle<()>, SockGuard) {
+        use std::io::Write;
+        let path = sock_path(tag);
+        let listener = UnixListener::bind(&path).expect("bind the throwaway host socket");
+        let conn = HostConn::connect(&path, Duration::from_secs(2)).expect("connect to it");
+        let viewing = viewing.to_owned();
+        let list: Vec<SessionInfo> = survivors
+            .iter()
+            .map(|name| SessionInfo {
+                name: (*name).to_owned(),
+                windows: 1,
+                panes: 1,
+                default: false,
+                attached: 1,
+            })
+            .collect();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept the client");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+            let mut writer = stream;
+            let mut line = String::new();
+            // Flipped by the sessions read itself, which is the LAST thing the wake this fixture
+            // serves does that matters. Everything after it is the killed session's world.
+            let mut dropped_us = false;
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let request: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+                let method = request["method"].as_str().unwrap_or_default().to_owned();
+                let asked = request["params"]["path"].as_str().unwrap_or_default();
+                let result = if dropped_us {
+                    None
+                } else if method == "scene/waitFor" {
+                    Some(json!({ "revision": 1 }))
+                } else if method == CLIENT_MESSAGES_METHOD {
+                    Some(json!({}))
+                } else if asked == mux_action_path(SESSION_SLOT) {
+                    Some(Value::String(viewing.clone()))
+                } else if asked == mux_action_path(WINDOWS_SLOT)
+                    || asked == mux_action_path(PANES_SLOT)
+                {
+                    Some(json!([]))
+                } else if asked == mux_action_path(WINDOW_SIZE_SLOT) {
+                    Some(Value::Null)
+                } else if asked == mux_action_path(LAYOUT_SLOT) {
+                    Some(serde_json::to_value(LayoutSnapshot::default()).expect("a default tree"))
+                } else if asked == mux_action_path(SESSIONS_SLOT) {
+                    dropped_us = true;
+                    Some(serde_json::to_value(&list).expect("a session list"))
+                } else {
+                    // The activity sample and anything else this wake asks for: best-effort on the
+                    // client's side, so a refusal here changes nothing it does.
+                    None
+                };
+                let reply = match result {
+                    Some(value) => {
+                        json!({ "jsonrpc": "2.0", "id": request["id"], "result": value })
+                    }
+                    None => json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "error": { "code": -32602, "message": "no session named \"alpha\"" },
+                    }),
+                };
+                let _ = writeln!(writer, "{reply}");
+                let _ = writer.flush();
+                line.clear();
+            }
+        });
+        (conn, server, SockGuard(path))
+    }
+
+    /// **THE REACHABILITY HALF OF R367: the shipped poll loop erases the row this client stands on,
+    /// and must not erase WHERE IT STOOD.**
+    ///
+    /// Two claims, and they are separate facts about the same wake:
+    ///
+    /// 1. **The mirror really does lose the row.** It holds the survivor alone afterwards — the
+    ///    state `a_switch_policy_counts_from_where_the_person_stood_after_the_mirror_moved_past_it`
+    ///    decides, reached here by the real loop rather than written by hand. This claim held BEFORE
+    ///    R367 too, and that is the point: it is what made the decision-level defect live.
+    /// 2. **The anchor survives it**, so the reconcile that follows still has a place to count from.
+    ///
+    /// The `lost` flag is asserted with them because a fixture that never got as far as the refusal
+    /// would satisfy both claims vacuously — the loop simply would not have run.
+    ///
+    /// REVERT-PROOF: make [`store_sessions`] assign the anchor unconditionally (the natural way to
+    /// write it) and the second claim reads `None` — which is the shipped detach. Serve the
+    /// survivor list BEFORE the wake's scoped reads and the first claim still passes while the
+    /// window this is about never opens, which is why the fixture flips on the sessions read itself.
+    #[test]
+    fn a_wake_that_outlives_its_session_keeps_the_place_the_person_stood() {
+        let (conn, server, _guard) =
+            a_wake_that_drops_us_then_refuses("anchor", "alpha", &["beta"]);
+        // The mirror as it stands the instant before that wake: the person can see both rows and is
+        // on the FIRST one, which is the place the assertions below are about.
+        let sessions: SessionsMirror = Arc::new(Mutex::new(Sessions::default()));
+        store_sessions(&sessions, session_list(&["alpha", "beta"]), "alpha");
+        let session = Arc::new(Mutex::new("alpha".to_owned()));
+        let lost = Arc::new(AtomicBool::new(false));
+        let quit = Arc::new(RecordingQuit::default());
+        let stop = Arc::new(AtomicBool::new(false)); // NOT our teardown: the session was killed
+        let poll = spawn_poll(
+            conn,
+            Arc::new(Mutex::new(PaneCache::default())),
+            Arc::new(Mutex::new(Mirrored::default())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::clone(&sessions),
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&session),
+            Arc::new(Mutex::new(None)),
+            Arc::new(|| {}),
+            Arc::clone(&quit) as Arc<dyn QuitSink>,
+            Arc::new(|| DetachOnDestroy::Previous),
+            Arc::clone(&lost),
+            Arc::clone(&stop),
+            0,
+        )
+        .expect("spawn the poll thread");
+        poll.join().expect("the poll thread exited");
+        drop(server); // the client left; the server thread ends on the socket's EOF
+
+        assert!(
+            lost.load(Ordering::Acquire),
+            "the wake after the one that dropped us must flag the loss, or nothing below ran",
+        );
+        let held = lock_sessions(&sessions);
+        assert_eq!(
+            held.list
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["beta"],
+            "the registry-wide re-read succeeds through our own death and erases our row",
+        );
+        assert_eq!(
+            held.anchor,
+            Some(0),
+            "...and the place that row held is what no later read can recover, so it is kept",
+        );
+    }
+
     /// answering after two, so a client that FAILS to detach terminates the test (via EOF) rather
     /// than spinning forever. The count is what proves the client left on the FIRST refusal.
     fn a_session_killed_host_conn(
@@ -5670,7 +6049,7 @@ mod tests {
             Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Sessions::default())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
             Arc::new(Mutex::new(None)),
@@ -5755,7 +6134,7 @@ mod tests {
             Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Sessions::default())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
             Arc::new(Mutex::new(None)),
@@ -5816,7 +6195,7 @@ mod tests {
                 Arc::new(Mutex::new(PaneCache::default())),
                 Arc::new(Mutex::new(Mirrored::default())),
                 Arc::new(Mutex::new(Vec::new())),
-                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Sessions::default())),
                 Arc::new(Mutex::new(None)),
                 Arc::new(Mutex::new(String::new())),
                 Arc::new(Mutex::new(None)),
@@ -5864,7 +6243,7 @@ mod tests {
             Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Sessions::default())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
             Arc::new(Mutex::new(None)),
@@ -5913,7 +6292,7 @@ mod tests {
             Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Sessions::default())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
             Arc::new(Mutex::new(None)),
@@ -5985,7 +6364,7 @@ mod tests {
             Arc::new(Mutex::new(PaneCache::default())),
             Arc::new(Mutex::new(Mirrored::default())),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Sessions::default())),
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(String::new())),
             Arc::new(Mutex::new(None)),
