@@ -241,3 +241,32 @@ sprag-tui = { path = "crates/sprag-tui", version = "0.0.1" }
 # appears — a cycle through dev-dependencies is one Cargo allows, and it is what keeps
 # this out of every shipped binary.
 sprag-peer = { path = "crates/sprag-peer", version = "0.0.1" }
+
+# DEBUG INFO IS STORED ONCE PER CRATE, NOT COPIED INTO EVERY BINARY THAT LINKS IT.
+#
+# This workspace links 85 test binaries against the same dependency tree (its own crates plus
+# pinion's), and cargo's default packs every crate's debug info into each one of them. Measured
+# 2026-08-12, cold builds of `cargo test --workspace --no-run -j 4`, same 85 binaries:
+#
+#   |                | target total | executables | wall  |
+#   | default        |    5.22 GB   |   3.11 GB   | 117 s |
+#   | unpacked       |    4.38 GB   |   2.22 GB   | 116 s |
+#
+# Per binary: pty_round_trip 87 -> 56 MB, sprag_gui 160 -> 121 MB, sprag_host 126 -> 93 MB.
+#
+# ⚠ WHAT DOES NOT MOVE IS `.debug_line`, which is the half this project actually reads: it stays
+# at 24.9 MB, byte for byte, so a failing test's backtrace keeps its file:line. What leaves the
+# binary is `.debug_str` (27.2 -> 3.1 MB) and `.debug_info` (11.3 -> 2.1 MB) — a debugger's type
+# and variable names — and those live in `.dwo` files beside the objects, which gdb/lldb resolve
+# as long as the target tree is intact. A binary COPIED out of the tree loses them.
+#
+# ⚠ Wall time did NOT improve (117 vs 116 s). The link has less to copy and the compiler has more
+# files to write, and the two cancel. Recorded because the opposite is the obvious guess.
+#
+# ⚠ NOT VALID ON `windows-msvc`, where only `packed` (PDB) is supported. sprag does not build for
+# Windows today (blocked by the wire) and no CI job targets it; a later Windows port needs this
+# key moved under a `[target.'cfg(not(windows))']`-style split, which Cargo does not yet offer for
+# profiles — so it will need `.cargo/config.toml` or a feature of Cargo that does not exist yet.
+# macOS already defaults to `unpacked` for dev, so this changes nothing there.
+[profile.dev]
+split-debuginfo = "unpacked"
