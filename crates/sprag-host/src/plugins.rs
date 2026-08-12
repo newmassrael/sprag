@@ -2086,6 +2086,57 @@ mod tests {
     ///
     /// ⚠ THE CONTROL is the same call with the key spelled right: it must be ACCEPTED. Without it
     /// this gate would also pass over a parser that refused every guardrail object there is.
+    /// ⚠⚠ **EVERY DECLARED GUARDRAIL IS ONE THE PARSER ACTUALLY READS** — the direction the gate
+    /// beside this one cannot see.
+    ///
+    /// [`parse_guardrails`] refuses a key the publication does not name, so a bound this daemon
+    /// cannot honour is never silently ignored. The MIRROR of that was uncaught: a field ADDED to
+    /// `GUARDRAILS_BYTES`/`GUARDRAILS_TOKENS` and never wired into the parser is ACCEPTED by that
+    /// same refusal loop — it is declared, after all — and then read by nobody. The caller is told
+    /// about a bound, sends it, gets a success, and has no bound. **That is the exact failure the
+    /// refusal above exists to prevent, arriving through the other door.**
+    ///
+    /// ⚠ THE PROBE IS A WRONG TYPE, because it is what separates the two. Every honoured field is
+    /// type-checked (`as_u64().ok_or(TypeMismatch)`), so a string where an int is declared must be
+    /// REFUSED — and a declared field nobody reads cannot refuse anything. Sending a well-formed
+    /// value would be accepted either way and would measure nothing.
+    ///
+    /// ⚠ Derived from [`PluginGrammar::guardrail_fields`], never from a list here: a fourth
+    /// guardrail is covered the day it is declared, which is the day it can go unread.
+    #[test]
+    fn every_declared_guardrail_is_one_the_parser_actually_reads() {
+        let (mut external, _registry, pane) = host_with_a_pane();
+        let mut ask = |guardrails: Value| {
+            external.invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "guardrails": guardrails,
+                })),
+            )
+        };
+
+        let declared =
+            crate::wire::PluginGrammar::guardrail_fields(sprag_plugin::Cost::Bytes(0).unit());
+        assert!(
+            !declared.is_empty(),
+            "the walk must have something to drive, or it reports a clean surface having asked \
+             nothing",
+        );
+        for field in declared {
+            let said = format!("{:?}", ask(json!({ field.name: "not a number" })));
+            assert!(
+                said.contains("Err"),
+                "`{}` is DECLARED as a guardrail and the parser does not read it: a string where \
+                 an int is published was accepted, so a caller sending this bound gets a success \
+                 and no bound — {said}",
+                field.name,
+            );
+        }
+    }
+
     #[test]
     fn a_guardrail_this_daemon_does_not_know_is_refused_rather_than_ignored() {
         let (mut external, _registry, pane) = host_with_a_pane();
