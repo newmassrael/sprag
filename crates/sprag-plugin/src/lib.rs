@@ -37,6 +37,7 @@ pub(crate) mod sm {
 
 pub mod access;
 pub mod agent;
+pub mod completion;
 pub mod deliver;
 pub mod dialogue;
 pub mod driver;

@@ -35,10 +35,11 @@ use sprag_input::Modifiers;
 use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
+use crate::completion::DoneWhen;
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
-use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
+use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited};
 
 /// How much of a prompt has to appear on the pane before the delivery counts it as arrived.
 ///
@@ -353,13 +354,15 @@ impl Agent {
         .map(Prompted::Delivered)
     }
 
-    /// Wait (bounded by `timeout`, cancellable) for the pane child to exit —
-    /// once it has, its full reply is on screen ([`PaneAccess::pane_eof`]'s
-    /// contract). An unknown pane (`None`) counts as done.
+    /// Wait (bounded by `timeout`, cancellable) for this turn's completion contract —
+    /// [`DoneWhen::Exits`], the pane's child exiting, which is what makes its full reply complete.
+    ///
+    /// ⚠ Through [`DoneWhen`] rather than a `pane_eof` poll spelled here, because
+    /// [`Dialogue`](crate::dialogue::Dialogue) spelled the IDENTICAL rule in its own module with
+    /// nothing comparing the two. See [`mod@crate::completion`] for what a second kind of evidence
+    /// would buy and why this is still the only one.
     fn await_reply(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
-        poll_until(run, self.spec.timeout, || {
-            panes.pane_eof(self.pane).unwrap_or(true)
-        })
+        DoneWhen::Exits.wait(panes, self.pane, self.spec.timeout, run)
     }
 
     /// Capture what the pane has produced since `baseline` — the reply region — joined as the

@@ -61,9 +61,10 @@ use std::time::Duration;
 use sprag_terminal::{PaneId, RawOutput};
 
 use crate::access::{PaneAccess, PaneError, PaneLifecycle};
+use crate::completion::DoneWhen;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::reply::parse_claude_json;
-use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
+use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited};
 use crate::session::Session;
 
 sprag_vt::closed_set! {
@@ -262,9 +263,11 @@ impl Plugin for Dialogue {
         // Ok, on the cancel early-return, on a later `?`, and on a panic unwind.
         let guard = PaneGuard { life, id };
 
-        let waited = poll_until(run, self.spec.timeout, || {
-            panes.pane_eof(id).unwrap_or(true)
-        });
+        // ⚠ The SAME contract the agent adapter waits on, from the one definition rather than from
+        // a second copy of the predicate — see [`mod@crate::completion`]. Here the rule is exactly
+        // right and always will be: this plugin SPAWNS a one-shot CLI per turn and passes the
+        // prompt as an argv argument, so the turn really is over when that process leaves.
+        let waited = DoneWhen::Exits.wait(panes, id, self.spec.timeout, run);
 
         // If the RUN ended mid-turn — cancelled, or out of time — record nothing
         // (no junk partial turn) and return Continue with the spend committed so
