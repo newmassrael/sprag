@@ -364,6 +364,47 @@ mod tests {
         );
     }
 
+    /// Each DELIVERY reads as its own verb, and none of them leaks a variant name.
+    ///
+    /// ⚠ Written because the sweep found the `Terminate` and `Kill` arms built by NOTHING: the CLI
+    /// and the agent surface both render whatever the daemon echoes back, and every gate on those
+    /// mouths drives `interrupt`. So two thirds of the text a caller reads for a stop had no reader
+    /// at all — the shape this workspace keeps paying for, one arm at a time.
+    ///
+    /// ⚠⚠ DISTINCTNESS is the half a per-arm check cannot make: three requests rendering one verb
+    /// would satisfy every shape claim while telling a caller nothing about which they got.
+    #[test]
+    fn every_stop_reads_as_its_own_verb() {
+        let mut said: Vec<String> = Vec::new();
+        for stop in Stop::ALL {
+            let verb = stop.to_string();
+            assert!(
+                !verb.is_empty() && verb.starts_with(char::is_lowercase),
+                "{stop:?} must read as prose inside a report, not as {verb:?}",
+            );
+            assert_ne!(
+                verb,
+                format!("{stop:?}"),
+                "{stop:?} hands a caller its Rust shape",
+            );
+            assert!(
+                !said.contains(&verb),
+                "{stop:?} repeats a verb another request already uses, so a caller cannot tell \
+                 which they got: {verb}",
+            );
+            said.push(verb);
+        }
+        assert_eq!(
+            said.len(),
+            Stop::ALL.len(),
+            "every request in the type was asked, not a hand-picked few",
+        );
+        // ⚠ And each reads as the END of *"the job was …"*, which is the sentence they are
+        // composed into by `Signalled`'s own `Display`. A verb that does not fit there reaches a
+        // person as two fragments.
+        assert_eq!(Stop::Interrupt.to_string(), "interrupted");
+    }
+
     /// Each refusal reads as its own sentence, and none of them leaks a variant name.
     ///
     /// ⚠ Walks [`Unstopped::ALL`] rather than a literal list, and asserts the sentences are
@@ -465,6 +506,20 @@ mod tests {
             }
             false
         };
+        // ⚠⚠ THE PANE'S OWN CHILD **AND** THE NAME IT EXEC'D INTO. Waiting only for the pane to own
+        // its terminal is not enough and this test proved it under load: a shell leads its own
+        // group from the instant it is exec'd, so the disposition would be read while the process
+        // is still `/bin/sh` — **and a shell CATCHES `SIGINT`**, so the control would be delivered
+        // instead of refused. Measured, as a whole-suite red:
+        // `Ok(StoppedJob { leader: Some(JobProcess { name: "sh", argv: ["/bin/sh", "-c", "exec
+        // sleep 300"] }) })` where `Err(WouldEndThePane)` was expected. The same race was closed in
+        // the agent's own gate and left open here, which is why one fixture is not a rule.
+        let became = |child: u32, name: &'static str| {
+            move || {
+                crate::foreground_leader_of(child)
+                    .is_some_and(|job| job.pid == child && job.name == name)
+            }
+        };
         let owns_its_terminal =
             |child| crate::foreground_leader_of(child).is_some_and(|job| job.pid == child);
 
@@ -472,11 +527,8 @@ mod tests {
         // ends the pane. The narrow reach refuses BY NAME and nothing is sent.
         let (doomed, child) = spawn("exec sleep 300");
         assert!(
-            until(
-                Duration::from_secs(15),
-                Box::new(move || owns_its_terminal(child)),
-            ),
-            "the control fixture never took its terminal",
+            until(Duration::from_secs(15), Box::new(became(child, "sleep"))),
+            "the control fixture never BECAME its job, so the disposition below is the shell's",
         );
         // ⚠⚠ THE ARM IS THE PLATFORM'S OWN, and asserting one spelling on both runners is the
         // mistake R362 could only find by pushing. Linux reads the disposition and answers that the
@@ -503,11 +555,8 @@ mod tests {
         // ⚠ AND THE WIDE REACH IS THE SAME CALL WITH THE CALLER'S OWN DECISION IN IT.
         let (wide, child) = spawn("exec sleep 300");
         assert!(
-            until(
-                Duration::from_secs(15),
-                Box::new(move || owns_its_terminal(child)),
-            ),
-            "the wide fixture never took its terminal",
+            until(Duration::from_secs(15), Box::new(became(child, "sleep"))),
+            "the wide fixture never BECAME its job",
         );
         let stopped = stop_foreground_job(child, Stop::Interrupt, Reach::TheProgramToo)
             .expect("a caller who asked for the program too reaches it");

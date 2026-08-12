@@ -8402,6 +8402,19 @@ fn a_ctrl_c_is_a_byte_the_pane_may_ignore_and_stop_job_is_a_signal_it_cannot() {
         sprag(&sock, &["processes", "1"]).stdout,
     );
 
+    // ⚠⚠ AND A PANE WHOSE PROGRAM HAS ALREADY FINISHED SAYS SO. The pane outlives its child, so
+    // this is a real state a caller reaches — and *your program is over* sends them to their
+    // scrollback where *there is no such pane* would send them to their pane list. The daemon's own
+    // refusal path for it had no gate at this mouth until now; it is free here because the stop
+    // above is what ended the program.
+    let finished = sprag(&sock, &["stop-job", "1"]);
+    assert!(!finished.ok);
+    assert!(
+        finished.stderr.contains("already exited"),
+        "a pane whose child is gone is refused about the PROGRAM, not about the pane: {}",
+        finished.stderr,
+    );
+
     // ⚠ AND A WORD THIS VERB DOES NOT SEND IS REFUSED WITH THE LIST. A caller who mistyped is owed
     // the vocabulary, and the wire's own type refusal has nowhere to carry one.
     let wrong = sprag(&sock, &["stop-job", "0", "--signal", "maim"]);
