@@ -80,6 +80,67 @@ pub enum Joined {
     Refused(io::Error),
 }
 
+/// Who puts a pane's own input back on its screen.
+///
+/// # ⚠⚠⚠ Why a caller must be able to ask
+///
+/// **A pseudoterminal echoes what is written to it, and on the grid that echo is ordinary output.**
+/// Everything above this crate that confirms an injection by LOOKING AT THE SCREEN is therefore
+/// making a claim it cannot support unless it knows which of these two it has — and until this
+/// existed, none of them could:
+///
+/// * With [`ByTheTerminal`](Self::ByTheTerminal), the line discipline paints every byte the instant
+///   it reaches the device, **before the program has read one and whether or not it ever will**. A
+///   read-back that finds the text has learned that the TERMINAL is alive. Measured: a confirmed
+///   delivery into a pane running `sleep 60`, in 20 ms, over a peer that never read a byte.
+/// * With [`ByTheProgram`](Self::ByTheProgram), the program has taken its terminal off echo, so
+///   anything on that screen was PRINTED BY IT — which is exactly the evidence the read-back wanted.
+///
+/// This is read from the kernel (`termios`' `ECHO`, through the pane's own device) rather than
+/// assumed, because it is the program's to change at any moment and every interactive agent does
+/// change it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneEcho {
+    /// The terminal echoes: what is written into this pane appears on it without the program's
+    /// involvement.
+    ByTheTerminal,
+    /// Echo is off: what appears on this pane was printed by the program running in it.
+    ByTheProgram,
+}
+
+/// A read-only handle on a pane's terminal — for ASKING the kernel about the device, never for
+/// reading or writing it.
+///
+/// A separate type rather than a bare descriptor because the distinction is the whole point: the
+/// pane's other two handles on this device are a reader thread blocked in `read` and a coalescer
+/// that resizes it, and a third one that consumed bytes would silently steal a program's input.
+/// Nothing here can: the only operations are `ioctl`s that ask.
+#[derive(Debug)]
+pub struct TerminalQuery(OwnedFd);
+
+impl TerminalQuery {
+    /// Who echoes this pane's input — [`PaneEcho`] — or `None` where the kernel will not say.
+    ///
+    /// ⚠ `None` is not "the terminal does not echo": it is *this platform's device would not answer
+    /// the question*, and a caller that reads it as the negative would draw exactly the false
+    /// confidence this type exists to prevent. Both readings are asserted in the gate, in each
+    /// platform's own terms.
+    #[must_use]
+    pub fn echo(&self) -> Option<PaneEcho> {
+        let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: the descriptor is open for the life of `self`, and `tcgetattr` only fills in the
+        // fully-owned `termios` handed to it.
+        if unsafe { libc::tcgetattr(self.0.as_raw_fd(), &raw mut modes) } != 0 {
+            return None;
+        }
+        Some(if modes.c_lflag & libc::ECHO == 0 {
+            PaneEcho::ByTheProgram
+        } else {
+            PaneEcho::ByTheTerminal
+        })
+    }
+}
+
 /// A pseudoterminal pair: the master this process reads and writes, and the slave the child gets.
 ///
 /// The slave is held only until a child is spawned onto it. Holding it any longer would keep the
@@ -229,6 +290,20 @@ impl Pty {
     /// Returns the OS error if the descriptor could not be duplicated.
     pub fn writer(&self) -> io::Result<File> {
         Ok(File::from(self.master.try_clone()?))
+    }
+
+    /// A handle that only ASKS this terminal questions — see [`TerminalQuery`].
+    ///
+    /// A third duplicate of the controlling side, taken because the other two are spoken for: the
+    /// reader thread is blocked in `read` on one and the resize coalescer owns the device itself.
+    /// Duplicating the master keeps neither of them waiting and cannot affect when the reader sees
+    /// EOF, which depends on the SLAVE side being let go.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error if the descriptor could not be duplicated.
+    pub fn query(&self) -> io::Result<TerminalQuery> {
+        Ok(TerminalQuery(self.master.try_clone()?))
     }
 
     /// Put `body` on its own thread reading this terminal, and answer only once it IS reading it.
@@ -856,5 +931,78 @@ mod tests {
             "a child that writes once and exits is still read: {:?}",
             String::from_utf8_lossy(&got),
         );
+    }
+
+    /// ⚠⚠⚠ **THE KERNEL SAYS WHO WILL PAINT THIS PANE'S INPUT**, and it changes when the program
+    /// changes it.
+    ///
+    /// The claim is a DISCRIMINATOR, not a value: a device that answers the same thing before and
+    /// after the child's `stty -echo` would be reporting a constant, and every caller that acts on
+    /// it would be acting on nothing. So one pane is read twice, with the child's own `stty`
+    /// between the readings, and the two must DISAGREE.
+    ///
+    /// ⚠ Written to hold on a platform whose master will not answer: `None` on both readings is
+    /// accepted, and any platform that answers at all must answer correctly. That is R362's rule —
+    /// a refusal asserted in its own platform's terms — and it is the shape that stops this gate
+    /// going red on macOS for the one reason that would not be a defect.
+    #[test]
+    fn a_pane_says_whether_its_own_terminal_paints_what_is_typed_at_it() {
+        let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut attached = Pty::open(80, 24)
+            .expect("open a pty")
+            .attach_reader("echo-gate", {
+                let seen = Arc::clone(&seen);
+                move |mut terminal| {
+                    let mut buf = [0u8; 256];
+                    while let Ok(n) = terminal.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        seen.lock()
+                            .expect("the seen mutex")
+                            .extend_from_slice(&buf[..n]);
+                    }
+                }
+            })
+            .expect("a fresh pty takes a reader");
+        let query = attached.pty.query().expect("a query handle");
+
+        // BEFORE: a device nobody has configured. This is the state every pane is born in, and the
+        // one in which a screen read-back proves nothing about the program.
+        let born = query.echo();
+
+        // The child announces AFTER its `stty`, so the second reading cannot race it.
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("stty -echo; printf 'OFF'; sleep 30");
+        let (mut child, _joined) = attached.spawn(&command, None).expect("spawn onto the pty");
+        let _ = until(
+            || seen.lock().expect("the seen mutex").clone(),
+            |seen| seen.starts_with(b"OFF"),
+        );
+        let after = query.echo();
+        let _ = child.kill();
+
+        match (born, after) {
+            (None, None) => { /* this platform's master does not answer — see the doc. */ }
+            (Some(born), Some(after)) => {
+                assert_eq!(
+                    born,
+                    PaneEcho::ByTheTerminal,
+                    "a pane is born echoing, which is why a fresh one can never confirm an \
+                     injection by reading its own screen",
+                );
+                assert_eq!(
+                    after,
+                    PaneEcho::ByTheProgram,
+                    "and the program's own `stty -echo` is visible here — a reading that did not \
+                     move is a constant, and a constant is not evidence",
+                );
+            }
+            mixed => panic!(
+                "a device that answers must go on answering — half an answer is neither reading: \
+                 {mixed:?}",
+            ),
+        }
     }
 }

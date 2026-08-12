@@ -73,6 +73,8 @@ pub use processes::{
     ForegroundJob, JobProcess, PaneProcessReading, PaneProcessSampler, PaneProcesses,
     foreground_leader_of,
 };
+#[cfg(unix)]
+pub use pty::PaneEcho;
 pub use registry::{
     Ended, KillOutcome, Located, LocatedWindow, OrderStep, PaneKillOutcome, PaneMoveError,
     PlaceHow, Session, SessionError, SessionId, SessionInfo, SessionRegistry, TreePane,

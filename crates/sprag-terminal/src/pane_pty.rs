@@ -41,6 +41,12 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// See [`ECHO_TRAIL_CAP`] for why a pane keeps this at all.
 type SharedEchoTrail = Arc<Mutex<Vec<u8>>>;
 
+/// A pane's ask-only handle on its own device, shared with every [`PanePtyHandle`].
+///
+/// No `Mutex`: every operation on it is an `ioctl` that reads, so there is nothing to serialise —
+/// which is the point of the type being ask-only rather than a third writer.
+type SharedQuery = Arc<crate::pty::TerminalQuery>;
+
 /// How much recently-written input a pane remembers, for telling its own ECHO apart from what the
 /// program in it actually said.
 ///
@@ -303,6 +309,13 @@ pub struct PanePty {
     tty: Option<PathBuf>,
     exit: SharedExit,
     writer: SharedWriter,
+    /// A handle that only ASKS this pane's device questions — see
+    /// [`TerminalQuery`](crate::pty::TerminalQuery).
+    ///
+    /// Shared with every [`PanePtyHandle`] because the question it answers is asked from the
+    /// plugin surface, which is handle-shaped, and because a descriptor per handle would be a
+    /// descriptor per reader of a fact that does not change per reader.
+    query: SharedQuery,
     /// What has recently been written INTO this pane — see [`ECHO_TRAIL_CAP`].
     echo_trail: SharedEchoTrail,
     emulator: Arc<Mutex<Emulator>>,
@@ -576,6 +589,14 @@ impl PanePty {
         // to decide.
         let _ = child_tx.send(child);
         let (master, reader_thread) = attached.into_parts();
+        // ⚠ TAKEN BEFORE THE DEVICE MOVES. The coalescer below owns the master from here on, so
+        // this is the last moment a handle on it can be made — and a question about the device
+        // must not have to be routed through a thread whose job is to sleep between resizes.
+        let query = Arc::new(
+            master
+                .query()
+                .map_err(|e| PanePtyError::new("query handle", &e))?,
+        );
 
         // `TIOCSWINSZ` coalescer: own thread, owns the PTY master (its only
         // user). The caller's reflow (a continuous drag) resizes the emulator
@@ -601,6 +622,7 @@ impl PanePty {
             tty,
             exit,
             writer,
+            query,
             echo_trail: Arc::new(Mutex::new(Vec::new())),
             emulator,
             raw_output,
@@ -919,10 +941,17 @@ impl PanePty {
         PanePtyHandle {
             emulator: Arc::clone(&self.emulator),
             writer: Arc::clone(&self.writer),
+            query: Arc::clone(&self.query),
             echo_trail: Arc::clone(&self.echo_trail),
             raw_output: Arc::clone(&self.raw_output),
             clipboard_answered: Arc::clone(&self.clipboard_answered),
         }
+    }
+
+    /// Who paints what is typed into this pane — see [`PaneEcho`](crate::pty::PaneEcho).
+    #[must_use]
+    pub fn echo(&self) -> Option<crate::pty::PaneEcho> {
+        self.query.echo()
     }
 
     /// Resize the pseudoterminal and the emulator to `cols × rows`, notifying
@@ -1014,6 +1043,8 @@ impl PanePty {
 pub struct PanePtyHandle {
     emulator: Arc<Mutex<Emulator>>,
     writer: SharedWriter,
+    /// Shared with the owning [`PanePty`] — see [`SharedQuery`].
+    query: SharedQuery,
     /// Shared with the owning [`PanePty`] — see [`ECHO_TRAIL_CAP`].
     echo_trail: SharedEchoTrail,
     raw_output: SharedRawCapture,
@@ -1039,6 +1070,16 @@ impl PanePtyHandle {
     #[must_use]
     pub fn input_modes(&self) -> InputModes {
         lock(&self.emulator).input_modes()
+    }
+
+    /// Who paints what is typed into this pane — see [`PaneEcho`](crate::pty::PaneEcho).
+    ///
+    /// ⚠ Read at the moment it is ASKED, never cached. It is the program's to change and every
+    /// interactive agent changes it on startup, so a value taken at the pane's birth would be a
+    /// claim about a terminal that no longer exists.
+    #[must_use]
+    pub fn echo(&self) -> Option<crate::pty::PaneEcho> {
+        self.query.echo()
     }
 
     /// A snapshot of the child's raw output bytes (the source stream, before
