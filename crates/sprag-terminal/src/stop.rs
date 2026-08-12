@@ -168,18 +168,30 @@ pub enum Unstopped {
     /// `ESRCH` for a group that ended between the read and the send — the window the module doc
     /// states — and `EPERM` for one this daemon may not signal.
     Refused(i32) = (0),
-    /// ⚠⚠ THE PANE'S OWN PROGRAM is what owns the terminal, and the caller asked to reach no
-    /// further than [`Reach::UnderTheProgram`] — so nothing was signalled.
+    /// ⚠⚠ THE PANE'S OWN PROGRAM is what owns the terminal AND THE KERNEL SAYS THE SIGNAL WOULD
+    /// KILL IT, so nothing was sent — the caller asked to reach no further than
+    /// [`Reach::UnderTheProgram`], and this is the case that reach exists for.
     ///
     /// # Why this is a refusal and not a stop
     ///
-    /// Signalling the pane's own child can END THE PANE: a program with no `SIGINT` handler dies,
-    /// its pty closes, and the pane goes with it. A shell survives that and `cat` does not, and
-    /// nothing here can tell those apart. For a caller who asked deliberately — a person typing
-    /// `stop-job` — that is a consequence they chose. For a BOUNDED RUN whose clock simply ran out
-    /// it is not: a routine timeout must not be able to close somebody's pane, still less the last
-    /// pane of a session. **Measured**: it closed one, and the daemon exited behind it.
-    IsTheProgram,
+    /// Signalling the pane's own child can END THE PANE: its pty closes and the pane goes with it.
+    /// For a caller who asked deliberately — a person typing `stop-job` — that is a consequence
+    /// they chose. For a BOUNDED RUN whose clock simply ran out it is not: a routine timeout must
+    /// not be able to close somebody's pane, still less the last pane of a session. **Measured**:
+    /// it closed one, and the daemon exited behind it.
+    ///
+    /// ⚠ It is NOT *"the program is the pane's own"*, which is what this arm meant before: a peer
+    /// that HANDLES the signal is signalled, because it cannot die of it. That is what makes a pane
+    /// opened as its own peer — `open_pane`'s `cmd`, the preferred path — stoppable at all.
+    WouldEndThePane,
+    /// The pane's own program owns the terminal and **this host cannot read whether the signal
+    /// would kill it**, so nothing was sent.
+    ///
+    /// A fact about the DEPLOYMENT rather than about this pane, which is why it is not folded into
+    /// [`WouldEndThePane`](Self::WouldEndThePane): there, the kernel answered and the answer was
+    /// yes; here nobody answered. See
+    /// [`signal_ends`](../procfs/index.html) for which platform can say and why the other cannot.
+    CannotTellIfItWouldEnd,
 }
 }
 
@@ -219,10 +231,15 @@ impl std::fmt::Display for Unstopped {
                 f,
                 "the kernel refused to signal the pane's job (errno {errno})",
             ),
-            Self::IsTheProgram => f.write_str(
-                "the pane's own program is what is running, and signalling that could end the \
-                 pane, so nothing was sent — stop it by name if that is what you want, or close \
-                 the pane",
+            Self::WouldEndThePane => f.write_str(
+                "the pane's own program is what is running and the signal would kill it, which \
+                 would take the pane with it, so nothing was sent — stop it by name if that is \
+                 what you want, or close the pane",
+            ),
+            Self::CannotTellIfItWouldEnd => f.write_str(
+                "the pane's own program is what is running and this host cannot tell whether the \
+                 signal would kill it, so nothing was sent — stop it by name if that is what you \
+                 want",
             ),
         }
     }
@@ -245,8 +262,9 @@ impl std::fmt::Display for Unstopped {
 /// A pane sitting at its prompt has its own child as the terminal's foreground group. Under
 /// [`Reach::TheProgramToo`] the stop is delivered to that shell — exactly what a person's `Ctrl-C`
 /// at a prompt does, and what a shell answers by redrawing the prompt. Under
-/// [`Reach::UnderTheProgram`] it is refused as [`Unstopped::IsTheProgram`], because the same
-/// delivery to a pane whose program is not a shell ends the pane.
+/// [`Reach::UnderTheProgram`] it is delivered only if the KERNEL says the program cannot die of it
+/// — a shell catches `SIGINT`, so a stop at a prompt lands; a `cat` does not, so it is refused as
+/// [`Unstopped::WouldEndThePane`] rather than taking the pane with it.
 ///
 /// # Errors
 ///
@@ -258,10 +276,23 @@ pub fn stop_foreground_job(
     reach: Reach,
 ) -> Result<StoppedJob, Unstopped> {
     let pgid = crate::pane_pty::foreground_pgid_of(pane_child).ok_or(Unstopped::Unseen)?;
-    // ⚠ DECIDED BEFORE THE SIGNAL, necessarily: there is no undoing one, and the whole point of the
-    // narrow reach is that the pane must still be there afterwards.
+    // ⚠⚠ DECIDED BEFORE THE SIGNAL, necessarily: there is no undoing one, and the whole point of
+    // the narrow reach is that the pane must still be there afterwards.
+    //
+    // ⚠⚠⚠ AND THE QUESTION IS THE KERNEL'S, NOT A GUESS ABOUT WHAT KIND OF PROGRAM THIS IS. The
+    // first spelling of this refused whenever the group WAS the pane's own program, which left the
+    // main AI-loop path — a pane opened running its peer — permanently unstoppable. What actually
+    // decides whether the pane survives is whether the signal KILLS that program, and every process
+    // publishes its own answer to that.
     if reach == Reach::UnderTheProgram && pgid == pane_child {
-        return Err(Unstopped::IsTheProgram);
+        match crate::procfs::signal_ends(pane_child, stop.signal()) {
+            Some(true) => return Err(Unstopped::WouldEndThePane),
+            None => return Err(Unstopped::CannotTellIfItWouldEnd),
+            // It catches or ignores the signal, so it cannot die of it: the pane stays whatever
+            // the program decides to do next, which is the same position a person's `Ctrl-C`
+            // leaves them in.
+            Some(false) => {}
+        }
     }
     // Read the name BEFORE signalling: after it, `Stop::Kill`'s target may already be unreadable,
     // and a report that names nothing for the one request that always works would be worst where
@@ -379,64 +410,134 @@ mod tests {
     /// exited.** A routine deadline expiring must not be able to do that. A person typing a stop at
     /// one named pane may; those are different callers and the argument is how they say so.
     ///
-    /// ⚠ The fixture is `exec sleep 300` with no shell in between, so the pane's own child IS the
-    /// foreground group — the condition being discriminated. A pane running a shell would have the
-    /// job one level down and both reaches would behave alike, which is exactly the case that would
-    /// make this gate vacuous.
+    /// ⚠⚠⚠ **AND THE FIRST FIX WAS TOO BLUNT.** It refused whenever the group WAS the pane's own
+    /// program, which made a pane opened running its peer — `open_pane`'s `cmd`, the preferred path
+    /// — permanently unstoppable: a timed-out run could only report that its peer was still going.
+    /// **What decides whether the pane survives is not what KIND of program it is; it is whether
+    /// the signal KILLS it, and every process publishes its own answer.** Measured on two processes
+    /// whose command line is the identical string `sleep 300`: `SigIgn: …0000` for the plain one
+    /// and `SigIgn: …0002` — the `SIGINT` bit — for the one whose shell trapped it.
+    ///
+    /// ⚠ Every pane here has its own child as the foreground group, which is the condition being
+    /// discriminated. A pane running a shell would have the job one level down and no arm would
+    /// fire, which is exactly the case that would make this gate vacuous.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn a_stop_that_must_not_end_the_pane_leaves_the_panes_own_program_running() {
+    fn a_stop_that_must_not_end_the_pane_refuses_only_what_the_signal_would_kill() {
         use crate::{CommandBuilder, PanePty};
         use std::time::{Duration, Instant};
 
-        let spawn = || {
+        let spawn = |script: &str| {
             let mut command = CommandBuilder::new("/bin/sh");
             command.arg("-c");
-            command.arg("exec sleep 300");
+            command.arg(script);
             command.env("TERM", "dumb");
-            let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+            let pty = PanePty::spawn(command, 30, 4).expect("spawn a pty");
             let child = pty.pid().expect("a live child");
+            (pty, child)
+        };
+        let until = |within: Duration, mut ready: Box<dyn FnMut() -> bool>| {
             let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(10) {
-                if crate::foreground_leader_of(child).is_some_and(|job| job.name == "sleep") {
-                    return (pty, child);
+            while start.elapsed() < within {
+                if ready() {
+                    return true;
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            panic!("the fixture never reached its job, so nothing below measures anything");
+            false
         };
+        let owns_its_terminal =
+            |child| crate::foreground_leader_of(child).is_some_and(|job| job.pid == child);
 
-        // ⚠ THE CONTROL: the narrow reach refuses, by name, and the program is still there.
-        let (narrow, child) = spawn();
-        assert_eq!(
-            stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram),
-            Err(Unstopped::IsTheProgram),
-            "a stop that may not end the pane must refuse when the pane's own program is what \
-             owns the terminal",
+        // ⚠ THE CONTROL: nothing handles the signal, so the kernel would end it — and ending it
+        // ends the pane. The narrow reach refuses BY NAME and nothing is sent.
+        let (doomed, child) = spawn("exec sleep 300");
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(move || owns_its_terminal(child)),
+            ),
+            "the control fixture never took its terminal",
         );
         assert_eq!(
-            narrow.exit_status(),
+            stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram),
+            Err(Unstopped::WouldEndThePane),
+            "a stop that may not end the pane must refuse the program the signal would kill",
+        );
+        assert_eq!(
+            doomed.exit_status(),
             None,
             "⚠⚠ and NOTHING WAS SENT — the pane's program is still running, which is the whole \
              point of the narrow reach",
         );
 
-        // ⚠ THE SUBJECT: the wide reach is the same call with the caller's own decision in it.
-        let (wide, child) = spawn();
+        // ⚠ AND THE WIDE REACH IS THE SAME CALL WITH THE CALLER'S OWN DECISION IN IT.
+        let (wide, child) = spawn("exec sleep 300");
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(move || owns_its_terminal(child)),
+            ),
+            "the wide fixture never took its terminal",
+        );
         let stopped = stop_foreground_job(child, Stop::Interrupt, Reach::TheProgramToo)
             .expect("a caller who asked for the program too reaches it");
         assert_eq!(
             stopped.pgid, child,
             "and what it reached IS the pane's program"
         );
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(10) && wide.exit_status().is_none() {
-            std::thread::sleep(Duration::from_millis(20));
-        }
         assert!(
-            wide.exit_status().is_some_and(|exit| exit.signal.is_some()),
-            "⚠⚠ THE SUBJECT: the pane's own program ended by a signal — the consequence the narrow \
-             reach exists to keep away from a run that merely ran out of time",
+            until(
+                Duration::from_secs(15),
+                Box::new(|| wide.exit_status().is_some()),
+            ) && wide.exit_status().is_some_and(|exit| exit.signal.is_some()),
+            "⚠⚠ the pane's own program ended by a signal — the consequence the narrow reach exists \
+             to keep away from a run that merely ran out of time",
+        );
+
+        // ⚠⚠⚠ THE SUBJECT: a pane whose own program CATCHES the signal. It cannot die of it, so
+        // the NARROW reach delivers — the peer's current work ends and the peer stays, which is
+        // exactly what a cut-short AI turn needs and what the first fix could not do.
+        //
+        // ⚠⚠ IT PRINTS `READY` AFTER INSTALLING THE TRAP, AND THE GATE WAITS FOR THAT. Waiting for
+        // the pane to own its terminal is not enough: a shell leads its own group from the instant
+        // it is exec'd, seconds before it has parsed the script that installs the handler — so the
+        // disposition would be read while the program still dies of the signal. The first spelling
+        // of this gate did exactly that and reported `WouldEndThePane`, which was the honest answer
+        // at that instant. ⚠ The same is true in production and is the safe direction: a peer that
+        // has not yet taken its handler is one a narrow stop leaves alone.
+        let (peer, child) =
+            spawn("trap 'printf CAUGHT\\n' INT; printf READY\\n; while :; do sleep 300; done");
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(|| peer.with_screen(|screen| screen.full_text().contains("READY"))),
+            ),
+            "the subject fixture never installed its handler",
+        );
+        assert!(
+            owns_its_terminal(child),
+            "and it owns its own terminal, which is the condition being discriminated",
+        );
+        let stopped = stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram)
+            .expect("a program that cannot die of the signal is signalled");
+        assert_eq!(
+            stopped.pgid, child,
+            "and what it reached IS the pane's own program",
+        );
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(|| peer.with_screen(|screen| screen.full_text().contains("CAUGHT"))),
+            ),
+            "⚠⚠ THE SIGNAL LANDED AND THE PEER'S OWN HANDLER RAN — the turn ending rather than \
+             the program",
+        );
+        assert_eq!(
+            peer.exit_status(),
+            None,
+            "⚠⚠⚠ AND THE PANE IS STILL THERE. This is the residue the first fix could only \
+             report: a pane opened running its own peer is stoppable after all.",
         );
     }
 

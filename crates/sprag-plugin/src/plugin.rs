@@ -224,7 +224,19 @@ pub trait Plugin {
     /// is mid-turn answers its pane. A plugin that OWNS its pane outright and closes it on every
     /// exit path (as [`Dialogue`](crate::dialogue::Dialogue) does) has nothing to add here: closing
     /// a pane already ends everything in it.
-    fn driving(&self) -> Option<PaneId> {
-        None
-    }
+    ///
+    /// # ⚠⚠⚠ Why this has NO DEFAULT, alone among the methods here
+    ///
+    /// [`captured`](Self::captured) defaults to `None` because that default is HARMLESS — a plugin
+    /// with nothing to publish publishes nothing. This one's would not be. A plugin that drives a
+    /// pane and inherits `None` makes a cut-short run report *the run had no job of its own
+    /// running* — a true-sounding sentence about a peer that is still working and still spending,
+    /// which is exactly the defect this method exists to close, reintroduced silently by an author
+    /// who never saw the question.
+    ///
+    /// So the compiler asks instead. All four bundled plugins answer it explicitly, two of them
+    /// with `None` and their reasons written out; a fifth cannot be written without deciding. It is
+    /// the reasoning that renamed `Waited::Cancelled` — **make the mistake fail to compile rather
+    /// than fail quietly.**
+    fn driving(&self) -> Option<PaneId>;
 }

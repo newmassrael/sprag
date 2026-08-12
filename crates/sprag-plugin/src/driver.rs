@@ -864,6 +864,10 @@ mod tests {
                 poll_until(run, Duration::from_secs(60), || false);
                 Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
             }
+            /// NOTHING, and that is this stand-in's whole subject.
+            fn driving(&self) -> Option<PaneId> {
+                None
+            }
         }
         let panes = RecordingPanes::new();
         let outcome = Driver::new(Guardrails {
@@ -1072,6 +1076,10 @@ mod tests {
         fn step(&mut self, _panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
             Err(PaneError::UnknownPane(PaneId(0)))
         }
+        /// A step that fails before it acts has nothing running.
+        fn driving(&self) -> Option<PaneId> {
+            None
+        }
     }
 
     /// An empty pane access (the failing plugin ignores it).
@@ -1130,6 +1138,10 @@ mod tests {
                 self.0 += 1;
                 Ok(Step::new(Cost::Bytes(1), Verdict::Continue).noting(format!("step {}", self.0)))
             }
+            /// It touches no pane at all — the journal is its whole subject.
+            fn driving(&self) -> Option<PaneId> {
+                None
+            }
         }
 
         let steps = u32::try_from(JOURNAL_LIMIT).expect("the limit fits a step count") + 10;
@@ -1187,6 +1199,10 @@ mod tests {
             }
             let waited = poll_until(run, Duration::from_secs(600), || false);
             Ok(Step::new(Cost::Bytes(1), Verdict::Continue).noting(format!("{waited:?}")))
+        }
+        /// It blocks against no pane at all — its subject is the clock.
+        fn driving(&self) -> Option<PaneId> {
+            None
         }
     }
 

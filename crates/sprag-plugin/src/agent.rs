@@ -1252,8 +1252,13 @@ mod tests {
     /// answer than either alternative, because *your work is still running and here is why* is
     /// something a caller can act on.
     ///
-    /// ⚠ `cat` and not a shell: with a shell in between, the peer would be a JOB one level down and
-    /// both reaches would behave alike — the case that would make this gate vacuous.
+    /// ⚠ The pane's OWN program is the peer, with no shell in between: with one, the peer would be
+    /// a JOB one level down and no reach would refuse — the case that would make this gate vacuous.
+    ///
+    /// ⚠⚠ AND THE GATE WAITS FOR THE `exec`, BY NAME. The disposition is read at stop time, so a
+    /// shell that has not yet replaced itself with its peer reads as THE SHELL — and a shell
+    /// catches `SIGINT`, so the stop would be delivered and this would measure the opposite of what
+    /// it claims. Found by this gate failing exactly that way.
     ///
     /// [`Reach::UnderTheProgram`]: sprag_terminal::Reach::UnderTheProgram
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1262,12 +1267,24 @@ mod tests {
         use crate::access::PaneAccess;
         use std::sync::atomic::AtomicBool;
 
-        let (access, pane) = sh_access("exec cat", 40, 6);
+        // `sleep` and not `cat`, because what is discriminated is a program the signal would KILL
+        // — and `sleep` is one whose arrival can be waited for by name.
+        let (access, pane) = sh_access("exec sleep 300", 40, 6);
         let panes: &dyn PaneAccess = &access;
-        assert_eq!(
-            panes.pane_eof(pane),
-            Some(false),
-            "the peer is running before the run starts, or nothing below measures anything",
+        let jobs = panes
+            .foreground_job()
+            .expect("this host reads the job table");
+        let became_the_peer = || {
+            jobs.pane_foreground_leader(pane)
+                .is_some_and(|job| job.name == "sleep")
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && !became_the_peer() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            became_the_peer(),
+            "the shell must have BECOME the peer, or the disposition read below is the shell's",
         );
 
         let mut agent = Agent::new(

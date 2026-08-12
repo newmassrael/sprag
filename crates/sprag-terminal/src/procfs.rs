@@ -175,6 +175,61 @@ pub(crate) fn stat(_pid: u32) -> Option<Stat> {
     None
 }
 
+/// WOULD `signal` END `pid`? `None` when this host cannot say.
+///
+/// # ⚠⚠⚠ Why this is a real answer and not a guess
+///
+/// A caller deciding whether it is safe to signal a pane's own program had, until this, no way to
+/// tell a peer that will absorb a `SIGINT` from one that will die of it — and the difference
+/// decides whether the pane survives. It looks like it needs to know what KIND of program is
+/// running. It does not: the question is *will this signal kill you*, and **the kernel publishes
+/// each process's own answer**.
+///
+/// Measured, on two processes whose command line is the identical string `sleep 300`: the plain one
+/// reports `SigIgn: 0000000000000000` and the one started under `trap '' INT` reports
+/// `SigIgn: 0000000000000002` — bit 1, which is `SIGINT`. Nothing about the two is distinguishable
+/// from outside except this.
+///
+/// # The three states, and why only one of them is a refusal
+///
+/// * **DEFAULT** (neither caught nor ignored) — the signal terminates it. `Some(true)`.
+/// * **CAUGHT** — the program's own handler runs and the program decides. `Some(false)`: it may
+///   choose to exit, but that is its decision and exactly what a person's `Ctrl-C` would produce.
+/// * **IGNORED** — nothing happens at all. `Some(false)`.
+///
+/// # ⚠ The window, stated
+///
+/// A program may install or drop a handler between this read and the signal. Microseconds, the same
+/// class as the group-read window [`crate::stop`] documents, and it is one-sided in practice: a
+/// program that is about to take a handler DOWN is exiting anyway.
+///
+/// # ⚠⚠ Linux only, and the absence is REPORTED rather than assumed away
+///
+/// `/proc/<pid>/status` carries `SigIgn` / `SigCgt`. macOS keeps the same fact in
+/// `kinfo_proc.kp_proc.p_sigignore` / `p_sigcatch`, reachable only through a `KERN_PROC_PID`
+/// sysctl — and **`libc` declares neither `kinfo_proc` nor `extern_proc` for Apple targets**, so
+/// reading it would mean hand-writing a `#[repr(C)]` mirror of a struct nothing here can test.
+/// `None` is answered instead, and every caller treats it as *cannot promise the pane survives* —
+/// so macOS behaves exactly as it did before this existed, and says so.
+#[cfg(target_os = "linux")]
+pub(crate) fn signal_ends(pid: u32, signal: i32) -> Option<bool> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    // Signal N is bit N-1 in both masks (`SIGHUP` is 1 and sits in bit 0).
+    let bit = 1_u64.checked_shl(u32::try_from(signal).ok()?.checked_sub(1)?)?;
+    let mask = |field: &str| -> Option<u64> {
+        let line = status.lines().find(|line| line.starts_with(field))?;
+        u64::from_str_radix(line.split(':').nth(1)?.trim(), 16).ok()
+    };
+    let handled = (mask("SigIgn:")? | mask("SigCgt:")?) & bit != 0;
+    Some(!handled)
+}
+
+/// See the Linux reader: this host cannot say, and every caller reads that as *no promise*.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn signal_ends(_pid: u32, _signal: i32) -> Option<bool> {
+    None
+}
+
 /// EVERY process on the box, as `(pid, its stat)`, from one pass over `/proc`.
 ///
 /// The single walk this crate's whole-machine questions are built from — a `pid → children` map for
