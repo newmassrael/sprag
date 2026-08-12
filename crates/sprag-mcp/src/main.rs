@@ -1775,6 +1775,18 @@ fn argument_help(name: &str) -> &'static str {
              starting up is asked again instead of lost. Leave it off for a one-shot command that \
              renders nothing, where a second attempt would arrive as a second prompt."
         }
+        "done_when" => {
+            "WHAT MAKES THE TURN OVER (agent), and the default is right for only one kind of peer. \
+             `exits` — the default — waits for the pane's PROGRAM TO EXIT, which is what a \
+             one-shot command like `claude -p` does when it has answered. `settles` waits for the \
+             AGENT IN THE PANE to go back to waiting for you, having first been seen to start: \
+             that is the one for a long-lived interactive agent, which never exits. ⚠ Getting this \
+             wrong is not an error, it is a WAIT: an interactive agent under `exits` is waited on \
+             until timeout_ms runs out (two minutes by default) every single turn, and what comes \
+             back is whatever was on the pane at that moment rather than the answer. ⚠ `settles` \
+             needs this host to be able to see the agent — the same fact list_panes and \
+             agent_state report — and where it cannot, the turn waits instead of guessing."
+        }
         "timeout_ms" => "How long one turn may take before the run gives up on it.",
         "seed" => "The first message, given to endpoint A (dialogue).",
         "endpoint_a" => "The command line of the first speaker, as a list (dialogue).",

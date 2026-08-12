@@ -578,7 +578,26 @@ impl ScopeAsk {
 ///   ⚠ The byte is still WRITTEN and the call still succeeds. A person's `Ctrl-C` must reach a
 ///   full-screen program as input — refusing the write to protect the automation caller would break
 ///   the display client. This reports; it does not withhold.
-pub const WIRE_PROTOCOL: u32 = 24;
+/// * **25** — an `agent` run says WHAT MAKES ITS TURN OVER. `done_when` on
+///   `sprag_host::wire::AGENT_FORM`, `{"match": "exits"|"settles", "agent": "claude"}`, where the
+///   rule was hard-coded to *the pane's child exited* (R365).
+///
+///   ⚠ **THE TWELFTH BUMP CAUSED BY AN ADDED ARGUMENT**, and the first one whose additivity was
+///   MEASURED rather than reasoned. `an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused`
+///   sends the plugin host a key no version has ever declared: the run starts and converges. So an
+///   older daemon does not refuse this key by name the way it refuses an unknown ADDRESS or ACTION
+///   — it accepts the request and runs the other contract.
+///
+///   What earned it is what that silence costs. *The child exited* is a ONE-SHOT tool's completion;
+///   a long-lived peer — an agent CLI that answers and goes on waiting — never exits, so its every
+///   turn ran the whole reply timeout out (two minutes by default) and captured whatever was on
+///   screen when it did. A caller naming `settles` to a pre-R365 daemon is answered `ok`, waits for
+///   an exit that cannot come, and is handed a snapshot in the same shape a working call returns.
+///
+///   ⚠ The DEFAULT does not move: absent `done_when` is `exits`, which is what every existing call
+///   already got. A default that re-answered them silently is the failure version 22's shape change
+///   exists to prevent.
+pub const WIRE_PROTOCOL: u32 = 25;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

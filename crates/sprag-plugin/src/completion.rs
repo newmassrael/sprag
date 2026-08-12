@@ -79,17 +79,18 @@ use crate::run::{RunContext, Waited, poll_until};
 /// does, and a LONG-LIVED peer's ends when it goes back to waiting. Nothing about a pane says which
 /// it is — **only the caller knows**, which is [`ReadyWhen`](crate::readiness::ReadyWhen)'s reason
 /// for existing, met at the other end of the same turn.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DoneWhen {
     /// Over once the pane's CHILD HAS EXITED — the pseudoterminal reached end-of-file.
     ///
     /// The right rule for a ONE-SHOT tool (`claude -p`), which answers and leaves: its exit is
     /// what makes the capture complete, so nothing on screen can be a half-written reply.
     ///
-    /// ⚠ It is the WRONG rule for a long-lived peer, which never exits — see the module doc. For
-    /// that, name the agent and use [`Settles`](Self::Settles).
+    /// ⚠ It is the WRONG rule for a long-lived peer, which never exits — see the module doc. Use
+    /// [`Settles`](Self::Settles) for those.
     Exits,
-    /// Over once the AGENT named here is at rest again, **having been seen to move first**.
+    /// Over once the AGENT THIS TURN WAS ADDRESSED TO is at rest again, **having been seen to move
+    /// first**.
     ///
     /// The rule for a long-lived interactive peer — an agent CLI that answers and goes on waiting.
     /// It is the same observation [`ReadyWhen::Settles`](crate::readiness::ReadyWhen::Settles)
@@ -116,12 +117,60 @@ pub enum DoneWhen {
     ///   and a loop that read them the same way would submit its next stimulus INTO a menu. Waiting
     ///   the timeout out is the honest answer until a run can report the question, which is a
     ///   decision about the step vocabulary and not about this rule.
-    /// * An observation naming a DIFFERENT agent, or naming none — that is not evidence about the
-    ///   peer this turn was addressed to.
+    /// * An observation naming a DIFFERENT agent than the one the turn was addressed to, or naming
+    ///   none — that is not evidence about this peer.
     /// * A host with no supervisor at all, which simply never satisfies this and times out. Every
     ///   one of these fails in the direction that WAITS, because the other direction publishes a
     ///   fragment as a model's reply.
-    Settles(String),
+    ///
+    /// # ⚠⚠ Why it does NOT name the agent, where [`ReadyWhen::Settles`] must
+    ///
+    /// The barrier at the other end is deciding *is the right program up yet*, so the caller has to
+    /// say which program they meant. By the time a turn ENDS that question is settled: the prompt
+    /// went to whatever was in the pane, and [`Completion::begin`] read WHICH AGENT that was. So
+    /// the name is taken from the observation the turn was actually addressed to rather than from
+    /// the caller — which is both one less argument and a stricter check, because a caller's name
+    /// can be right about the pane while being the wrong pane.
+    ///
+    /// [`ReadyWhen::Settles`]: crate::readiness::ReadyWhen::Settles
+    Settles,
+}
+
+impl DoneWhen {
+    /// The words a caller may spell, in this type's own order.
+    ///
+    /// Published to every mouth from here rather than retyped as literals, so a third kind reaches
+    /// the wire in the compile that adds it — [`ReadyWhen::WIRE_WORDS`](crate::readiness::ReadyWhen::WIRE_WORDS)'
+    /// rule, which this vocabulary is the twin of.
+    pub const WIRE_WORDS: &'static [&'static str] = &["exits", "settles"];
+
+    /// The word this kind is spelled as on the wire.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Exits => "exits",
+            Self::Settles => "settles",
+        }
+    }
+
+    /// The contract named by `word`, or `None` for a word outside the closed set.
+    ///
+    /// ⚠ A caller who sends something else has made a MALFORMED request, not a rejected one —
+    /// R353's rule, and the reason this returns an `Option` for the parser to turn into the wire's
+    /// own grammar refusal rather than a friendly sentence.
+    ///
+    /// ⚠ A BARE WORD, and that is what the published vocabulary and the parser agreeing looks
+    /// like: every word here is one this surface accepts ALONE. A kind that needed a companion
+    /// argument would be a word the wire advertises and the daemon refuses — which is precisely
+    /// what `every_published_word_is_a_word_the_plugin_host_accepts` caught on this argument's
+    /// first draft.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.word() == word)
+    }
+
+    /// Every kind, so the published vocabulary and the parser are read off ONE list.
+    const ALL: [Self; 2] = [Self::Exits, Self::Settles];
 }
 
 /// The per-turn evaluator of a [`DoneWhen`] — the contract plus whatever the turn has to REMEMBER
@@ -140,12 +189,16 @@ pub enum DoneWhen {
 pub struct Completion {
     /// Which evidence ends the turn.
     when: DoneWhen,
-    /// The pane's agent-state [`seq`](crate::access::AgentObservation::seq) when this turn BEGAN.
+    /// WHO the turn was addressed to and how many published changes their pane had been through,
+    /// read when the turn BEGAN.
     ///
     /// `None` until [`begin`](Self::begin) arms it, and `None` after it where the host has no
-    /// supervisor to ask — which is why [`DoneWhen::Settles`] treats an unarmed evaluator as never
-    /// satisfied rather than as immediately satisfied.
-    began_at: Option<u64>,
+    /// supervisor to ask or no agent was identified — which is why [`DoneWhen::Settles`] treats an
+    /// unarmed evaluator as never satisfied rather than as immediately satisfied.
+    ///
+    /// ⚠ The NAME is armed, not taken from the caller: see [`DoneWhen::Settles`]. It is what makes
+    /// *"the agent came back to rest"* a claim about the peer this turn was actually given to.
+    addressed: Option<(String, u64)>,
 }
 
 impl Completion {
@@ -154,7 +207,7 @@ impl Completion {
     pub const fn new(when: DoneWhen) -> Self {
         Self {
             when,
-            began_at: None,
+            addressed: None,
         }
     }
 
@@ -164,10 +217,10 @@ impl Completion {
     /// started and stopped, and the change this looks for would be one the turn missed; armed
     /// before, the comparison is against the state the turn was addressed to.
     pub fn begin(&mut self, panes: &dyn PaneAccess, pane: PaneId) {
-        self.began_at = panes
+        self.addressed = panes
             .supervision()
             .and_then(|supervisor| supervisor.pane_agent_state(pane))
-            .map(|seen| seen.seq);
+            .and_then(|seen| seen.agent.map(|agent| (agent, seen.seq)));
     }
 
     /// Whether `pane` satisfies this contract RIGHT NOW.
@@ -178,9 +231,11 @@ impl Completion {
             // both plugins that use this already spelled it `unwrap_or(true)`, which is the
             // behaviour this preserves exactly.
             DoneWhen::Exits => panes.pane_eof(pane).unwrap_or(true),
-            DoneWhen::Settles(agent) => {
-                let Some(began_at) = self.began_at else {
-                    return false; // never armed, or no supervisor to arm from — see `begin`.
+            DoneWhen::Settles => {
+                // Never armed, no supervisor to arm from, or no agent identified in the pane the
+                // prompt went to — see `begin`. None of those is evidence that a turn ended.
+                let Some((addressed, began_at)) = &self.addressed else {
+                    return false;
                 };
                 panes
                     .supervision()
@@ -189,8 +244,8 @@ impl Completion {
                         // ⚠⚠ ALL THREE, and the last one is what stops a peer's PRE-TURN rest from
                         // reading as its answer. See the variant's doc.
                         seen.state == AgentState::Idle
-                            && seen.agent.as_deref() == Some(agent.as_str())
-                            && seen.seq > began_at
+                            && seen.agent.as_deref() == Some(addressed.as_str())
+                            && seen.seq > *began_at
                     })
             }
         }
@@ -216,7 +271,7 @@ impl Completion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{PaneLifecycle, WorkspacePaneAccess};
+    use crate::access::WorkspacePaneAccess;
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
 
@@ -245,14 +300,14 @@ mod tests {
     /// what the contract does with an observation, not how one is derived.
     fn supervised(state: AgentState, seq: u64) -> (WorkspacePaneAccess, PaneId, Reported) {
         let (access, pane) = sh_access("exec cat", 20, 4);
-        let reported: Reported = Arc::new(Mutex::new((state, seq)));
+        let reported: Reported = Arc::new(Mutex::new((state, seq, Some("claude".to_string()))));
         let source = {
             let reported = Arc::clone(&reported);
             Arc::new(move |_id: PaneId| {
-                let (state, seq) = *reported.lock().expect("the reported mutex");
+                let (state, seq, agent) = reported.lock().expect("the reported mutex").clone();
                 Some(crate::access::AgentObservation {
                     state,
-                    agent: Some("claude".to_string()),
+                    agent,
                     authority: crate::access::Authority::Reported {
                         source: "test".to_string(),
                     },
@@ -264,8 +319,9 @@ mod tests {
         (access.with_agent_state(Some(source)), pane, reported)
     }
 
-    /// What a test moves the supervised pane's state with: the state, and its published `seq`.
-    type Reported = Arc<Mutex<(AgentState, u64)>>;
+    /// What a test moves the supervised pane's observation with: the state, its published `seq`,
+    /// and WHICH agent is reported there.
+    type Reported = Arc<Mutex<(AgentState, u64, Option<String>)>>;
 
     /// ⚠⚠⚠ **A PEER'S REST FROM BEFORE THE TURN IS NOT ITS ANSWER** — the failure this rule would
     /// otherwise introduce, and the reason it was gated before it was wired to anything.
@@ -281,7 +337,7 @@ mod tests {
     #[test]
     fn a_peer_that_was_already_at_rest_has_not_answered_this_turn() {
         let (access, pane, _reported) = supervised(AgentState::Idle, 7);
-        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
 
         assert_eq!(
@@ -307,11 +363,12 @@ mod tests {
     #[test]
     fn a_turn_is_over_when_the_peer_it_addressed_comes_back_to_rest() {
         let (access, pane, reported) = supervised(AgentState::Working, 7);
-        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
 
         // The peer answers and goes quiet — a published change, which is what `seq` counts.
-        *reported.lock().expect("the reported mutex") = (AgentState::Idle, 8);
+        *reported.lock().expect("the reported mutex") =
+            (AgentState::Idle, 8, Some("claude".to_string()));
 
         assert_eq!(
             done.wait(
@@ -336,11 +393,12 @@ mod tests {
     #[test]
     fn a_peer_that_is_still_working_has_not_finished_however_much_it_has_moved() {
         let (access, pane, reported) = supervised(AgentState::Idle, 7);
-        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
 
         // It started, and has been busy through several published changes.
-        *reported.lock().expect("the reported mutex") = (AgentState::Working, 11);
+        *reported.lock().expect("the reported mutex") =
+            (AgentState::Working, 11, Some("claude".to_string()));
 
         assert_eq!(
             done.wait(
@@ -355,17 +413,26 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠ **AN OBSERVATION ABOUT A DIFFERENT AGENT IS NOT EVIDENCE ABOUT THIS ONE**, and a host
-    /// with no supervisor at all never satisfies this rather than satisfying it vacuously.
+    /// ⚠⚠ **THE PEER THAT WENT QUIET MUST BE THE PEER THAT WAS ASKED**, and every way this
+    /// contract can fail to KNOW leaves it waiting.
     ///
-    /// Both are the same discipline: every way this contract can fail to KNOW leaves it waiting,
-    /// because the other direction publishes a fragment as a model's answer.
+    /// Three ways, one discipline — the other direction publishes a fragment as a model's answer:
+    ///
+    /// * The pane's agent CHANGED under the turn. The prompt went to one program and a different
+    ///   one is at rest there now; its stillness says nothing about the question that was asked.
+    ///   ⚠ This is the arm that the caller-supplied name could not have covered, and the reason
+    ///   the name is ARMED from the observation instead: a caller's name can be right about the
+    ///   agent while being wrong about the moment.
+    /// * The observation names NOBODY — not evidence about anybody.
+    /// * The host has no supervisor at all, so the evaluator cannot even arm.
     #[test]
     fn a_contract_that_cannot_know_waits_rather_than_guessing() {
         let (access, pane, reported) = supervised(AgentState::Working, 7);
-        let mut done = Completion::new(DoneWhen::Settles("codex".to_string()));
+        let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
-        *reported.lock().expect("the reported mutex") = (AgentState::Idle, 8);
+        // At rest, and moved — but it is not the program the prompt was given to.
+        *reported.lock().expect("the reported mutex") =
+            (AgentState::Idle, 8, Some("codex".to_string()));
         assert_eq!(
             done.wait(
                 &access,
@@ -374,13 +441,27 @@ mod tests {
                 &RunContext::uncancellable(),
             ),
             Waited::TimedOut,
-            "the pane's agent is `claude`; nothing here says what `codex` did",
+            "⚠⚠ the turn was addressed to `claude` and `codex` is what is at rest there now — a \
+             contract satisfied here reports another program's quiet as this question's answer",
+        );
+
+        // Named nobody: the same absence of evidence, spelled the other way.
+        *reported.lock().expect("the reported mutex") = (AgentState::Idle, 9, None);
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_millis(200),
+                &RunContext::uncancellable(),
+            ),
+            Waited::TimedOut,
+            "an observation naming no agent is not evidence about the one that was asked",
         );
         access.lifecycle().expect("lifecycle").close(pane);
 
         // No supervisor at all: the evaluator cannot even ARM, and must not read that as done.
         let (bare, pane) = sh_access("exec cat", 20, 4);
-        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&bare, pane);
         assert_eq!(
             done.wait(

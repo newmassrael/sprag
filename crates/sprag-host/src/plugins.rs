@@ -30,9 +30,9 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
-    Agent, AgentSpec, Ceiling, Cost, Dialogue, DialogueSpec, Driver, Guardrails, OrchestrationSpec,
-    Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin, ReadyWhen, ReplyFormat,
-    RunContext, WorkspacePaneAccess,
+    Agent, AgentSpec, Ceiling, Cost, Dialogue, DialogueSpec, DoneWhen, Driver, Guardrails,
+    OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin, ReadyWhen,
+    ReplyFormat, RunContext, WorkspacePaneAccess,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -413,6 +413,9 @@ impl PluginsExternal {
                 if let Some(timeout) = opt_millis(map, "timeout_ms")? {
                     spec.timeout = timeout;
                 }
+                if let Some(done_when) = opt_done_when(map)? {
+                    spec.done_when = done_when;
+                }
                 spec.ready_when = opt_ready_when(map)?;
                 spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
                 let label = format!("agent pane={}", pane.0);
@@ -746,6 +749,22 @@ fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeE
     let matched = require_str(object, "match")?;
     let marker = require_str(object, "marker")?.to_string();
     ReadyWhen::parse(matched, marker)
+        .ok_or(InvokeError::TypeMismatch)
+        .map(Some)
+}
+
+/// Parse the `agent` form's optional `done_when` — WHAT MAKES THE TURN OVER. Absent (or `null`)
+/// leaves the spec's default, which is [`DoneWhen::Exits`] and is what this adapter did
+/// unconditionally before the argument existed.
+///
+/// ⚠ A BARE WORD, read through the type's own [`DoneWhen::parse`], so the set this accepts and the
+/// set the wire publishes are one list. The first draft took an object with a companion `agent`
+/// and two conformance gates refused it — see [`PluginGrammar::DONE_WHEN`](crate::wire::PluginGrammar::DONE_WHEN).
+fn opt_done_when(map: &Map<String, Value>) -> Result<Option<DoneWhen>, InvokeError> {
+    let Some(word) = opt_str(map, "done_when")? else {
+        return Ok(None);
+    };
+    DoneWhen::parse(word)
         .ok_or(InvokeError::TypeMismatch)
         .map(Some)
 }
@@ -1682,12 +1701,15 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            20,
+            22,
             "one call per published word: the ONE plugin word that selects each of the four forms, \
-             the two reply formats on each of a dialogue's two endpoints, and the readiness \
-             barrier's FOUR `match` words on each of the three plugins that inject — the last two \
-             being `runs` and `settles`, which ask the pane's terminal and its supervisor rather \
-             than its screen",
+             the two reply formats on each of a dialogue's two endpoints, the readiness barrier's \
+             FOUR `match` words on each of the three plugins that inject — the last two being \
+             `runs` and `settles`, which ask the pane's terminal and its supervisor rather than \
+             its screen — and the agent's TWO `done_when` words. ⚠ Those two are why this gate is \
+             worth its own line: `done_when`'s first draft published `settles` and the parser \
+             REFUSED it, because that draft needed a companion `agent` argument the vocabulary \
+             could not demand. This is the gate that said so.",
         );
     }
 
@@ -1732,7 +1754,7 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            37,
+            38,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
              malformed rather than declined",
@@ -1744,10 +1766,11 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            57,
+            58,
             "one probe per declared argument of every FORM, nesting included: THIRTEEN for an \
-             orchestrator, TWELVE for a pipe, FIFTEEN for an agent, sixteen for a dialogue, and \
-             one to cancel. ⚠ Eleven are the READINESS BARRIER on the THREE plugins that inject, \
+             orchestrator, TWELVE for a pipe, SIXTEEN for an agent, sixteen for a dialogue, and \
+             one to cancel. ⚠ The agent's newest is `done_when` — WHAT MAKES THE TURN OVER, the \
+             mirror of `ready_when` and the one argument of the four that is a BARE word. ⚠ Eleven are the READINESS BARRIER on the THREE plugins that inject, \
              each carrying `ready_when` AND its two nested fields: a marker alone could not say \
              whether text already on the screen is evidence, so the value became an object",
         );
@@ -1818,6 +1841,53 @@ mod tests {
         assert!(
             ask(pane.0).is_ok(),
             "a real pane may open a run, or the refusal above is about something else",
+        );
+    }
+
+    /// ⚠⚠⚠ **AN ARGUMENT THIS SURFACE DOES NOT DECLARE IS SWALLOWED, NOT REFUSED** — measured,
+    /// because it is what decides whether an ADDED argument earns a protocol number.
+    ///
+    /// The rule this project reasons from is that an addition is additive when an older daemon
+    /// **refuses it loudly by name**: the caller learns it is talking to a stale peer, and no
+    /// silent difference of behaviour survives. R363 measured exactly that for an added ACTION —
+    /// an unknown verb comes back `UnknownPath`, which every mouth renders as skew.
+    ///
+    /// An added ARGUMENT is the opposite, and this is the gate that says so rather than a comment
+    /// asserting it. The plugin host reads the keys it knows and walks past the rest, so a request
+    /// carrying a key an older daemon has never heard of is ACCEPTED, the run starts, and it
+    /// converges — under the behaviour the key was sent to change. That is version 17's failure and
+    /// version 23's (`shows_prompt`): *the request is accepted, the run converges, and the answer
+    /// is byte-identical either way.*
+    ///
+    /// ⚠ So every argument added to this surface owes a `WIRE_PROTOCOL` bump, and this gate is the
+    /// evidence for the next person who has to decide.
+    #[test]
+    fn an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused() {
+        let (workspace, pane) = pane_painting("");
+        let mut external = PluginsExternal::new(
+            workspace,
+            Arc::new(Mutex::new(RunRegistry::default())),
+            None,
+            None,
+            None,
+            None,
+        );
+        let accepted = external.invoke(
+            RUN_ACTION,
+            IntrospectValue::Json(json!({
+                "plugin": "orchestrator",
+                "pane": pane.0,
+                "stimulus": "x",
+                // A key no version of this surface has ever declared, standing in for one a FUTURE
+                // client sends to a daemon that predates it.
+                "a_key_from_a_later_protocol": "surprise",
+            })),
+        );
+        assert!(
+            accepted.is_ok(),
+            "⚠⚠⚠ the request carrying an unknown key was ACCEPTED. A client that sent it to buy \
+             different behaviour got the old behaviour and a successful answer, which is why an \
+             added ARGUMENT cannot be additive the way an added ADDRESS or ACTION is: {accepted:?}",
         );
     }
 

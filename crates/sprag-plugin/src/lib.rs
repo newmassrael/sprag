@@ -58,6 +58,7 @@ pub use access::{
     WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
+pub use completion::{Completion, DoneWhen};
 pub use deliver::{Delivered, Delivery, deliver, has_painted};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use driver::{

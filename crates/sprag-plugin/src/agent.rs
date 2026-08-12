@@ -266,7 +266,7 @@ impl Agent {
     pub fn new(pane: PaneId, spec: AgentSpec) -> Self {
         Self {
             ready: Readiness::new(spec.ready_when.clone(), spec.ready_within),
-            done: Completion::new(spec.done_when.clone()),
+            done: Completion::new(spec.done_when),
             pane,
             spec,
             response: None,

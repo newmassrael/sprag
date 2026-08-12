@@ -994,6 +994,42 @@ impl PluginGrammar {
     )
     .optional();
 
+    /// The `agent` form's COMPLETION contract — what makes the peer's turn over, the mirror of
+    /// [`READY_WHEN`](Self::READY_WHEN) at the other end of the same turn.
+    ///
+    /// # ⚠⚠⚠ Why this earns a protocol number where `ready_when`'s `runs` did not
+    ///
+    /// R342 settled that widening an argument's VALUE SPACE does not earn one, which is why
+    /// `ready_when` gained a fourth word for free: a client sending an unknown word meets an
+    /// ordinary grammar refusal at the door, because the words are PUBLISHED and it can ask first.
+    ///
+    /// A whole added ARGUMENT is the opposite, and it is measured rather than argued —
+    /// `an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused` sends a key no
+    /// version has ever declared and the run **starts and converges**. So a caller naming
+    /// `settles` to a daemon that predates this key is answered `ok`, waits for an exit that a
+    /// long-lived peer will never make, and gets back a snapshot taken when its timeout ran out —
+    /// under the same shape of answer a working call returns. That is version 23's failure exactly.
+    ///
+    /// # ⚠⚠ A BARE WORD, and the first draft's two defects that made it one
+    ///
+    /// It was `{"match": …, "agent": …}` — [`READY_WHEN`](Self::READY_WHEN)'s shape, copied — and
+    /// the conformance gates refused it twice in one run, each for a reason worth keeping:
+    ///
+    /// * **`done_when.match` and `ready_when.match` collide when FLATTENED.** A mouth that offers
+    ///   nested arguments one flag at a time (`--match`) could not say which of the two a caller
+    ///   meant, and this form carries both. `no_surface_publishes_a_nested_argument_that_collides`
+    ///   named it in both directions.
+    /// * **The wire published `settles` and the daemon REFUSED it.** `agent` was optional in the
+    ///   grammar and required by that word, so an agent enumerating the vocabulary would build a
+    ///   call this daemon cannot read — `every_published_word_is_a_word_the_plugin_host_accepts`.
+    ///
+    /// Both dissolve once the companion argument goes away, and it could: the agent's NAME is not
+    /// the caller's to give at this end of the turn — see
+    /// [`DoneWhen::Settles`](sprag_plugin::DoneWhen::Settles). One word, no nesting, nothing to
+    /// collide with, and every published word is one the parser takes alone.
+    pub const DONE_WHEN: ArgGrammar =
+        ArgGrammar::one_of("done_when", "string", sprag_plugin::DoneWhen::WIRE_WORDS).optional();
+
     /// `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
     pub const ORCHESTRATOR_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::ORCHESTRATOR),
@@ -1029,6 +1065,7 @@ impl PluginGrammar {
         ArgGrammar::open("eof", "bool").optional(),
         ArgGrammar::open("shows_prompt", "bool").optional(),
         ArgGrammar::open("timeout_ms", "int").optional(),
+        Self::DONE_WHEN,
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
         Self::OPENED_BY,
@@ -6931,7 +6968,9 @@ mod tests {
             // the deliberate opposite of R364's free-text note — *which* key was swallowed and
             // *why* are two things a caller BRANCHES on (retry, reconfigure, or reach for
             // `stop_job`), and a sentence cannot be branched on.
-            24,
+            // R365 again: re-stamped for an ADDED REQUEST ARGUMENT (`done_when`). No ANSWER word
+            // moved — a completion contract is something a caller SAYS, not something it is told.
+            25,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7082,7 +7121,13 @@ mod tests {
             // value FROM — and no verb here takes a new one: the caveat is something a caller is
             // TOLD, never something it says. `an_answers_value_space_cannot_widen_…` is the pin
             // that moved, and the two lists being different is the whole reason there are two.
-            24,
+            // ⚠⚠ R365 AGAIN, and THIS time this pin is the one that moved: `run` gained
+            // `done_when=exits,settles`, a vocabulary a caller picks a value FROM. The number moves
+            // with it — not because the space widened (R342 settled that widening alone need not)
+            // but because the ARGUMENT is new, and an older daemon SWALLOWS an undeclared key
+            // rather than refusing it. Measured:
+            // `an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused`.
+            25,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7135,9 +7180,9 @@ mod tests {
                 // FOUR TIMES because each form publishes only the word that SELECTS it — the union is
                 // the whole vocabulary, and a client can tell which key set goes with which plugin.
                 "sprag_workspace/sprag_plugins/cancel:",
-                "sprag_workspace/sprag_plugins/run:format_a=text,claude_json \
-                 format_b=text,claude_json plugin=agent plugin=dialogue plugin=orchestrator \
-                 plugin=pipe",
+                "sprag_workspace/sprag_plugins/run:done_when=exits,settles \
+                 format_a=text,claude_json format_b=text,claude_json plugin=agent \
+                 plugin=dialogue plugin=orchestrator plugin=pipe",
             ],
         );
 
@@ -7584,7 +7629,10 @@ mod tests {
         // answer a caveat when the bytes they wrote MEANT a signal the pane will raise none. Same
         // three addresses, same request grammar, different answer; no pin over ADDRESSES can see
         // it, which is why the number lives beside the list rather than the list living alone.
-        24,
+        // R365 again: re-stamped for an ADDED REQUEST ARGUMENT (`done_when`), which lives inside a
+        // form this pin does not walk — the blind spot named above, and the reason the argument
+        // grammar has ratchets of its own.
+        25,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
