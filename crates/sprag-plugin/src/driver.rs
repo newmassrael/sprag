@@ -161,6 +161,47 @@ pub enum OutcomeState {
     Blocked(Option<crate::consent::Unanswered>),
 }
 
+impl OutcomeState {
+    /// This outcome's terminal word — the ONE place the variant → name mapping lives.
+    ///
+    /// # ⚠⚠ Why this belongs on the type and lived in the host for five rounds
+    ///
+    /// [`Cost::unit`], [`Ceiling::wire_str`] and [`Verdict::wire_str`] all follow this rule for the
+    /// same stated reason — *the host never spells a variant* — and this, the outcome a run is
+    /// actually reported under, was the one that did not. The host's `outcome_word` matched on the
+    /// variants itself, so the mapping and the type could drift, and no list existed for a pin to
+    /// walk. R365 found the second half of that (a fifth word reached the wire with every ratchet
+    /// green) and filed the first half; this is the first half.
+    ///
+    /// ⚠ THE WORD IS UNCHANGED BY WHAT THE VARIANT CARRIES, deliberately: folding the ceiling into
+    /// the word (`exhausted_duration`) would change the value space of a key old readers decode
+    /// whole, which is a wire break no address or shape pin can see (R342). The ceiling travels
+    /// beside it.
+    #[must_use]
+    pub const fn wire_str(&self) -> &'static str {
+        match self {
+            Self::Converged => "converged",
+            Self::Exhausted(_) => "exhausted",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            // ⚠⚠ A WORD OF ITS OWN, not a flavour of `failed`. A blocked run wants an ANSWER and a
+            // failed one wants a FIX — R357's rule for `interrupted`, and the same honesty test.
+            Self::Blocked(_) => "blocked",
+        }
+    }
+
+    /// Every word this vocabulary publishes, so the answers pin walks a LIST rather than an array
+    /// somebody has to remember to extend.
+    ///
+    /// ⚠ Hand-ordered, because these variants CARRY DATA and so have no `ALL` to project from —
+    /// [`Verdict::WIRE_WORDS`](crate::plugin::Verdict::WIRE_WORDS)' residue, closed the same way:
+    /// the gate beside this type constructs every variant and holds the list to
+    /// [`wire_str`](Self::wire_str), so a sixth outcome cannot be published without a word or
+    /// spelled without being published.
+    pub const WIRE_WORDS: &'static [&'static str] =
+        &["converged", "exhausted", "failed", "cancelled", "blocked"];
+}
+
 sprag_vt::closed_set! {
 /// WHAT BECAME OF THE WORK a run had going, once the run was cut short.
 ///
@@ -335,6 +376,14 @@ pub struct Progress {
     ///
     /// See [`StepRecord`] for why a run that reports only its total is not diagnosable.
     pub journal: Vec<StepRecord>,
+    /// HOW MANY OF ITS PEER'S QUESTIONS THIS RUN HAS ANSWERED SO FAR, on the caller's consent —
+    /// [`Outcome::answered`] read mid-flight, under the same name for this type's stated reason.
+    ///
+    /// ⚠⚠ **A RUNNING RUN IS EXACTLY WHERE THIS MATTERS MOST.** The other two counters are watched
+    /// to tell progress from stuck; this one is watched to see a decision being taken on your
+    /// behalf while there is still time to stop it. Available only in the outcome, it would reach
+    /// the reader after every approval had already been given.
+    pub answered: u32,
 }
 
 /// HOW MANY STEPS A RUN REMEMBERS.
@@ -418,6 +467,7 @@ impl Driver {
                 iterations: self.iterations,
                 cost: self.cost,
                 journal: self.journal.clone(),
+                answered: self.answered,
             };
         }
     }
@@ -699,6 +749,46 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⚠⚠ **THE PUBLISHED OUTCOME LIST IS HELD TO THE ONE THAT IS SERVED** — the residue R365 named
+    /// on the answers pin, and the reason `OutcomeState` finally spells its own words.
+    ///
+    /// The pin that stops a run's outcome vocabulary from widening unnoticed used to walk a
+    /// HAND-WRITTEN array of five variants, because this type carries data and has no `ALL`. So a
+    /// sixth outcome added here would have reached the wire with the pin green — the exact way the
+    /// FIFTH one (`blocked`) got in, one level up, before that pin existed at all.
+    ///
+    /// Building every variant and asking it for its word is what closes it: a sixth fails here
+    /// until it is published, and the pin now walks the published list.
+    #[test]
+    fn every_outcome_the_type_can_spell_is_a_word_the_wire_publishes() {
+        let served: Vec<&'static str> = [
+            OutcomeState::Converged,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            OutcomeState::Failed,
+            OutcomeState::Cancelled,
+            OutcomeState::Blocked(None),
+        ]
+        .iter()
+        .map(OutcomeState::wire_str)
+        .collect();
+        assert_eq!(
+            served,
+            OutcomeState::WIRE_WORDS,
+            "⚠⚠ an outcome the type can spell and the wire does not publish is a word a client \
+             decoding this set WHOLE meets with no warning — and the pin that would have caught it \
+             walks the PUBLISHED list, so it cannot see one that was never added",
+        );
+        // ⚠ THE CEILING DOES NOT CHANGE THE WORD. Folding it in (`exhausted_duration`) would widen
+        // a value space old readers decode whole, which is a break no address pin can see.
+        for ceiling in [Ceiling::Iterations, Ceiling::Cost, Ceiling::Duration] {
+            assert_eq!(OutcomeState::Exhausted(ceiling).wire_str(), "exhausted");
+        }
+        let mut unique = OutcomeState::WIRE_WORDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), OutcomeState::WIRE_WORDS.len());
+    }
     use crate::access::{KeyStroke, PaneRow, Written};
     use crate::plugin::Step;
     use crate::run::poll_until;

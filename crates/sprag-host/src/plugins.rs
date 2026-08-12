@@ -1005,6 +1005,12 @@ fn run_to_json(run: &RunSummary) -> Value {
             "iterations": run.progress.iterations,
             "cost": cost,
             "unit": unit,
+            // ⚠⚠ AND THE ANSWER TALLY MID-FLIGHT, under the outcome's own name. The comment above
+            // says these keys exist so a reader who polls a run and then reads its outcome meets
+            // ONE vocabulary — and this is the key where the polling matters MOST: the other two
+            // are watched to tell progress from stuck, this one is watched to see a decision being
+            // taken on your behalf while there is still time to cancel.
+            RUN_ANSWERED_KEY: run.progress.answered,
         }),
         RunState::Done { outcome, output } => json!({
             "status": RunStatus::Done.wire_str(),
@@ -1069,18 +1075,11 @@ fn step_to_json(step: &sprag_plugin::StepRecord) -> Value {
 /// log, so a run reloaded from disk cannot come back under a different word than it went out under.
 #[must_use]
 pub fn outcome_word(outcome: &Outcome) -> &'static str {
-    match outcome.state {
-        OutcomeState::Converged => "converged",
-        // ⚠⚠ A WORD OF ITS OWN, not a flavour of `failed`. A blocked run wants an ANSWER and a
-        // failed one wants a FIX — R357's rule for `interrupted`, and the same honesty test.
-        OutcomeState::Blocked(_) => "blocked",
-        // ⚠ THE STATE WORD IS UNCHANGED by the ceiling, deliberately: folding the ceiling into the
-        // word (`exhausted_duration`) would change the value space of a key old readers decode
-        // whole, which is a wire break no address or shape pin can see (R342).
-        OutcomeState::Exhausted(_) => "exhausted",
-        OutcomeState::Failed => "failed",
-        OutcomeState::Cancelled => "cancelled",
-    }
+    // ⚠⚠ THROUGH THE TYPE, which is where every other variant→name mapping on this wire lives
+    // (`Cost::unit`, `Ceiling::wire_str`, `Verdict::wire_str`) and where this one did NOT until
+    // R366. Spelled here, the host could name an outcome the type had renamed, and there was no
+    // list for the answers pin to walk — so the pin hand-wrote five variants and said so.
+    outcome.state.wire_str()
 }
 
 /// Which ceiling stopped it, or [`None`] when no ceiling did — [`outcome_word`]'s companion.
@@ -1132,6 +1131,27 @@ pub fn outcome_question(outcome: &Outcome) -> Option<Value> {
     Some(asking)
 }
 
+/// THE SENTENCE behind an `asking.why` word — what a person or an agent is told to DO about a run
+/// that stopped on its peer's question, or the word itself when this build does not know it.
+///
+/// # ⚠⚠ Why the mouths read this and not the type
+///
+/// [`sprag_plugin::Refusal`] owns the sentence, and both mouths must say the SAME one — which is
+/// the whole reason it lives on the type rather than in a renderer. But the agent-facing mouth
+/// depends on this crate and not on the plugin crate, so reaching the type would mean a second
+/// binary carrying the whole plugin layer to read six strings. The host already owns every other
+/// wire↔type projection a mouth needs ([`outcome_word`], [`outcome_from_words`]); this is one more,
+/// and it delegates rather than spelling a variant.
+///
+/// ⚠ An UNKNOWN word answers itself rather than nothing. A newer daemon may name a reason an older
+/// mouth predates, and printing the raw word is honest where silence would be a run that stopped
+/// for no stated cause — the rule [`RUN_CEILING_KEY`] follows for the same reason.
+#[must_use]
+pub fn refusal_sentence(word: &str) -> String {
+    sprag_plugin::Refusal::parse(word)
+        .map_or_else(|| word.to_owned(), |why| why.describe().to_owned())
+}
+
 /// [`outcome_word`] / [`outcome_ceiling`] READ BACK — how a restored run recovers the state it was
 /// written out under.
 ///
@@ -1155,7 +1175,14 @@ pub fn outcome_from_words(word: Option<&str>, ceiling: Option<&str>) -> OutcomeS
     }
 }
 
-fn outcome_to_json(outcome: &Outcome) -> Value {
+/// A run's OUTCOME as a client receives it — the projection both mouths render from.
+///
+/// ⚠ `pub` for the reason [`outcome_word`] beside it is: a mouth's gate has to drive the DAEMON's
+/// renderer rather than a hand-written copy of its answer shape, or the gate passes while the two
+/// drift. That is the two-readers defect this crate has paid for repeatedly, and a fixture spelling
+/// `{"state": …, "asking": …}` itself would be a fresh instance of it.
+#[must_use]
+pub fn outcome_to_json(outcome: &Outcome) -> Value {
     let (state, ceiling) = (outcome_word(outcome), outcome_ceiling(outcome));
     // Cost is self-describing on the wire: the scalar amount plus its unit label
     // (both from `Cost` itself, so the host never names a variant), so a peer

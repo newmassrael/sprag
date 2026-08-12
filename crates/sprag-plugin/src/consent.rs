@@ -396,6 +396,21 @@ pub enum Taken {
     /// ⚠ The marker having moved is the proof the peer processed the number — which is also what
     /// makes the Enter safe, since it is now landing on the option the consent named.
     NumberedThenConfirmed,
+    /// The peer IGNORED the Enter its own marker justified, so the option's number was typed too.
+    ///
+    /// # ⚠⚠⚠ The arm an END-TO-END run had to measure
+    ///
+    /// [`Selected`](Self::Selected) is the commonest case by far — the caller authorises `Yes` and
+    /// `Yes` is the option the agent has highlighted — and against a menu with number hotkeys and
+    /// no Enter handling it was the one case that could never be answered: the run pressed the one
+    /// key that dialog does not read and reported [`Refusal::NotTaken`]. **Every unit gate passed**,
+    /// because each of them supplied the other side of the conversation; the first run through a
+    /// real daemon against a real pane found it in one go.
+    ///
+    /// ⚠ The escalation is bounded by the same evidence as everything else here: it happens only
+    /// while the screen still shows THAT question with the marker still on THAT option, so an Enter
+    /// that had in fact landed would have taken the dialog away and left nothing to escalate into.
+    SelectedThenNumbered,
 }
 
 impl Taken {
@@ -407,6 +422,9 @@ impl Taken {
             Self::Numbered => "typing the number took it outright, so no Enter was sent",
             Self::NumberedThenConfirmed => {
                 "the number moved its marker onto the option and Enter then committed it"
+            }
+            Self::SelectedThenNumbered => {
+                "it did not take the Enter its own marker justified, so the number was typed too"
             }
         }
     }
@@ -664,6 +682,7 @@ mod tests {
             Taken::Selected,
             Taken::Numbered,
             Taken::NumberedThenConfirmed,
+            Taken::SelectedThenNumbered,
         ] {
             let said = Answered {
                 question: permission(),

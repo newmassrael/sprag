@@ -3677,8 +3677,10 @@ name = "sprag-mcp"
 version = "0.0.1"
 dependencies = [
  "serde_json",
+ "sprag-detect",
  "sprag-host",
  "sprag-peer",
+ "sprag-plugin",
  "sprag-rpc",
  "sprag-terminal",
  "tracing",

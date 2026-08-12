@@ -355,6 +355,10 @@ impl RunRegistry {
                     // over and unresumable, and keeping it would grow the file with every step of
                     // every run this daemon ever ran. The totals survive; the steps do not.
                     journal: Vec::new(),
+                    // ⚠ NOR IS THE ANSWER TALLY, for `Outcome::answered`'s reason at this end too:
+                    // the durable log has no column for it, and `0` would be this record asserting
+                    // that a restored run approved nothing when nobody wrote that down.
+                    answered: 0,
                 })),
                 cancel: Arc::new(AtomicBool::new(false)),
             });

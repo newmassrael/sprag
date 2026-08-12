@@ -77,7 +77,18 @@ fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Option<Question>>
 /// while it is being given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Arrival {
-    /// The peer is no longer asking anything: it took the number.
+    /// The peer is no longer showing the question this answer was given to — it took the key.
+    ///
+    /// ⚠⚠ **THE QUESTION, not the STATE.** A supervisor's verdict SETTLES: a real detector goes on
+    /// calling a pane blocked for its hysteresis window after the dialog has left the screen. Keyed
+    /// on the state, the wait for a peer to move outlived the answering bound and a run that HAD
+    /// been answered reported [`Refusal::NotTaken`] — measured end to end through a real daemon,
+    /// and invisible to every fixture here because a fixture derives its state from the screen and
+    /// so has no lag to model.
+    ///
+    /// ⚠ A DIFFERENT question is also this arm. The one this run answered is gone, and whatever the
+    /// peer asked next is the next step's business — where it meets the whole contract again rather
+    /// than an answer already in flight.
     LeftTheQuestion,
     /// The peer is still asking the SAME question and its marker is now on the authorised option —
     /// so it read the key, and an Enter can land nowhere else.
@@ -99,26 +110,32 @@ fn marker_arrived(
     question: &Question,
     chose: &Choice,
 ) -> Arrival {
-    let Some(asking) = peer_asking(panes, pane) else {
+    // ⚠⚠ FLATTENED, and the two `None`s it merges are both this question being over. Not blocked
+    // at all is obvious; blocked with NO READABLE MENU is the settle window — a detector goes on
+    // calling a pane blocked after the dialog left its screen — and it is also a peer that moved on
+    // to something this host cannot parse. In every one of those the question this answer was given
+    // to is no longer on the pane, and the next step meets whatever is.
+    let Some(now) = peer_asking(panes, pane).flatten() else {
         return Arrival::LeftTheQuestion;
     };
-    let on_the_option = asking.is_some_and(|now| {
-        // ⚠ The question's own SENTENCE, not the whole value: the marker has moved by now, so the
-        // choices differ from the ones this answer was authorised against, and comparing them
-        // whole would be a condition that can never hold.
-        now.asked == question.asked
-            && now
-                .selected()
-                .is_some_and(|marked| marked.number == chose.number)
-    });
-    if on_the_option {
+    // ⚠ Compared by the question's own SENTENCE, never the whole value: the marker has moved by
+    // now, so the choices differ from the ones this answer was authorised against and comparing
+    // them whole would be a condition that can never hold.
+    if now.asked != question.asked {
+        return Arrival::LeftTheQuestion;
+    }
+    if now
+        .selected()
+        .is_some_and(|marked| marked.number == chose.number)
+    {
         Arrival::OnTheOption
     } else {
         Arrival::NotYet
     }
 }
 
-/// How long the whole answering act may take — the keystroke, and the peer moving off the question.
+/// How long the whole answering act may take — the keystroke, the peer moving off the question, and
+/// its supervisor catching up with both.
 ///
 /// # ⚠⚠ A MECHANISM bound, which is why it is a constant and not an argument
 ///
@@ -128,7 +145,56 @@ fn marker_arrived(
 /// for, and nobody has a better answer for that than the product does. A peer that has not moved
 /// off its own dialog in this long is not slow — it did not take the key, which is
 /// [`Refusal::NotTaken`] and a fact worth reporting rather than a bound worth raising.
-const ANSWER_WITHIN: Duration = Duration::from_secs(2);
+///
+/// # ⚠⚠⚠ Why it is SIZED FROM THE SETTLE WINDOW and not from a repaint
+///
+/// A keystroke's repaint is milliseconds, and the first draft of this was two seconds on that
+/// reasoning. It was the wrong quantity: the slowest thing this waits for is not the PANE, it is
+/// the SUPERVISOR — a verdict is published only once a candidate has held for
+/// [`sprag_detect::DEFAULT_SETTLE`], so a pane whose dialog has just gone on being answered still
+/// reads `Blocked` for that whole window. Two seconds against a two-second settle is a bound that
+/// races the thing it is waiting for, and an end-to-end run measured it losing: a run whose answer
+/// had plainly landed reported [`Refusal::NotTaken`].
+///
+/// ⚠ The residue, stated: a host may CONFIGURE a longer settle than the default this is anchored
+/// to, and there the race returns. The anchor is what makes that a known quantity rather than a
+/// coincidence — and the failure stays in the safe direction, since a run that gives up reports the
+/// question rather than typing at it.
+const ANSWER_WITHIN: Duration = Duration::from_secs(sprag_detect::DEFAULT_SETTLE.as_secs() + 2);
+
+/// What the peer is asking, having given a pane that reads BLOCKED WITH NOTHING READABLE the chance
+/// to catch up first.
+///
+/// # ⚠⚠⚠ Why the immediate reading is not trustworthy for this one case
+///
+/// `Blocked` with no question is a real state with a real remedy — a person — and R366 gave it a
+/// word for that reason. It is ALSO what a pane looks like for [`sprag_detect::DEFAULT_SETTLE`]
+/// after its dialog has been answered and gone: the screen has no menu, and the supervisor's
+/// verdict has not yet caught up with that. Read on sight, the step after a successful answer
+/// reported *"the peer is blocked on something this host cannot read — fetch a person"* about a
+/// pane that had just done exactly what it was asked. Measured end to end through a real daemon.
+///
+/// So the ambiguous reading is waited out. If it was the settle window, the verdict moves and the
+/// run goes on; if the peer really is blocked on something unreadable, the same answer comes back
+/// and the remedy is reported one bound later — which costs a run that is stopping anyway nothing
+/// it can use.
+///
+/// ⚠ Only the AMBIGUOUS reading waits. A pane that is not blocked, and a pane blocked on a menu
+/// this host CAN read, are both answered on sight.
+fn settled_question(
+    panes: &dyn PaneAccess,
+    pane: PaneId,
+    run: &RunContext,
+) -> Option<Option<Question>> {
+    let asking = peer_asking(panes, pane)?;
+    if asking.is_some() {
+        return Some(asking);
+    }
+    let _ = poll_until(run, ANSWER_WITHIN, || {
+        !matches!(peer_asking(panes, pane), Some(None))
+    });
+    peer_asking(panes, pane)
+}
 
 /// The bound a readiness wait is given when the caller names none.
 ///
@@ -537,47 +603,86 @@ impl Readiness {
             Err(why) => return Ok(Reached::Asking(Unanswered::refused(question, why))),
         };
 
-        let (how, bytes) = if question.selected() == Some(&chose) {
-            // The peer is already standing on it. Enter takes THIS option and no other.
-            let bytes = panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes();
-            (Taken::Selected, bytes)
+        let standing_on_it = question.selected() == Some(&chose);
+        // ⚠ THE KEY WHOSE LANDING PLACE IS PROVEN GOES FIRST. Where the peer's own marker is
+        // already on the authorised option, that key is Enter — `Question::selected` says exactly
+        // where it lands. Everywhere else it is the number, whose effect is inferred and whose
+        // proof arrives afterwards, as the marker.
+        let mut bytes = if standing_on_it {
+            panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes()
         } else {
-            let mut bytes = panes
+            panes
                 .inject(pane, &KeyStroke::text(&chose.number.to_string()))?
-                .bytes();
-            // Either the peer takes the number, or its marker arrives on the option — and until
-            // one of those is true there is nothing this run may do.
-            match poll_until(run, ANSWER_WITHIN, || {
-                marker_arrived(panes, pane, &question, &chose) != Arrival::NotYet
-            }) {
-                Waited::Ready => {}
-                // ⚠ A run ending underneath does not un-type the digit, and it does not answer the
-                // question either. Both endings are the same sentence to whoever reads the run —
-                // see [`Refusal::NotTaken`] — and both carry what was spent.
-                Waited::Stopped | Waited::TimedOut => {
-                    return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
-                }
-            }
-            match marker_arrived(panes, pane, &question, &chose) {
-                // The number was the whole answer. ⚠ NOT followed by an Enter: there is no
-                // question left for one to land on.
-                Arrival::LeftTheQuestion => (Taken::Numbered, bytes),
-                Arrival::OnTheOption => {
-                    bytes += panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes();
-                    (Taken::NumberedThenConfirmed, bytes)
-                }
-                // Raced back to the question between the poll and the re-read. Nothing was
-                // confirmed, and re-typing is what this contract exists to not do.
-                Arrival::NotYet => {
-                    return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
-                }
-            }
+                .bytes()
+        };
+        let mut how = if standing_on_it {
+            Taken::Selected
+        } else {
+            Taken::Numbered
         };
 
-        // ⚠⚠ AN ANSWER IS NOT GIVEN UNTIL THE PEER STOPS ASKING. A run that reported one off its
-        // own keystroke would report success for a dialog still on the screen, which is precisely
-        // the claim `Reached::Asking` was built to stop being made silently.
-        match poll_until(run, ANSWER_WITHIN, || peer_asking(panes, pane).is_none()) {
+        // What would END the wait differs by which key went in, and conflating them was a defect
+        // an end-to-end run measured. For a NUMBER, the marker arriving on the option is news. For
+        // an ENTER it is not — the marker was already there, so a wait that treated it as a signal
+        // would return before the peer had touched the key.
+        let settled = poll_until(run, ANSWER_WITHIN, || {
+            match marker_arrived(panes, pane, &question, &chose) {
+                Arrival::LeftTheQuestion => true,
+                Arrival::OnTheOption => !standing_on_it,
+                Arrival::NotYet => false,
+            }
+        });
+        // ⚠ A run ending underneath does not un-type the key, and it does not answer the question
+        // either. Both endings are the same sentence to whoever reads the run — see
+        // [`Refusal::NotTaken`] — and both carry what was spent.
+        if settled == Waited::Stopped {
+            return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
+        }
+
+        // ⚠⚠⚠ THE SECOND KEY, and it is the OTHER one — sent only where the same question is still
+        // up with the marker still on the authorised option, which is the same evidence the first
+        // key was justified by.
+        //
+        // Both directions are real dialogs and neither can be told from a screen. A NUMBER that
+        // moved the marker wants an Enter to commit it. An ENTER the peer ignored — a menu with
+        // number hotkeys and no Enter handling — wants the number, and until an end-to-end run
+        // MEASURED one, the commonest consent there was (`Yes`, on the pre-selected option) could
+        // not be answered at all: the run pressed the one key that dialog does not read and
+        // reported `not_taken`.
+        //
+        // ⚠ The escalation cannot confirm something else by accident. It happens only while the
+        // screen still shows THIS question with the marker on THIS option, so a first key that had
+        // in fact landed would have taken the dialog away and there would be nothing to escalate
+        // into.
+        if marker_arrived(panes, pane, &question, &chose) == Arrival::OnTheOption {
+            if standing_on_it {
+                bytes += panes
+                    .inject(pane, &KeyStroke::text(&chose.number.to_string()))?
+                    .bytes();
+                how = Taken::SelectedThenNumbered;
+            } else {
+                bytes += panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes();
+                how = Taken::NumberedThenConfirmed;
+            }
+        } else if settled == Waited::TimedOut {
+            // The peer neither left the question nor put its marker where this run could act on
+            // it. Nothing further is justified, and re-typing is what this contract exists to not
+            // do.
+            return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
+        }
+
+        // ⚠⚠ AN ANSWER IS NOT GIVEN UNTIL THE PEER LEAVES THE QUESTION. A run that reported one off
+        // its own keystroke would report success for a dialog still on the screen, which is
+        // precisely the claim `Reached::Asking` was built to stop being made silently.
+        //
+        // ⚠⚠⚠ THROUGH THE SAME PREDICATE THE REST OF THIS ACT USES, and that is a fix rather than
+        // tidiness. Asked as *"is the pane still blocked"* this outlived the answering bound on
+        // every real daemon: a detector's verdict SETTLES, so the state says blocked for its
+        // hysteresis window after the menu has gone. A run whose answer had plainly landed reported
+        // `not_taken`. See [`Arrival::LeftTheQuestion`].
+        match poll_until(run, ANSWER_WITHIN, || {
+            marker_arrived(panes, pane, &question, &chose) == Arrival::LeftTheQuestion
+        }) {
             Waited::Ready => Ok(Reached::Answered(Answered {
                 question,
                 chose,
@@ -687,7 +792,7 @@ impl Readiness {
         // place all three injecting plugins pass through on their way to a keystroke. Put after
         // the latch it would never run again after the first step, which is exactly the window the
         // defect lived in.
-        if let Some(asking) = peer_asking(panes, pane) {
+        if let Some(asking) = settled_question(panes, pane, run) {
             return self.answer(panes, pane, asking, run);
         }
         if self.seen {
@@ -1461,8 +1566,13 @@ mod tests {
     // ⚠⚠ AND THE PEER SAYS WHICH KEY IT ACTED ON. Every claim here is about which keystrokes a run
     // sends, so a fixture that only reported the OUTCOME would pass for a run that typed a digit
     // it did not need — the exact over-typing this contract is about. The peer prints
-    // `TOOK <option> VIA <byte>` when it acts, `SAW <byte>` for a key it ignores, and
-    // `EXTRA <byte>` for anything that arrives after it is done. The pane is the witness.
+    // `TOOK <option> VIA <byte> AFTER <the bytes it ignored>` when it acts, `SAW <byte>` for a key
+    // it ignores, and `EXTRA <byte>` for anything that arrives after it is done. The pane is the
+    // witness.
+    //
+    // ⚠ `AFTER` exists because ACTING CLEARS THE SCREEN, so the `SAW` lines that led up to it are
+    // wiped by the redraw — and the ORDER two keys went in is exactly what an escalation gate has
+    // to assert. Carried in a variable, it survives the clear.
 
     /// A peer that draws a bottom-anchored numbered menu and reacts to single keystrokes, in one of
     /// the four dialog behaviours a run has to survive.
@@ -1482,6 +1592,7 @@ mod tests {
 stty -icanon -echo 2>/dev/null
 kind={kind}
 sel=1
+seen=''
 readbyte() {{ dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }}
 draw() {{
   printf '\033[2J\033[H'
@@ -1496,7 +1607,7 @@ draw() {{
 }}
 took() {{
   printf '\033[2J\033[H'
-  printf 'TOOK %s VIA %s\r\n' "$sel" "$1"
+  printf 'TOOK %s VIA %s AFTER%s\r\n' "$sel" "$1" "$seen"
   while :; do
     e=$(readbyte)
     [ -n "$e" ] || exit 0
@@ -1512,14 +1623,14 @@ while :; do
       case "$kind" in
         numbers|either) sel=$((k-48)); took "$k" ;;
         marker) sel=$((k-48)); draw ;;
-        *) printf 'SAW %s\r\n' "$k" ;;
+        *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
       esac ;;
     13|10)
       case "$kind" in
         marker|either) took "$k" ;;
-        *) printf 'SAW %s\r\n' "$k" ;;
+        *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
       esac ;;
-    *) printf 'SAW %s\r\n' "$k" ;;
+    *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
   esac
 done
 "#
@@ -1554,14 +1665,33 @@ done
                 .spawn(command, "peer".to_string(), 60, 12)
                 .expect("spawn the peer")
         };
+        // ⚠⚠⚠ IT SETTLES, like the real one. A supervisor publishes a resting verdict only once a
+        // candidate has held for its window, so a pane whose dialog has just been answered goes on
+        // reading `Blocked` with NOTHING readable on it for that long. A source derived straight
+        // from the screen has no such lag — and its absence hid a live defect from every gate in
+        // this file until an end-to-end run through a real daemon met it: the step after a
+        // successful answer read the stale verdict as a fresh one and reported that a person was
+        // needed. **A double that cannot be wrong in the way the real thing is wrong is a double
+        // that asserts your belief.**
+        //
+        // ⚠ Far shorter than `sprag_detect::DEFAULT_SETTLE`, because what is under test is that the
+        // product tolerates a lag AT ALL rather than any particular length of one — and a gate that
+        // paid two seconds per answer would be bought with wall-clock nobody gets back.
+        const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
         let source = {
             let workspace = Arc::clone(&workspace);
+            let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
             Arc::new(move |id: PaneId| {
                 let guard = workspace.lock().expect("the workspace mutex");
                 guard.pane(id)?.pty().with_screen(|screen| {
                     let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
+                    let mut seen = last_menu.lock().expect("the settle mutex");
+                    if asking.is_some() {
+                        *seen = Some(std::time::Instant::now());
+                    }
+                    let settling = seen.is_some_and(|at| at.elapsed() < FIXTURE_SETTLE);
                     Some(crate::access::AgentObservation {
-                        state: if asking.is_some() {
+                        state: if asking.is_some() || settling {
                             AgentState::Blocked
                         } else {
                             AgentState::Idle
@@ -1821,6 +1951,80 @@ done
              here would have committed option 1 — the caller authorised the other one: {screen:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A PEER THAT IGNORES THE ENTER ITS OWN MARKER JUSTIFIED IS STILL ANSWERED** — the arm an
+    /// end-to-end run through a real daemon had to find, because every unit gate here supplied the
+    /// other side of the conversation.
+    ///
+    /// The commonest consent by far names the option the agent has already highlighted (`Yes`, on a
+    /// permission dialog). Against the `numbers` peer — number hotkeys, no Enter handling, which is
+    /// a real menu shape — the run pressed the one key that dialog does not read and reported
+    /// `not_taken`. The measurement came from `cli.rs`'s live-daemon gate; this is the same finding
+    /// reduced to a fixture that runs in milliseconds.
+    ///
+    /// Both halves are asserted. The Enter goes FIRST, because it is the key whose landing place
+    /// the peer's own marker proves; the number follows ONLY because the same question is still up
+    /// with the marker still on the authorised option.
+    ///
+    /// ⚠ REVERT-PROOF: drop the `SelectedThenNumbered` escalation and this reads `not_taken`.
+    #[test]
+    fn a_peer_that_ignores_the_enter_gets_the_number_it_does_read() {
+        let (access, pane) = asking_peer("numbers");
+        let reached = answering(Some(consent_to("Yes")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("the answer is not an error");
+        let Reached::Answered(answered) = reached else {
+            panic!(
+                "⚠⚠⚠ the peer offers the option the consent named and reads a key that takes it — \
+                 a run that gave up here cannot answer the commonest dialog there is: {reached:?}",
+            );
+        };
+        assert_eq!(answered.chose.number, 1);
+        assert_eq!(
+            answered.how,
+            Taken::SelectedThenNumbered,
+            "the Enter went first and the peer ignored it; the number followed",
+        );
+        assert_eq!(answered.bytes, 2, "the Enter and then the number");
+        let screen = screen_showing(&access, pane, "TOOK");
+        assert!(
+            screen.contains("TOOK 1 VIA 49"),
+            "and the peer took the authorised option, moved by the NUMBER — `VIA 10` here would \
+             mean this fixture accepts Enter and proves nothing: {screen:?}",
+        );
+        assert!(
+            screen.contains(&format!("AFTER {ENTER_BYTE}")),
+            "⚠⚠ and the ORDER: the peer received the Enter FIRST and did nothing with it, which is \
+             what makes the second key justified rather than a guess. A run that reached for the \
+             number first would read `AFTER` with nothing behind it: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠ **AND THE ESCALATION DOES NOT FIRE WHERE THE FIRST KEY WORKED.** The `either` peer takes
+    /// the Enter, so the number must never be typed — otherwise every ordinary answer would put a
+    /// stray digit into whatever the peer showed next, which is the hazard the whole `Taken`
+    /// vocabulary exists to avoid.
+    ///
+    /// The control for the gate above: without it, an escalation that fired unconditionally would
+    /// pass there and be a defect everywhere else.
+    #[test]
+    fn a_peer_that_takes_the_enter_is_never_sent_the_number_as_well() {
+        let (access, pane) = asking_peer("either");
+        let reached = answering(Some(consent_to("Yes")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("the answer is not an error");
+        let Reached::Answered(answered) = reached else {
+            panic!("the peer takes the Enter its marker justifies: {reached:?}");
+        };
+        assert_eq!(answered.how, Taken::Selected);
+        assert_eq!(answered.bytes, 1, "one key, and it is the Enter");
+        let screen = screen_showing(&access, pane, "TOOK");
+        assert!(
+            !screen.contains("EXTRA"),
+            "⚠⚠ NOTHING followed the Enter that worked: {screen:?}",
+        );
     }
 
     /// ⚠⚠⚠ **A CONSENT THAT DOES NOT NAME EXACTLY ONE OPTION TYPES NOTHING**, and each way of not

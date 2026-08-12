@@ -8427,3 +8427,213 @@ fn a_ctrl_c_is_a_byte_the_pane_may_ignore_and_stop_job_is_a_signal_it_cannot() {
         wrong.stderr,
     );
 }
+
+/// A pane the DAEMON'S OWN DETECTOR reads as `claude`, blocked on a numbered menu — and which takes
+/// the digit `1` and then prints a sentinel.
+///
+/// ⚠ Its shape is `workspace::tests::BLOCKED_CLAUDE`'s, with a question line added above the list:
+/// a consent names the QUESTION, and that fixture's screen has nothing above its first option, so
+/// there is no sentence for one to be about. Everything else — the marker glyph, the footer that
+/// makes the built-in manifest claim the pane — is unchanged, because what this gate needs is a
+/// dialog the SHIPPING detector recognises rather than one this test invented.
+///
+/// ⚠ It reads bytes in a LOOP and ignores everything that is not the digit, so a stray keystroke
+/// cannot end the fixture early and turn a real failure into a green pass.
+const ASKING_CLAUDE: &str = "stty -icanon -echo 2>/dev/null; \
+     printf '\\033[2J\\033[HDo you want to proceed?\\n\\342\\235\\257 1. Yes\\n  2. No\\n  \\342\\217\\270 manual mode on \\302\\267 ? for shortcuts\\n'; \
+     while :; do \
+       k=$(dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'); \
+       [ -n \"$k\" ] || exit 0; \
+       [ \"$k\" = 49 ] && break; \
+     done; \
+     printf '\\033[2J\\033[HANSWERED-OK\\n'; exec cat";
+
+/// ⚠⚠⚠ **THE ANSWERING CONTRACT, END TO END THROUGH A REAL DAEMON** — the wire, the shipping
+/// detector, a real pseudoterminal, and a run that answers its peer and goes on to converge.
+///
+/// # What this proves that the unit gates cannot
+///
+/// `sprag-plugin`'s gates drive the barrier directly and `sprag-host`'s drive the parser and the
+/// renderer, each with the other side supplied. Nothing joined them: **no test had ever sent
+/// `may_answer` over the wire.** That matters more here than for an ordinary argument, because this
+/// wire is measured to SWALLOW an undeclared key and report success
+/// (`an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused`) — so a
+/// mis-spelled key, a parser never reached, or a spec field never threaded would all look exactly
+/// like a run that simply chose not to answer.
+///
+/// The peer here is claimed by the daemon's OWN agent detector, and the question is parsed by the
+/// shipping `sprag_detect::question` off the pane's real screen. Nothing in the path is a double.
+///
+/// ⚠ THE RUN IS SUBMITTED ONLY ONCE THE DAEMON REPORTS THE PANE BLOCKED. The detector has a settle
+/// window, so a run started before it has answered would inject its stimulus into a pane the daemon
+/// does not yet call blocked — a race in the FIXTURE that would read as the product failing to
+/// answer.
+///
+/// ⚠ CONTROL: the same run, same pane, same dialog, with NO `may_answer` — it must end `blocked`
+/// having answered nothing. Without it this gate would pass against a product that answers every
+/// dialog it meets, which is the behaviour the whole contract exists to prevent.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn a_run_given_consent_answers_its_peer_over_the_wire_and_one_without_it_does_not() {
+    let sock = socket_path();
+    let state = std::env::temp_dir().join(format!(
+        "sprag-consent-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id(),
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let guard = DaemonGuard {
+        sock: sock.clone(),
+        state: state.clone(),
+    };
+    spawn_daemon(&sock, &state);
+    assert!(
+        wait_for(Duration::from_secs(10), || sprag(&sock, &["ls"]).ok),
+        "the daemon never started serving",
+    );
+    let mut conn = HostConn::connect(&sock, Duration::from_secs(5)).expect("connect");
+
+    // Each half gets its OWN session and pane, so the control cannot be answered by the subject's
+    // run and the two dialogs cannot be confused for one another.
+    /// A fresh session whose pane runs [`ASKING_CLAUDE`], returned once the DAEMON'S OWN detector
+    /// calls it blocked.
+    fn blocked_pane(conn: &mut HostConn, session: &str) -> u64 {
+        conn.call(
+            "scene/invoke",
+            json!({
+                "path": mux_action_path(NEW_SESSION_ACTION),
+                "args": { "name": session, "cmd": ["sh", "-c", ASKING_CLAUDE] },
+            }),
+        )
+        .expect("new_session answers");
+        let pane = conn
+            .call(
+                "scene/query",
+                json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+            )
+            .expect("the pane list answers")
+            .as_array()
+            .and_then(|panes| panes.first().cloned())
+            .and_then(|pane| pane["id"].as_u64())
+            .expect("the session's pane");
+        // ⚠ THE BEHAVIOURAL TRIGGER: wait for the DAEMON to say the pane is blocked, not for a
+        // clock. The detector settles, and a run submitted before it has would be racing.
+        let ready = wait_for(Duration::from_secs(20), || {
+            conn.call(
+                "scene/query",
+                json!({ "session": session, "path": mux_action_path(PANES_SLOT) }),
+            )
+            .ok()
+            .and_then(|panes| panes.as_array().and_then(|list| list.first().cloned()))
+            .is_some_and(|entry| entry["agent"]["state"] == "blocked")
+        });
+        assert!(
+            ready,
+            "the daemon's own detector must call this pane blocked, or the gate is about nothing",
+        );
+        pane
+    }
+
+    /// One orchestrator run over the wire, with or without a consent, waited out and answered as
+    /// its `runs` entry.
+    fn drive(conn: &mut HostConn, session: &str, pane: u64, consent: Option<Value>) -> Value {
+        let mut args = json!({
+            "plugin": "orchestrator",
+            "pane": pane,
+            "stimulus": "ping",
+            "sentinel": "ANSWERED-OK",
+            "guardrails": { "max_iterations": 4, "max_seconds": 60 },
+        });
+        if let Some(consent) = consent {
+            args[sprag_plugin::Consent::WIRE_KEY] = consent;
+        }
+        conn.call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+                "args": args,
+            }),
+        )
+        .expect("the run is submitted");
+        let mut last = Value::Null;
+        let finished = wait_for(Duration::from_secs(90), || {
+            last = conn
+                .call(
+                    "scene/query",
+                    json!({
+                        "session": session,
+                        "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUNS_SLOT),
+                    }),
+                )
+                .expect("the runs slot answers");
+            last.as_array()
+                .and_then(|runs| runs.last().cloned())
+                .is_some_and(|run| run["state"]["status"] == "done")
+        });
+        assert!(finished, "the run never finished: {last}");
+        last.as_array()
+            .and_then(|runs| runs.last().cloned())
+            .expect("the run's entry")
+    }
+
+    // ── THE SUBJECT: a consent naming this question and this option.
+    let pane = blocked_pane(&mut conn, "answered");
+    let outcome = drive(
+        &mut conn,
+        "answered",
+        pane,
+        Some(json!({
+            sprag_plugin::Consent::ASKED_KEY: "Do you want to proceed?",
+            sprag_plugin::Consent::ANSWER_KEY: "Yes",
+        })),
+    )["state"]["outcome"]
+        .clone();
+    assert_eq!(
+        outcome["state"], "converged",
+        "⚠⚠⚠ the run answered its peer's dialog and went on to reach its sentinel — a
+         `may_answer` the daemon swallowed would leave this `blocked`: {outcome}",
+    );
+    assert_eq!(
+        outcome[sprag_host::plugins::RUN_ANSWERED_KEY],
+        1,
+        "and the outcome says a decision was taken on the caller's behalf: {outcome}",
+    );
+    assert!(
+        outcome.get(sprag_host::plugins::RUN_ASKING_KEY).is_none(),
+        "a converged run has no unanswered question: {outcome}",
+    );
+
+    // ── THE CONTROL: the same everything, minus the consent.
+    let pane = blocked_pane(&mut conn, "unanswered");
+    let outcome = drive(&mut conn, "unanswered", pane, None)["state"]["outcome"].clone();
+    assert_eq!(
+        outcome["state"], "blocked",
+        "⚠⚠⚠ WITHOUT a consent the run must answer nothing at all. This is the control that stops \
+         the gate above from passing against a product that answers every dialog it meets: \
+         {outcome}",
+    );
+    assert_eq!(
+        outcome[sprag_host::plugins::RUN_ANSWERED_KEY],
+        0,
+        "and it says so: {outcome}",
+    );
+    let asking = &outcome[sprag_host::plugins::RUN_ASKING_KEY];
+    assert_eq!(
+        asking[sprag_host::plugins::RUN_WHY_KEY],
+        "no_consent",
+        "with the reason a caller can act on: {outcome}",
+    );
+    assert_eq!(
+        asking[sprag_host::plugins::RUN_ASKED_KEY][0],
+        "Do you want to proceed?",
+        "and the question the shipping parser read off the pane's own screen: {outcome}",
+    );
+    assert_eq!(
+        asking[sprag_host::plugins::RUN_CHOICES_KEY][0]["selected"],
+        true,
+        "and where a bare Enter would land: {outcome}",
+    );
+    drop(conn);
+    drop(guard);
+}

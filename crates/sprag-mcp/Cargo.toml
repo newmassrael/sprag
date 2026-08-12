@@ -36,3 +36,11 @@ tracing-subscriber = { workspace = true }
 # A daemon OLDER than this build — the agent surface's skew gate drives one that serves no address
 # and knows no action. DEV-ONLY; four test files had each written their own until R324.
 sprag-peer = { workspace = true }
+# DEV-ONLY, and the reason is a gate's honesty rather than a feature. This mouth renders a run's
+# answer, so its gate must drive the DAEMON's renderer over a real `Outcome` — a fixture that spelled
+# the answer JSON by hand would pass while the two drifted, which is the two-readers defect this
+# workspace keeps paying for. Nothing here reaches the runtime binary.
+sprag-plugin = { workspace = true }
+# Its companion: a blocked run's outcome carries a `sprag_detect::Question`, so building one needs
+# the type. Same dev-only reasoning.
+sprag-detect = { workspace = true }

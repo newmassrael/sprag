@@ -7128,33 +7128,15 @@ mod tests {
             // ⚠⚠ A RUN'S OUTCOME WORD, read through `outcome_word` — the same renderer the wire and
             // the durable run log both use, so this pin is over the words a peer really meets.
             //
-            // ⚠ The variant list is written out because `OutcomeState` CARRIES DATA and so has no
-            // `ALL` to walk, which is the one place this pin is weaker than the rest of it: a sixth
-            // variant has to be added here by hand. That is the residue, stated — and it is still
-            // strictly better than the nothing this had before, which is how a fifth word reached
-            // the wire with every ratchet green.
+            // ⚠⚠ R366: the LIST, not five variants written out here. This walked a hand-written
+            // array because `OutcomeState` carries data and had no `ALL` — the residue R365 stated,
+            // and the shape by which a fifth word reached the wire with every ratchet green. The
+            // type publishes its own words now and a gate beside it holds them to `wire_str`, so a
+            // sixth outcome cannot be spelled without being published or published without a word.
             .chain(
-                [
-                    sprag_plugin::OutcomeState::Converged,
-                    sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Iterations),
-                    sprag_plugin::OutcomeState::Failed,
-                    sprag_plugin::OutcomeState::Cancelled,
-                    sprag_plugin::OutcomeState::Blocked(None),
-                ]
-                .into_iter()
-                .map(|state| {
-                    format!(
-                        "outcome:{}",
-                        crate::plugins::outcome_word(&sprag_plugin::Outcome {
-                            state,
-                            iterations: 0,
-                            cost: None,
-                            failure: None,
-                            stopped: None,
-                            answered: 0,
-                        })
-                    )
-                }),
+                sprag_plugin::OutcomeState::WIRE_WORDS
+                    .iter()
+                    .map(|word| format!("outcome:{word}")),
             )
             // ⚠⚠ A STEP'S VERDICT, joined through the type's own published list. `Verdict` carries
             // data too, so its list is hand-ordered where `Refusal`'s is projected — and the

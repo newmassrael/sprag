@@ -2160,6 +2160,81 @@ fn render_journal(run: &Value) -> String {
     out
 }
 
+/// HOW MANY OF ITS PEER'S QUESTIONS a run answered on the caller's consent, as a sentence — empty
+/// when it answered none.
+///
+/// ⚠⚠ Printed for a RUNNING run as well as a finished one. An agent polling a loop it started can
+/// still cancel it; an approval it only learns about in the outcome is one it could not have
+/// stopped. Same key both times, which is what `run_to_json` publishes it for.
+fn render_answered(state: &Value) -> String {
+    match state[sprag_host::plugins::RUN_ANSWERED_KEY]
+        .as_u64()
+        .unwrap_or_default()
+    {
+        0 => String::new(),
+        1 => " It answered 1 of its peer's questions under your consent.".to_owned(),
+        many => format!(" It answered {many} of its peer's questions under your consent."),
+    }
+}
+
+/// WHAT THE PEER IS ASKING and why the run did not answer it, for a run that ended `blocked`.
+///
+/// # ⚠⚠⚠ The word alone is not actionable, and this mouth exists to be acted on
+///
+/// `blocked` tells an agent that its loop stopped and nothing else. What it needs is the QUESTION
+/// (so it can decide), the OPTIONS with the one a bare Enter would take (so it knows what doing
+/// nothing means), and the REASON its consent did not fire (so it can tell a typo from a dialog it
+/// never pictured). Every one of those was parsed by the daemon and thrown away here.
+///
+/// ⚠ **It does NOT tell the agent to type the digit itself.** An agent that answered a dialog with
+/// `send_keys` would be routing around the whole consent contract — the check that exactly one
+/// option carries the authorised words, and the rule that no Enter is sent unjustified. The two
+/// honest next moves are to name a `may_answer` or to hand the pane to a person, and those are what
+/// this says.
+fn render_asking(outcome: &Value) -> String {
+    let asking = &outcome[sprag_host::plugins::RUN_ASKING_KEY];
+    let Some(why) = asking[sprag_host::plugins::RUN_WHY_KEY].as_str() else {
+        return String::new();
+    };
+    // ⚠ Through the host's projection, so both mouths say the SAME sentence for the same word —
+    // and a reason this build does not know prints as its own word rather than as silence.
+    let sentence = sprag_host::plugins::refusal_sentence(why);
+    let mut said = format!("\nIts peer is asking, and {sentence}.");
+    for line in asking[sprag_host::plugins::RUN_ASKED_KEY]
+        .as_array()
+        .unwrap_or(&Vec::new())
+    {
+        said.push_str(&format!("\n  {}", line.as_str().unwrap_or_default()));
+    }
+    for choice in asking[sprag_host::plugins::RUN_CHOICES_KEY]
+        .as_array()
+        .unwrap_or(&Vec::new())
+    {
+        said.push_str(&format!(
+            "\n  {}. {}{}",
+            choice["number"].as_u64().unwrap_or_default(),
+            choice["label"].as_str().unwrap_or_default(),
+            if choice["selected"].as_bool().unwrap_or_default() {
+                "   <- a bare Enter takes this one"
+            } else {
+                ""
+            },
+        ));
+    }
+    if asking
+        .get(sprag_host::plugins::RUN_CHOICES_KEY)
+        .and_then(Value::as_array)
+        .is_some_and(|choices| !choices.is_empty())
+    {
+        said.push_str(
+            "\nTo let a run answer this, start it again with may_answer naming the question and \
+             the option in the agent's own words. Do NOT type the number yourself: that skips the \
+             check that exactly one option carries what you authorised.",
+        );
+    }
+    said
+}
+
 /// One run as an agent reads it.
 fn render_run(run: &Value) -> String {
     let id = run["id"].as_u64().unwrap_or_default();
@@ -2170,10 +2245,11 @@ fn render_run(run: &Value) -> String {
         // long run and sees the same numbers twice has learned it is stuck, and `still running`
         // could not say that. It also lets an agent see spend BEFORE the budget is gone.
         Some("running") => format!(
-            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.\n{}",
+            "Run {id} ({label}): still running — {} iterations, {} {} spent so far.{}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),
+            render_answered(state),
             render_journal(run),
         ),
         Some("done") => {
@@ -2182,7 +2258,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}\n{}{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}{}{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -2207,6 +2283,9 @@ fn render_run(run: &Value) -> String {
                 outcome[sprag_host::plugins::RUN_STOPPED_KEY]
                     .as_str()
                     .map_or_else(String::new, |stopped| format!(" {stopped}.")),
+                render_answered(outcome),
+                // ⚠⚠⚠ AND WHAT THE PEER IS ASKING — the fact a `blocked` run exists to deliver.
+                render_asking(outcome),
                 render_journal(run),
             )
         }
@@ -7263,6 +7342,174 @@ fn last_n_lines(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The measured permission dialog, as a blocked run carries it.
+    fn asked_dialog() -> sprag_detect::Question {
+        sprag_detect::Question {
+            asked: vec!["Do you want to proceed?".to_owned()],
+            choices: vec![
+                sprag_detect::Choice {
+                    number: 1,
+                    label: "Yes".to_owned(),
+                    selected: true,
+                },
+                sprag_detect::Choice {
+                    number: 2,
+                    label: "No, and tell me why".to_owned(),
+                    selected: false,
+                },
+            ],
+        }
+    }
+
+    /// A finished run's entry as `query("runs")` renders it — built by the DAEMON's own renderer
+    /// from a real [`sprag_plugin::Outcome`], never from hand-written JSON.
+    ///
+    /// ⚠ That is the point of the helper rather than an economy. A fixture that spelled the answer
+    /// shape itself would pass while the daemon published something else — the two-readers defect
+    /// this workspace keeps paying for, reintroduced inside the gate meant to catch it.
+    fn run_entry(outcome: &sprag_plugin::Outcome) -> Value {
+        serde_json::json!({
+            "id": 7,
+            "label": "orchestrator pane=1",
+            "state": {
+                "status": "done",
+                "outcome": sprag_host::plugins::outcome_to_json(outcome),
+                "output": Value::Null,
+            },
+        })
+    }
+
+    /// A run that stopped on its peer's question, refused for `why`.
+    fn blocked_run(why: sprag_plugin::Refusal, answered: u32) -> sprag_plugin::Outcome {
+        sprag_plugin::Outcome {
+            state: sprag_plugin::OutcomeState::Blocked(Some(match why {
+                sprag_plugin::Refusal::Unreadable => sprag_plugin::Unanswered::unreadable(),
+                other => sprag_plugin::Unanswered::refused(asked_dialog(), other),
+            })),
+            iterations: 2,
+            cost: Some(sprag_plugin::Cost::Bytes(14)),
+            failure: None,
+            stopped: None,
+            answered,
+        }
+    }
+
+    /// ⚠⚠⚠ **A BLOCKED RUN HANDS THE AGENT THE QUESTION AND THE TWO HONEST NEXT MOVES.**
+    ///
+    /// `blocked` on its own tells an agent that its loop stopped and nothing else — so it polls,
+    /// re-reads the pane, and re-derives a menu the daemon already parsed. What it needs is the
+    /// QUESTION, the OPTIONS with the one a bare Enter would take, and the REASON its consent did
+    /// not fire, which is how it tells a typo in a needle from a dialog it never pictured.
+    ///
+    /// ⚠⚠ And it must NOT be told to type the digit itself. An agent answering with `send_keys`
+    /// routes around every check the consent contract exists for — that exactly one option carries
+    /// the authorised words, and that no Enter is sent unjustified. The two honest moves are
+    /// `may_answer` and a person, and this gate holds the mouth to saying so.
+    #[test]
+    fn a_blocked_run_tells_an_agent_what_its_peer_is_asking() {
+        let said = render_run(&run_entry(&blocked_run(
+            sprag_plugin::Refusal::NoConsent,
+            0,
+        )));
+        assert!(said.contains("blocked"), "{said}");
+        assert!(
+            said.contains("Do you want to proceed?"),
+            "⚠⚠⚠ the QUESTION, or the agent re-derives what this daemon already parsed: {said}",
+        );
+        assert!(
+            said.contains("1. Yes") && said.contains("2. No, and tell me why"),
+            "and every option in the peer's own words: {said}",
+        );
+        assert!(
+            said.contains("a bare Enter takes this one"),
+            "⚠⚠⚠ and which one doing nothing would take: {said}",
+        );
+        assert!(
+            said.contains("was given no consent"),
+            "⚠⚠ and WHY, as the sentence — the agent's next move depends on which reason: {said}",
+        );
+        assert!(
+            said.contains("may_answer"),
+            "⚠⚠ and the argument that lets a run answer it, named: {said}",
+        );
+        assert!(
+            said.contains("Do NOT type the number yourself"),
+            "⚠⚠⚠ and the move that must NOT be suggested, refused out loud. `send_keys` with the \
+             digit skips the whole consent check: {said}",
+        );
+    }
+
+    /// ⚠⚠ **EVERY REASON REACHES THE AGENT**, driven from the type's published list so a seventh
+    /// fails here until this mouth says it.
+    ///
+    /// ⚠ `unreadable` carries no menu, so it must NOT offer `may_answer` — no consent can name an
+    /// option a screen does not show, and telling an agent to write one would send it to fix
+    /// something that cannot help. That arm's remedy is a person, and the sentence says so.
+    #[test]
+    fn every_refusal_reaches_the_agent_with_the_move_that_fits_it() {
+        for word in sprag_plugin::Refusal::WIRE_WORDS {
+            let why = sprag_plugin::Refusal::parse(word).expect("published");
+            let said = render_run(&run_entry(&blocked_run(why, 0)));
+            assert!(
+                said.contains(&sprag_host::plugins::refusal_sentence(word)),
+                "{word:?} must reach the agent as its own sentence: {said}",
+            );
+            let unreadable = why == sprag_plugin::Refusal::Unreadable;
+            assert_eq!(
+                unreadable,
+                !said.contains("may_answer"),
+                "⚠⚠ only `unreadable` withholds the may_answer advice, because no consent can \
+                 name an option a screen does not show ({word:?}): {said}",
+            );
+            if unreadable {
+                assert!(
+                    said.contains("person"),
+                    "and its remedy is named instead: {said}",
+                );
+            }
+        }
+    }
+
+    /// ⚠⚠⚠ **AN AGENT SEES ITS OWN LOOP APPROVING THINGS WHILE IT CAN STILL CANCEL.**
+    ///
+    /// `cancel_run` exists, so an approval reported only in the outcome is one the agent had no
+    /// chance to stop. The running half is the one a renderer forgets.
+    #[test]
+    fn a_run_that_answered_for_an_agent_says_so_before_it_is_over() {
+        let running = serde_json::json!({
+            "id": 7,
+            "label": "orchestrator pane=1",
+            "state": {
+                "status": "running",
+                "iterations": 4,
+                "cost": 12,
+                "unit": "bytes",
+                sprag_host::plugins::RUN_ANSWERED_KEY: 2,
+            },
+        });
+        assert!(
+            render_run(&running).contains("answered 2 of its peer's questions under your consent"),
+            "⚠⚠⚠ mid-flight, while cancel_run is still an option: {}",
+            render_run(&running),
+        );
+        assert!(
+            render_run(&run_entry(&blocked_run(
+                sprag_plugin::Refusal::NotOffered,
+                1
+            )))
+            .contains("answered 1 of its peer's questions"),
+            "and in the outcome",
+        );
+        assert!(
+            !render_run(&run_entry(&blocked_run(
+                sprag_plugin::Refusal::NotOffered,
+                0
+            )))
+            .contains("under your consent"),
+            "⚠ and a run that answered nothing says nothing",
+        );
+    }
 
     /// **THE COMPLETENESS RATCHET: every subject an agent is TOLD about, it can READ.**
     ///
