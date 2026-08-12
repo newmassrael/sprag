@@ -61,7 +61,7 @@ use std::time::Duration;
 use sprag_terminal::{PaneId, RawOutput};
 
 use crate::access::{PaneAccess, PaneError, PaneLifecycle};
-use crate::completion::DoneWhen;
+use crate::completion::{Completion, DoneWhen};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::reply::parse_claude_json;
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited};
@@ -267,7 +267,7 @@ impl Plugin for Dialogue {
         // a second copy of the predicate — see [`mod@crate::completion`]. Here the rule is exactly
         // right and always will be: this plugin SPAWNS a one-shot CLI per turn and passes the
         // prompt as an argv argument, so the turn really is over when that process leaves.
-        let waited = DoneWhen::Exits.wait(panes, id, self.spec.timeout, run);
+        let waited = Completion::new(DoneWhen::Exits).wait(panes, id, self.spec.timeout, run);
 
         // If the RUN ended mid-turn — cancelled, or out of time — record nothing
         // (no junk partial turn) and return Continue with the spend committed so

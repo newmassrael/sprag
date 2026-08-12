@@ -25,18 +25,25 @@
 //!
 //! # ⚠ Why the orchestrator's rule is named here and not yet MOVED here
 //!
-//! The first two are the same predicate over the same evidence, so collapsing them is a rename and
+//! The first two are the same predicate over the same evidence, so collapsing them was a rename and
 //! nothing else. The third is not: *"the pane produced output that is not the echo"* needs context
 //! a turn has to carry — where this turn's output starts (a
 //! [`RowTrail`](crate::access::RowTrail) marked BEFORE the injection) and what was typed, so the
 //! terminal's echo of it can be discounted. [`Exits`](DoneWhen::Exits) needs neither.
 //!
-//! Whether that context belongs in each variant's PAYLOAD or in a uniform per-turn evaluator (the
-//! shape [`Readiness`](crate::readiness::Readiness) uses for its latched state) is a decision that
-//! should not be made from ONE example. The next variant settles it: an agent-at-rest rule needs a
-//! NAME and no baseline, and a marker rule needs a marker and no baseline — two more shapes, and
-//! then the right signature is a reading rather than a guess. Moving the orchestrator first would
-//! fix the API from the single case least like the others.
+//! Whether that context belongs in each variant's PAYLOAD or in a uniform per-turn evaluator was a
+//! decision deliberately left until a second context-needing rule existed, so the API would be read
+//! off more than its least typical case. [`Settles`](DoneWhen::Settles) is that second rule and it
+//! ANSWERED: it needs to remember the peer's state at the turn's start, which is not a payload the
+//! caller can supply — so the evaluator is [`Completion`], armed by
+//! [`begin`](Completion::begin), exactly the shape [`Readiness`](crate::readiness::Readiness) uses
+//! at the other end.
+//!
+//! ⚠ The orchestrator's rule now has somewhere to go: its baseline is armed at the same moment
+//! `begin` is, so it becomes a third variant holding a [`RowTrail`](crate::access::RowTrail) rather
+//! than a fourth spelling. It has not moved yet because that is a behaviour change in the loop
+//! whose echo-discounting rule is the subtlest here, and it is owed its own gate rather than a ride
+//! on this one.
 //!
 //! # ⚠⚠ Why the hard-coded rule is not merely untidy
 //!
@@ -50,14 +57,17 @@
 //! [`ReadyWhen::Settles`](crate::readiness::ReadyWhen::Settles) reads the peer's own
 //! [`AgentObservation`](crate::access::AgentObservation) — *"this agent is at rest, waiting for
 //! input"* — carrying an [`Authority`](crate::access::Authority) that says how much the reading is
-//! worth. **The evidence exists, it is published, and the end of the turn does not consult it.**
-//! That is the variant this vocabulary is being opened for; it is deliberately NOT in this first
-//! commit, because a completion rule that fires EARLY truncates a model's answer and publishes the
-//! fragment as the reply — the exact failure class this crate has paid for four times — and it has
-//! to arrive with the gates that pin it.
+//! worth. **The evidence existed, it was published, and the end of the turn did not consult it.**
+//! [`DoneWhen::Settles`] is that consultation.
+//!
+//! ⚠⚠ It arrives with its gates and not after them, because a completion rule that fires EARLY
+//! truncates a model's answer and publishes the fragment as the reply — the exact failure class
+//! this crate has paid for four times, reached from a new direction. The first gate written for it
+//! is the one that holds a peer's PRE-TURN rest to not being an answer.
 
 use std::time::Duration;
 
+use sprag_detect::AgentState;
 use sprag_terminal::PaneId;
 
 use crate::access::PaneAccess;
@@ -65,48 +75,135 @@ use crate::run::{RunContext, Waited, poll_until};
 
 /// WHICH EVIDENCE says a peer's turn is over.
 ///
-/// One variant today, and that is the honest state of the product rather than an abbreviation: it
-/// is the rule the two plugins below were already applying, now written once. See the module doc
-/// for the variants this is being opened for and why they are not here yet.
-///
-/// ⚠ NOT on the wire and NOT on any spec, because **no caller can choose yet**. Publishing a
-/// vocabulary of one would invite clients to depend on a set whose whole purpose is to grow, and
-/// this crate's rule is that a published choice is a choice a caller actually has.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Two kinds, and they are not degrees of one another: a ONE-SHOT tool's turn ends when the process
+/// does, and a LONG-LIVED peer's ends when it goes back to waiting. Nothing about a pane says which
+/// it is — **only the caller knows**, which is [`ReadyWhen`](crate::readiness::ReadyWhen)'s reason
+/// for existing, met at the other end of the same turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DoneWhen {
     /// Over once the pane's CHILD HAS EXITED — the pseudoterminal reached end-of-file.
     ///
     /// The right rule for a ONE-SHOT tool (`claude -p`), which answers and leaves: its exit is
     /// what makes the capture complete, so nothing on screen can be a half-written reply.
     ///
-    /// ⚠ It is the WRONG rule for a long-lived peer, which never exits — see the module doc. It
-    /// stays the only one until the alternative can be gated, because *waits too long* is the safe
-    /// direction and *stops early* publishes a fragment as a model's answer.
+    /// ⚠ It is the WRONG rule for a long-lived peer, which never exits — see the module doc. For
+    /// that, name the agent and use [`Settles`](Self::Settles).
     Exits,
+    /// Over once the AGENT named here is at rest again, **having been seen to move first**.
+    ///
+    /// The rule for a long-lived interactive peer — an agent CLI that answers and goes on waiting.
+    /// It is the same observation [`ReadyWhen::Settles`](crate::readiness::ReadyWhen::Settles)
+    /// clears the barrier on, asked at the other end of the turn.
+    ///
+    /// # ⚠⚠⚠ Why stillness alone is NOT the answer
+    ///
+    /// A peer that is waiting for a prompt is *at rest*. Ask *"is it at rest?"* right after typing
+    /// one and the honest answer is YES — it has not started yet. A rule built on the state alone
+    /// therefore reports every turn complete in milliseconds, and what gets captured and published
+    /// AS THE MODEL'S ANSWER is the screen before the model wrote a word.
+    ///
+    /// That is [`ReadyWhen::Prints`](crate::readiness::ReadyWhen::Prints)' hazard exactly — a
+    /// condition satisfied by what was already true when the turn began — and it is answered the
+    /// same way: by ARMING. [`AgentObservation::seq`](crate::access::AgentObservation::seq) counts
+    /// published changes and never decreases, so this contract holds only once the pane's state has
+    /// MOVED past what it was when the turn started. Its own doc says it is for exactly this
+    /// comparison.
+    ///
+    /// # ⚠ What it deliberately does NOT complete on
+    ///
+    /// * [`AgentState::Blocked`] — the peer stopped because it ASKED something. The turn did end,
+    ///   but *"here is your answer"* and *"answer my question first"* are opposite instructions,
+    ///   and a loop that read them the same way would submit its next stimulus INTO a menu. Waiting
+    ///   the timeout out is the honest answer until a run can report the question, which is a
+    ///   decision about the step vocabulary and not about this rule.
+    /// * An observation naming a DIFFERENT agent, or naming none — that is not evidence about the
+    ///   peer this turn was addressed to.
+    /// * A host with no supervisor at all, which simply never satisfies this and times out. Every
+    ///   one of these fails in the direction that WAITS, because the other direction publishes a
+    ///   fragment as a model's reply.
+    Settles(String),
 }
 
-impl DoneWhen {
-    /// Whether `pane` satisfies this contract RIGHT NOW.
+/// The per-turn evaluator of a [`DoneWhen`] — the contract plus whatever the turn has to REMEMBER
+/// for it.
+///
+/// Mirrors [`Readiness`](crate::readiness::Readiness), which exists for the same reason at the
+/// other end: some conditions are not predicates over the present. [`DoneWhen::Settles`] has to
+/// know what the peer's state was when the turn began, and a bare `match` on the enum could not.
+///
+/// ⚠ ONE door, even though [`DoneWhen::Exits`] needs none of this. Two entry points — a plain
+/// predicate for the stateless rules and an evaluator for the rest — would be two ways to ask one
+/// question, which is the shape this crate keeps finding defects in; and a caller that reached for
+/// the cheap door with a rule that needed the other would get a contract that is silently never
+/// satisfied.
+#[derive(Clone, Debug)]
+pub struct Completion {
+    /// Which evidence ends the turn.
+    when: DoneWhen,
+    /// The pane's agent-state [`seq`](crate::access::AgentObservation::seq) when this turn BEGAN.
     ///
-    /// ⚠ An UNKNOWN pane counts as over. A rule that answered *"not yet"* for a pane that is not
-    /// there would spin until the timeout on a question that can never be answered — and both
-    /// plugins below already spelled this `unwrap_or(true)`, which is the behaviour this preserves
-    /// exactly.
-    fn satisfied(self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
-        match self {
-            Self::Exits => panes.pane_eof(pane).unwrap_or(true),
+    /// `None` until [`begin`](Self::begin) arms it, and `None` after it where the host has no
+    /// supervisor to ask — which is why [`DoneWhen::Settles`] treats an unarmed evaluator as never
+    /// satisfied rather than as immediately satisfied.
+    began_at: Option<u64>,
+}
+
+impl Completion {
+    /// An evaluator for `when`, not yet armed.
+    #[must_use]
+    pub const fn new(when: DoneWhen) -> Self {
+        Self {
+            when,
+            began_at: None,
+        }
+    }
+
+    /// Arm it — **called where the turn BEGINS, before a byte is injected**.
+    ///
+    /// ⚠ The ordering is the whole guarantee. Armed after the injection, the peer may already have
+    /// started and stopped, and the change this looks for would be one the turn missed; armed
+    /// before, the comparison is against the state the turn was addressed to.
+    pub fn begin(&mut self, panes: &dyn PaneAccess, pane: PaneId) {
+        self.began_at = panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(pane))
+            .map(|seen| seen.seq);
+    }
+
+    /// Whether `pane` satisfies this contract RIGHT NOW.
+    fn satisfied(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
+        match &self.when {
+            // ⚠ An UNKNOWN pane counts as over. A rule that answered "not yet" for a pane that is
+            // not there would spin to the timeout on a question that can never be answered — and
+            // both plugins that use this already spelled it `unwrap_or(true)`, which is the
+            // behaviour this preserves exactly.
+            DoneWhen::Exits => panes.pane_eof(pane).unwrap_or(true),
+            DoneWhen::Settles(agent) => {
+                let Some(began_at) = self.began_at else {
+                    return false; // never armed, or no supervisor to arm from — see `begin`.
+                };
+                panes
+                    .supervision()
+                    .and_then(|supervisor| supervisor.pane_agent_state(pane))
+                    .is_some_and(|seen| {
+                        // ⚠⚠ ALL THREE, and the last one is what stops a peer's PRE-TURN rest from
+                        // reading as its answer. See the variant's doc.
+                        seen.state == AgentState::Idle
+                            && seen.agent.as_deref() == Some(agent.as_str())
+                            && seen.seq > began_at
+                    })
+            }
         }
     }
 
     /// Wait for this contract to be met, bounded by `within` and by the RUN's own deadline.
     ///
-    /// [`Waited::TimedOut`] is *the contract was not met in `within`* — for [`Exits`](Self::Exits)
-    /// that means the peer never finished, and the caller decides what a partial capture is worth.
-    /// [`Waited::Stopped`] is THE RUN ending underneath, which is not this wait's business to
-    /// interpret: every caller here hands that back to the driver's loop top, because only it
-    /// knows whether it was a cancel or the duration ceiling.
+    /// [`Waited::TimedOut`] is *the contract was not met in `within`* — the caller decides what a
+    /// partial capture is worth. [`Waited::Stopped`] is THE RUN ending underneath, which is not
+    /// this wait's business to interpret: every caller here hands that back to the driver's loop
+    /// top, because only it knows whether it was a cancel or the duration ceiling.
     pub fn wait(
-        self,
+        &self,
         panes: &dyn PaneAccess,
         pane: PaneId,
         within: Duration,
@@ -144,13 +241,167 @@ mod tests {
     /// would be a constant, and a constant is not evidence — the shape `PaneEcho`'s gate is built
     /// on, applied here.
     ///
+    /// A pane whose agent state this test DRIVES, plus a handle to move it — the question here is
+    /// what the contract does with an observation, not how one is derived.
+    fn supervised(state: AgentState, seq: u64) -> (WorkspacePaneAccess, PaneId, Reported) {
+        let (access, pane) = sh_access("exec cat", 20, 4);
+        let reported: Reported = Arc::new(Mutex::new((state, seq)));
+        let source = {
+            let reported = Arc::clone(&reported);
+            Arc::new(move |_id: PaneId| {
+                let (state, seq) = *reported.lock().expect("the reported mutex");
+                Some(crate::access::AgentObservation {
+                    state,
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "test".to_string(),
+                    },
+                    seq,
+                    asking: None,
+                })
+            })
+        };
+        (access.with_agent_state(Some(source)), pane, reported)
+    }
+
+    /// What a test moves the supervised pane's state with: the state, and its published `seq`.
+    type Reported = Arc<Mutex<(AgentState, u64)>>;
+
+    /// ⚠⚠⚠ **A PEER'S REST FROM BEFORE THE TURN IS NOT ITS ANSWER** — the failure this rule would
+    /// otherwise introduce, and the reason it was gated before it was wired to anything.
+    ///
+    /// An interactive agent waiting for a prompt is AT REST. Ask *"is it at rest?"* the instant
+    /// after typing one and the honest answer is yes: it has not started. A contract built on the
+    /// state alone therefore calls every turn complete in milliseconds, and the capture published
+    /// **as the model's answer** is the screen from before the model wrote a word — this crate's
+    /// most expensive failure class, arrived at from a new direction.
+    ///
+    /// So the peer is left EXACTLY as a real one is at that moment — `Idle`, named, and not having
+    /// moved — and the contract must refuse it.
+    #[test]
+    fn a_peer_that_was_already_at_rest_has_not_answered_this_turn() {
+        let (access, pane, _reported) = supervised(AgentState::Idle, 7);
+        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        done.begin(&access, pane);
+
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_millis(200),
+                &RunContext::uncancellable(),
+            ),
+            Waited::TimedOut,
+            "⚠⚠⚠ the peer is at rest and named, and it has NOT answered — it never started. A \
+             contract satisfied here captures the screen from before the model wrote a word and \
+             publishes it as the model's reply.",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠ **AND IT DOES COMPLETE WHEN THE PEER ACTUALLY ANSWERS** — the other half, without which
+    /// the gate above is satisfied by a rule that refuses everything.
+    ///
+    /// The peer is working when the turn arms, then goes to rest with a fresh `seq`, which is what
+    /// a real agent's turn looks like from the supervisor's side.
+    #[test]
+    fn a_turn_is_over_when_the_peer_it_addressed_comes_back_to_rest() {
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        done.begin(&access, pane);
+
+        // The peer answers and goes quiet — a published change, which is what `seq` counts.
+        *reported.lock().expect("the reported mutex") = (AgentState::Idle, 8);
+
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_secs(5),
+                &RunContext::uncancellable(),
+            ),
+            Waited::Ready,
+            "a peer that worked and came back to rest has finished its turn — and this is the \
+             evidence the end of a turn never consulted, while the START of one has read it since \
+             R359b",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠ **A PEER STILL WORKING DOES NOT END THE TURN, even though its `seq` has moved.**
+    ///
+    /// The arming comparison alone is not enough: a state that CHANGED is not a state at REST, and
+    /// an agent prints, calls a tool and thinks its way through several published changes before
+    /// it answers. Both halves are required, and this is the half the `seq` test cannot cover.
+    #[test]
+    fn a_peer_that_is_still_working_has_not_finished_however_much_it_has_moved() {
+        let (access, pane, reported) = supervised(AgentState::Idle, 7);
+        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        done.begin(&access, pane);
+
+        // It started, and has been busy through several published changes.
+        *reported.lock().expect("the reported mutex") = (AgentState::Working, 11);
+
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_millis(200),
+                &RunContext::uncancellable(),
+            ),
+            Waited::TimedOut,
+            "a peer mid-answer is not a peer that answered — capturing here truncates it",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠ **AN OBSERVATION ABOUT A DIFFERENT AGENT IS NOT EVIDENCE ABOUT THIS ONE**, and a host
+    /// with no supervisor at all never satisfies this rather than satisfying it vacuously.
+    ///
+    /// Both are the same discipline: every way this contract can fail to KNOW leaves it waiting,
+    /// because the other direction publishes a fragment as a model's answer.
+    #[test]
+    fn a_contract_that_cannot_know_waits_rather_than_guessing() {
+        let (access, pane, reported) = supervised(AgentState::Working, 7);
+        let mut done = Completion::new(DoneWhen::Settles("codex".to_string()));
+        done.begin(&access, pane);
+        *reported.lock().expect("the reported mutex") = (AgentState::Idle, 8);
+        assert_eq!(
+            done.wait(
+                &access,
+                pane,
+                Duration::from_millis(200),
+                &RunContext::uncancellable(),
+            ),
+            Waited::TimedOut,
+            "the pane's agent is `claude`; nothing here says what `codex` did",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        // No supervisor at all: the evaluator cannot even ARM, and must not read that as done.
+        let (bare, pane) = sh_access("exec cat", 20, 4);
+        let mut done = Completion::new(DoneWhen::Settles("claude".to_string()));
+        done.begin(&bare, pane);
+        assert_eq!(
+            done.wait(
+                &bare,
+                pane,
+                Duration::from_millis(200),
+                &RunContext::uncancellable(),
+            ),
+            Waited::TimedOut,
+            "a host that cannot see agents must not report every turn instantly complete",
+        );
+        bare.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// The SUBJECT is a child that exits on its own; the CONTROL is `cat`, which holds its
     /// pseudoterminal open forever and is exactly the long-lived peer the module doc is about.
     #[test]
     fn a_turn_is_over_when_its_one_shot_peer_has_exited_and_not_before() {
         let (ended, pane) = sh_access("exit 0", 20, 4);
         assert_eq!(
-            DoneWhen::Exits.wait(
+            Completion::new(DoneWhen::Exits).wait(
                 &ended,
                 pane,
                 Duration::from_secs(10),
@@ -163,7 +414,7 @@ mod tests {
 
         let (running, pane) = sh_access("exec cat", 20, 4);
         assert_eq!(
-            DoneWhen::Exits.wait(
+            Completion::new(DoneWhen::Exits).wait(
                 &running,
                 pane,
                 Duration::from_millis(200),

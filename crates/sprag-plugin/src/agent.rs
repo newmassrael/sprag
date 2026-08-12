@@ -35,7 +35,7 @@ use sprag_input::Modifiers;
 use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
-use crate::completion::DoneWhen;
+use crate::completion::{Completion, DoneWhen};
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
@@ -64,6 +64,23 @@ pub struct AgentSpec {
     /// Overall bound on the reply wait. On timeout the agent converges with
     /// whatever it captured (possibly nothing) rather than hanging.
     pub timeout: Duration,
+    /// WHAT MAKES THE TURN OVER — see [`DoneWhen`]. Defaults to [`DoneWhen::Exits`], which is what
+    /// this adapter did unconditionally before the contract existed.
+    ///
+    /// # ⚠⚠ Why this had to become the caller's
+    ///
+    /// *"The child exited"* is a ONE-SHOT tool's completion, and it was the only rule there was. A
+    /// long-lived peer — an agent CLI that answers and goes on waiting, which is the whole class
+    /// [`shows_the_prompt`](Self::shows_the_prompt) and
+    /// [`crate::readiness::ReadyWhen::Settles`] exist for — never exits, so its
+    /// every turn ran [`timeout`](Self::timeout) out in full and captured whatever was on screen
+    /// when it did. Two minutes per turn, by default, and the reply was a snapshot rather than an
+    /// answer.
+    ///
+    /// ⚠ The DEFAULT is deliberately unchanged. Which kind of peer a pane holds is not visible
+    /// from here, and a default that re-answered every existing call silently is the failure
+    /// `ready_when`'s own shape change exists to prevent.
+    pub done_when: DoneWhen,
     /// What the pane must SHOW before the prompt is injected — see [`Readiness`].
     /// `None` prompts immediately, which is right for a pane already running the
     /// tool.
@@ -125,6 +142,7 @@ impl AgentSpec {
             prompt: prompt.into(),
             eof: true,
             timeout: DEFAULT_REPLY_TIMEOUT,
+            done_when: DoneWhen::Exits,
             ready_when: None,
             ready_within: None,
             // The write, not the delivery: a one-shot peer renders nothing, and this default is
@@ -238,6 +256,8 @@ pub struct Agent {
     response: Option<String>,
     /// The barrier the pane must clear before it is prompted — see [`Readiness`].
     ready: Readiness,
+    /// What makes this turn OVER, armed at the turn's start — see [`Completion`].
+    done: Completion,
 }
 
 impl Agent {
@@ -246,6 +266,7 @@ impl Agent {
     pub fn new(pane: PaneId, spec: AgentSpec) -> Self {
         Self {
             ready: Readiness::new(spec.ready_when.clone(), spec.ready_within),
+            done: Completion::new(spec.done_when.clone()),
             pane,
             spec,
             response: None,
@@ -357,12 +378,12 @@ impl Agent {
     /// Wait (bounded by `timeout`, cancellable) for this turn's completion contract —
     /// [`DoneWhen::Exits`], the pane's child exiting, which is what makes its full reply complete.
     ///
-    /// ⚠ Through [`DoneWhen`] rather than a `pane_eof` poll spelled here, because
-    /// [`Dialogue`](crate::dialogue::Dialogue) spelled the IDENTICAL rule in its own module with
-    /// nothing comparing the two. See [`mod@crate::completion`] for what a second kind of evidence
-    /// would buy and why this is still the only one.
+    /// ⚠ Through the caller's [`DoneWhen`] rather than a `pane_eof` poll spelled here. The rule
+    /// was hard-coded to *the child exits*, which is a ONE-SHOT tool's completion — a long-lived
+    /// peer never exits, so every one of its turns ran the full timeout out. See
+    /// [`mod@crate::completion`].
     fn await_reply(&self, panes: &dyn PaneAccess, run: &RunContext) -> Waited {
-        DoneWhen::Exits.wait(panes, self.pane, self.spec.timeout, run)
+        self.done.wait(panes, self.pane, self.spec.timeout, run)
     }
 
     /// Capture what the pane has produced since `baseline` — the reply region — joined as the
@@ -528,6 +549,12 @@ impl Plugin for Agent {
         // Baseline before acting, so `capture` isolates this prompt's reply (and its cooked-mode
         // echo) from prior content.
         let baseline = self.mark(panes);
+        // ⚠⚠⚠ AND THE COMPLETION CONTRACT ARMS HERE, FOR THE SAME REASON AND IN THE SAME BREATH:
+        // before a byte goes in. A peer waiting for a prompt is AT REST, so a contract armed after
+        // the injection can be satisfied by the stillness the turn was addressed TO — and the
+        // capture published as the model's answer would be the screen from before it wrote a word.
+        // See [`Completion::begin`].
+        self.done.begin(panes, self.pane);
 
         // ⚠⚠⚠ DELIVERED, NOT WRITTEN — see [`Agent::deliver_prompt`]. This was a bare `inject` for
         // as long as this adapter has existed, which meant the one plugin whose output is published
