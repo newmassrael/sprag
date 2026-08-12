@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
-    Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput,
-    Reach, Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
+    Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneEcho, PaneId, PanePtyHandle,
+    RawOutput, Reach, Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
 };
 use sprag_vt::LinesSince;
 use sprag_vt::Screen;
@@ -207,6 +207,26 @@ pub enum PaneError {
         wanted: ReadyWhen::Shows(String::new()),
         instead: PaneDoing::Unknown,
     },
+    /// ⚠ A PROMPT WAS WRITTEN INTO A READY PANE AND THE PANE NEVER SHOWED IT, so nothing was
+    /// submitted and the peer was never asked.
+    ///
+    /// The sibling of [`NeverReady`](Self::NeverReady) one step later: that one is *the pane never
+    /// became the thing you wanted to talk to*, this one is *it was, and it did not take what you
+    /// said*. Both end with nothing asked, and the distinction is what a caller acts on — the first
+    /// is a wrong `ready_when`, the second is a peer swallowing its input.
+    ///
+    /// A separate refusal rather than an empty reply because **an empty reply is a sentence about
+    /// the model** and this is a sentence about the pane. A run that converged with nothing
+    /// captured told its caller the model had said nothing, which is the worst reading available:
+    /// it is the only one that is actionable and wrong.
+    NeverTook {
+        /// How many injections were written before giving up — [`Delivery::attempts`] worth.
+        ///
+        /// [`Delivery::attempts`]: crate::deliver::Delivery::attempts
+        attempts: u32,
+        /// How many bytes reached the pseudoterminal across all of them. Paid for, and gone.
+        written: u64,
+    } = { attempts: 0, written: 0 },
     /// ⚠ A STOP WAS NOT DELIVERED, so the pane's job is STILL RUNNING — and why.
     ///
     /// Distinct from every other arm here because the others describe something that did not
@@ -391,6 +411,14 @@ impl std::fmt::Display for PaneError {
                     wanted.describe(),
                 )?;
                 write!(f, "{instead}")
+            }
+            Self::NeverTook { attempts, written } => {
+                write!(
+                    f,
+                    "the pane never took the prompt: {attempts} injections put {written} bytes on \
+                     its pseudoterminal and none of them ever appeared on it, so nothing was \
+                     submitted and no reply is this run's"
+                )
             }
             Self::NotStopped(why) => {
                 write!(
@@ -702,6 +730,23 @@ pub trait PaneInputEcho {
     /// Bounded and lossy-UTF-8 by construction — it is compared against SCREEN TEXT, and the
     /// screen is text.
     fn pane_recent_input(&self, id: PaneId) -> Option<String>;
+
+    /// WHO will put that input back on the screen — the kernel's answer, not a guess.
+    ///
+    /// # ⚠⚠⚠ The question the trail above cannot answer
+    ///
+    /// The trail says *what was written*, so a reader can recognise its own bytes coming back. It
+    /// cannot say whether they will come back AT ALL, and that is the half every read-back
+    /// confirmation in this workspace was missing: with [`PaneEcho::ByTheTerminal`] the line
+    /// discipline paints the text the instant it reaches the device, **before the program has read
+    /// a byte and whether or not it ever does** — so finding it there is evidence about the
+    /// terminal. Measured: [`deliver`](crate::deliver::deliver) reported a CONFIRMED delivery into
+    /// a pane running `sleep 60`, in 20 ms.
+    ///
+    /// `None` where the pane is unknown, or where the platform's device will not answer. ⚠ It is
+    /// **not** the negative: reading it as *"the terminal does not echo"* manufactures exactly the
+    /// confidence this exists to withhold.
+    fn pane_echo(&self, id: PaneId) -> Option<PaneEcho>;
 }
 
 /// Which authority a pane's [`AgentState`] came from, and so how much it is worth.
@@ -1026,6 +1071,10 @@ impl PaneSupervision for WorkspacePaneAccess {
 impl PaneInputEcho for WorkspacePaneAccess {
     fn pane_recent_input(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.echo_trail())
+    }
+
+    fn pane_echo(&self, id: PaneId) -> Option<PaneEcho> {
+        self.handle(id)?.echo()
     }
 }
 

@@ -13,6 +13,27 @@
 //! is visible, and only THEN press Enter — is what this module is, written once so that every
 //! plugin author does not discover it separately.
 //!
+//! ## ⚠⚠⚠ And the screen is where the pty puts them too
+//!
+//! That prescription has a hole the paragraph above walks straight past. **A pseudoterminal echoes
+//! what is written to it**, so on a pane whose line discipline is echoing, the text appears the
+//! instant it reaches the device — before the program has read a byte, and whether or not it ever
+//! will. A read-back that finds it has learned that the TERMINAL is alive.
+//!
+//! Measured, over a pane running `sleep 60`: `Confirmed { attempts: 1 }`, in 20 ms. The peer had
+//! read nothing and was going to read nothing. **Every fixture in this module's own tests began
+//! with `stty raw -echo`**, which takes the kernel out of the picture, and that is why nothing here
+//! ever asked the question.
+//!
+//! So a delivery now says which evidence it has, by asking the kernel who echoes
+//! ([`PaneEcho`], through
+//! [`PaneInputEcho::pane_echo`](crate::access::PaneInputEcho::pane_echo)):
+//! [`Delivered::Confirmed`] where the program painted the text, and
+//! [`Delivered::OnScreenOnly`] where it is on the screen and nothing here can say who put it there.
+//! ⚠ The weaker answer is not a failure — for a cooked one-shot peer (`claude -p`) it is the best
+//! any observer of a screen can honestly claim, and the delivery still proceeds. What changed is
+//! that a caller is no longer told it was proved.
+//!
 //! ## Why this is not a method on `PaneAccess`
 //!
 //! It waits, so it is bounded, so it must be cancellable, so it needs the run-scoped
@@ -31,7 +52,7 @@
 
 use std::time::Duration;
 
-use sprag_terminal::PaneId;
+use sprag_terminal::{PaneEcho, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, Written};
 use crate::run::{POLL_INTERVAL, RunContext};
@@ -120,9 +141,36 @@ impl Default for Delivery {
 /// pane or an unencodable key IS an error and comes back as [`PaneError`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivered {
-    /// The text is on the pane's screen. `attempts` is how many injections it took, so a caller
-    /// that wants to know whether this pane swallows input can find out.
+    /// The text is on the pane's screen AND THE PROGRAM IS WHAT PUT IT THERE — the pane's echo is
+    /// off, so nothing but the program could have painted it. `attempts` is how many injections it
+    /// took, so a caller that wants to know whether this pane swallows input can find out.
     Confirmed { attempts: u32, written: Written },
+    /// The text is on the pane's screen and **nothing here can say the program is what put it
+    /// there**, so it is not evidence the program read a byte.
+    ///
+    /// # ⚠⚠⚠ Why this had to become a separate answer
+    ///
+    /// This module exists to not be fooled by a pseudoterminal, and it was: with the pane's echo
+    /// ON, the line discipline paints every byte the instant it reaches the device — before the
+    /// program has read one and whether or not it ever will. Measured, over a pane running
+    /// `sleep 60`: `Confirmed { attempts: 1 }`, in 20 ms, with the peer having read nothing and
+    /// about to read nothing. **Every fixture in this module's own tests disabled the echo**
+    /// (`stty raw -echo`), which is why nothing ever asked.
+    ///
+    /// `echo` carries the reading that decided it — [`PaneEcho::ByTheTerminal`] where the terminal
+    /// is what echoes, and `None` where the host offers no such capability or the platform's device
+    /// would not say. Two different reasons for one epistemic state, kept apart because only the
+    /// first also tells the caller their pane is in COOKED mode.
+    ///
+    /// ⚠ The submit ([`Delivery::then_press`]) is still sent for this answer, and deliberately: in
+    /// cooked mode the newline is what makes the line readable at all, so withholding it would
+    /// guarantee the non-delivery it is meant to prevent. The press is withheld only where the text
+    /// is demonstrably ABSENT — see [`Unconfirmed`](Self::Unconfirmed).
+    OnScreenOnly {
+        attempts: u32,
+        written: Written,
+        echo: Option<PaneEcho>,
+    },
     /// Every attempt was written and none of them ever appeared. The bytes went to the pty; the
     /// program behind it did not show them.
     Unconfirmed { attempts: u32, written: Written },
@@ -132,10 +180,35 @@ pub enum Delivered {
 }
 
 impl Delivered {
-    /// Whether the pane is known to be holding the text.
+    /// Whether the PROGRAM is known to be holding the text.
+    ///
+    /// ⚠ False for [`OnScreenOnly`](Self::OnScreenOnly), and that is the whole point of the
+    /// distinction: a caller that treats text on a cooked pane's screen as delivery is reading the
+    /// terminal's own echo as the program's acknowledgement.
     #[must_use]
     pub const fn is_confirmed(self) -> bool {
         matches!(self, Self::Confirmed { .. })
+    }
+
+    /// Whether the text is on the pane's screen at all, however it got there.
+    ///
+    /// The weaker question, named so that a caller that genuinely wants it does not reach for
+    /// [`is_confirmed`](Self::is_confirmed) and get the strong claim by accident.
+    #[must_use]
+    pub const fn is_on_screen(self) -> bool {
+        matches!(self, Self::Confirmed { .. } | Self::OnScreenOnly { .. })
+    }
+
+    /// How many injections were made — the number a caller reports when it has to say the pane
+    /// never took what it was given.
+    #[must_use]
+    pub const fn attempts(self) -> u32 {
+        match self {
+            Self::Confirmed { attempts, .. }
+            | Self::OnScreenOnly { attempts, .. }
+            | Self::Unconfirmed { attempts, .. }
+            | Self::Stopped { attempts, .. } => attempts,
+        }
     }
 
     /// How many bytes reached the pty across every attempt — what a plugin charges as its
@@ -143,6 +216,7 @@ impl Delivered {
     pub const fn written(self) -> Written {
         match self {
             Self::Confirmed { written, .. }
+            | Self::OnScreenOnly { written, .. }
             | Self::Unconfirmed { written, .. }
             | Self::Stopped { written, .. } => written,
         }
@@ -192,13 +266,22 @@ pub fn deliver(
                 });
             }
             Seen::Yes => {
-                // Only now: the prompt is holding the text, so a submit submits the text.
+                // Only now: the text is on the screen, so a submit submits the text rather than an
+                // empty line. Sent for BOTH on-screen answers — see `Delivered::OnScreenOnly`.
                 if !spec.then_press.is_empty() {
                     written += panes.inject(pane, &spec.then_press)?.bytes();
                 }
-                return Ok(Delivered::Confirmed {
-                    attempts,
-                    written: Written::of(written),
+                let written = Written::of(written);
+                // ⚠⚠ THE READING IS TAKEN HERE, not at the top: a program that takes its terminal
+                // off echo does it during the same startup this call is racing, so an answer read
+                // before the injection would be about the terminal the pane USED to have.
+                return Ok(match painter(panes, pane) {
+                    Some(PaneEcho::ByTheProgram) => Delivered::Confirmed { attempts, written },
+                    echo => Delivered::OnScreenOnly {
+                        attempts,
+                        written,
+                        echo,
+                    },
                 });
             }
             Seen::No => {}
@@ -208,6 +291,17 @@ pub fn deliver(
         attempts,
         written: Written::of(written),
     })
+}
+
+/// Who paints what is written into `pane`, or `None` where nothing can say.
+///
+/// `None` covers two hosts that are the same to a caller and different to a reader of this code: a
+/// [`PaneAccess`] that offers no [`PaneInputEcho`](crate::access::PaneInputEcho) at all, and one
+/// whose platform device would not
+/// answer. Both mean the same thing here — **no evidence** — which is why they collapse to one
+/// value rather than to a `Confirmed` that would be a guess.
+fn painter(panes: &dyn PaneAccess, pane: PaneId) -> Option<PaneEcho> {
+    panes.input_echo()?.pane_echo(pane)
 }
 
 /// Whether a pane's child has produced ANY output yet — the cheapest honest readiness signal there
@@ -277,7 +371,7 @@ fn await_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{PaneRow, WorkspacePaneAccess};
+    use crate::access::{PaneInputEcho, PaneRow, WorkspacePaneAccess};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -443,6 +537,68 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠ **A PANE THAT WILL NEVER READ A BYTE USED TO COME BACK CONFIRMED**, in 20 ms, and this
+    /// is the gate that says it does not any more.
+    ///
+    /// The peer is `sleep 60`. It has a terminal, it has printed, and it will not read for as long
+    /// as this test can wait — so there is no reading of "the program took it" that is true of it.
+    /// The text appears on its screen anyway, because the pane's line discipline paints every byte
+    /// written to the device the instant it arrives.
+    ///
+    /// **This is the module's own premise turned against it.** Its docs open with a pty taking
+    /// bytes "whether or not the program behind it is ready to read them meaningfully"; its answer
+    /// was to read the screen back; and the screen is where the pty puts them. Every fixture around
+    /// this one says `stty raw -echo` first, which removed the kernel from the picture and is why
+    /// the hole survived.
+    ///
+    /// ⚠ THE CONTROL is the assertion that the text IS on the screen. Without it a passing gate
+    /// would be indistinguishable from one where the injection simply failed, and the claim —
+    /// *on the screen is not the same as taken* — needs both halves to mean anything.
+    #[test]
+    fn a_peer_that_never_reads_is_not_confirmed_by_its_terminals_own_echo() {
+        // No `stty`: the pty's default discipline, which is what a pane running a program that
+        // does not touch its terminal has. `printf` first so the peer is up before the delivery.
+        let (access, pane) = access("printf 'UP\\n'; sleep 60");
+        assert!(
+            shows(&access, pane, "UP", Duration::from_secs(10)),
+            "the peer never started",
+        );
+
+        let outcome = deliver(
+            &access,
+            &RunContext::uncancellable(),
+            pane,
+            "hello",
+            &Delivery::new().without_submitting(),
+        )
+        .expect("no error");
+
+        assert!(
+            !outcome.is_confirmed(),
+            "a peer blocked in `sleep` has read nothing, so nothing may report it as holding the \
+             text: {outcome:?}",
+        );
+        assert!(
+            matches!(
+                outcome,
+                Delivered::OnScreenOnly {
+                    attempts: 1,
+                    echo: Some(PaneEcho::ByTheTerminal),
+                    ..
+                },
+            ),
+            "and the reason is the pane's own terminal, named: {outcome:?}",
+        );
+        // THE CONTROL: the text really is on the screen, put there by the line discipline. A gate
+        // that passed because nothing arrived would prove the opposite of what this claims.
+        assert!(
+            shows(&access, pane, "hello", Duration::from_millis(1)),
+            "the terminal painted it — that is the whole difficulty: {:?}",
+            access.pane_collapsed(pane),
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// Readiness, in both directions — and the pane that is NOT ready still takes a delivery, which
     /// is why [`deliver`] consults this and does not gate on it.
     #[test]
@@ -465,17 +621,38 @@ mod tests {
             "a pane nobody knows has not painted",
         );
 
+        // ⚠⚠⚠ AND THE WEAKER CLAIM IS THE HONEST ONE. This fixture's own comment above says the
+        // line discipline is what will show the text — and it asserted `is_confirmed()` anyway,
+        // for as long as `Confirmed` covered both. It does not: a cooked pane's screen is the
+        // TERMINAL's answer, so what is proved here is that the delivery went through, not that
+        // `cat` read it.
+        let onto_a_cooked_pane = deliver(
+            &quiet,
+            &RunContext::uncancellable(),
+            quiet_pane,
+            "x",
+            &Delivery::new().without_submitting(),
+        )
+        .expect("no error");
         assert!(
-            deliver(
-                &quiet,
-                &RunContext::uncancellable(),
-                quiet_pane,
-                "x",
-                &Delivery::new().without_submitting(),
-            )
-            .expect("no error")
-            .is_confirmed(),
-            "a pane that has painted nothing is still a pane you can deliver to",
+            onto_a_cooked_pane.is_on_screen(),
+            "a pane that has painted nothing is still a pane you can deliver to: \
+             {onto_a_cooked_pane:?}",
+        );
+        assert!(
+            !onto_a_cooked_pane.is_confirmed(),
+            "and the terminal's own echo must never be read as the program's acknowledgement: \
+             {onto_a_cooked_pane:?}",
+        );
+        assert!(
+            matches!(
+                onto_a_cooked_pane,
+                Delivered::OnScreenOnly {
+                    echo: Some(PaneEcho::ByTheTerminal),
+                    ..
+                },
+            ),
+            "and it says WHICH of the two reasons it cannot confirm: {onto_a_cooked_pane:?}",
         );
 
         quiet.lifecycle().expect("lifecycle").close(quiet_pane);
@@ -534,6 +711,28 @@ mod tests {
                 .expect("the log")
                 .push(keys.iter().map(|k| k.key.clone()).collect());
             Ok(Written::of(keys.len() as u64))
+        }
+        fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
+            Some(self)
+        }
+    }
+
+    /// ⚠⚠ **A DOUBLE THAT SHOWS TEXT MUST SAY WHO SHOWED IT.** This one models a PROGRAM painting
+    /// its own prompt box — that is the whole reason it withholds the text for `hidden_reads` and
+    /// then produces it — so it declares [`PaneEcho::ByTheProgram`] and the confirmations below are
+    /// about the program.
+    ///
+    /// A double that left this out would be answering `None`, which collapses to
+    /// [`Delivered::OnScreenOnly`]: honest for a host that cannot say, and wrong here, because this
+    /// one can. **A fixture that will not state its own premise makes every gate over it weaker
+    /// than the product.**
+    impl PaneInputEcho for Recorder {
+        fn pane_recent_input(&self, _id: PaneId) -> Option<String> {
+            // Not what this double is for; the trail has its own gates against a real pane.
+            None
+        }
+        fn pane_echo(&self, _id: PaneId) -> Option<PaneEcho> {
+            Some(PaneEcho::ByTheProgram)
         }
     }
 

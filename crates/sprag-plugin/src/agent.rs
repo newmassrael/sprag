@@ -32,12 +32,24 @@
 use std::time::Duration;
 
 use sprag_input::Modifiers;
-use sprag_terminal::PaneId;
+use sprag_terminal::{PaneEcho, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
+use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{DEFAULT_REPLY_TIMEOUT, RunContext, Waited, poll_until};
+
+/// How much of a prompt has to appear on the pane before the delivery counts it as arrived.
+///
+/// A prompt longer than this is confirmed on its leading `CONFIRM_WHOLE_UP_TO` characters, because
+/// an interactive agent's prompt box WRAPS what is typed into it and draws its own border between
+/// the halves — so the pane's collapsed text holds a long prompt in pieces and never as one run.
+///
+/// Forty, because the number has to be long enough that a match is not a coincidence and short
+/// enough to fit inside a narrow pane's box: at this length the fragment is a sentence, and the
+/// narrowest pane this project spawns in a test is 40 columns.
+const CONFIRM_WHOLE_UP_TO: usize = 40;
 
 /// What the agent asks and how long it waits for the answer.
 #[derive(Clone, Debug)]
@@ -70,6 +82,38 @@ pub struct AgentSpec {
     /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
     /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
     pub ready_within: Option<Duration>,
+    /// Whether the peer SHOWS a prompt typed at it before it is submitted — and so whether the
+    /// prompt can be DELIVERED rather than merely written.
+    ///
+    /// # ⚠⚠⚠ What the two paths are, and why the difference is not cosmetic
+    ///
+    /// `true` — the prompt is injected, the pane is read back, it is re-injected until it appears,
+    /// and Enter is pressed **only then**. This is [`mod@crate::deliver`], written from a measured
+    /// failure against a rival multiplexer: an agent that is up, has a tty and reports itself idle
+    /// still discards what you type while its own input layer finishes starting, and an Enter sent
+    /// beside a swallowed prompt submits an EMPTY one — which an agent answers.
+    ///
+    /// `false` (the default) — the prompt, its Enter and its optional Ctrl-D go in ONE injection.
+    /// That is what this adapter has always done and it is right for a peer that renders nothing:
+    /// there is no read-back that could succeed, so a retry is not a repair but a SECOND PROMPT,
+    /// and splitting the write is not a safeguard but a weld — on a cooked pane the prompt's echo
+    /// stops being a whole line and fuses onto whatever the program prints next.
+    ///
+    /// # ⚠⚠ Why this is declared and not derived
+    ///
+    /// Two adjacent facts look like they answer it and neither does. [`eof`](Self::eof) is close —
+    /// a peer read to end-of-input is usually a one-shot filter that renders nothing — and the
+    /// pane's own echo setting is closer still, but a program can have its terminal off echo and
+    /// paint nothing until EOF (`stty -echo; in=$(cat); echo "> $in"`), which is a peer that would
+    /// be injected into three times by a barrier reading either fact. **That is R358's shape: a
+    /// plausible predicate measuring an ADJACENT fact, which passes right up until it does not.**
+    /// The pane is the caller's, they know what is in it, and this is the same reason
+    /// [`ready_when`](Self::ready_when) is asked for rather than guessed.
+    ///
+    /// ⚠ Whichever path is taken, what the delivery established is REPORTED: a step whose prompt
+    /// could not be confirmed says so in its own note, so a caller reading the capture as a
+    /// model's answer is never left to assume the model was asked.
+    pub shows_the_prompt: bool,
 }
 
 impl AgentSpec {
@@ -82,7 +126,71 @@ impl AgentSpec {
             timeout: DEFAULT_REPLY_TIMEOUT,
             ready_when: None,
             ready_within: None,
+            // The write, not the delivery: a one-shot peer renders nothing, and this default is
+            // what keeps a caller who says nothing on the path their peer can survive.
+            shows_the_prompt: false,
         }
+    }
+}
+
+/// What a step established about its prompt reaching the peer.
+///
+/// Not [`Delivered`] itself, because that type answers a question only one of this adapter's two
+/// paths can ask: it can WITHHOLD the submit, and a peer that renders nothing would never be
+/// submitted to at all. So the write path answers in its own terms and both are read in one place.
+enum Prompted {
+    /// One injection carried the prompt and its submit, with what the pane's terminal was doing
+    /// when it landed.
+    Written {
+        written: u64,
+        echo: Option<PaneEcho>,
+    },
+    /// The prompt was delivered — read back, retried if need be, and submitted only once it was on
+    /// the pane.
+    Delivered(Delivered),
+}
+
+impl Prompted {
+    /// How many bytes reached the pseudoterminal — the step's [`Cost`].
+    const fn written(&self) -> u64 {
+        match self {
+            Self::Written { written, .. } => *written,
+            Self::Delivered(delivered) => delivered.written().bytes(),
+        }
+    }
+
+    /// The one line a caller reading a capture AS A MODEL'S ANSWER is owed about whether anything
+    /// established that the model was asked — or `None` where the program's own paint proved it.
+    ///
+    /// ⚠ Constant for a given peer, and deliberately: an unverifiable delivery does not become
+    /// verified by being reported often, and a caller publishing an answer is entitled to the
+    /// caveat on every one rather than on the interesting ones.
+    fn caveat(&self) -> Option<&'static str> {
+        let echo = match self {
+            Self::Delivered(Delivered::Confirmed { .. }) => return None,
+            Self::Delivered(Delivered::OnScreenOnly { echo, .. }) => *echo,
+            Self::Written { echo, .. } => *echo,
+            // Neither reaches here: the step returns before building a note for both.
+            Self::Delivered(Delivered::Unconfirmed { .. } | Delivered::Stopped { .. }) => {
+                return None;
+            }
+        };
+        Some(match echo {
+            Some(PaneEcho::ByTheTerminal) => {
+                "; ⚠ THE PROMPT'S DELIVERY WAS NOT CONFIRMED — this pane's own terminal echoes, so \
+                 the prompt appearing on it is the line discipline's doing and not evidence the \
+                 peer read it"
+            }
+            Some(PaneEcho::ByTheProgram) => {
+                "; ⚠ THE PROMPT'S DELIVERY WAS NOT CONFIRMED — this peer's terminal is off echo \
+                 and it was not asked to show what it was given, so nothing here saw the prompt \
+                 arrive"
+            }
+            None => {
+                "; ⚠ THE PROMPT'S DELIVERY WAS NOT CONFIRMED — nothing here can say whether this \
+                 pane's terminal or its program puts typed text on the screen"
+            }
+        })
     }
 }
 
@@ -117,11 +225,17 @@ impl Agent {
         }
     }
 
-    /// The keystrokes that submit the prompt: its characters, Enter, then
-    /// optionally Ctrl-D (EOF) for a read-until-EOF peer.
-    fn prompt_keys(&self) -> Vec<KeyStroke> {
-        let mut keys = KeyStroke::text(&self.spec.prompt);
-        keys.push(KeyStroke::named("Enter"));
+    /// The keystrokes that SUBMIT a prompt: Enter, then optionally Ctrl-D (EOF) for a
+    /// read-until-EOF peer.
+    ///
+    /// ⚠ On the delivery path these are held back until the prompt is on the pane
+    /// ([`Delivery::then_press`](crate::deliver::Delivery::then_press)), which is the ordering that
+    /// stops an unread prompt being submitted — and end-of-input'd — as though it had been asked.
+    /// The Ctrl-D is the sharper half: a peer reading to end-of-input answers the empty question
+    /// and EXITS, which is the very signal [`await_reply`](Self::await_reply) treats as *the reply
+    /// is complete*.
+    fn submit_keys(&self) -> Vec<KeyStroke> {
+        let mut keys = vec![KeyStroke::named("Enter")];
         if self.spec.eof {
             keys.push(KeyStroke {
                 key: "d".to_string(),
@@ -132,6 +246,85 @@ impl Agent {
             });
         }
         keys
+    }
+
+    /// The prompt and its submit as ONE injection — the write path's keystrokes.
+    fn prompt_keys(&self) -> Vec<KeyStroke> {
+        let mut keys = KeyStroke::text(&self.spec.prompt);
+        keys.extend(self.submit_keys());
+        keys
+    }
+
+    /// Put the prompt in the pane and find out whether it landed, before anything is submitted.
+    ///
+    /// # ⚠⚠⚠ Why this adapter of all of them owes a DELIVERY rather than a write
+    ///
+    /// This was `panes.inject(…)` for as long as the adapter has existed — one write, no read-back,
+    /// straight into the reply wait — while [`mod@crate::deliver`] sat one module over, written from a
+    /// measured failure against a rival multiplexer *for exactly this*: a long-lived agent that is
+    /// up, has a tty, reports itself idle, and discards what you type because its own input layer
+    /// has not finished starting. **It had no production caller at all.**
+    ///
+    /// What that cost, measured on a pane that clears its readiness barrier and then consumes the
+    /// prompt without acting on it: the run reported `Converged`, charged its bytes, and published
+    /// `"REPLY[]"` to its caller **as the model's answer to a question the peer never received**.
+    /// Nothing in the outcome, the cost or the note said so.
+    ///
+    /// # What each answer means here
+    ///
+    /// * [`Delivered::Confirmed`] — the program painted the prompt, so it has it.
+    /// * [`Delivered::OnScreenOnly`] — it is on the screen and the pane's own terminal may be what
+    ///   put it there. **Not a failure**: a cooked one-shot peer (`claude -p`) never takes its
+    ///   terminal off echo, so this is the strongest claim any reader of a screen can make about
+    ///   it, and the run proceeds — saying which it had.
+    /// * [`Delivered::Unconfirmed`] — every injection was written and none ever appeared. Nothing
+    ///   was submitted, so there is no turn to wait for.
+    ///
+    /// ⚠ The submit moved INTO the delivery ([`Delivery::then_press`]) and that is the ordering
+    /// this buys: `Enter` and the optional `Ctrl-D` are sent only once the prompt is on the pane.
+    /// Sent beside a swallowed prompt they submit an EMPTY one — and the `Ctrl-D` is worse than
+    /// that, because a peer reading to end-of-input answers the empty question and EXITS, which is
+    /// the very signal [`await_reply`](Self::await_reply) treats as *the reply is complete*.
+    fn deliver_prompt(
+        &self,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+    ) -> Result<Prompted, PaneError> {
+        if !self.spec.shows_the_prompt {
+            // The write path, unchanged: one injection carrying the prompt and its submit. What is
+            // new is that the pane is ASKED who paints it, so the step can say what its capture is
+            // worth instead of publishing it as though the question had been confirmed.
+            let written = panes.inject(self.pane, &self.prompt_keys())?.bytes();
+            return Ok(Prompted::Written {
+                written,
+                echo: panes
+                    .input_echo()
+                    .and_then(|echo| echo.pane_echo(self.pane)),
+            });
+        }
+        deliver(
+            panes,
+            run,
+            self.pane,
+            &self.spec.prompt,
+            &Delivery {
+                // ⚠ CONFIRMED ON A LEADING FRAGMENT when the prompt is long, because an agent's
+                // prompt box is a BOX: the text wraps inside it and the border lands between the
+                // halves, so the pane's collapsed text holds the prompt in pieces. `Delivery`
+                // documents this; the number is this adapter's, and it is the point at which a
+                // fragment stops being a coincidence.
+                confirm: (self.spec.prompt.chars().count() > CONFIRM_WHOLE_UP_TO).then(|| {
+                    self.spec
+                        .prompt
+                        .chars()
+                        .take(CONFIRM_WHOLE_UP_TO)
+                        .collect::<String>()
+                }),
+                then_press: self.submit_keys(),
+                ..Delivery::new()
+            },
+        )
+        .map(Prompted::Delivered)
     }
 
     /// Wait (bounded by `timeout`, cancellable) for the pane child to exit —
@@ -285,12 +478,34 @@ impl Plugin for Agent {
         // echo) from prior content.
         let baseline = self.mark(panes);
 
-        let cost = panes.inject(self.pane, &self.prompt_keys())?.bytes();
-
-        // If the RUN ended mid-wait — cancelled, or out of time — don't converge
-        // or record a partial reply. Return Continue so the Driver's loop top
-        // decides the terminal state, which is the only place that knows whether
-        // it was a cancel or the duration ceiling.
+        // ⚠⚠⚠ DELIVERED, NOT WRITTEN — see [`Agent::deliver_prompt`]. This was a bare `inject` for
+        // as long as this adapter has existed, which meant the one plugin whose output is published
+        // AS A MODEL'S ANSWER was the one that never checked its question arrived.
+        let prompted = self.deliver_prompt(panes, run)?;
+        let cost = prompted.written();
+        match prompted {
+            // The prompt is in the pane, by whichever route, and something was submitted. What each
+            // route established is carried into the note below.
+            Prompted::Written { .. }
+            | Prompted::Delivered(Delivered::Confirmed { .. } | Delivered::OnScreenOnly { .. }) => {
+            }
+            // Nothing was submitted (`deliver` withholds the press when the text is demonstrably
+            // absent), so there is no turn to wait for and nothing on that screen is this run's.
+            // A REFUSAL rather than a converged empty capture: the latter tells a caller the model
+            // said nothing, which is the one reading that is both actionable and false.
+            Prompted::Delivered(Delivered::Unconfirmed { attempts, written }) => {
+                return Err(PaneError::NeverTook {
+                    attempts,
+                    written: written.bytes(),
+                });
+            }
+            // The run ended under the delivery. Continue, so the Driver's loop top decides whether
+            // that was a cancel or the deadline — the same hand-off the reply wait makes below.
+            Prompted::Delivered(Delivered::Stopped { .. }) => {
+                return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
+                    .noting("the run ended while delivering the prompt; nothing was asked"));
+            }
+        }
 
         let waited = self.await_reply(panes, run);
         // If the RUN ended mid-wait — cancelled, or out of time — don't converge
@@ -332,6 +547,14 @@ impl Plugin for Agent {
                  history",
                 reply.lost,
             ));
+        }
+        // ⚠⚠ AND WHAT THE QUESTION'S DELIVERY WAS WORTH, on every step that produced a reply. A
+        // caller reading a capture as a model's answer is entitled to know whether anything
+        // established that the model was asked: on a pane whose own terminal echoes, the prompt
+        // appearing there is the line discipline's doing and not the peer's. Silent, this is the
+        // shape R363 paid for twice — a fact that reaches the wire and dies at the mouth.
+        if let Some(caveat) = prompted.caveat() {
+            note.push_str(caveat);
         }
         self.response = Some(text);
 
@@ -615,6 +838,211 @@ mod tests {
             "and it must carry no trace of the shell that was there first — a caller reading this \
              as the model's answer would be reading a shell error: {captured:?}",
         );
+    }
+
+    /// A peer whose terminal is RAW with echo off — an interactive agent's shape — that discards
+    /// the first four bytes it is given and paints everything after them.
+    ///
+    /// `dd` is what makes the swallow exact rather than something to wait for: the first injection
+    /// of `ping` is ALWAYS lost and everything after it is ALWAYS painted. The announcement comes
+    /// after the `stty`, so nothing below races the peer's own configuration (R347).
+    const SWALLOWS_THE_FIRST_PROMPT: &str =
+        "stty raw -echo; printf 'UP\\r\\n'; dd bs=1 count=4 of=/dev/null 2>/dev/null; exec cat";
+
+    /// ⚠⚠⚠ **A PROMPT THE PEER SWALLOWED IS RE-ASKED — AND ON THE WRITE PATH IT IS SIMPLY GONE.**
+    ///
+    /// This is the failure [`mod@crate::deliver`] was written from, measured against a rival
+    /// multiplexer, and for as long as this adapter has existed it did not use it: the one plugin
+    /// whose capture is published AS A MODEL'S ANSWER wrote its question once and never looked.
+    ///
+    /// Both halves against ONE fixture, which is what makes it a measurement rather than two
+    /// stories. The peer eats exactly four bytes — one `ping` — and paints the rest:
+    ///
+    /// * on the WRITE path the whole injection is `ping` + Enter, the peer eats the prompt and is
+    ///   left holding a bare carriage return, and **the word never reaches the pane at all**;
+    /// * on the DELIVERY path the first injection is eaten, the read-back finds nothing, and the
+    ///   re-injection lands — so the peer ends up holding the question it was asked.
+    ///
+    /// ⚠ The control is the write path, and it is the half that can fail: if the peer painted the
+    /// prompt either way, the retry would be measuring nothing.
+    #[test]
+    fn a_peer_that_swallows_the_first_prompt_is_asked_again_and_a_bare_write_is_not() {
+        /// The pane's own text once the turn is over, for a peer that paints what it is given.
+        fn asked(shows_the_prompt: bool) -> String {
+            let (access, pane) = sh_access(SWALLOWS_THE_FIRST_PROMPT, 40, 8);
+            let mut agent = Agent::new(
+                pane,
+                AgentSpec {
+                    // `cat` never exits, so the turn ends on its own clock; what this gate reads is
+                    // what the PEER was given, not what it answered.
+                    eof: false,
+                    timeout: Duration::from_millis(400),
+                    ready_when: Some(ReadyWhen::Prints("UP".to_string())),
+                    shows_the_prompt,
+                    ..AgentSpec::new("ping")
+                },
+            );
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 1,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .run(&mut agent, &access, &RunContext::uncancellable());
+            assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+            let screen = access.pane_collapsed(pane).expect("a live pane");
+            access.lifecycle().expect("lifecycle").close(pane);
+            screen
+        }
+
+        // THE CONTROL. One injection, the peer eats it, and nothing downstream can tell.
+        let written = asked(false);
+        assert!(
+            !written.contains("ping"),
+            "the control must really lose the prompt, or the delivery below proves nothing: \
+             {written:?}",
+        );
+
+        // THE SUBJECT. Same peer, same swallow, and the question arrives.
+        let delivered = asked(true);
+        assert!(
+            delivered.contains("ping"),
+            "a prompt the peer swallowed has to be asked again — this is the whole reason a \
+             delivery is not a write: {delivered:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **A CAPTURE FROM A COOKED PANE SAYS THAT NOTHING CONFIRMED THE QUESTION WAS ASKED.**
+    ///
+    /// The measurement this whole round started from. The pane clears its readiness barrier, then
+    /// consumes exactly the prompt and its Enter without acting on them, and the peer behind it
+    /// answers the empty question it was left with. The run reported `Converged`, charged its
+    /// bytes, and published **`"REPLY[]"` to its caller as the model's answer** — with nothing in
+    /// the outcome, the cost or the note to say the peer had never been asked.
+    ///
+    /// ⚠⚠ AND IT STILL PUBLISHES IT, because on a pane whose own terminal echoes there is no
+    /// observation that would say otherwise: the line discipline paints the prompt on receipt, so
+    /// the screen shows the question whether or not anything read it, and a peer that answers an
+    /// empty question is byte-for-byte a peer that answered a real one. **What changed is that the
+    /// caller is told which of those they have.** That is the honest fix and the whole of it; a
+    /// gate claiming detection here would be claiming an observation nothing can make.
+    ///
+    /// ⚠ Both halves. The caveat has to name the TERMINAL — a caveat that fired for every peer
+    /// would be a constant, and the same run against a peer whose program paints its own prompt
+    /// carries no caveat at all (`a_peer_that_swallows_…` drives that side).
+    #[test]
+    fn a_reply_from_a_pane_whose_terminal_echoes_is_published_with_that_said() {
+        // `dd` discards exactly `summarise the repo` and its Enter — 19 bytes — and the tool behind
+        // it then reads what is left, which is the end-of-input the same injection carried.
+        let script = "printf 'TOOL-UP\\n'; dd bs=1 count=19 of=/dev/null 2>/dev/null; \
+                      exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'";
+        let (access, pane) = sh_access(script, 40, 8);
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
+                ..AgentSpec::new("summarise the repo")
+            },
+        );
+        // ⚠ REPORTED TO, because a note nobody publishes is not a note: `Step::note` reaches a
+        // caller only through the run's journal, and this is the seam the host reads it from.
+        let cell = crate::driver::ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(30)),
+        })
+        .reporting_to(Arc::clone(&cell))
+        .run(&mut agent, &access, &RunContext::uncancellable());
+
+        assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+        // THE CONTROL, and it is what makes the caveat worth anything: the peer really did answer a
+        // question it was never asked, and this run really did publish that answer.
+        assert_eq!(
+            agent.captured().as_deref(),
+            Some("REPLY[]"),
+            "the fixture must reproduce the silent loss, or the caveat below is decoration",
+        );
+        let said = cell
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .last()
+            .and_then(|step| step.note.clone())
+            .unwrap_or_default();
+        assert!(
+            said.contains("NOT CONFIRMED") && said.contains("terminal echoes"),
+            "a caller reading that capture as a model's answer has to be told that nothing \
+             established the model was asked, and WHY nothing could: {said:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A PANE THAT NEVER TAKES THE PROMPT IS A REFUSAL, NOT AN EMPTY ANSWER.**
+    ///
+    /// The peer reads its input into `/dev/null` and paints nothing, so no number of injections
+    /// will ever show up. What must NOT happen is the thing that happened before: converge, charge
+    /// the bytes, and hand the caller an empty capture — because an empty capture is a sentence
+    /// about the MODEL (*it said nothing*) and this is a sentence about the PANE.
+    ///
+    /// ⚠ The second half is the one that matters more: the submit is WITHHELD. An Enter beside a
+    /// prompt that is not there submits an empty one, and the `Ctrl-D` that would follow it makes a
+    /// read-to-end-of-input peer answer that empty question AND EXIT — which is the exact signal
+    /// this adapter treats as *the reply is complete*.
+    #[test]
+    fn a_pane_that_never_shows_the_prompt_refuses_instead_of_publishing_an_empty_reply() {
+        let (access, pane) = sh_access(
+            "stty raw -echo; printf 'UP\\r\\n'; exec cat >/dev/null",
+            40,
+            8,
+        );
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                eof: false,
+                timeout: Duration::from_millis(200),
+                ready_when: Some(ReadyWhen::Prints("UP".to_string())),
+                shows_the_prompt: true,
+                ..AgentSpec::new("ping")
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .run(&mut agent, &access, &RunContext::uncancellable());
+
+        assert_eq!(outcome.state, OutcomeState::Failed, "{outcome:?}");
+        // ⚠ THE SENTENCE, not the variant: what a caller reads is this type's `Display`, and that
+        // is the only rendering standing between an agent and a debug dump.
+        let said = outcome
+            .failure
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            said.contains("never took the prompt") && said.contains("nothing was submitted"),
+            "the failure has to name the pane rather than the model, in the sentence a caller \
+             reads: {said:?}",
+        );
+        assert!(
+            agent.captured().is_none(),
+            "and nothing may be published as a reply to a question that was never asked: {:?}",
+            agent.captured(),
+        );
+        // THE WITHHELD SUBMIT. Everything written into the pane is in its trail, and a run that had
+        // pressed Enter would have put a carriage return there.
+        let trail = access
+            .input_echo()
+            .expect("this host records a trail")
+            .pane_recent_input(pane)
+            .expect("a live pane");
+        assert!(
+            !trail.contains('\r'),
+            "the submit must be withheld when the prompt is not there — a `\\r` in the trail is an \
+             empty prompt submitted: {trail:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠ **A HOST WITH NO OUTPUT STREAM STILL CAPTURES A REPLY** — the degradation arm, which no
