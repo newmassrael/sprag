@@ -159,6 +159,32 @@ impl Prompted {
         }
     }
 
+    /// Whether the pane's own TERMINAL painted the prompt back — so whether the capture opens with
+    /// an echo this run is responsible for, or with the peer's first line.
+    ///
+    /// Taken at the moment the prompt was injected, which is the only moment that decides what
+    /// happened to those bytes. See [`without_own_echo`], whose named residue this closes.
+    ///
+    /// ⚠ `None` — a host that offers no such capability, or a platform whose device will not say —
+    /// answers **`true`**, which is what this adapter did before the fact existed. It is the
+    /// unchanged behaviour rather than the safer-sounding one on purpose: where nothing can be
+    /// established, changing the answer would trade a named residue for an unmeasured one.
+    const fn echoed_by_the_terminal(&self) -> bool {
+        let echo = match self {
+            // A confirmed delivery is confirmed BECAUSE the echo was off — the program painted the
+            // prompt itself, which is the whole distinction `Delivered::Confirmed` carries.
+            Self::Delivered(Delivered::Confirmed { .. }) => return false,
+            Self::Delivered(Delivered::OnScreenOnly { echo, .. }) | Self::Written { echo, .. } => {
+                *echo
+            }
+            Self::Delivered(Delivered::Unconfirmed { .. } | Delivered::Stopped { .. }) => {
+                // Neither reaches a capture: the step returns before one is taken.
+                return true;
+            }
+        };
+        !matches!(echo, Some(PaneEcho::ByTheProgram))
+    }
+
     /// The one line a caller reading a capture AS A MODEL'S ANSWER is owed about whether anything
     /// established that the model was asked — or `None` where the program's own paint proved it.
     ///
@@ -362,7 +388,7 @@ impl Agent {
     ///
     /// ⚠ [`RowTrail`] remains the fallback for a host with no output stream — repaint-proof, not
     /// scroll-proof, and named as a degradation rather than an equivalent.
-    fn capture(&self, panes: &dyn PaneAccess, baseline: &Baseline) -> Captured {
+    fn capture(&self, panes: &dyn PaneAccess, baseline: &Baseline, echoed: bool) -> Captured {
         match baseline {
             Baseline::Line(cursor) => {
                 let Some(since) = panes
@@ -376,12 +402,13 @@ impl Agent {
                     lines.push(since.partial);
                 }
                 Captured {
-                    text: without_own_echo(lines, &self.spec.prompt).join("\n"),
+                    text: without_own_echo(lines, &self.spec.prompt, echoed).join("\n"),
                     lost: since.lost,
                 }
             }
             Baseline::Rows(trail) => Captured {
-                text: without_own_echo(trail.fresh(panes, self.pane), &self.spec.prompt).join("\n"),
+                text: without_own_echo(trail.fresh(panes, self.pane), &self.spec.prompt, echoed)
+                    .join("\n"),
                 // ⚠ A rendering comparison cannot report a loss it cannot see — a scrolled-away
                 // row is simply not there to be counted. `0` here means UNKNOWN, and it is the
                 // degradation this fallback is already named as, not a claim of completeness.
@@ -444,10 +471,31 @@ struct Captured {
 /// a REPL's re-draw) matches nothing and keeps every line. **Deleting a line of an answer is worse
 /// than leaving a line that was not one**, because only the first is unrecoverable.
 ///
-/// ⚠ The residue, named: a program with its echo OFF whose reply's first line is byte-identical to
-/// the prompt loses that line. It needs the echo to be absent AND the model to open by quoting the
-/// question exactly, and the safe reading of the pair does not exist — one of them has to lose.
-fn without_own_echo(lines: Vec<String>, prompt: &str) -> Vec<String> {
+/// # ⚠⚠⚠ `echoed` — and the residue this used to carry is CLOSED by it
+///
+/// The filing read: *"a program with its echo OFF whose reply's first line is byte-identical to the
+/// prompt loses that line … **the safe reading of the pair does not exist** — one of them has to
+/// lose."* That was true of everything this function could see. It is not true of the pane: a
+/// terminal publishes whether it echoes, and **if it does not, there is no own-echo on that screen
+/// to strip.** Measured before the fix, on a peer that quotes the question back
+/// (`stty -echo; …; echo "$in"; echo "REPLY[$in]"`): the run captured `REPLY[ping]` and the model's
+/// first line was gone.
+///
+/// So the strip is now conditional on the fact rather than on a guess:
+///
+/// * `false` — the pane's program is what paints, so every line on that screen is the peer's and
+///   none of them is this run's echo. Nothing is stripped.
+/// * `true` — the terminal echoes, which is the case this function was written for.
+///
+/// ⚠ The reading is the one taken **when the prompt was injected**, carried on [`Prompted`], not
+/// one taken at capture time: a program that turns its echo off during startup would otherwise
+/// have its own-echo kept, because by the time the reply is read the pty is no longer the thing
+/// that painted it. **Measured — the first fixture for this raced its own `stty` and put the
+/// prompt on the pane TWICE**, once by each.
+fn without_own_echo(lines: Vec<String>, prompt: &str, echoed: bool) -> Vec<String> {
+    if !echoed {
+        return lines;
+    }
     let mut lines = lines.into_iter();
     let mut kept: Vec<String> = Vec::new();
     let mut echo = prompt.split('\n').peekable();
@@ -516,7 +564,7 @@ impl Plugin for Agent {
             return Ok(Step::new(Cost::Bytes(cost), Verdict::Continue)
                 .noting("the run ended while waiting for the reply; nothing captured"));
         }
-        let reply = self.capture(panes, &baseline);
+        let reply = self.capture(panes, &baseline, prompted.echoed_by_the_terminal());
         let text = reply.text;
         // ⚠ THE LENGTH IS THE DIAGNOSTIC. A peer that never answered and one that answered are the
         // same `converged` with the same cost, and an EMPTY capture is what a prompt the peer
@@ -753,35 +801,44 @@ mod tests {
         );
     }
 
-    /// The three cases [`without_own_echo`] decides, without a pty in the way.
+    /// The cases [`without_own_echo`] decides, without a pty in the way.
     #[test]
     fn an_echo_is_dropped_only_where_it_leads_and_only_where_it_matches() {
         let lines = |all: &[&str]| all.iter().map(|l| (*l).to_string()).collect::<Vec<_>>();
 
+        // ⚠⚠⚠ THE FIRST CASE IS THE PANE'S ANSWER, not a line's shape: with the program painting,
+        // there is no echo on that screen at all, so the strongest-looking match is still the
+        // model's. Every case below it assumes a terminal that echoes.
         assert_eq!(
-            without_own_echo(lines(&["ask", "answer"]), "ask"),
+            without_own_echo(lines(&["ask", "answer"]), "ask", false),
+            lines(&["ask", "answer"]),
+            "a pane whose PROGRAM paints has nothing of this run's on it to strip",
+        );
+
+        assert_eq!(
+            without_own_echo(lines(&["ask", "answer"]), "ask", true),
             lines(&["answer"]),
             "the leading echo of a one-line prompt",
         );
         assert_eq!(
-            without_own_echo(lines(&["one", "two", "answer"]), "one\ntwo"),
+            without_own_echo(lines(&["one", "two", "answer"]), "one\ntwo", true),
             lines(&["answer"]),
             "and of a prompt with newlines in it, line for line",
         );
         assert_eq!(
-            without_own_echo(lines(&["answer", "ask"]), "ask"),
+            without_own_echo(lines(&["answer", "ask"]), "ask", true),
             lines(&["answer", "ask"]),
             "⚠⚠ NOT A LINE THAT MERELY EQUALS THE PROMPT — only the LEADING one is the echo, and \
              a model that quotes the question mid-answer is quoting it",
         );
         assert_eq!(
-            without_own_echo(lines(&["ask"]), "ask"),
+            without_own_echo(lines(&["ask"]), "ask", true),
             Vec::<String>::new(),
             "a peer that answered nothing leaves an EMPTY capture, which is the diagnostic the \
              step's character count exists to publish — not a capture of this run's own prompt",
         );
         assert_eq!(
-            without_own_echo(lines(&["answer"]), ""),
+            without_own_echo(lines(&["answer"]), "", true),
             lines(&["answer"]),
             "and a prompt with nothing in it consumes nothing",
         );
@@ -914,6 +971,70 @@ mod tests {
             delivered.contains("ping"),
             "a prompt the peer swallowed has to be asked again — this is the whole reason a \
              delivery is not a write: {delivered:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **A MODEL THAT OPENS BY QUOTING THE QUESTION KEEPS THAT LINE** — the residue
+    /// [`without_own_echo`] carried as unclosable, closed by asking the pane who echoes.
+    ///
+    /// The filing said *"the safe reading of the pair does not exist — one of them has to lose"*,
+    /// and it was right about everything the STRIP could see. It was wrong about the pane: a
+    /// terminal publishes whether it echoes, so *"is this line mine or the peer's?"* stopped being
+    /// a guess.
+    ///
+    /// Both peers say the same words and differ only in who painted them, which is what makes this
+    /// a measurement of the fact rather than of the fixture:
+    ///
+    /// * ECHO OFF — the peer prints the question back itself, and the only `ping` on that screen is
+    ///   the model's. Before the fix this run captured `REPLY[ping]` and **the model's first line
+    ///   was deleted**; deleting a line of an answer is the unrecoverable direction.
+    /// * ECHO ON — nothing but the line discipline puts the prompt there, and it must still be
+    ///   stripped. That is R362's defect (sprag publishing its own words as a model's) and this
+    ///   round must not trade one for the other.
+    ///
+    /// ⚠ Each peer announces AFTER configuring its terminal, so neither races its own `stty` — the
+    /// first draft of the echo-off arm did, and put `ping` on the pane twice, once by each painter.
+    #[test]
+    fn a_reply_that_opens_by_quoting_the_question_keeps_that_line() {
+        /// What one turn publishes as the model's answer, against a peer that quotes the question
+        /// back before answering it.
+        fn captured(configure: &str) -> String {
+            let script =
+                format!("{configure} printf 'UP\\n'; in=$(cat); echo \"$in\"; echo \"REPLY[$in]\"");
+            let (access, pane) = sh_access(&script, 40, 8);
+            let mut agent = Agent::new(
+                pane,
+                AgentSpec {
+                    ready_when: Some(ReadyWhen::Prints("UP".to_string())),
+                    ..AgentSpec::new("ping")
+                },
+            );
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 1,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .run(&mut agent, &access, &RunContext::uncancellable());
+            assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+            let text = agent.captured().expect("a captured reply");
+            access.lifecycle().expect("lifecycle").close(pane);
+            text
+        }
+
+        assert_eq!(
+            captured("stty -echo;"),
+            "ping\nREPLY[ping]",
+            "the peer painted that `ping` — its terminal echoes nothing — so it is the model's \
+             first line, and a run that deletes it hands its caller a truncated answer with \
+             nothing in it saying so",
+        );
+        // THE OTHER DIRECTION, and it is the one this fix could have broken: with the terminal
+        // echoing, the identical `ping` is sprag's own and republishing it is R362's defect.
+        assert_eq!(
+            captured(""),
+            "ping\nREPLY[ping]",
+            "with the terminal echoing there are TWO `ping`s — the line discipline's and the \
+             peer's — and exactly one of them may survive",
         );
     }
 
