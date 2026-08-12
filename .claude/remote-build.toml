@@ -1,0 +1,78 @@
+# What sprag needs from a build machine — REQUIREMENTS, never a machine name.
+#
+# The `remote-build` skill picks the machine from `~/.claude/remote-build/hosts.toml` at run time
+# and asks it what it has. Naming a machine here would go stale the day another one arrives, and a
+# stale list reads exactly like a correct one.
+#
+# ⚠⚠ THE REMOTE TREE IS A READ-ONLY VERIFICATION COPY. Commits, ledger writes and pushes happen
+# locally; anything edited over there is erased by the next rsync.
+
+# Tracked files only. sprag keeps `claudedocs/` gitignored and it holds UPSTREAM REQUIREMENT drafts
+# (PR-9 as of R362) that are nobody else's business — `all` would ship them to another machine
+# without anyone deciding to.
+send = "tracked"
+
+# ⚠⚠ `target` IS A SYMLINK HERE (`target -> ~/.buildcache/sprag`), so rsync would plant a BROKEN
+# link on the remote and cargo would build through it into nowhere. Excluded by path, not by luck.
+# `sweep.timestamp` is `cargo sweep --stamp`'s transient marker; it is consumed by `--file`, but a
+# run interrupted between the two leaves one behind and it must not travel.
+exclude = ["/target", "/sweep.timestamp"]
+
+# The executables the commands below actually invoke. `mnemosyne-cli` is deliberately NOT here: it
+# is a COMMIT-time gate (`.githooks/pre-commit`), and committing is local by rule.
+needs = ["cargo", "cargo-clippy", "rustdoc"]
+
+# Measured against `.github/workflows/ci.yml`'s own `System packages` step for the headless Linux
+# job. macOS needs none of it — `fontique` uses Core Text there and links no fontconfig at all.
+#
+# ⚠ The PIXEL smoke needs more (`xvfb`, `mesa-vulkan-drivers`, `libvulkan1`, `libxkbcommon-x11-0`,
+# `libxcursor1`, `libxi6`) and is NOT part of `verify` below: it drives a real GPU surface, and a
+# machine that has to be asked for a GPU is a different question from one that has to be asked for
+# cores. Add them here on the day the pixel smoke is what gets sent.
+packages = ["libfontconfig-dev"]
+
+# A full sprag build compiles the pinion crates too, so this is not a small workspace.
+min_ram_gb = 16
+min_free_gb = 20
+
+# ⚠ `peak_gb_per_task` is DELIBERATELY ABSENT. The skill's parallelism formula uses it to cap by
+# RAM, and sprag has never measured what its heaviest test actually peaks at — writing a number
+# nobody measured would make the cap look derived when it was guessed. The CPU half of the formula
+# still applies. Fill this in the day somebody measures it.
+
+[commands]
+# What the machine has to produce before anything can be judged.
+build = "cargo test --workspace --no-run"
+
+# ⚠⚠ THE SAME FOUR GATES THIS PROJECT RUNS LOCALLY, in one command so a remote run cannot pass a
+# subset. Each is here for a reason the others do not cover:
+#
+#   1. the workspace suite, minus sprag-gui — the bulk of the evidence;
+#   2. sprag-gui SEPARATELY and as `--bins`, because that crate HAS NO LIB TARGET, so `--workspace`
+#      alone never builds its 333 gates. The bogus `DBUS_SESSION_BUS_ADDRESS` / `XDG_RUNTIME_DIR`
+#      are load-bearing: without cgroup delegation the daemon otherwise tries a real session bus
+#      and the gates hang rather than fail;
+#   3. clippy over ALL targets, because a lint that only fires in a test is still a lint;
+#   4. rustdoc, because a broken intra-doc link is how this workspace's docs rot silently.
+verify = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR=/nonexistent cargo test -p sprag-gui --bins && cargo clippy --workspace --all-targets && cargo doc --workspace --no-deps"
+
+# ⚠⚠⚠ MEASURED 2026-08-12, FIRST REMOTE RUN — ONE GATE DIVERGES BETWEEN TWO MACHINES AND WHY IS NOT
+# KNOWN. `sprag-host --test cli`'s `a_hooks_report_does_not_outlive_an_agent_the_pane_did_not_spawn`
+# fails on the BUILD MACHINE and passes on the WORKSTATION, on the same tree: the agent's
+# `hook:claude` report is still `working` twenty seconds after the agent was killed.
+#
+#   * build machine, with that binary's other 112 tests: FAILS;
+#   * build machine, run ALONE: passes 3/3;
+#   * workstation, full `cargo test --workspace`: passes (2881/0).
+#
+# ⚠ Bounding `RUST_TEST_THREADS` to 8 did NOT fix it, so "too much test parallelism" is refuted. So
+# are the obvious environment guesses: **both machines report 32 cores, `XDG_RUNTIME_DIR`, a running
+# `systemd --user`, and the same rustc.** The cause is open.
+#
+# ⚠ The machines are named in the owner's own notes rather than here, because which hosts exist is
+# not this repository's business — but WHICH SIDE a measurement came from is, or the next reader
+# cannot tell a machine-specific result from a general one.
+#
+# Until it is understood, a remote verify of sprag will report this one failure. Do not read it as a
+# red in the change under test without checking it against this note — and do not read it as
+# harmless either. It is its own round.
