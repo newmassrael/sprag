@@ -27,7 +27,7 @@
 //!
 //! So a delivery now says which evidence it has, by asking the kernel who echoes
 //! ([`PaneEcho`], through
-//! [`PaneInputEcho::pane_echo`](crate::access::PaneInputEcho::pane_echo)):
+//! [`PaneTerminalModes::pane_echo`](crate::access::PaneTerminalModes::pane_echo)):
 //! [`Delivered::Confirmed`] where the program painted the text, and
 //! [`Delivered::OnScreenOnly`] where it is on the screen and nothing here can say who put it there.
 //! ⚠ The weaker answer is not a failure — for a cooked one-shot peer (`claude -p`) it is the best
@@ -301,7 +301,7 @@ pub fn deliver(
 /// answer. Both mean the same thing here — **no evidence** — which is why they collapse to one
 /// value rather than to a `Confirmed` that would be a guess.
 fn painter(panes: &dyn PaneAccess, pane: PaneId) -> Option<PaneEcho> {
-    panes.input_echo()?.pane_echo(pane)
+    panes.terminal_modes()?.pane_echo(pane)
 }
 
 /// Whether a pane's child has produced ANY output yet — the cheapest honest readiness signal there
@@ -371,7 +371,8 @@ fn await_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::access::{PaneInputEcho, PaneRow, WorkspacePaneAccess};
+    use crate::access::{PaneRow, PaneTerminalModes, WorkspacePaneAccess};
+    use sprag_terminal::PaneEndOfInput;
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -712,7 +713,7 @@ mod tests {
                 .push(keys.iter().map(|k| k.key.clone()).collect());
             Ok(Written::of(keys.len() as u64))
         }
-        fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
+        fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
             Some(self)
         }
     }
@@ -726,13 +727,14 @@ mod tests {
     /// [`Delivered::OnScreenOnly`]: honest for a host that cannot say, and wrong here, because this
     /// one can. **A fixture that will not state its own premise makes every gate over it weaker
     /// than the product.**
-    impl PaneInputEcho for Recorder {
-        fn pane_recent_input(&self, _id: PaneId) -> Option<String> {
-            // Not what this double is for; the trail has its own gates against a real pane.
-            None
-        }
+    impl PaneTerminalModes for Recorder {
         fn pane_echo(&self, _id: PaneId) -> Option<PaneEcho> {
             Some(PaneEcho::ByTheProgram)
+        }
+        fn pane_end_of_input(&self, _id: PaneId) -> Option<PaneEndOfInput> {
+            // Not what this double is for — nothing here waits for a peer to finish — and the
+            // honest answer for a stand-in with no device is that it cannot say.
+            None
         }
     }
 

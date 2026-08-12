@@ -108,6 +108,30 @@ pub enum PaneEcho {
     ByTheProgram,
 }
 
+/// Whether a `Ctrl-D` written into a pane will END the program's input, or arrive as a byte.
+///
+/// # ⚠⚠⚠ Why a caller must be able to ask
+///
+/// An end-of-input is not a character — it is a CONDITION the line discipline raises when it sees
+/// the EOF character, **and only while the terminal is in canonical mode.** A program that took its
+/// terminal raw (every full-screen agent, every editor) gets `0x04` as an ordinary byte and decides
+/// for itself what it means.
+///
+/// So a caller that ends a question with `Ctrl-D` and then waits for the peer to finish is, on a
+/// raw pane, waiting for something it did not ask for. Measured, on `stty raw -echo; exec cat` with
+/// the agent adapter's DEFAULT `eof`: the run spent its whole reply timeout, converged, published
+/// the peer's echo of the prompt as the model's answer, and explained itself with *"the peer had
+/// not finished"* — a sentence about the PEER's speed, for a cause that is the TERMINAL's mode and
+/// was knowable before the wait began.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneEndOfInput {
+    /// Canonical mode: the line discipline turns the EOF character into end-of-input, so a peer
+    /// reading until end-of-input is told the input is over.
+    EndsTheInput,
+    /// Raw mode: it is delivered as an ordinary byte, and what it means is the program's business.
+    IsJustAByte,
+}
+
 /// A read-only handle on a pane's terminal — for ASKING the kernel about the device, never for
 /// reading or writing it.
 ///
@@ -127,17 +151,40 @@ impl TerminalQuery {
     /// platform's own terms.
     #[must_use]
     pub fn echo(&self) -> Option<PaneEcho> {
+        Some(if self.local_modes()? & libc::ECHO == 0 {
+            PaneEcho::ByTheProgram
+        } else {
+            PaneEcho::ByTheTerminal
+        })
+    }
+
+    /// Whether a `Ctrl-D` written into this pane ends its program's input — [`PaneEndOfInput`] —
+    /// or `None` where the kernel will not say.
+    ///
+    /// ⚠ `None` carries the same warning [`echo`](Self::echo) does: it is *this platform's device
+    /// would not answer*, never the negative.
+    #[must_use]
+    pub fn end_of_input(&self) -> Option<PaneEndOfInput> {
+        Some(if self.local_modes()? & libc::ICANON == 0 {
+            PaneEndOfInput::IsJustAByte
+        } else {
+            PaneEndOfInput::EndsTheInput
+        })
+    }
+
+    /// The device's local mode flags (`c_lflag`), or `None` where it will not answer.
+    ///
+    /// One `tcgetattr` behind every question above, so a reading is never assembled from two calls
+    /// that could straddle a program changing its terminal — and so a new question costs a flag
+    /// test rather than another syscall.
+    fn local_modes(&self) -> Option<libc::tcflag_t> {
         let mut modes: libc::termios = unsafe { std::mem::zeroed() };
         // SAFETY: the descriptor is open for the life of `self`, and `tcgetattr` only fills in the
         // fully-owned `termios` handed to it.
         if unsafe { libc::tcgetattr(self.0.as_raw_fd(), &raw mut modes) } != 0 {
             return None;
         }
-        Some(if modes.c_lflag & libc::ECHO == 0 {
-            PaneEcho::ByTheProgram
-        } else {
-            PaneEcho::ByTheTerminal
-        })
+        Some(modes.c_lflag)
     }
 }
 

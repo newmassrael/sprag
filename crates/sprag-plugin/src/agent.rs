@@ -32,7 +32,7 @@
 use std::time::Duration;
 
 use sprag_input::Modifiers;
-use sprag_terminal::{PaneEcho, PaneId};
+use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::deliver::{Delivered, Delivery, deliver};
@@ -324,8 +324,8 @@ impl Agent {
             return Ok(Prompted::Written {
                 written,
                 echo: panes
-                    .input_echo()
-                    .and_then(|echo| echo.pane_echo(self.pane)),
+                    .terminal_modes()
+                    .and_then(|modes| modes.pane_echo(self.pane)),
             });
         }
         deliver(
@@ -584,6 +584,26 @@ impl Plugin for Agent {
         } else {
             format!("captured a {characters}-character reply")
         };
+        // ⚠⚠⚠ AND WHEN THE END-OF-INPUT COULD NOT ARRIVE, SAY THAT INSTEAD OF BLAMING THE PEER.
+        // This adapter converges on the child EXITING, which is what a peer reading to end-of-input
+        // does when it is told the question is over. `Ctrl-D` only tells it that in CANONICAL mode;
+        // on a raw terminal it is an ordinary byte, so the wait was for something never asked for.
+        // Measured on `stty raw -echo; exec cat` with the default `eof`: the whole reply timeout
+        // spent, the peer's echo of the prompt published as the model's answer, and the only
+        // explanation offered was *"the peer had not finished"* — a sentence about the PEER's speed
+        // for a cause that is the TERMINAL's mode and was knowable before the wait began.
+        if waited == Waited::TimedOut && self.spec.eof {
+            if let Some(PaneEndOfInput::IsJustAByte) = panes
+                .terminal_modes()
+                .and_then(|modes| modes.pane_end_of_input(self.pane))
+            {
+                note.push_str(
+                    "; ⚠ AND THE END-OF-INPUT NEVER ARRIVED — this pane's terminal is not in \
+                     canonical mode, so the Ctrl-D this run sent is an ordinary byte and a peer \
+                     reading until end-of-input was never told the question was over",
+                );
+            }
+        }
         // ⚠⚠ A HOLE IN THE ANSWER IS REPORTED, NEVER SWALLOWED. The pane's retained history is
         // bounded, so a reply that outran it between the prompt and the read has lines nothing can
         // recover — and a silent gap is indistinguishable from a model that said less. This is the
@@ -656,6 +676,33 @@ mod tests {
             .spawn(command, "sh".to_string(), cols, rows)
             .expect("spawn pane");
         (WorkspacePaneAccess::new(workspace), id)
+    }
+
+    /// Wait (bounded) for `marker` to appear on `pane`, so a run below starts against a peer that
+    /// is already up.
+    ///
+    /// # ⚠⚠ Why a run's own readiness barrier is not enough here
+    ///
+    /// The barrier is bounded by the RUN's clock, so on a loaded box a fixture that leaves the wait
+    /// to it spends the run's whole duration getting the peer started and then has none left for
+    /// the thing being measured — `Exhausted(Duration)` with `Bytes(0)` charged, which is a red
+    /// about the machine. Waiting HERE takes the startup out of the run's budget entirely, so the
+    /// clock can only be spent on the turn.
+    fn started(access: &WorkspacePaneAccess, pane: PaneId, marker: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if access
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains(marker))
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "the peer never printed {marker:?}: {:?}",
+            access.pane_collapsed(pane)
+        );
     }
 
     fn run(access: &WorkspacePaneAccess, agent: &mut Agent) -> Outcome {
@@ -1035,6 +1082,83 @@ mod tests {
             "ping\nREPLY[ping]",
             "with the terminal echoing there are TWO `ping`s — the line discipline's and the \
              peer's — and exactly one of them may survive",
+        );
+    }
+
+    /// ⚠⚠⚠ **A RUN THAT SENT AN END-OF-INPUT THE TERMINAL CANNOT DELIVER SAYS SO** — instead of
+    /// spending its whole wait and then blaming the peer's speed for it.
+    ///
+    /// This adapter converges on the pane's child EXITING, which is what a peer reading to
+    /// end-of-input does once it is told the question is over. `Ctrl-D` tells it that **only in
+    /// canonical mode**; a program that took its terminal raw — every full-screen agent — receives
+    /// an ordinary byte. So the run waits for something it never asked for, and the sentence it
+    /// offered was *"the peer had not finished after 120s"*: about the PEER's speed, for a cause
+    /// that is the TERMINAL's mode and is knowable before the wait begins.
+    ///
+    /// Both arms against peers that differ ONLY in that mode, because the sentence is worth
+    /// nothing if it fires for everyone:
+    ///
+    /// * RAW — the byte is just a byte, the turn ends on its clock, and the run names the cause.
+    /// * CANONICAL — the same `Ctrl-D` is an end-of-input, the peer really does finish, and there
+    ///   is no such sentence to say.
+    #[test]
+    fn a_run_says_when_its_end_of_input_could_not_reach_the_peer() {
+        /// The note of one turn against `script`, with the adapter's default `eof`.
+        fn note_for(script: &str) -> String {
+            let (access, pane) = sh_access(script, 40, 8);
+            // ⚠ The peer is UP before the run starts, so the run's clock is spent on the turn and
+            // not on a loaded box's process startup — see `started`.
+            started(&access, pane, "UP");
+            let cell = crate::driver::ProgressCell::default();
+            // ⚠ NO `ready_when`: `started` above already established the peer is up, and
+            // `ReadyWhen::Prints` asks for output printed AFTER the barrier begins looking — so a
+            // barrier here would wait for a second announcement that never comes. One wait, on the
+            // observable fact, in the fixture (R359b's distinction, met from the other side).
+            let mut agent = Agent::new(
+                pane,
+                AgentSpec {
+                    timeout: Duration::from_millis(400),
+                    ..AgentSpec::new("ping")
+                },
+            );
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 1,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .reporting_to(Arc::clone(&cell))
+            .run(&mut agent, &access, &RunContext::uncancellable());
+            assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+            let note = cell
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .last()
+                .and_then(|step| step.note.clone())
+                .unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            note
+        }
+
+        // RAW: `cat` never sees an end-of-input, so the turn can only end on the clock.
+        let raw = note_for("stty raw -echo; printf 'UP\\r\\n'; exec cat");
+        assert!(
+            raw.contains("THE END-OF-INPUT NEVER ARRIVED") && raw.contains("canonical"),
+            "a run whose Ctrl-D could not be an end-of-input must name that, or its caller reads a \
+             wrong diagnosis of a knowable fact: {raw:?}",
+        );
+
+        // CANONICAL: the same keystroke IS an end-of-input, so the peer finishes and answers.
+        let cooked = note_for("printf 'UP\\n'; in=$(cat); echo \"REPLY[$in]\"");
+        assert!(
+            !cooked.contains("END-OF-INPUT"),
+            "and it must NOT be said where the terminal delivers it — a caveat that fires for \
+             every peer is not a diagnosis: {cooked:?}",
+        );
+        assert!(
+            cooked.contains("captured a"),
+            "the control has to be a turn that really completed, or its silence proves nothing: \
+             {cooked:?}",
         );
     }
 
@@ -1556,8 +1680,17 @@ mod tests {
     /// run publishes.
     #[test]
     fn a_capture_taken_because_the_turn_ran_out_of_time_is_marked_as_possibly_partial() {
-        // Answers, then stays alive — so the reply IS on screen but EOF never comes.
-        let (access, pane) = sh_access("echo PARTIAL-REPLY; exec cat", 40, 8);
+        // Announces, then answers when spoken to, then stays alive — so the reply IS on screen
+        // but EOF never comes.
+        //
+        // ⚠⚠ IT USED TO PRINT ITS REPLY UNCONDITIONALLY and this test waited for nothing, which
+        // made it one of the recorded load-marginal gates: under whole-suite load the peer got its
+        // line out BEFORE the run took its baseline, so the reply was not "since" the prompt and
+        // the capture came back without it. The reply now waits to be asked for, and the fixture
+        // waits for the peer — the wait is on the observable fact, not on the ACT that causes it.
+        let (access, pane) =
+            sh_access("printf 'UP\n'; read _; echo PARTIAL-REPLY; exec cat", 40, 8);
+        started(&access, pane, "UP");
         let mut agent = Agent::new(
             pane,
             AgentSpec {

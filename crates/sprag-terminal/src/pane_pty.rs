@@ -954,6 +954,13 @@ impl PanePty {
         self.query.echo()
     }
 
+    /// Whether a `Ctrl-D` typed into this pane ends its program's input — see
+    /// [`PaneEndOfInput`](crate::pty::PaneEndOfInput).
+    #[must_use]
+    pub fn end_of_input(&self) -> Option<crate::pty::PaneEndOfInput> {
+        self.query.end_of_input()
+    }
+
     /// Resize the pseudoterminal and the emulator to `cols × rows`, notifying
     /// the child via `TIOCSWINSZ` (DESIGN.md §3 winsize ownership).
     ///
@@ -1080,6 +1087,14 @@ impl PanePtyHandle {
     #[must_use]
     pub fn echo(&self) -> Option<crate::pty::PaneEcho> {
         self.query.echo()
+    }
+
+    /// Whether a `Ctrl-D` typed into this pane ends its program's input — see
+    /// [`PaneEndOfInput`](crate::pty::PaneEndOfInput). Read when asked, for
+    /// [`echo`](Self::echo)'s reason.
+    #[must_use]
+    pub fn end_of_input(&self) -> Option<crate::pty::PaneEndOfInput> {
+        self.query.end_of_input()
     }
 
     /// A snapshot of the child's raw output bytes (the source stream, before

@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
-    Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneEcho, PaneId, PanePtyHandle,
-    RawOutput, Reach, Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
+    Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneEcho, PaneEndOfInput, PaneId,
+    PanePtyHandle, RawOutput, Reach, Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
 };
 use sprag_vt::LinesSince;
 use sprag_vt::Screen;
@@ -528,6 +528,13 @@ pub trait PaneAccess {
         None
     }
 
+    /// What this pane's TERMINAL does with what is written into it — see [`PaneTerminalModes`].
+    /// `None` by default, on the same terms as the other sub-surfaces: a host that cannot ask its
+    /// device says so rather than guessing.
+    fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+        None
+    }
+
     /// The pane's *foreground job* — WHICH PROGRAM owns its terminal — if this host can see the
     /// process table. `None` by default, on the same terms as the other four sub-surfaces.
     ///
@@ -730,23 +737,46 @@ pub trait PaneInputEcho {
     /// Bounded and lossy-UTF-8 by construction — it is compared against SCREEN TEXT, and the
     /// screen is text.
     fn pane_recent_input(&self, id: PaneId) -> Option<String>;
+}
 
-    /// WHO will put that input back on the screen — the kernel's answer, not a guess.
+/// What a pane's TERMINAL does with what is written into it — the kernel's answers, not guesses.
+/// Reached via [`PaneAccess::terminal_modes`].
+///
+/// # ⚠⚠ Why this is not on [`PaneInputEcho`], which it was for one round
+///
+/// The trail beside it is what SPRAG REMEMBERS writing; these are what THE KERNEL will do with it.
+/// Merging them read well while there was one of them — both were about an echo — and stopped the
+/// moment a second question arrived, because *"will a `Ctrl-D` end this program's input?"* is not a
+/// fact about an echo trail under any reading. **A trait whose name stops describing its methods is
+/// the defect this workspace's own doc gate refuses one layer down**, so the two subjects were
+/// split rather than the name stretched.
+///
+/// Every answer is `Option`, and `None` is always *this platform's device would not say* — never
+/// the negative. A caller that reads an absence as a NO manufactures the exact confidence these
+/// exist to withhold.
+pub trait PaneTerminalModes {
+    /// WHO will put a pane's own input back on its screen.
     ///
-    /// # ⚠⚠⚠ The question the trail above cannot answer
+    /// # ⚠⚠⚠ The question a read-back cannot answer for itself
     ///
-    /// The trail says *what was written*, so a reader can recognise its own bytes coming back. It
-    /// cannot say whether they will come back AT ALL, and that is the half every read-back
-    /// confirmation in this workspace was missing: with [`PaneEcho::ByTheTerminal`] the line
-    /// discipline paints the text the instant it reaches the device, **before the program has read
-    /// a byte and whether or not it ever does** — so finding it there is evidence about the
-    /// terminal. Measured: [`deliver`](crate::deliver::deliver) reported a CONFIRMED delivery into
-    /// a pane running `sleep 60`, in 20 ms.
-    ///
-    /// `None` where the pane is unknown, or where the platform's device will not answer. ⚠ It is
-    /// **not** the negative: reading it as *"the terminal does not echo"* manufactures exactly the
-    /// confidence this exists to withhold.
+    /// With [`PaneEcho::ByTheTerminal`] the line discipline paints the text the instant it reaches
+    /// the device, **before the program has read a byte and whether or not it ever does** — so
+    /// finding it there is evidence about the terminal. Measured:
+    /// [`deliver`](crate::deliver::deliver) reported a CONFIRMED delivery into a pane running
+    /// `sleep 60`, in 20 ms.
     fn pane_echo(&self, id: PaneId) -> Option<PaneEcho>;
+
+    /// Whether a `Ctrl-D` written into the pane ENDS its program's input, or arrives as a byte.
+    ///
+    /// # ⚠⚠⚠ The wait this answers before it is spent
+    ///
+    /// An end-of-input is a CONDITION the line discipline raises, and only in canonical mode. A
+    /// caller that ends a question with `Ctrl-D` and then waits for the peer to finish is, on a raw
+    /// pane, waiting for something it never asked for. Measured on `stty raw -echo; exec cat`: the
+    /// run spent its whole reply timeout and explained itself with *"the peer had not finished"* —
+    /// a sentence about the PEER's speed for a cause that was the TERMINAL's mode, and knowable
+    /// before the wait began.
+    fn pane_end_of_input(&self, id: PaneId) -> Option<PaneEndOfInput>;
 }
 
 /// Which authority a pane's [`AgentState`] came from, and so how much it is worth.
@@ -1041,6 +1071,10 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self)
     }
 
+    fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+        Some(self)
+    }
+
     fn foreground_job(&self) -> Option<&dyn PaneForegroundJob> {
         Some(self)
     }
@@ -1072,9 +1106,15 @@ impl PaneInputEcho for WorkspacePaneAccess {
     fn pane_recent_input(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.echo_trail())
     }
+}
 
+impl PaneTerminalModes for WorkspacePaneAccess {
     fn pane_echo(&self, id: PaneId) -> Option<PaneEcho> {
         self.handle(id)?.echo()
+    }
+
+    fn pane_end_of_input(&self, id: PaneId) -> Option<PaneEndOfInput> {
+        self.handle(id)?.end_of_input()
     }
 }
 
