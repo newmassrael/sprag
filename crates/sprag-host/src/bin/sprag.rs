@@ -197,9 +197,10 @@ use sprag_host::wire::{
     RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, ResizeHow, ResizeWindowAsk,
     SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT, SPAWN_ACTION, SPLIT_ACTION,
     SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION,
-    TREE_SLOT, WINDOWS_SLOT, WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, doctor_over,
-    events_slot_since, find_slot_for, pane_processes_at, pane_resources_at, project_slot_for,
-    regex_slot_for, session_activity_at, settled, unknown_action, unknown_slot,
+    TREE_SLOT, UNSIGNALLED_KEY, UNSIGNALLED_WHICH_KEY, UNSIGNALLED_WHY_KEY, WINDOWS_SLOT,
+    WindowBirthAsk, WindowPin, ZOOM_PANE_ACTION, doctor_over, events_slot_since, find_slot_for,
+    pane_processes_at, pane_resources_at, project_slot_for, regex_slot_for, session_activity_at,
+    settled, unknown_action, unknown_slot,
 };
 use sprag_host::{ClientSize, PaneFind, SshTarget, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -208,7 +209,7 @@ use sprag_rpc::{
 };
 use sprag_terminal::{
     Ceiling, Counted, Cpu, Diagnosis, Ended, LayoutSnapshot, OrderStep, PaneDir, PaneId, PlaceHow,
-    Taken, Verdict, Waiting, WindowPlace, arrangement,
+    SignalKey, Taken, Unraised, Verdict, Waiting, WindowPlace, arrangement,
 };
 
 /// A management command is talking to an already-running daemon, so the socket either accepts
@@ -5349,7 +5350,7 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
                 json!({ "key": key, "ctrl": ctrl, "alt": alt, "shift": shift }),
             )
         };
-        invoke_action(
+        let answer = invoke_action(
             &mut conn,
             site_invoke(
                 session.as_deref(),
@@ -5358,7 +5359,6 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
                 action_args,
             ),
         )
-        .map(|_: Value| ())
         .map_err(|error| {
             if error.kind() == io::ErrorKind::Other {
                 io::Error::new(
@@ -5380,6 +5380,12 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
                 error
             }
         })?;
+        // ⚠ On stderr, and NOT folded into the count below: a person piping `send-keys` reads the
+        // line that says what was sent, and a warning hidden in that line is a warning they filter
+        // out. It is also per-token, because which key was swallowed is the whole content.
+        for caveat in unsignalled_caveats(&answer) {
+            eprintln!("send-keys: {caveat}");
+        }
     }
     println!(
         "sent {} {} to pane {pane}",
@@ -5387,6 +5393,40 @@ fn send_keys(args: Vec<String>) -> io::Result<()> {
         if literal { "string(s)" } else { "key(s)" }
     );
     Ok(())
+}
+
+/// The sentences an injection's answer earns when what it wrote MEANT a signal the pane will not
+/// raise — see [`sprag_host::wire::UNSIGNALLED_KEY`]. Empty when there is nothing to report.
+///
+/// ⚠ Read back through each vocabulary's own `from_wire`, so a word this build does not know is
+/// SILENCE rather than a confidently wrong sentence.
+fn unsignalled_caveats(answer: &Value) -> Vec<String> {
+    let Some(entries) = answer.get(UNSIGNALLED_KEY).and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let key = entry
+                .get(UNSIGNALLED_WHICH_KEY)
+                .and_then(Value::as_str)
+                .and_then(SignalKey::from_wire)?;
+            let why = entry
+                .get(UNSIGNALLED_WHY_KEY)
+                .and_then(Value::as_str)
+                .and_then(Unraised::from_wire)?;
+            Some(format!(
+                "{} was written as a byte and raised NO signal, because {}. Nothing was \
+                 stopped — use `sprag {} <pane>` to send the signal itself.",
+                key.chord(),
+                why,
+                // The verb's own name, from the vocabulary that owns it: this sentence points a
+                // person at a command they will type, so a spelling invented here is a spelling
+                // that can stop existing without anything noticing.
+                Verb::StopJob.name(),
+            ))
+        })
+        .collect()
 }
 
 /// Split a `send-keys` token into its W3C key name and `(ctrl, alt, shift)` modifiers, reading
