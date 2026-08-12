@@ -3367,21 +3367,31 @@ mod tests {
                 &window,
                 crate::wire_claim::grammar::SURFACES,
             );
-            // ⚠⚠ **NINETY-NINE VERB ADDRESSES, AND SPRAG WROTE NINE OF THEM.** The palette's four,
-            // the confirmation's three and a pane oracle's two are sprag's and publish their grammar;
-            // the other ninety are pinion widget instances (a button per window tab, per session tab
-            // and per kill affordance, four text fields, a checkbox, two scrollbars, the context menu,
-            // the dock reorganizer), each serving verbs of its own that upstream describes.
+            // ⚠⚠ **A HUNDRED AND THREE VERB ADDRESSES, AND SPRAG WROTE NINE OF THEM.** The
+            // palette's four, the confirmation's three and a pane oracle's two are sprag's and
+            // publish their grammar; the other ninety-four are pinion widget instances (a button
+            // per window tab, per session tab and per kill affordance, four text fields, a
+            // checkbox, two scrollbars, the context menu, the dock reorganizer, and a panel per
+            // docked pane), each serving verbs of its own that upstream describes.
             //
             // The number is pinned because it is a fact about what a client connected to this window
             // can address, and because a pinion bump that changes a widget's verb set should be a
             // decision rather than a surprise.
+            //
+            // ⚠⚠⚠ **IT MOVED 99 → 103 AT R364'S PIN BUMP, AND THIS IS THAT DECISION.** Not one
+            // widget was added: pinion R1637 (`a call must be declared first`) found that two of
+            // `DockPanelExternal`'s fields had been declared READ while only `invoke` answered
+            // them, and corrected the declaration. They were always verbs — what changed is that
+            // `$schema` stopped lying about them — so two panels' worth of two addresses each
+            // arrived here at once. **The pin doing its job**: the same bump also made those dock
+            // panels the first surface this audit had never had reason to name, which is the
+            // finding that led here.
             assert_eq!(
                 audit.count_or_panic(),
-                99,
+                103,
                 "every verb this window serves, counted per surface: sprag's nine — the palette's \
-                 four, the confirmation's three, a pane oracle's two — and ninety belonging to the \
-                 pinion widgets sprag registers",
+                 four, the confirmation's three, a pane oracle's two — and ninety-four belonging \
+                 to the pinion widgets sprag registers",
             );
         });
     }

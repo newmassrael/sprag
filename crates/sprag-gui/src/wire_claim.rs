@@ -277,6 +277,19 @@ pub(crate) mod grammar {
         upstream("the prompt's field", crate::prompt::PROMPT_FIELD_TAG),
         upstream("the context menu", crate::ctxmenu::CTXMENU_TAG),
         upstream("the dock reorganizer", crate::split::DOCK_REORGANIZE_TAG),
+        // ⚠⚠⚠ **THIS ONE ARRIVED BY MOVING THE PIN, AND THE WIDGET DID NOT CHANGE.** pinion R1637
+        // (`a call must be declared first`) reclassified three of `DockPanelExternal`'s fields from
+        // READ to INVOKE — its own comment says they *"were declared readable, so `$schema` said
+        // 'query me' about a name only `invoke` answers"*. They were always verbs; only the
+        // declaration was wrong. So every dock leaf sprag registers began serving verbs, and this
+        // audit reported a surface it had never had reason to name.
+        //
+        // That is the audit doing its job, in the words two paragraphs up: *a widget added tomorrow
+        // fails this audit until somebody decides whose it is.* Decided: pinion's, like every entry
+        // around it. ⚠ Verified at the construction site rather than inferred from the tag —
+        // `split.rs` mounts each leaf with `panel_id = terminal-{i}` and pinion's dock surface
+        // builds one `DockPanelExternal` per leaf, aligned with `panel_ids()[i]`.
+        upstream("a docked pane's panel", "terminal-<i>"),
         upstream("a pane's scrollbar", "sprag_gui.scrollbar.<i>"),
         upstream("a window tab", "sprag_gui.wtab.<i>"),
         upstream("the new-window button", "sprag_gui.wnew"),

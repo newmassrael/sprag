@@ -199,18 +199,6 @@ impl Delivered {
         matches!(self, Self::Confirmed { .. } | Self::OnScreenOnly { .. })
     }
 
-    /// How many injections were made — the number a caller reports when it has to say the pane
-    /// never took what it was given.
-    #[must_use]
-    pub const fn attempts(self) -> u32 {
-        match self {
-            Self::Confirmed { attempts, .. }
-            | Self::OnScreenOnly { attempts, .. }
-            | Self::Unconfirmed { attempts, .. }
-            | Self::Stopped { attempts, .. } => attempts,
-        }
-    }
-
     /// How many bytes reached the pty across every attempt — what a plugin charges as its
     /// [`Cost`](crate::plugin::Cost), since a swallowed write cost the same as a landed one.
     pub const fn written(self) -> Written {
