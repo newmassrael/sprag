@@ -4306,7 +4306,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -4318,6 +4318,14 @@ fn render_run(run: &Value) -> String {
                 outcome["failure"]
                     .as_str()
                     .map_or_else(String::new, |why| format!("\n  failed: {why}")),
+                // ⚠⚠ AND WHAT BECAME OF THE WORK, present only for a run that was CUT SHORT. A
+                // person who cancelled a loop and was told only `cancelled` cannot tell whether the
+                // peer stopped or is still spending — and two of the four answers here say it is
+                // still going. Dropping it was the shape this project keeps paying for: a fact that
+                // reaches the wire and dies at the mouth somebody actually reads.
+                outcome[sprag_host::plugins::RUN_STOPPED_KEY]
+                    .as_str()
+                    .map_or_else(String::new, |stopped| format!("\n  {stopped}")),
                 render_journal(run),
             )
         }

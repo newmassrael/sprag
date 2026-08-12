@@ -489,6 +489,107 @@ mod tests {
     use sprag_terminal::Workspace;
     use std::sync::{Arc, Mutex};
 
+    /// ⚠⚠⚠ **`Dialogue::driving()` ANSWERS `None`, AND THIS IS WHY IT IS ALLOWED TO** — driven,
+    /// not read.
+    ///
+    /// Every other plugin names the pane it is driving so a cut-short run can stop the work. This
+    /// one answers nothing, on the claim that it OWNS its per-turn pane and closes it on every exit
+    /// path — so the work is ended by a stronger route than a signal. **That claim was written from
+    /// reading the code**, which is the shape this workspace has been wrong about before: R335 wrote
+    /// seven exemptions from reading and driving them refuted six.
+    ///
+    /// So it is driven. The endpoint sleeps for five minutes and would outlive any test; the run is
+    /// cancelled mid-turn; and the assertion is about the PROCESS TABLE — the pid the turn spawned
+    /// is gone afterwards. If the guard were removed, or if closing a pane did not end its process
+    /// group, this fails with a five-minute `sleep` still live.
+    ///
+    /// ⚠ The pid is captured by a WATCHER, from the pane the turn opens, so the gate cannot pass by
+    /// having measured a turn that never started.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_cancelled_dialogue_leaves_no_process_behind_although_it_names_no_pane() {
+        use crate::access::PaneAccess;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use std::time::Instant;
+
+        // The pane's own child IS the `sleep`, so the pid the watcher reads is the work itself.
+        let endpoint = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "exec sleep 300".to_string(),
+            "_".to_string(),
+        ];
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 6))));
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let spawned = Arc::new(AtomicU32::new(0));
+        let watcher = {
+            let (cancel, spawned) = (Arc::clone(&cancel), Arc::clone(&spawned));
+            let workspace = Arc::clone(&workspace);
+            std::thread::spawn(move || {
+                let watching = WorkspacePaneAccess::new(workspace);
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(20) {
+                    let seen = (&watching as &dyn PaneAccess)
+                        .foreground_job()
+                        .and_then(|jobs| {
+                            (&watching as &dyn PaneAccess)
+                                .pane_ids()
+                                .into_iter()
+                                .find_map(|id| jobs.pane_foreground_leader(id))
+                        });
+                    if let Some(job) = seen.filter(|job| job.name == "sleep") {
+                        spawned.store(job.pid, Ordering::Release);
+                        cancel.store(true, Ordering::Release);
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                // ⚠ Cancel anyway so a broken fixture cannot hang the suite for five minutes; the
+                // assertion below is what reports that nothing was ever seen.
+                cancel.store(true, Ordering::Release);
+                false
+            })
+        };
+
+        let mut spec = DialogueSpec::new(endpoint.clone(), endpoint, "go");
+        spec.timeout = Duration::from_secs(300);
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: None,
+        })
+        .run(
+            &mut Dialogue::new(spec),
+            &access,
+            &RunContext::new(Arc::clone(&cancel)),
+        );
+
+        assert!(
+            watcher.join().expect("the watcher thread"),
+            "no turn ever reached a running peer, so this measured nothing",
+        );
+        assert_eq!(outcome.state, OutcomeState::Cancelled);
+        let pid = spawned.load(Ordering::Acquire);
+        assert!(pid > 0, "the watcher recorded the turn's own process");
+
+        let still_live = || sprag_terminal::procfs::pids_named("sleep").contains(&pid);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(15) && still_live() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !still_live(),
+            "⚠⚠ THE CLAIM: this plugin names no pane BECAUSE it ends its own — and pid {pid} is \
+             still running, so it does not",
+        );
+        // ⚠ AND THE OUTCOME SAYS SO in the vocabulary the other plugins share: a run that had
+        // nothing of its OWN left to stop, which is true here only because the guard got there
+        // first. A reader must not be told the work was signalled when it was closed.
+        assert_eq!(outcome.stopped, Some(crate::driver::Stopped::Nothing));
+    }
+
     /// A one-shot fake endpoint that replies with the newline-count of its
     /// prompt (`$1`): as the transcript accumulates, the prompt gains a line per
     /// turn, so the count strictly increases — a deterministic proof that the

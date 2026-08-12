@@ -388,6 +388,16 @@ impl Driver {
     /// ⚠ The context the PLUGIN sees is not the one handed in: the run's deadline
     /// is armed here, at the one moment "when does this run end?" has a single
     /// answer every wait underneath can share.
+    ///
+    /// # ⚠⚠⚠ Panics
+    ///
+    /// A panicking plugin's panic is RE-RAISED, after the work it had going is stopped. Swallowing
+    /// it would trade a leak for a lie — the host turns the worker's join failure into
+    /// `RunState::Panicked` and a caller is entitled to that — but letting it unwind unattended was
+    /// **the one ending that skipped the stop**. Measured: a plugin that typed `sleep 300` into a
+    /// pane and then panicked left the `sleep` running, with the run reported as panicked and
+    /// nothing said about the peer. That is precisely the unbounded loop the guardrails exist to
+    /// prevent, reached by the one path around them.
     #[must_use]
     pub fn run(
         mut self,
@@ -396,6 +406,40 @@ impl Driver {
         run: &RunContext,
     ) -> Outcome {
         let run = &run.deadline_in(self.guardrails.max_duration);
+        // ⚠⚠ THE STEPPING IS GUARDED AGAINST AN UNWIND, and `AssertUnwindSafe` is an assertion this
+        // makes rather than an escape: what the closure borrows is this Driver's own counters, a
+        // `Vec`, and the statechart engine, none of which a `plugin.step` panic can leave
+        // half-mutated — the panic happens INSIDE the plugin, before any of them is touched for
+        // that step. The plugin itself may well be inconsistent, which is why it is never stepped
+        // again and why the panic is re-raised rather than absorbed.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.step_to_a_terminal_state(plugin, panes, run);
+        }));
+        if let Err(payload) = unwound {
+            // ⚠ The same NARROW reach a cut-short run uses: a plugin bug must not close somebody's
+            // pane. And the report is DISCARDED here rather than published, because there is no
+            // outcome to publish it in — the honest channel for a panicking run is the panic.
+            let _ = Self::stop_the_work(&*plugin, panes);
+            std::panic::resume_unwind(payload);
+        }
+        // ⚠⚠ THE WORK OUTLIVES THE LOOP UNLESS SOMEBODY ENDS IT. After the statechart has reached a
+        // terminal state and before the outcome is assembled, because the answer is part of the
+        // outcome — a run that reports `cancelled` without saying what became of its work is
+        // telling half of what happened.
+        if self.cut_short {
+            self.stopped = Some(Self::stop_the_work(&*plugin, panes));
+        }
+        self.outcome()
+    }
+
+    /// Step the plugin until the statechart is final — [`run`](Self::run)'s loop, split out so the
+    /// unwind guard has one call to wrap rather than a closure holding the whole body.
+    fn step_to_a_terminal_state(
+        &mut self,
+        plugin: &mut dyn Plugin,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+    ) {
         self.engine.initialize();
         self.engine.process_event(OrchestrationEvent::Start);
         // `running` is the only non-final state in the loop.
@@ -446,14 +490,6 @@ impl Driver {
             };
             self.engine.process_event(event);
         }
-        // ⚠⚠ THE WORK OUTLIVES THE LOOP UNLESS SOMEBODY ENDS IT. Placed here, after the statechart
-        // has reached a terminal state and before the outcome is assembled, because the answer is
-        // part of the outcome — a run that reports `cancelled` without saying what became of its
-        // work is telling half of what happened.
-        if self.cut_short {
-            self.stopped = Some(Self::stop_the_work(&*plugin, panes));
-        }
-        self.outcome()
     }
 
     /// How the run ended FROM OUTSIDE its own logic — a person raised the cancel, or the clock ran
@@ -907,6 +943,126 @@ mod tests {
                 settled,
             );
         }
+    }
+
+    /// ⚠⚠⚠ **A RUN THAT PANICS IS THE FOURTH WAY ONE ENDS, AND IT LEFT ITS WORK RUNNING.**
+    ///
+    /// The host has a whole state for it — `RunState::Panicked`, raised when a worker thread's
+    /// join comes back `Err` — so this is not a hypothetical: it is an ending the product already
+    /// names and reports. And a panic UNWINDS past the end of [`Driver::run`], so the stop that
+    /// every other cut-short ending performs never ran.
+    ///
+    /// ⚠ The three endings that leave nothing behind were checked rather than assumed:
+    /// `Converged` and the per-step ceilings are decided with the last step returned, and a
+    /// `Failed` one cannot have work in flight because **every plugin's only fallible call after
+    /// its readiness barrier is the inject itself** — read across all four, and everything after it
+    /// is `Ok`. A panic is the one ending where a step is abandoned MID-FLIGHT.
+    ///
+    /// ⚠ REVERT-PROOF: remove the unwind guard from `Driver::run` and the `sleep` outlives the run.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_run_that_panics_mid_step_still_stops_the_work_it_had_going() {
+        use crate::access::WorkspacePaneAccess;
+        use sprag_terminal::{CommandBuilder, Workspace};
+        use std::time::Instant;
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((60, 8))));
+        let mut command = CommandBuilder::new("/bin/bash");
+        command.arg("--norc");
+        command.arg("-i");
+        command.env("TERM", "dumb");
+        command.env("PS1", "$ ");
+        let pane = workspace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn(command, "bash".to_string(), 60, 8)
+            .expect("spawn pane");
+        let child = workspace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pane(pane)
+            .and_then(|held| held.pty().pid())
+            .expect("a live child");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let until = |within: Duration, mut ready: Box<dyn FnMut() -> bool>| {
+            let start = Instant::now();
+            while start.elapsed() < within {
+                if ready() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(|| sprag_terminal::foreground_leader_of(child)
+                    .is_some_and(|job| job.pid == child)),
+            ),
+            "the shell must reach its own prompt first",
+        );
+
+        /// Types a job into the pane, waits for it to own the terminal, then PANICS.
+        struct PanicsMidStep(PaneId);
+        impl Plugin for PanicsMidStep {
+            fn step(
+                &mut self,
+                panes: &dyn PaneAccess,
+                _run: &RunContext,
+            ) -> Result<Step, PaneError> {
+                let mut keys = crate::access::KeyStroke::text("sleep 300");
+                keys.push(crate::access::KeyStroke::named("Enter"));
+                let _typed = panes.inject(self.0, &keys)?;
+                let jobs = panes
+                    .foreground_job()
+                    .expect("this host reads the job table");
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(15) {
+                    if jobs
+                        .pane_foreground_leader(self.0)
+                        .is_some_and(|job| job.name == "sleep")
+                    {
+                        // ⚠ THE PANIC IS RAISED WITH THE JOB PROVABLY RUNNING, so a gate that
+                        // passes cannot be passing because nothing had started.
+                        panic!("a plugin bug, raised while its peer is working");
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                panic!("the job never started, so this measured nothing");
+            }
+            fn driving(&self) -> Option<PaneId> {
+                Some(self.0)
+            }
+        }
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Driver::new(Guardrails {
+                max_iterations: 4,
+                max_cost: None,
+                max_duration: None,
+            })
+            .run(
+                &mut PanicsMidStep(pane),
+                &access,
+                &RunContext::uncancellable(),
+            )
+        }));
+        assert!(
+            unwound.is_err(),
+            "the panic must still reach the caller — the host turns it into RunState::Panicked, \
+             and swallowing it here would trade a leak for a lie",
+        );
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(|| !sprag_terminal::foreground_leader_of(child)
+                    .is_some_and(|job| job.name == "sleep")),
+            ),
+            "⚠⚠ A PANICKED RUN MUST NOT LEAVE ITS PEER WORKING — that is the unbounded loop the \
+             whole guardrail apparatus exists to prevent, reached by the one path that skips it",
+        );
     }
 
     /// A plugin whose step always fails — to pin the Driver's Err -> Failed

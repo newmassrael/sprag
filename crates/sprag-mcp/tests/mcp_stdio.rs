@@ -4703,6 +4703,50 @@ fn an_agent_starts_a_bounded_loop_and_reads_how_it_ended() {
     );
 }
 
+/// ⚠⚠⚠ **A CANCELLED RUN TELLS THE AGENT WHAT BECAME OF ITS WORK** — the half that reached the
+/// wire and died at the mouth.
+///
+/// `cancelled after N iterations` is consistent with two opposite states of the world: the peer
+/// stopped, or it is still going and still spending somebody's money. An agent cannot tell them
+/// apart and cannot derive the answer — only the daemon that tried the stop knows. The listing was
+/// printing the ceiling and the failure and dropping this, so the fact existed on the wire and
+/// never reached the one reader who acts on it.
+///
+/// ⚠ The pane here runs `exec cat`, so its OWN program is the peer — the case where a cut-short run
+/// is refused the reach that would close the pane, and therefore the case where the answer is *your
+/// work is still running*. That is the answer worth having, and it is the one that was missing.
+#[test]
+fn a_cancelled_run_tells_the_agent_whether_its_peer_is_still_working() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+    open_echo_pane(&mut server, "cancelme");
+
+    let started = server.call_tool(
+        "orchestrate",
+        json!({
+            "plugin": "orchestrator",
+            "pane": "cancelme",
+            "stimulus": "x",
+            // ⚠ The agent surface's own ceiling, not a bigger number: an agent may TIGHTEN a
+            // guardrail and never loosen one, so asking for more is refused before the run starts.
+            "sentinel": "A SENTINEL THIS PANE NEVER PRINTS",
+            "max_iterations": sprag_host::plugins::DEFAULT_MAX_ITERATIONS,
+        }),
+    );
+    assert!(started.contains("Run 0 started"), "{started}");
+    server.wait_for_tool("list_runs", json!({}), "still running");
+
+    let cancelled = server.call_tool("cancel_run", json!({ "run": 0 }));
+    assert!(!cancelled.is_empty(), "the cancel is taken: {cancelled}");
+
+    let ended = server.wait_for_tool("list_runs", json!({}), "cancelled");
+    assert!(
+        ended.contains("still running"),
+        "⚠⚠ THE ANSWER AN AGENT ACTS ON: a cancelled run must say whether its peer stopped, and \
+         this pane's own program IS the peer — so the honest answer is that it did not: {ended}",
+    );
+}
+
 /// ⚠⚠ **A LOOP IS REFUSED AGAINST A PANE THE AGENT DOES NOT OWN** — the rule the five other writing
 /// tools keep, and the reason this one had to have it.
 ///

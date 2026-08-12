@@ -2135,7 +2135,7 @@ fn render_run(run: &Value) -> String {
                 .as_str()
                 .map_or_else(String::new, |text| format!("  What it captured:\n{text}\n"));
             format!(
-                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}\n{}{reply}",
+                "Run {id} ({label}): {}{} after {} iterations, {} {}.{}{}\n{}{reply}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING, because the three have three different remedies and an agent
                 // told only `exhausted` has to guess which one to change. It is also the fact an
@@ -2152,6 +2152,14 @@ fn render_run(run: &Value) -> String {
                 outcome["failure"]
                     .as_str()
                     .map_or_else(String::new, |why| format!(" It failed: {why}.")),
+                // ⚠⚠ AND WHAT BECAME OF THE WORK, present only for a run that was CUT SHORT — the
+                // fact an agent cannot derive and most needs. A run that ended on somebody's cancel
+                // or on its clock may have left its peer working, and TWO of the four answers here
+                // say exactly that. `cancelled after 3 iterations` is consistent with both states
+                // of the world, and the one to act on is the one where the work goes on.
+                outcome[sprag_host::plugins::RUN_STOPPED_KEY]
+                    .as_str()
+                    .map_or_else(String::new, |stopped| format!(" {stopped}.")),
                 render_journal(run),
             )
         }

@@ -8260,6 +8260,17 @@ fn a_running_loop_is_cancelled_and_an_absent_one_is_told_apart() {
         "the run never ended cancelled: {}",
         sprag(&sock, &["runs", "-t", "work"]).stdout,
     );
+    // ⚠⚠ **AND WHAT BECAME OF THE WORK IS ON THE SAME LISTING.** `cancelled` alone is consistent
+    // with two opposite states of the world — the peer stopped, or it is still going and still
+    // spending — and the one a person acts on is the second. This pane's own program IS the peer
+    // (`exec cat`), so the run is REFUSED the reach that would have closed the pane, and the
+    // listing has to say so rather than leave `cancelled` to be read as *it is over*.
+    let listed = sprag(&sock, &["runs", "-t", "work"]).stdout;
+    assert!(
+        listed.contains("still running"),
+        "a cancelled run must say what became of its work, or the answer reaches the wire and \
+         dies at the mouth a person reads: {listed}",
+    );
 
     // A run nobody has is a REFUSAL with its own sentence, not a silent success — the difference
     // between "stopped" and "there was nothing to stop" is the whole of what a caller needs next.
