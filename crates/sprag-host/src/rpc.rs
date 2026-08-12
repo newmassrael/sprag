@@ -4619,10 +4619,20 @@ mod tests {
                 // list: its subject is the WIRE, so no session can be wrong about it, and a client
                 // whose session has gone is exactly the one that may need to look a verb up.
                 "action_grammar",
+                // ⚠ EACH FAMILY IS FOLLOWED BY ITS EMPTY MEMBER, and the pairing is the decision
+                // this ratchet asked for rather than a line to copy: an empty argument answers
+                // `Null` without consulting anything, so it can only ever be at least as reachable
+                // as the family it belongs to. A pair that SPLIT across these two lists would mean
+                // a caller could reach `doctor.<window_ms>` and not `doctor.`, which is the
+                // three-way taxonomy collapsing by another route.
                 "session_activity.<max_age_ms>",
+                "session_activity.",
                 "pane_processes.<max_age_ms>",
+                "pane_processes.",
                 "pane_resources.<max_age_ms>",
+                "pane_resources.",
                 "doctor.<window_ms>",
+                "doctor.",
             ],
             "these answer about the SET of sessions, or about the daemon itself, so a reader whose \
              own session has gone is still owed them",
@@ -4637,7 +4647,9 @@ mod tests {
                 "window_size",
                 "project.<pane>",
                 "neighbors.<pane>",
+                "neighbors.",
                 "events.<since>",
+                "events.",
             ],
             "these answer about ONE session, so a dead scope is refused — which is the DETACH \
              signal a display client's poll thread runs on",

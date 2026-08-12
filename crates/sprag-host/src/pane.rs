@@ -882,6 +882,19 @@ mod tests {
         }
     }
 
+    /// ⚠⚠⚠ **THIS SURFACE'S EMPTY MEMBERS ARE DECLARED** — all four of its families, against the
+    /// live surface. See [`crate::wire::assert_empty_members_are_declared`] for what it costs when
+    /// they are not.
+    #[test]
+    fn every_empty_member_this_pane_answers_is_one_it_declares() {
+        let (_workspace, external) = surface();
+        crate::wire::assert_empty_members_are_declared(
+            crate::wire::PANE_SCHEMA,
+            "the pane surface",
+            |path| external.query(path).is_some(),
+        );
+    }
+
     /// The other half of the same claim: encoded-once must not mean encoded-DIFFERENTLY.
     ///
     /// A `RawJson` carries text the producer wrote, and nothing downstream re-checks it against

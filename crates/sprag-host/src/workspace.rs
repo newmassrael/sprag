@@ -3287,6 +3287,23 @@ mod tests {
     /// The schema is asserted whole for the reason its own doc gives: the addresses this DAEMON
     /// serves do not shrink because one reader's session died, and a second shorter list would be a
     /// copy of the declaration `wire::MUX_SCHEMA` exists to be the only one of.
+    /// ⚠⚠⚠ **THIS SURFACE'S EMPTY MEMBERS ARE DECLARED** — all seven of its families, against the
+    /// live surface, and the one that answers NOTHING declares nothing.
+    ///
+    /// The mux surface is where the omission was widest: six of its seven families answered an
+    /// address none of them published, and no gate anywhere drove one of the six.
+    #[test]
+    fn every_empty_member_this_workspace_answers_is_one_it_declares() {
+        let reg = registry();
+        lock(&reg).new_session(Some("work")).unwrap();
+        let (scoped, _) = control(&reg);
+        crate::wire::assert_empty_members_are_declared(
+            crate::wire::MUX_SCHEMA,
+            "the mux surface",
+            |path| scoped.query(path).is_some(),
+        );
+    }
+
     #[test]
     fn the_dead_scope_surface_reads_the_registry_and_writes_nothing() {
         let reg = registry();

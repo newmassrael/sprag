@@ -286,6 +286,118 @@ const REGEX_ARGS: &[SchemaArg] = &[SchemaArg::open("pattern", "string")];
 pub const REGEX_FIELD: SchemaField =
     SchemaField::parametric("regex.<pattern>", "object", REGEX_ARGS);
 
+/// The EMPTY member of a parametric family, as the address it is.
+///
+/// # ⚠⚠⚠ TEN ADDRESSES THIS DAEMON SERVED AND NEVER PUBLISHED
+///
+/// A parametric family has a member whose argument is EMPTY — `find.` beside `find.<needle>` — and
+/// this daemon has always answered it, on purpose: `Null`, meaning *"that search is nothing"*,
+/// which is a different fact from `find` (**not an address at all**). Three cases, three answers,
+/// and the middle one is the reason a caller can tell *"this build has no find"* from *"I sent an
+/// empty box"*.
+///
+/// **What was never true is that the schema said so.** Four `query` slots in this workspace carry a
+/// comment claiming *"the path IS in the schema"* and it was not, in any of them. Measured across
+/// both published surfaces: **eleven parametric families, ten of which answer their empty member,
+/// and not one of the ten was declared.**
+///
+/// Nothing could see it until pinion R1637 (`dd9743eb`) made the declaration a GATE — *"a call must
+/// be declared first"* — at which point an undeclared address stopped being reachable. Two of the
+/// ten had gates and went red; **the other eight had been silently unreachable with nothing in the
+/// workspace to say so.** That gate is right, and this is the defect it found.
+///
+/// Derived from the family rather than spelled beside it, because a hand-written twin is the list
+/// the twelfth family is left out of — and the reading is checked from the other end too, by a gate
+/// that asks each live surface which empty members it ANSWERS and compares that with what its
+/// schema DECLARES.
+///
+/// ⚠ It takes the family's own `ty` rather than a type of its own. A family's declared type already
+/// permits `Null` for a malformed member — `cells.<offset>` says `frame` and answers `Null` for an
+/// offset that addresses nothing — so a second type word here would publish a distinction the
+/// surface does not make.
+#[must_use]
+pub const fn empty_member_of(family: &SchemaField) -> SchemaField {
+    SchemaField::new(literal_prefix_of(family.path), family.ty)
+}
+
+/// The literal run of `template` before its first placeholder — pinion's
+/// [`SchemaField::literal_prefix`](pinion_core::external::SchemaField::literal_prefix), in a form a
+/// `const` schema can call.
+///
+/// It exists only because that accessor is not `const`; a template with no placeholder answers
+/// itself, exactly as pinion's does. The split is on a byte, and safe: every placeholder in this
+/// workspace is preceded by ASCII, so the cut can never land inside a codepoint — and if it somehow
+/// did, this answers the whole template rather than reaching for `unsafe`.
+const fn literal_prefix_of(template: &'static str) -> &'static str {
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            break;
+        }
+        i += 1;
+    }
+    let (head, _) = bytes.split_at(i);
+    match std::str::from_utf8(head) {
+        Ok(prefix) => prefix,
+        Err(_) => template,
+    }
+}
+
+/// ⚠⚠⚠ **WHAT A SURFACE ANSWERS FOR AN EMPTY ARGUMENT IS WHAT ITS SCHEMA MUST DECLARE** — read
+/// from the LIVE surface, in both directions, for every parametric family it publishes.
+///
+/// This is the gate for [`empty_member_of`], and it is written against the surface rather than
+/// against the array because the array is the thing that was wrong: ten families answered an
+/// address none of them declared, for as long as they have existed, and the four comments claiming
+/// *"the path IS in the schema"* were the only record of a contract nothing enforced.
+///
+/// Both directions, because they fail differently and each is a real defect:
+///
+/// * ANSWERED and not DECLARED — the address is unreachable through a daemon whose boundary gates
+///   on the declaration (pinion R1637 onward), and the surface's own doc is a false statement.
+/// * DECLARED and not ANSWERED — `$schema` advertises an address that errors, which is worse than
+///   silence: a client enumerating the schema to build a call builds one that cannot work.
+///
+/// Placed here, beside the declarations, rather than in either surface's test module, because ONE
+/// rule over TWO published schemas is exactly the duplication this module exists to prevent — and a
+/// third surface gets it by calling this instead of by remembering.
+#[cfg(test)]
+pub(crate) fn assert_empty_members_are_declared(
+    schema: &'static [SchemaField],
+    surface: &str,
+    mut answers: impl FnMut(&str) -> bool,
+) {
+    let mut families = 0_usize;
+    for family in schema {
+        let empty = literal_prefix_of(family.path);
+        if empty == family.path {
+            // A scalar, an action, or an already-declared empty member: no placeholder, no
+            // separate address to reconcile.
+            continue;
+        }
+        families += 1;
+        let declared = schema.iter().any(|field| field.path == empty);
+        let answered = answers(empty);
+        assert_eq!(
+            declared,
+            answered,
+            "`{surface}` disagrees with itself about `{empty}`, the EMPTY member of \
+             `{}`: the schema {} it and the surface {} it. An address a surface answers and does \
+             not declare is unreachable through the declaration gate and its doc is false; one it \
+             declares and does not answer is advertised to every client that reads `$schema`.",
+            family.path,
+            if declared { "declares" } else { "omits" },
+            if answered { "answers" } else { "refuses" },
+        );
+    }
+    assert!(
+        families > 0,
+        "`{surface}` published no parametric family at all, so this gate measured nothing — it is \
+         written against a schema that has some",
+    );
+}
+
 /// The pane-input external's DECLARED SCHEMA — every path it answers, with its type and any
 /// arguments, in `$schema` order. [`SpragPaneExternal`](crate::SpragPaneExternal) publishes
 /// this verbatim.
@@ -305,6 +417,7 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::action(FOCUS_ACTION, "action"),
     SchemaField::action(PASTE_ACTION, "action"),
     CELLS_FIELD,
+    empty_member_of(&CELLS_FIELD),
     SchemaField::new(FRAMES_SLOT, "int"),
     SchemaField::new(CURSOR_KEYS_SLOT, "bool"),
     SchemaField::new(FULL_TEXT_SLOT, "string"),
@@ -313,8 +426,11 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     SchemaField::new(PROMPT_MARKS_SLOT, "array"),
     SchemaField::new(LINKS_SLOT, "array"),
     FIND_FIELD,
+    empty_member_of(&FIND_FIELD),
     REGEX_FIELD,
+    empty_member_of(&REGEX_FIELD),
     IMAGE_DATA_FIELD,
+    empty_member_of(&IMAGE_DATA_FIELD),
     SchemaField::new(CLIPBOARD_WRITE_SLOT, "object"),
     SchemaField::action(CLIPBOARD_ANSWER_ACTION, "action"),
     // HOW TO CALL THE SIX VERBS ABOVE — this surface's own [`PANE_GRAMMAR`]. A client that
@@ -1387,13 +1503,23 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::new(GLOBAL_COMMANDS_SLOT, "object"),
     SchemaField::new(AGENT_MANIFESTS_SLOT, "object"),
     SchemaField::new(ACTION_GRAMMAR_SLOT, "object"),
+    // ⚠ `PROJECT_FIELD` has NO empty member below, and that is the measurement rather than an
+    // omission: it is the one parametric family of the eleven whose surface answers `None` for an
+    // empty argument, so declaring one would publish an address this daemon does not serve. The
+    // gate over this array reads both directions, so the day it starts answering, it must declare.
     PROJECT_FIELD,
     NEIGHBORS_FIELD,
+    empty_member_of(&NEIGHBORS_FIELD),
     EVENTS_FIELD,
+    empty_member_of(&EVENTS_FIELD),
     SESSION_ACTIVITY_FIELD,
+    empty_member_of(&SESSION_ACTIVITY_FIELD),
     PANE_PROCESSES_FIELD,
+    empty_member_of(&PANE_PROCESSES_FIELD),
     PANE_RESOURCES_FIELD,
+    empty_member_of(&PANE_RESOURCES_FIELD),
     DOCTOR_FIELD,
+    empty_member_of(&DOCTOR_FIELD),
 ];
 
 /// The out-of-band request param naming the SESSION a request acts on — `{"session": "work"}`
@@ -7372,6 +7498,11 @@ mod tests {
         // R364: re-stamped for an ADDED REQUEST ARGUMENT (`shows_prompt`), with every ADDRESS
         // unchanged. An argument lives inside a form this pin does not walk, which is exactly the
         // blind spot named above and the reason the argument grammar has ratchets of its own.
+        // ⚠⚠ R364 AGAIN, and this time the ADDRESSES moved: TEN empty members
+        // (`find.`, `cells.`, …) that both surfaces have ALWAYS ANSWERED and never declared. The
+        // number stands, by this pin's own rule and by measurement: every one of them is a name
+        // ADDED, an old client that never asks is unaffected, and one that does ask gets the
+        // answer it got before pinion's declaration gate made an undeclared address unreachable.
         23,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
@@ -7388,6 +7519,7 @@ mod tests {
             "application_cursor_keys",
             "break_pane",
             "cancel",
+            "cells.",
             "cells.<offset>",
             "clients",
             "clipboard_answer",
@@ -7395,9 +7527,12 @@ mod tests {
             "close",
             "commands",
             "display_message",
+            "doctor.",
             "doctor.<window_ms>",
             "drop_file",
+            "events.",
             "events.<since>",
+            "find.",
             "find.<needle>",
             "focus",
             "frames",
@@ -7410,6 +7545,7 @@ mod tests {
             // WIRE_PROTOCOL stands — and this slot exists precisely so a client need not compile
             // the number in.
             "guardrail_defaults",
+            "image_data.",
             "image_data.<id>",
             "join_pane",
             "key",
@@ -7421,16 +7557,20 @@ mod tests {
             "mouse",
             "move_pane",
             "move_window",
+            "neighbors.",
             "neighbors.<pane>",
             "new_session",
             "new_window",
+            "pane_processes.",
             "pane_processes.<max_age_ms>",
+            "pane_resources.",
             "pane_resources.<max_age_ms>",
             "panes",
             "paste",
             "plugins",
             "project.<pane>",
             "prompt_marks",
+            "regex.",
             "regex.<pattern>",
             "rename_pane",
             "rename_session",
@@ -7445,6 +7585,7 @@ mod tests {
             "select_pane",
             "select_window",
             "session",
+            "session_activity.",
             "session_activity.<max_age_ms>",
             "sessions",
             "set_floating",
