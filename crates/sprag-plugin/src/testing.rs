@@ -32,6 +32,27 @@
 /// ⚠ Belongs on the READER, before the `&`: `while read x; do …; done </dev/tty &`.
 pub(crate) const STANDIN_READS_TTY: &str = "</dev/tty";
 
+/// Signal the backgrounded stand-in AND REAP IT, so the next thing the fixture does happens with
+/// the reader provably gone.
+///
+/// # ⚠⚠⚠ Why signalling it is not enough
+///
+/// `kill` DELIVERS a signal and returns; the shell then runs on while the target is still being
+/// torn down. A stand-in reading with [`STANDIN_READS_TTY`] is parked in a one-byte `read` on the
+/// pane's own terminal, and a shell's `read` builtin reads a byte at a time from a tty precisely so
+/// it cannot over-consume — so between the `kill` and the death there is a window in which the
+/// stand-in will take **exactly one byte** of whatever arrives.
+///
+/// What arrives is the next thing the fixture invites: a readiness marker, then a run's prompt. The
+/// cost was measured, and it is a CORRECTNESS failure rather than a timing one — a run that asked
+/// `"summarise the repo"` was answered `REPLY[ummarise the repo]`, converged, and published it.
+/// It surfaced only under whole-suite load, which is what a window looks like from outside.
+///
+/// Reaping closes it at the cause: the fixture waits for the observable fact (this process is gone)
+/// instead of for the act that should cause it. ⚠ Errors are discarded because a stand-in that has
+/// ALREADY exited is a perfectly good outcome — the fixture wants it dead, not killed by this line.
+pub(crate) const REAP_THE_STANDIN: &str = "kill $! 2>/dev/null; wait $! 2>/dev/null;";
+
 /// Assert that a readiness barrier REFUSED for `wanted`, and that the job it blames is the one the
 /// pane was LAUNCHED as.
 ///

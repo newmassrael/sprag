@@ -590,7 +590,7 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, Outcome, OutcomeState};
-    use crate::testing::STANDIN_READS_TTY;
+    use crate::testing::{REAP_THE_STANDIN, STANDIN_READS_TTY};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -806,9 +806,15 @@ mod tests {
         // execs a one-shot that reads until EOF and answers. The stand-in shell EATS what it is
         // given (see `STANDIN_READS_TTY`) — an un-eaten prompt would sit in the pty and be read by
         // the tool anyway, and this gate would pass without a barrier.
+        // ⚠⚠⚠ `kill` AND THEN REAP, and the reap is the whole fix. `kill` only DELIVERS a signal;
+        // the shell runs on without the reader being gone, so `TOOL-UP` could be printed while the
+        // stand-in was still parked in a one-byte `read` on this pane's tty. Under whole-suite load
+        // it was: the barrier cleared, the prompt was injected, and the dying reader took its FIRST
+        // BYTE — `REPLY[ummarise the repo]`, a whole run answering a question nobody asked. Forced
+        // deterministically in `a_reader_that_outlives_the_barrier_steals_the_prompts_first_byte`.
         let script = format!(
             "while read early; do echo \"SHELL-ATE $early\"; done {STANDIN_READS_TTY} & \
-             sleep 1; kill $! 2>/dev/null; printf 'TOOL-UP\\n'; \
+             sleep 1; {REAP_THE_STANDIN} printf 'TOOL-UP\\n'; \
              exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'"
         );
         let (access, pane) = sh_access(&script, 40, 8);
@@ -908,6 +914,68 @@ mod tests {
             delivered.contains("ping"),
             "a prompt the peer swallowed has to be asked again — this is the whole reason a \
              delivery is not a write: {delivered:?}",
+        );
+    }
+
+    /// ⚠⚠⚠ **A READER THAT OUTLIVES THE READINESS BARRIER STEALS THE PROMPT'S FIRST BYTE** — the
+    /// mechanism behind a load-marginal gate, forced into one deterministic run.
+    ///
+    /// `an_agent_waits_for_the_tool_…` failed under whole-suite load with a capture of
+    /// `REPLY[ummarise the repo]` — a CORRECTNESS symptom, not a timing one, filed with its cause
+    /// open. The cause is that signalling a process is not the same as it being gone, so a stand-in
+    /// parked in a one-byte `read` on the pane's tty is still there when the barrier clears, and
+    /// the very next thing that happens is the injection.
+    ///
+    /// Both arms against one shape, because the claim is about the REAP and not about `dd`:
+    ///
+    /// * THE CONTROL — a reader nobody reaps takes exactly one byte, and the peer answers a
+    ///   question this run did not ask. ⚠ It must carry [`STANDIN_READS_TTY`]: a background job of
+    ///   a non-interactive shell reads `/dev/null`, and without the redirect this arm eats nothing
+    ///   and passes for the wrong reason. **Measured — the first draft of this test did exactly
+    ///   that and reported a whole capture.**
+    /// * THE SUBJECT — the same reader, reaped ([`REAP_THE_STANDIN`]), cannot be holding a read
+    ///   when the prompt arrives, so the question reaches the peer whole.
+    #[test]
+    fn a_reader_that_outlives_the_barrier_steals_the_prompts_first_byte() {
+        /// One turn against a pane whose stand-in reader is dealt with by `how`, answering what the
+        /// peer was actually asked.
+        fn asked(how: &str) -> String {
+            let script = format!(
+                "dd bs=1 count=1 of=/dev/null 2>/dev/null {STANDIN_READS_TTY} & \
+                 sleep 0.3; {how} printf 'TOOL-UP\\n'; \
+                 exec sh -c 'in=$(cat); echo \"REPLY[$in]\"'"
+            );
+            let (access, pane) = sh_access(&script, 40, 8);
+            let mut agent = Agent::new(
+                pane,
+                AgentSpec {
+                    ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
+                    ..AgentSpec::new("summarise the repo")
+                },
+            );
+            let outcome = Driver::new(Guardrails {
+                max_iterations: 1,
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .run(&mut agent, &access, &RunContext::uncancellable());
+            assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+            let captured = agent.captured().expect("a captured reply");
+            access.lifecycle().expect("lifecycle").close(pane);
+            captured
+        }
+
+        assert_eq!(
+            asked(""),
+            "REPLY[ummarise the repo]",
+            "the control must really lose the first byte, or the subject below proves nothing — \
+             and this is the shape a whole-suite run hit for real",
+        );
+        assert_eq!(
+            asked(REAP_THE_STANDIN),
+            "REPLY[summarise the repo]",
+            "a barrier may only clear once the reader that was there before it is GONE — \
+             signalling it is an act, and what a fixture must wait for is the fact",
         );
     }
 
