@@ -592,17 +592,17 @@ impl Plugin for Agent {
         // spent, the peer's echo of the prompt published as the model's answer, and the only
         // explanation offered was *"the peer had not finished"* — a sentence about the PEER's speed
         // for a cause that is the TERMINAL's mode and was knowable before the wait began.
-        if waited == Waited::TimedOut && self.spec.eof {
-            if let Some(PaneEndOfInput::IsJustAByte) = panes
+        if waited == Waited::TimedOut
+            && self.spec.eof
+            && let Some(PaneEndOfInput::IsJustAByte) = panes
                 .terminal_modes()
                 .and_then(|modes| modes.pane_end_of_input(self.pane))
-            {
-                note.push_str(
-                    "; ⚠ AND THE END-OF-INPUT NEVER ARRIVED — this pane's terminal is not in \
-                     canonical mode, so the Ctrl-D this run sent is an ordinary byte and a peer \
-                     reading until end-of-input was never told the question was over",
-                );
-            }
+        {
+            note.push_str(
+                "; ⚠ AND THE END-OF-INPUT NEVER ARRIVED — this pane's terminal is not in \
+                 canonical mode, so the Ctrl-D this run sent is an ordinary byte and a peer \
+                 reading until end-of-input was never told the question was over",
+            );
         }
         // ⚠⚠ A HOLE IN THE ANSWER IS REPORTED, NEVER SWALLOWED. The pane's retained history is
         // bounded, so a reply that outran it between the prompt and the read has lines nothing can
