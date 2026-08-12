@@ -628,7 +628,15 @@ mod tests {
     /// alive, the write succeeds, the bytes are charged, and nothing appears.
     #[test]
     fn a_relay_into_a_destination_that_shows_nothing_reports_that_it_showed_nothing() {
-        let relay_into = |dst_script: &str| {
+        // ⚠⚠⚠ `dst_ready` IS NOT OPTIONAL DECORATION — a destination that configures its terminal
+        // must announce that it did, or this fixture races its own `stty`. The deaf arm below was
+        // `stty -echo; cat >/dev/null` with nothing waited for, and under whole-suite load the
+        // relay's write landed FIRST: the line discipline was still echoing, the text came back,
+        // and the run correctly reported *"only those bytes came back"* — the gate went red over a
+        // product that was right. R347 wrote this rule down; it is the third fixture in two rounds
+        // to be caught by it, which is why the wait is a parameter here rather than a line in one
+        // script.
+        let relay_into = |dst_script: &str, dst_ready: Option<&str>| {
             let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
             let spawn = |script: &str| {
                 let mut command = CommandBuilder::new("/bin/sh");
@@ -644,6 +652,14 @@ mod tests {
             let src = spawn("cat");
             let dst = spawn(dst_script);
             let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+            if let Some(marker) = dst_ready {
+                assert!(
+                    wait_until(&access, dst, marker),
+                    "the destination never announced that its terminal was configured, so \
+                     anything relayed below would be racing its `stty`",
+                );
+            }
 
             let mut seed = KeyStroke::text("relayme");
             seed.push(KeyStroke::named("Enter"));
@@ -681,14 +697,19 @@ mod tests {
         // pty echoing it, so the control was passing on the kernel's work. A destination that
         // PREFIXES what it reads produces a line that is not the relayed text, which is the only
         // evidence a screen can carry that a program read anything.
-        let heard = relay_into("while read line; do echo \"DST-SAW $line\"; done");
+        // No `stty`, so nothing to race: this destination keeps the pty's default discipline and
+        // proves it read by PREFIXING what it got.
+        let heard = relay_into("while read line; do echo \"DST-SAW $line\"; done", None);
         assert!(
             heard.contains("the destination answered"),
             "a destination that produces output of its own must read as answering: {heard}",
         );
 
         // THE SUBJECT — a destination that consumes its input and prints nothing.
-        let deaf = relay_into("stty -echo; cat >/dev/null");
+        let deaf = relay_into(
+            "stty -echo; printf 'DEAF-UP\\n'; cat >/dev/null",
+            Some("DEAF-UP"),
+        );
         assert!(
             deaf.contains("THE DESTINATION SHOWED NOTHING"),
             "a relay into a pane that shows nothing must say so — no number in the outcome can: \
@@ -700,7 +721,9 @@ mod tests {
         // destination running `sleep` shows the relayed text back exactly as a working one does.
         // Reading that as delivery is the same blindness R357 removed, one layer in — the check
         // was watching the kernel rather than the peer.
-        let unread = relay_into("sleep 5");
+        // Echo ON deliberately and no `stty` at all, so there is nothing here to wait for either —
+        // this arm is about the kernel doing the painting.
+        let unread = relay_into("sleep 5", None);
         assert!(
             !unread.contains("the destination reacted"),
             "nothing in this pane has read a byte — the text on screen is the pty's own echo, and \
