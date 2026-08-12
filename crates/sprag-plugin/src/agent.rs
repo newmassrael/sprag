@@ -658,7 +658,7 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, Outcome, OutcomeState};
-    use crate::testing::{REAP_THE_STANDIN, STANDIN_READS_TTY};
+    use crate::testing::{REAP_THE_STANDIN, STANDIN_READS_TTY, started};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -676,33 +676,6 @@ mod tests {
             .spawn(command, "sh".to_string(), cols, rows)
             .expect("spawn pane");
         (WorkspacePaneAccess::new(workspace), id)
-    }
-
-    /// Wait (bounded) for `marker` to appear on `pane`, so a run below starts against a peer that
-    /// is already up.
-    ///
-    /// # ⚠⚠ Why a run's own readiness barrier is not enough here
-    ///
-    /// The barrier is bounded by the RUN's clock, so on a loaded box a fixture that leaves the wait
-    /// to it spends the run's whole duration getting the peer started and then has none left for
-    /// the thing being measured — `Exhausted(Duration)` with `Bytes(0)` charged, which is a red
-    /// about the machine. Waiting HERE takes the startup out of the run's budget entirely, so the
-    /// clock can only be spent on the turn.
-    fn started(access: &WorkspacePaneAccess, pane: PaneId, marker: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if access
-                .pane_collapsed(pane)
-                .is_some_and(|text| text.contains(marker))
-            {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!(
-            "the peer never printed {marker:?}: {:?}",
-            access.pane_collapsed(pane)
-        );
     }
 
     fn run(access: &WorkspacePaneAccess, agent: &mut Agent) -> Outcome {

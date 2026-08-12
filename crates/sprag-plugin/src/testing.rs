@@ -53,6 +53,52 @@ pub(crate) const STANDIN_READS_TTY: &str = "</dev/tty";
 /// ALREADY exited is a perfectly good outcome — the fixture wants it dead, not killed by this line.
 pub(crate) const REAP_THE_STANDIN: &str = "kill $! 2>/dev/null; wait $! 2>/dev/null;";
 
+/// Wait (bounded) for `marker` to appear on `pane`, so a run below starts against a peer that is
+/// already up.
+///
+/// # ⚠⚠⚠ Why a run's own readiness barrier cannot do this job
+///
+/// The barrier is bounded by the RUN's clock. A fixture that leaves the wait to it is asking one
+/// budget to cover two different things — a loaded box's process startup, and the behaviour the
+/// gate exists to measure — and on a busy machine the first eats the second. What comes back is
+/// `Exhausted(Duration)` with `Bytes(0)` charged, or a journal whose last step is the readiness
+/// wait where the gate demanded the observe wait: **a red about the machine, wearing the shape of a
+/// red about the product.**
+///
+/// Every load-marginal failure this crate has recorded is that one shape. Waiting HERE takes the
+/// startup out of the run's budget entirely, so the clock can only be spent on the turn.
+///
+/// ⚠ **AND THEN THE BARRIER MUST CHANGE KIND, NOT DISAPPEAR.** A gate that drives the product's
+/// `ready_when` should go on driving it — but [`ReadyWhen::Prints`] asks for output produced AFTER
+/// it begins looking, so against a pre-waited peer it waits for a second announcement that never
+/// comes. [`ReadyWhen::Shows`] is the one that reads a marker already on the screen, which is
+/// exactly the state this helper leaves the pane in. R359b built that distinction for a caller;
+/// this is the same distinction met from the fixture's side.
+///
+/// [`ReadyWhen::Prints`]: crate::readiness::ReadyWhen::Prints
+/// [`ReadyWhen::Shows`]: crate::readiness::ReadyWhen::Shows
+pub(crate) fn started(
+    panes: &dyn crate::access::PaneAccess,
+    pane: sprag_terminal::PaneId,
+    marker: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if panes
+            .pane_collapsed(pane)
+            .is_some_and(|text| text.contains(marker))
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!(
+        "the peer never printed {marker:?}, so nothing below would be measuring what it says it \
+         is: {:?}",
+        panes.pane_collapsed(pane),
+    );
+}
+
 /// Assert that a readiness barrier REFUSED for `wanted`, and that the job it blames is the one the
 /// pane was LAUNCHED as.
 ///

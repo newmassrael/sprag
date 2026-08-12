@@ -205,7 +205,7 @@ mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState};
-    use crate::testing::STANDIN_READS_TTY;
+    use crate::testing::{STANDIN_READS_TTY, started};
     use sprag_terminal::{CommandBuilder, Workspace};
     use std::sync::{Arc, Mutex};
 
@@ -1141,14 +1141,24 @@ mod tests {
         // `stty -echo` stops the kernel echoing the injection; the reader discards what it reads.
         // Once ready, nothing this run does can reach the screen.
         let (access, pane) = sh_access(DEAF, 20, 4);
-        // ⚠ The readiness barrier is the PRODUCT's now (`ready_when`, below) rather than a helper
-        // this test kept to itself — so the gate drives the same wait a caller gets.
+        // ⚠⚠⚠ THE PEER IS UP BEFORE THE CLOCK STARTS. This run's whole point is arithmetic over a
+        // 1.2-second budget, and the readiness wait used to be INSIDE it: on a loaded box the
+        // startup ate the budget and the journal's last step was the readiness wait where the
+        // assertion below demands the observe wait. That is a red about the machine wearing the
+        // shape of a red about the product, and it is the one shape every load-marginal failure in
+        // this crate has taken.
+        started(&access, pane, "DEAF-READY");
+        // ⚠ The readiness barrier is still the PRODUCT's (`ready_when`, below) rather than a helper
+        // this test kept to itself — so the gate drives the same wait a caller gets. It changes
+        // KIND rather than going away: `Shows` reads a marker already on the screen, which is the
+        // state `started` leaves the pane in, while `Prints` would wait for a second announcement
+        // this peer never makes. See `testing::started`.
         let mut orch = Orchestrator::new(
             pane,
             OrchestrationSpec {
                 stimulus: "ping".to_string(),
                 sentinel: Some("A SENTINEL THIS PANE NEVER PRINTS".to_string()),
-                ready_when: Some(ReadyWhen::Prints("DEAF-READY".to_string())),
+                ready_when: Some(ReadyWhen::Shows("DEAF-READY".to_string())),
                 ready_within: None,
             },
         );
