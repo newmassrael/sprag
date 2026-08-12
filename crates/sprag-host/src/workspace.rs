@@ -86,8 +86,9 @@ use crate::wire::{
     RENAME_PANE_ACTION, RENAME_SESSION_ACTION, RENAME_WINDOW_ACTION, REPORT_AGENT_ACTION,
     RESIZE_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk, SELECT_PANE_ACTION,
     SELECT_WINDOW_ACTION, SESSION_ACTIVITY_FIELD, SESSION_SLOT, SESSIONS_SLOT, SET_FLOATING_ACTION,
-    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, SWAP_PANE_ACTION, SelectWindowAsk, SwapAsk,
-    TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef, ZOOM_PANE_ACTION,
+    SET_LAYOUT_ACTION, SPAWN_ACTION, SPLIT_ACTION, STOP_JOB_ACTION, SWAP_PANE_ACTION,
+    SelectWindowAsk, SwapAsk, TREE_SLOT, WINDOW_SIZE_SLOT, WINDOWS_SLOT, WindowRef,
+    ZOOM_PANE_ACTION,
 };
 
 /// The refusal every agent-report verb shares: this host runs no agent detector, so there is no
@@ -941,6 +942,53 @@ impl WorkspaceExternal {
         Ok(IntrospectValue::Json(
             serde_json::json!({ crate::wire::ENDED_KEY: ended.as_wire() }),
         ))
+    }
+
+    /// `stop_job {pane, signal?}` action: end what a pane is RUNNING, and leave the pane — see
+    /// [`crate::wire::STOP_JOB_ACTION`] for why this is neither a `C-c` nor a close.
+    ///
+    /// Daemon-wide for [`rename_pane`](Self::rename_pane)'s reason: this is about the PANE, whose
+    /// id is registry-unique, and a caller stopping a runaway job should not have to be attached to
+    /// the right window first.
+    ///
+    /// ⚠⚠ THE PID IS TAKEN AND THE LOCK IS NOT HELD ACROSS THE SIGNAL. R291 measured what I/O under
+    /// this lock costs a concurrent reader (median +0.8 us → +687 us, p99 → +41.8 ms), and this is
+    /// called at exactly the moment somebody is also watching the pane to see it stop.
+    fn stop_job(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
+        let map = as_object(args)?;
+        let id = require_pane_id(map, "pane")?;
+        let stop = match map.get(crate::wire::STOP_JOB_SIGNAL_KEY) {
+            // ⚠ An explicit `null` reads as ABSENT, not as malformed — R361 measured that same
+            // conflation on thirty-two optional arguments, and a generated client that spells an
+            // omitted argument `null` is an ordinary client.
+            None | Some(Value::Null) => sprag_terminal::Stop::Interrupt,
+            Some(Value::String(word)) => {
+                sprag_terminal::Stop::from_wire(word).ok_or(InvokeError::TypeMismatch)?
+            }
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        let pid = self
+            .scan_panes(|pane| (pane.id() == id).then(|| pane.pty().pid()))
+            .ok_or_else(|| refused(format!("no pane {} on this host", id.0)))?
+            // ⚠ A pane THIS HOST HOLDS whose child has been reaped is a different correction from a
+            // pane nobody knows — *your program finished* sends somebody to their scrollback, *there
+            // is no such pane* sends them to their pane list — so the two `None`s do not collapse.
+            .ok_or_else(|| refused(sprag_terminal::Unstopped::Gone.to_string()))?;
+        let job =
+            sprag_terminal::stop_foreground_job(pid, stop, sprag_terminal::Reach::TheProgramToo)
+                // ⚠ THE SENTENCE, not the variant — the same rule the plugin host's failures follow.
+                // A caller told `Unseen` learns nothing; one told what was not done and why can act.
+                .map_err(|why| refused(why.to_string()))?;
+        let mut answer = serde_json::json!({
+            crate::wire::STOP_JOB_STOP_KEY: job.stop.wire_str(),
+            crate::wire::STOP_JOB_PGID_KEY: job.pgid,
+        });
+        // The leader's name is present only when there is one to give — a group whose leader has
+        // gone still has members, and the stop still landed. Its ABSENCE is the fact.
+        if let Some(leader) = job.leader.as_ref().map(sprag_plugin::JobLeader::of) {
+            answer[crate::wire::STOP_JOB_LEADER_KEY] = Value::from(leader.named());
+        }
+        Ok(IntrospectValue::Json(answer))
     }
 
     /// `rename_pane {pane, name?}` action: name a pane, or take its name away — see
@@ -3011,6 +3059,7 @@ impl WorkspaceExternal {
             CLOSE_ACTION => self.close(&args),
             RESIZE_ACTION => self.resize(&args),
             RENAME_PANE_ACTION => self.rename_pane(&args),
+            STOP_JOB_ACTION => self.stop_job(&args),
             GRANT_PANE_ACTION => self.grant_pane(&args),
             SET_LAYOUT_ACTION => self.set_layout(&args),
             SET_FLOATING_ACTION => self.set_floating(&args),
@@ -8536,7 +8585,7 @@ mod tests {
         // would pass every assertion inside the gate by running none of them.
         assert_eq!(
             mux_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            31,
+            34,
             "one call per published word: four directions on each of three pane verbs (12), two \
              steps of the window ring, four places to move a window to, the three window-size \
              policies that fold clients (`manual` being the fourth and not one of them), the two \
@@ -8569,7 +8618,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            61,
+            62,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
              declined",
@@ -8583,7 +8632,7 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            100,
+            102,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
              per form rather than per verb: 31 across the seven ask-backed verbs and 64 across the \
              twenty declared inline (R355b described `resize` and `grant_pane`, exempted as nested \

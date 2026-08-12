@@ -16,7 +16,7 @@ use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
     Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneId, PanePtyHandle, RawOutput,
-    Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
+    Reach, Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
 };
 use sprag_vt::LinesSince;
 use sprag_vt::Screen;
@@ -627,7 +627,7 @@ pub trait PaneJobControl {
     /// [`PaneError::UnknownPane`] for a pane nobody knows, and [`PaneError::NotStopped`] when
     /// there was no group to signal or the kernel refused — ⚠ in which case the work is STILL
     /// RUNNING, which is the whole reason this answers instead of returning nothing.
-    fn pane_stop_job(&self, id: PaneId, stop: Stop) -> Result<Signalled, PaneError>;
+    fn pane_stop_job(&self, id: PaneId, stop: Stop, reach: Reach) -> Result<Signalled, PaneError>;
 }
 
 /// WHAT A STOP REACHED, as a plugin's caller reads it.
@@ -1046,14 +1046,14 @@ impl PaneJobControl for WorkspacePaneAccess {
     /// applies — and that is reported as [`Unstopped::Gone`] rather than as an unknown pane: the
     /// pane is still there, its program is not, and telling a caller their pane does not exist when
     /// it does would send them looking in the wrong place.
-    fn pane_stop_job(&self, id: PaneId, stop: Stop) -> Result<Signalled, PaneError> {
+    fn pane_stop_job(&self, id: PaneId, stop: Stop, reach: Reach) -> Result<Signalled, PaneError> {
         let pid = {
             let workspace = lock(&self.workspace);
             let pane = workspace.pane(id).ok_or(PaneError::UnknownPane(id))?;
             pane.pty().pid()
         };
         let pid = pid.ok_or(PaneError::NotStopped(Unstopped::Gone))?;
-        sprag_terminal::stop_foreground_job(pid, stop)
+        sprag_terminal::stop_foreground_job(pid, stop, reach)
             .map(|job| Signalled::of(&job))
             .map_err(PaneError::NotStopped)
     }
@@ -1273,7 +1273,7 @@ mod tests {
             .job_control()
             .expect("this host can signal a pane's job");
         let signalled = control
-            .pane_stop_job(pane, Stop::Interrupt)
+            .pane_stop_job(pane, Stop::Interrupt, Reach::TheProgramToo)
             .expect("the group is signalled");
         assert!(
             signalled
@@ -1318,13 +1318,13 @@ mod tests {
 
         assert!(
             until(Duration::from_secs(10), || matches!(
-                control.pane_stop_job(pane, Stop::Interrupt),
+                control.pane_stop_job(pane, Stop::Interrupt, Reach::TheProgramToo),
                 Err(PaneError::NotStopped(Unstopped::Gone)),
             )),
             "a pane whose child was reaped has nothing to stop, and says so about the PROGRAM",
         );
         assert_eq!(
-            control.pane_stop_job(PaneId(4242), Stop::Interrupt),
+            control.pane_stop_job(PaneId(4242), Stop::Interrupt, Reach::TheProgramToo),
             Err(PaneError::UnknownPane(PaneId(4242))),
             "and a pane nobody knows is a different correction entirely",
         );

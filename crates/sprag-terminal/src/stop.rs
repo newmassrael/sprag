@@ -110,6 +110,8 @@ impl Stop {
     }
 }
 
+sprag_vt::wire_words!(Stop: wire_str);
+
 impl std::fmt::Display for Stop {
     /// The verb a report uses for what was done, reading as *"the job was …"*.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -166,6 +168,39 @@ pub enum Unstopped {
     /// `ESRCH` for a group that ended between the read and the send — the window the module doc
     /// states — and `EPERM` for one this daemon may not signal.
     Refused(i32) = (0),
+    /// ⚠⚠ THE PANE'S OWN PROGRAM is what owns the terminal, and the caller asked to reach no
+    /// further than [`Reach::UnderTheProgram`] — so nothing was signalled.
+    ///
+    /// # Why this is a refusal and not a stop
+    ///
+    /// Signalling the pane's own child can END THE PANE: a program with no `SIGINT` handler dies,
+    /// its pty closes, and the pane goes with it. A shell survives that and `cat` does not, and
+    /// nothing here can tell those apart. For a caller who asked deliberately — a person typing
+    /// `stop-job` — that is a consequence they chose. For a BOUNDED RUN whose clock simply ran out
+    /// it is not: a routine timeout must not be able to close somebody's pane, still less the last
+    /// pane of a session. **Measured**: it closed one, and the daemon exited behind it.
+    IsTheProgram,
+}
+}
+
+sprag_vt::closed_set! {
+/// HOW FAR A STOP MAY REACH — the choice that decides whether the PANE can end with the job.
+///
+/// It is the caller's and cannot be inferred, because the two cases are indistinguishable from
+/// here: a pane whose own program is an agent CLI mid-turn and a pane whose own program is `cat`
+/// look identical to the process table, and a signal ends the turn in the first and the pane in the
+/// second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Only work the pane's own program STARTED. A foreground group that IS the pane's program is
+    /// left alone and reported as [`Unstopped::IsTheProgram`].
+    ///
+    /// What an automatic stop wants: a run that ran out of time ends the work it caused and never
+    /// the pane it was given.
+    UnderTheProgram,
+    /// Whatever owns the terminal, the pane's own program included — what a person's `Ctrl-C` does,
+    /// and what a caller naming one pane on purpose is asking for.
+    TheProgramToo,
 }
 }
 
@@ -183,6 +218,11 @@ impl std::fmt::Display for Unstopped {
             Self::Refused(errno) => write!(
                 f,
                 "the kernel refused to signal the pane's job (errno {errno})",
+            ),
+            Self::IsTheProgram => f.write_str(
+                "the pane's own program is what is running, and signalling that could end the \
+                 pane, so nothing was sent — stop it by name if that is what you want, or close \
+                 the pane",
             ),
         }
     }
@@ -202,17 +242,27 @@ impl std::fmt::Display for Unstopped {
 ///
 /// # At a prompt, the shell IS the job
 ///
-/// A pane sitting at its prompt has its own child as the terminal's foreground group, so a stop
-/// there is delivered to the shell — which is exactly what a person's `Ctrl-C` at a prompt does,
-/// and what a shell answers by redrawing the prompt. That is a delivered stop and it reports as
-/// one; it is not an error and it is not silently skipped, because a caller that asked to stop the
-/// work is entitled to know the work was the shell.
+/// A pane sitting at its prompt has its own child as the terminal's foreground group. Under
+/// [`Reach::TheProgramToo`] the stop is delivered to that shell — exactly what a person's `Ctrl-C`
+/// at a prompt does, and what a shell answers by redrawing the prompt. Under
+/// [`Reach::UnderTheProgram`] it is refused as [`Unstopped::IsTheProgram`], because the same
+/// delivery to a pane whose program is not a shell ends the pane.
 ///
 /// # Errors
 ///
-/// [`Unstopped`] when there is no group to signal or the kernel refused — see each arm.
-pub fn stop_foreground_job(pane_child: u32, stop: Stop) -> Result<StoppedJob, Unstopped> {
+/// [`Unstopped`] when there is no group to signal, the group IS the pane's own program and `reach`
+/// forbids that, or the kernel refused — see each arm.
+pub fn stop_foreground_job(
+    pane_child: u32,
+    stop: Stop,
+    reach: Reach,
+) -> Result<StoppedJob, Unstopped> {
     let pgid = crate::pane_pty::foreground_pgid_of(pane_child).ok_or(Unstopped::Unseen)?;
+    // ⚠ DECIDED BEFORE THE SIGNAL, necessarily: there is no undoing one, and the whole point of the
+    // narrow reach is that the pane must still be there afterwards.
+    if reach == Reach::UnderTheProgram && pgid == pane_child {
+        return Err(Unstopped::IsTheProgram);
+    }
     // Read the name BEFORE signalling: after it, `Stop::Kill`'s target may already be unreadable,
     // and a report that names nothing for the one request that always works would be worst where
     // it matters most.
@@ -311,10 +361,82 @@ mod tests {
     #[test]
     fn a_pane_with_no_process_to_read_is_refused_before_any_signal_is_sent() {
         assert_eq!(
-            stop_foreground_job(0, Stop::Kill),
+            stop_foreground_job(0, Stop::Kill, Reach::TheProgramToo),
             Err(Unstopped::Unseen),
             "an unreadable process has no foreground group, and the alternative reading of `0` is \
              this very test's process group",
+        );
+    }
+
+    /// ⚠⚠⚠ **THE NARROW REACH LEAVES THE PANE'S OWN PROGRAM ALONE, AND THE WIDE ONE ENDS IT** —
+    /// the same pane, the same instant, one argument different.
+    ///
+    /// # ⚠⚠ The measurement that put this here
+    ///
+    /// Before [`Reach`] existed, a run cut short signalled whatever owned the pane's terminal. On a
+    /// pane whose own program was `cat` — the fake peer every loop fixture uses — that killed the
+    /// child, the pty closed, the pane went, and it was a session's LAST pane, **so the daemon
+    /// exited.** A routine deadline expiring must not be able to do that. A person typing a stop at
+    /// one named pane may; those are different callers and the argument is how they say so.
+    ///
+    /// ⚠ The fixture is `exec sleep 300` with no shell in between, so the pane's own child IS the
+    /// foreground group — the condition being discriminated. A pane running a shell would have the
+    /// job one level down and both reaches would behave alike, which is exactly the case that would
+    /// make this gate vacuous.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_stop_that_must_not_end_the_pane_leaves_the_panes_own_program_running() {
+        use crate::{CommandBuilder, PanePty};
+        use std::time::{Duration, Instant};
+
+        let spawn = || {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec sleep 300");
+            command.env("TERM", "dumb");
+            let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+            let child = pty.pid().expect("a live child");
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(10) {
+                if crate::foreground_leader_of(child).is_some_and(|job| job.name == "sleep") {
+                    return (pty, child);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("the fixture never reached its job, so nothing below measures anything");
+        };
+
+        // ⚠ THE CONTROL: the narrow reach refuses, by name, and the program is still there.
+        let (narrow, child) = spawn();
+        assert_eq!(
+            stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram),
+            Err(Unstopped::IsTheProgram),
+            "a stop that may not end the pane must refuse when the pane's own program is what \
+             owns the terminal",
+        );
+        assert_eq!(
+            narrow.exit_status(),
+            None,
+            "⚠⚠ and NOTHING WAS SENT — the pane's program is still running, which is the whole \
+             point of the narrow reach",
+        );
+
+        // ⚠ THE SUBJECT: the wide reach is the same call with the caller's own decision in it.
+        let (wide, child) = spawn();
+        let stopped = stop_foreground_job(child, Stop::Interrupt, Reach::TheProgramToo)
+            .expect("a caller who asked for the program too reaches it");
+        assert_eq!(
+            stopped.pgid, child,
+            "and what it reached IS the pane's program"
+        );
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) && wide.exit_status().is_none() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            wide.exit_status().is_some_and(|exit| exit.signal.is_some()),
+            "⚠⚠ THE SUBJECT: the pane's own program ended by a signal — the consequence the narrow \
+             reach exists to keep away from a run that merely ran out of time",
         );
     }
 
@@ -390,7 +512,8 @@ mod tests {
              the job is still running — this is what `send-keys C-c` guarantees, and it is nothing",
         );
 
-        let stopped = stop_foreground_job(child, Stop::Interrupt).expect("the group is signalled");
+        let stopped = stop_foreground_job(child, Stop::Interrupt, Reach::TheProgramToo)
+            .expect("the group is signalled");
         assert_eq!(
             stopped.pgid, child,
             "the group signalled is the one that owns the pane's terminal",

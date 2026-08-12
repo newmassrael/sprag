@@ -309,6 +309,7 @@ fn dispatch(verb: Verb, mut args: impl Iterator<Item = String>) -> io::Result<()
         Verb::Events => events(args.collect()),
         Verb::SplitWindow => split_window(args.collect()),
         Verb::KillPane => kill_pane(args.collect()),
+        Verb::StopJob => stop_job(args.collect()),
         Verb::ResizePane => resize_pane(args.collect()),
         Verb::SendKeys => send_keys(args.collect()),
         Verb::CapturePane => capture_pane(args.collect()),
@@ -6478,6 +6479,95 @@ fn rename_pane(args: Vec<String>) -> io::Result<()> {
     match answer["name"].as_str() {
         Some(recorded) => println!("pane {pane} is now {recorded:?}"),
         None => println!("pane {pane} has no name"),
+    }
+    Ok(())
+}
+
+/// `stop-job PANE [--signal WORD]` — end what a pane is RUNNING, and leave the pane standing.
+///
+/// # ⚠⚠ Why this is not `send-keys PANE C-c`
+///
+/// Because that is a BYTE and this is a SIGNAL. `send-keys` writes `0x03` onto the pane's
+/// pseudoterminal and the line discipline decides what becomes of it — a program that took the
+/// terminal raw has turned signal generation off, and then the byte is ordinary input. Measured: a
+/// pane running `stty -isig; sleep 300` shows `^C` and keeps sleeping. This asks the daemon that
+/// owns the pty to signal the group itself, so nothing depends on the terminal's modes, and the
+/// answer names what received it.
+///
+/// ⚠ And not `kill-pane`, which ends the pane — its shell, its scrollback, its place in the layout.
+/// This ends the pane's current JOB and leaves the rest.
+fn stop_job(args: Vec<String>) -> io::Result<()> {
+    let (session, rest) = scope_and_rest(args, "stop-job")?;
+    let mut rest = rest.into_iter();
+    let asked = required_pane(rest.next(), "stop-job")?;
+    let mut signal: Option<String> = None;
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--signal" => {
+                let word = rest.next().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "stop-job: --signal needs one of {}",
+                            sprag_terminal::Stop::WIRE_WORDS.join(", "),
+                        ),
+                    )
+                })?;
+                // ⚠ Refused HERE and not at the daemon, and the reason is the sentence: a caller
+                // who mistyped a word is owed the list of words, and the wire's `TypeMismatch` has
+                // nowhere to carry one. The words come from the type, so the CLI cannot admit a
+                // spelling the daemon does not.
+                if sprag_terminal::Stop::from_wire(&word).is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "stop-job: {word:?} is not a signal this verb sends — say one of {}",
+                            sprag_terminal::Stop::WIRE_WORDS.join(", "),
+                        ),
+                    ));
+                }
+                signal = Some(word);
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("stop-job: unexpected argument {other:?}"),
+                ));
+            }
+        }
+    }
+    let mut conn = connect_scoped(session.as_deref())?;
+    let site = resolve_pane(&mut conn, session.as_deref(), &asked, "stop-job")?;
+    let pane = site.id;
+    let mut action_args = json!({ "pane": pane });
+    if let Some(word) = &signal {
+        action_args[sprag_host::wire::STOP_JOB_SIGNAL_KEY] = json!(word);
+    }
+    let answer: Value = invoke_action(
+        &mut conn,
+        site_invoke(
+            session.as_deref(),
+            &site,
+            mux_action_path(sprag_host::wire::STOP_JOB_ACTION),
+            action_args,
+        ),
+    )?;
+    // WHAT WAS DELIVERED and WHAT RECEIVED IT, both from the daemon: the caller may have omitted
+    // the signal, and a line that echoed the request would leave them to know the default.
+    // ⚠ The wire word read back through the TYPE, so the line a person reads is prose
+    // (`interrupted`) rather than the argument vocabulary (`interrupt`) — one mapping, in the one
+    // place that owns it, rather than a second list of three words here.
+    let delivered = answer[sprag_host::wire::STOP_JOB_STOP_KEY]
+        .as_str()
+        .and_then(sprag_terminal::Stop::from_wire)
+        .map_or_else(|| "stopped".to_owned(), |stop| stop.to_string());
+    let group = answer[sprag_host::wire::STOP_JOB_PGID_KEY]
+        .as_u64()
+        .unwrap_or_default();
+    match answer[sprag_host::wire::STOP_JOB_LEADER_KEY].as_str() {
+        Some(job) => println!("pane {pane}: {job:?} (process group {group}) — {delivered}"),
+        // A group whose leader has gone still has members, and the stop still landed on it.
+        None => println!("pane {pane}: process group {group} — {delivered}"),
     }
     Ok(())
 }

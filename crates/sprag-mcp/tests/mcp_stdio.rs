@@ -3887,7 +3887,8 @@ fn a_tool_against_an_older_daemon_says_so() {
             "machine_health" => json!({}),
             "read_pane" | "read_last_command" | "read_pane_links" | "read_pane_images"
             | "pane_processes" | "pane_resources" | "agent_state" | "agent_explain"
-            | "select_pane" | "break_pane" | "zoom_pane" | "close_pane" | "rename_pane" => {
+            | "select_pane" | "break_pane" | "zoom_pane" | "close_pane" | "rename_pane"
+            | "stop_job" => {
                 json!({ "pane": 1 })
             }
             "send_keys" => json!({ "pane": 1, "keys": ["Enter"] }),

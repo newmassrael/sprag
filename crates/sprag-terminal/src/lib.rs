@@ -108,7 +108,7 @@ pub use sprag_vt::closed_set;
 /// bare reference is the ambiguity the doc gate refuses, and R344's rule is that a word naming two
 /// things is a defect rather than a link to spell around.
 pub use sprag_vt::wire_words;
-pub use stop::{Stop, StoppedJob, Unstopped, stop_foreground_job};
+pub use stop::{Reach, Stop, StoppedJob, Unstopped, stop_foreground_job};
 pub use tiling::{Divider, PaneRect, Projection, Rect, Tiling, fit_window, tile, with_ratio};
 pub use window_name::{WindowName, WindowNameError};
 pub use workspace::{

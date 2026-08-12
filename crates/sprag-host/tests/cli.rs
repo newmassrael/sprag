@@ -5899,8 +5899,27 @@ fn a_hooks_report_does_not_outlive_an_agent_the_pane_did_not_spawn() {
     );
 
     // The agent dies without running a hook, which is what a crash, a SIGKILL and an OOM all look
-    // like from here. Ctrl-C reaches the foreground job and nothing else.
-    assert!(sprag(&sock, &["send-keys", "0", "C-c"]).ok);
+    // like from here.
+    //
+    // ⚠⚠⚠ **`stop-job` AND NOT `send-keys C-c`, AND THAT IS THE FIX FOR THIS TEST'S OWN FLAKE.**
+    // A `C-c` is a BYTE on the pty, and whether a `SIGINT` follows is the line discipline's
+    // decision at the instant it processes it — not the caller's. Under whole-workspace load on
+    // another machine this fixture failed exactly there, and instrumenting it showed the byte
+    // arriving (the screen carried its `^C` echo) with no signal behind it: the job alive, in its
+    // own group, still foreground, and the daemon still naming it. The report under test was
+    // CORRECT and the fixture's premise was not.
+    //
+    // `stop-job` signals the group itself, so what this fixture needs — the job GONE — is what it
+    // now asks for, and the answer names what received it. The `C-c` path is measured on its own,
+    // beside its control, in `sprag_terminal::stop`.
+    let stopped = sprag(&sock, &["stop-job", "0"]);
+    assert!(stopped.ok, "the pane's job is stopped: {}", stopped.stderr);
+    assert!(
+        stopped.stdout.contains("sleep"),
+        "and the stop NAMES the job it reached, which is how this fixture knows it stopped the \
+         agent rather than the shell: {}",
+        stopped.stdout,
+    );
     assert!(
         wait_for(Duration::from_secs(20), || {
             !sprag(&sock, &["agent", "0"]).stdout.contains("0: working")
@@ -6567,8 +6586,12 @@ fn every_verb_the_usage_says_takes_a_pane_reaches_one_a_window_over() {
             // stopped being a hand-written list and started naming every verb the binary
             // dispatches: this verb had been dispatched and undocumented, so nothing derived from
             // the usage could see it.
+            // `stop-job` needs nothing else — the pane one window over is at its own prompt, so
+            // the stop reaches its shell, which is what a `Ctrl-C` at a prompt reaches and what a
+            // shell answers by redrawing it. That leaves the pane exactly as it was, which is what
+            // this ratchet needs of a verb it drives against a LIVE pane.
             "run" | "break-pane" | "processes" | "resources" | "kill-pane" | "zoom-pane"
-            | "capture-pane" | "agent" | "release-agent" | "events" => vec![],
+            | "capture-pane" | "agent" | "release-agent" | "events" | "stop-job" => vec![],
             other => panic!(
                 "the usage says {other:?} takes a PANE and this ratchet has no other arguments for \
                  it. Add them — a skipped verb is a verb this test believes it covered."
@@ -7481,7 +7504,7 @@ fn every_verb_the_vocabulary_names_is_one_this_binary_answers_for() {
         // R355: three more, and they are the door onto the LOOP the README leads with. Each was
         // DRIVEN here before the count moved: the binary answers for `orchestrate`, `runs` and
         // `cancel-run` against a live daemon, which is what this sweep is for.
-        (56, 5, 3),
+        (57, 5, 3),
         "the shell half, the keyboard-only half, and the acts no shell spells yet",
     );
 
@@ -7650,7 +7673,7 @@ fn bind_key_answers_for_every_verb_in_the_words_the_table_promises() {
         // `orchestrate` (its whole content is the words) and `runs` (it answers) join the third,
         // and `cancel-run` is the SECOND entry in the fourth — a key could mean "cancel the runs I
         // started" and nobody has built that verb, which is a gap rather than a refusal.
-        (15, 10, 37, 2),
+        (15, 10, 37, 3),
         "bound outright / refused for flags / refused with a rule / not built yet",
     );
 
@@ -7886,8 +7909,8 @@ fn the_cli_prints_how_to_call_the_verbs_the_daemon_publishes() {
         .collect();
     assert_eq!(
         verbs.len(),
-        27,
-        "the multiplexer publishes twenty-seven of its twenty-eight verbs — `resize` and \
+        28,
+        "the multiplexer publishes twenty-eight of its twenty-nine verbs — `resize` and \
          `grant_pane` were exempted as NESTED values and are flat (R355b), leaving `set_layout`'s \
          arrangement tree as the only one whose reason survived being re-derived: {verbs:?}",
     );
@@ -8293,6 +8316,90 @@ fn show_grammar_points_at_the_plugin_host_and_names_what_is_inside_guardrails() 
     assert!(
         wrong.stderr.contains("sprag_mux") && wrong.stderr.contains("--plugins"),
         "the refusal names the surface it asked and the flags that name the others: {}",
+        wrong.stderr,
+    );
+}
+
+/// ⚠⚠⚠ **THE BYTE IS THE CONTROL AND THE VERB IS THE SUBJECT, THROUGH THE SHIPPED CLI.**
+///
+/// The same pair `sprag_terminal::stop` measures at the substrate, driven here through the two
+/// commands a person actually types — because what a caller has is the CLI, and a mechanism that is
+/// right one layer down and unreachable from the outside is not a fix.
+///
+/// The pane runs `stty -isig; exec sleep 300`, so its terminal has been told to make no signals out
+/// of input. Then:
+///
+/// 1. `send-keys PANE C-c` succeeds and the screen shows `^C` — the byte was PROCESSED, so what
+///    follows is not a race a longer wait would win. **The job lives.**
+/// 2. `stop-job PANE` ends it, and its line names the program and the process group.
+///
+/// ⚠ The `^C` assertion is what makes step 1 an OBSERVATION rather than a timer — the load-marginal
+/// shape this suite has paid for repeatedly.
+#[test]
+fn a_ctrl_c_is_a_byte_the_pane_may_ignore_and_stop_job_is_a_signal_it_cannot() {
+    let (_host, sock) = spawn_host();
+    let split = sprag(
+        &sock,
+        &[
+            "split-window",
+            "--",
+            "/bin/sh",
+            "-c",
+            "stty -isig; exec sleep 300",
+        ],
+    );
+    assert!(split.ok, "split-window succeeded: {}", split.stderr);
+
+    assert!(
+        wait_for(Duration::from_secs(15), || {
+            sprag(&sock, &["processes", "1"]).stdout.contains("sleep")
+        }),
+        "the fixture reached its job, or nothing below measures anything: {}",
+        sprag(&sock, &["processes", "1"]).stdout,
+    );
+
+    assert!(sprag(&sock, &["send-keys", "1", "C-c"]).ok);
+    assert!(
+        wait_for(Duration::from_secs(15), || {
+            sprag(&sock, &["capture-pane", "1", "-p"])
+                .stdout
+                .contains("^C")
+        }),
+        "⚠ THE CONTROL'S PREMISE: the terminal ECHOED the byte, so it was processed: {}",
+        sprag(&sock, &["capture-pane", "1", "-p"]).stdout,
+    );
+    assert!(
+        sprag(&sock, &["processes", "1"]).stdout.contains("sleep"),
+        "⚠⚠ THE CONTROL: `send-keys C-c` was written, echoed, and stopped nothing — which is what \
+         it guarantees, and it is nothing: {}",
+        sprag(&sock, &["processes", "1"]).stdout,
+    );
+
+    let stopped = sprag(&sock, &["stop-job", "1"]);
+    assert!(stopped.ok, "the job is signalled: {}", stopped.stderr);
+    assert!(
+        stopped.stdout.contains("sleep") && stopped.stdout.contains("interrupted"),
+        "⚠ and the line NAMES what received it and what was delivered — a write of 0x03 can \
+         report neither: {}",
+        stopped.stdout,
+    );
+    assert!(
+        wait_for(Duration::from_secs(15), || {
+            !sprag(&sock, &["processes", "1"]).stdout.contains("sleep")
+        }),
+        "⚠⚠ THE SUBJECT: the signal ended the job the byte could not: {}",
+        sprag(&sock, &["processes", "1"]).stdout,
+    );
+
+    // ⚠ AND A WORD THIS VERB DOES NOT SEND IS REFUSED WITH THE LIST. A caller who mistyped is owed
+    // the vocabulary, and the wire's own type refusal has nowhere to carry one.
+    let wrong = sprag(&sock, &["stop-job", "0", "--signal", "maim"]);
+    assert!(!wrong.ok);
+    assert!(
+        wrong.stderr.contains("interrupt")
+            && wrong.stderr.contains("terminate")
+            && wrong.stderr.contains("kill"),
+        "the refusal lists every word the verb takes: {}",
         wrong.stderr,
     );
 }

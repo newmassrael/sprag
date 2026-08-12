@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sce_rust_runtime::Engine;
-use sprag_terminal::{Stop, Unstopped};
+use sprag_terminal::{Reach, Stop, Unstopped};
 
 use crate::access::{PaneAccess, PaneError, Signalled};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
@@ -541,7 +541,7 @@ impl Driver {
         let Some(control) = panes.job_control() else {
             return Stopped::Unsupported;
         };
-        match control.pane_stop_job(pane, Stop::Interrupt) {
+        match control.pane_stop_job(pane, Stop::Interrupt, Reach::UnderTheProgram) {
             Ok(signalled) => Stopped::Job(signalled),
             Err(why) => Stopped::Unreached(why),
         }
@@ -634,7 +634,12 @@ mod tests {
     }
 
     impl crate::access::PaneJobControl for RecordingPanes {
-        fn pane_stop_job(&self, id: PaneId, stop: Stop) -> Result<Signalled, PaneError> {
+        fn pane_stop_job(
+            &self,
+            id: PaneId,
+            stop: Stop,
+            _reach: Reach,
+        ) -> Result<Signalled, PaneError> {
             self.asked
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -144,6 +144,8 @@ pub enum Verb {
     SplitWindow,
     /// `kill-pane` — end a pane, and whatever the cascade takes with it.
     KillPane,
+    /// `stop-job` — end what a pane is RUNNING, and leave the pane standing.
+    StopJob,
     /// `resize-pane` — move the boundary that bounds a pane.
     ResizePane,
     /// `zoom-pane` — one pane fills its window, or the arrangement comes back.
@@ -541,7 +543,7 @@ impl Verb {
     /// The one hand-written sequence in this module, and the only drift it can carry is an OMISSION
     /// — which [`the_table_holds_every_variant_of_the_enum`](self) catches by counting the enum's
     /// own variants out of this file's source, the instrument R322 built for the wire's methods.
-    pub const ALL: [Self; 64] = [
+    pub const ALL: [Self; 65] = [
         Self::Ls,
         Self::ListClients,
         Self::New,
@@ -572,6 +574,7 @@ impl Verb {
         Self::SwapPane,
         Self::SplitWindow,
         Self::KillPane,
+        Self::StopJob,
         Self::ResizePane,
         Self::ZoomPane,
         Self::RenamePane,
@@ -890,6 +893,18 @@ impl Verb {
                 Shell::Runs("[PANE] [-t SESSION]"),
                 Keystroke::Means("kill-pane"),
                 Agent::Tools(&["close_pane"]),
+            ),
+            // ⚠ `NotBuilt` and NOT `Cannot`, and the distinction is the honest one here. A person
+            // at the keyboard has `Ctrl-C` already — but that is a BYTE, and this verb exists
+            // because a byte is not a stop: on a terminal whose `ISIG` a program turned off, the
+            // keyboard cannot end the job and this can. So a binding would be worth having and
+            // sprag has not built one; filing it under `Cannot` would print a reason that is false.
+            Self::StopJob => (
+                "stop-job",
+                Group::Pane,
+                Shell::Runs("PANE [--signal interrupt|terminate|kill] [-t SESSION]"),
+                Keystroke::NotBuilt,
+                Agent::Tools(&["stop_job"]),
             ),
             Self::ResizePane => (
                 "resize-pane",
@@ -1573,7 +1588,7 @@ mod tests {
             // wanted a bounded loop against a sibling had to hand-roll one in its own turns,
             // without the iteration ceiling, the typed cost ceiling, the wall-clock deadline or
             // the cancel flag that exist.
-            (36, 7, 21),
+            (37, 7, 21),
             "an agent reaches {served} verbs, {not_built} are an agent's to ask and are not built, \
              and {refused} are refused with a reason",
         );
@@ -1723,7 +1738,7 @@ mod tests {
             // R353: `show-grammar` is the 53rd shell verb — the door onto the wire's own grammar.
             // R355: three more, and they are the door onto the LOOP the README leads with —
             // `orchestrate`, `runs` and `cancel-run`.
-            (56, 3, 5),
+            (57, 3, 5),
             "the shell dispatches {runs} verbs, {not_built} are a shell's to say and are not \
              built, and {refused} are refused with a reason",
         );
@@ -1808,7 +1823,7 @@ mod tests {
             // R355: `orchestrate` needs words and `runs` answers, so both are refused with a
             // reason; `cancel-run` is the second `NotBuilt` — a key COULD mean "cancel the runs I
             // started" and nobody has built that verb.
-            (25, 2, 37),
+            (25, 3, 37),
             "the keyboard reaches {bindable} verbs, {not_built} are a keystroke's to mean and are \
              not built, and {refused} are refused with a reason",
         );
@@ -1821,7 +1836,7 @@ mod tests {
             .collect();
         assert_eq!(
             pending,
-            ["run", "cancel-run"],
+            ["run", "stop-job", "cancel-run"],
             "the keyboard's remaining gap, by name",
         );
     }

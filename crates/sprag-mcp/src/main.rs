@@ -131,9 +131,11 @@ use sprag_host::wire::{
     NEW_WINDOW_ACTION, OUTCOME_KEY, PANES_SLOT, PaneProcessesWire, PaneResourcesWire,
     RENAME_PANE_ACTION, RENAME_WINDOW_ACTION, RESIZE_PANE_ACTION, RESIZE_WINDOW_ACTION, ResizeAsk,
     ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
-    SINCE_PARAM, SPAWN_ACTION, SWAP_PANE_ACTION, SelectAsk, SelectHow, SelectWindowAsk, SwapAsk,
-    SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, WindowPin, WindowRef, ZOOM_PANE_ACTION,
-    doctor_over, find_slot_for, pane_processes_at, pane_resources_at, regex_slot_for, settled,
+    SINCE_PARAM, SPAWN_ACTION, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY,
+    STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SWAP_PANE_ACTION, SelectAsk, SelectHow,
+    SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, WindowPin,
+    WindowRef, ZOOM_PANE_ACTION, doctor_over, find_slot_for, pane_processes_at, pane_resources_at,
+    regex_slot_for, settled,
 };
 use sprag_host::{ClientSize, PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -311,6 +313,12 @@ fn handle_initialize(message: &Value) -> Value {
             found rather than acting on it. \
             DRIVE a pane with `write_pane` (type a command) and `send_keys` (named keys and \
             chords). \
+            To STOP something you started, use `stop_job` rather than a `send_keys` C-c. A C-c is \
+            a BYTE, and whether a signal follows is the pane's terminal's decision, not yours — a \
+            full-screen program has turned that off, and the write reports success either way. \
+            `stop_job` sends the signal itself, leaves the pane and its scrollback standing, and \
+            names the program and process group that received it. It does not promise obedience: \
+            read the pane afterwards to see whether the job ended. \
             Instead of polling, WAIT: `wait_for_change` for the one change you name — a \
             job starting or finishing, a pane opening or closing, an agent's state moving — and \
             `wait_for_output` for a pane PRINTING text you name, which is how you run something \
@@ -973,6 +981,35 @@ fn tools_list() -> Value {
                         "name": {
                             "type": "string",
                             "description": "The new name. Omit it to take the pane's name away."
+                        }
+                    },
+                    "required": ["pane"],
+                    "additionalProperties": false
+                }
+            },
+            {
+                "name": "stop_job",
+                "description": "STOP what a pane YOU opened is RUNNING, without ending the pane. \
+                    Use it when a command you started is taking too long, is stuck, or is no \
+                    longer wanted — the pane, its shell and its scrollback all survive, so the \
+                    next thing can be run in it. This is NOT `send_keys` with a C-c: that writes \
+                    the byte 0x03 and the pane's terminal decides whether a signal follows (a \
+                    full-screen program has turned that off), and the write reports success \
+                    either way. This sends the signal itself and tells you which program and \
+                    which process group received it. It does NOT promise obedience — `interrupt` \
+                    and `terminate` can be caught; read the pane afterwards to see. A pane you \
+                    did not open is refused: what runs in it is somebody's work.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pane": pane_arg,
+                        "signal": {
+                            "type": "string",
+                            "enum": sprag_terminal::Stop::WIRE_WORDS,
+                            "description": "Which stop to send. `interrupt` (the default) is \
+                                what a person's Ctrl-C means: end the work, keep the program. \
+                                `terminate` asks the program itself to shut down. `kill` cannot \
+                                be refused and the program runs nothing on the way out."
                         }
                     },
                     "required": ["pane"],
@@ -2270,6 +2307,7 @@ fn handle_tools_call(message: &Value) -> Value {
         "open_pane" => tool_open_pane(&args),
         "close_pane" => tool_close_pane(&args),
         "rename_pane" => tool_rename_pane(&args),
+        "stop_job" => tool_stop_job(&args),
         "select_pane" => tool_select_pane(&args),
         "swap_pane" => tool_swap_pane(&args),
         "resize_pane" => tool_resize_pane(&args),
@@ -4797,6 +4835,95 @@ fn tool_close_pane(args: &Value) -> Result<String, String> {
 /// [`tool_close_pane`]'s rule, for its reason: the target is resolved and the gate evaluated from
 /// ONE listing, so the pane the caller named and the pane the gate answered about are the same pane
 /// at the same instant.
+/// `stop_job` — end what a pane YOU opened is RUNNING, and leave the pane standing.
+///
+/// # ⚠⚠⚠ Why this exists beside `send_keys`
+///
+/// An agent that wants to stop a runaway command has, until now, had one move: `send_keys` a
+/// `C-c`. **That is a byte, not a stop.** It becomes a signal only if the pane's line discipline is
+/// still willing to make one — a full-screen program has turned that off — and it reaches whichever
+/// process group owns the terminal at the instant the kernel reads it. `send_keys` reports success
+/// either way, so the agent cannot even find out. Measured: a pane running `stty -isig; sleep 300`
+/// echoes `^C` and keeps sleeping.
+///
+/// This asks the daemon that owns the pseudoterminal to signal the group itself, and the answer
+/// names what received it — so an agent can say *the build I started is stopped* rather than *I
+/// typed something at it*.
+///
+/// ⚠ **A PANE YOU DID NOT OPEN IS REFUSED**, on `close_pane`'s reasoning and more strongly: killing
+/// somebody's running work is not an agent's to do on a pane it did not start.
+fn tool_stop_job(args: &Value) -> Result<String, String> {
+    let signal = match args.get(STOP_JOB_SIGNAL_KEY) {
+        Some(Value::String(word)) => {
+            // ⚠ Checked HERE against the type's own words, so the refusal can LIST them. The
+            // daemon's `TypeMismatch` has nowhere to carry a vocabulary, and an agent told only
+            // that its argument was wrong will guess again.
+            if sprag_terminal::Stop::from_wire(word).is_none() {
+                return Err(format!(
+                    "'{STOP_JOB_SIGNAL_KEY}' must be one of {}, not {word:?}.",
+                    sprag_terminal::Stop::WIRE_WORDS.join(", "),
+                ));
+            }
+            Some(word.clone())
+        }
+        Some(Value::Null) | None => None,
+        Some(other) => {
+            return Err(format!(
+                "'{STOP_JOB_SIGNAL_KEY}' must be a string, not {other}"
+            ));
+        }
+    };
+    let pane = resolve_pane_ref(args)?;
+    let subject = pane.subject();
+    require_own_pane(
+        &pane,
+        "stop_job",
+        "Whatever is running in it is somebody's work, and ending it is theirs to decide.",
+    )?;
+    let mut action_args = json!({ "pane": pane.id() });
+    if let Some(word) = &signal {
+        action_args[STOP_JOB_SIGNAL_KEY] = json!(word);
+    }
+    let answer = host_call_kinded(
+        "scene/invoke",
+        with_args(
+            pane_params(&pane, mux_action_path(STOP_JOB_ACTION)),
+            action_args,
+        ),
+    )
+    .map_err(|why| {
+        refusal_sentence(
+            &why,
+            &format!(
+                "could not stop what {subject} is running: its program may have already finished, \
+                 or this host may not be able to see which job owns a pane's terminal. Call \
+                 read_pane to see where the pane got to."
+            ),
+        )
+    })?;
+    // What the DAEMON delivered, read back through the type so the sentence is prose — and an agent
+    // that omitted the argument learns which stop it got instead of having to know the default.
+    let delivered = answer
+        .get(STOP_JOB_STOP_KEY)
+        .and_then(Value::as_str)
+        .and_then(sprag_terminal::Stop::from_wire)
+        .map_or_else(|| "stopped".to_owned(), |stop| stop.to_string());
+    let group = answer
+        .get(STOP_JOB_PGID_KEY)
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let named = match answer.get(STOP_JOB_LEADER_KEY).and_then(Value::as_str) {
+        Some(job) => format!("{job:?} (process group {group})"),
+        // A group whose leader has already gone still has members, and the stop still landed.
+        None => format!("process group {group}"),
+    };
+    Ok(format!(
+        "{named} in {subject} was {delivered}. That is the SIGNAL delivered, not obedience: \
+         `interrupt` and `terminate` can be caught or ignored. Read the pane, or call \
+         list_panes, to see whether the job actually ended."
+    ))
+}
+
 fn tool_rename_pane(args: &Value) -> Result<String, String> {
     let new = match args.get("name") {
         Some(Value::String(name)) => Some(name.clone()),
@@ -7253,7 +7380,7 @@ mod tests {
         );
         // THE CONTROL: this is not vacuously true over two empty lists. The count is asserted where
         // the register's estimate was, so a later round reads a measured number.
-        assert_eq!(advertised.len(), 39, "the agent surface's roster");
+        assert_eq!(advertised.len(), 40, "the agent surface's roster");
     }
 
     /// ⚠⚠ **EVERY `int` ARGUMENT OF A RUN IS CLASSIFIED AS A PANE OR AS NOT ONE** — the gate that

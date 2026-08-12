@@ -454,6 +454,19 @@ impl InlineGrammar {
             &[ArgGrammar::open("id", "int").optional()],
         )];
 
+    /// [`STOP_JOB_ACTION`] — a pane, and WHICH stop to deliver to its job. Absent `signal` asks for
+    /// the one a person's `Ctrl-C` means, because that is what *"stop this"* means to everybody who
+    /// is not thinking about signals — and the harder two must be typed out on purpose.
+    pub const STOP_JOB: &'static [CallForm] = &[CallForm::object(&[
+        ArgGrammar::open(SPLIT_PANE_KEY, "int"),
+        ArgGrammar::one_of(
+            STOP_JOB_SIGNAL_KEY,
+            "string",
+            &sprag_terminal::Stop::WIRE_WORDS,
+        )
+        .optional(),
+    ])];
+
     /// [`ZOOM_PANE_ACTION`] — a pane, and whether to zoom it. Absent `on` TOGGLES.
     pub const ZOOM_PANE: &'static [CallForm] = &[CallForm::object(&[
         ArgGrammar::open(SPLIT_PANE_KEY, "int").optional(),
@@ -1100,6 +1113,11 @@ pub const MUX_GRAMMAR: &[ActionGrammar] = &[
         from_ask: false,
     },
     ActionGrammar {
+        action: STOP_JOB_ACTION,
+        forms: InlineGrammar::STOP_JOB,
+        from_ask: false,
+    },
+    ActionGrammar {
         action: ZOOM_PANE_ACTION,
         forms: InlineGrammar::ZOOM_PANE,
         from_ask: false,
@@ -1326,6 +1344,7 @@ pub const MUX_SCHEMA: &[SchemaField] = &[
     SchemaField::action(CLOSE_ACTION, "action"),
     SchemaField::action(RESIZE_ACTION, "action"),
     SchemaField::action(RENAME_PANE_ACTION, "action"),
+    SchemaField::action(STOP_JOB_ACTION, "action"),
     SchemaField::action(GRANT_PANE_ACTION, "action"),
     SchemaField::action(SET_LAYOUT_ACTION, "action"),
     SchemaField::action(SET_FLOATING_ACTION, "action"),
@@ -2704,6 +2723,56 @@ pub const ENDED_KEY: &str = "ended";
 /// The mux control external invoke action that resizes a pane's PTY + emulator (`{id?, cols, rows,
 /// cell_width?, cell_height?}`). `id` absent ⇒ the current window's ACTIVE pane.
 pub const RESIZE_ACTION: &str = "resize";
+
+/// The mux control external invoke action that STOPS WHAT A PANE IS RUNNING without ending the pane
+/// (`{pane, signal?}`), answering `{stop, pgid, job?}`.
+///
+/// # ⚠⚠⚠ Why this is not [`KEY_ACTION`] with a `C-c`
+///
+/// **Writing `0x03` into a pane is not a stop.** The byte becomes a `SIGINT` only if the terminal's
+/// line discipline is willing — a program that took the terminal raw has turned that off — and it
+/// reaches whichever process group owns the terminal at the instant the kernel processes it. Neither
+/// condition is one the caller can see, and a write reports success either way, so a caller could
+/// not even find out. Measured: a pane running `stty -isig; sleep 300` echoes `^C` and keeps
+/// sleeping. See [`sprag_terminal::stop`](../../sprag_terminal/stop/index.html).
+///
+/// This delivers the signal itself, to the group the terminal actually has in the foreground, and
+/// says what received it — the whole difference being that a daemon that owns the pty can act and
+/// report where a byte can only be sent and hoped for.
+///
+/// # ⚠ Why it is not [`CLOSE_ACTION`] either
+///
+/// That ends the PANE — its shell, its scrollback, its place in the layout. This ends the pane's
+/// current JOB and leaves the pane. For an AI control loop those are not degrees of the same act:
+/// the loop wants the peer's turn over and the peer still there for the next turn.
+///
+/// ⚠ **NO [`WIRE_PROTOCOL`] BUMP, and the reason is the constant's own
+/// rule rather than this note.** A bump is earned when an old peer would MISREAD or SILENTLY DROP.
+/// Neither direction does here: an old client never names this action, and a new client naming it
+/// at an old daemon is refused by name at [`declares_verb`] before any handler runs — the loud
+/// failure version 15's whole-new-capability bump existed because it did NOT have (a message to a
+/// daemon with no mailbox reached nobody, with no key whose absence could say so).
+pub const STOP_JOB_ACTION: &str = "stop_job";
+/// The answer key of [`STOP_JOB_ACTION`] naming WHAT the pane's job answers to, absent when the
+/// group's leader has already gone and its other members keep the group alive.
+///
+/// The name the CALLER would use — `JobLeader`'s own choice of `argv[0]` over the kernel's spelling
+/// — so a stop and a readiness refusal name one program the same way. The kernel's name, when the
+/// two disagree, is on `pane_processes`; publishing both here would invite a reader to take the
+/// same fact two ways.
+pub const STOP_JOB_LEADER_KEY: &str = "job";
+/// The [`STOP_JOB_ACTION`] argument naming WHICH stop to deliver — a
+/// [`Stop`](sprag_terminal::Stop) word. Absent asks for the one a `Ctrl-C` means.
+pub const STOP_JOB_SIGNAL_KEY: &str = "signal";
+/// The [`STOP_JOB_ACTION`] answer key echoing WHICH stop was delivered — the same vocabulary the
+/// argument takes, so a caller that omitted it learns what it got rather than having to know the
+/// default.
+pub const STOP_JOB_STOP_KEY: &str = "stop";
+/// The [`STOP_JOB_ACTION`] answer key naming the process GROUP that received the signal.
+///
+/// The ADDRESS and not only the name: it is what a person types into `kill` to check, and a report
+/// naming only a program leaves them nothing to verify with.
+pub const STOP_JOB_PGID_KEY: &str = "pgid";
 
 /// The mux control external invoke action that NAMES a pane (`{pane, name?}`). `name` absent (or
 /// `null`) takes the pane's name away.
@@ -6839,6 +6908,7 @@ mod tests {
                 "sprag_workspace/sprag_mux/set_floating:",
                 "sprag_workspace/sprag_mux/spawn:",
                 "sprag_workspace/sprag_mux/split:dir=horizontal,vertical",
+                "sprag_workspace/sprag_mux/stop_job:signal=interrupt,terminate,kill",
                 "sprag_workspace/sprag_mux/swap_pane:dir=left,right,up,down",
                 "sprag_workspace/sprag_mux/zoom_pane:",
                 // A PANE'S INPUT, all six verbs. `key`'s `state` and `clipboard_answer`'s `sel` were
@@ -7370,6 +7440,7 @@ mod tests {
             "set_layout",
             "spawn",
             "split",
+            "stop_job",
             "swap_pane",
             "text",
             "tree",
@@ -7745,8 +7816,8 @@ mod tests {
                 SURFACES,
             )
             .count_or_panic(),
-            36,
-            "the whole write half of this crate's wire: twenty-eight multiplexer verbs, a pane's six, \
+            37,
+            "the whole write half of this crate's wire: twenty-nine multiplexer verbs, a pane's six, \
              and the plugin host's two",
         );
     }
