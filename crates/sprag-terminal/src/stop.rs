@@ -167,6 +167,25 @@ pub enum Unstopped {
     ///
     /// `ESRCH` for a group that ended between the read and the send — the window the module doc
     /// states — and `EPERM` for one this daemon may not signal.
+    ///
+    /// # ⚠⚠ Why NOTHING BUILDS THIS, measured rather than assumed
+    ///
+    /// It was first written down as *"needs an `EPERM` a test cannot arrange without another
+    /// user's process"*, which was a guess. Driving it found the real reason, and it is worth more
+    /// than the guess was:
+    ///
+    /// * **`EPERM` is out of reach by construction.** The only group this function can name is the
+    ///   one a pane's terminal points at, and that is always a descendant of this daemon.
+    /// * **`ESRCH` needs the group GONE while the terminal still points at it**, which is a race of
+    ///   microseconds because the shell reclaims the terminal the moment it notices. The obvious way
+    ///   to hold that window open — `SIGSTOP` the shell, then kill the job — **does not work, and
+    ///   the reason is the interesting part: a stopped shell cannot REAP, so the job's leader
+    ///   becomes a ZOMBIE, a zombie is still a member of its process group, and `killpg` therefore
+    ///   SUCCEEDS.** Only the shell can reap it, and a shell that reaps is a shell that reclaims.
+    ///
+    /// So this arm is real in production — the module doc's window — and not constructible on
+    /// demand here. Its SENTENCE is covered through [`ALL`](Self::ALL); the path is not, and
+    /// **recorded so nobody adds a vacuous gate or a retry loop that passes by luck.**
     Refused(i32) = (0),
     /// ⚠⚠ THE PANE'S OWN PROGRAM is what owns the terminal AND THE KERNEL SAYS THE SIGNAL WOULD
     /// KILL IT, so nothing was sent — the caller asked to reach no further than
@@ -703,6 +722,88 @@ mod tests {
             "and it ended BY A SIGNAL rather than returning — the platform's own spelling for \
              which is not asserted, because a gate that names it asserts a distribution's \
              packaging",
+        );
+    }
+
+    /// ⚠⚠⚠ **A GROUP WHOSE LEADER HAS GONE IS STILL A JOB, AND THE STOP STILL LANDS ON IT** —
+    /// [`StoppedJob::leader`]'s `None`, built rather than registered.
+    ///
+    /// This was filed as *"built by nothing"* with the note that it needed a fixture killing a
+    /// leader mid-job. It needs no such thing: **a shell pipeline produces it by itself.** The
+    /// group's leader is the pipeline's FIRST process, so a pipeline whose head finishes first
+    /// leaves a live group led by a pid the kernel has already reaped — which is exactly the state
+    /// [`foreground_leader_of`](crate::foreground_leader_of) answers `None` for, while the terminal
+    /// still belongs to that group.
+    ///
+    /// ⚠ Both halves are asserted, because either alone is consistent with the bug: the terminal
+    /// belongs to a group that is NOT the pane's own child (so a job really is running), and the
+    /// leader is unreadable (so this is the arm under test). Then the stop is delivered anyway —
+    /// **a report that refused to act because it could not narrate would be the tail wagging the
+    /// dog**, which is what this arm's doc claims and what nothing had checked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_job_whose_leader_was_reaped_is_still_signalled_and_reported_without_a_name() {
+        use crate::{CommandBuilder, PanePty};
+        use std::time::{Duration, Instant};
+
+        // ⚠ `bash -i`: JOB CONTROL is what puts the pipeline in its own process group, which is the
+        // whole condition. A non-interactive shell runs it in the shell's group and the leader is
+        // the shell, which never goes.
+        let mut command = CommandBuilder::new("/bin/bash");
+        command.arg("--norc");
+        command.arg("-i");
+        command.env("TERM", "dumb");
+        command.env("PS1", "$ ");
+        let pty = PanePty::spawn(command, 40, 6).expect("spawn a pty");
+        let child = pty.pid().expect("a live child");
+        let until = |within: Duration, mut ready: Box<dyn FnMut() -> bool>| {
+            let start = Instant::now();
+            while start.elapsed() < within {
+                if ready() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(move || crate::foreground_pgid_of(child) == Some(child)),
+            ),
+            "the shell must reach its own prompt first",
+        );
+
+        // The head of the pipeline leads the job and finishes first; the tail keeps the group.
+        pty.write(b"sleep 0.2 | sleep 300\n").expect("write");
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(move || {
+                    let pgid = crate::foreground_pgid_of(child);
+                    pgid.is_some_and(|pgid| pgid != child)
+                        && crate::foreground_leader_of(child).is_none()
+                }),
+            ),
+            "the fixture never reached a live job whose leader was gone, so the arm under test \
+             was never entered",
+        );
+        let pgid = crate::foreground_pgid_of(child).expect("the terminal still belongs to the job");
+
+        let stopped = stop_foreground_job(child, Stop::Interrupt, Reach::TheProgramToo)
+            .expect("⚠⚠ a job with no readable leader is STILL a job, and the stop must land");
+        assert_eq!(stopped.pgid, pgid, "and it reached that group");
+        assert_eq!(
+            stopped.leader, None,
+            "⚠ with NO name to give, which is the fact this arm exists to carry rather than a \
+             failure to report",
+        );
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(move || crate::foreground_pgid_of(child) == Some(child)),
+            ),
+            "⚠⚠ AND THE WORLD AGREES: the job ended and the shell took its terminal back",
         );
     }
 }

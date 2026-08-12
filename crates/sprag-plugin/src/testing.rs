@@ -78,3 +78,60 @@ pub(crate) fn refused_naming(
          correction phrased in a word the caller never wrote is one they cannot act on",
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::refused_naming;
+    use crate::access::{JobLeader, PaneDoing, PaneError};
+    use crate::readiness::ReadyWhen;
+
+    /// ⚠⚠ **THE HELPER'S OWN REFUSALS FIRE** — the two paths that were registered as *"built by
+    /// nothing"* rather than written, which took a `#[should_panic]` each.
+    ///
+    /// It matters because this helper is what NINE gates decide a readiness refusal by. A shape
+    /// check that silently accepted the wrong shape would make all nine pass over a barrier that
+    /// refused for some other reason entirely, or over one that blamed nobody — and a gate that
+    /// cannot fail is worse than no gate, because its green is read as evidence.
+    #[test]
+    #[should_panic(expected = "did not refuse for a readiness it never reached")]
+    fn a_failure_that_is_not_a_readiness_refusal_is_rejected() {
+        refused_naming(
+            Some(&PaneError::Write("broken pipe".to_string())),
+            &ReadyWhen::Runs("claude".to_string()),
+            "claude",
+            "a write failure is not a barrier giving up",
+        );
+    }
+
+    /// The other half: a refusal that names no program at all. `PaneDoing::Unknown` is the honest
+    /// answer from a host with no process table — and a gate asserting *the refusal names what the
+    /// caller launched* must not read it as a pass.
+    #[test]
+    #[should_panic(expected = "nothing was reported as owning the pane's terminal")]
+    fn a_refusal_that_blames_nobody_is_rejected() {
+        refused_naming(
+            Some(&PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("claude".to_string()),
+                instead: PaneDoing::Unknown,
+            }),
+            &ReadyWhen::Runs("claude".to_string()),
+            "claude",
+            "a host that cannot see the process table blames nobody",
+        );
+    }
+
+    /// ⚠ AND THE CONTROL: the shape it is FOR passes. Without this the two above are satisfied by a
+    /// helper that panics unconditionally.
+    #[test]
+    fn the_shape_it_exists_for_passes() {
+        refused_naming(
+            Some(&PaneError::NeverReady {
+                wanted: ReadyWhen::Runs("claude".to_string()),
+                instead: PaneDoing::Job(JobLeader::known_as("sh".to_string())),
+            }),
+            &ReadyWhen::Runs("claude".to_string()),
+            "sh",
+            "a barrier that gave up on a pane still running its shell",
+        );
+    }
+}
