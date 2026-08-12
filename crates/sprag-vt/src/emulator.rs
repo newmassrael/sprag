@@ -1739,17 +1739,38 @@ impl Emulator {
                 // A SOFT WRAP IS, BY DEFINITION, A BREAK CAUSED BY THE WIDTH — so a row that never
                 // reached the right margin was not broken by the width and its line feed is a hard
                 // break, epoch or no epoch. That is why the editor's idiom exists at all: readline
-                // emits an explicit `CR LF` only at EXACT-FILL widths, where the content ends on
-                // the last column and it will not rely on autowrap. Anything short of the margin
-                // is somebody's output.
+                // emits an explicit `CR LF` only where the next cluster will not fit and it will
+                // not rely on autowrap. A row with room to spare is somebody's output.
+                //
+                // ⚠⚠⚠ "WILL NOT FIT" IS NOT "REACHED THE LAST COLUMN", and reading it that way was
+                // a bug only CJK could show. This said `held >= self.cols` — exact fill — and its
+                // own comment gave the premise away: readline breaks where the NEXT cluster does
+                // not fit, which is the last column for narrow text and ONE COLUMN EARLIER for a
+                // two-column one. So a Korean command line's redraw emitted this exact idiom at
+                // `cols - 1`, was read as a hard break, and stacked a per-width copy — the ghost
+                // this epoch exists to prevent, reachable only through wide text.
+                //
+                // Measured as a macOS CI red (`31639410510`) whose ASCII sibling stayed green in
+                // the same storm, and forced deterministically here in 0.00 s:
+                // `a_resize_redraw_row_a_wide_cluster_could_not_fit_is_a_soft_wrap_too`. The
+                // platform never came into it — a real bash's prompt length decides which width of
+                // a drag lands on the odd boundary, so it only decided whether the sweep sampled
+                // the hole (R368).
+                //
+                // ⚠ The bound is [`crate::port::MAX_GLYPH_COLUMNS`] and cannot be looser: a row with that many
+                // columns still free had room for the widest glyph there is, so its break was not
+                // width-caused. `a_resize_redraw_row_with_room_for_any_glyph_is_still_a_hard_break`
+                // holds that edge, because gluing unrelated output together is a far worse failure
+                // than the cosmetic ghost this trades against.
                 //
                 // ⚠ The residue, named and far narrower than the premise it replaces: a child that
-                // prints exactly `cols` characters and a `CR LF` inside the epoch emits the same
-                // bytes as the idiom and is still read as a continuation. Nothing at this layer can
-                // separate those two, and the reading that costs a cosmetic ghost is the one that
-                // does not corrupt a line.
+                // prints exactly `cols` (or `cols - 1`) characters and a `CR LF` inside the epoch
+                // emits the same bytes as the idiom and is still read as a continuation. Nothing at
+                // this layer can separate those two, and the reading that costs a cosmetic ghost is
+                // the one that does not corrupt a line.
                 let held = self.col.max(self.screen.row_content_len(self.row));
-                let soft_wrap = (self.in_resize_redraw && held >= self.cols).then_some(held);
+                let no_room_left = held + crate::port::MAX_GLYPH_COLUMNS > self.cols;
+                let soft_wrap = (self.in_resize_redraw && no_room_left).then_some(held);
                 self.screen.set_wrapped_at(self.row, soft_wrap);
                 self.line_feed();
                 // LNM (ANSI mode 20): under new-line mode a line feed also returns the cursor to
@@ -5011,6 +5032,78 @@ mod tests {
             "AAAAAAAAAABBBB",
             "a widen rejoins the repainted line; read as a hard break the two rows stay stacked, \
              which IS the ghost accumulation",
+        );
+    }
+
+    /// **A ROW A WIDE CLUSTER COULD NOT FIT ON IS ALSO A WIDTH-CAUSED BREAK** — the case the
+    /// exact-fill premise above cannot state.
+    ///
+    /// # The measurement this opened on
+    ///
+    /// CI run `31639410510`, macOS: `rapid_extreme_resize_with_wide_char_input_does_not_accumulate`
+    /// counted **4 prompts where 3 is the bound** — the ghost accumulation, smaller. Its ASCII
+    /// sibling, the same storm through the same code at the same instant, stayed green. That is the
+    /// discriminator, and it is not about the platform: **only a wide cluster can end a readline
+    /// redraw row one column SHORT of the margin.**
+    ///
+    /// The rule above reads *"anything short of the margin is somebody's output"*, and its own
+    /// comment gives the reason: readline emits this `CR LF` only where the content ends on the last
+    /// column and it will not rely on autowrap. A two-column cluster that will not fit at the last
+    /// column breaks the row at `cols - 1` and readline emits exactly the same idiom — so the
+    /// premise is true of ASCII and false of CJK, and the test that could see it ran on a real bash
+    /// whose prompt length decides which width of the sweep lands on the odd boundary. **The
+    /// platform only decided whether the sweep sampled the hole.**
+    ///
+    /// ⚠ `cols - 1` and not less: a row ending further back than that had room for the widest
+    /// glyph there is, so its break was not caused by the width. That is what keeps this from
+    /// swallowing ordinary output, and it is asserted below rather than argued.
+    #[test]
+    fn a_resize_redraw_row_a_wide_cluster_could_not_fit_is_a_soft_wrap_too() {
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"x");
+        em.resize(10, 4); // arms the redraw window
+        // NINE columns of content in a TEN-column row, then the idiom, then the cluster that would
+        // not fit. This is the exact shape readline paints a Korean command line in.
+        em.advance("\rAAAAAAAAA\r\n\u{c548}\u{b155}".as_bytes());
+        assert!(
+            em.screen().wrapped(0),
+            "the row broke because a 2-column cluster could not fit on it, which IS the width \
+             breaking the line",
+        );
+        assert_eq!(
+            em.screen().lines_since(0).partial,
+            "AAAAAAAAA\u{c548}\u{b155}",
+            "so the redraw is ONE logical line, the claim the whole epoch exists to make",
+        );
+
+        // ...and the SYMPTOM: a widen must rejoin it. Read as a hard break the two rows stay
+        // stacked, and a drag that visits this width leaves a ghost prompt behind — the fourth
+        // prompt the macOS runner counted.
+        em.resize(20, 4);
+        assert_eq!(
+            em.screen().row_text(0),
+            "AAAAAAAAA\u{c548}\u{b155}",
+            "the repaint collapses back into the one line the editor was painting",
+        );
+    }
+
+    /// ...and the CONTROL for it: a row that ended with room to spare is somebody's OUTPUT, and a
+    /// line feed after it is a hard break however deep in a redraw epoch it lands.
+    ///
+    /// Without this the fix above could be *"treat every short row as a continuation"*, which would
+    /// glue unrelated output together — the corruption the exact-fill rule was written to avoid, and
+    /// a far worse failure than the cosmetic ghost it is trading against.
+    #[test]
+    fn a_resize_redraw_row_with_room_for_any_glyph_is_still_a_hard_break() {
+        let mut em = Emulator::new(10, 4);
+        em.advance(b"x");
+        em.resize(10, 4);
+        // EIGHT columns in a ten-column row: the widest glyph there is would have fit, so the
+        // break cannot have been the width's doing.
+        em.advance("\rAAAAAAAA\r\n\u{c548}\u{b155}".as_bytes());
+        assert!(
+            !em.screen().wrapped(0),
+            "a row with room for a wide cluster was not broken by the width",
         );
     }
 

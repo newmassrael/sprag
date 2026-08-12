@@ -39,6 +39,15 @@ pub fn char_columns(ch: char) -> usize {
     UnicodeWidthChar::width(ch).unwrap_or(0)
 }
 
+/// The MOST columns any one glyph can occupy — [`char_columns`]'s ceiling, named so a reader that
+/// has to ask *"could anything still have fit here?"* does not answer it with a literal `2`.
+///
+/// The question is not decoration: a line editor's resize redraw breaks a row when the NEXT cluster
+/// will not fit, which is the last column for narrow text and one column earlier for a wide one.
+/// A row with this many columns still free had room for anything, so a break there was not the
+/// width's doing (`Emulator`'s resize-redraw reinterpretation, R368).
+pub const MAX_GLYPH_COLUMNS: u16 = 2;
+
 /// How many scrolled-off LOGICAL lines a [`Screen`] retains (FIFO) when nobody says otherwise —
 /// the DEFAULT for [`Screen::history_limit`], not a ceiling over it.
 ///
