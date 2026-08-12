@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use sprag_detect::{Hysteresis, Report, ReportOutcome, Ruleset, Tracker};
+use sprag_detect::{Hysteresis, Question, Report, ReportOutcome, Ruleset, Tracker};
 use sprag_terminal::PaneId;
 use sprag_vt::Screen;
 
@@ -130,6 +130,50 @@ pub struct AgentFacts {
     /// reported verdict carries no `rule` and a scraped one carries no `source`, so which authority
     /// answered is never a guess.
     pub source: Option<String>,
+    /// WHAT THE PANE IS ASKING, for a pane this look found `blocked` and whose menu this build
+    /// could read — `None` for every other pane.
+    ///
+    /// # ⚠⚠⚠ Why the registry carries it rather than each caller re-deriving it
+    ///
+    /// The question is a fact about THE SCREEN THIS VERDICT WAS REACHED ON, and the only place both
+    /// are in hand at once is inside [`observe`](AgentRegistry::observe). A caller that reads the
+    /// state here and parses the menu itself is reading two moments and calling them one — and it
+    /// cannot even be given the chance, because the pane list builds this map under the workspace
+    /// guard and renders it after the guard has dropped, with no screen left to consult. That is
+    /// exactly why the pane-level surface published `blocked` and no question for four rounds while
+    /// the RUN surface published both: the run path had a screen and the pane path did not.
+    ///
+    /// Deriving it once here also removes the duplication that had already appeared —
+    /// [`crate::plugins`]'s own observation re-read the same screen for the same parse — so the two
+    /// surfaces cannot come to disagree about what a pane is asking.
+    ///
+    /// ⚠ Only computed for a `blocked` verdict, which is what keeps it off the hot path: a settled
+    /// workspace of working and idle panes pays nothing, and a blocked pane pays one bottom-anchored
+    /// parse of a screen that is already mapped.
+    pub asking: Option<Question>,
+}
+
+/// A [`Question`] in the shape BOTH surfaces put it on the wire — the ONE renderer, so a pane's
+/// `asking` and a run's cannot come to differ.
+///
+/// The keys are [`crate::wire`]'s (see [`crate::wire::ASKING_KEY`] for why they are shared), and
+/// nothing is invented here: `asked` is the parser's lines and each choice is its number, its label
+/// and whether the agent's own marker is on it. A caller reads one shape whichever surface it came
+/// from.
+#[must_use]
+pub fn question_json(question: &Question) -> serde_json::Value {
+    serde_json::json!({
+        crate::wire::ASKED_KEY: question.asked,
+        crate::wire::CHOICES_KEY: question
+            .choices
+            .iter()
+            .map(|choice| serde_json::json!({
+                crate::wire::CHOICE_NUMBER_KEY: choice.number,
+                crate::wire::CHOICE_LABEL_KEY: choice.label,
+                crate::wire::CHOICE_SELECTED_KEY: choice.selected,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Every pane's agent-state memory, plus the one ruleset they are all evaluated against.
@@ -318,6 +362,13 @@ impl AgentRegistry {
         };
         let verdict = tracker.observe(screen, title, &self.rules, now);
         let state = verdict.state.wire_str();
+        // Read HERE, off the screen this verdict was reached on and while it is still in hand — see
+        // [`AgentFacts::asking`] for why no caller can be left to do it. Keyed on the VERDICT's own
+        // variant rather than on the rule that fired: `blocked` is the claim a reader acts on, and a
+        // manifest may reach it by more than one rule.
+        let asking = (verdict.state == sprag_detect::AgentState::Blocked)
+            .then(|| sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW))
+            .flatten();
         let agent = verdict.agent.clone();
         let rule = verdict.rule.clone();
         // Case 3: this look created the candidate, so the deadline it now implies has never been
@@ -329,6 +380,7 @@ impl AgentRegistry {
         }
         Some(AgentFacts {
             state: state?,
+            asking,
             agent,
             rule,
             seq: tracker.seq(),

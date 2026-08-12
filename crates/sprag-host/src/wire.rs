@@ -1276,6 +1276,58 @@ pub const AGENT_SEQ_KEY: &str = "seq";
 /// [`REPORT_AGENT_ACTION`]'s key asking the daemon to bind the report to the pane's process group.
 pub const AGENT_BIND_KEY: &str = "bind";
 
+/// The key carrying WHAT A BLOCKED PEER IS ASKING — on a pane's `agent` object and on a run's
+/// outcome alike.
+///
+/// # ⚠⚠ Why the two surfaces share one spelling and one renderer
+///
+/// A run's `asking` and a pane's `asking` are the same fact read off the same parse
+/// ([`crate::AgentFacts::asking`]), and they are reached by callers who move between the two: an
+/// agent watching a sibling pane go `blocked` and an agent whose RUN stopped on a peer are the same
+/// agent asking the same question one surface apart. Two spellings, or two shapes for `choices`,
+/// would make a caller written against one of them wrong against the other — the drift this tree
+/// keeps paying to remove.
+///
+/// ⚠ The run's object carries one member this one does not: `why`, the [`sprag_plugin::Refusal`] a
+/// RUN owes for not answering. A pane is not a run, has been given no consent and refuses nothing,
+/// so there is no reason to invent. See [`crate::agent::question_json`] for what the shared part is.
+pub const ASKING_KEY: &str = "asking";
+/// The [`AGENT_STATE_KEY`] word a BLOCKED pane publishes — the state [`ASKING_KEY`] belongs to.
+///
+/// # ⚠⚠ Why a mouth reads this instead of the type, and instead of the literal
+///
+/// A mouth has to recognise `blocked` to decide whether an ABSENT [`ASKING_KEY`] is a claim (this
+/// daemon looked and read no menu) or simply not that kind of pane. The agent-facing mouth carries
+/// `sprag-detect` as a DEV dependency only — deliberately, so a binary that renders wire values does
+/// not link the detector to read one word — so reaching the type is not available to it, and
+/// spelling `"blocked"` there would be a second definition of a vocabulary this tree keeps insisting
+/// has one.
+///
+/// DERIVED from [`sprag_detect::AgentState::wire_str`] at compile time rather than typed, which is
+/// the same rule [`crate::plugins::outcome_word`] follows: the word moves when the type moves.
+pub const AGENT_BLOCKED_STATE: &str = match sprag_detect::AgentState::Blocked.wire_str() {
+    Some(word) => word,
+    // A published state has a word by construction; only `Unknown` does not, and this is not it.
+    None => panic!("a blocked agent publishes a wire word"),
+};
+/// The [`ASKING_KEY`] member holding the question's own lines, in reading order.
+pub const ASKED_KEY: &str = "asked";
+/// The [`ASKING_KEY`] member holding the options, in screen order.
+pub const CHOICES_KEY: &str = "choices";
+/// A [`CHOICES_KEY`] entry's key carrying the number a caller would type to pick it.
+///
+/// Taken from the SCREEN and never from the option's position — a list that has scrolled does not
+/// start at one, which is the measurement [`sprag_detect::Choice::number`] records.
+pub const CHOICE_NUMBER_KEY: &str = "number";
+/// A [`CHOICES_KEY`] entry's key carrying what the option says.
+pub const CHOICE_LABEL_KEY: &str = "label";
+/// A [`CHOICES_KEY`] entry's key marking WHERE A BARE ENTER WOULD LAND.
+///
+/// ⚠⚠ The difference between confirming a tool call and declining it. Carried rather than left for
+/// a caller to infer, for the reason R366 measured: the commonest consent of all is answered by the
+/// marker's own position, and a reader that cannot see it must either guess or type a number.
+pub const CHOICE_SELECTED_KEY: &str = "selected";
+
 /// Every MULTIPLEXER verb that publishes its grammar — what [`MUX_SCHEMA`]'s surface serves.
 ///
 /// ⚠ A LIST, and the one place in this feature that is. What holds it honest is not review:
@@ -7019,7 +7071,12 @@ mod tests {
             // both senses: a fresh vocabulary on a fresh key (`asking.why`), published so a caller
             // can BRANCH on why a run stopped rather than read a sentence — R365's argument for
             // `signal_key` and `unraised`, and the reason those are not free-text notes either.
-            27,
+            // R367: re-stamped for an ADDED ANSWER KEY (`asking` on a pane's `agent` object) whose
+            // ABSENCE a reader takes as a claim. NEITHER enum a peer decodes whole moved, which is
+            // what this re-stamp says: the question's own members are lines, numbers, labels and a
+            // flag — a caller reads them, it does not decode a closed set out of them. The one word
+            // near it that IS closed (`state`) is unchanged; `blocked` has been there since 26.
+            28,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7231,7 +7288,12 @@ mod tests {
             // it, so both needles are open strings; a closed set here could only be sprag's guess
             // at what dialogs say, which is the guess `sprag_detect::question` exists to not make.
             // The number moves for the argument, on version 25's measured grounds.
-            27,
+            // R367: re-stamped for an ADDED ANSWER KEY (`asking` on a pane's `agent` object). This
+            // pin holds the REQUEST half, and R367 added no argument at all — the question travels
+            // outward only. ⚠ That asymmetry is the round's open residue rather than an oversight:
+            // a pane-level surface that can say what a peer is asking still offers no way to ANSWER
+            // it there, which is the run surface's `may_answer` and is registered as owed.
+            28,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7742,7 +7804,12 @@ mod tests {
         // step's fifth `verdict` word, and `asking.why`'s six). Every one of those lives inside a
         // form or a value, and this pin walks ADDRESSES — the blind spot named above, and the
         // reason the argument grammar and the answer vocabularies have ratchets of their own.
-        27,
+        // R367: re-stamped for a MEANING that changed under a name that did not move — the message
+        // above names exactly this case. The `panes` slot is the same address answering the same
+        // shape, except that a `blocked` pane's `agent` object now carries `asking`, and its
+        // ABSENCE there is a claim (this daemon read no menu) that an older daemon's silence does
+        // not make. No address moved, so this pin could not have seen it.
+        28,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

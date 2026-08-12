@@ -1202,10 +1202,40 @@ fn the_agent_tools_report_the_daemons_own_verdict() {
 
     // Naming one pane narrows the same reading.
     let one = server.call_tool("agent_state", json!({ "pane": 1 }));
-    assert_eq!(one.lines().count(), 1, "one pane, one line: {one}");
+    assert_eq!(
+        one.matches("state=").count(),
+        1,
+        "one pane, one verdict: {one}"
+    );
     assert!(
         one.contains("state=blocked"),
         "and it is the right one: {one}"
+    );
+
+    // ⚠⚠⚠ **AND IT SAYS WHAT THE PANE IS ASKING** (R367) — the whole point of asking this tool
+    // about a blocked pane, driven end to end: a real daemon parsed a real pty's screen, and the
+    // question crossed the wire, the mouth and MCP stdio without a caller reading a screen.
+    //
+    // Until R367 this surface published `blocked` and nothing else, so an agent that saw a sibling
+    // stop had to `read_pane` and re-derive a menu this daemon had ALREADY parsed for the run
+    // surface — off the same screen, in the same instant.
+    assert!(
+        one.contains("1. Yes") && one.contains("2. No"),
+        "every option a caller could pick has to reach it: {one}"
+    );
+    let takes_enter = one
+        .lines()
+        .find(|line| line.contains("a bare Enter takes this one"))
+        .unwrap_or_default();
+    assert!(
+        takes_enter.contains("1. Yes"),
+        "WHICH option a bare Enter would take is the difference between confirming a tool call and \
+         declining it, and it must be the one the agent's own marker is on: {one}"
+    );
+    assert!(
+        one.contains("may_answer") && one.contains("Do NOT type the number yourself"),
+        "...and the mouth must name the honest next moves rather than invite an agent to route \
+         around the consent contract with send_keys: {one}"
     );
 
     // A pane nobody has is an ERROR even though the whole-set form takes no argument: a caller who
@@ -1227,6 +1257,12 @@ fn the_agent_tools_report_the_daemons_own_verdict() {
     assert!(
         why.contains("`claude`"),
         "and whose manifest claimed the pane: {why}"
+    );
+    // ...and the MENU IT READ, which is the sharpest evidence the verdict is right — a `blocked`
+    // that names a rule and shows no question is exactly the reading a caller cannot check (R367).
+    assert!(
+        why.contains("1. Yes") && why.contains("2. No"),
+        "explaining a blocked verdict means showing what the detector read as the menu: {why}"
     );
 
     // The diagnosable answer for "why does my agent pane show nothing": no manifest claims it, so no

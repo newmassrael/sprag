@@ -74,15 +74,17 @@ const RUN_OPENED_BY_KEY: &str = "opened_by";
 pub const RUN_CEILING_KEY: &str = "ceiling";
 /// The outcome key carrying WHAT THE PEER IS ASKING, present only on a run that ended `blocked`
 /// and only where this host could read the question — see [`outcome_question`].
-pub const RUN_ASKING_KEY: &str = "asking";
+/// ⚠ ONE STRING, shared with the pane-level surface ([`crate::wire::ASKING_KEY`]) since R367: the
+/// same question is published in both places and a caller moves between them.
+pub const RUN_ASKING_KEY: &str = crate::wire::ASKING_KEY;
 /// The [`RUN_ASKING_KEY`] member holding the question's own lines, in reading order.
-pub const RUN_ASKED_KEY: &str = "asked";
+pub const RUN_ASKED_KEY: &str = crate::wire::ASKED_KEY;
 /// The [`RUN_ASKING_KEY`] member holding the options, in screen order — each `{number, label,
 /// selected}`.
 ///
 /// ⚠ `selected` is where a bare Enter would land, which is the difference between confirming a
 /// tool call and declining it. Carried rather than left for a caller to infer.
-pub const RUN_CHOICES_KEY: &str = "choices";
+pub const RUN_CHOICES_KEY: &str = crate::wire::CHOICES_KEY;
 /// The [`RUN_ASKING_KEY`] member saying WHY the run did not answer, from
 /// [`sprag_plugin::Refusal`]'s own words.
 ///
@@ -641,9 +643,10 @@ fn agent_state_source(
                 None => sprag_plugin::Authority::Scraped { rule: facts.rule },
             };
             Some(sprag_plugin::AgentObservation {
-                asking: (state == sprag_detect::AgentState::Blocked)
-                    .then(|| sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW))
-                    .flatten(),
+                // The REGISTRY's parse, not a second one taken here. It reads the same screen at the
+                // same instant, and having two sites derive it is how the run surface and the pane
+                // surface would come to disagree about what one pane is asking (R367 moved it).
+                asking: facts.asking,
                 state,
                 agent: facts.agent,
                 authority,
@@ -1115,18 +1118,15 @@ pub fn outcome_question(outcome: &Outcome) -> Option<Value> {
     // different things for the caller to fix — see [`RUN_WHY_KEY`].
     let mut asking = json!({ RUN_WHY_KEY: unanswered.why().wire_str() });
     if let Some(question) = unanswered.question() {
-        asking[RUN_ASKED_KEY] = json!(question.asked);
-        asking[RUN_CHOICES_KEY] = json!(
-            question
-                .choices
-                .iter()
-                .map(|choice| json!({
-                    "number": choice.number,
-                    "label": choice.label,
-                    "selected": choice.selected,
-                }))
-                .collect::<Vec<_>>()
-        );
+        // The SHARED renderer, so this surface and the pane list cannot come to spell one question
+        // two ways — see [`crate::wire::ASKING_KEY`]. `why` is merged over it rather than passed in
+        // because it is the one member a RUN owes and a pane does not.
+        let Value::Object(rendered) = crate::agent::question_json(question) else {
+            unreachable!("the shared renderer answers an object");
+        };
+        for (key, value) in rendered {
+            asking[key] = value;
+        }
     }
     Some(asking)
 }

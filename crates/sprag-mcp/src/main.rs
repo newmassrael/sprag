@@ -754,8 +754,12 @@ fn tools_list() -> Value {
                     (it has ASKED something and cannot continue until a human answers — a \
                     permission or trust dialog), and `idle` (at rest, waiting for input it has not \
                     asked for). A pane with NO agent state is reported as such and is NOT idle: \
-                    'this is not an agent' and 'this agent is waiting' are opposite facts. Given a \
-                    `pane`, reports that one; with no argument, every pane.",
+                    'this is not an agent' and 'this agent is waiting' are opposite facts. For a \
+                    `blocked` pane this also reports WHAT IT IS ASKING: the question, every \
+                    numbered option, and which one a bare Enter would take — so you can decide \
+                    without reading and re-interpreting the screen. Do NOT answer it by typing the \
+                    number with send_keys: start a run with `may_answer`, or hand the pane to a \
+                    person. Given a `pane`, reports that one; with no argument, every pane.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -852,7 +856,10 @@ fn tools_list() -> Value {
                     disagree with what agent_state reports. A pane no manifest claims is explained \
                     as exactly that, which is the diagnosable answer for 'why does my agent pane \
                     show nothing' — and if that config.toml will not parse at all, the answer says \
-                    so first, because an unparsed claim is indistinguishable from an absent one.",
+                    so first, because an unparsed claim is indistinguishable from an absent one. \
+                    For a `blocked` pane it also reports the menu the detector read, which is the \
+                    sharpest evidence a verdict is right — or says that no menu could be read \
+                    there, which means a person has to look.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "pane": pane_arg },
@@ -2609,6 +2616,17 @@ struct AgentInfo {
     /// Increments on a PUBLISHED change, so a poller tells "still blocked" from "blocked again"
     /// without diffing strings.
     seq: u64,
+    /// WHAT THE PANE IS ASKING (`{asked, choices}`), for a `blocked` pane whose menu the daemon
+    /// could read — the whole point of R367 reaching this mouth.
+    ///
+    /// Carried as the raw value rather than a parsed type for the reason `render_asking` is written
+    /// the same way: this binary depends on `sprag-host` for the wire's KEYS and not on
+    /// `sprag-detect` for its types, so a shape it re-declares here would be a second spelling of a
+    /// contract it does not own.
+    ///
+    /// ⚠ `None` on a `blocked` pane is a claim: the daemon looked and could not read a menu there.
+    /// [`asking_block`] says so out loud rather than printing nothing.
+    asking: Option<Value>,
 }
 
 /// Parse the additive `agent` object (`{state, name?, rule?, source?, seq}`) from a panes-slot
@@ -2628,7 +2646,78 @@ fn parse_agent_info(entry: &Value) -> Option<AgentInfo> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         seq: agent.get("seq").and_then(Value::as_u64).unwrap_or(0),
+        asking: agent.get(sprag_host::wire::ASKING_KEY).cloned(),
     })
+}
+
+/// WHAT A BLOCKED PANE IS ASKING, as an agent reads it — the question, its options, which one a
+/// bare Enter would take, and what the two honest next moves are.
+///
+/// `indent` is the caller's, because the two surfaces that print this sit at different depths
+/// (`list_panes` nests a pane's facts, `agent_state` gives one line per pane) and a block that
+/// chose its own would be misaligned on one of them.
+///
+/// # ⚠⚠⚠ Why a `blocked` pane with NO readable question still prints a line
+///
+/// Silence there reads as *"blocked, and nothing more is known"*, which is indistinguishable from
+/// an older daemon that never looked. The daemon DID look, and failing to read a menu has its own
+/// remedy — a person — so it is said. This is `Refusal::Unreadable`'s argument one surface along;
+/// the pane carries no `why` beside it because a pane was given no consent and refused nothing.
+///
+/// # ⚠⚠⚠ It does NOT tell the agent to type the digit
+///
+/// The same prohibition `render_asking` carries, and for the same reason: answering a sibling's
+/// dialog with `send_keys` routes around the consent contract — the check that exactly one option
+/// carries the authorised words, and the rule that no Enter is sent unjustified. A caller that
+/// wants this answered names a `may_answer` on a run, or hands the pane to a person.
+fn asking_block(agent: &AgentInfo, indent: &str) -> String {
+    if agent.state != sprag_host::wire::AGENT_BLOCKED_STATE {
+        return String::new();
+    }
+    let Some(asking) = &agent.asking else {
+        return format!(
+            "{indent}It is waiting on something this daemon could not read as a menu — a person \
+             has to look at this pane.\n",
+        );
+    };
+    let mut said = format!("{indent}It is asking:\n");
+    for line in asking[sprag_host::wire::ASKED_KEY]
+        .as_array()
+        .unwrap_or(&Vec::new())
+    {
+        said.push_str(&format!(
+            "{indent}  {}\n",
+            line.as_str().unwrap_or_default()
+        ));
+    }
+    for choice in asking[sprag_host::wire::CHOICES_KEY]
+        .as_array()
+        .unwrap_or(&Vec::new())
+    {
+        said.push_str(&format!(
+            "{indent}  {}. {}{}\n",
+            choice[sprag_host::wire::CHOICE_NUMBER_KEY]
+                .as_u64()
+                .unwrap_or_default(),
+            choice[sprag_host::wire::CHOICE_LABEL_KEY]
+                .as_str()
+                .unwrap_or_default(),
+            if choice[sprag_host::wire::CHOICE_SELECTED_KEY]
+                .as_bool()
+                .unwrap_or_default()
+            {
+                "   <- a bare Enter takes this one"
+            } else {
+                ""
+            },
+        ));
+    }
+    said.push_str(&format!(
+        "{indent}Answer it by starting a run with may_answer naming the question and the option in \
+         the agent's own words, or hand the pane to a person. Do NOT type the number yourself: \
+         that skips the check that exactly one option carries what you authorised.\n",
+    ));
+    said
 }
 
 /// One inline image a pane shows, as an agent reads it (R1404 Stage 5): its id, pixel size, and the
@@ -3436,6 +3525,9 @@ fn pane_summary(number: usize, pane: &PaneInfo, panes: &[PaneInfo], here: Option
     // reads it, and every other line answers a question about the terminal.
     if let Some(agent) = &pane.agent {
         out.push_str(&format!("      agent: {}\n", agent_line(agent)));
+        // ...and WHAT it is asking, when it is blocked. Beside the verdict rather than folded into
+        // it because the verdict is one line a scanner reads and this is a block a decider reads.
+        out.push_str(&asking_block(agent, "        "));
     }
     out
 }
@@ -6274,12 +6366,17 @@ fn tool_agent_state(args: &Value) -> Result<String, String> {
     let mut out = String::new();
     for pane in selected {
         match &pane.info.agent {
-            Some(agent) => out.push_str(&format!(
-                "  {}: id={} {}\n",
-                pane.subject(),
-                pane.id(),
-                agent_line(agent)
-            )),
+            Some(agent) => {
+                out.push_str(&format!(
+                    "  {}: id={} {}\n",
+                    pane.subject(),
+                    pane.id(),
+                    agent_line(agent)
+                ));
+                // The whole reason a caller asks this tool about a BLOCKED pane: not that it is
+                // blocked, but what it is blocked ON. Same block as `list_panes`, one indent in.
+                out.push_str(&asking_block(agent, "    "));
+            }
             None => out.push_str(&format!(
                 "  {}: id={} no agent (no manifest claims this pane — not the same as idle)\n",
                 pane.subject(),
@@ -6665,6 +6762,12 @@ fn tool_agent_explain(args: &Value) -> Result<String, String> {
          showing the same seq is the same verdict rather than a new one.\n",
         agent.seq, agent.seq
     ));
+    // ...and WHAT IT IS ASKING, which belongs on the tool that explains a verdict at least as much
+    // as on the one that reports it (R367). A caller reaches for `explain` when a verdict looks
+    // wrong, and for a `blocked` pane the sharpest evidence either way is the menu the daemon read
+    // — or the sentence saying it read none, which is a fact about the DETECTION and so is more at
+    // home here than anywhere else.
+    out.push_str(&asking_block(agent, ""));
     Ok(out)
 }
 
@@ -9551,6 +9654,7 @@ mod tests {
                 rule: Some("dialog-choice-list".to_owned()),
                 source: None,
                 seq: 4,
+                asking: None,
             }),
             ..shell
         };
@@ -9570,6 +9674,7 @@ mod tests {
                 rule: None,
                 source: Some("hook:claude".to_owned()),
                 seq: 5,
+                asking: None,
             }),
             ..claimed
         };
@@ -9590,6 +9695,96 @@ mod tests {
         assert!(
             !quiet.contains("agent:"),
             "a pane no manifest claims says nothing about an agent: {quiet}",
+        );
+    }
+
+    /// **THE AGENT-FACING MOUTH SAYS WHAT A BLOCKED SIBLING IS ASKING** — R367's half of the
+    /// surface an agent actually watches its neighbours through.
+    ///
+    /// Driven through the DAEMON's own renderer (`sprag_host::agent::question_json`) over a real
+    /// `sprag_detect::Question`, never a hand-spelled JSON object. R366b's finding, applied: a
+    /// fixture that writes the answer shape itself passes while the two sides drift, and the drift
+    /// is the entire failure mode a mouth has.
+    ///
+    /// Three claims, and the third is the one that keeps the consent contract intact:
+    ///
+    /// 1. the question and its options reach the reader;
+    /// 2. WHICH ONE A BARE ENTER TAKES is marked — here the refusal, so a reader that assumed the
+    ///    first option would act on the opposite of what the marker says;
+    /// 3. the mouth tells the agent NOT to type the digit. An agent that answered with `send_keys`
+    ///    would skip the check that exactly one option carries the authorised words.
+    #[test]
+    fn a_blocked_pane_tells_an_agent_what_it_asks_and_forbids_typing_the_digit() {
+        let question = sprag_detect::Question {
+            asked: vec!["Claude wants to run rm -rf build/".to_owned()],
+            choices: vec![
+                sprag_detect::Choice {
+                    number: 1,
+                    label: "Yes".to_owned(),
+                    selected: false,
+                },
+                sprag_detect::Choice {
+                    number: 2,
+                    label: "No, and tell Claude what to do differently".to_owned(),
+                    selected: true,
+                },
+            ],
+        };
+        let blocked = AgentInfo {
+            state: sprag_host::wire::AGENT_BLOCKED_STATE.to_owned(),
+            name: Some("claude".to_owned()),
+            rule: Some("dialog-choice-list".to_owned()),
+            source: None,
+            seq: 2,
+            asking: Some(sprag_host::agent::question_json(&question)),
+        };
+
+        let said = asking_block(&blocked, "  ");
+        assert!(
+            said.contains("Claude wants to run rm -rf build/"),
+            "the question itself has to reach the reader: {said}",
+        );
+        assert!(
+            said.contains("1. Yes") && said.contains("2. No, and tell Claude what to do"),
+            "...and every option, with the number that names it: {said}",
+        );
+        let enter_line = said
+            .lines()
+            .find(|line| line.contains("a bare Enter takes this one"))
+            .unwrap_or_default();
+        assert!(
+            enter_line.contains("2. No,"),
+            "the marker must be reported on the option it is ACTUALLY on — a reader that assumed \
+             the first would confirm what this dialog declines: {said}",
+        );
+        assert!(
+            said.contains("may_answer") && said.contains("Do NOT type the number yourself"),
+            "the two honest next moves, and the prohibition that keeps the consent contract from \
+             being routed around: {said}",
+        );
+
+        // A BLOCKED PANE WITH NO READABLE MENU still says something, and says the remedy. Silence
+        // here is indistinguishable from a daemon that never looks.
+        let unreadable = AgentInfo {
+            asking: None,
+            ..blocked.clone()
+        };
+        let said = asking_block(&unreadable, "  ");
+        assert!(
+            said.contains("could not read as a menu") && said.contains("a person"),
+            "an unreadable block names its own remedy: {said}",
+        );
+
+        // ...and a pane that is not blocked says NOTHING, so the block cannot become noise on every
+        // working agent in the list.
+        let working = AgentInfo {
+            state: "working".to_owned(),
+            ..blocked
+        };
+        assert_eq!(
+            asking_block(&working, "  "),
+            "",
+            "only a blocked pane is asking anything",
         );
     }
 

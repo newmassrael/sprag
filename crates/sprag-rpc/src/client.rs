@@ -658,7 +658,28 @@ impl ScopeAsk {
 ///   and only where exactly one option on offer carries that answer. See
 ///   `sprag_plugin::Consent`, whose whole design is that a consent cannot stretch to cover a
 ///   question the caller did not picture.
-pub const WIRE_PROTOCOL: u32 = 27;
+/// * **28** — a BLOCKED PANE says what it is asking, on the pane-level surface. `asking` on a
+///   pane's `agent` object in the `panes` slot — the same `{asked, choices:[{number, label,
+///   selected}]}` a run's outcome carries, from the same parse (R367).
+///
+///   ⚠ **AN ADDED ANSWER KEY WHOSE ABSENCE A READER WOULD TAKE AS A CLAIM** — version 27's third
+///   cause, and 24's shape. On a version-28 daemon, a `blocked` pane with no `asking` means *this
+///   daemon looked at that screen and could not read a menu there*, whose remedy is a person. On
+///   every older daemon it means *nothing ever looks*, and the two are indistinguishable to a
+///   caller that has learned to read the key. No address moves and no shape moves, so neither the
+///   address pin nor the shape pin can see it.
+///
+///   What earned it is what the silence cost. An agent watching a sibling pane go `blocked` had to
+///   `read_pane` and re-derive the menu — for a question this daemon had ALREADY PARSED, off the
+///   same screen, in the same instant, to publish on the RUN surface. So the parse existed, the
+///   answer existed, and the surface an agent actually watches its neighbours through published
+///   the state without it. Re-deriving from scraped text is where a supervisor mistakes *"2. No,
+///   and tell Claude what to do differently"* for an approval.
+///
+///   ⚠ The pane's object carries NO `why` beside it, unlike a run's. A run may be given a consent
+///   and refuse to use it, and owes a reason; a pane was given none and refuses nothing. Inventing
+///   the key here to make the two objects match would publish a refusal nobody made.
+pub const WIRE_PROTOCOL: u32 = 28;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

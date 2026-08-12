@@ -2869,6 +2869,25 @@ impl ExternalIntrospect for WorkspaceExternal {
                             if let Some(source) = &facts.source {
                                 value["source"] = serde_json::json!(source);
                             }
+                            // WHAT THE PANE IS ASKING — the question itself, its options, and which
+                            // one a bare Enter would take. ADDITIVE on the same terms as every key
+                            // beside it: present only on a pane this look found `blocked` AND whose
+                            // menu this build could read, so every other pane is byte-identical to
+                            // the pre-R367 wire shape.
+                            //
+                            // ⚠⚠ Its ABSENCE on a `blocked` pane is a claim too, and the one a
+                            // reader must not mistake: this daemon looked and could not read a menu
+                            // there. The remedy is a person, exactly as it is for a run
+                            // (`Refusal::Unreadable`) — but a pane carries no `why` beside it,
+                            // because a pane was given no consent and refused nothing.
+                            //
+                            // Until this key existed, an agent that saw a sibling go `blocked` had
+                            // to `read_pane` and re-derive a menu this daemon had already parsed —
+                            // for the RUN surface, on the same screen, in the same instant.
+                            if let Some(question) = &facts.asking {
+                                value[crate::wire::ASKING_KEY] =
+                                    crate::agent::question_json(question);
+                            }
                             entry["agent"] = value;
                         }
                         entry
@@ -4373,14 +4392,130 @@ mod tests {
                 "name": "claude",
                 "rule": "dialog-choice-list",
                 "seq": 1,
+                // ...and WHAT IT IS ASKING (R367). The whole object is asserted rather than the
+                // keys this round added, which is what makes it a ratchet: a key that appears here
+                // without a decision fails, and so does one that quietly leaves.
+                // ⚠ `asked` is EMPTY here and that is the parser being right: it is the lines
+                // ABOVE the first option, and this fixture paints its footer BELOW them. A
+                // question with no preamble is a real shape (the options carry the whole meaning),
+                // so the key is present and empty rather than absent.
+                "asking": {
+                    "asked": [],
+                    "choices": [
+                        { "number": 1, "label": "Yes", "selected": true },
+                        { "number": 2, "label": "No", "selected": false },
+                    ],
+                },
             }),
-            "the state a person wants, the agent, the rule that says WHY (D7), and the seq",
+            "the state a person wants, the agent, the rule that says WHY (D7), the seq — and the \
+             QUESTION, which this surface published nothing about until R367",
         );
 
         let shell = pane_entry(&mut ext, 0);
         assert!(
             shell.get("agent").is_none(),
             "a pane no manifest claims carries no key at all: {shell:?}",
+        );
+    }
+
+    /// A blocked `claude` whose dialog has a PREAMBLE and whose marker is NOT on the first option —
+    /// the shape that separates a surface carrying the question from one carrying a menu.
+    ///
+    /// Both departures from [`BLOCKED_CLAUDE`] are load-bearing. The preamble is the sentence a
+    /// policy classifies (`asked` is empty without one, which proves nothing about the field), and
+    /// moving the marker to option 2 is what makes `selected` a READING rather than a coincidence:
+    /// against a marker on option 1, "the first option" and "the selected option" are the same
+    /// answer and a surface that invented either would pass.
+    const BLOCKED_CLAUDE_ASKING: &str = "printf '\\033[2J\\033[HClaude wants to run rm -rf build/\\n  1. Yes\\n❯ 2. No, and tell \
+         Claude what to do differently\\n  ⏸ manual mode on · ? for shortcuts\\n'; cat";
+
+    /// **THE GATE FOR R367: the PANE-LEVEL surface carries what a blocked pane is asking.**
+    ///
+    /// # What was wrong, measured at R366b and unfixed until here
+    ///
+    /// `list_panes` / `agent_state` / `agent_explain` published `state`, `name`, `rule`, `source`
+    /// and `seq` — and NOT the question. So an agent that saw a sibling pane go `blocked` had to
+    /// `read_pane` and re-derive a menu THIS DAEMON HAD ALREADY PARSED, off the same screen, in the
+    /// same instant, to publish on the RUN surface. The parse existed; the surface an agent watches
+    /// its neighbours through threw it away.
+    ///
+    /// Re-deriving from scraped text is where a supervisor reads `2. No, and tell Claude what to do
+    /// differently` as an approval — which is why this fixture puts the marker THERE.
+    ///
+    /// REVERT-PROOF: drop the `asking` write in the panes-slot walk and the key vanishes; derive it
+    /// from the rule instead of the verdict and a reported `blocked` (the sibling gate below) stops
+    /// being distinguishable; take `selected` from the first option's position and the marker
+    /// assertion fails against this fixture and passes against [`BLOCKED_CLAUDE`], which is the
+    /// whole reason there are two.
+    #[test]
+    fn a_blocked_pane_publishes_the_question_its_options_and_where_a_bare_enter_lands() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        ext.invoke(
+            SPAWN_ACTION,
+            IntrospectValue::Json(json!({"cmd": ["sh", "-c", BLOCKED_CLAUDE_ASKING]})),
+        )
+        .unwrap();
+
+        let entry = await_agent(&mut ext, 0);
+        assert_eq!(
+            entry["agent"]["state"], "blocked",
+            "the fixture has to actually block, or nothing below is about a blocked pane: {entry:?}",
+        );
+        let asking = &entry["agent"][crate::wire::ASKING_KEY];
+        assert_eq!(
+            asking[crate::wire::ASKED_KEY],
+            json!(["Claude wants to run rm -rf build/"]),
+            "the sentence a policy classifies, in reading order: {entry:?}",
+        );
+        assert_eq!(
+            asking[crate::wire::CHOICES_KEY],
+            json!([
+                { "number": 1, "label": "Yes", "selected": false },
+                {
+                    "number": 2,
+                    "label": "No, and tell Claude what to do differently",
+                    "selected": true,
+                },
+            ]),
+            "the options in screen order, each with the number a caller would type — and the marker \
+             on the one a bare ENTER would take, which here is the REFUSAL: {entry:?}",
+        );
+    }
+
+    /// **A pane REPORTED blocked, with nothing on its screen to read** — the absence that is a claim.
+    ///
+    /// It is reachable and it is not a corner: a report outranks the screen ([`AgentRegistry`]), so
+    /// a hook that says `blocked` about a pane painting anything at all lands exactly here. The
+    /// answer must carry the verdict and NOT invent a question, because the remedy differs — a
+    /// question can be answered by a consent, and this can only be answered by a person.
+    ///
+    /// ⚠ This is also what pins the derivation to the VERDICT rather than to the rule: there is no
+    /// rule here at all.
+    #[test]
+    fn a_pane_reported_blocked_with_no_menu_publishes_the_verdict_and_no_question() {
+        let reg = registry();
+        let (mut ext, _agents) = control_with_agents(&reg);
+        ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .unwrap();
+        ext.invoke(
+            REPORT_AGENT_ACTION,
+            IntrospectValue::Json(json!({
+                "id": 0,
+                "source": "hook:claude",
+                "state": "blocked",
+                "name": "claude",
+                "seq": 3,
+            })),
+        )
+        .expect("a well-formed report is taken");
+
+        let entry = pane_entry(&mut ext, 0);
+        assert_eq!(entry["agent"]["state"], "blocked");
+        assert!(
+            entry["agent"].get(crate::wire::ASKING_KEY).is_none(),
+            "a daemon that could read no menu must say nothing rather than publish an empty one: \
+             {entry:?}",
         );
     }
 
