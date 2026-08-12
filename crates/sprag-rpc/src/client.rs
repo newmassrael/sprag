@@ -555,7 +555,30 @@ impl ScopeAsk {
 ///   The other direction is refused by number for version 12's reason: an old client never sends
 ///   the key, and a new daemon treats its absence as the behaviour it already had — the write, not
 ///   the delivery, which is what a one-shot peer that renders nothing needs.
-pub const WIRE_PROTOCOL: u32 = 23;
+/// * **24** — a pane input action says when what it just wrote MEANT a signal this pane will raise
+///   none. `key`, `text` and `paste` answered `null` on every success and answer
+///   `{"unsignalled": [{"key": "interrupt", "because": "raw"|"unbound"}]}` when the bytes that went
+///   in were a `Ctrl-C` the terminal will not turn into one (`sprag_host::wire::UNSIGNALLED_KEY`,
+///   R365).
+///
+///   ⚠ **THE THIRD BUMP FROM A VALUE THAT CHANGED SHAPE** (20 and 22 were the others), and version
+///   23's argument in the same breath. `null` became `null | object`, so a client that decoded the
+///   answer as a unit meets a map — but that is the smaller half. The larger one is that **the
+///   silence is load-bearing**: a client that has learned to read this caveat reads its ABSENCE as
+///   *the signal was raised*, and a pre-R365 daemon never writes one. The quiet half is not a
+///   withheld warning, it is a false guarantee — which is exactly why the number moves rather than
+///   the key being added quietly.
+///
+///   What earned it is that the write cannot report its own consequence. `0x03` becomes a `SIGINT`
+///   only while the line discipline has `ISIG` set, which every editor, every full-screen TUI and
+///   every interactive agent CLI clears on startup — and `PanePty::write` succeeds either way.
+///   Measured (R363): a pane running `stty -isig; sleep 300`, sent `C-c` through this product's own
+///   `send-keys`, echoes `^C` and the `sleep` lives on. The caller was told it sent a key.
+///
+///   ⚠ The byte is still WRITTEN and the call still succeeds. A person's `Ctrl-C` must reach a
+///   full-screen program as input — refusing the write to protect the automation caller would break
+///   the display client. This reports; it does not withhold.
+pub const WIRE_PROTOCOL: u32 = 24;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

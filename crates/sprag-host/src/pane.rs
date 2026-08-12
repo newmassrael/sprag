@@ -45,7 +45,7 @@ use pinion_core::external::{
 };
 use serde_json::{Value, json};
 use sprag_input::{KeyEdge, Modifiers, MouseButton, MouseEventKind, MouseInput};
-use sprag_terminal::PanePtyHandle;
+use sprag_terminal::{PanePtyHandle, SignalKey};
 use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
 use crate::external::{declined, refused, rpc_external_impl};
@@ -141,11 +141,69 @@ impl std::error::Error for KeyUnsent {}
 ///
 /// A [`KeyUnsent`] rather than `false`: see that type for why the two causes had to come apart. A
 /// caller that only needs "did it go" writes `.is_ok()`, which is what the display clients do.
-pub fn send_key(pty: &PanePtyHandle, key: &str, mods: Modifiers) -> Result<(), KeyUnsent> {
+///
+/// ⚠ Answers the BYTES it wrote, because the encoding is the only place they exist and a caller
+/// that must say what the write MEANT cannot re-derive them: a W3C key plus modifiers becomes PTY
+/// bytes through the pane's live input modes, so `Ctrl-C` is `0x03` only because this encoder said
+/// so — which is what the caveat below is computed from.
+pub fn send_key(pty: &PanePtyHandle, key: &str, mods: Modifiers) -> Result<Vec<u8>, KeyUnsent> {
     let bytes = sprag_input::encode(key, mods, pty.input_modes()).ok_or(KeyUnsent::Unencodable)?;
     pty.write(&bytes)
-        .map(|_| ())
+        .map(|_| bytes)
         .map_err(|_| KeyUnsent::NotWritten)
+}
+
+/// The caveat a pane-input action answers when `written` MEANT a signal this pane will not raise —
+/// [`UNSIGNALLED_KEY`](crate::wire::UNSIGNALLED_KEY) — or `None` when there is nothing to say.
+///
+/// # ⚠⚠⚠ Why this is answered by the WRITE and not by a slot a caller reads first
+///
+/// The modes are the program's to change at any moment, so a caller that read them and then wrote
+/// would be reporting a terminal that need not still exist. Answering it here closes that window:
+/// the reading is taken for the bytes that were just delivered, which is the only moment the claim
+/// is about.
+///
+/// # ⚠⚠ The two questions, and why BOTH are asked
+///
+/// What the caller MEANT is a fact about the caller — [`SignalKey::conventional_byte`] is what a
+/// person pressing that chord produces and what every surface offering it means by it. What the
+/// DEVICE does is read from the kernel. The whole value is that the two can disagree, so neither
+/// can be inferred from the other.
+///
+/// ⚠ A pane that will not answer at all (`None` from the kernel) yields NO caveat, on
+/// [`PaneSignalKeys`](sprag_terminal::PaneSignalKeys)' own terms: `None` is *this platform's device
+/// would not say*, never the negative, and manufacturing a warning out of it would be the false
+/// confidence in the other direction.
+fn unsignalled(pty: &PanePtyHandle, written: &[u8]) -> Option<Value> {
+    // The cheap gate first: ordinary typing contains no signal character, so the syscall below is
+    // never reached on the path a display client walks a keystroke at a time.
+    let meant: Vec<SignalKey> = SignalKey::ALL
+        .into_iter()
+        .filter(|key| written.contains(&key.conventional_byte()))
+        .collect();
+    if meant.is_empty() {
+        return None;
+    }
+    let raises = pty.signal_keys()?;
+    let unraised: Vec<Value> = meant
+        .into_iter()
+        .filter_map(|key| {
+            let why = raises.unraised(key.conventional_byte())?;
+            Some(json!({
+                crate::wire::UNSIGNALLED_WHICH_KEY: key.wire_str(),
+                crate::wire::UNSIGNALLED_WHY_KEY: why.wire_str(),
+            }))
+        })
+        .collect();
+    // ABSENT rather than empty: every signal the caller meant was raised, so there is nothing to
+    // warn about and a caveat here would teach a reader to skip the key.
+    (!unraised.is_empty()).then(|| json!({ crate::wire::UNSIGNALLED_KEY: unraised }))
+}
+
+/// [`unsignalled`] as this surface's ANSWER: the caveat, or [`IntrospectValue::Null`] when the
+/// write has nothing to report — which is what every one of these actions answered before.
+fn injected(pty: &PanePtyHandle, written: &[u8]) -> IntrospectValue {
+    unsignalled(pty, written).map_or(IntrospectValue::Null, IntrospectValue::Json)
 }
 
 /// Write literal UTF-8 `text` to `pty` (no key-encoding) — the IME-commit /
@@ -265,7 +323,7 @@ impl SpragPaneExternal {
             return Ok(IntrospectValue::Null); // suppressed key-up edge
         };
         send_key(&self.pty, &key, mods)
-            .map(|()| IntrospectValue::Null)
+            .map(|written| injected(&self.pty, &written))
             .map_err(refused)
     }
 
@@ -278,7 +336,7 @@ impl SpragPaneExternal {
     fn inject_text(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
         if send_text(&self.pty, &text) {
-            Ok(IntrospectValue::Null)
+            Ok(injected(&self.pty, text.as_bytes()))
         } else {
             Err(refused(NOT_WRITTEN))
         }
@@ -291,7 +349,10 @@ impl SpragPaneExternal {
     fn inject_paste(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
         if paste(&self.pty, &text) {
-            Ok(IntrospectValue::Null)
+            // The BRACKETS are not consulted: they wrap the text, they do not shield it. The line
+            // discipline sits below this device and raises its signals from the bytes whatever
+            // markers surround them, which is exactly why a pasted `0x03` surprises people.
+            Ok(injected(&self.pty, text.as_bytes()))
         } else {
             Err(refused(NOT_WRITTEN))
         }
@@ -839,10 +900,16 @@ mod tests {
     /// A quiescent pane and the surface over it — a child that blocks on its PTY and never
     /// writes, so the frame these tests read cannot change under them.
     fn surface() -> (sprag_terminal::Workspace, SpragPaneExternal) {
+        surface_running("exec cat")
+    }
+
+    /// [`surface`], but the pane runs `script` — for the gates that need a child which has
+    /// CONFIGURED its terminal, which is the one thing a caller cannot see from the outside.
+    fn surface_running(script: &str) -> (sprag_terminal::Workspace, SpragPaneExternal) {
         let mut workspace = sprag_terminal::Workspace::new((20, 4));
         let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
         command.arg("-c");
-        command.arg("exec cat");
+        command.arg(script);
         command.env("TERM", "dumb");
         let id = workspace
             .spawn(command, "cat".to_owned(), 20, 4)
@@ -855,6 +922,127 @@ mod tests {
                 .handle(),
         );
         (workspace, external)
+    }
+
+    /// Poll until `mark` is on the pane's screen, so a gate whose subject is the child's OWN
+    /// `stty` cannot race the shell that runs it. Answers whether it ever arrived.
+    fn until_printed(external: &SpragPaneExternal, mark: &str) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            if let Some(IntrospectValue::Text(screen)) = external.query(crate::wire::FULL_TEXT_SLOT)
+                && screen.contains(mark)
+            {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// ⚠⚠⚠ **A `Ctrl-C` THAT CANNOT BECOME A SIGNAL IS ANSWERED AS ONE THAT DID.**
+    ///
+    /// This is the ai-loop's stop, and until this gate the surface could not tell the two apart.
+    /// `send_keys` is the door an agent reaches for — its own description offers *"chords such as
+    /// Ctrl+C"* — and the warning that a full-screen program has turned signals off is written on
+    /// `stop_job`, **a tool the agent did not call**. So the caller writes `0x03` into a pane whose
+    /// child ran `stty -isig`, is told the write succeeded, and waits for a job that was never
+    /// asked to stop.
+    ///
+    /// The SUBJECT is the pane with `ISIG` off; the CONTROL is the same call into a pane that never
+    /// touched its terminal, which must stay silent — a caveat on every keystroke would be noise a
+    /// reader learns to skip, and then it is not a warning.
+    #[test]
+    fn a_key_that_cannot_become_a_signal_says_so() {
+        let (_workspace, mut raw) = surface_running("stty -isig; printf RAW; exec cat");
+        assert!(
+            until_printed(&raw, "RAW"),
+            "the child announces AFTER its `stty`, so the reading below cannot race it",
+        );
+        let said = raw
+            .invoke(KEY_ACTION, json_args(json!({"key": "c", "ctrl": true})))
+            .expect("the byte is still written — a person's Ctrl-C must reach a raw program");
+
+        let (_control_workspace, mut cooked) = surface_running("printf COOKED; exec cat");
+        assert!(until_printed(&cooked, "COOKED"), "the control pane starts");
+        let quiet = cooked
+            .invoke(KEY_ACTION, json_args(json!({"key": "c", "ctrl": true})))
+            .expect("the control's write succeeds too");
+
+        assert_eq!(
+            quiet,
+            IntrospectValue::Null,
+            "a pane whose terminal DOES raise the signal has nothing to report — a caveat on \
+             every keystroke is noise, and a reader who learns to skip it is not warned by it",
+        );
+        assert_ne!(
+            said, quiet,
+            "⚠⚠⚠ the two panes answer the SAME sentence for opposite outcomes: one interrupted \
+             its job and one wrote a byte a program will read as text. `stop_job` knows the \
+             difference and says so; the verb an agent actually calls does not.",
+        );
+
+        // WHICH key and WHY — a caveat that only said "something" would leave a caller to guess
+        // whether to retry, reconfigure, or reach for `stop_job`.
+        let IntrospectValue::Json(said) = said else {
+            panic!("the caveat is a JSON answer: {said:?}");
+        };
+        assert_eq!(
+            said,
+            json!({
+                crate::wire::UNSIGNALLED_KEY: [{
+                    crate::wire::UNSIGNALLED_WHICH_KEY: SignalKey::Interrupt.wire_str(),
+                    crate::wire::UNSIGNALLED_WHY_KEY:
+                        sprag_terminal::Unraised::TerminalRaisesNone.wire_str(),
+                }]
+            }),
+            "the answer names the key the caller MEANT and the state of the pane that swallowed \
+             it — `raw` is the program having taken its terminal, which is a different act from a \
+             rebound character and is retried differently",
+        );
+    }
+
+    /// ⚠⚠ **THE SAME CAVEAT ON THE VERB THAT TYPES**, because a `0x03` reaches a pane as literal
+    /// text at least as often as it reaches one as a key: `write_pane` is how an agent drives a
+    /// pane, and the byte is the byte whichever door it came through.
+    ///
+    /// The CONTROL is ordinary text through the same verb into the same pane — a caveat there
+    /// would fire on every command an agent ever types, and the syscall that reads the terminal
+    /// must not be on that path either.
+    #[test]
+    fn typing_a_signal_character_is_answered_the_same_way_a_key_is() {
+        let (_workspace, mut raw) = surface_running("stty -isig; printf RAW; exec cat");
+        assert!(
+            until_printed(&raw, "RAW"),
+            "the child announces after its `stty`"
+        );
+
+        let ordinary = raw
+            .invoke(TEXT_ACTION, json_args(json!({"text": "ls -al\n"})))
+            .expect("ordinary text is written");
+        assert_eq!(
+            ordinary,
+            IntrospectValue::Null,
+            "text that means no signal reports nothing — this is the path EVERY typed command \
+             walks, and a caveat on it would be noise on every call an agent makes",
+        );
+
+        let interrupt = String::from(char::from(SignalKey::Interrupt.conventional_byte()));
+        let said = raw
+            .invoke(TEXT_ACTION, json_args(json!({"text": interrupt})))
+            .expect("the byte is still written");
+        assert_eq!(
+            said,
+            IntrospectValue::Json(json!({
+                crate::wire::UNSIGNALLED_KEY: [{
+                    crate::wire::UNSIGNALLED_WHICH_KEY: SignalKey::Interrupt.wire_str(),
+                    crate::wire::UNSIGNALLED_WHY_KEY:
+                        sprag_terminal::Unraised::TerminalRaisesNone.wire_str(),
+                }]
+            })),
+            "⚠⚠ a caller that wrote the interrupt character as TEXT is in exactly the position \
+             the key path was, and answering only one of the two doors would make the warning a \
+             property of the spelling instead of a property of the pane",
+        );
     }
 
     /// THE ENCODING ITSELF — the one claim no other test in this crate can see.

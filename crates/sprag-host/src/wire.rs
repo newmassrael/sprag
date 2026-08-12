@@ -24,6 +24,9 @@ use crate::{INPUT_TAG, MUX_TAG};
 
 /// The pane-input external invoke action that injects a key (W3C key + mods →
 /// PTY bytes, the R2.6 encoder).
+///
+/// Answers `null`, or [`UNSIGNALLED_KEY`] when what it wrote MEANT a signal this pane will not
+/// raise.
 pub const KEY_ACTION: &str = "key";
 /// The pane-input external invoke action that reports a MOUSE event — a semantic pointer edge
 /// (`{button, kind, col, row, ctrl?, alt?, shift?}`) which the host gates against the pane's active
@@ -46,6 +49,46 @@ pub const TEXT_ACTION: &str = "text";
 /// bracketed — typed / IME-committed text never is. The bracketing decision lives at the PTY
 /// boundary (which holds the authoritative mode), so a display client just forwards the raw text.
 pub const PASTE_ACTION: &str = "paste";
+/// The answer key EVERY pane-input action that writes bytes carries when what it just wrote
+/// MEANT a signal and this pane's terminal will raise none — a list of
+/// `{`[`key`](UNSIGNALLED_WHICH_KEY)`, `[`because`](UNSIGNALLED_WHY_KEY)`}`, one per distinct key,
+/// and ABSENT when there is nothing to say.
+///
+/// # ⚠⚠⚠ The wait this answers before it is spent
+///
+/// **Writing `0x03` into a pane is not interrupting its job, and the write succeeds either way.**
+/// What makes it a `SIGINT` is the line discipline, and only while `ISIG` is set — which every
+/// editor, every full-screen TUI and every interactive agent CLI clears on startup. So a caller
+/// that sends `Ctrl-C` and waits for the job to end is, on such a pane, waiting for something it
+/// never asked for. Measured (R363): a pane running `stty -isig; sleep 300`, sent `C-c` through
+/// this product's own `send-keys`, echoes `^C` and the `sleep` lives on.
+///
+/// [`STOP_JOB_ACTION`] is what a caller wanted and this is what points at it — it sends the signal
+/// to the process group itself, so nothing depends on the terminal's modes.
+///
+/// ⚠ **The byte is still WRITTEN.** A person's `Ctrl-C` must reach a full-screen program as input,
+/// which is how that program learns to cancel its own prompt; refusing the write would break the
+/// display client to warn the automation one. This key REPORTS, it does not withhold.
+///
+/// ⚠⚠ **And the DISPLAY clients deliberately do not consume it.** A person pressing `Ctrl-C` inside
+/// an editor MEANT the program to receive it, so a warning there would be noise on the one path
+/// where the behaviour is already what was wanted. The caller this exists for is the one that sent
+/// the chord to STOP A JOB and cannot see what became of it — an automation client, which reaches
+/// the pane through this surface and reads what it answers.
+///
+/// ⚠ ABSENT rather than empty when there is nothing to report. A caveat on every keystroke is
+/// noise, and a reader who learns to skip it is not warned by it.
+pub const UNSIGNALLED_KEY: &str = "unsignalled";
+/// The [`UNSIGNALLED_KEY`] member naming WHICH key was meant — a
+/// [`SignalKey`](sprag_terminal::SignalKey) word.
+pub const UNSIGNALLED_WHICH_KEY: &str = "key";
+/// The [`UNSIGNALLED_KEY`] member naming WHY no signal followed — an
+/// [`Unraised`](sprag_terminal::Unraised) word.
+///
+/// A closed vocabulary rather than a sentence, because the two causes are two different states of
+/// the pane: one says the program is full-screen, the other says the terminal was reconfigured,
+/// and a caller retries differently for each.
+pub const UNSIGNALLED_WHY_KEY: &str = "because";
 /// The pane-input external query slot: how many distinct frames [`CELLS_FIELD`] can address
 /// — `scrollback_len + 1` (the live view, plus one per retained history line).
 ///
@@ -6882,7 +6925,13 @@ mod tests {
             // guarantee whose absence is indistinguishable from it holding). No ANSWER word moved
             // — what an unconfirmed delivery says reaches a caller as a step's NOTE, which is free
             // text by design and so has no value space to widen.
-            23,
+            // ⚠⚠ R365 IS THE SECOND RE-STAMP THIS PIN EARNED ITSELF, and it is R357's shape
+            // exactly: `signal_key` and `unraised` JOIN the list at all, because a pane input
+            // action's answer now carries closed vocabularies where it carried nothing. They are
+            // the deliberate opposite of R364's free-text note — *which* key was swallowed and
+            // *why* are two things a caller BRANCHES on (retry, reconfigure, or reach for
+            // `stop_job`), and a sentence cannot be branched on.
+            24,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -6905,6 +6954,12 @@ mod tests {
                 "run_status:panicked",
                 "run_status:interrupted",
                 "unmeasured:gone",
+                // ⚠ R365: the two an injection's caveat is built from.
+                "signal_key:interrupt",
+                "signal_key:quit",
+                "signal_key:suspend",
+                "unraised:raw",
+                "unraised:unbound",
             ],
         );
 
@@ -6945,6 +7000,22 @@ mod tests {
                 crate::plugins::RunStatus::WIRE_WORDS
                     .iter()
                     .map(|word| format!("run_status:{word}")),
+            )
+            // ⚠⚠ R365: the injection caveat's two vocabularies, joined the same way and for the
+            // same reason — they are hand-rendered words, so nothing else here could see one being
+            // added. `SignalKey` is bounded by `termios` (there are three such characters and the
+            // kernel defines no fourth), which is a reason to expect this half to hold still, NOT
+            // a reason to leave it unpinned: an expectation nothing checks is how the last one got
+            // through.
+            .chain(
+                sprag_terminal::SignalKey::WIRE_WORDS
+                    .iter()
+                    .map(|word| format!("signal_key:{word}")),
+            )
+            .chain(
+                sprag_terminal::Unraised::WIRE_WORDS
+                    .iter()
+                    .map(|word| format!("unraised:{word}")),
             )
             .collect();
         let mut pinned: Vec<String> = PINNED_VALUES.1.iter().map(|n| (*n).to_owned()).collect();
@@ -7006,7 +7077,12 @@ mod tests {
             // R364: re-stamped for an ADDED REQUEST ARGUMENT (`shows_prompt` on the agent
             // form). An argument NAME is not a published VALUE space — this pin holds the words a
             // client picks a value from — so nothing here moved, which is what this says.
-            23,
+            // R365: re-stamped for an ANSWER that gained two closed vocabularies (`unsignalled`'s
+            // `key` and `because`). This pin holds the REQUEST half — the words a client picks a
+            // value FROM — and no verb here takes a new one: the caveat is something a caller is
+            // TOLD, never something it says. `an_answers_value_space_cannot_widen_…` is the pin
+            // that moved, and the two lists being different is the whole reason there are two.
+            24,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7503,7 +7579,12 @@ mod tests {
         // number stands, by this pin's own rule and by measurement: every one of them is a name
         // ADDED, an old client that never asks is unaffected, and one that does ask gets the
         // answer it got before pinion's declaration gate made an undeclared address unreachable.
-        23,
+        // ⚠⚠ R365: re-stamped for a MEANING that changed under names that did not — R344's case,
+        // on the ANSWER side. `key`, `text` and `paste` answered `null` on every success and now
+        // answer a caveat when the bytes they wrote MEANT a signal the pane will raise none. Same
+        // three addresses, same request grammar, different answer; no pin over ADDRESSES can see
+        // it, which is why the number lives beside the list rather than the list living alone.
+        24,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
