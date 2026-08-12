@@ -315,6 +315,12 @@ impl RunRegistry {
                         iterations: saved.iterations,
                         cost,
                         failure: None,
+                        // ⚠ AND NEITHER IS `stopped`, for the same reason `failure` is dropped
+                        // above: the log carries a run's SUMMARY, not its whole outcome. Both are
+                        // diagnostics about a moment that is over — the daemon that could have
+                        // acted on them is the one that died — and a restored pane's occupant is a
+                        // plain shell, so there is no job left for either to describe.
+                        stopped: None,
                     },
                     output: saved.output.clone(),
                 }
@@ -410,6 +416,7 @@ mod tests {
                 iterations: 3,
                 cost: None,
                 failure: None,
+                stopped: None,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -446,6 +453,7 @@ mod tests {
                     iterations: 0,
                     cost: None,
                     failure: None,
+                    stopped: None,
                 },
                 output: None,
             };

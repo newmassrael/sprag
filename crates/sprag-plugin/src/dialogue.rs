@@ -334,6 +334,20 @@ impl Plugin for Dialogue {
             )
         }
     }
+
+    /// ⚠⚠ **NOTHING — because this plugin OWNS its pane and already closes it.**
+    ///
+    /// A turn spawns its own pane and closes it on every exit path (the crate-private `PaneGuard`),
+    /// a cancel or a passed deadline takes. Closing a pane ends the pane's whole process group, so
+    /// the work is over by a stronger route than a signal to the foreground job — there is nothing
+    /// left for [`Plugin::driving`] to name.
+    ///
+    /// Recorded rather than left to the default, because the default and this answer the same way
+    /// for opposite reasons, and a reader who assumed the omission was an oversight would "fix" it
+    /// by naming a pane that no longer exists.
+    fn driving(&self) -> Option<PaneId> {
+        None
+    }
 }
 
 /// Render one turn's prompt: a one-line instruction naming `speaker`, the seed,

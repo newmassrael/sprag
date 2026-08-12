@@ -343,6 +343,23 @@ impl Plugin for Agent {
     fn captured(&self) -> Option<String> {
         self.response.clone()
     }
+
+    /// THE PANE THIS PROMPTED, so a run cut short takes the model's turn down with it.
+    ///
+    /// The case this whole mechanism exists for: a step types a prompt and then blocks for up to
+    /// [`DEFAULT_REPLY_TIMEOUT`] waiting for a model to think. A
+    /// cancel or a passed deadline lands INSIDE that wait, and before the Driver could act on this
+    /// the run ended while the model went on answering a question nobody was listening to — still
+    /// billed, still holding the pane.
+    ///
+    /// ⚠ Answered unconditionally rather than only while a reply is outstanding, because a
+    /// `SIGINT` to a peer that has already finished is what its own idle prompt absorbs, and the
+    /// alternative — tracking in-flight-ness here — would put a second copy of *"is this turn
+    /// over?"* beside the one [`step`](Self::step) already keeps, to be got wrong exactly when it
+    /// matters.
+    fn driving(&self) -> Option<PaneId> {
+        Some(self.pane)
+    }
 }
 
 #[cfg(test)]
@@ -1080,5 +1097,145 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Converged);
         let captured = agent.captured().unwrap_or_default();
         assert!(captured.contains("PONG"), "captured: {captured:?}");
+    }
+
+    /// ⚠⚠⚠ **A RUN THAT IS STOPPED TAKES THE PEER'S TURN WITH IT** — end to end, on a real shell
+    /// pane, against a job that would otherwise outlive the run by five minutes.
+    ///
+    /// This is the whole defect in one fixture. The pane is an interactive `bash`, the prompt is
+    /// `sleep 300`, and the agent's own reply wait is two minutes — so when the cancel lands, the
+    /// step is BLOCKED and a job the run set going owns the pane's terminal. Before
+    /// [`Plugin::driving`](crate::plugin::Plugin::driving), `Driver::run` returned `cancelled` here
+    /// and the `sleep` ran on: **the run's bookkeeping ended and its work did not.**
+    ///
+    /// ⚠ The cancel is raised by a watcher thread THE MOMENT the job is observed running, not on a
+    /// timer. A timer would make the gate a race — cancel too early and there is no job yet, so it
+    /// would pass while measuring nothing.
+    ///
+    /// ⚠ The claim asserted last is about the WORLD, not about the report: no `sleep` owns the
+    /// pane's terminal afterwards. A report can be made to say anything; the process table cannot.
+    ///
+    /// ⚠ REVERT-PROOF, MEASURED: with the `stop_the_work` call in `Driver::run` disabled, this
+    /// fails at *"a cancelled run with a job going must report stopping it: None"* — the REPORT
+    /// assertion, which comes first. The world assertion below it is the stronger claim and is
+    /// never reached in that state, so the two are not redundant: the first says the run knows what
+    /// it did, the second says the process table agrees.
+    // Linux AND macOS: the substrate underneath is `procfs`, which answers on both.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_cancelled_turn_does_not_leave_the_peer_working() {
+        use crate::access::PaneAccess;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((60, 8))));
+        // ⚠ `bash -i` and not `/bin/sh`: JOB CONTROL is what puts `sleep` in its own process group,
+        // which is what makes this a gate about stopping the pane's JOB rather than its shell. A
+        // non-interactive shell runs the job in its own group and the two questions collapse.
+        let mut command = CommandBuilder::new("/bin/bash");
+        command.arg("--norc");
+        command.arg("-i");
+        command.env("TERM", "dumb");
+        command.env("PS1", "$ ");
+        let pane = workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "bash".to_string(), 60, 8)
+            .expect("spawn pane");
+        let child = workspace
+            .lock()
+            .unwrap()
+            .pane(pane)
+            .and_then(|held| held.pty().pid())
+            .expect("a live child");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        let leader_named = |want: &str| {
+            (&access as &dyn PaneAccess)
+                .foreground_job()
+                .and_then(|jobs| jobs.pane_foreground_leader(pane))
+                .is_some_and(|job| job.name == want)
+        };
+        let until = |within: Duration, mut ready: Box<dyn FnMut() -> bool>| {
+            let start = Instant::now();
+            while start.elapsed() < within {
+                if ready() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(
+            until(
+                Duration::from_secs(15),
+                Box::new(|| sprag_terminal::foreground_leader_of(child)
+                    .is_some_and(|job| job.pid == child)),
+            ),
+            "the shell must reach its own prompt first, or the prompt below is typed at nothing",
+        );
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let cancel = Arc::clone(&cancel);
+            std::thread::spawn(move || {
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(20) {
+                    if sprag_terminal::foreground_leader_of(child)
+                        .is_some_and(|job| job.name == "sleep")
+                    {
+                        cancel.store(true, Ordering::Release);
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                // ⚠ Cancel anyway so the run cannot hang the suite for two minutes; the assertion
+                // below is what reports that the job was never seen.
+                cancel.store(true, Ordering::Release);
+                false
+            })
+        };
+
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                // ⚠ `eof: false`: a trailing Ctrl-D would make the shell EXIT, which ends the job
+                // by killing the pane and would let this pass with the mechanism removed.
+                eof: false,
+                ..AgentSpec::new("sleep 300")
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: None,
+        })
+        .run(&mut agent, &access, &RunContext::new(Arc::clone(&cancel)));
+
+        assert!(
+            watcher.join().expect("the watcher thread"),
+            "the job never started, so this measured nothing — the cancel was raised on the \
+             fallback rather than on the observation",
+        );
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Cancelled,
+            "the run ended because somebody stopped it",
+        );
+        match &outcome.stopped {
+            Some(crate::driver::Stopped::Job(signalled)) => assert!(
+                signalled
+                    .leader
+                    .as_ref()
+                    .is_some_and(|leader| leader.answers_to("sleep")),
+                "the outcome names the job it stopped, which is the answer a caller acts on: \
+                 {signalled}",
+            ),
+            other => panic!("a cancelled run with a job going must report stopping it: {other:?}"),
+        }
+        assert!(
+            until(Duration::from_secs(15), Box::new(|| !leader_named("sleep"))),
+            "⚠⚠ AND THE WORLD AGREES: no `sleep` owns the pane's terminal after the run, which is \
+             the claim a report cannot fake",
+        );
     }
 }

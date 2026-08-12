@@ -17,8 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sce_rust_runtime::Engine;
+use sprag_terminal::{Stop, Unstopped};
 
-use crate::access::{PaneAccess, PaneError};
+use crate::access::{PaneAccess, PaneError, Signalled};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::run::RunContext;
 use crate::sm::orchestration::{OrchestrationEvent, OrchestrationPolicy, OrchestrationState};
@@ -140,6 +141,62 @@ pub enum OutcomeState {
     Cancelled,
 }
 
+sprag_vt::closed_set! {
+/// WHAT BECAME OF THE WORK a run had going, once the run was cut short.
+///
+/// # ⚠⚠⚠ Why a cancelled run that says only *"cancelled"* is half an answer
+///
+/// The two ceilings a run can be cut short by — a person's cancel and
+/// [`max_duration`](Guardrails::max_duration) — both land while a step may be BLOCKED on a peer
+/// this run set going. Ending the loop does not end that peer. So *"cancelled"* on its own is
+/// consistent with two opposite states of the world: the work stopped, or the work is still
+/// running and still spending. A caller cannot tell which, and the one they need to act on is the
+/// second.
+///
+/// Each arm is a different thing to tell them, and two of the four say **the work is still
+/// running** — which is why this is a closed set and not an `Option<Signalled>` whose `None` would
+/// have meant all three of *nothing was running*, *this host cannot stop things*, and *the stop
+/// failed*.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stopped {
+    /// The job the run had working was signalled, and this is what received it.
+    Job(Signalled) = (Signalled {
+        stop: Stop::Interrupt,
+        pgid: 0,
+        leader: None,
+    }),
+    /// The plugin had no pane's job of its own to stop — see
+    /// [`Plugin::driving`](crate::plugin::Plugin::driving). A relay starts nothing, and a plugin
+    /// that owns its pane outright has already closed it.
+    Nothing,
+    /// ⚠ THE WORK IS STILL RUNNING: the stop was attempted and did not land, and this is why.
+    Unreached(PaneError) = (PaneError::NotStopped(Unstopped::Unseen)),
+    /// ⚠ THE WORK IS STILL RUNNING: this host offers no way to stop a pane's job at all, so none
+    /// was attempted.
+    ///
+    /// Distinct from [`Unreached`](Self::Unreached) because it is a fact about the DEPLOYMENT and
+    /// not about this pane — the same distinction
+    /// [`PaneDoing::Unknown`](crate::access::PaneDoing::Unknown) is a separate arm for.
+    Unsupported,
+}
+}
+
+impl std::fmt::Display for Stopped {
+    /// ⚠ THE SENTENCE A CALLER READS beside their run's state. Each is a clause about the WORK,
+    /// because the run's own fate is already published next to it and repeating it here would tell
+    /// a reader nothing twice.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Job(signalled) => write!(f, "the run's own job was {signalled}"),
+            Self::Nothing => f.write_str("the run had no job of its own running"),
+            Self::Unreached(why) => write!(f, "the run's own job is still running: {why}"),
+            Self::Unsupported => f.write_str(
+                "the run's own job may still be running: this host cannot stop a pane's job",
+            ),
+        }
+    }
+}
+
 /// The result of a plugin run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
@@ -150,6 +207,18 @@ pub struct Outcome {
     pub cost: Option<Cost>,
     /// The cause when `state` is [`OutcomeState::Failed`]; `None` otherwise.
     pub failure: Option<PaneError>,
+    /// WHAT BECAME OF THE WORK, for a run that was CUT SHORT — cancelled, or out of time.
+    ///
+    /// `None` for a run that ended on its own terms: a [`Converged`](OutcomeState::Converged) one
+    /// reached its goal, a [`Failed`](OutcomeState::Failed) step never got to block on a peer, and
+    /// the per-step ceilings ([`Ceiling::Iterations`], [`Ceiling::Cost`]) are decided BETWEEN steps
+    /// — at which point the last step has returned and there is nothing in flight to stop. Only the
+    /// two outside endings can land mid-step, and they are exactly the two this answers for.
+    ///
+    /// ⚠ `None` ALSO for a run RESTORED from a previous daemon's log, which carries a run's summary
+    /// and not its whole outcome — the same lossiness `failure` already has there, and harmless for
+    /// the same reason: the daemon that had work running is the one that died.
+    pub stopped: Option<Stopped>,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -163,6 +232,18 @@ pub struct Driver {
     progress: Option<ProgressCell>,
     /// What each step did, bounded to the last [`JOURNAL_LIMIT`].
     journal: Vec<StepRecord>,
+    /// WHETHER THE RUN WAS CUT SHORT — ended by a cancel or a passed deadline rather than by its
+    /// own logic. [`Driver::ended_from_outside`] is the only writer, so this cannot disagree with
+    /// the decision that was actually taken.
+    ///
+    /// ⚠ Recorded rather than re-derived from the terminal state, and the difference is real: a
+    /// cancel raised in the same instant a plugin converged leaves the statechart in `converged`,
+    /// and a re-derivation would then conclude nothing was cut short while a step had in fact been
+    /// pre-empted. The decision is the fact; the state is its consequence.
+    cut_short: bool,
+    /// What became of the work, once [`Driver::stop_the_work`] has answered. `None` for a run that
+    /// ended on its own terms and never asked.
+    stopped: Option<Stopped>,
     /// Which ceiling raised [`OrchestrationEvent::Exhaust`], recorded AT the raise.
     ///
     /// Recorded rather than re-derived at the end, because a deadline that passed one instant
@@ -247,6 +328,8 @@ impl Driver {
             failure: None,
             progress: None,
             journal: Vec::new(),
+            cut_short: false,
+            stopped: None,
             exhausted_by: None,
         }
     }
@@ -359,6 +442,13 @@ impl Driver {
             };
             self.engine.process_event(event);
         }
+        // ⚠⚠ THE WORK OUTLIVES THE LOOP UNLESS SOMEBODY ENDS IT. Placed here, after the statechart
+        // has reached a terminal state and before the outcome is assembled, because the answer is
+        // part of the outcome — a run that reports `cancelled` without saying what became of its
+        // work is telling half of what happened.
+        if self.cut_short {
+            self.stopped = Some(Self::stop_the_work(&*plugin, panes));
+        }
         self.outcome()
     }
 
@@ -374,9 +464,11 @@ impl Driver {
     /// ran out in the same instant — a cancel is somebody's decision and an exhaustion is nobody's.
     fn ended_from_outside(&mut self, run: &RunContext) -> Option<OrchestrationEvent> {
         if run.cancelled() {
+            self.cut_short = true;
             return Some(OrchestrationEvent::Cancel);
         }
         if run.expired() {
+            self.cut_short = true;
             return Some(self.exhaust(Ceiling::Duration));
         }
         None
@@ -423,6 +515,34 @@ impl Driver {
         }
     }
 
+    /// END THE WORK THIS RUN SET GOING, now that the run itself is over.
+    ///
+    /// Called on exactly the two endings that can land while a step is blocked — a cancel and a
+    /// passed deadline — and answers what became of the work so the run can publish it.
+    ///
+    /// ⚠ NOT called for a run that ended on its own terms. A converged run's peer answered, a
+    /// failed step never got to block on one, and the per-step ceilings are decided between steps
+    /// with the last one already returned. Signalling there would interrupt work nobody asked to
+    /// interrupt — a run that finished normally must leave the pane exactly as it found it.
+    ///
+    /// ⚠⚠ [`Stop::Interrupt`] and not one of the harder two. What is being ended is a TURN, and the
+    /// program that was taking it — an agent CLI, a shell's job — is meant to still be there for
+    /// the next run. A run that reached for `SIGKILL` because its clock ran out would leave the
+    /// caller a dead peer to restart, which is a far larger consequence than the one they asked
+    /// for.
+    fn stop_the_work(plugin: &dyn Plugin, panes: &dyn PaneAccess) -> Stopped {
+        let Some(pane) = plugin.driving() else {
+            return Stopped::Nothing;
+        };
+        let Some(control) = panes.job_control() else {
+            return Stopped::Unsupported;
+        };
+        match control.pane_stop_job(pane, Stop::Interrupt) {
+            Ok(signalled) => Stopped::Job(signalled),
+            Err(why) => Stopped::Unreached(why),
+        }
+    }
+
     fn outcome(self) -> Outcome {
         let state = match self.engine.get_current_state() {
             OrchestrationState::Converged => OutcomeState::Converged,
@@ -446,6 +566,7 @@ impl Driver {
             iterations: self.iterations,
             cost: self.cost,
             failure: self.failure,
+            stopped: self.stopped,
         }
     }
 }
@@ -459,6 +580,262 @@ mod tests {
     use sprag_terminal::PaneId;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A pane surface that RECORDS every stop asked of it and answers `Ok` — for the claims about
+    /// WHEN the Driver stops work, which need no pseudoterminal to settle.
+    ///
+    /// ⚠ It honours the pane id in its answer, so a gate can tell *the Driver stopped the pane the
+    /// plugin named* from *the Driver stopped something*.
+    struct RecordingPanes {
+        asked: Mutex<Vec<(PaneId, Stop)>>,
+    }
+
+    impl RecordingPanes {
+        fn new() -> Self {
+            Self {
+                asked: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn asked(&self) -> Vec<(PaneId, Stop)> {
+            self.asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl PaneAccess for RecordingPanes {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            vec![PaneId(1)]
+        }
+        fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            Some(String::new())
+        }
+        fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
+            Some(Vec::new())
+        }
+        fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+            Some(false)
+        }
+        fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+            Some(String::new())
+        }
+        fn inject(&self, _id: PaneId, _keys: &[KeyStroke]) -> Result<Written, PaneError> {
+            Ok(Written::of(0))
+        }
+        fn job_control(&self) -> Option<&dyn crate::access::PaneJobControl> {
+            Some(self)
+        }
+    }
+
+    impl crate::access::PaneJobControl for RecordingPanes {
+        fn pane_stop_job(&self, id: PaneId, stop: Stop) -> Result<Signalled, PaneError> {
+            self.asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((id, stop));
+            Ok(Signalled {
+                stop,
+                pgid: 4711,
+                leader: None,
+            })
+        }
+    }
+
+    /// A plugin that never converges, DRIVES pane 1, and can be told to block for a while — the
+    /// stand-in for "a step is in flight when the run ends".
+    struct Driving {
+        blocks_for: Duration,
+    }
+
+    impl Plugin for Driving {
+        fn step(&mut self, _panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
+            poll_until(run, self.blocks_for, || false);
+            Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
+        }
+        fn driving(&self) -> Option<PaneId> {
+            Some(PaneId(1))
+        }
+    }
+
+    /// ⚠⚠⚠ **A RUN CUT SHORT STOPS ITS WORK; A RUN THAT ENDED ON ITS OWN TERMS TOUCHES NOTHING.**
+    ///
+    /// Both halves in one gate, because either alone is half a claim. Stopping on every ending
+    /// would make a converged run interrupt the peer that had just answered it, and stopping on
+    /// none is the defect this exists to close — a `cancelled` outcome over a model still
+    /// answering.
+    ///
+    /// The four endings are driven through the Driver's own ceilings rather than asserted about its
+    /// internals: a passed deadline and a cancel are the two that can land INSIDE a step, and the
+    /// iteration ceiling and a plugin's own convergence are the two that cannot.
+    #[test]
+    fn only_a_run_that_was_cut_short_stops_the_work_it_had_going() {
+        let bounded = |max_iterations, max_duration| Guardrails {
+            max_iterations,
+            max_cost: None,
+            max_duration,
+        };
+
+        // 1. OUT OF TIME, inside a step that would have blocked for a minute.
+        let panes = RecordingPanes::new();
+        let outcome = Driver::new(bounded(100, Some(Duration::from_millis(50)))).run(
+            &mut Driving {
+                blocks_for: Duration::from_secs(60),
+            },
+            &panes,
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Duration));
+        assert_eq!(
+            panes.asked(),
+            vec![(PaneId(1), Stop::Interrupt)],
+            "a run out of time stops the pane its plugin named, and asks for an INTERRUPT — the \
+             turn ends and the peer stays",
+        );
+        assert!(
+            matches!(outcome.stopped, Some(Stopped::Job(_))),
+            "and the outcome SAYS so, or a caller cannot tell this from the defect: {:?}",
+            outcome.stopped,
+        );
+
+        // 2. CANCELLED at the loop top, before any step.
+        let panes = RecordingPanes::new();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let outcome = Driver::new(bounded(100, None)).run(
+            &mut Driving {
+                blocks_for: Duration::from_millis(0),
+            },
+            &panes,
+            &RunContext::new(cancel),
+        );
+        assert_eq!(outcome.state, OutcomeState::Cancelled);
+        assert_eq!(
+            panes.asked().len(),
+            1,
+            "a cancel stops the work too — it is the other way a run ends from outside",
+        );
+
+        // 3. THE ITERATION CEILING, which is decided BETWEEN steps with nothing in flight.
+        let panes = RecordingPanes::new();
+        let outcome = Driver::new(bounded(1, None)).run(
+            &mut Driving {
+                blocks_for: Duration::from_millis(0),
+            },
+            &panes,
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
+        assert_eq!(
+            panes.asked(),
+            Vec::new(),
+            "⚠⚠ a run that spent its own budget interrupts NOTHING: its last step returned, so \
+             there is no work of its to end, and signalling here would interrupt whatever the pane \
+             went on to do",
+        );
+        assert_eq!(
+            outcome.stopped, None,
+            "and it has no answer to give about work it never cut short",
+        );
+
+        // 4. CONVERGED — the plugin reached its goal.
+        struct Converging;
+        impl Plugin for Converging {
+            fn step(
+                &mut self,
+                _panes: &dyn PaneAccess,
+                _run: &RunContext,
+            ) -> Result<Step, PaneError> {
+                Ok(Step::new(Cost::Bytes(1), Verdict::Converged))
+            }
+            fn driving(&self) -> Option<PaneId> {
+                Some(PaneId(1))
+            }
+        }
+        let panes = RecordingPanes::new();
+        let outcome = Driver::new(bounded(100, None)).run(
+            &mut Converging,
+            &panes,
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(outcome.state, OutcomeState::Converged);
+        assert_eq!(
+            panes.asked(),
+            Vec::new(),
+            "⚠⚠ AND A RUN THAT SUCCEEDED LEAVES THE PANE EXACTLY AS IT FOUND IT — a peer that has \
+             just answered must not be interrupted for having answered",
+        );
+    }
+
+    /// A run cut short by a host that CANNOT stop a pane's job says so, rather than reporting a
+    /// stop it never made.
+    ///
+    /// ⚠ The arm every other gate here skips, because [`WorkspacePaneAccess`] offers the
+    /// capability — so this is product behaviour nothing else in the crate builds, which is the
+    /// shape this workspace has paid for five times.
+    ///
+    /// [`WorkspacePaneAccess`]: crate::access::WorkspacePaneAccess
+    #[test]
+    fn a_host_that_cannot_stop_a_job_reports_that_and_not_a_stop() {
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(50)),
+        })
+        .run(
+            &mut Driving {
+                blocks_for: Duration::from_secs(60),
+            },
+            // `NoPanes` implements the trait's minimum, so `job_control` is the default `None`.
+            &NoPanes,
+            &RunContext::uncancellable(),
+        );
+        assert_eq!(
+            outcome.stopped,
+            Some(Stopped::Unsupported),
+            "a caller must be able to tell 'nothing was running' from 'this host cannot stop \
+             things, so your work may well be'",
+        );
+        assert!(
+            outcome
+                .stopped
+                .as_ref()
+                .is_some_and(|stopped| stopped.to_string().contains("may still be running")),
+            "and the sentence must say the work may still be running, which is the part they act \
+             on",
+        );
+    }
+
+    /// A plugin whose whole purpose is to leave panes alone gets its `None` honoured, and the
+    /// outcome says the run had nothing of its own going.
+    #[test]
+    fn a_run_that_drove_no_job_of_its_own_says_so_rather_than_stopping_something() {
+        struct DrivingNothing;
+        impl Plugin for DrivingNothing {
+            fn step(
+                &mut self,
+                _panes: &dyn PaneAccess,
+                run: &RunContext,
+            ) -> Result<Step, PaneError> {
+                poll_until(run, Duration::from_secs(60), || false);
+                Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
+            }
+        }
+        let panes = RecordingPanes::new();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 100,
+            max_cost: None,
+            max_duration: Some(Duration::from_millis(50)),
+        })
+        .run(&mut DrivingNothing, &panes, &RunContext::uncancellable());
+        assert_eq!(
+            panes.asked(),
+            Vec::new(),
+            "⚠⚠ NOTHING IS SIGNALLED FOR A PLUGIN THAT NAMED NO PANE — a relay reads panes a \
+             person is working in, and an unrelated timeout must not reach into them",
+        );
+        assert_eq!(outcome.stopped, Some(Stopped::Nothing));
+    }
 
     /// A plugin whose step always fails — to pin the Driver's Err -> Failed
     /// mapping deterministically, no threads or PTY.

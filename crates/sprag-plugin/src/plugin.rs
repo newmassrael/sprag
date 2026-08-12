@@ -8,6 +8,8 @@
 //!
 //! [`Driver`]: crate::driver::Driver
 
+use sprag_terminal::PaneId;
+
 use crate::access::{PaneAccess, PaneError};
 use crate::run::RunContext;
 
@@ -191,6 +193,38 @@ pub trait Plugin {
     ///
     /// [`Driver`]: crate::driver::Driver
     fn captured(&self) -> Option<String> {
+        None
+    }
+
+    /// THE PANE WHOSE JOB THIS PLUGIN IS CAUSING TO WORK — what a run that is cut short must stop.
+    /// `None`, the default, for a plugin that sets nothing running of its own.
+    ///
+    /// # ⚠⚠⚠ Why the Driver cannot answer this itself
+    ///
+    /// A run has two ways to end from OUTSIDE its own logic — somebody cancels it, or its
+    /// [`max_duration`](crate::driver::Guardrails::max_duration) passes — and both can land while a
+    /// step is blocked waiting for a peer that this run set going. Before this existed the Driver
+    /// stopped STEPPING and returned, and the peer kept working: **the loop's door closed on a room
+    /// that was still occupied.** A cancelled run reported `cancelled` while the model it had
+    /// prompted went on spending somebody's tokens.
+    ///
+    /// The Driver holds the lifecycle and cannot fix that alone, because *which* pane is running
+    /// *this run's* work is the plugin's own knowledge and nothing else's. The
+    /// [`PaneAccess`] it is handed lists every pane in the workspace, and
+    /// guessing among them is exactly the wrong answer: a relay reads a pane a PERSON is working
+    /// in, and stopping that would be sprag interrupting somebody's editor because an unrelated run
+    /// timed out.
+    ///
+    /// So the plugin names it and the Driver acts on it — the same seam as everywhere else here:
+    /// what is plugin-specific is the plugin's, what is uniform is the substrate's.
+    ///
+    /// # ⚠ It is a question about NOW, not a configuration
+    ///
+    /// Asked when the run ends, so a plugin whose work is finished may answer `None` and one that
+    /// is mid-turn answers its pane. A plugin that OWNS its pane outright and closes it on every
+    /// exit path (as [`Dialogue`](crate::dialogue::Dialogue) does) has nothing to add here: closing
+    /// a pane already ends everything in it.
+    fn driving(&self) -> Option<PaneId> {
         None
     }
 }

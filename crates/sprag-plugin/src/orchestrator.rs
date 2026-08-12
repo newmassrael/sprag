@@ -187,6 +187,17 @@ impl Plugin for Orchestrator {
         };
         Ok(Step::new(Cost::Bytes(cost), verdict).noting(note))
     }
+
+    /// THE PANE THIS DRIVES, so a run cut short takes the reaction it asked for down with it.
+    ///
+    /// This plugin types a stimulus and waits for the peer to react, and the peer is a program
+    /// somebody else started in a pane this plugin does not own. A run cancelled inside that wait
+    /// leaves the peer working on the stimulus — the same residue an
+    /// [`Agent`](crate::agent::Agent)'s prompt leaves, in the plugin whose whole purpose is to make
+    /// a pane do something.
+    fn driving(&self) -> Option<PaneId> {
+        Some(self.pane)
+    }
 }
 
 #[cfg(test)]

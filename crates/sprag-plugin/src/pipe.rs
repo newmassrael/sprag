@@ -274,6 +274,22 @@ impl Plugin for Pipe {
             },
         ))
     }
+
+    /// ⚠⚠ **NOTHING — and this is a DECISION, not an omission.**
+    ///
+    /// A relay does not set anything going. Its SOURCE is a pane it only reads, running whatever a
+    /// person started there; its DESTINATION is handed lines, and what that pane's program does
+    /// with them is that program's own business, begun before this run and continuing after it.
+    ///
+    /// So a cancelled relay must stop NOTHING. Answering either pane here would make an unrelated
+    /// timeout interrupt somebody's editor or kill a build they were watching — sprag reaching into
+    /// a pane it was only reading. That is the exact hazard
+    /// [`Plugin::driving`] is a per-plugin question rather than a
+    /// Driver-side guess to avoid, and this is the plugin that proves the guess would have been
+    /// wrong.
+    fn driving(&self) -> Option<PaneId> {
+        None
+    }
 }
 
 #[cfg(test)]
