@@ -135,6 +135,385 @@ fn homes_from(
     Ok(homes)
 }
 
+/// Why a sibling binary a suite drives cannot be trusted.
+///
+/// Its own type for [`Unwatchable`]'s reason exactly: every arm here is a state in which the
+/// question *"is this the code I edited?"* has NO answer, and this crate's whole doctrine is that a
+/// probe which cannot tell must never read as clean.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unbuilt {
+    /// Nothing is there at all — cargo never built it for this package.
+    Missing(PathBuf),
+    /// It is there, and cargo's record of WHAT IT WAS BUILT FROM is not beside it, so its freshness
+    /// is unknowable.
+    Unrecorded {
+        /// The binary.
+        bin: PathBuf,
+        /// The depfile that is missing or unreadable.
+        depfile: PathBuf,
+        /// Why it could not be read.
+        why: String,
+    },
+    /// It is there and it was built from source that has been EDITED SINCE — the case that lies.
+    Stale {
+        /// The binary.
+        bin: PathBuf,
+        /// The inputs newer than it, in the order cargo recorded them.
+        edited: Vec<PathBuf>,
+    },
+}
+
+impl fmt::Display for Unbuilt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing(bin) => write!(
+                f,
+                "{} is not built. This suite drives a binary that belongs to another package, so \
+                 cargo does not build it for a single `-p` — run `cargo build -p sprag-host --bins` \
+                 first, or `cargo test --workspace`.",
+                bin.display()
+            ),
+            Self::Unrecorded { bin, depfile, why } => write!(
+                f,
+                "{} is there and {} is not readable ({why}), so whether it was built from the \
+                 source in this tree cannot be answered. A run that cannot tell must not pass: \
+                 rebuild it with `cargo build -p sprag-host --bins`.",
+                bin.display(),
+                depfile.display(),
+            ),
+            Self::Stale { bin, edited } => {
+                write!(
+                    f,
+                    "{} IS STALE — {} of the sources cargo built it from have been edited since, \
+                     so this run would be about code that is not in this tree. Run \
+                     `cargo build -p sprag-host --bins` first.\n  newer than the binary:",
+                    bin.display(),
+                    edited.len(),
+                )?;
+                for path in edited.iter().take(STALE_REPORT_CAP) {
+                    write!(f, "\n    {}", path.display())?;
+                }
+                if let Some(rest) = edited
+                    .len()
+                    .checked_sub(STALE_REPORT_CAP)
+                    .filter(|n| *n > 0)
+                {
+                    write!(f, "\n    ...and {rest} more")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// How many newer inputs a [`Unbuilt::Stale`] report NAMES before summarising the rest.
+///
+/// A whole dependency closure can be newer after a `touch -r`, and a panic message that pastes six
+/// hundred paths buries the sentence that says what to do.
+const STALE_REPORT_CAP: usize = 5;
+
+/// The sources `bin` was built from that have been EDITED SINCE it was built — empty for a binary
+/// that is current.
+///
+/// # ⚠⚠⚠ Why this exists, and why it asks CARGO rather than guessing
+///
+/// A test that spawns a binary from another package is asking a question about code it did not
+/// compile. `cargo test -p sprag-mcp` builds the `sprag-host` LIB and never the `sprag-term` BIN,
+/// so a change to daemon-side code is invisible to that suite and **a revert-proof measured through
+/// it passes**. The absence check both call sites already had cannot see it: the binary EXISTS, it
+/// is simply older than the edit, and that is the case that lies.
+///
+/// Measured three times: R241 (a forced `arbitrate` left three window-size tests green; rebuilt,
+/// two went red), R284 (a pixel-smoke "regression" that was a day-old `sprag-tui`), and R367 — where
+/// a mutation dropped a whole wire key and the end-to-end gate stayed GREEN until the bins were
+/// rebuilt. Every one of those was a rule somebody was supposed to remember.
+///
+/// **Cargo already writes the answer.** Beside every binary it links is a depfile — `sprag-term.d`
+/// — holding the target and every source that went into it, across the WHOLE dependency closure
+/// (eight crates here, generated `OUT_DIR` sources included). So this hard-codes no crate list, runs
+/// no nested cargo, and cannot drift when the graph changes: the question it asks is cargo's own,
+/// off cargo's own record.
+///
+/// ⚠ It is also cargo's own REBUILD condition, which is what makes the remedy always work: an input
+/// newer than the output is exactly what makes `cargo build` relink, so a binary this reports on is
+/// one cargo will refresh.
+///
+/// # Errors
+///
+/// [`Unbuilt::Missing`] when nothing is there, [`Unbuilt::Unrecorded`] when the depfile is not —
+/// never `Ok(vec![])`, which is this crate's standing rule about probes that cannot see.
+pub fn edited_since_built(bin: &Path) -> Result<Vec<PathBuf>, Unbuilt> {
+    let built = std::fs::metadata(bin)
+        .and_then(|meta| meta.modified())
+        .map_err(|_| Unbuilt::Missing(bin.to_path_buf()))?;
+    let depfile = bin.with_extension("d");
+    let record = std::fs::read_to_string(&depfile).map_err(|why| Unbuilt::Unrecorded {
+        bin: bin.to_path_buf(),
+        depfile: depfile.clone(),
+        why: why.to_string(),
+    })?;
+    // `<target>: <input> <input> ...`, one rule per line. Only the inputs are of interest, and the
+    // target is re-derived rather than trusted — a depfile naming another binary is still a list of
+    // this one's inputs as far as this check goes, and refusing it would be stricter than the
+    // question being asked.
+    let mut edited = Vec::new();
+    for line in record.lines() {
+        let Some((_, inputs)) = line.split_once(": ") else {
+            continue;
+        };
+        for input in inputs.split_whitespace().map(Path::new) {
+            // A source that no longer EXISTS counts as edited: its removal is a change, and a
+            // binary built from a file that is gone is exactly as untrustworthy as one built from a
+            // file that moved on.
+            let newer = std::fs::metadata(input)
+                .and_then(|meta| meta.modified())
+                .map_or(true, |touched| touched > built);
+            if newer {
+                edited.push(input.to_path_buf());
+            }
+        }
+    }
+    Ok(edited)
+}
+
+/// A binary belonging to ANOTHER package, beside the one cargo built for the test calling this —
+/// PANICKING unless it exists and is current.
+///
+/// `own_exe` is the caller's own `env!("CARGO_BIN_EXE_<name>")`: cargo sets that only for binaries
+/// of the package under test, which is the whole reason a sibling has to be derived rather than
+/// given.
+///
+/// # ⚠⚠ Why one function rather than a check at each spawn site
+///
+/// There were two derivations of this path when it was written — `sprag-tui`'s pty suite and
+/// `sprag-mcp`'s stdio suite — with near-identical comments and the same absence-only check, which
+/// is the drift shape this tree keeps paying to remove. More to the point, a check each site has to
+/// remember is the thing that already failed three times; the point of moving it here is that a
+/// site cannot spawn a sibling WITHOUT it.
+///
+/// # Panics
+///
+/// If the binary is missing, unrecorded, or stale — [`Unbuilt`] carries the remedy in each case.
+/// A panic rather than a `Result` so no call site can decide to carry on: the run that follows
+/// would be about the wrong code.
+#[must_use]
+pub fn sibling_bin(own_exe: &str, name: &str) -> PathBuf {
+    let bin = Path::new(own_exe)
+        .parent()
+        .expect("a built binary has a directory")
+        .join(name);
+    match edited_since_built(&bin) {
+        Ok(edited) if edited.is_empty() => bin,
+        Ok(edited) => panic!("{}", Unbuilt::Stale { bin, edited }),
+        Err(unbuilt) => panic!("{unbuilt}"),
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    /// A fake `target/debug` holding one binary, its depfile, and the sources it names — the shape
+    /// cargo leaves behind, built by hand so the MTIMES can be stated rather than raced.
+    ///
+    /// The binary is stamped OLDER than now and each source is placed relative to it, because the
+    /// whole subject here is an ordering that a real build produces over minutes and a test has to
+    /// produce in one call.
+    struct BuiltTree {
+        dir: PathBuf,
+        bin: PathBuf,
+    }
+
+    impl BuiltTree {
+        /// `sources` is `(name, seconds relative to the binary's own mtime)` — negative is a source
+        /// the binary was built AFTER (the healthy case), positive is one edited since.
+        fn new(tag: &str, sources: &[(&str, i64)]) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("sprag-gate-fresh-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("the fake target dir");
+            let bin = dir.join("sprag-term");
+            std::fs::write(&bin, b"ELF").expect("the fake binary");
+            let built = SystemTime::now() - Duration::from_secs(3600);
+            set_mtime(&bin, built);
+
+            let mut inputs = Vec::new();
+            for (name, offset) in sources {
+                let path = dir.join(name);
+                std::fs::write(&path, b"fn main() {}").expect("a fake source");
+                set_mtime(&path, shifted(built, *offset));
+                inputs.push(path.display().to_string());
+            }
+            std::fs::write(
+                bin.with_extension("d"),
+                format!("{}: {}\n", bin.display(), inputs.join(" ")),
+            )
+            .expect("the fake depfile");
+            Self { dir, bin }
+        }
+    }
+
+    impl Drop for BuiltTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn shifted(from: SystemTime, seconds: i64) -> SystemTime {
+        let by = Duration::from_secs(seconds.unsigned_abs());
+        if seconds < 0 { from - by } else { from + by }
+    }
+
+    /// Stamp a file's mtime through `filetime`-free plumbing: rewrite it, then walk the clock with
+    /// `utimensat`. There is no std API for this, and the alternative — sleeping between writes —
+    /// would make the ordering a race rather than a statement.
+    fn set_mtime(path: &Path, when: SystemTime) {
+        let secs = when
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("a time after the epoch")
+            .as_secs();
+        // `touch -d @<epoch>` is POSIX and this crate takes no dependencies by charter.
+        let status = std::process::Command::new("touch")
+            .arg("-d")
+            .arg(format!("@{secs}"))
+            .arg(path)
+            .status()
+            .expect("touch runs");
+        assert!(status.success(), "touch stamped {}", path.display());
+    }
+
+    /// **A BINARY NEWER THAN EVERY SOURCE CARGO BUILT IT FROM IS CURRENT** — the healthy reading,
+    /// asserted first so the reds below are not a probe that always fires.
+    #[test]
+    fn a_binary_built_after_its_sources_is_reported_current() {
+        let tree = BuiltTree::new("current", &[("a.rs", -60), ("b.rs", -30)]);
+        assert_eq!(
+            edited_since_built(&tree.bin),
+            Ok(Vec::new()),
+            "nothing has moved since the link, so there is nothing to report",
+        );
+    }
+
+    /// **THE CASE THAT LIES**: the binary is THERE, so every absence check this replaced passes,
+    /// and one of its sources has been edited since.
+    ///
+    /// This is R367's mutation exactly — a source changed, the test binary rebuilt, the daemon not.
+    /// REVERT-PROOF: compare `>=` instead of `>` and the current case above reddens; drop the
+    /// missing-input arm and the sibling test below goes green on a deleted source.
+    #[test]
+    fn a_source_edited_since_the_link_makes_the_binary_stale() {
+        let tree = BuiltTree::new("stale", &[("fresh.rs", -60), ("edited.rs", 60)]);
+        let edited =
+            edited_since_built(&tree.bin).expect("the binary and its record are both there");
+        assert_eq!(
+            edited,
+            vec![tree.dir.join("edited.rs")],
+            "only the input newer than the binary is named, and it IS named",
+        );
+        let said = Unbuilt::Stale {
+            bin: tree.bin.clone(),
+            edited,
+        }
+        .to_string();
+        assert!(
+            said.contains("IS STALE") && said.contains("cargo build -p sprag-host --bins"),
+            "the report has to carry the remedy, or it is a puzzle rather than a gate: {said}",
+        );
+    }
+
+    /// A source cargo recorded and that is now GONE counts as edited: a binary built from a file
+    /// that no longer exists is exactly as untrustworthy as one built from a file that moved on.
+    #[test]
+    fn a_source_that_no_longer_exists_makes_the_binary_stale() {
+        let tree = BuiltTree::new("removed", &[("gone.rs", -60)]);
+        std::fs::remove_file(tree.dir.join("gone.rs")).expect("remove the recorded source");
+        assert_eq!(
+            edited_since_built(&tree.bin),
+            Ok(vec![tree.dir.join("gone.rs")]),
+            "a recorded input that cannot be found must not read as unchanged",
+        );
+    }
+
+    /// **A BINARY WITH NO RECORD IS A REFUSAL, NOT A PASS** — this crate's whole doctrine, applied
+    /// to its newest probe. Without this arm a missing depfile would report `Ok(vec![])`, which is
+    /// the "clean" that the shell guard R342 shipped could not stop saying.
+    #[test]
+    fn a_binary_whose_record_is_missing_is_refused_rather_than_believed() {
+        let tree = BuiltTree::new("unrecorded", &[("a.rs", -60)]);
+        std::fs::remove_file(tree.bin.with_extension("d")).expect("remove the record");
+        let why = edited_since_built(&tree.bin).expect_err("no record is no answer");
+        assert!(
+            matches!(why, Unbuilt::Unrecorded { .. }),
+            "an unreadable record is its own arm: {why:?}",
+        );
+        assert!(
+            why.to_string().contains("cannot be answered"),
+            "and it says so rather than implying cleanliness: {why}",
+        );
+    }
+
+    /// ...and a binary that was never built at all is the arm both call sites already had, kept.
+    #[test]
+    fn a_binary_that_was_never_built_is_named_as_missing() {
+        let dir = std::env::temp_dir().join(format!("sprag-gate-absent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("an empty dir");
+        let bin = dir.join("sprag-term");
+        assert_eq!(
+            edited_since_built(&bin),
+            Err(Unbuilt::Missing(bin.clone())),
+            "nothing there is a different failure from something stale, and needs a different fix",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **THE GATE'S OWN SUBJECT, AGAINST THE REAL BUILD**: the depfile cargo writes beside the
+    /// daemon this workspace actually ships covers MORE THAN ONE CRATE.
+    ///
+    /// The whole design rests on that — if cargo recorded only `sprag-host`'s own sources, a change
+    /// in `sprag-vt` would still slip through and this check would be a comfortable lie. Asserted
+    /// against the artefact rather than argued from the format's documentation.
+    ///
+    /// ⚠ SKIPPED, loudly, when the daemon has not been built in this profile: this crate takes no
+    /// dependency on the product and must not require it to be built. The skip prints, so it cannot
+    /// be a silent green.
+    #[test]
+    fn cargos_own_record_for_this_workspaces_daemon_spans_the_whole_closure() {
+        let Some(bin) = built_daemon() else {
+            eprintln!(
+                "skipped: no sprag-term in target/debug — run `cargo build -p sprag-host --bins`",
+            );
+            return;
+        };
+        let record =
+            std::fs::read_to_string(bin.with_extension("d")).expect("cargo wrote a record");
+        let mut crates: Vec<&str> = record
+            .split_whitespace()
+            .filter_map(|path| path.split("crates/").nth(1))
+            .filter_map(|rest| rest.split('/').next())
+            .collect();
+        crates.sort_unstable();
+        crates.dedup();
+        assert!(
+            crates.len() > 1,
+            "a record naming one crate would make this check blind to every dependency: {crates:?}",
+        );
+        assert!(
+            crates.contains(&"sprag-host"),
+            "...and it must name the crate the binary is IN: {crates:?}",
+        );
+    }
+
+    /// The shipped daemon in this workspace's debug profile, or `None` when nobody has built it.
+    fn built_daemon() -> Option<PathBuf> {
+        let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .parent()?
+            .join("target/debug/sprag-term");
+        bin.is_file().then_some(bin)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

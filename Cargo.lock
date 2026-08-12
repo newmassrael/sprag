@@ -3678,6 +3678,7 @@ version = "0.0.1"
 dependencies = [
  "serde_json",
  "sprag-detect",
+ "sprag-gate",
  "sprag-host",
  "sprag-peer",
  "sprag-plugin",
@@ -3739,6 +3740,7 @@ dependencies = [
  "pinion-core",
  "serde_json",
  "sprag-client",
+ "sprag-gate",
  "sprag-grid",
  "sprag-host",
  "sprag-input",

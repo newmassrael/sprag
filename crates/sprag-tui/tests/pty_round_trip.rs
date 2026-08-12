@@ -152,19 +152,14 @@ fn sprag_cli_bin() -> PathBuf {
 /// `sprag-host` — so the path is derived rather than given, and its ABSENCE is a loud failure
 /// rather than a skip. A skipped gate is a green tick over an untested claim, which is the failure
 /// mode this whole file exists to prevent.
+///
+/// ⚠⚠⚠ **AND ITS STALENESS IS THE SAME FAILURE, WHICH THIS FILE'S OWN CHECK COULD NOT SEE.** The
+/// absence check that used to live here passes for a binary that exists and was built from older
+/// source — the case R241 and R284 both lost a round to, and R367 met again when a mutation left an
+/// end-to-end gate green. [`sprag_gate::sibling_bin`] answers it off cargo's own depfile; it lives
+/// out there because a check each spawn site has to remember is exactly what failed three times.
 fn sibling_bin(name: &str) -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_BIN_EXE_sprag-tui"))
-        .parent()
-        .expect("the built sprag-tui has a directory")
-        .join(name);
-    assert!(
-        path.exists(),
-        "{} is not built. This test drives a binary that belongs to another package, so cargo \
-         does not build it for `-p sprag-tui` alone — run `cargo test --workspace`, or \
-         `cargo build -p sprag-host --bin {name}` first.",
-        path.display(),
-    );
-    path
+    sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag-tui"), name)
 }
 
 /// A socket path unique to this CALL, under the temp dir.

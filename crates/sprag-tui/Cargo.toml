@@ -72,3 +72,7 @@ serde_json = { workspace = true }
 # gate file until R324, one of four copies with three different ideas of what "older"
 # means; the crate is DEV-ONLY, so nothing this client ships depends on it.
 sprag-peer = { workspace = true }
+# The freshness check for the sprag-host binaries the PTY gate spawns. Same reason as
+# sprag-mcp's: `cargo test -p sprag-tui` builds the sprag-host LIB and never its BINS, and an
+# absence check cannot see a binary that is THERE and older than the edit (R241, R284, R367).
+sprag-gate = { workspace = true }

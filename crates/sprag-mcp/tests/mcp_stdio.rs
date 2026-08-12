@@ -126,19 +126,15 @@ impl Drop for Daemon {
 /// to `sprag-host` — so the path is derived rather than given, and its ABSENCE is a loud failure
 /// rather than a skip. A skipped gate is a green tick over an untested claim, which is the failure
 /// mode this whole file exists to prevent.
+///
+/// ⚠⚠⚠ **AND R367 MEASURED THE STALENESS HALF RIGHT HERE.** A mutation that removed a whole wire
+/// key from the daemon left `the_agent_tools_report_the_daemons_own_verdict` GREEN, because
+/// `cargo test -p sprag-mcp` builds the `sprag-host` LIB and never its BINS — so this file was
+/// driving a daemon from older source while asserting about the edit. The absence check this
+/// replaces cannot see that: the binary is there. [`sprag_gate::sibling_bin`] asks cargo's own
+/// depfile instead, and it is shared with the pty suite so neither site can drift from the other.
 fn sprag_term_bin() -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_BIN_EXE_sprag-mcp"))
-        .parent()
-        .expect("the built sprag-mcp has a directory")
-        .join("sprag-term");
-    assert!(
-        path.exists(),
-        "{} is not built. This test drives a binary that belongs to another package, so cargo does \
-         not build it for `-p sprag-mcp` alone — run `cargo test --workspace`, or \
-         `cargo build -p sprag-host --bins` first.",
-        path.display(),
-    );
-    path
+    sprag_gate::sibling_bin(env!("CARGO_BIN_EXE_sprag-mcp"), "sprag-term")
 }
 
 /// A socket path unique to this CALL (pid + a per-binary counter).

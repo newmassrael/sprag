@@ -44,3 +44,7 @@ sprag-plugin = { workspace = true }
 # Its companion: a blocked run's outcome carries a `sprag_detect::Question`, so building one needs
 # the type. Same dev-only reasoning.
 sprag-detect = { workspace = true }
+# The freshness check for the DAEMON this file spawns. `cargo test -p sprag-mcp` builds the
+# sprag-host LIB and never its BINS, so without this the stdio gate can drive a daemon built
+# from older source and report green about an edit it never contained (measured, R367).
+sprag-gate = { workspace = true }

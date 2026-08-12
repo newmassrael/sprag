@@ -242,6 +242,12 @@ sprag-tui = { path = "crates/sprag-tui", version = "0.0.1" }
 # this out of every shipped binary.
 sprag-peer = { path = "crates/sprag-peer", version = "0.0.1" }
 
+# The checks a test cannot make about ITSELF. A DEV-dependency everywhere it appears, on
+# `sprag-peer`'s terms and for the same reason: it depends on nothing of the product, so a
+# suite that drives a sibling binary can ask whether that binary is CURRENT without the
+# question being able to fail because the product did not compile.
+sprag-gate = { path = "crates/sprag-gate", version = "0.0.1" }
+
 # DEBUG INFO IS STORED ONCE PER CRATE, NOT COPIED INTO EVERY BINARY THAT LINKS IT.
 #
 # This workspace links 85 test binaries against the same dependency tree (its own crates plus
