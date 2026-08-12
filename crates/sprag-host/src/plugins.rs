@@ -403,7 +403,9 @@ impl PluginsExternal {
                 let prompt = require_str(map, "prompt")?.to_string();
                 let mut spec = AgentSpec::new(prompt);
                 if !declined(map, "eof") {
-                    spec.eof = map["eof"].as_bool().ok_or(InvokeError::TypeMismatch)?;
+                    // `Some`, and the wrapper carries meaning: a caller who SAID so overrides what
+                    // the completion contract would have implied — see `AgentSpec::eof`.
+                    spec.eof = Some(map["eof"].as_bool().ok_or(InvokeError::TypeMismatch)?);
                 }
                 if !declined(map, "shows_prompt") {
                     spec.shows_the_prompt = map["shows_prompt"]

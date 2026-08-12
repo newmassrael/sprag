@@ -57,10 +57,20 @@ const CONFIRM_WHOLE_UP_TO: usize = 40;
 pub struct AgentSpec {
     /// The prompt injected into the pane (followed by Enter).
     pub prompt: String,
-    /// Send Ctrl-D (EOF) after the prompt, so a tool that reads stdin until
-    /// end-of-input (`claude -p`, `cat`) sees EOF and replies. Default `true`;
-    /// set `false` for a peer that reads line-by-line and stays alive.
-    pub eof: bool,
+    /// Send Ctrl-D (EOF) after the prompt, so a tool that reads stdin until end-of-input
+    /// (`claude -p`, `cat`) sees EOF and replies. `None` — the default — means **whatever
+    /// [`done_when`](Self::done_when) implies**, which is to send one under
+    /// [`DoneWhen::Exits`] and not under [`DoneWhen::Settles`].
+    ///
+    /// # ⚠⚠ Why this is an OPTION and not a `bool` that defaults to `true`
+    ///
+    /// An end-of-input and a peer that stays alive are contradictory requests: `Settles` says *my
+    /// peer answers and goes on waiting*, and a Ctrl-D is how you tell a program the conversation
+    /// is over — an agent CLI may take it as *quit*. A plain `bool` cannot tell a caller who
+    /// ASKED for one from a caller who never mentioned it, so the contradiction could only be
+    /// resolved by overriding somebody's explicit request. `None` makes the default yield to the
+    /// contract while an explicit `Some` still wins, which is the honest order.
+    pub eof: Option<bool>,
     /// Overall bound on the reply wait. On timeout the agent converges with
     /// whatever it captured (possibly nothing) rather than hanging.
     pub timeout: Duration,
@@ -140,7 +150,7 @@ impl AgentSpec {
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
-            eof: true,
+            eof: None,
             timeout: DEFAULT_REPLY_TIMEOUT,
             done_when: DoneWhen::Exits,
             ready_when: None,
@@ -249,6 +259,24 @@ enum Baseline {
 }
 
 /// A one-shot AI-tool adapter over one pane.
+/// What a turn did about its end-of-input, decided BEFORE the prompt is submitted.
+///
+/// Three, because two of them are *no Ctrl-D was sent* for opposite reasons and a caller acts on
+/// them differently: one is the contract working as asked, the other is a request this pane cannot
+/// honour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EndOfInput {
+    /// Sent, and this pane's terminal will turn it into an end-of-input (or would not say, which
+    /// is not the negative — see [`Agent::end_of_input`]).
+    Sent,
+    /// Not sent, because nothing asked for one: the caller said so, or the completion contract
+    /// implies a peer that stays alive. Unremarkable, and reported as nothing.
+    NotWanted,
+    /// Not sent, because this pane's terminal is not in canonical mode and **could not have made
+    /// one of it**. The request was real and it cannot be honoured, so the step says so.
+    CannotArrive,
+}
+
 pub struct Agent {
     pane: PaneId,
     spec: AgentSpec,
@@ -282,9 +310,9 @@ impl Agent {
     /// The Ctrl-D is the sharper half: a peer reading to end-of-input answers the empty question
     /// and EXITS, which is the very signal [`await_reply`](Self::await_reply) treats as *the reply
     /// is complete*.
-    fn submit_keys(&self) -> Vec<KeyStroke> {
+    fn submit_keys(&self, eof: EndOfInput) -> Vec<KeyStroke> {
         let mut keys = vec![KeyStroke::named("Enter")];
-        if self.spec.eof {
+        if eof == EndOfInput::Sent {
             keys.push(KeyStroke {
                 key: "d".to_string(),
                 mods: Modifiers {
@@ -296,10 +324,48 @@ impl Agent {
         keys
     }
 
+    /// Whether this run WANTS an end-of-input — the caller's explicit answer, or what the
+    /// completion contract implies when they left it out. See [`AgentSpec::eof`].
+    fn wants_end_of_input(&self) -> bool {
+        self.spec
+            .eof
+            .unwrap_or(matches!(self.spec.done_when, DoneWhen::Exits))
+    }
+
+    /// What this turn will do about its end-of-input, **decided before a byte is typed**.
+    ///
+    /// # ⚠⚠⚠ Why the pane is asked FIRST rather than blamed afterwards
+    ///
+    /// A `Ctrl-D` is an end-of-input only while the line discipline is in CANONICAL mode; a
+    /// program that took its terminal raw — every full-screen agent — receives an ordinary byte.
+    /// This adapter used to send it regardless, wait out the whole reply timeout for an exit that
+    /// could not follow, and only THEN read the terminal's mode to explain itself. The fact was
+    /// knowable before the wait began, and the wait was two minutes by default.
+    ///
+    /// Asking first buys two things a post-mortem could not: **the stray byte is never written**
+    /// — into a full-screen agent a `Ctrl-D` is not inert, it is a keystroke that may well mean
+    /// *quit* — and the caller is told at the moment of the decision rather than after the clock.
+    ///
+    /// ⚠ A pane that will not answer ([`None`] from the kernel) is SENT one, which is both the
+    /// old behaviour and the honest reading: `None` is *this platform's device would not say*,
+    /// never *the terminal is raw*.
+    fn end_of_input(&self, panes: &dyn PaneAccess) -> EndOfInput {
+        if !self.wants_end_of_input() {
+            return EndOfInput::NotWanted;
+        }
+        match panes
+            .terminal_modes()
+            .and_then(|modes| modes.pane_end_of_input(self.pane))
+        {
+            Some(PaneEndOfInput::IsJustAByte) => EndOfInput::CannotArrive,
+            _ => EndOfInput::Sent,
+        }
+    }
+
     /// The prompt and its submit as ONE injection — the write path's keystrokes.
-    fn prompt_keys(&self) -> Vec<KeyStroke> {
+    fn prompt_keys(&self, eof: EndOfInput) -> Vec<KeyStroke> {
         let mut keys = KeyStroke::text(&self.spec.prompt);
-        keys.extend(self.submit_keys());
+        keys.extend(self.submit_keys(eof));
         keys
     }
 
@@ -337,12 +403,13 @@ impl Agent {
         &self,
         panes: &dyn PaneAccess,
         run: &RunContext,
+        eof: EndOfInput,
     ) -> Result<Prompted, PaneError> {
         if !self.spec.shows_the_prompt {
             // The write path, unchanged: one injection carrying the prompt and its submit. What is
             // new is that the pane is ASKED who paints it, so the step can say what its capture is
             // worth instead of publishing it as though the question had been confirmed.
-            let written = panes.inject(self.pane, &self.prompt_keys())?.bytes();
+            let written = panes.inject(self.pane, &self.prompt_keys(eof))?.bytes();
             return Ok(Prompted::Written {
                 written,
                 echo: panes
@@ -368,7 +435,7 @@ impl Agent {
                         .take(CONFIRM_WHOLE_UP_TO)
                         .collect::<String>()
                 }),
-                then_press: self.submit_keys(),
+                then_press: self.submit_keys(eof),
                 ..Delivery::new()
             },
         )
@@ -555,11 +622,15 @@ impl Plugin for Agent {
         // capture published as the model's answer would be the screen from before it wrote a word.
         // See [`Completion::begin`].
         self.done.begin(panes, self.pane);
+        // ⚠⚠⚠ AND THE END-OF-INPUT IS DECIDED HERE, BEFORE ANYTHING IS TYPED — see
+        // [`Agent::end_of_input`]. It used to be sent unconditionally, waited out, and only then
+        // explained; the terminal's mode was knowable all along and the wait was two minutes.
+        let eof = self.end_of_input(panes);
 
         // ⚠⚠⚠ DELIVERED, NOT WRITTEN — see [`Agent::deliver_prompt`]. This was a bare `inject` for
         // as long as this adapter has existed, which meant the one plugin whose output is published
         // AS A MODEL'S ANSWER was the one that never checked its question arrived.
-        let prompted = self.deliver_prompt(panes, run)?;
+        let prompted = self.deliver_prompt(panes, run, eof)?;
         let cost = prompted.written();
         match prompted {
             // The prompt is in the pane, by whichever route, and something was submitted. What each
@@ -615,23 +686,18 @@ impl Plugin for Agent {
             format!("captured a {characters}-character reply")
         };
         // ⚠⚠⚠ AND WHEN THE END-OF-INPUT COULD NOT ARRIVE, SAY THAT INSTEAD OF BLAMING THE PEER.
-        // This adapter converges on the child EXITING, which is what a peer reading to end-of-input
-        // does when it is told the question is over. `Ctrl-D` only tells it that in CANONICAL mode;
-        // on a raw terminal it is an ordinary byte, so the wait was for something never asked for.
-        // Measured on `stty raw -echo; exec cat` with the default `eof`: the whole reply timeout
-        // spent, the peer's echo of the prompt published as the model's answer, and the only
-        // explanation offered was *"the peer had not finished"* — a sentence about the PEER's speed
-        // for a cause that is the TERMINAL's mode and was knowable before the wait began.
-        if waited == Waited::TimedOut
-            && self.spec.eof
-            && let Some(PaneEndOfInput::IsJustAByte) = panes
-                .terminal_modes()
-                .and_then(|modes| modes.pane_end_of_input(self.pane))
-        {
+        //
+        // ⚠⚠ REPORTED WHATEVER THE OUTCOME, because it is now decided BEFORE the wait rather than
+        // diagnosed after one. The old form fired only on a timeout, which made the caveat a
+        // property of how the turn happened to end: a peer that exited for its own reasons left
+        // the caller believing their end-of-input had done it. What the run knows is that the
+        // request could not be honoured, and that is true either way.
+        if eof == EndOfInput::CannotArrive {
             note.push_str(
-                "; ⚠ AND THE END-OF-INPUT NEVER ARRIVED — this pane's terminal is not in \
-                 canonical mode, so the Ctrl-D this run sent is an ordinary byte and a peer \
-                 reading until end-of-input was never told the question was over",
+                "; ⚠ AND NO END-OF-INPUT WAS SENT — this pane's terminal is not in canonical \
+                 mode, so a Ctrl-D could only have arrived as an ordinary byte and a peer reading \
+                 until end-of-input would never have been told the question was over. For a peer \
+                 that stays alive, ask for `done_when: settles` instead of an end-of-input",
             );
         }
         // ⚠⚠ A HOLE IN THE ANSWER IS REPORTED, NEVER SWALLOWED. The pane's retained history is
@@ -988,7 +1054,7 @@ mod tests {
                 AgentSpec {
                     // `cat` never exits, so the turn ends on its own clock; what this gate reads is
                     // what the PEER was given, not what it answered.
-                    eof: false,
+                    eof: Some(false),
                     timeout: Duration::from_millis(400),
                     ready_when: Some(ReadyWhen::Prints("UP".to_string())),
                     shows_the_prompt,
@@ -1098,16 +1164,23 @@ mod tests {
     /// offered was *"the peer had not finished after 120s"*: about the PEER's speed, for a cause
     /// that is the TERMINAL's mode and is knowable before the wait begins.
     ///
+    /// ⚠⚠⚠ **AND THE BYTE IS NOT WRITTEN AT ALL**, which is the half a post-mortem could never
+    /// have. Into a full-screen agent a `Ctrl-D` is not inert — it is a keystroke, and a likely
+    /// meaning of it is *quit*. So the assertion is over the pane's record of WHAT WAS TYPED INTO
+    /// IT rather than over the sentence alone: a diagnosis that still sent the byte would pass a
+    /// text match and fail here.
+    ///
     /// Both arms against peers that differ ONLY in that mode, because the sentence is worth
     /// nothing if it fires for everyone:
     ///
-    /// * RAW — the byte is just a byte, the turn ends on its clock, and the run names the cause.
-    /// * CANONICAL — the same `Ctrl-D` is an end-of-input, the peer really does finish, and there
-    ///   is no such sentence to say.
+    /// * RAW — no end-of-input is sent, the turn ends on its clock, and the run names the cause.
+    /// * CANONICAL — the same `Ctrl-D` IS an end-of-input, so it is sent, the peer really does
+    ///   finish, and there is no such sentence to say.
     #[test]
     fn a_run_says_when_its_end_of_input_could_not_reach_the_peer() {
-        /// The note of one turn against `script`, with the adapter's default `eof`.
-        fn note_for(script: &str) -> String {
+        /// One turn against `script` with the adapter's default `eof`: its note, and everything
+        /// the run TYPED into the pane.
+        fn note_for(script: &str) -> (String, String) {
             let (access, pane) = sh_access(script, 40, 8);
             // ⚠ The peer is UP before the run starts, so the run's clock is spent on the turn and
             // not on a loaded box's process startup — see `started`.
@@ -1139,20 +1212,39 @@ mod tests {
                 .last()
                 .and_then(|step| step.note.clone())
                 .unwrap_or_default();
+            // What the PANE remembers being written into it — the only record of whether the
+            // Ctrl-D was ever sent, and it is the pane's rather than this run's.
+            let typed = access
+                .input_echo()
+                .and_then(|echo| echo.pane_recent_input(pane))
+                .unwrap_or_default();
             access.lifecycle().expect("lifecycle").close(pane);
-            note
+            (note, typed)
         }
 
-        // RAW: `cat` never sees an end-of-input, so the turn can only end on the clock.
-        let raw = note_for("stty raw -echo; printf 'UP\\r\\n'; exec cat");
+        const CTRL_D: char = '\u{4}';
+
+        // RAW: a Ctrl-D could only arrive as a byte, so none is sent and the turn ends on the clock.
+        let (raw, raw_typed) = note_for("stty raw -echo; printf 'UP\\r\\n'; exec cat");
         assert!(
-            raw.contains("THE END-OF-INPUT NEVER ARRIVED") && raw.contains("canonical"),
+            raw.contains("NO END-OF-INPUT WAS SENT") && raw.contains("canonical"),
             "a run whose Ctrl-D could not be an end-of-input must name that, or its caller reads a \
              wrong diagnosis of a knowable fact: {raw:?}",
         );
+        assert!(
+            raw.contains("done_when: settles"),
+            "and it must name the REMEDY — a caller told only that their request was dropped will \
+             send it again: {raw:?}",
+        );
+        assert!(
+            !raw_typed.contains(CTRL_D),
+            "⚠⚠⚠ and NOTHING was written: into a full-screen agent a Ctrl-D is a keystroke that \
+             may well mean QUIT, so a run that diagnosed the mode and sent it anyway would be \
+             typing a stray command into somebody's peer. Typed: {raw_typed:?}",
+        );
 
         // CANONICAL: the same keystroke IS an end-of-input, so the peer finishes and answers.
-        let cooked = note_for("printf 'UP\\n'; in=$(cat); echo \"REPLY[$in]\"");
+        let (cooked, cooked_typed) = note_for("printf 'UP\\n'; in=$(cat); echo \"REPLY[$in]\"");
         assert!(
             !cooked.contains("END-OF-INPUT"),
             "and it must NOT be said where the terminal delivers it — a caveat that fires for \
@@ -1162,6 +1254,11 @@ mod tests {
             cooked.contains("captured a"),
             "the control has to be a turn that really completed, or its silence proves nothing: \
              {cooked:?}",
+        );
+        assert!(
+            cooked_typed.contains(CTRL_D),
+            "⚠⚠ and here it IS sent — the withholding above is about the terminal's mode and not \
+             about this adapter having stopped submitting. Typed: {cooked_typed:?}",
         );
     }
 
@@ -1314,7 +1411,7 @@ mod tests {
         let mut agent = Agent::new(
             pane,
             AgentSpec {
-                eof: false,
+                eof: Some(false),
                 timeout: Duration::from_millis(200),
                 ready_when: Some(ReadyWhen::Prints("UP".to_string())),
                 shows_the_prompt: true,
@@ -1697,7 +1794,7 @@ mod tests {
         let mut agent = Agent::new(
             pane,
             AgentSpec {
-                eof: false,
+                eof: Some(false),
                 timeout: Duration::from_millis(300),
                 ..AgentSpec::new("x")
             },
@@ -1780,7 +1877,7 @@ mod tests {
         let timed = |deadline: Option<Duration>| {
             let (access, pane) = sh_access("exec cat", 40, 6);
             let mut spec = AgentSpec::new("ping");
-            spec.eof = false;
+            spec.eof = Some(false);
             spec.timeout = Duration::from_secs(4);
             let mut agent = Agent::new(pane, spec);
             let start = std::time::Instant::now();
@@ -1953,7 +2050,7 @@ mod tests {
             AgentSpec {
                 // ⚠ `eof: false`: a trailing Ctrl-D would make the shell EXIT, which ends the job
                 // by killing the pane and would let this pass with the mechanism removed.
-                eof: false,
+                eof: Some(false),
                 ..AgentSpec::new("sleep 300")
             },
         );
@@ -2043,7 +2140,7 @@ mod tests {
         let mut agent = Agent::new(
             pane,
             AgentSpec {
-                eof: false,
+                eof: Some(false),
                 ..AgentSpec::new("anything")
             },
         );

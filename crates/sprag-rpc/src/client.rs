@@ -597,6 +597,19 @@ impl ScopeAsk {
 ///   ⚠ The DEFAULT does not move: absent `done_when` is `exits`, which is what every existing call
 ///   already got. A default that re-answered them silently is the failure version 22's shape change
 ///   exists to prevent.
+///
+///   ⚠⚠ **AND `eof` IS REDEFINED IN TERMS OF IT, which is the same version's business and not a
+///   separate one.** Absent `eof` stopped meaning `true` and started meaning *whatever the
+///   completion contract implies* — send one under `exits`, none under `settles`, because an
+///   end-of-input and a peer that stays alive are contradictory requests and a Ctrl-D into a
+///   full-screen agent is a keystroke that may well mean *quit*. An explicit `eof` still wins.
+///   Every pre-R365 call is unaffected: with no `done_when` the contract is `exits` and the
+///   implication is the `true` they already had.
+///
+///   ⚠ One behaviour DOES change for an unchanged request: a run no longer writes a `Ctrl-D` into
+///   a pane whose terminal is not in canonical mode, because there it could only arrive as an
+///   ordinary byte. It says so in the step's note instead — at the moment of the decision rather
+///   than after the reply timeout, which is where that diagnosis used to live.
 pub const WIRE_PROTOCOL: u32 = 25;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
