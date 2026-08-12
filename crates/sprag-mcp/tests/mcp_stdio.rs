@@ -2721,6 +2721,33 @@ fn a_named_pane_answers_to_its_name_after_its_number_has_moved() {
         "a pane's name is what a PERSON reads on it: {refused}",
     );
 
+    // ⚠⚠ AND SO IS STOPPING WHAT A PERSON'S PANE IS RUNNING, which is the strongest form of this
+    // gate on the surface: a rename changes a label and a stop ends somebody's work.
+    let refused = server.call_tool_error("stop_job", json!({ "pane": 1 }));
+    assert!(
+        refused.contains("pane 1 was opened by a person, not by you")
+            && refused.contains("theirs to decide"),
+        "an agent must not end work it did not start: {refused}",
+    );
+    // ⚠ And a word this tool does not send is refused WITH THE LIST — an agent told only that its
+    // argument was wrong will guess again, which is the one thing a closed vocabulary is for.
+    let mistyped = server.call_tool_error("stop_job", json!({ "pane": "build", "signal": "maim" }));
+    assert!(
+        mistyped.contains("interrupt")
+            && mistyped.contains("terminate")
+            && mistyped.contains("kill"),
+        "the refusal lists every word the tool takes: {mistyped}",
+    );
+    // The agent's OWN pane answers, and the answer names what received the stop and refuses to
+    // claim obedience — the distinction the tool exists to make.
+    let stopped = server.call_tool("stop_job", json!({ "pane": "build" }));
+    assert!(
+        stopped.contains("process group")
+            && stopped.contains("interrupted")
+            && stopped.contains("not obedience"),
+        "a stop names what it reached and says what it does not promise: {stopped}",
+    );
+
     let renamed = server.call_tool("rename_pane", json!({ "pane": "build", "name": "tests" }));
     assert!(
         renamed.starts_with("pane 2 is now called \"tests\".")

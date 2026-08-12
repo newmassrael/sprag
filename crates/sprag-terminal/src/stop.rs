@@ -440,6 +440,73 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **THE THREE PUBLISHED WORDS DO THREE DIFFERENT THINGS**, against a job that has said no
+    /// to the first two.
+    ///
+    /// A vocabulary whose members are all accepted proves only that the parser reads them. What
+    /// makes three words worth publishing is that a caller who picks the wrong one gets a different
+    /// outcome — so the fixture TRAPS `INT` and `TERM` and the gate walks the escalation: interrupt
+    /// (ignored), terminate (ignored), kill (cannot be).
+    ///
+    /// ⚠ Without the trap this would pass with all three mapped to `SIGKILL`, which is exactly the
+    /// shape of vacuous vocabulary gate this workspace has removed before.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_job_that_refuses_the_first_two_stops_are_ended_by_the_third() {
+        use crate::{CommandBuilder, PanePty};
+        use std::time::{Duration, Instant};
+
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // `trap '' INT TERM` sets both to IGNORED, which `exec` PRESERVES across the new image —
+        // so the sleep itself is the process that ignores them, not a shell standing in front of
+        // it. That is what makes the pgid read below the job's own.
+        command.arg("trap '' INT TERM; exec sleep 300");
+        command.env("TERM", "dumb");
+        let pty = PanePty::spawn(command, 20, 4).expect("spawn a pty");
+        let child = pty.pid().expect("a live child");
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10)
+            && !crate::foreground_leader_of(child).is_some_and(|job| job.name == "sleep")
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            crate::foreground_leader_of(child).is_some_and(|job| job.name == "sleep"),
+            "the fixture never reached its job, so nothing below measures anything",
+        );
+
+        for ignored in [Stop::Interrupt, Stop::Terminate] {
+            stop_foreground_job(child, ignored, Reach::TheProgramToo)
+                .unwrap_or_else(|why| panic!("{ignored:?} is delivered: {why}"));
+            // ⚠ A DELIVERED SIGNAL IS NOT OBEDIENCE, which is what this half asserts and what the
+            // module doc promises rather than hides. The wait is generous in the direction that
+            // makes the claim WEAKER if it is wrong — a job that was going to die has ample time.
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_millis(500) && pty.exit_status().is_none() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(
+                pty.exit_status(),
+                None,
+                "{ignored:?} was DELIVERED and the job ignored it — the report says delivered, and \
+                 that is all it ever claims",
+            );
+        }
+
+        stop_foreground_job(child, Stop::Kill, Reach::TheProgramToo).expect("a kill is delivered");
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) && pty.exit_status().is_none() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            pty.exit_status().is_some_and(|exit| exit.signal.is_some()),
+            "⚠⚠ AND THE THIRD CANNOT BE REFUSED — which is the whole reason a caller is offered \
+             three words instead of one",
+        );
+    }
+
     /// ⚠⚠⚠ **THE BYTE IS THE CONTROL AND THE SIGNAL IS THE SUBJECT**, on ONE pane, ONE job and one
     /// run of the test — the pair that answers the open product question this module exists for.
     ///
