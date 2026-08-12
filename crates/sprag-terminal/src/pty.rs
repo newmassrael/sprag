@@ -132,6 +132,221 @@ pub enum PaneEndOfInput {
     IsJustAByte,
 }
 
+sprag_vt::closed_set! {
+/// WHICH SIGNAL a terminal's line discipline raises for one of its signal characters.
+///
+/// Three, because `termios` has three such characters and they ask a job for three different
+/// things — the same distinction [`Stop`](crate::Stop) draws for the signal a caller sends
+/// itself, arrived at from the other end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalKey {
+    /// The INTR character — `Ctrl-C` on a terminal nobody has reconfigured (`SIGINT`).
+    Interrupt,
+    /// The QUIT character — `Ctrl-\` (`SIGQUIT`).
+    Quit,
+    /// The SUSP character — `Ctrl-Z` (`SIGTSTP`), which STOPS the job rather than ending it.
+    Suspend,
+}
+}
+
+impl SignalKey {
+    /// This key's WORD on the wire — the one place the variant → name mapping lives, so no
+    /// surface spells a variant itself ([`Stop::wire_str`](crate::Stop::wire_str)'s rule).
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Interrupt => "interrupt",
+            Self::Quit => "quit",
+            Self::Suspend => "suspend",
+        }
+    }
+
+    /// The key a caller's word names, or `None` for a word no surface publishes. DERIVED from
+    /// [`ALL`](Self::ALL), so the set a caller may say and the set a surface publishes cannot
+    /// drift apart.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|key| key.wire_str() == word)
+    }
+
+    /// How a person names the chord that means this, for a sentence a human reads.
+    #[must_use]
+    pub const fn chord(self) -> &'static str {
+        match self {
+            Self::Interrupt => "Ctrl-C",
+            Self::Quit => "Ctrl-\\",
+            Self::Suspend => "Ctrl-Z",
+        }
+    }
+
+    /// The character this key CONVENTIONALLY is — what a person pressing that chord produces, and
+    /// what every surface offering it means by it.
+    ///
+    /// ⚠ This is a fact about the CALLER'S INTENT, not about the device. What the device does with
+    /// the byte is [`PaneSignalKeys::raises`], read from the kernel — and the whole point of asking
+    /// both is that they can DISAGREE.
+    #[must_use]
+    pub const fn conventional_byte(self) -> u8 {
+        match self {
+            Self::Interrupt => 0x03,
+            Self::Quit => 0x1c,
+            Self::Suspend => 0x1a,
+        }
+    }
+}
+
+sprag_vt::wire_words!(SignalKey: wire_str);
+
+/// Whether the characters that MEAN a signal raise one in a pane, and which characters those are.
+///
+/// # ⚠⚠⚠ Why a caller must be able to ask
+///
+/// **Writing `0x03` into a pane is not interrupting its job**, and the write reports success
+/// either way. What turns the byte into a `SIGINT` is the line discipline, and it does so only
+/// while `ISIG` is set — every full-screen program, every editor and every interactive agent CLI
+/// clears it on startup. Measured (R363): a pane running `stty -isig; sleep 300`, sent `C-c`
+/// through this product's own `send-keys`, echoes `^C` and the `sleep` lives on.
+///
+/// So a caller that sends `Ctrl-C` and then waits for the job to end is, on such a pane, waiting
+/// for something it never asked for — [`PaneEndOfInput`]'s failure exactly, one character over.
+/// This is the reading that lets the surface SAY so at the moment of the write, and
+/// [`Stop`](crate::Stop) is what it points the caller at instead.
+///
+/// # ⚠⚠ Why the CHARACTERS and not just the flag
+///
+/// `ISIG` alone answers *"does this terminal raise signals?"*, and a surface that stays quiet
+/// whenever it is set is asserting *"your `Ctrl-C` became a signal"* — a claim it has not checked.
+/// The characters are the device's to rebind (`stty intr ^X`) or to disable outright, and they
+/// come out of the SAME `tcgetattr`, so reading them costs nothing and closes a second way for the
+/// silence to be false.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneSignalKeys {
+    /// `ISIG` is set: the line discipline turns each character it names into that signal. A field
+    /// is `None` where the device has DISABLED that character, which raises nothing at all.
+    RaisedByTheTerminal {
+        /// The INTR character, or `None` where it is disabled.
+        interrupt: Option<u8>,
+        /// The QUIT character, or `None` where it is disabled.
+        quit: Option<u8>,
+        /// The SUSP character, or `None` where it is disabled.
+        suspend: Option<u8>,
+    },
+    /// `ISIG` is clear — the program took its terminal raw, so NO character raises a signal and
+    /// every one of them reaches the program as an ordinary byte.
+    DeliveredAsBytes,
+}
+
+sprag_vt::closed_set! {
+/// WHY a byte a caller sent MEANING a signal did not become one.
+///
+/// Two, because they are two different states of the pane and a caller acts on them differently —
+/// and because a surface that reported only *"no signal"* would leave a reader to guess which,
+/// when one of them says the program is full-screen and the other says the terminal was
+/// reconfigured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unraised {
+    /// The program took its terminal RAW (`ISIG` off), so no input character raises a signal here
+    /// — the state every editor, every full-screen TUI and every interactive agent CLI is in.
+    TerminalRaisesNone,
+    /// Signals ARE raised here, but not for this byte: the terminal's own character for it is
+    /// another one, or that character is disabled.
+    NotItsCharacter,
+}
+}
+
+impl Unraised {
+    /// This cause's WORD on the wire — [`SignalKey::wire_str`]'s rule.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::TerminalRaisesNone => "raw",
+            Self::NotItsCharacter => "unbound",
+        }
+    }
+
+    /// The cause a caller's word names, or `None` for a word no surface publishes. DERIVED from
+    /// [`ALL`](Self::ALL), so the published set and the readable set cannot drift apart.
+    #[must_use]
+    pub fn from_wire(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|why| why.wire_str() == word)
+    }
+}
+
+sprag_vt::wire_words!(Unraised: wire_str);
+
+impl std::fmt::Display for Unraised {
+    /// The clause a report uses, reading as *"nothing was raised, because …"*.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TerminalRaisesNone => {
+                "the program running there has taken its terminal raw, so nothing typed at it \
+                 raises a signal"
+            }
+            Self::NotItsCharacter => {
+                "that terminal's character for it is a different one, or is disabled"
+            }
+        })
+    }
+}
+
+impl PaneSignalKeys {
+    /// WHY writing `byte` into this pane raises no signal, or `None` when it DOES raise one.
+    ///
+    /// ⚠ DERIVED from [`raises`](Self::raises) rather than deciding a second time, so the answer
+    /// *"nothing was raised"* and the answer *"here is why"* cannot disagree.
+    #[must_use]
+    pub fn unraised(&self, byte: u8) -> Option<Unraised> {
+        if self.raises(byte).is_some() {
+            return None;
+        }
+        Some(match self {
+            Self::DeliveredAsBytes => Unraised::TerminalRaisesNone,
+            Self::RaisedByTheTerminal { .. } => Unraised::NotItsCharacter,
+        })
+    }
+
+    /// Which signal writing `byte` into this pane RAISES, or `None` when it raises none.
+    ///
+    /// ⚠ `None` is the answer that matters: it means the byte reaches the program as input. A
+    /// caller that sent it meaning to stop a job has not stopped one.
+    #[must_use]
+    pub fn raises(&self, byte: u8) -> Option<SignalKey> {
+        let Self::RaisedByTheTerminal {
+            interrupt,
+            quit,
+            suspend,
+        } = self
+        else {
+            return None;
+        };
+        [
+            (*interrupt, SignalKey::Interrupt),
+            (*quit, SignalKey::Quit),
+            (*suspend, SignalKey::Suspend),
+        ]
+        .into_iter()
+        .find_map(|(character, key)| (character == Some(byte)).then_some(key))
+    }
+}
+
+/// A `c_cc` slot's character, or `None` where the device has no character in it.
+///
+/// # ⚠⚠ Why a SHAPE test and not `_POSIX_VDISABLE`
+///
+/// The disabled value is not the same number everywhere — `0` on Linux, `0xff` on the BSDs and
+/// macOS — and `libc` publishes `_POSIX_VDISABLE` for the BSDs and Android but **not for
+/// linux-gnu**, so neither number can be named portably and picking one would be a defect on the
+/// other of this project's two targets. Both fall outside the test that actually matters: a signal
+/// character is one a keyboard produces with `Ctrl`, so it is a control character — `0x01..=0x1F`,
+/// or `0x7F` for the terminals that bind one to `Ctrl-?`. `0x00` and `0xff` are excluded by that
+/// test whichever platform meant which by them.
+const fn signal_character(raw: libc::cc_t) -> Option<u8> {
+    match raw {
+        0x01..=0x1f | 0x7f => Some(raw),
+        _ => None,
+    }
+}
+
 /// A read-only handle on a pane's terminal — for ASKING the kernel about the device, never for
 /// reading or writing it.
 ///
@@ -172,19 +387,46 @@ impl TerminalQuery {
         })
     }
 
+    /// Whether the characters that mean a signal RAISE one in this pane — [`PaneSignalKeys`] — or
+    /// `None` where the kernel will not say.
+    ///
+    /// ⚠ `None` carries the same warning [`echo`](Self::echo) does: it is *this platform's device
+    /// would not answer*, never the negative. Reading it as *"no signals"* would put the false
+    /// confidence back that this exists to remove.
+    #[must_use]
+    pub fn signal_keys(&self) -> Option<PaneSignalKeys> {
+        let attributes = self.attributes()?;
+        if attributes.c_lflag & libc::ISIG == 0 {
+            return Some(PaneSignalKeys::DeliveredAsBytes);
+        }
+        Some(PaneSignalKeys::RaisedByTheTerminal {
+            interrupt: signal_character(attributes.c_cc[libc::VINTR]),
+            quit: signal_character(attributes.c_cc[libc::VQUIT]),
+            suspend: signal_character(attributes.c_cc[libc::VSUSP]),
+        })
+    }
+
     /// The device's local mode flags (`c_lflag`), or `None` where it will not answer.
+    fn local_modes(&self) -> Option<libc::tcflag_t> {
+        Some(self.attributes()?.c_lflag)
+    }
+
+    /// The device's whole `termios`, or `None` where it will not answer.
     ///
     /// One `tcgetattr` behind every question above, so a reading is never assembled from two calls
     /// that could straddle a program changing its terminal — and so a new question costs a flag
-    /// test rather than another syscall.
-    fn local_modes(&self) -> Option<libc::tcflag_t> {
-        let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+    /// test rather than another syscall. ⚠ That is why [`signal_keys`](Self::signal_keys) takes the
+    /// WHOLE structure rather than calling [`local_modes`](Self::local_modes) and then reading
+    /// `c_cc`: the flag and the characters it governs must come from one reading, or a program
+    /// re-configuring its terminal between them yields an answer that was never true.
+    fn attributes(&self) -> Option<libc::termios> {
+        let mut attributes: libc::termios = unsafe { std::mem::zeroed() };
         // SAFETY: the descriptor is open for the life of `self`, and `tcgetattr` only fills in the
         // fully-owned `termios` handed to it.
-        if unsafe { libc::tcgetattr(self.0.as_raw_fd(), &raw mut modes) } != 0 {
+        if unsafe { libc::tcgetattr(self.0.as_raw_fd(), &raw mut attributes) } != 0 {
             return None;
         }
-        Some(modes.c_lflag)
+        Some(attributes)
     }
 }
 
@@ -1051,5 +1293,150 @@ mod tests {
                  {mixed:?}",
             ),
         }
+    }
+
+    /// ⚠⚠⚠ **THE READING MOVES WHEN THE CHILD TAKES ITS SIGNALS AWAY** — and it is a
+    /// DISCRIMINATOR, on the same terms as the echo gate above: one pty, read twice, with the
+    /// child's own `stty -isig` in between, and the two readings must DISAGREE.
+    ///
+    /// This is the fact that makes `Ctrl-C` answerable. Before the `stty`, `0x03` is this device's
+    /// interrupt character and the kernel says so; after it, the SAME byte raises nothing, and a
+    /// caller who sent it to stop a job has written a byte a program will read as text.
+    ///
+    /// ⚠ The CHARACTER is asserted too, not only the flag. `raises` is what the surface consults,
+    /// and a reading that answered `RaisedByTheTerminal` with no interrupt character in it would
+    /// pass a flag-only assertion while telling every caller the opposite of the truth.
+    ///
+    /// ⚠ Written to hold where the master will not answer (`None` on both readings), for the echo
+    /// gate's reason.
+    #[test]
+    fn a_pane_says_whether_a_ctrl_c_written_into_it_can_become_a_signal() {
+        let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut attached = Pty::open(80, 24)
+            .expect("open a pty")
+            .attach_reader("signal-gate", {
+                let seen = Arc::clone(&seen);
+                move |mut terminal| {
+                    let mut buf = [0u8; 256];
+                    while let Ok(n) = terminal.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        seen.lock()
+                            .expect("the seen mutex")
+                            .extend_from_slice(&buf[..n]);
+                    }
+                }
+            })
+            .expect("a fresh pty takes a reader");
+        let query = attached.pty.query().expect("a query handle");
+
+        // BEFORE: the state every pane is born in, and the one in which a written `0x03` really is
+        // an interrupt — which is exactly why the silence after the `stty` is so misleading.
+        let born = query.signal_keys();
+
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("stty -isig; printf 'OFF'; sleep 30");
+        let (mut child, _joined) = attached.spawn(&command, None).expect("spawn onto the pty");
+        let _ = until(
+            || seen.lock().expect("the seen mutex").clone(),
+            |seen| seen.starts_with(b"OFF"),
+        );
+        let after = query.signal_keys();
+        let _ = child.kill();
+
+        let interrupt = SignalKey::Interrupt.conventional_byte();
+        match (born, after) {
+            (None, None) => { /* this platform's master does not answer — see the doc. */ }
+            (Some(born), Some(after)) => {
+                assert_eq!(
+                    born.raises(interrupt),
+                    Some(SignalKey::Interrupt),
+                    "a pane is born turning `0x03` into a SIGINT, and the reading has to name \
+                     WHICH signal — a bare yes could not tell a caller what it just did",
+                );
+                assert_eq!(
+                    after,
+                    PaneSignalKeys::DeliveredAsBytes,
+                    "and the child's own `stty -isig` is visible here: this is the pane every \
+                     full-screen agent CLI presents, where a written Ctrl-C is input",
+                );
+                assert_eq!(
+                    after.raises(interrupt),
+                    None,
+                    "⚠⚠⚠ the same byte, the same pane, and no signal — the difference a write \
+                     cannot report because a write succeeds either way",
+                );
+            }
+            mixed => panic!(
+                "a device that answers must go on answering — half an answer is neither reading: \
+                 {mixed:?}",
+            ),
+        }
+    }
+
+    /// ⚠⚠ **A REBOUND INTERRUPT CHARACTER IS THE SECOND WAY THE SILENCE WOULD BE FALSE**, and the
+    /// reason this reads `c_cc` rather than trusting `ISIG` alone.
+    ///
+    /// `stty intr ^X` leaves signals ON — a flag-only reading calls this pane healthy — while the
+    /// `0x03` a caller sends for `Ctrl-C` becomes an ordinary byte. The device's own answer is
+    /// asserted BOTH ways here: nothing is raised for `0x03`, and the interrupt is raised for the
+    /// character the child actually bound, so the reading is a discriminator rather than a
+    /// blanket refusal that would happen to look right.
+    #[test]
+    fn a_terminal_that_rebound_its_interrupt_does_not_raise_one_for_ctrl_c() {
+        let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut attached = Pty::open(80, 24)
+            .expect("open a pty")
+            .attach_reader("rebind-gate", {
+                let seen = Arc::clone(&seen);
+                move |mut terminal| {
+                    let mut buf = [0u8; 256];
+                    while let Ok(n) = terminal.read(&mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        seen.lock()
+                            .expect("the seen mutex")
+                            .extend_from_slice(&buf[..n]);
+                    }
+                }
+            })
+            .expect("a fresh pty takes a reader");
+        let query = attached.pty.query().expect("a query handle");
+
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("stty intr ^X; printf 'MOVED'; sleep 30");
+        let (mut child, _joined) = attached.spawn(&command, None).expect("spawn onto the pty");
+        let _ = until(
+            || seen.lock().expect("the seen mutex").clone(),
+            |seen| seen.starts_with(b"MOVED"),
+        );
+        let after = query.signal_keys();
+        let _ = child.kill();
+
+        let Some(after) = after else {
+            return; // this platform's master does not answer — see the doc.
+        };
+        assert!(
+            matches!(after, PaneSignalKeys::RaisedByTheTerminal { .. }),
+            "signals are still ON here — this pane is exactly the one a flag-only reading calls \
+             healthy: {after:?}",
+        );
+        assert_eq!(
+            after.raises(SignalKey::Interrupt.conventional_byte()),
+            None,
+            "⚠⚠ and yet the `0x03` a caller sends for Ctrl-C raises nothing, because this \
+             terminal's interrupt character is somewhere else",
+        );
+        assert_eq!(
+            after.raises(0x18),
+            Some(SignalKey::Interrupt),
+            "the character the child DID bind still raises it — so the answer discriminates \
+             rather than refusing everything, which would have passed the assertion above while \
+             being useless",
+        );
     }
 }

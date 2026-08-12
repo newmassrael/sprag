@@ -1084,6 +1084,16 @@ impl PanePtyHandle {
         self.query.end_of_input()
     }
 
+    /// Whether the characters that mean a signal RAISE one in this pane — see
+    /// [`PaneSignalKeys`](crate::pty::PaneSignalKeys). Read when asked, for
+    /// [`echo`](Self::echo)'s reason, and here it is the whole point: `ISIG` is cleared by the
+    /// program on startup, so a value taken at the pane's birth would say the opposite of the
+    /// truth for exactly the panes an AI loop drives.
+    #[must_use]
+    pub fn signal_keys(&self) -> Option<crate::pty::PaneSignalKeys> {
+        self.query.signal_keys()
+    }
+
     /// A snapshot of the child's raw output bytes (the source stream, before
     /// emulation) paired with whether the capture was truncated at the cap —
     /// The COMPLETE logical lines this pane has produced after absolute line `cursor`, and how
