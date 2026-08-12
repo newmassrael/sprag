@@ -478,16 +478,26 @@ mod tests {
             ),
             "the control fixture never took its terminal",
         );
+        // ⚠⚠ THE ARM IS THE PLATFORM'S OWN, and asserting one spelling on both runners is the
+        // mistake R362 could only find by pushing. Linux reads the disposition and answers that the
+        // signal WOULD kill it; macOS cannot read it at all (`libc` declares no `kinfo_proc` for
+        // Apple) and answers that it cannot tell. **The SAFETY property is the same on both** — the
+        // stop is refused and nothing is sent — and that is what the assertion below is really for.
+        let refused = stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram);
         assert_eq!(
-            stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram),
-            Err(Unstopped::WouldEndThePane),
-            "a stop that may not end the pane must refuse the program the signal would kill",
+            refused,
+            Err(if cfg!(target_os = "linux") {
+                Unstopped::WouldEndThePane
+            } else {
+                Unstopped::CannotTellIfItWouldEnd
+            }),
+            "a stop that may not end the pane must refuse, in this platform's own terms",
         );
         assert_eq!(
             doomed.exit_status(),
             None,
             "⚠⚠ and NOTHING WAS SENT — the pane's program is still running, which is the whole \
-             point of the narrow reach",
+             point of the narrow reach and is true on every platform",
         );
 
         // ⚠ AND THE WIDE REACH IS THE SAME CALL WITH THE CALLER'S OWN DECISION IN IT.
@@ -538,6 +548,24 @@ mod tests {
             owns_its_terminal(child),
             "and it owns its own terminal, which is the condition being discriminated",
         );
+        // ⚠⚠⚠ AND HERE THE TWO PLATFORMS GENUINELY DIFFER, so the gate asks each for its own
+        // answer rather than baking one. **This is the capability macOS does not have**: it cannot
+        // read the disposition, so it refuses and reports — exactly as it did before any of this
+        // existed. Registered as owed; asserted here so the divergence is a stated fact rather than
+        // a surprise on a runner.
+        if !cfg!(target_os = "linux") {
+            assert_eq!(
+                stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram),
+                Err(Unstopped::CannotTellIfItWouldEnd),
+                "a host that cannot read a disposition must refuse rather than guess",
+            );
+            assert_eq!(
+                peer.exit_status(),
+                None,
+                "and the pane is left exactly as it was found",
+            );
+            return;
+        }
         let stopped = stop_foreground_job(child, Stop::Interrupt, Reach::UnderTheProgram)
             .expect("a program that cannot die of the signal is signalled");
         assert_eq!(
