@@ -1238,4 +1238,72 @@ mod tests {
              the claim a report cannot fake",
         );
     }
+
+    /// ⚠⚠⚠ **A RUN CUT SHORT AGAINST A PANE WHOSE OWN PROGRAM IS THE PEER LEAVES THE PANE STANDING,
+    /// AND SAYS THE WORK IS STILL RUNNING.**
+    ///
+    /// The other half of the gate above, and it exists because the first version of this mechanism
+    /// did not have it: a run cut short signalled whatever owned the pane's terminal, and on a pane
+    /// whose own program was the peer that ENDED THE PANE. Measured then — the pane went, it was a
+    /// session's last, and the daemon exited behind it.
+    ///
+    /// A person typing a stop at one named pane may choose that. A clock running out may not, so
+    /// [`Reach::UnderTheProgram`] refuses and the outcome carries the refusal — which is a better
+    /// answer than either alternative, because *your work is still running and here is why* is
+    /// something a caller can act on.
+    ///
+    /// ⚠ `cat` and not a shell: with a shell in between, the peer would be a JOB one level down and
+    /// both reaches would behave alike — the case that would make this gate vacuous.
+    ///
+    /// [`Reach::UnderTheProgram`]: sprag_terminal::Reach::UnderTheProgram
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_cancelled_run_does_not_end_the_pane_whose_own_program_is_the_peer() {
+        use crate::access::PaneAccess;
+        use std::sync::atomic::AtomicBool;
+
+        let (access, pane) = sh_access("exec cat", 40, 6);
+        let panes: &dyn PaneAccess = &access;
+        assert_eq!(
+            panes.pane_eof(pane),
+            Some(false),
+            "the peer is running before the run starts, or nothing below measures anything",
+        );
+
+        let mut agent = Agent::new(
+            pane,
+            AgentSpec {
+                eof: false,
+                ..AgentSpec::new("anything")
+            },
+        );
+        let outcome = Driver::new(Guardrails {
+            max_iterations: 1,
+            max_cost: None,
+            max_duration: None,
+        })
+        .run(
+            &mut agent,
+            &access,
+            &RunContext::new(Arc::new(AtomicBool::new(true))),
+        );
+
+        assert_eq!(outcome.state, OutcomeState::Cancelled);
+        let said = outcome
+            .stopped
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            said.contains("still running"),
+            "⚠ the outcome must TELL the caller their peer was left going, which is the whole \
+             value of refusing rather than reaching: {said:?}",
+        );
+        assert_eq!(
+            panes.pane_eof(pane),
+            Some(false),
+            "⚠⚠ AND THE PANE IS STILL THERE — a run that merely ran out of time must not be able \
+             to close somebody's pane",
+        );
+    }
 }
