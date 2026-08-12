@@ -633,7 +633,32 @@ impl ScopeAsk {
 ///   ⚠ `asking` is ABSENT rather than empty when the peer blocked on something this host cannot
 ///   read, which is a real case with its own remedy (hand the pane to a person). A caller tells the
 ///   two apart by the key's presence, this wire's rule for `ceiling` and `opened_by` already.
-pub const WIRE_PROTOCOL: u32 = 26;
+/// * **27** — a run can be given CONSENT to answer its peer's question, and every run says what it
+///   answered and why it did not. `may_answer` on the three injecting forms
+///   (`{"asked": …, "answer": …}`), a fifth `verdict` word (`answered`), a `why` beside a blocked
+///   run's `asking`, and an `answered` tally on every outcome (R366).
+///
+///   ⚠ **THREE OF THIS WIRE'S FOUR BUMP CAUSES AT ONCE**, which is why it is one number and not
+///   three: an added ARGUMENT (version 25's measurement — this surface SWALLOWS an undeclared key
+///   and the run succeeds, so a caller naming `may_answer` at an older daemon is answered `ok` and
+///   gets a run that will never answer anything); an added VALUE (`answered` joins the closed
+///   `verdict` set a journal reader decodes whole, version 26's argument); and an added answer KEY
+///   whose ABSENCE a reader would take as a claim.
+///
+///   That last one is version 24's shape and it is the sharpest here. A caller who has learned to
+///   read `answered: 0` reads its absence as *this run answered nothing* — and a pre-R366 daemon,
+///   which could not answer anything, never writes the key. The silence happens to be true today
+///   and would be a false guarantee the moment anything about it changed, so it is not left to
+///   luck.
+///
+///   ⚠ **THE DEFAULT DOES NOT MOVE, and that is the whole safety of the feature.** A run with no
+///   `may_answer` answers nothing and reports `blocked` exactly as version 26 does. Answering a
+///   peer's dialog is a decision with consequences outside the loop — a tool-permission prompt is
+///   one of these — so it happens only where a caller named the question AND the option in advance,
+///   and only where exactly one option on offer carries that answer. See
+///   `sprag_plugin::Consent`, whose whole design is that a consent cannot stretch to cover a
+///   question the caller did not picture.
+pub const WIRE_PROTOCOL: u32 = 27;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

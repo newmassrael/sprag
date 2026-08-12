@@ -144,8 +144,13 @@ pub enum OutcomeState {
     Cancelled,
     /// **THE PEER STOPPED TO ASK**, and the run ended rather than answering for somebody.
     ///
-    /// Carries the question when this host can read it — see [`Verdict::Blocked`], whose doc holds
-    /// the reason this is a terminal outcome at all.
+    /// Carries the question when this host can read it AND the reason nothing was answered — see
+    /// [`Verdict::Blocked`], whose doc holds the reason this is a terminal outcome at all, and
+    /// [`Unanswered`](crate::consent::Unanswered) for why the reason travels with it.
+    ///
+    /// ⚠ The `Option` is *does this record carry the detail at all*: a run RESTORED from a previous
+    /// daemon's log has only its word (the host's `outcome_from_words`), and a re-published
+    /// question would be a claim about a screen nobody has looked at since.
     ///
     /// # ⚠⚠ Why not a flavour of [`Failed`](Self::Failed)
     ///
@@ -153,7 +158,7 @@ pub enum OutcomeState {
     /// FIXED; this one wants an ANSWER, and one that is not the run's to give. R357 settled this
     /// shape for `interrupted`: reporting a run that did not finish as though it had would have
     /// been a lie, and *"the honest word is what costs the number"*.
-    Blocked(Option<sprag_detect::Question>),
+    Blocked(Option<crate::consent::Unanswered>),
 }
 
 sprag_vt::closed_set! {
@@ -238,6 +243,14 @@ pub struct Outcome {
     /// and not its whole outcome — the same lossiness `failure` already has there, and harmless for
     /// the same reason: the daemon that had work running is the one that died.
     pub stopped: Option<Stopped>,
+    /// HOW MANY OF ITS PEER'S QUESTIONS THIS RUN ANSWERED on the caller's consent — `0` for the
+    /// runs that answered none, which is every run that was given no consent.
+    ///
+    /// ⚠ Reported for EVERY terminal state and not only the happy one. A run that answered a
+    /// tool-permission dialog and then hit its iteration ceiling still answered it, and an outcome
+    /// that mentioned the approval only on convergence would hide it in exactly the cases somebody
+    /// is reading the outcome to understand.
+    pub answered: u32,
 }
 
 /// Runs a [`Plugin`] over a [`PaneAccess`] to a terminal [`Outcome`], owning the
@@ -278,10 +291,24 @@ pub struct Driver {
     /// that pane may have been answered by a person, scrolled, or closed. The outcome must report
     /// what stopped the run, not what the screen says afterwards.
     ///
-    /// ⚠ The outer `Option` is *was there a blocked verdict at all*; the inner one is
-    /// [`AgentObservation::asking`](crate::access::AgentObservation::asking)'s own — *this host
-    /// could not read the question*, which is a real answer with its own remedy.
-    asking: Option<Option<sprag_detect::Question>>,
+    /// ⚠ The `Option` is *was there a blocked verdict at all*. Whether the QUESTION could be read
+    /// is [`Unanswered`](crate::consent::Unanswered)'s own business, and it carries the reason
+    /// beside it — which is a real answer with its own remedy rather than a second `Option`.
+    asking: Option<crate::consent::Unanswered>,
+    /// HOW MANY OF ITS PEER'S QUESTIONS THIS RUN ANSWERED, on the caller's consent.
+    ///
+    /// # ⚠⚠ Why a run that answered has to say so in its OUTCOME and not only in its journal
+    ///
+    /// The journal keeps the last [`JOURNAL_LIMIT`] steps, so an approval given on step 3 of a
+    /// three-hundred-step run is not in it. A tally is unbounded and cheap, and it is the
+    /// difference between *"this run answered nothing"* and *"this run answered something you can
+    /// no longer see"* — which for an act taken on a person's behalf is the one distinction that
+    /// must survive.
+    ///
+    /// ⚠ A COUNT and not a list, deliberately: a list grows with the run, which is the property
+    /// [`Step::note`](crate::plugin::Step::note) is capped for. The count says how many to go
+    /// looking for; the journal says what they were, for as far back as it reaches.
+    answered: u32,
 }
 
 /// WHAT A RUN HAS SPENT SO FAR — the counters the [`Driver`] keeps, readable while it is still
@@ -363,6 +390,7 @@ impl Driver {
             stopped: None,
             exhausted_by: None,
             asking: None,
+            answered: 0,
         }
     }
 
@@ -493,6 +521,12 @@ impl Driver {
                 Ok(step) => {
                     self.iterations += 1;
                     self.accumulate(step.cost);
+                    // ⚠ Counted with the loop's other per-step totals rather than inside the
+                    // verdict match below, so an answer is tallied by the same code that tallies
+                    // iterations and spend — one place a step is measured, not two.
+                    if matches!(step.verdict, Verdict::Answered(_)) {
+                        self.answered += 1;
+                    }
                     self.record(&step);
                     self.publish();
                     match &step.verdict {
@@ -515,13 +549,22 @@ impl Driver {
                         // iterations`, and a deadline that curtailed the last permitted turn
                         // reported the same. Both told the reader to raise a guardrail that would
                         // have bought the run nothing, about work that never finished.
-                        Verdict::Continue => match self.ended_from_outside(run) {
-                            Some(event) => event,
-                            None => match self.budget_exhausted() {
-                                Some(ceiling) => self.exhaust(ceiling),
-                                None => OrchestrationEvent::Continue,
-                            },
-                        },
+                        //
+                        // ⚠⚠ AN ANSWERED STEP TAKES THIS ARM, and sharing it is the claim: a step
+                        // that answered its peer's dialog continues under exactly the same
+                        // guardrails as any other, because an approval is not a licence to exceed
+                        // a ceiling. What makes it different is a RECORD and not a control path —
+                        // the fifth verdict word, and the tally kept beside the loop's own
+                        // counters — so a second arm here would be one concept spelled twice.
+                        Verdict::Continue | Verdict::Answered(_) => {
+                            match self.ended_from_outside(run) {
+                                Some(event) => event,
+                                None => match self.budget_exhausted() {
+                                    Some(ceiling) => self.exhaust(ceiling),
+                                    None => OrchestrationEvent::Continue,
+                                },
+                            }
+                        }
                     }
                 }
             };
@@ -638,7 +681,7 @@ impl Driver {
             // `Verdict::Blocked` is the only producer of the event that reaches this state, and it
             // always records — the same construction `exhausted` uses one arm up, for the same
             // reason: an outcome that cannot say what it is blocked on is not worth reaching.
-            OrchestrationState::Blocked => OutcomeState::Blocked(self.asking.flatten()),
+            OrchestrationState::Blocked => OutcomeState::Blocked(self.asking),
             // Failed, or any state the loop left unexpectedly.
             _ => OutcomeState::Failed,
         };
@@ -648,6 +691,7 @@ impl Driver {
             cost: self.cost,
             failure: self.failure,
             stopped: self.stopped,
+            answered: self.answered,
         }
     }
 }

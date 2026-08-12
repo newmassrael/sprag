@@ -14,6 +14,7 @@ use sprag_terminal::PaneId;
 #[cfg(test)]
 use crate::access::{JobLeader, PaneDoing};
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
+use crate::consent::Consent;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
@@ -45,6 +46,14 @@ pub struct OrchestrationSpec {
     /// takes seconds, a cold test runner minutes — and the caller who names the
     /// marker is exactly the one who knows.
     pub ready_within: Option<Duration>,
+    /// WHAT THIS RUN MAY ANSWER if the peer stops to ask — `None` answers nothing, which is what
+    /// this loop did for its whole life before the contract existed.
+    ///
+    /// ⚠ This is the loop that MEASURED the failure the contract is about: a peer that blocked
+    /// after the first step was typed at three more times, each stimulus landing on a menu as a
+    /// SELECTION, and the run reported `Exhausted(Iterations)`. See
+    /// [`Consent`].
+    pub may_answer: Option<Consent>,
 }
 
 /// A fixed-stimulus drive plugin over one pane.
@@ -63,7 +72,11 @@ impl Orchestrator {
     #[must_use]
     pub fn new(pane: PaneId, spec: OrchestrationSpec) -> Self {
         Self {
-            ready: Readiness::new(spec.ready_when.clone(), spec.ready_within),
+            ready: Readiness::new(
+                spec.ready_when.clone(),
+                spec.ready_within,
+                spec.may_answer.clone(),
+            ),
             pane,
             spec,
             baseline: RowTrail::default(),
@@ -147,8 +160,17 @@ impl Plugin for Orchestrator {
             // The peer is showing a question. Typing the stimulus here would SELECT rather than
             // say anything — see [`Verdict::Blocked`].
             Reached::Asking(asking) => {
-                return Ok(Step::new(Cost::Bytes(0), Verdict::Blocked(asking))
-                    .noting("the peer stopped to ASK, so nothing was typed at it"));
+                let note = format!("the peer stopped to ASK: {}", asking.why().describe());
+                return Ok(
+                    Step::new(Cost::Bytes(asking.bytes()), Verdict::Blocked(asking)).noting(note),
+                );
+            }
+            // The peer asked and the caller had consented to exactly this answer. The step is
+            // SPENT on that: the peer is now acting on a decision, and the next step asks the
+            // barrier again rather than typing a stimulus into a pane mid-transition.
+            Reached::Answered(answered) => {
+                let (note, cost) = (answered.describe(), answered.bytes);
+                return Ok(Step::new(Cost::Bytes(cost), Verdict::Answered(answered)).noting(note));
             }
         }
 
@@ -270,6 +292,7 @@ mod tests {
             // costs the suite two minutes to report what it can report in fifteen seconds. A
             // gate's failing path has a running time too.
             ready_within: Some(Duration::from_secs(15)),
+            may_answer: None,
         }
     }
 
@@ -291,6 +314,7 @@ mod tests {
                 sentinel: None,
                 ready_when: None,
                 ready_within: None,
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -381,6 +405,7 @@ mod tests {
                 // The STRONGEST barrier this product has — the agent must be at rest and named.
                 ready_when: Some(crate::readiness::ReadyWhen::Settles("claude".to_string())),
                 ready_within: Some(Duration::from_secs(5)),
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -424,6 +449,7 @@ mod tests {
                 sentinel: Some("ping".to_string()),
                 ready_when: None,
                 ready_within: None,
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -455,6 +481,7 @@ mod tests {
                 sentinel: Some("abcdef".to_string()),
                 ready_when: None,
                 ready_within: None,
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -479,6 +506,7 @@ mod tests {
                 sentinel: None,
                 ready_when: None,
                 ready_within: None,
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -544,6 +572,7 @@ mod tests {
                 sentinel: Some("PEER-SAW ping".to_string()),
                 ready_when: Some(ReadyWhen::Prints("PEER-UP".to_string())),
                 ready_within: None,
+                may_answer: None,
             },
         );
         // ⚠ WHICH OF THE TWO ASSERTIONS BELOW FIRES DEPENDS ON THE STAND-IN, and both were
@@ -621,6 +650,7 @@ mod tests {
                     sentinel: None,
                     ready_when: Some(ReadyWhen::Prints("TOOL-UP".to_string())),
                     ready_within: Some(Duration::from_millis(400)),
+                    may_answer: None,
                 },
             );
             let outcome = Driver::new(Guardrails {
@@ -683,6 +713,7 @@ mod tests {
                 sentinel: Some("SAW ping".to_string()),
                 ready_when: Some(ReadyWhen::Prints("PEER-UP".to_string())),
                 ready_within: Some(Duration::from_secs(10)),
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -741,6 +772,7 @@ mod tests {
                 sentinel: Some("GOT ping".to_string()),
                 ready_when: Some(ReadyWhen::Shows("REPL-READY".to_string())),
                 ready_within: Some(Duration::from_millis(500)),
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -861,6 +893,7 @@ mod tests {
         let mut ready = crate::readiness::Readiness::new(
             drive_the_silent_program().ready_when,
             drive_the_silent_program().ready_within,
+            None,
         );
         let started = std::time::Instant::now();
         let reached = ready
@@ -947,6 +980,7 @@ mod tests {
                 sentinel: None,
                 ready_when: Some(ReadyWhen::Runs("tr".to_string())),
                 ready_within: Some(Duration::from_millis(300)),
+                may_answer: None,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -988,6 +1022,7 @@ mod tests {
                 sentinel: None,
                 ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
                 ready_within: None,
+                may_answer: None,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1040,6 +1075,7 @@ mod tests {
                 sentinel: None,
                 ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
                 ready_within: Some(Duration::from_millis(200)),
+                may_answer: None,
             },
         );
         let outcome = Driver::new(Guardrails {
@@ -1214,6 +1250,7 @@ mod tests {
                 sentinel: Some("PEER-REPLIED".to_string()),
                 ready_when: None,
                 ready_within: None,
+                may_answer: None,
             },
         );
         let outcome = run(
@@ -1280,6 +1317,7 @@ mod tests {
                 sentinel: Some("A SENTINEL THIS PANE NEVER PRINTS".to_string()),
                 ready_when: Some(ReadyWhen::Shows("DEAF-READY".to_string())),
                 ready_within: None,
+                may_answer: None,
             },
         );
         let cell = crate::driver::ProgressCell::default();

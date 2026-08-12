@@ -30,7 +30,7 @@ use pinion_core::external::{
 };
 use serde_json::{Map, Value, json};
 use sprag_plugin::{
-    Agent, AgentSpec, Ceiling, Cost, Dialogue, DialogueSpec, DoneWhen, Driver, Guardrails,
+    Agent, AgentSpec, Ceiling, Consent, Cost, Dialogue, DialogueSpec, DoneWhen, Driver, Guardrails,
     OrchestrationSpec, Orchestrator, Outcome, OutcomeState, Pipe, PipeSpec, Plugin, ReadyWhen,
     ReplyFormat, RunContext, WorkspacePaneAccess,
 };
@@ -83,6 +83,28 @@ pub const RUN_ASKED_KEY: &str = "asked";
 /// ⚠ `selected` is where a bare Enter would land, which is the difference between confirming a
 /// tool call and declining it. Carried rather than left for a caller to infer.
 pub const RUN_CHOICES_KEY: &str = "choices";
+/// The [`RUN_ASKING_KEY`] member saying WHY the run did not answer, from
+/// [`sprag_plugin::Refusal`]'s own words.
+///
+/// # ⚠⚠ Present on EVERY blocked run, including the ones with no question
+///
+/// It is the only member of `asking` that is never absent, and that is deliberate: a run that was
+/// GIVEN a consent and stopped anyway looks identical to one that was given none, and the two have
+/// completely different remedies — fix a needle, or write a consent. `unreadable` also carries the
+/// case that has no question at all (`sprag_plugin::Unanswered::unreadable`), which was published
+/// as an absence and explained nowhere until R366.
+pub const RUN_WHY_KEY: &str = "why";
+/// The outcome key counting HOW MANY of its peer's questions a run answered on the caller's
+/// consent — always present, `0` for the runs that answered none.
+///
+/// # ⚠⚠ Why this is not absence-is-the-claim like its neighbours
+///
+/// [`RUN_CEILING_KEY`] and [`RUN_STOPPED_KEY`] are absent when they have nothing to say, because
+/// their absence is *nothing of this kind happened* and a reader loses nothing. Here the absence
+/// would be the same sentence a `0` is — and this is a count of DECISIONS TAKEN ON SOMEBODY'S
+/// BEHALF, so *"this run answered nothing"* is a claim a reader must be able to get affirmatively
+/// rather than by not finding a key.
+pub const RUN_ANSWERED_KEY: &str = "answered";
 /// The answer key carrying WHAT EACH STEP DID — the last [`sprag_plugin::JOURNAL_LIMIT`] of them.
 ///
 /// A run reported its total and its terminal state and nothing about the steps between, so a loop
@@ -386,6 +408,7 @@ impl PluginsExternal {
                     sentinel,
                     ready_when,
                     ready_within,
+                    may_answer: opt_may_answer(map)?,
                 };
                 Ok((
                     PluginKind::Orchestrator(Orchestrator::new(pane, spec)),
@@ -402,6 +425,7 @@ impl PluginsExternal {
                     dst,
                     ready_when: opt_ready_when(map)?,
                     ready_within: opt_millis(map, "ready_timeout_ms")?,
+                    may_answer: opt_may_answer(map)?,
                 };
                 Ok((
                     PluginKind::Pipe(Pipe::new(spec)),
@@ -431,6 +455,7 @@ impl PluginsExternal {
                 }
                 spec.ready_when = opt_ready_when(map)?;
                 spec.ready_within = opt_millis(map, "ready_timeout_ms")?;
+                spec.may_answer = opt_may_answer(map)?;
                 let label = format!("agent pane={}", pane.0);
                 Ok((PluginKind::Agent(Agent::new(pane, spec)), label))
             }
@@ -535,7 +560,10 @@ impl PluginsExternal {
             // The worker still owns the plugin after the run, so it can read any
             // content the plugin captured (an AI adapter's reply) for the host.
             let output = plugin.as_plugin().captured();
-            *lock(&worker_state) = RunState::Done { outcome, output };
+            *lock(&worker_state) = RunState::Done {
+                outcome: Box::new(outcome),
+                output,
+            };
             // ⚠ AFTER the state is written, never before: a client woken by this asks `runs`
             // immediately, and an announcement that raced the write would answer `running` about a
             // run the wake said had finished — the client would then park again on an event that
@@ -762,6 +790,29 @@ fn opt_ready_when(map: &Map<String, Value>) -> Result<Option<ReadyWhen>, InvokeE
     let matched = require_str(object, "match")?;
     let marker = require_str(object, "marker")?.to_string();
     ReadyWhen::parse(matched, marker)
+        .ok_or(InvokeError::TypeMismatch)
+        .map(Some)
+}
+
+/// Read the optional `may_answer` consent — WHAT THIS RUN MAY ANSWER if its peer stops to ask.
+/// Absent (or `null`) is a run that answers nothing, which is what every run did before the key
+/// existed.
+///
+/// ⚠⚠ **BOTH NEEDLES ARE REQUIRED AND NEITHER MAY BE EMPTY.** An empty `asked` is carried by every
+/// question and an empty `answer` by every option, so each of them turns a narrow consent into
+/// something else — see [`Consent::parse`](sprag_plugin::Consent::parse), which owns the predicate
+/// so the parser and the publication cannot drift. A caller who sends one has made a MALFORMED
+/// request (R353's rule), which is why this is a `TypeMismatch` rather than a friendly refusal.
+fn opt_may_answer(map: &Map<String, Value>) -> Result<Option<Consent>, InvokeError> {
+    if declined(map, Consent::WIRE_KEY) {
+        return Ok(None);
+    }
+    let object = map[Consent::WIRE_KEY]
+        .as_object()
+        .ok_or(InvokeError::TypeMismatch)?;
+    let asked = require_str(object, Consent::ASKED_KEY)?.to_string();
+    let answer = require_str(object, Consent::ANSWER_KEY)?.to_string();
+    Consent::parse(asked, answer)
         .ok_or(InvokeError::TypeMismatch)
         .map(Some)
 }
@@ -1057,21 +1108,28 @@ pub fn outcome_ceiling(outcome: &Outcome) -> Option<&'static str> {
 /// person — and a caller can tell the two apart because the key is ABSENT rather than empty.
 #[must_use]
 pub fn outcome_question(outcome: &Outcome) -> Option<Value> {
-    let OutcomeState::Blocked(Some(question)) = &outcome.state else {
+    let OutcomeState::Blocked(Some(unanswered)) = &outcome.state else {
         return None;
     };
-    Some(json!({
-        RUN_ASKED_KEY: question.asked,
-        RUN_CHOICES_KEY: question
-            .choices
-            .iter()
-            .map(|choice| json!({
-                "number": choice.number,
-                "label": choice.label,
-                "selected": choice.selected,
-            }))
-            .collect::<Vec<_>>(),
-    }))
+    // ⚠ WHY is unconditional and the question is not. A run that was given a consent and stopped
+    // anyway is indistinguishable from one that was given none without it, and those are two
+    // different things for the caller to fix — see [`RUN_WHY_KEY`].
+    let mut asking = json!({ RUN_WHY_KEY: unanswered.why().wire_str() });
+    if let Some(question) = unanswered.question() {
+        asking[RUN_ASKED_KEY] = json!(question.asked);
+        asking[RUN_CHOICES_KEY] = json!(
+            question
+                .choices
+                .iter()
+                .map(|choice| json!({
+                    "number": choice.number,
+                    "label": choice.label,
+                    "selected": choice.selected,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    Some(asking)
 }
 
 /// [`outcome_word`] / [`outcome_ceiling`] READ BACK — how a restored run recovers the state it was
@@ -1111,6 +1169,9 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
         "iterations": outcome.iterations,
         "cost": cost,
         "unit": unit,
+        // ⚠ ALWAYS, including `0` — see `RUN_ANSWERED_KEY`. A decision taken on somebody's behalf
+        // must be readable as a claim and not inferred from a key nobody wrote.
+        RUN_ANSWERED_KEY: outcome.answered,
         // ⚠ THE SENTENCE, not the variant. This was `format!("{e:?}")` — `Write("Broken pipe (os
         // error 32)")` reaching an agent, which is R283's leak on the loop's own answer.
         "failure": outcome.failure.as_ref().map(ToString::to_string),
@@ -1276,6 +1337,185 @@ mod tests {
         agents: &Arc<crate::AgentClock>,
     ) -> sprag_plugin::AgentStateSource {
         agent_state_source(Arc::clone(workspace), Arc::clone(agents), instant_window)
+    }
+
+    /// An outcome with `state`, and nothing else that matters here.
+    fn finished(state: OutcomeState, answered: u32) -> Outcome {
+        Outcome {
+            state,
+            iterations: 1,
+            cost: None,
+            failure: None,
+            stopped: None,
+            answered,
+        }
+    }
+
+    /// The measured shape of a real permission dialog, as a run's outcome carries it.
+    fn a_question() -> sprag_detect::Question {
+        sprag_detect::Question {
+            asked: vec!["Do you want to proceed?".to_owned()],
+            choices: vec![
+                sprag_detect::Choice {
+                    number: 1,
+                    label: "Yes".to_owned(),
+                    selected: true,
+                },
+                sprag_detect::Choice {
+                    number: 2,
+                    label: "No".to_owned(),
+                    selected: false,
+                },
+            ],
+        }
+    }
+
+    /// ⚠⚠⚠ **A BLOCKED RUN ALWAYS SAYS WHY IT DID NOT ANSWER, EVEN WHEN IT HAS NO QUESTION.**
+    ///
+    /// Two runs that stop on the same dialog look identical to a client unless the reason travels:
+    /// one was given no consent (fix: write one) and one was given a consent that named nothing on
+    /// offer (fix: the needle). Those are different actions, and until R366 the answer carried
+    /// neither.
+    ///
+    /// ⚠ The `unreadable` half is the one with NO question at all — a pane blocked on something
+    /// this host cannot parse as a menu. It published as an ABSENCE and explained nowhere; the
+    /// remedy (a person) lived in a doc comment. Here the key is present and the word says so.
+    #[test]
+    fn a_blocked_run_publishes_why_it_did_not_answer_with_or_without_the_question() {
+        let refused = finished(
+            OutcomeState::Blocked(Some(sprag_plugin::Unanswered::refused(
+                a_question(),
+                sprag_plugin::Refusal::NotOffered,
+            ))),
+            0,
+        );
+        let answer = outcome_to_json(&refused);
+        assert_eq!(answer["state"], "blocked");
+        let asking = &answer[RUN_ASKING_KEY];
+        assert_eq!(asking[RUN_WHY_KEY], "not_offered");
+        assert_eq!(asking[RUN_ASKED_KEY][0], "Do you want to proceed?");
+        assert_eq!(
+            asking[RUN_CHOICES_KEY][0]["selected"], true,
+            "and where a bare Enter would land, which is what a person answering it needs",
+        );
+
+        // ⚠ NO QUESTION, and the key that says so is the one that is never absent.
+        let unreadable = finished(
+            OutcomeState::Blocked(Some(sprag_plugin::Unanswered::unreadable())),
+            0,
+        );
+        let answer = outcome_to_json(&unreadable);
+        assert_eq!(answer[RUN_ASKING_KEY][RUN_WHY_KEY], "unreadable");
+        assert!(
+            answer[RUN_ASKING_KEY].get(RUN_ASKED_KEY).is_none(),
+            "the question is ABSENT rather than empty — a caller tells `this host could not read \
+             it` from `it had no lines` by the key's presence: {answer}",
+        );
+        assert!(
+            sprag_plugin::Refusal::parse(
+                answer[RUN_ASKING_KEY][RUN_WHY_KEY]
+                    .as_str()
+                    .expect("a word"),
+            )
+            .is_some(),
+            "and every word published here is one the type spells, never a literal: {answer}",
+        );
+    }
+
+    /// ⚠⚠ **EVERY OUTCOME SAYS HOW MANY DECISIONS THE RUN TOOK ON SOMEBODY'S BEHALF** — including
+    /// `0`, and including the runs that did not end well.
+    ///
+    /// The key's neighbours (`ceiling`, `stopped`) are absent when they have nothing to say,
+    /// because their absence means *nothing of this kind happened* and costs a reader nothing.
+    /// This one is a count of APPROVALS, so *"this run answered nothing"* has to be readable as a
+    /// claim rather than inferred from a key nobody wrote — and a run that answered a dialog and
+    /// then hit its iteration ceiling has to report both.
+    #[test]
+    fn every_outcome_says_how_many_of_its_peers_questions_it_answered() {
+        for state in [
+            OutcomeState::Converged,
+            OutcomeState::Cancelled,
+            OutcomeState::Failed,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            OutcomeState::Blocked(Some(sprag_plugin::Unanswered::unreadable())),
+        ] {
+            let quiet = outcome_to_json(&finished(state.clone(), 0));
+            assert_eq!(
+                quiet[RUN_ANSWERED_KEY], 0,
+                "⚠ PRESENT and zero, not absent — see `RUN_ANSWERED_KEY`: {quiet}",
+            );
+            let spoke = outcome_to_json(&finished(state, 3));
+            assert_eq!(
+                spoke[RUN_ANSWERED_KEY], 3,
+                "and a run that answered says so whatever became of it afterwards: {spoke}",
+            );
+        }
+    }
+
+    /// ⚠⚠ **THE CONSENT IS READ THROUGH THE TYPE, so what this surface accepts and what the type
+    /// admits are one predicate.**
+    ///
+    /// The two needles are open strings on the wire, which makes the EMPTY one the whole risk: an
+    /// empty `asked` is carried by every question and an empty `answer` by every option, so either
+    /// turns a narrow consent into something the caller did not write. `Consent::parse` owns that
+    /// refusal and this holds the parser to it — R352's shape, where a `String` argument admits
+    /// fewer values than its type.
+    ///
+    /// ⚠ And an absent key is a run that answers NOTHING, which is the default the whole feature
+    /// rests on.
+    #[test]
+    fn the_consent_this_surface_reads_is_the_one_the_type_admits() {
+        let asked = "Do you want to proceed?";
+        let good =
+            json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: asked, Consent::ANSWER_KEY: "Yes" } });
+        assert_eq!(
+            opt_may_answer(good.as_object().expect("an object")).expect("a well-formed consent"),
+            Consent::parse(asked.to_owned(), "Yes".to_owned()),
+            "the surface builds exactly what the type would",
+        );
+
+        for (label, sent) in [
+            ("absent", json!({})),
+            (
+                "declined as null",
+                json!({ Consent::WIRE_KEY: Value::Null }),
+            ),
+        ] {
+            assert_eq!(
+                opt_may_answer(sent.as_object().expect("an object")).expect("well-formed"),
+                None,
+                "⚠⚠ {label} is a run that may answer NOTHING — the default every run had before \
+                 this key existed, and the reason answering is opt-in",
+            );
+        }
+
+        for (label, sent) in [
+            (
+                "an empty question needle",
+                json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: "", Consent::ANSWER_KEY: "Yes" } }),
+            ),
+            (
+                "an empty option needle",
+                json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: asked, Consent::ANSWER_KEY: "" } }),
+            ),
+            (
+                "no option needle at all",
+                json!({ Consent::WIRE_KEY: { Consent::ASKED_KEY: asked } }),
+            ),
+            (
+                "a bare string where the object goes",
+                json!({ Consent::WIRE_KEY: "Yes" }),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    opt_may_answer(sent.as_object().expect("an object")),
+                    Err(InvokeError::TypeMismatch),
+                ),
+                "⚠⚠⚠ {label} is a MALFORMED request and must meet the grammar at the door — \
+                 accepting it would authorise an answer to a question the caller never named",
+            );
+        }
     }
 
     /// A plugin reads what the agent in its pane is DOING, and what it is blocked ON — through the
@@ -1785,10 +2025,14 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            9,
+            15,
             "one probe per open string argument of every form: an orchestrator's stimulus, \
              sentinel and ready_when, a PIPE's ready_when, an agent's prompt and ready_when, and \
-             a dialogue's seed and two labels",
+             a dialogue's seed and two labels — PLUS the ANSWERING CONTRACT's two needles on each \
+             of the three forms that inject. ⚠ Both of those are open on purpose and it is the \
+             one place on this surface where that is a safety property rather than a convenience: \
+             a consent quotes the AGENT's own words, so a closed vocabulary here could only ever \
+             be sprag's guess at what dialogs say",
         );
     }
 
@@ -1813,10 +2057,12 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            38,
+            41,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined",
+             malformed rather than declined. ⚠ The three newest are `may_answer` on each injecting \
+             form, and its declinability is the whole default: a run that names no consent answers \
+             nothing and reports the question, which is what every run did before the key existed",
         );
     }
 
@@ -1825,13 +2071,17 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            58,
-            "one probe per declared argument of every FORM, nesting included: THIRTEEN for an \
-             orchestrator, TWELVE for a pipe, SIXTEEN for an agent, sixteen for a dialogue, and \
-             one to cancel. ⚠ The agent's newest is `done_when` — WHAT MAKES THE TURN OVER, the \
-             mirror of `ready_when` and the one argument of the four that is a BARE word. ⚠ Eleven are the READINESS BARRIER on the THREE plugins that inject, \
-             each carrying `ready_when` AND its two nested fields: a marker alone could not say \
-             whether text already on the screen is evidence, so the value became an object",
+            67,
+            "one probe per declared argument of every FORM, nesting included: SIXTEEN for an \
+             orchestrator, FIFTEEN for a pipe, NINETEEN for an agent, sixteen for a dialogue, and \
+             one to cancel. ⚠ The newest NINE are the ANSWERING CONTRACT on the three forms that \
+             inject — `may_answer` and its two needles — which completes the turn's three declared \
+             contracts: when it may START (`ready_when`), what makes it OVER (`done_when`), and \
+             what the run may ANSWER if the peer interrupts it with a question of its own. ⚠ The \
+             agent's `done_when` is the one argument of the lot that is a BARE word. ⚠ Eleven are \
+             the READINESS BARRIER on the THREE plugins that inject, each carrying `ready_when` \
+             AND its two nested fields: a marker alone could not say whether text already on the \
+             screen is evidence, so the value became an object",
         );
     }
 
@@ -1848,10 +2098,13 @@ mod tests {
                 crate::wire::PLUGINS_GRAMMAR
             )
             .count_or_panic(),
-            18,
+            24,
             "one per nested field of every form: THREE guardrail fields on each of the four run \
              forms, since a run is bounded in steps, in spend and in time, PLUS the readiness \
-             barrier's `match` and `marker` on each of the three that inject",
+             barrier's `match` and `marker` on each of the three that inject, PLUS the consent's \
+             `asked` and `answer` on those same three. ⚠ The consent's two names were CHOSEN so \
+             this holds: `done_when`'s first draft copied `ready_when`'s `match` and collided with \
+             it on exactly this gate",
         );
     }
 

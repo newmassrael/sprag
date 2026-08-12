@@ -38,6 +38,7 @@ pub(crate) mod sm {
 pub mod access;
 pub mod agent;
 pub mod completion;
+pub mod consent;
 pub mod deliver;
 pub mod dialogue;
 pub mod driver;
@@ -59,6 +60,7 @@ pub use access::{
 };
 pub use agent::{Agent, AgentSpec};
 pub use completion::{Completion, DoneWhen};
+pub use consent::{Answered, Consent, Refusal, Taken, Unanswered};
 pub use deliver::{Delivered, Delivery, deliver, has_painted};
 pub use dialogue::{Dialogue, DialogueSpec, Endpoint, ReplyFormat};
 pub use driver::{

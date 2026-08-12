@@ -36,6 +36,7 @@ use sprag_terminal::{PaneEcho, PaneEndOfInput, PaneId};
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
 use crate::completion::{Completion, DoneWhen};
+use crate::consent::Consent;
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
@@ -110,6 +111,14 @@ pub struct AgentSpec {
     /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
     /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
     pub ready_within: Option<Duration>,
+    /// WHAT THIS RUN MAY ANSWER if the peer stops to ask — `None` answers nothing.
+    ///
+    /// ⚠⚠ The consequence of getting this wrong is sharpest here, in BOTH directions. Answer
+    /// nothing and a one-shot turn against a peer that pops a permission dialog is spent doing
+    /// nothing; answer too widely and this adapter — the one that publishes what comes back AS THE
+    /// MODEL'S REPLY — is the one that approved a tool call on the caller's behalf. See
+    /// [`Consent`], whose whole design is about the second.
+    pub may_answer: Option<Consent>,
     /// Whether the peer SHOWS a prompt typed at it before it is submitted — and so whether the
     /// prompt can be DELIVERED rather than merely written.
     ///
@@ -155,6 +164,7 @@ impl AgentSpec {
             done_when: DoneWhen::Exits,
             ready_when: None,
             ready_within: None,
+            may_answer: None,
             // The write, not the delivery: a one-shot peer renders nothing, and this default is
             // what keeps a caller who says nothing on the path their peer can survive.
             shows_the_prompt: false,
@@ -293,7 +303,11 @@ impl Agent {
     #[must_use]
     pub fn new(pane: PaneId, spec: AgentSpec) -> Self {
         Self {
-            ready: Readiness::new(spec.ready_when.clone(), spec.ready_within),
+            ready: Readiness::new(
+                spec.ready_when.clone(),
+                spec.ready_within,
+                spec.may_answer.clone(),
+            ),
             done: Completion::new(spec.done_when),
             pane,
             spec,
@@ -618,8 +632,21 @@ impl Plugin for Agent {
             // ANSWER, so a prompt typed into a dialog would return the dialog's own text as a
             // reply — after selecting an option with the Enter that submits it.
             Reached::Asking(asking) => {
-                return Ok(Step::new(Cost::Bytes(0), Verdict::Blocked(asking))
-                    .noting("the peer stopped to ASK, so the prompt was not sent"));
+                let note = format!(
+                    "the peer stopped to ASK, so the prompt was not sent: {}",
+                    asking.why().describe(),
+                );
+                return Ok(
+                    Step::new(Cost::Bytes(asking.bytes()), Verdict::Blocked(asking)).noting(note),
+                );
+            }
+            // ⚠⚠ THE PROMPT IS STILL NOT SENT. This adapter is one-shot, so an answered dialog
+            // spends one of its iterations — which is correct and worth the arithmetic: the
+            // alternative is prompting a peer that is still acting on the answer, and publishing
+            // whatever that produces AS THE MODEL'S REPLY.
+            Reached::Answered(answered) => {
+                let (note, cost) = (answered.describe(), answered.bytes);
+                return Ok(Step::new(Cost::Bytes(cost), Verdict::Answered(answered)).noting(note));
             }
         }
 
@@ -1693,6 +1720,7 @@ mod tests {
             AgentSpec {
                 ready_when: Some(ReadyWhen::Runs("claude".to_string())),
                 ready_within: Some(Duration::from_millis(200)),
+                may_answer: None,
                 ..AgentSpec::new("summarise the repo")
             },
         );
@@ -1739,6 +1767,7 @@ mod tests {
                 // ⚠ FAR ABOVE the run's clock, so the RUN's deadline is provably what ends the
                 // wait rather than the barrier's own bound — that ending is the other arm.
                 ready_within: Some(Duration::from_secs(300)),
+                may_answer: None,
                 ..AgentSpec::new("summarise the repo")
             },
         );

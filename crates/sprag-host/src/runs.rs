@@ -29,8 +29,15 @@ pub enum RunState {
     Running,
     /// The run finished with this outcome, plus any content the plugin captured
     /// (an AI adapter's reply); `output` is `None` for control plugins.
+    ///
+    /// ⚠ **BOXED, and the reason is that this variant grows and its siblings do not.** An
+    /// [`Outcome`] carries a failure, what became of the work, and — since R366 — what the peer was
+    /// asking and why nothing was answered; it passed 256 bytes when the last of those landed,
+    /// while `Running` and `Interrupted` carry nothing at all. Unboxed, every live run's state cell
+    /// pays the terminal record's size for its whole life, which is backwards: the payload matters
+    /// once, at the end, and is read rarely after that.
     Done {
-        outcome: Outcome,
+        outcome: Box<Outcome>,
         output: Option<String>,
     },
     /// The worker thread panicked (defensive — a plugin step should not).
@@ -307,7 +314,7 @@ impl RunRegistry {
             };
             let state = if saved.finished {
                 RunState::Done {
-                    outcome: Outcome {
+                    outcome: Box::new(Outcome {
                         state: crate::plugins::outcome_from_words(
                             saved.outcome.as_deref(),
                             saved.ceiling.as_deref(),
@@ -321,7 +328,14 @@ impl RunRegistry {
                         // acted on them is the one that died — and a restored pane's occupant is a
                         // plain shell, so there is no job left for either to describe.
                         stopped: None,
-                    },
+                        // ⚠ AND THE ANSWER TALLY IS NOT RESTORED EITHER, for a reason worth
+                        // stating rather than folding into the two above: this one is a count of
+                        // decisions taken on somebody's behalf, so `0` here is a claim the log
+                        // cannot back. What survives a restart is the run's WORD; the durable log
+                        // does not carry this column, and inventing one would be the record
+                        // asserting something nobody wrote down.
+                        answered: 0,
+                    }),
                     output: saved.output.clone(),
                 }
             } else {
@@ -417,6 +431,7 @@ mod tests {
                 cost: None,
                 failure: None,
                 stopped: None,
+                answered: 0,
             };
             let read_back = crate::plugins::outcome_from_words(
                 Some(crate::plugins::outcome_word(&outcome)),
@@ -448,13 +463,14 @@ mod tests {
         let handle = std::thread::spawn(move || {
             // A trivial "run" that completes immediately.
             *lock(&worker_state) = RunState::Done {
-                outcome: Outcome {
+                outcome: Box::new(Outcome {
                     state: sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Iterations),
                     iterations: 0,
                     cost: None,
                     failure: None,
                     stopped: None,
-                },
+                    answered: 0,
+                }),
                 output: None,
             };
         });

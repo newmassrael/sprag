@@ -1760,6 +1760,30 @@ fn argument_help(name: &str) -> &'static str {
              it is TEXT the pane carries: pick the program's own prompt or banner, never a word \
              from the command line you typed to start it. It may never be empty."
         }
+        "may_answer" => {
+            "LET THE RUN ANSWER ONE QUESTION its peer stops to ask (orchestrator, pipe, agent). \
+             Leave it out and the run answers NOTHING: an agent that pops a permission dialog ends \
+             the run `blocked`, the question and its options come back to you, and a person \
+             decides. That default is deliberate — a loop that clicked approvals nobody read would \
+             be worse than a loop that stops. Give it only when you can name, in advance and in \
+             the agent's own words, both the question you expect and the option you authorise."
+        }
+        "asked" => {
+            "WHICH QUESTION the consent is about — text the dialog's own sentence must contain. It \
+             is not optional and it is not decoration: without it, a `Yes` you authorised for \
+             `overwrite the draft?` would also answer `delete the production database?`. Quote a \
+             phrase from the prompt itself, not a paraphrase; matching is exact and \
+             case-sensitive."
+        }
+        "answer" => {
+            "WHICH OPTION to pick, as text the option's own label carries. Never a number — a \
+             number means a different thing in every dialog, so `always press 2` authorises \
+             whatever happens to be second. ⚠ It must name EXACTLY ONE option or the run answers \
+             nothing and tells you why: a word two options share (`and`, in `Yes, and don't ask \
+             again` / `No, and tell me why`) is refused as ambiguous, because those two are \
+             opposite instructions. An option whose label IS your text wins outright, which is how \
+             you say `Yes` when `Yes, and don't ask again` is also on offer."
+        }
         "ready_timeout_ms" => {
             "How long to wait for ready_when before giving up on the pane (default two minutes). \
              Set it to what you know about the program you are starting — a REPL is up in \

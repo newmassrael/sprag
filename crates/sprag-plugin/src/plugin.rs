@@ -44,22 +44,47 @@ pub enum Verdict {
     /// Measured before this existed: an orchestrator whose peer blocked after the first step typed
     /// its stimulus three more times and reported `Exhausted(Iterations)` — the answer that tells
     /// a reader to raise a budget.
-    Blocked(Option<sprag_detect::Question>),
+    Blocked(crate::consent::Unanswered),
+    /// **THE PEER ASKED AND THIS STEP ANSWERED IT**, on a [`Consent`](crate::consent::Consent) the
+    /// caller declared before the run started. The run continues.
+    ///
+    /// # ⚠⚠⚠ Why an approval given by a machine gets a WORD OF ITS OWN
+    ///
+    /// For control flow this is a `Continue` — the run goes on, guardrails and all — and it would
+    /// have been one line shorter to say so. But the step DECIDED SOMETHING ON A PERSON'S BEHALF,
+    /// and a run whose journal spells that `continue` is a run in which approvals are indexed by
+    /// nothing. The word is what makes *"which of my runs answered a dialog, and what did they
+    /// say?"* a question the journal can be asked, and it costs one arm of an exhaustive match.
+    ///
+    /// This is [`Stopped`](crate::driver::Stopped)'s argument at the other end of the run: an act
+    /// with consequences outside the loop must be reportable in the loop's own vocabulary, or the
+    /// only record of it is prose.
+    Answered(crate::consent::Answered),
 }
 
 impl Verdict {
     /// This verdict's word in a run's published journal — the ONE place the variant → name mapping
     /// lives, so the host never spells a `Verdict` variant ([`Cost::unit`]'s rule).
     ///
-    /// Exhaustive, so a fourth verdict cannot reach the wire without a word.
+    /// Exhaustive, so a fifth verdict cannot reach the wire without a word.
     #[must_use]
     pub const fn wire_str(&self) -> &'static str {
         match self {
             Self::Continue => "continue",
             Self::Converged => "converged",
             Self::Blocked(_) => "blocked",
+            Self::Answered(_) => "answered",
         }
     }
+
+    /// Every word this vocabulary publishes, so a reader of a run's journal can be told the closed
+    /// set rather than discovering it.
+    ///
+    /// ⚠ Hand-ordered because the variants CARRY DATA and so have no `ALL` to walk — the residue
+    /// [`OutcomeState`](crate::driver::OutcomeState) states for the same reason, and the gate below
+    /// this holds the list to [`wire_str`](Self::wire_str) rather than trusting it.
+    pub const WIRE_WORDS: &'static [&'static str] =
+        &["continue", "converged", "blocked", "answered"];
 }
 
 /// A typed cost quantity — what a [`Step`] spent, with its UNIT in the type.
@@ -265,4 +290,60 @@ pub trait Plugin {
     /// the reasoning that renamed `Waited::Cancelled` — **make the mistake fail to compile rather
     /// than fail quietly.**
     fn driving(&self) -> Option<PaneId>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠⚠ **THE PUBLISHED VERDICT LIST IS HELD TO THE ONE THAT IS SERVED.**
+    ///
+    /// [`Verdict::wire_str`] is what a run's journal is rendered through and
+    /// [`Verdict::WIRE_WORDS`] is what the wire's value-space pin walks. They are two spellings of
+    /// one vocabulary, and this type CARRIES DATA so there is no `ALL` to derive the second from —
+    /// which is exactly the weakness `OutcomeState` states one level up, and the reason it is
+    /// checked rather than trusted.
+    ///
+    /// Built by constructing every variant and asking it for its word, so a fifth verdict added to
+    /// the type fails here until it is published — the failure mode being that a journal reaches a
+    /// peer carrying a word no pin has ever seen.
+    #[test]
+    fn every_verdict_the_type_can_spell_is_a_word_the_wire_publishes() {
+        let question = sprag_detect::Question {
+            asked: vec!["Do you want to proceed?".to_owned()],
+            choices: vec![sprag_detect::Choice {
+                number: 1,
+                label: "Yes".to_owned(),
+                selected: true,
+            }],
+        };
+        let served: Vec<&'static str> = [
+            Verdict::Continue,
+            Verdict::Converged,
+            Verdict::Blocked(crate::consent::Unanswered::unreadable()),
+            Verdict::Answered(crate::consent::Answered {
+                question: question.clone(),
+                chose: question.choices[0].clone(),
+                how: crate::consent::Taken::Selected,
+                bytes: 1,
+            }),
+        ]
+        .iter()
+        .map(Verdict::wire_str)
+        .collect();
+        assert_eq!(
+            served,
+            Verdict::WIRE_WORDS,
+            "⚠⚠ a verdict the type can spell and the wire does not publish is a word a journal \
+             reader meets with no warning — and the pin that would have caught it walks the \
+             PUBLISHED list, so it cannot see one that was never added",
+        );
+        // ⚠ Distinct, or the mapping is not a vocabulary. Two verdicts sharing a word would make
+        // `answered` and `continue` indistinguishable in a journal, which is the whole reason the
+        // fifth word exists.
+        let mut unique = Verdict::WIRE_WORDS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), Verdict::WIRE_WORDS.len());
+    }
 }

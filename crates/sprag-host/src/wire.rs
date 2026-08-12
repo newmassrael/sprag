@@ -1030,6 +1030,40 @@ impl PluginGrammar {
     pub const DONE_WHEN: ArgGrammar =
         ArgGrammar::one_of("done_when", "string", sprag_plugin::DoneWhen::WIRE_WORDS).optional();
 
+    /// WHAT THIS RUN MAY ANSWER if its peer stops to ASK — on every form whose plugin INJECTS, the
+    /// third of the turn's three declared contracts.
+    ///
+    /// # ⚠⚠⚠ Why BOTH needles are required, and why neither is a number
+    ///
+    /// An agent that stops to ask shows a numbered menu, so the obvious argument is a NUMBER — and
+    /// it is the one shape this must not have. A number means a different thing in every dialog
+    /// (`sprag_detect::Choice::number` is read off the screen precisely because a list that has
+    /// scrolled does not start at one), so *"always press 2"* is a consent to whatever happens to
+    /// be second, which nobody can have agreed to.
+    ///
+    /// So the caller quotes the agent's own words twice. `asked` says WHICH QUESTION this is about
+    /// — without it, a `Yes` authorised for *"overwrite the draft?"* answers *"delete the
+    /// production database?"*. `answer` says WHICH OPTION, and it must name exactly one: a needle
+    /// carried by two options answers NEITHER, because the measured shape of a real permission
+    /// dialog is `Yes` / `Yes, and don't ask again` / `No` and a first-match policy grants a
+    /// standing permission the day an agent reorders its list.
+    ///
+    /// ⚠ **ABSENT IS THE DEFAULT AND IT ANSWERS NOTHING**, which is what every run did before this
+    /// key existed. The run reports `blocked` with the question, and a person answers it.
+    ///
+    /// ⚠ An OBJECT and not a bare word, unlike [`DONE_WHEN`](Self::DONE_WHEN): the two needles are
+    /// independent values a caller supplies, so there is no closed vocabulary to spell. Neither
+    /// name collides with anything on these forms when a mouth flattens them
+    /// (`no_surface_publishes_a_nested_argument_that_collides`), which `ready_when`'s `match` did.
+    pub const MAY_ANSWER: ArgGrammar = ArgGrammar::nested(
+        sprag_plugin::Consent::WIRE_KEY,
+        &[
+            ArgGrammar::open(sprag_plugin::Consent::ASKED_KEY, "string"),
+            ArgGrammar::open(sprag_plugin::Consent::ANSWER_KEY, "string"),
+        ],
+    )
+    .optional();
+
     /// `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
     pub const ORCHESTRATOR_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::ORCHESTRATOR),
@@ -1038,6 +1072,7 @@ impl PluginGrammar {
         ArgGrammar::open("sentinel", "string").optional(),
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
+        Self::MAY_ANSWER,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1053,6 +1088,7 @@ impl PluginGrammar {
         ArgGrammar::open("dst", "int"),
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
+        Self::MAY_ANSWER,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -1068,6 +1104,7 @@ impl PluginGrammar {
         Self::DONE_WHEN,
         Self::READY_WHEN,
         ArgGrammar::open("ready_timeout_ms", "int").optional(),
+        Self::MAY_ANSWER,
         Self::OPENED_BY,
         Self::GUARDRAILS_BYTES,
     ]);
@@ -6974,7 +7011,15 @@ mod tests {
             // OUTCOME word (`converged` | `exhausted` | `failed` | `cancelled`) is an answer a peer
             // decodes whole, and it lived outside this list exactly as `run_status` did before
             // R357. `blocked` is the fifth, and it JOINS the pin in the same edit that adds it.
-            26,
+            // ⚠⚠⚠ R366 AND THE SAME BLIND SPOT ONE LEVEL DOWN: a STEP's `verdict` is the other
+            // closed set a run's answer carries whole, and it was outside this list for the same
+            // reason the outcome word was — four literals inside `Verdict::wire_str` with nothing
+            // walking them. `answered` is the fifth verdict and it JOINS the pin in the edit that
+            // adds it, exactly as `blocked` did one round ago. So does `refusal`, which is new in
+            // both senses: a fresh vocabulary on a fresh key (`asking.why`), published so a caller
+            // can BRANCH on why a run stopped rather than read a sentence — R365's argument for
+            // `signal_key` and `unraised`, and the reason those are not free-text notes either.
+            27,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7009,6 +7054,20 @@ mod tests {
                 "outcome:failed",
                 "outcome:cancelled",
                 "outcome:blocked",
+                // ⚠⚠ R366: a STEP's verdict, which this pin could not see until now — the fifth
+                // word is the one that cost the number.
+                "verdict:continue",
+                "verdict:converged",
+                "verdict:blocked",
+                "verdict:answered",
+                // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
+                // needle, write a consent, or fetch a person — so they are words and not prose.
+                "refusal:unreadable",
+                "refusal:not_taken",
+                "refusal:no_consent",
+                "refusal:other_question",
+                "refusal:not_offered",
+                "refusal:ambiguous",
             ],
         );
 
@@ -7092,9 +7151,24 @@ mod tests {
                             cost: None,
                             failure: None,
                             stopped: None,
+                            answered: 0,
                         })
                     )
                 }),
+            )
+            // ⚠⚠ A STEP'S VERDICT, joined through the type's own published list. `Verdict` carries
+            // data too, so its list is hand-ordered where `Refusal`'s is projected — and the
+            // round-trip gate beside the type holds the hand-written half to `wire_str`, which is
+            // what keeps this from pinning a list the product does not serve.
+            .chain(
+                sprag_plugin::Verdict::WIRE_WORDS
+                    .iter()
+                    .map(|word| format!("verdict:{word}")),
+            )
+            .chain(
+                sprag_plugin::Refusal::WIRE_WORDS
+                    .iter()
+                    .map(|word| format!("refusal:{word}")),
             )
             .collect();
         let mut pinned: Vec<String> = PINNED_VALUES.1.iter().map(|n| (*n).to_owned()).collect();
@@ -7169,7 +7243,13 @@ mod tests {
             // but because the ARGUMENT is new, and an older daemon SWALLOWS an undeclared key
             // rather than refusing it. Measured:
             // `an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused`.
-            26,
+            // ⚠⚠ R366: re-stamped for an ADDED REQUEST ARGUMENT (`may_answer` and its two needles,
+            // on each form that injects) with NO published vocabulary moving — and the absence is
+            // the design rather than an omission. A consent quotes the AGENT'S OWN WORDS back at
+            // it, so both needles are open strings; a closed set here could only be sprag's guess
+            // at what dialogs say, which is the guess `sprag_detect::question` exists to not make.
+            // The number moves for the argument, on version 25's measured grounds.
+            27,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7676,7 +7756,11 @@ mod tests {
         // grammar has ratchets of its own.
         // R365 (third): re-stamped for a widened ANSWER value space, invisible here for the reason
         // stated above — an outcome word lives in a value, not at an address.
-        26,
+        // R366: re-stamped for an ADDED REQUEST ARGUMENT and two widened ANSWER value spaces (a
+        // step's fifth `verdict` word, and `asking.why`'s six). Every one of those lives inside a
+        // form or a value, and this pin walks ADDRESSES — the blind spot named above, and the
+        // reason the argument grammar and the answer vocabularies have ratchets of their own.
+        27,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a
@@ -8172,9 +8256,12 @@ mod tests {
             })
             .sum();
         assert_eq!(
-            driven, 18,
+            driven, 24,
             "the nested fields this crate's wire publishes: THREE guardrail fields on each of the \
-             plugin host's four run forms, and nothing on the multiplexer or a pane",
+             plugin host's four run forms, `ready_when`'s two on each of the three that inject, \
+             the consent's two on those same three, and nothing on the multiplexer or a pane. \
+             ⚠ The consent's `asked`/`answer` were named FOR this gate — `done_when`'s first draft \
+             reused `ready_when`'s `match` and collided here",
         );
     }
 }

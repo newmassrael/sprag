@@ -34,6 +34,7 @@ use std::time::Duration;
 use sprag_terminal::PaneId;
 
 use crate::access::{KeyStroke, PaneAccess, PaneError, RowTrail};
+use crate::consent::Consent;
 use crate::plugin::{Cost, Plugin, Step, Verdict};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, poll_until};
@@ -77,11 +78,18 @@ pub struct PipeSpec {
     /// How long to wait for [`ready_when`](Self::ready_when), or `None` for
     /// [`DEFAULT_READY_TIMEOUT`](crate::readiness::DEFAULT_READY_TIMEOUT).
     pub ready_within: Option<Duration>,
+    /// WHAT THIS RELAY MAY ANSWER if its destination stops to ask — `None` answers nothing.
+    ///
+    /// ⚠ A relay is the plugin most likely to meet a dialog and the one whose caller knows least
+    /// about it: the destination is somebody else's pane. So a consent given here is a claim about
+    /// a peer this run did not start, which is a reason to write a NARROW one — see
+    /// [`Consent`].
+    pub may_answer: Option<Consent>,
 }
 
 impl PipeSpec {
-    /// Relay `src` into `dst` with no readiness barrier — for a destination already running what
-    /// it is meant to be running.
+    /// Relay `src` into `dst` with no readiness barrier and no consent to answer anything — for a
+    /// destination already running what it is meant to be running.
     #[must_use]
     pub const fn new(src: PaneId, dst: PaneId) -> Self {
         Self {
@@ -89,6 +97,7 @@ impl PipeSpec {
             dst,
             ready_when: None,
             ready_within: None,
+            may_answer: None,
         }
     }
 }
@@ -121,7 +130,7 @@ impl Pipe {
             dst: spec.dst,
             cursor: 0,
             consumed: RowTrail::default(),
-            ready: Readiness::new(spec.ready_when, spec.ready_within),
+            ready: Readiness::new(spec.ready_when, spec.ready_within, spec.may_answer),
         }
     }
 }
@@ -186,8 +195,20 @@ impl Plugin for Pipe {
             // the likeliest of the three to be pointed at an agent that pops a dialog — and a
             // relayed line ends in a newline, which a menu reads as the Enter that confirms.
             Reached::Asking(asking) => {
-                return Ok(Step::new(Cost::Bytes(0), Verdict::Blocked(asking))
-                    .noting("the destination stopped to ASK, so nothing was relayed into it"));
+                let note = format!(
+                    "the destination stopped to ASK: {}",
+                    asking.why().describe(),
+                );
+                return Ok(
+                    Step::new(Cost::Bytes(asking.bytes()), Verdict::Blocked(asking)).noting(note),
+                );
+            }
+            // ⚠ The relay answered its destination's dialog and relayed NOTHING this step. The
+            // source's output is not lost by that: this barrier is consulted before the source is
+            // read, so whatever arrived meanwhile is still new when the next step reads it.
+            Reached::Answered(answered) => {
+                let (note, cost) = (answered.describe(), answered.bytes);
+                return Ok(Step::new(Cost::Bytes(cost), Verdict::Answered(answered)).noting(note));
             }
         }
 
@@ -912,6 +933,7 @@ mod tests {
             // ⚠ FAR ABOVE the run's clock, so the run's deadline is provably what ends the wait
             // rather than the barrier's own bound — that ending is the OTHER arm.
             ready_within: Some(Duration::from_secs(300)),
+            may_answer: None,
             ..PipeSpec::new(src, dst)
         };
         let journal = Arc::new(Mutex::new(sprag_plugin_progress()));
@@ -986,6 +1008,7 @@ mod tests {
         let spec = PipeSpec {
             ready_when: Some(ReadyWhen::Prints("NEVER-PRINTED".to_string())),
             ready_within: Some(Duration::from_millis(200)),
+            may_answer: None,
             ..PipeSpec::new(src, dst)
         };
         let outcome = Driver::new(Guardrails {

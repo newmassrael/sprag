@@ -37,26 +37,98 @@
 //! * [`Dialogue`](crate::dialogue::Dialogue) takes NONE, and the absence is a finding too: it
 //!   passes each turn's prompt as an ARGV ARGUMENT of the pane it spawns for that turn and never
 //!   injects a byte, so there is no window for a shell to be typed into.
+//!
+//! # ⚠⚠ And the same door decides what may be typed at a peer that is ASKING
+//!
+//! A barrier that only ever refuses would leave a run with one answer to a peer's question, and
+//! *"stop and fetch a person"* is the right answer only until somebody has decided in advance. So
+//! the caller's [`Consent`] lives here too, and the reason is the reason
+//! this module exists at all: **this is the one place all three injecting plugins pass through on
+//! their way to a keystroke.** A second door to a blocked pane — a plugin answering a dialog on its
+//! own — would be two readers of one question, which is the shape R344 spent a round on and R365
+//! found again. There is one, and what it may type is what the caller wrote down.
 
 use std::time::Duration;
 
-use sprag_detect::AgentState;
+use sprag_detect::{AgentState, Choice, Question};
 use sprag_terminal::PaneId;
 
-use crate::access::{JobLeader, PaneAccess, PaneDoing, PaneError};
+use crate::access::{JobLeader, KeyStroke, PaneAccess, PaneDoing, PaneError};
+use crate::consent::{Answered, Consent, Refusal, Taken, Unanswered};
 use crate::run::{RunContext, Waited, poll_until};
 
-/// Whether the peer in `pane` has stopped to ASK — [`Reached::Asking`] with the question when this
-/// host can read it, or `None` when it is not asking (or nothing here can tell).
+/// Whether the peer in `pane` has stopped to ASK, and what it is asking when this host can read it.
+///
+/// The OUTER `Option` is *is it blocked*; the inner one is
+/// [`AgentObservation::asking`](crate::access::AgentObservation::asking)'s own — *this host cannot
+/// read the question* — and the two must not collapse: one says nothing is wrong and the other says
+/// a person is needed.
 ///
 /// ⚠ A host with no supervisor answers `None` and the run proceeds, which is this crate's rule
 /// everywhere: an absence of evidence is never read as the negative. It is also the honest cost of
 /// the guard — a build that cannot see agents cannot protect their dialogs either, and pretending
 /// otherwise would block every run on every host that has no detector.
-fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Reached> {
+fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Option<Question>> {
     let seen = panes.supervision()?.pane_agent_state(pane)?;
-    (seen.state == AgentState::Blocked).then(|| Reached::Asking(seen.asking))
+    (seen.state == AgentState::Blocked).then_some(seen.asking)
 }
+
+/// What a peer did with the number that was typed at it — the three states an answer can be in
+/// while it is being given.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Arrival {
+    /// The peer is no longer asking anything: it took the number.
+    LeftTheQuestion,
+    /// The peer is still asking the SAME question and its marker is now on the authorised option —
+    /// so it read the key, and an Enter can land nowhere else.
+    OnTheOption,
+    /// Neither yet. ⚠ Also the answer when the peer moved to a DIFFERENT question, which is a
+    /// dialog nobody consented to and must never be confirmed.
+    NotYet,
+}
+
+/// Where the peer stands right now, relative to the question `chose` was authorised for.
+///
+/// ⚠ Read FRESH each time, and the freshness is load-bearing: `asking` is derived from the pane's
+/// screen at the moment it is asked, so a peer that has taken the key no longer shows the menu even
+/// while a settle window still calls its STATE blocked. That is why a stale approval cannot be
+/// confirmed here — the screen is the thing that moved, and the screen is what this reads.
+fn marker_arrived(
+    panes: &dyn PaneAccess,
+    pane: PaneId,
+    question: &Question,
+    chose: &Choice,
+) -> Arrival {
+    let Some(asking) = peer_asking(panes, pane) else {
+        return Arrival::LeftTheQuestion;
+    };
+    let on_the_option = asking.is_some_and(|now| {
+        // ⚠ The question's own SENTENCE, not the whole value: the marker has moved by now, so the
+        // choices differ from the ones this answer was authorised against, and comparing them
+        // whole would be a condition that can never hold.
+        now.asked == question.asked
+            && now
+                .selected()
+                .is_some_and(|marked| marked.number == chose.number)
+    });
+    if on_the_option {
+        Arrival::OnTheOption
+    } else {
+        Arrival::NotYet
+    }
+}
+
+/// How long the whole answering act may take — the keystroke, and the peer moving off the question.
+///
+/// # ⚠⚠ A MECHANISM bound, which is why it is a constant and not an argument
+///
+/// Every other bound in this crate is the caller's, because every other one asks a question only
+/// the caller can answer: how long a program takes to start, how long a model may think. This one
+/// asks how long a terminal program takes to process a keystroke it was already sitting waiting
+/// for, and nobody has a better answer for that than the product does. A peer that has not moved
+/// off its own dialog in this long is not slow — it did not take the key, which is
+/// [`Refusal::NotTaken`] and a fact worth reporting rather than a bound worth raising.
+const ANSWER_WITHIN: Duration = Duration::from_secs(2);
 
 /// The bound a readiness wait is given when the caller names none.
 ///
@@ -70,9 +142,9 @@ fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Reached> {
 /// [`DEFAULT_REPLY_TIMEOUT`]: crate::run::DEFAULT_REPLY_TIMEOUT
 pub const DEFAULT_READY_TIMEOUT: Duration = crate::run::DEFAULT_REPLY_TIMEOUT;
 
-/// How a [`Readiness`] wait ended, for the two endings that are not an error.
-/// ⚠ NOT `Copy` since [`Asking`](Self::Asking) carries the question — [`Verdict`]'s reason, and
-/// the same one: an answer that cannot say WHAT the peer is asking is not worth returning.
+/// How a [`Readiness`] wait ended, for the endings that are not an error.
+/// ⚠ NOT `Copy` since two arms carry the peer's question — [`Verdict`]'s reason, and the same one:
+/// an answer that cannot say WHAT the peer is asking is not worth returning.
 ///
 /// [`Verdict`]: crate::plugin::Verdict
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -82,8 +154,8 @@ pub enum Reached {
     /// THE RUN ended while waiting — cancelled, or out of time. **Nothing was injected**, so
     /// nothing is charged; which of the two it was is the [`RunContext`]'s to answer.
     RunEnded,
-    /// **THE PEER HAS STOPPED TO ASK, so nothing may be typed at it** — carrying the question when
-    /// this host can read it.
+    /// **THE PEER HAS STOPPED TO ASK, and the run is not going to type its own text at it** —
+    /// carrying the question when this host can read it, and WHY nothing was answered.
     ///
     /// # ⚠⚠⚠ The one answer here that is not about STARTING
     ///
@@ -97,7 +169,18 @@ pub enum Reached {
     /// agent had highlighted. Measured before this variant existed: an orchestrator whose peer
     /// blocked after its first step typed the stimulus three more times and reported
     /// `Exhausted(Iterations)`.
-    Asking(Option<sprag_detect::Question>),
+    Asking(Unanswered),
+    /// **THE PEER ASKED AND THE RUN ANSWERED IT**, on a [`Consent`] the caller declared in advance.
+    ///
+    /// # ⚠⚠ This is not `Yes`, and the difference is the whole safety of it
+    ///
+    /// The peer has just been handed a decision and is acting on it. A barrier that answered `Yes`
+    /// here would let the same step go on to type its stimulus into a pane that is mid-transition,
+    /// which is the defect one step to the right of the one [`Asking`](Self::Asking) closed. So an
+    /// answer ENDS the step: the plugin charges what the keystrokes cost, records what was
+    /// answered, and the NEXT step asks this barrier again — by which time the peer is working, at
+    /// rest, or asking something else, and each of those is already an answer this type has.
+    Answered(Answered),
 }
 
 /// WHICH QUESTION a readiness marker is asking — the distinction the argument used to hide.
@@ -355,20 +438,155 @@ pub struct Readiness {
     armed_at: Option<usize>,
     /// Whether the marker has been seen. Latched.
     seen: bool,
+    /// WHAT THIS RUN MAY ANSWER when the peer stops to ask — `None` for a run that may answer
+    /// nothing, which is the default and what every run did before the contract existed.
+    ///
+    /// ⚠ It lives on the BARRIER because this is the one place all three injecting plugins pass
+    /// through on their way to a keystroke, and a second door to a blocked pane is the shape this
+    /// crate keeps finding defects in. The consent is the only thing that may be typed at a peer
+    /// that is asking, and it is typed here or nowhere.
+    consent: Option<Consent>,
 }
 
 impl Readiness {
-    /// A barrier for `when`, waiting `within` (defaulting to [`DEFAULT_READY_TIMEOUT`]).
+    /// A barrier for `when`, waiting `within` (defaulting to [`DEFAULT_READY_TIMEOUT`]), answering
+    /// its peer's questions under `consent`.
     ///
     /// A `None` condition is a barrier that is already down: the caller is saying the pane is
-    /// running what they mean to drive.
+    /// running what they mean to drive. A `None` consent is a run that answers nothing.
+    ///
+    /// ⚠ The consent is a PARAMETER and not a builder, so a plugin that injects cannot be written
+    /// without deciding what it does about a blocked peer — [`Plugin::driving`]'s reasoning, which
+    /// is the other question in this crate whose harmless-looking default was a wrong answer.
+    ///
+    /// [`Plugin::driving`]: crate::plugin::Plugin::driving
     #[must_use]
-    pub fn new(when: Option<ReadyWhen>, within: Option<Duration>) -> Self {
+    pub fn new(
+        when: Option<ReadyWhen>,
+        within: Option<Duration>,
+        consent: Option<Consent>,
+    ) -> Self {
         Self {
             seen: when.is_none(),
             when,
             within: within.unwrap_or(DEFAULT_READY_TIMEOUT),
             armed_at: None,
+            consent,
+        }
+    }
+
+    /// The peer stopped to ask. Answer it if — and only if — the caller consented to exactly this
+    /// question and exactly one of its options; otherwise say why nothing was typed.
+    ///
+    /// # ⚠⚠⚠ Every keystroke sent from here is justified by the peer's OWN marker
+    ///
+    /// The three shapes are [`Taken`]'s, and the reasoning is worth having in one place because it
+    /// is the difference between a supervisor and a machine that clicks approvals:
+    ///
+    /// * **The marker is already on the authorised option.** Then a bare Enter takes THAT option
+    ///   and cannot take another — [`Question::selected`] is exactly this fact — so no number is
+    ///   typed at all. Typing one would be a keystroke with no purpose and, in a dialog whose
+    ///   numbers submit outright, a second act nobody authorised.
+    /// * **The marker is elsewhere.** The number is typed, and then one of two things is TRUE
+    ///   rather than assumed: the peer left the question (it took the number), or the peer's marker
+    ///   moved onto the authorised option (it processed the number and wants an Enter). The Enter
+    ///   is sent only in the second case, where the marker having moved is both the proof the key
+    ///   was read AND the guarantee of where the Enter will land.
+    ///
+    /// ⚠ **NO ENTER IS EVER SENT ON A GUESS**, which is the rule the measured hazard demands: the
+    /// agents this reads submit on the number, so a reflexive `number + Enter` would put a stray
+    /// Enter into whatever the peer showed NEXT — a second dialog, most dangerously.
+    ///
+    /// ⚠ The residue, stated: a peer whose marker never moves and which never leaves the question
+    /// keeps a typed digit. That is [`Refusal::NotTaken`], the run stops, and the remedy is a
+    /// person — the same direction every other unknown in this module fails in.
+    ///
+    /// # ⚠⚠ A consent is STANDING, and what makes that safe is the tally
+    ///
+    /// Nothing here latches, so a run whose peer asks the same question on every turn answers it on
+    /// every turn — which is the point: a fifty-turn loop that stopped after the first
+    /// tool-permission dialog would be a loop somebody has to sit with. The failure mode it opens
+    /// is a peer that asks in a cycle, and that is bounded twice and hidden neither time: the
+    /// run's own [`max_iterations`](crate::driver::Guardrails::max_iterations) ends it, and
+    /// [`Outcome::answered`](crate::driver::Outcome::answered) says how many decisions were taken
+    /// on the caller's behalf getting there. **A count of approvals is what makes an unlatched
+    /// consent auditable rather than merely convenient.**
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError`] from the injection itself — an unencodable key or a write failure, which is a
+    /// failure of the run and not a refusal of the answer.
+    fn answer(
+        &self,
+        panes: &dyn PaneAccess,
+        pane: PaneId,
+        asking: Option<Question>,
+        run: &RunContext,
+    ) -> Result<Reached, PaneError> {
+        let Some(question) = asking else {
+            return Ok(Reached::Asking(Unanswered::unreadable()));
+        };
+        let Some(consent) = self.consent.as_ref() else {
+            return Ok(Reached::Asking(Unanswered::refused(
+                question,
+                Refusal::NoConsent,
+            )));
+        };
+        let chose = match consent.covers(&question) {
+            Ok(choice) => choice.clone(),
+            Err(why) => return Ok(Reached::Asking(Unanswered::refused(question, why))),
+        };
+
+        let (how, bytes) = if question.selected() == Some(&chose) {
+            // The peer is already standing on it. Enter takes THIS option and no other.
+            let bytes = panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes();
+            (Taken::Selected, bytes)
+        } else {
+            let mut bytes = panes
+                .inject(pane, &KeyStroke::text(&chose.number.to_string()))?
+                .bytes();
+            // Either the peer takes the number, or its marker arrives on the option — and until
+            // one of those is true there is nothing this run may do.
+            match poll_until(run, ANSWER_WITHIN, || {
+                marker_arrived(panes, pane, &question, &chose) != Arrival::NotYet
+            }) {
+                Waited::Ready => {}
+                // ⚠ A run ending underneath does not un-type the digit, and it does not answer the
+                // question either. Both endings are the same sentence to whoever reads the run —
+                // see [`Refusal::NotTaken`] — and both carry what was spent.
+                Waited::Stopped | Waited::TimedOut => {
+                    return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
+                }
+            }
+            match marker_arrived(panes, pane, &question, &chose) {
+                // The number was the whole answer. ⚠ NOT followed by an Enter: there is no
+                // question left for one to land on.
+                Arrival::LeftTheQuestion => (Taken::Numbered, bytes),
+                Arrival::OnTheOption => {
+                    bytes += panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes();
+                    (Taken::NumberedThenConfirmed, bytes)
+                }
+                // Raced back to the question between the poll and the re-read. Nothing was
+                // confirmed, and re-typing is what this contract exists to not do.
+                Arrival::NotYet => {
+                    return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
+                }
+            }
+        };
+
+        // ⚠⚠ AN ANSWER IS NOT GIVEN UNTIL THE PEER STOPS ASKING. A run that reported one off its
+        // own keystroke would report success for a dialog still on the screen, which is precisely
+        // the claim `Reached::Asking` was built to stop being made silently.
+        match poll_until(run, ANSWER_WITHIN, || peer_asking(panes, pane).is_none()) {
+            Waited::Ready => Ok(Reached::Answered(Answered {
+                question,
+                chose,
+                how,
+                bytes,
+            })),
+            Waited::Stopped | Waited::TimedOut => {
+                Ok(Reached::Asking(Unanswered::not_taken(question, bytes)))
+            }
         }
     }
 
@@ -470,7 +688,7 @@ impl Readiness {
         // the latch it would never run again after the first step, which is exactly the window the
         // defect lived in.
         if let Some(asking) = peer_asking(panes, pane) {
-            return Ok(asking);
+            return self.answer(panes, pane, asking, run);
         }
         if self.seen {
             return Ok(Reached::Yes);
@@ -657,6 +875,7 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Settles("claude".to_string())),
                 Some(Duration::from_millis(150)),
+                None,
             )
             .reached(access, pane, &RunContext::uncancellable())
         };
@@ -667,6 +886,7 @@ mod tests {
             && Readiness::new(
                 Some(ReadyWhen::Runs("tr".to_string())),
                 Some(Duration::from_millis(50)),
+                None,
             )
             .reached(&access, pane, &RunContext::uncancellable())
             .is_err()
@@ -677,6 +897,7 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Runs("tr".to_string())),
                 Some(Duration::from_millis(200)),
+                None
             )
             .reached(&access, pane, &RunContext::uncancellable()),
             Ok(Reached::Yes),
@@ -782,6 +1003,7 @@ mod tests {
         let mut ready = Readiness::new(
             Some(ReadyWhen::Prints("BANNER".to_string())),
             Some(Duration::from_millis(600)),
+            None,
         );
         let outcome = std::thread::scope(|scope| {
             let waiting =
@@ -840,6 +1062,7 @@ mod tests {
         let failed = Readiness::new(
             Some(ReadyWhen::Runs("claude".to_string())),
             Some(Duration::from_millis(120)),
+            None,
         )
         .reached(&access, pane, &RunContext::uncancellable())
         .expect_err("a pane with no child can never come to run anything");
@@ -897,6 +1120,7 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Prints("BANNER".to_string())),
                 Some(Duration::from_millis(120)),
+                None
             )
             .reached(&NoEchoTrail, PaneId(1), &RunContext::uncancellable())
             .is_err(),
@@ -930,6 +1154,7 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Runs("tr".to_string())),
                 Some(Duration::from_millis(400)),
+                None,
             )
             .reached(&access, pane, &RunContext::uncancellable())
             .as_ref()
@@ -983,7 +1208,7 @@ mod tests {
         };
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         let asks = |name: &str, within: Duration| {
-            Readiness::new(Some(ReadyWhen::Runs(name.to_string())), Some(within)).reached(
+            Readiness::new(Some(ReadyWhen::Runs(name.to_string())), Some(within), None).reached(
                 &access,
                 pane,
                 &RunContext::uncancellable(),
@@ -1067,6 +1292,7 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Shows("TOOL UP".to_string())),
                 Some(Duration::from_secs(5)),
+                None
             )
             .reached(&access, pane, &RunContext::uncancellable()),
             Ok(Reached::Yes),
@@ -1191,6 +1417,7 @@ mod tests {
         let mut ready = Readiness::new(
             Some(ReadyWhen::Runs("claude".to_string())),
             Some(Duration::from_millis(120)),
+            None,
         );
         let failed = ready
             .reached(&NoProcessView, PaneId(1), &RunContext::uncancellable())
@@ -1210,6 +1437,7 @@ mod tests {
             Readiness::new(
                 Some(ReadyWhen::Settles("claude".to_string())),
                 Some(Duration::from_millis(120)),
+                None
             )
             .reached(&NoProcessView, PaneId(1), &RunContext::uncancellable())
             .is_err(),
@@ -1220,5 +1448,501 @@ mod tests {
             "so the sentence simply omits that clause rather than reading `belonged to None`: {}",
             failed,
         );
+    }
+
+    // ── THE ANSWERING CONTRACT ────────────────────────────────────────────────────────────────
+    //
+    // ⚠⚠⚠ EVERY GATE BELOW DRIVES A REAL PSEUDOTERMINAL RUNNING A REAL MENU, and the observation
+    // the barrier reads is derived by the SHIPPING parser (`sprag_detect::question`) from that
+    // pane's actual screen — the same derivation the daemon's own `agent_state_source` makes. A
+    // double reporting a hand-built `Question` would have asserted my belief about dialogs; this
+    // asserts what the product does to one.
+    //
+    // ⚠⚠ AND THE PEER SAYS WHICH KEY IT ACTED ON. Every claim here is about which keystrokes a run
+    // sends, so a fixture that only reported the OUTCOME would pass for a run that typed a digit
+    // it did not need — the exact over-typing this contract is about. The peer prints
+    // `TOOK <option> VIA <byte>` when it acts, `SAW <byte>` for a key it ignores, and
+    // `EXTRA <byte>` for anything that arrives after it is done. The pane is the witness.
+
+    /// A peer that draws a bottom-anchored numbered menu and reacts to single keystrokes, in one of
+    /// the four dialog behaviours a run has to survive.
+    ///
+    /// * `numbers` — the DIGIT selects outright and Enter does nothing. The measured behaviour of
+    ///   the agents this reads, and the one where a reflexive trailing Enter lands on whatever the
+    ///   peer shows next.
+    /// * `marker` — the digit only MOVES the highlight; Enter commits whatever it is on. The
+    ///   behaviour where an Enter is required, and may only be sent once the marker can be SEEN on
+    ///   the authorised option.
+    /// * `either` — both, which is what a real agent's permission dialog does. The kind that makes
+    ///   *"do not type a key you do not need"* a claim with consequences.
+    /// * `deaf` — nothing works. The peer that makes [`Refusal::NotTaken`] reachable.
+    fn menu_peer(kind: &str) -> String {
+        format!(
+            r#"
+stty -icanon -echo 2>/dev/null
+kind={kind}
+sel=1
+readbyte() {{ dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }}
+draw() {{
+  printf '\033[2J\033[H'
+  printf 'Bash command\r\n'
+  printf 'Do you want to proceed?\r\n'
+  i=1
+  for label in 'Yes' 'Yes, and do not ask again' 'No, and tell me what to do'; do
+    if [ "$i" = "$sel" ]; then printf '\342\235\257 '; else printf '  '; fi
+    printf '%s. %s\r\n' "$i" "$label"
+    i=$((i+1))
+  done
+}}
+took() {{
+  printf '\033[2J\033[H'
+  printf 'TOOK %s VIA %s\r\n' "$sel" "$1"
+  while :; do
+    e=$(readbyte)
+    [ -n "$e" ] || exit 0
+    printf 'EXTRA %s\r\n' "$e"
+  done
+}}
+draw
+while :; do
+  k=$(readbyte)
+  [ -n "$k" ] || exit 0
+  case "$k" in
+    49|50|51)
+      case "$kind" in
+        numbers|either) sel=$((k-48)); took "$k" ;;
+        marker) sel=$((k-48)); draw ;;
+        *) printf 'SAW %s\r\n' "$k" ;;
+      esac ;;
+    13|10)
+      case "$kind" in
+        marker|either) took "$k" ;;
+        *) printf 'SAW %s\r\n' "$k" ;;
+      esac ;;
+    *) printf 'SAW %s\r\n' "$k" ;;
+  esac
+done
+"#
+        )
+    }
+
+    /// The byte the peer reports for Enter, so a gate names a KEY and not a number nobody can read.
+    /// `VIA 10` is Enter; `VIA 50` is the digit `2`.
+    ///
+    /// ⚠ TEN, not thirteen — [`KeyStroke::named("Enter")`](crate::access::KeyStroke::named) encodes
+    /// LF and not CR, which the fixture MEASURED rather than assumed (the first draft of these
+    /// gates asserted `13` and the pane said `10`). The peer accepts both, so the gates are about
+    /// which key the RUN chose to send and not about which byte a terminal calls Enter.
+    const ENTER_BYTE: &str = "10";
+
+    /// A pane running [`menu_peer`], wrapped in a pane-access whose SUPERVISOR is derived from that
+    /// pane's own screen by the shipping choice-list parser.
+    ///
+    /// ⚠ `Blocked` exactly when the screen carries a menu. That is the daemon's own rule for the
+    /// `asking` field (`agent_state_source`), reproduced here rather than mocked, so a gate cannot
+    /// pass against a question the product would not have parsed.
+    fn asking_peer(kind: &str) -> (WorkspacePaneAccess, PaneId) {
+        let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(menu_peer(kind));
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .expect("the workspace mutex")
+                .spawn(command, "peer".to_string(), 60, 12)
+                .expect("spawn the peer")
+        };
+        let source = {
+            let workspace = Arc::clone(&workspace);
+            Arc::new(move |id: PaneId| {
+                let guard = workspace.lock().expect("the workspace mutex");
+                guard.pane(id)?.pty().with_screen(|screen| {
+                    let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
+                    Some(crate::access::AgentObservation {
+                        state: if asking.is_some() {
+                            AgentState::Blocked
+                        } else {
+                            AgentState::Idle
+                        },
+                        agent: Some("claude".to_string()),
+                        authority: crate::access::Authority::Scraped {
+                            rule: Some("dialog-choice-list".to_string()),
+                        },
+                        seq: 1,
+                        asking,
+                    })
+                })
+            }) as crate::access::AgentStateSource
+        };
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+        // The menu must be UP before anything asks the barrier, or the gate is about a pane that
+        // was never blocked.
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10)
+            && peer_asking(&access, pane).flatten().is_none()
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            peer_asking(&access, pane).flatten().is_some(),
+            "the fixture's peer must be showing a menu the shipping parser reads, or this gate is \
+             about nothing: {:?}",
+            access.pane_collapsed(pane),
+        );
+        (access, pane)
+    }
+
+    /// Wait (bounded) for `pane` to show `needle`, then hand back the whole collapsed screen —
+    /// which is what every assertion below reads, including the ones about what is NOT there.
+    fn screen_showing(access: &WorkspacePaneAccess, pane: PaneId, needle: &str) -> String {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5)
+            && !access
+                .pane_collapsed(pane)
+                .is_some_and(|text| text.contains(needle))
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        access.pane_collapsed(pane).unwrap_or_default()
+    }
+
+    /// A barrier with no readiness condition and the given consent — the shape every gate below
+    /// wants, since what is under test is the ANSWERING contract and not the starting one.
+    fn answering(consent: Option<Consent>) -> Readiness {
+        Readiness::new(None, Some(Duration::from_millis(200)), consent)
+    }
+
+    /// A consent for the measured permission question, authorising the option carrying `answer`.
+    fn consent_to(answer: &str) -> Consent {
+        Consent::parse("Do you want to proceed?".to_string(), answer.to_string())
+            .expect("two needles")
+    }
+
+    /// ⚠⚠⚠ **A RUN GIVEN NO CONSENT STILL TYPES NOTHING** — the behaviour R365 shipped, held here
+    /// against the round that made answering possible at all.
+    ///
+    /// This is the arm that must not move. Everything else in this section is about how a run
+    /// answers; this one is about the DEFAULT, and the default is the product's whole position on
+    /// clicking approvals nobody read.
+    ///
+    /// ⚠ And the run must SAY WHY. `no_consent` is what tells a reader the run behaved as
+    /// configured rather than that its consent failed to fire — the two look identical without it.
+    #[test]
+    fn a_run_with_no_consent_does_not_type_at_a_peer_that_is_asking() {
+        let (access, pane) = asking_peer("either");
+        let refused = answering(None)
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a blocked peer is not an error");
+        let Reached::Asking(unanswered) = refused else {
+            panic!("⚠⚠⚠ a peer showing a menu must never be reported ready: {refused:?}");
+        };
+        assert_eq!(
+            unanswered.why(),
+            Refusal::NoConsent,
+            "the run was configured to answer nothing and it must say so — a reader who cannot \
+             tell `I gave no consent` from `my consent did not fire` cannot fix either",
+        );
+        assert_eq!(unanswered.bytes(), 0, "and nothing was typed at the peer");
+        let question = unanswered.question().expect("the question was read");
+        assert_eq!(question.choices.len(), 3);
+        assert_eq!(
+            question.selected().map(|c| c.number),
+            Some(1),
+            "and the report says where a bare Enter would land, which is what a person answering \
+             this by hand needs to know",
+        );
+        std::thread::sleep(Duration::from_millis(80));
+        let screen = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            !screen.contains("SAW") && !screen.contains("TOOK"),
+            "⚠⚠⚠ NOT ONE KEY, and the pane is the witness: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A KEY THAT IS NOT NEEDED IS NOT SENT.**
+    ///
+    /// The commonest real case: the agent's own marker is already on the option the caller
+    /// authorised. A bare Enter takes THAT option and can take no other
+    /// ([`Question::selected`]), so there is nothing for a digit to do — and a digit sent anyway is
+    /// a second act nobody authorised, which against a dialog whose numbers submit outright is a
+    /// second submission.
+    ///
+    /// The peer accepts BOTH keys and reports which one moved it, so `VIA 13` is the whole claim:
+    /// the run pressed Enter and never typed a number.
+    ///
+    /// ⚠ REVERT-PROOF: make the [`Taken::Selected`] arm type the number first and the peer reports
+    /// `VIA 49`.
+    #[test]
+    fn an_option_the_peer_is_already_standing_on_is_taken_without_typing_its_number() {
+        let (access, pane) = asking_peer("either");
+        let reached = answering(Some(consent_to("Yes")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("the answer is not an error");
+        let Reached::Answered(answered) = reached else {
+            panic!(
+                "`Yes` is option 1's whole label, so exactly one option carries it: {reached:?}"
+            );
+        };
+        assert_eq!(answered.chose.number, 1);
+        assert_eq!(answered.how, Taken::Selected);
+        assert_eq!(answered.bytes, 1, "one keystroke, and it is the Enter");
+        let screen = screen_showing(&access, pane, "TOOK");
+        assert!(
+            screen.contains(&format!("TOOK 1 VIA {ENTER_BYTE}")),
+            "⚠⚠⚠ the peer must report being moved by the ENTER — a run that typed the number \
+             first would show `VIA 49`, which is a keystroke nobody needed sent into a dialog \
+             whose numbers submit: {screen:?}",
+        );
+        assert!(
+            !screen.contains("EXTRA"),
+            "and nothing followed it: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **THE NUMBER IS THE WHOLE ANSWER, AND NO ENTER FOLLOWS IT.**
+    ///
+    /// The peer here selects on the digit and ignores Enter, which is what the measured agents do.
+    /// A run that reflexively sent `number + Enter` would put a stray Enter into whatever the peer
+    /// showed NEXT — and what an agent shows after a tool approval is frequently ANOTHER dialog,
+    /// where that Enter confirms the highlighted option.
+    ///
+    /// The consent names option 2, so the marker (on 1) is NOT already where it needs to be and the
+    /// digit is genuinely required. The peer prints `EXTRA <byte>` for anything arriving after it
+    /// is done, so the absence of one is the assertion.
+    ///
+    /// ⚠ REVERT-PROOF: append an Enter to the [`Taken::Numbered`] arm and the peer reports
+    /// `EXTRA 13`.
+    #[test]
+    fn a_peer_that_takes_the_number_is_never_sent_an_enter_after_it() {
+        let (access, pane) = asking_peer("numbers");
+        let reached = answering(Some(consent_to("do not ask again")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("the answer is not an error");
+        let Reached::Answered(answered) = reached else {
+            panic!("one option carries the authorised words: {reached:?}");
+        };
+        assert_eq!(answered.chose.number, 2);
+        assert_eq!(
+            answered.how,
+            Taken::Numbered,
+            "the peer left the question on the digit alone",
+        );
+        assert_eq!(answered.bytes, 1, "one keystroke: the digit");
+        let screen = screen_showing(&access, pane, "TOOK");
+        assert!(
+            screen.contains("TOOK 2 VIA 50"),
+            "the peer took the option the consent authorised, moved by its number: {screen:?}",
+        );
+        assert!(
+            !screen.contains("EXTRA"),
+            "⚠⚠⚠ and NOTHING followed it. An Enter sent here goes to whatever the peer shows \
+             next, which for an agent is often a second dialog: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AN ENTER IS SENT ONLY ONCE THE PEER'S OWN MARKER IS ON THE AUTHORISED OPTION.**
+    ///
+    /// The other dialog behaviour: the digit moves the highlight and Enter commits it. Here the
+    /// Enter is REQUIRED, and it is safe for a reason the run can check rather than assume — the
+    /// marker having arrived on the option is simultaneously the proof the peer read the digit and
+    /// the guarantee of where the Enter will land.
+    ///
+    /// The consent names option 3, deliberately: the marker starts on 1, so a run that pressed
+    /// Enter before checking would take `Yes` when the caller authorised `No`. The peer prints
+    /// which option it took, so this gate can tell those apart.
+    #[test]
+    fn a_peer_whose_marker_must_move_first_is_confirmed_only_after_it_has() {
+        let (access, pane) = asking_peer("marker");
+        let reached = answering(Some(consent_to("No, and tell me")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("the answer is not an error");
+        let Reached::Answered(answered) = reached else {
+            panic!("one option carries the authorised words: {reached:?}");
+        };
+        assert_eq!(answered.chose.number, 3);
+        assert_eq!(answered.how, Taken::NumberedThenConfirmed);
+        assert_eq!(answered.bytes, 2, "the digit and the Enter");
+        let screen = screen_showing(&access, pane, "TOOK");
+        assert!(
+            screen.contains(&format!("TOOK 3 VIA {ENTER_BYTE}")),
+            "⚠⚠⚠ the peer must have taken the option the CONSENT named, not the one its marker \
+             happened to start on — an Enter sent before the marker moved reads `TOOK 1`, which is \
+             `Yes` to a caller who authorised `No`: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A PEER THAT IGNORES THE NUMBER IS NEVER SENT THE ENTER** — and the run reports it
+    /// rather than typing again.
+    ///
+    /// The deaf peer's marker never moves, so the confirming Enter is never justified. Three
+    /// things must follow, and the middle one is the sharpest: the run stops with
+    /// [`Refusal::NotTaken`] rather than escalating; **no Enter is sent**, because an Enter here
+    /// would commit option 1 when the caller authorised option 2; and the step charges for the key
+    /// it did type, or a run under a cost ceiling under-reports its own spend.
+    ///
+    /// ⚠ REVERT-PROOF: send the Enter unconditionally after the number and the peer reports
+    /// `SAW 13`.
+    #[test]
+    fn an_answer_the_peer_ignores_is_reported_rather_than_confirmed_anyway() {
+        let (access, pane) = asking_peer("deaf");
+        let reached = answering(Some(consent_to("do not ask again")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a peer that ignores a key is not an error");
+        let Reached::Asking(unanswered) = reached else {
+            panic!("the peer never left the question, so nothing was answered: {reached:?}");
+        };
+        assert_eq!(unanswered.why(), Refusal::NotTaken);
+        assert_eq!(
+            unanswered.bytes(),
+            1,
+            "⚠ the digit WAS typed, and a refusal that charged nothing for it would under-report \
+             the run's spend against the caller's ceiling",
+        );
+        assert!(
+            unanswered.question().is_some(),
+            "and the question is still what a person has to answer",
+        );
+        let screen = screen_showing(&access, pane, "SAW");
+        assert!(
+            screen.contains("SAW 50"),
+            "the digit reached the peer, which is what makes this the NotTaken case rather than a \
+             refusal: {screen:?}",
+        );
+        assert!(
+            !screen.contains(&format!("SAW {ENTER_BYTE}")),
+            "⚠⚠⚠ and the Enter was NOT sent. The marker never moved onto option 2, so an Enter \
+             here would have committed option 1 — the caller authorised the other one: {screen:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A CONSENT THAT DOES NOT NAME EXACTLY ONE OPTION TYPES NOTHING**, and each way of not
+    /// naming one is reported as itself.
+    ///
+    /// Driven against the SAME live dialog, so the three answers differ only by what the caller
+    /// consented to. The ambiguity arm is the one that matters most: `"and"` sits on the two
+    /// options that mean opposite things — grant a standing permission, or refuse — and a
+    /// first-match policy would take one of them.
+    #[test]
+    fn a_consent_that_names_no_single_option_leaves_the_dialog_untouched() {
+        for (asked, answer, expected) in [
+            ("Do you want to proceed?", "and", Refusal::Ambiguous),
+            ("Do you want to proceed?", "Maybe", Refusal::NotOffered),
+            ("delete the database?", "Yes", Refusal::OtherQuestion),
+        ] {
+            let (access, pane) = asking_peer("either");
+            let consent =
+                Consent::parse(asked.to_string(), answer.to_string()).expect("two needles");
+            let reached = answering(Some(consent))
+                .reached(&access, pane, &RunContext::uncancellable())
+                .expect("a refusal is not an error");
+            let Reached::Asking(unanswered) = reached else {
+                panic!("{asked:?}/{answer:?} must not have answered anything: {reached:?}");
+            };
+            assert_eq!(unanswered.why(), expected, "for {asked:?} / {answer:?}");
+            assert_eq!(unanswered.bytes(), 0, "for {asked:?} / {answer:?}");
+            std::thread::sleep(Duration::from_millis(80));
+            let screen = access.pane_collapsed(pane).unwrap_or_default();
+            assert!(
+                !screen.contains("TOOK") && !screen.contains("SAW"),
+                "⚠⚠⚠ NOT ONE KEY may reach a dialog no consent covers, and the peer says whether \
+                 one did ({asked:?} / {answer:?}): {screen:?}",
+            );
+            access.lifecycle().expect("lifecycle").close(pane);
+        }
+    }
+
+    /// ⚠⚠ **A BLOCKED PANE WHOSE QUESTION THIS HOST CANNOT READ NOW SAYS WHAT TO DO ABOUT IT.**
+    ///
+    /// `asking: None` on a blocked pane was published as an ABSENCE and explained nowhere: the
+    /// remedy — hand the pane to a person — lived in a doc comment and no surface said it. An agent
+    /// can block on something that is not a numbered list, and no consent can name an option a
+    /// screen does not offer, so this is a real state and not a gap.
+    #[test]
+    fn a_blocked_pane_with_no_readable_question_is_handed_to_a_person() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .expect("the workspace mutex")
+                .spawn(command, "peer".to_string(), 20, 4)
+                .expect("spawn pane")
+        };
+        let source = Arc::new(|_id: PaneId| {
+            Some(crate::access::AgentObservation {
+                state: AgentState::Blocked,
+                agent: Some("claude".to_string()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook".to_string(),
+                },
+                seq: 3,
+                asking: None,
+            })
+        }) as crate::access::AgentStateSource;
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+
+        // ⚠ Even WITH a consent — the consent is not the thing missing, and a run that reported
+        // `no_consent` here would send its caller to fix an argument that would not have helped.
+        let reached = answering(Some(consent_to("Yes")))
+            .reached(&access, pane, &RunContext::uncancellable())
+            .expect("a blocked peer is not an error");
+        let Reached::Asking(unanswered) = reached else {
+            panic!("a blocked pane must never be reported ready: {reached:?}");
+        };
+        assert_eq!(unanswered.why(), Refusal::Unreadable);
+        assert!(unanswered.question().is_none());
+        assert!(
+            unanswered.why().describe().contains("person"),
+            "and the remedy is a PERSON, said out loud rather than left in a doc comment: {}",
+            unanswered.why().describe(),
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠ **AN ANSWERED PEER IS NOT A READY PANE**, and the barrier says so by ending the step.
+    ///
+    /// The step that answers must not go on to type its stimulus: the peer has just been handed a
+    /// decision and is acting on it. This gate takes the barrier round TWICE against the same live
+    /// pane — the first call answers, the second finds the peer no longer asking and clears — which
+    /// is the sequence a driven loop actually makes.
+    ///
+    /// ⚠ It also holds the LATCH honest: both answers are computed BEFORE the readiness latch, so a
+    /// run that has already cleared its barrier still cannot type into a dialog that opened later.
+    #[test]
+    fn an_answer_ends_the_step_and_the_next_one_finds_the_pane_ready() {
+        let (access, pane) = asking_peer("either");
+        let mut barrier = answering(Some(consent_to("Yes")));
+        assert!(
+            matches!(
+                barrier.reached(&access, pane, &RunContext::uncancellable()),
+                Ok(Reached::Answered(_)),
+            ),
+            "the first step spends itself on the answer",
+        );
+        let start = std::time::Instant::now();
+        let mut second = barrier.reached(&access, pane, &RunContext::uncancellable());
+        while start.elapsed() < Duration::from_secs(5) && second != Ok(Reached::Yes) {
+            std::thread::sleep(Duration::from_millis(20));
+            second = barrier.reached(&access, pane, &RunContext::uncancellable());
+        }
+        assert_eq!(
+            second,
+            Ok(Reached::Yes),
+            "and the NEXT one drives the pane the answer freed — an answer that left the barrier \
+             shut would be a loop that stops on every dialog it is allowed to answer",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 }
