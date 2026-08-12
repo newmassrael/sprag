@@ -4506,6 +4506,88 @@ fn an_agent_opens_a_pane_that_is_the_program_rather_than_a_shell_running_it() {
     );
 }
 
+/// ⚠⚠⚠ **THE AGENT IS TOLD ITS `Ctrl-C` DID NOT STOP ANYTHING, BY THE TOOL THAT SENT IT.**
+///
+/// This is the ai-loop's stop, end to end through the door an agent actually calls. `send_keys`
+/// answered `Sent 1 key(s)` whether the job was interrupted or the byte was swallowed as text, and
+/// the fact that a full-screen program has turned signals off was written on **`stop_job`'s**
+/// description — a tool the agent did not call, because it reached for the chord a person would.
+///
+/// The SUBJECT is a pane whose program ran `stty -isig`, which is what every editor, every
+/// full-screen TUI and every interactive agent CLI does on startup. The CONTROL is a pane that
+/// never touched its terminal: it must answer with NO caveat, because a warning printed on every
+/// keystroke is one an agent learns to skip, and then it is not a warning.
+///
+/// ⚠ The answer must also name the REMEDY. An agent told only that nothing happened does the one
+/// thing that cannot work: it sends the key again.
+#[test]
+fn send_keys_tells_an_agent_when_its_ctrl_c_cannot_become_a_signal() {
+    let (_daemon, sock) = spawn_daemon(&["cat"], BOOT_PANE);
+    let mut server = McpServer::spawn_in_pane(&sock, 0);
+
+    // The pane an agent drives: a program that has taken its terminal, announcing only AFTER the
+    // `stty`, so the assertion below cannot race the shell that runs it.
+    server.call_tool(
+        "open_pane",
+        json!({
+            "name": "raw",
+            "cmd": ["/bin/sh", "-c", "stty -isig; printf 'RAW-UP\n'; exec cat"],
+        }),
+    );
+    server.wait_for_tool("read_pane", json!({ "pane": "raw" }), "RAW-UP");
+
+    let sent = server.call_tool(
+        "send_keys",
+        json!({ "pane": "raw", "keys": ["c"], "ctrl": true }),
+    );
+    assert!(
+        sent.contains("Ctrl-C") && sent.contains("raised NO signal"),
+        "⚠⚠⚠ the tool that wrote the byte is the one that has to say the signal did not follow — \
+         the agent called THIS, not stop_job: {sent}",
+    );
+    assert!(
+        sent.contains("taken its terminal raw"),
+        "and WHY, because a caller retries a raw pane differently from a rebound character: {sent}",
+    );
+    assert!(
+        sent.contains("stop_job"),
+        "and WHAT TO DO — an agent told only that nothing happened sends the key again, which is \
+         the one move that cannot work: {sent}",
+    );
+
+    // THE CONTROL: a pane that never reconfigured its terminal, driven through the same tool with
+    // the same chord. Here the byte really does become a SIGINT, and there is nothing to report.
+    server.call_tool(
+        "open_pane",
+        json!({
+            "name": "cooked",
+            "cmd": ["/bin/sh", "-c", "printf 'COOKED-UP\n'; exec cat"],
+        }),
+    );
+    server.wait_for_tool("read_pane", json!({ "pane": "cooked" }), "COOKED-UP");
+    let quiet = server.call_tool(
+        "send_keys",
+        json!({ "pane": "cooked", "keys": ["c"], "ctrl": true }),
+    );
+    assert!(
+        !quiet.contains("raised NO signal"),
+        "a pane whose terminal DOES raise the signal is not warned about — a caveat on every \
+         keystroke is noise, and an agent that learns to skip it is not warned by it: {quiet}",
+    );
+
+    // ⚠⚠ AND THE SAME THROUGH `write_pane`, because a `0x03` reaches a pane as literal text at
+    // least as often as it reaches one as a key, and a warning that depended on which door the
+    // caller used would be a property of the spelling rather than of the pane.
+    let typed = server.call_tool(
+        "write_pane",
+        json!({ "pane": "raw", "text": "\u{3}", "enter": false }),
+    );
+    assert!(
+        typed.contains("Ctrl-C") && typed.contains("stop_job"),
+        "the verb that types is in exactly the position the verb that keys was: {typed}",
+    );
+}
+
 /// ⚠⚠ **AN ARGUMENT THIS SURFACE DOES NOT TAKE IS REFUSED, NOT SWALLOWED** — the other half of a
 /// typo, and the half every tool here PUBLISHED and none of them enforced.
 ///

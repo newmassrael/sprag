@@ -133,9 +133,9 @@ use sprag_host::wire::{
     ResizeHow, ResizeWindowAsk, SELECT_PANE_ACTION, SELECT_WINDOW_ACTION, SESSIONS_SLOT,
     SINCE_PARAM, SPAWN_ACTION, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY,
     STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SWAP_PANE_ACTION, SelectAsk, SelectHow,
-    SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, WINDOWS_SLOT, WindowBirthAsk, WindowPin,
-    WindowRef, ZOOM_PANE_ACTION, doctor_over, find_slot_for, pane_processes_at, pane_resources_at,
-    regex_slot_for, settled,
+    SelectWindowAsk, SwapAsk, SwapHow, TEXT_ACTION, UNSIGNALLED_KEY, UNSIGNALLED_WHICH_KEY,
+    UNSIGNALLED_WHY_KEY, WINDOWS_SLOT, WindowBirthAsk, WindowPin, WindowRef, ZOOM_PANE_ACTION,
+    doctor_over, find_slot_for, pane_processes_at, pane_resources_at, regex_slot_for, settled,
 };
 use sprag_host::{ClientSize, PANE_ENV_VAR, PaneFind, mux_action_path, pane_input_path};
 use sprag_rpc::{
@@ -884,7 +884,11 @@ fn tools_list() -> Value {
                 "description": "Send one or more named keys to a pane (W3C key names: \
                     \"Enter\", \"Escape\", \"Tab\", \"ArrowUp\", \"Backspace\", or a single \
                     character like \"c\"). Combine with ctrl/alt/shift for chords such as \
-                    Ctrl+C (keys=[\"c\"], ctrl=true).",
+                    Ctrl+D (keys=[\"d\"], ctrl=true). To STOP what a pane is running, use \
+                    stop_job and NOT a Ctrl+C here: a Ctrl+C is only the byte 0x03, and whether \
+                    a signal follows is the pane's terminal's decision — a full-screen program \
+                    has turned that off, and then it is ordinary input. This tool now says so \
+                    in its answer when it happens, but stop_job is the one that stops a job.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -4504,13 +4508,14 @@ fn tool_write_pane(args: &Value) -> Result<String, String> {
         .get("text")
         .and_then(Value::as_str)
         .ok_or("missing required string argument 'text'")?;
-    host_call(
+    let answer = host_call(
         "scene/invoke",
         with_args(
             pane_params(&pane, pane_input_path(id, TEXT_ACTION)),
             json!({ "text": text }),
         ),
     )?;
+    let caveats = unsignalled_sentence(&answer);
     let enter = args.get("enter").and_then(Value::as_bool).unwrap_or(true);
     if enter {
         host_call(
@@ -4522,7 +4527,7 @@ fn tool_write_pane(args: &Value) -> Result<String, String> {
         )?;
     }
     Ok(format!(
-        "Wrote {} byte(s) to {}{}.",
+        "Wrote {} byte(s) to {}{}.{caveats}",
         text.len(),
         pane.subject(),
         if enter { " and pressed Enter" } else { "" }
@@ -6037,6 +6042,55 @@ fn render_selection(
     }
 }
 
+/// What an injection's answer says about the signals that did NOT follow — the sentence appended
+/// to `send_keys` and `write_pane`, or empty when the write had nothing to report.
+///
+/// # ⚠⚠⚠ Why the tool that TYPES has to be the one that says it
+///
+/// The fact was already written down — on `stop_job`'s description, which explains that a `C-c` is
+/// a byte and the pane's terminal decides whether a signal follows. **That is a tool the agent did
+/// not call.** An agent trying to stop a runaway command reaches for the chord a person would, and
+/// `send_keys`' own description offers it (*"chords such as Ctrl+C"*); the answer then said
+/// `Sent 1 key(s)` whether the job was interrupted or the byte was swallowed as text. A warning
+/// filed on the remedy is read by whoever already found the remedy.
+///
+/// ⚠ It names `stop_job` because a caller who learns only that nothing happened is left to guess,
+/// and the guess an agent makes is *send it again*.
+fn unsignalled_sentence(answer: &Value) -> String {
+    let Some(entries) = answer.get(UNSIGNALLED_KEY).and_then(Value::as_array) else {
+        return String::new();
+    };
+    let mut said = String::new();
+    for entry in entries {
+        // Through `from_wire` both ways: the host published a word from these vocabularies and
+        // this reads it back through the same list, so a word added on one side and unhandled here
+        // is silence rather than a wrong sentence.
+        let Some(key) = entry
+            .get(UNSIGNALLED_WHICH_KEY)
+            .and_then(Value::as_str)
+            .and_then(sprag_terminal::SignalKey::from_wire)
+        else {
+            continue;
+        };
+        let Some(why) = entry
+            .get(UNSIGNALLED_WHY_KEY)
+            .and_then(Value::as_str)
+            .and_then(sprag_terminal::Unraised::from_wire)
+        else {
+            continue;
+        };
+        said.push_str(&format!(
+            "\nWARNING: {} reached the pane as an ordinary byte and raised NO signal, because {}. \
+             Whatever is running there was NOT stopped, and sending it again will not stop it \
+             either. Use {} to send the signal itself.",
+            key.chord(),
+            why,
+            STOP_JOB_ACTION,
+        ));
+    }
+    said
+}
+
 fn tool_send_keys(args: &Value) -> Result<String, String> {
     let pane = resolve_pane_ref(args)?;
     let id = pane.id();
@@ -6052,16 +6106,22 @@ fn tool_send_keys(args: &Value) -> Result<String, String> {
     }
     let flag = |name: &str| args.get(name).and_then(Value::as_bool).unwrap_or(false);
     let (ctrl, alt, shift, sup) = (flag("ctrl"), flag("alt"), flag("shift"), flag("super"));
+    let mut caveats = String::new();
     for key in &keys {
-        host_call(
+        let answer = host_call(
             "scene/invoke",
             with_args(
                 pane_params(&pane, pane_input_path(id, KEY_ACTION)),
                 json!({ "key": key, "ctrl": ctrl, "alt": alt, "shift": shift, "super": sup }),
             ),
         )?;
+        caveats.push_str(&unsignalled_sentence(&answer));
     }
-    Ok(format!("Sent {} key(s) to {}.", keys.len(), pane.subject()))
+    Ok(format!(
+        "Sent {} key(s) to {}.{caveats}",
+        keys.len(),
+        pane.subject()
+    ))
 }
 
 /// `agent_state`: what the agent in each pane is doing, or in one named pane (H3 slice 5).
