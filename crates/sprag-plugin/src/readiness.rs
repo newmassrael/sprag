@@ -46,6 +46,18 @@ use sprag_terminal::PaneId;
 use crate::access::{JobLeader, PaneAccess, PaneDoing, PaneError};
 use crate::run::{RunContext, Waited, poll_until};
 
+/// Whether the peer in `pane` has stopped to ASK — [`Reached::Asking`] with the question when this
+/// host can read it, or `None` when it is not asking (or nothing here can tell).
+///
+/// ⚠ A host with no supervisor answers `None` and the run proceeds, which is this crate's rule
+/// everywhere: an absence of evidence is never read as the negative. It is also the honest cost of
+/// the guard — a build that cannot see agents cannot protect their dialogs either, and pretending
+/// otherwise would block every run on every host that has no detector.
+fn peer_asking(panes: &dyn PaneAccess, pane: PaneId) -> Option<Reached> {
+    let seen = panes.supervision()?.pane_agent_state(pane)?;
+    (seen.state == AgentState::Blocked).then(|| Reached::Asking(seen.asking))
+}
+
 /// The bound a readiness wait is given when the caller names none.
 ///
 /// ⚠ Deliberately the same number as [`DEFAULT_REPLY_TIMEOUT`], and deliberately its OWN name.
@@ -59,13 +71,33 @@ use crate::run::{RunContext, Waited, poll_until};
 pub const DEFAULT_READY_TIMEOUT: Duration = crate::run::DEFAULT_REPLY_TIMEOUT;
 
 /// How a [`Readiness`] wait ended, for the two endings that are not an error.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// ⚠ NOT `Copy` since [`Asking`](Self::Asking) carries the question — [`Verdict`]'s reason, and
+/// the same one: an answer that cannot say WHAT the peer is asking is not worth returning.
+///
+/// [`Verdict`]: crate::plugin::Verdict
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Reached {
     /// The pane is ready. Drive it.
     Yes,
     /// THE RUN ended while waiting — cancelled, or out of time. **Nothing was injected**, so
     /// nothing is charged; which of the two it was is the [`RunContext`]'s to answer.
     RunEnded,
+    /// **THE PEER HAS STOPPED TO ASK, so nothing may be typed at it** — carrying the question when
+    /// this host can read it.
+    ///
+    /// # ⚠⚠⚠ The one answer here that is not about STARTING
+    ///
+    /// Every other state of this barrier is about *has the program come up*, which is answered
+    /// once and stays answered — that is why it latches. This one is about a fact that CHANGES
+    /// under a running loop: an agent that was at rest can pop a tool-permission dialog at any
+    /// moment, and from then on the pane is a numbered menu.
+    ///
+    /// A menu consumes keystrokes, so a stimulus typed into one is not text — it is a SELECTION,
+    /// and every injection these plugins make ends with Enter, which lands on whatever option the
+    /// agent had highlighted. Measured before this variant existed: an orchestrator whose peer
+    /// blocked after its first step typed the stimulus three more times and reported
+    /// `Exhausted(Iterations)`.
+    Asking(Option<sprag_detect::Question>),
 }
 
 /// WHICH QUESTION a readiness marker is asking — the distinction the argument used to hide.
@@ -432,6 +464,14 @@ impl Readiness {
         pane: PaneId,
         run: &RunContext,
     ) -> Result<Reached, PaneError> {
+        // ⚠⚠⚠ ASKED EVERY TIME, BEFORE THE LATCH AND BEFORE THE CONDITION. *Has it started* is
+        // answered once; *is it waiting on a question of its own* is not, and this is the only
+        // place all three injecting plugins pass through on their way to a keystroke. Put after
+        // the latch it would never run again after the first step, which is exactly the window the
+        // defect lived in.
+        if let Some(asking) = peer_asking(panes, pane) {
+            return Ok(asking);
+        }
         if self.seen {
             return Ok(Reached::Yes);
         }
@@ -654,11 +694,20 @@ mod tests {
         );
 
         // HALF 3: blocked is waiting for an answer to its own question, which is not this.
+        //
+        // ⚠⚠ THE CLAIM IS UNCHANGED AND THE ANSWER MOVED. This asserted `is_err()` — the barrier
+        // simply never cleared, so the caller waited out `ready_within` and got `NeverReady`,
+        // which protected the pane while saying nothing about WHY. `Reached::Asking` is the same
+        // protection reached IMMEDIATELY and carrying the question, so a run can report what its
+        // peer wants instead of a generic refusal. Asserting the variant rather than "not Yes"
+        // because *typed into anyway* and *told the peer is asking* are different products.
         *reported.lock().unwrap() = (AgentState::Blocked, Some("claude".to_string()));
         assert!(
-            settled(&access).is_err(),
+            matches!(settled(&access), Ok(Reached::Asking(_))),
             "a BLOCKED agent is waiting for an answer to its own question — a fresh prompt sent \
-             there answers the wrong thing, and into a numbered menu it selects",
+             there answers the wrong thing, and into a numbered menu it selects. The barrier must \
+             say so rather than merely failing to open: {:?}",
+            settled(&access),
         );
 
         // HALF 4: an idle observation that names no agent says nothing about WHICH is at rest.

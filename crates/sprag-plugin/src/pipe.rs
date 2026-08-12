@@ -176,9 +176,19 @@ impl Plugin for Pipe {
         // is still newly-damaged when the wait ends, so a relay that had to wait for its
         // destination delivers what arrived meanwhile rather than losing it — reading first would
         // consume those rows against a destination not ready to be given them.
-        if self.ready.reached(panes, self.dst, run)? == Reached::RunEnded {
-            return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
-                .noting("the run ended while waiting for the destination to be ready"));
+        match self.ready.reached(panes, self.dst, run)? {
+            Reached::Yes => {}
+            Reached::RunEnded => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
+                    .noting("the run ended while waiting for the destination to be ready"));
+            }
+            // ⚠ A RELAY MUST STOP TOO. Its destination is a pane somebody else prepared, so it is
+            // the likeliest of the three to be pointed at an agent that pops a dialog — and a
+            // relayed line ends in a newline, which a menu reads as the Enter that confirms.
+            Reached::Asking(asking) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Blocked(asking))
+                    .noting("the destination stopped to ASK, so nothing was relayed into it"));
+            }
         }
 
         // ⚠⚠ WHAT THE SOURCE PRODUCED, BY LINE NUMBER — not what its grid looks like. A row is

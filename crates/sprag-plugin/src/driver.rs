@@ -125,7 +125,10 @@ impl Ceiling {
 }
 
 /// Which terminal statechart state a run reached.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠ NOT `Copy` since [`Blocked`](Self::Blocked) carries the question — [`Verdict`]'s reason
+/// exactly, one level up.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutcomeState {
     /// A plugin step returned [`Verdict::Converged`].
     Converged,
@@ -139,6 +142,18 @@ pub enum OutcomeState {
     Failed,
     /// The run was cancelled (the host raised the cancel signal).
     Cancelled,
+    /// **THE PEER STOPPED TO ASK**, and the run ended rather than answering for somebody.
+    ///
+    /// Carries the question when this host can read it — see [`Verdict::Blocked`], whose doc holds
+    /// the reason this is a terminal outcome at all.
+    ///
+    /// # ⚠⚠ Why not a flavour of [`Failed`](Self::Failed)
+    ///
+    /// They are different instructions to whoever reads the run. A failed run wants something
+    /// FIXED; this one wants an ANSWER, and one that is not the run's to give. R357 settled this
+    /// shape for `interrupted`: reporting a run that did not finish as though it had would have
+    /// been a lie, and *"the honest word is what costs the number"*.
+    Blocked(Option<sprag_detect::Question>),
 }
 
 sprag_vt::closed_set! {
@@ -255,6 +270,18 @@ pub struct Driver {
     /// taken. [`Driver::exhaust`] is the only writer, so the statechart cannot reach its
     /// `exhausted` state without one.
     exhausted_by: Option<Ceiling>,
+    /// WHAT THE PEER WAS ASKING when a step returned [`Verdict::Blocked`], recorded at the moment
+    /// the verdict is read.
+    ///
+    /// Recorded rather than re-read at the end for [`exhausted_by`](Self::exhausted_by)'s reason
+    /// and one more: the question was read off a PANE, and by the time the outcome is assembled
+    /// that pane may have been answered by a person, scrolled, or closed. The outcome must report
+    /// what stopped the run, not what the screen says afterwards.
+    ///
+    /// ⚠ The outer `Option` is *was there a blocked verdict at all*; the inner one is
+    /// [`AgentObservation::asking`](crate::access::AgentObservation::asking)'s own — *this host
+    /// could not read the question*, which is a real answer with its own remedy.
+    asking: Option<Option<sprag_detect::Question>>,
 }
 
 /// WHAT A RUN HAS SPENT SO FAR — the counters the [`Driver`] keeps, readable while it is still
@@ -335,6 +362,7 @@ impl Driver {
             cut_short: false,
             stopped: None,
             exhausted_by: None,
+            asking: None,
         }
     }
 
@@ -377,7 +405,7 @@ impl Driver {
         self.journal.push(StepRecord {
             iteration: self.iterations,
             cost: step.cost,
-            verdict: step.verdict,
+            verdict: step.verdict.clone(),
             note: step.note.clone(),
         });
     }
@@ -467,12 +495,21 @@ impl Driver {
                     self.accumulate(step.cost);
                     self.record(&step);
                     self.publish();
-                    match step.verdict {
+                    match &step.verdict {
                         // A step that saw the goal SAW IT. A stop or a deadline arriving in the
                         // same instant does not un-reach it, and the plugins hand back `Continue`
                         // rather than a verdict off a screen nobody finished reading precisely so
                         // that a `Converged` reaching here is a real one.
                         Verdict::Converged => OrchestrationEvent::Converge,
+                        // ⚠⚠⚠ AND A PEER THAT STOPPED TO ASK OUTRANKS EVERYTHING BELOW, including
+                        // the run's own end. A cancel arriving in the same instant does not make
+                        // the question go away, and reporting `cancelled` would lose the one fact
+                        // a person has to act on. Recorded here rather than re-derived at the
+                        // final state, because the pane it was read from may be gone by then.
+                        Verdict::Blocked(asking) => {
+                            self.asking = Some(asking.clone());
+                            OrchestrationEvent::Block
+                        }
                         // ⚠⚠ THE RUN'S OWN END OUTRANKS THE TALLY, and asking in the other order
                         // was two defects: a person's stop mid-turn reported as `exhausted —
                         // iterations`, and a deadline that curtailed the last permitted turn
@@ -598,6 +635,10 @@ impl Driver {
                 }),
             ),
             OrchestrationState::Cancelled => OutcomeState::Cancelled,
+            // `Verdict::Blocked` is the only producer of the event that reaches this state, and it
+            // always records — the same construction `exhausted` uses one arm up, for the same
+            // reason: an outcome that cannot say what it is blocked on is not worth reaching.
+            OrchestrationState::Blocked => OutcomeState::Blocked(self.asking.flatten()),
             // Failed, or any state the loop left unexpectedly.
             _ => OutcomeState::Failed,
         };

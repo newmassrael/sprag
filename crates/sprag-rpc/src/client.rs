@@ -610,7 +610,30 @@ impl ScopeAsk {
 ///   a pane whose terminal is not in canonical mode, because there it could only arrive as an
 ///   ordinary byte. It says so in the step's note instead — at the moment of the decision rather
 ///   than after the reply timeout, which is where that diagnosis used to live.
-pub const WIRE_PROTOCOL: u32 = 25;
+/// * **26** — a run can end `blocked`. A peer that stopped to ASK ends the run under a fifth
+///   `state` word instead of being typed at, and the question it is asking is published beside it
+///   (`sprag_host::plugins::RUN_ASKING_KEY`, R365).
+///
+///   ⚠ **THE THIRD BUMP FROM A VALUE SPACE** (18 and 21 were the others), and version 21's argument
+///   word for word: a peer that decodes a closed set WHOLE fails the entire document on a word it
+///   has never seen, and no address moves and no shape moves, so neither the address pin nor the
+///   shape pin can see it.
+///
+///   What earned it is the same honesty test R357 applied to `interrupted`. The run could have been
+///   reported `failed` — it did stop — but a failed run wants something FIXED and this one wants an
+///   ANSWER that is not the run's to give. Measured before the word existed: an orchestrator whose
+///   peer popped a dialog after its first step typed the stimulus three more times and reported
+///   `exhausted — iterations`, which tells a reader to raise a budget.
+///
+///   ⚠ The behaviour that goes with it is the point, not the word: an agent that stops to ask shows
+///   a NUMBERED CHOICE LIST, a menu consumes keystrokes, and every injection these plugins make
+///   ends with Enter — so a loop that kept going confirmed whatever option was highlighted. On a
+///   tool-permission dialog that is an approval nobody read.
+///
+///   ⚠ `asking` is ABSENT rather than empty when the peer blocked on something this host cannot
+///   read, which is a real case with its own remedy (hand the pane to a person). A caller tells the
+///   two apart by the key's presence, this wire's rule for `ceiling` and `opened_by` already.
+pub const WIRE_PROTOCOL: u32 = 26;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

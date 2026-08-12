@@ -607,10 +607,20 @@ impl Plugin for Agent {
         // ⚠⚠ NOT ONE BYTE UNTIL THE PANE IS THE TOOL — see [`AgentSpec::ready_when`], which is
         // where the measured failure is written down. Latched, so it costs nothing after the first
         // step (and this adapter is one-shot anyway).
-        if self.ready.reached(panes, self.pane, run)? == Reached::RunEnded {
-            return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(
-                "the run ended while waiting for the pane to be ready; nothing was asked",
-            ));
+        match self.ready.reached(panes, self.pane, run)? {
+            Reached::Yes => {}
+            Reached::RunEnded => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(
+                    "the run ended while waiting for the pane to be ready; nothing was asked",
+                ));
+            }
+            // ⚠⚠ THE SHARPEST OF THE THREE: this adapter publishes what comes back AS THE MODEL'S
+            // ANSWER, so a prompt typed into a dialog would return the dialog's own text as a
+            // reply — after selecting an option with the Enter that submits it.
+            Reached::Asking(asking) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Blocked(asking))
+                    .noting("the peer stopped to ASK, so the prompt was not sent"));
+            }
         }
 
         // Baseline before acting, so `capture` isolates this prompt's reply (and its cooked-mode

@@ -132,11 +132,24 @@ impl Plugin for Orchestrator {
         // started is spending a turn on the shell that is still there — see [`Readiness`], which
         // owns this barrier and the `NeverReady` failure. Latched, so it costs nothing after the
         // first step.
-        if self.ready.reached(panes, self.pane, run)? == Reached::RunEnded {
+        // ⚠⚠ A `match`, NOT an `== Reached::RunEnded`. All three injecting plugins compared
+        // against one variant, so a barrier that learned a new answer would have been IGNORED by
+        // every one of them and fallen through to the keystroke — which is how `Asking` was added
+        // and compiled clean. Exhaustive here means a fourth answer cannot reach a pane unread.
+        match self.ready.reached(panes, self.pane, run)? {
+            Reached::Yes => {}
             // Nothing was injected, so nothing is charged; the Driver's loop top says which of the
             // two ways the run ended it was.
-            return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
-                .noting("the run ended while waiting for the pane to be ready"));
+            Reached::RunEnded => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Continue)
+                    .noting("the run ended while waiting for the pane to be ready"));
+            }
+            // The peer is showing a question. Typing the stimulus here would SELECT rather than
+            // say anything — see [`Verdict::Blocked`].
+            Reached::Asking(asking) => {
+                return Ok(Step::new(Cost::Bytes(0), Verdict::Blocked(asking))
+                    .noting("the peer stopped to ASK, so nothing was typed at it"));
+            }
         }
 
         // Baseline before acting, so observe() waits for this step's reply.
@@ -171,7 +184,7 @@ impl Plugin for Orchestrator {
         // outcome: the step costs the same bytes and reads `continue` either way, so a hundred
         // iterations against a pane that is not listening look exactly like a hundred against one
         // that is.
-        let note = match (seen, verdict) {
+        let note = match (seen, &verdict) {
             (_, Verdict::Converged) => "the sentinel appeared".to_string(),
             // The two ways a step can end with no answer are different findings with different
             // remedies: a pane showing NOTHING is one nobody is listening on, while one that
@@ -292,6 +305,113 @@ mod tests {
         assert_eq!(outcome.state, OutcomeState::Exhausted(Ceiling::Iterations));
         assert_eq!(outcome.iterations, 3);
         assert!(outcome.failure.is_none());
+    }
+
+    /// ⚠⚠⚠ **A PEER THAT BLOCKS MID-RUN IS TYPED INTO ANYWAY, AND WHAT IT IS SHOWING IS A MENU.**
+    ///
+    /// The readiness barrier is LATCHED — `reached` returns early on `seen` — and that is right for
+    /// the question it asks: *has the program started?* is answered once and stays answered. But it
+    /// is the only thing standing between this loop and the pane, so nothing re-asks a DIFFERENT
+    /// question whose answer changes under the run: **is the peer waiting for me, or waiting on
+    /// something it asked?**
+    ///
+    /// An agent that stops to ask — a tool-permission dialog, a trust prompt — shows a BOTTOM-
+    /// ANCHORED NUMBERED CHOICE LIST, and a numbered list consumes keystrokes. This loop's every
+    /// injection is a stimulus followed by ENTER, and `Question::selected` is documented as *"where
+    /// a bare Enter would land, and so the answer a caller gets by doing nothing"*. So the next
+    /// iteration does not deliver text to a peer: **it picks whatever option is highlighted.**
+    ///
+    /// The pane here is `claude`, `Idle` when the run starts and `Blocked` from the first step on —
+    /// the shape of an agent that pops a permission dialog while working. The claim is what the run
+    /// does with its remaining iterations.
+    #[test]
+    fn a_loop_keeps_typing_into_a_peer_that_stopped_to_ask() {
+        // Echoes what it is given, so what the pane RECEIVED is readable afterwards.
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("printf 'UP\\n'; exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 40, 8)
+                .expect("spawn pane")
+        };
+        let plain = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&plain, pane, "UP");
+
+        // ⚠⚠ THE PEER BLOCKS WHEN IT IS GIVEN SOMETHING, which is what a real one does: the
+        // dialog is a REACTION to the work. Keyed on the pane's own record of what was typed into
+        // it rather than on a call counter, so the fixture does not depend on how many times the
+        // barrier happens to look — and so the barrier genuinely LATCHES on an at-rest peer first,
+        // which is the precondition the whole subject rests on.
+        let source = {
+            let workspace = Arc::clone(&workspace);
+            Arc::new(move |id: PaneId| {
+                let asking = workspace
+                    .lock()
+                    .unwrap()
+                    .pane(id)
+                    .is_some_and(|p| p.pty().echo_trail().contains("ping"));
+                Some(crate::access::AgentObservation {
+                    state: if asking {
+                        sprag_detect::AgentState::Blocked
+                    } else {
+                        sprag_detect::AgentState::Idle
+                    },
+                    agent: Some("claude".to_string()),
+                    authority: crate::access::Authority::Reported {
+                        source: "test".to_string(),
+                    },
+                    seq: if asking { 2 } else { 1 },
+                    asking: None,
+                })
+            })
+        };
+        let access =
+            WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
+
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: None,
+                // The STRONGEST barrier this product has — the agent must be at rest and named.
+                ready_when: Some(crate::readiness::ReadyWhen::Settles("claude".to_string())),
+                ready_within: Some(Duration::from_secs(5)),
+            },
+        );
+        let outcome = run(
+            &access,
+            &mut orch,
+            Guardrails {
+                max_iterations: 3,
+                max_cost: None,
+                max_duration: None,
+            },
+        );
+
+        let typed = access
+            .input_echo()
+            .and_then(|echo| echo.pane_recent_input(pane))
+            .unwrap_or_default();
+        assert!(
+            matches!(outcome.state, OutcomeState::Blocked(_)),
+            "⚠⚠⚠ the run must REPORT that its peer is asking. `exhausted` tells a reader to raise \
+             a budget and `failed` tells them to fix something; neither says the one thing that is \
+             true — somebody has to answer a question. Outcome: {outcome:?}",
+        );
+        let fed = typed.matches("ping").count();
+        assert_eq!(
+            fed, 1,
+            "⚠⚠⚠ EXACTLY ONE stimulus — the one sent while the peer was still at rest. Every \
+             iteration after it met a pane that had stopped to ask, and into a numbered choice \
+             list a stimulus is not text delivery, it is SELECTION: each ends with Enter, which \
+             confirms whatever option the agent had highlighted. Typed {fed}. \
+             Outcome: {outcome:?}, typed: {typed:?}",
+        );
     }
 
     #[test]

@@ -14,24 +14,50 @@ use crate::access::{PaneAccess, PaneError};
 use crate::run::RunContext;
 
 /// A plugin's verdict for one step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠ NOT `Copy`, because [`Blocked`](Self::Blocked) carries the question. That is
+/// [`OutcomeState::Exhausted`](crate::driver::OutcomeState::Exhausted)'s rule — the reason is
+/// carried INSIDE, so a verdict that does not say what it is blocked on cannot be constructed —
+/// and the convenience of `Copy` is not worth a second field somebody can forget to set.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Keep going (subject to the Driver's guardrails).
     Continue,
     /// The plugin reached its goal; the run converges.
     Converged,
+    /// **The peer stopped to ASK, so the run stops rather than typing at it.**
+    ///
+    /// Carries what it is asking, when this host can read the question. `None` is a real answer
+    /// and not a gap — an agent can block on something that is not a numbered list, and
+    /// [`AgentObservation::asking`](crate::access::AgentObservation::asking) records the remedy:
+    /// hand the pane to a person.
+    ///
+    /// # ⚠⚠⚠ Why a verdict of its own rather than a `Continue` with a note
+    ///
+    /// An agent that stops to ask shows a bottom-anchored NUMBERED CHOICE LIST, and a numbered
+    /// list consumes keystrokes: what a loop types into one is not text, it is a SELECTION. Every
+    /// injection these plugins make ends with Enter, and `Question::selected` is *"where a bare
+    /// Enter would land, and so the answer a caller gets by doing nothing"* — so a loop that kept
+    /// going would confirm whatever option the agent had highlighted, which on a tool-permission
+    /// dialog is an approval nobody read.
+    ///
+    /// Measured before this existed: an orchestrator whose peer blocked after the first step typed
+    /// its stimulus three more times and reported `Exhausted(Iterations)` — the answer that tells
+    /// a reader to raise a budget.
+    Blocked(Option<sprag_detect::Question>),
 }
 
 impl Verdict {
     /// This verdict's word in a run's published journal — the ONE place the variant → name mapping
     /// lives, so the host never spells a `Verdict` variant ([`Cost::unit`]'s rule).
     ///
-    /// Exhaustive, so a third verdict cannot reach the wire without a word.
+    /// Exhaustive, so a fourth verdict cannot reach the wire without a word.
     #[must_use]
-    pub const fn wire_str(self) -> &'static str {
+    pub const fn wire_str(&self) -> &'static str {
         match self {
             Self::Continue => "continue",
             Self::Converged => "converged",
+            Self::Blocked(_) => "blocked",
         }
     }
 }

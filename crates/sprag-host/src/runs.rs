@@ -412,7 +412,7 @@ mod tests {
         ];
         for state in every {
             let outcome = Outcome {
-                state,
+                state: state.clone(),
                 iterations: 3,
                 cost: None,
                 failure: None,

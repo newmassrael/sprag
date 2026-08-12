@@ -6970,7 +6970,11 @@ mod tests {
             // `stop_job`), and a sentence cannot be branched on.
             // R365 again: re-stamped for an ADDED REQUEST ARGUMENT (`done_when`). No ANSWER word
             // moved — a completion contract is something a caller SAYS, not something it is told.
-            25,
+            // ⚠⚠⚠ R365 A THIRD TIME, AND THIS PIN HAD A BLIND SPOT IT DID NOT SEE: a run's
+            // OUTCOME word (`converged` | `exhausted` | `failed` | `cancelled`) is an answer a peer
+            // decodes whole, and it lived outside this list exactly as `run_status` did before
+            // R357. `blocked` is the fifth, and it JOINS the pin in the same edit that adds it.
+            26,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -6999,6 +7003,12 @@ mod tests {
                 "signal_key:suspend",
                 "unraised:raw",
                 "unraised:unbound",
+                // ⚠⚠ R365: a RUN'S OUTCOME, which this pin could not see until now.
+                "outcome:converged",
+                "outcome:exhausted",
+                "outcome:failed",
+                "outcome:cancelled",
+                "outcome:blocked",
             ],
         );
 
@@ -7055,6 +7065,36 @@ mod tests {
                 sprag_terminal::Unraised::WIRE_WORDS
                     .iter()
                     .map(|word| format!("unraised:{word}")),
+            )
+            // ⚠⚠ A RUN'S OUTCOME WORD, read through `outcome_word` — the same renderer the wire and
+            // the durable run log both use, so this pin is over the words a peer really meets.
+            //
+            // ⚠ The variant list is written out because `OutcomeState` CARRIES DATA and so has no
+            // `ALL` to walk, which is the one place this pin is weaker than the rest of it: a sixth
+            // variant has to be added here by hand. That is the residue, stated — and it is still
+            // strictly better than the nothing this had before, which is how a fifth word reached
+            // the wire with every ratchet green.
+            .chain(
+                [
+                    sprag_plugin::OutcomeState::Converged,
+                    sprag_plugin::OutcomeState::Exhausted(sprag_plugin::Ceiling::Iterations),
+                    sprag_plugin::OutcomeState::Failed,
+                    sprag_plugin::OutcomeState::Cancelled,
+                    sprag_plugin::OutcomeState::Blocked(None),
+                ]
+                .into_iter()
+                .map(|state| {
+                    format!(
+                        "outcome:{}",
+                        crate::plugins::outcome_word(&sprag_plugin::Outcome {
+                            state,
+                            iterations: 0,
+                            cost: None,
+                            failure: None,
+                            stopped: None,
+                        })
+                    )
+                }),
             )
             .collect();
         let mut pinned: Vec<String> = PINNED_VALUES.1.iter().map(|n| (*n).to_owned()).collect();
@@ -7121,13 +7161,15 @@ mod tests {
             // value FROM — and no verb here takes a new one: the caveat is something a caller is
             // TOLD, never something it says. `an_answers_value_space_cannot_widen_…` is the pin
             // that moved, and the two lists being different is the whole reason there are two.
+            // R365 (third): re-stamped for a widened ANSWER value space (a run's fifth outcome
+            // word, `blocked`). No REQUEST vocabulary moved.
             // ⚠⚠ R365 AGAIN, and THIS time this pin is the one that moved: `run` gained
             // `done_when=exits,settles`, a vocabulary a caller picks a value FROM. The number moves
             // with it — not because the space widened (R342 settled that widening alone need not)
             // but because the ARGUMENT is new, and an older daemon SWALLOWS an undeclared key
             // rather than refusing it. Measured:
             // `an_argument_this_surface_does_not_declare_is_swallowed_rather_than_refused`.
-            25,
+            26,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7632,7 +7674,9 @@ mod tests {
         // R365 again: re-stamped for an ADDED REQUEST ARGUMENT (`done_when`), which lives inside a
         // form this pin does not walk — the blind spot named above, and the reason the argument
         // grammar has ratchets of its own.
-        25,
+        // R365 (third): re-stamped for a widened ANSWER value space, invisible here for the reason
+        // stated above — an outcome word lives in a value, not at an address.
+        26,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

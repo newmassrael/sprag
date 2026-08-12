@@ -28,10 +28,22 @@
     <transition event="exhaust"  target="exhausted"/>   <!-- Driver: iteration/cost budget hit -->
     <transition event="fail"     target="failed"/>      <!-- step: Err -->
     <transition event="cancel"   target="cancelled"/>   <!-- Driver: cancel signal raised -->
+    <transition event="block"    target="blocked"/>     <!-- step: Verdict::Blocked -->
   </state>
 
   <final id="converged"/>
   <final id="exhausted"/>
   <final id="failed"/>
   <final id="cancelled"/>
+  <!--
+    The peer stopped to ASK, so the run stops rather than answering for somebody. This is the
+    "human-approval pause" the header anticipated, and it is a FIFTH terminal outcome rather than
+    a flavour of `failed` because they are different instructions to a reader: a failed run wants
+    something fixed, and this one wants an ANSWER that is not the run's to give.
+
+    ⚠ Terminal, not a pause that resumes. Answering an agent's dialog is a policy decision with
+    real consequences (a tool-permission prompt is one of these), so the run reports the question
+    and ends; whoever may answer it does so and starts the next run.
+  -->
+  <final id="blocked"/>
 </scxml>

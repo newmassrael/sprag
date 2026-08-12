@@ -76,3 +76,26 @@ verify = "cargo test --workspace --exclude sprag-gui && DBUS_SESSION_BUS_ADDRESS
 # Until it is understood, a remote verify of sprag will report this one failure. Do not read it as a
 # red in the change under test without checking it against this note — and do not read it as
 # harmless either. It is its own round.
+#
+# ⚠⚠⚠ MEASURED 2026-08-12, SECOND REMOTE RUN — A SECOND DIVERGENT CLASS, in `sprag-plugin --lib`,
+# and this one MOVES BETWEEN TESTS. Every instance has the same signature:
+#
+#     Outcome { state: Exhausted(Duration), iterations: 1, cost: Some(Bytes(0)), ... }
+#
+# `Bytes(0)` with one iteration means NOTHING WAS EVER INJECTED: the readiness barrier consumed the
+# fixture's whole `max_duration` (30 s) and the run ended on the clock. Seen so far:
+#
+#   * `a_reply_that_opens_by_quoting_the_question_keeps_that_line`
+#   * `a_pane_that_never_shows_the_prompt_refuses_instead_of_publishing_an_empty_reply`
+#
+# ⚠ THE CONTROL SAYS IT IS NOT THE CHANGE UNDER TEST. The full `-p sprag-plugin --lib` suite fails
+# this way ON THE PARENT COMMIT too — a different member of the class each run, which is what a race
+# looks like. And each one PASSES ALONE on the same machine (3/3), so it needs the other 130 tests
+# running beside it at 32 threads.
+#
+# ⚠ The workstation does not show it: the same suite is green there. The suspicion is `ReadyWhen::
+# Prints`, whose contract is *more* occurrences than when the barrier ARMED — on a fast enough box
+# the fixture's own `printf` can land BEFORE the arming look, putting the marker in the baseline so
+# it can never be exceeded. That is a hypothesis, not a finding: nobody has instrumented the arming
+# count on the failing side. It is its own round, and it is a FIXTURE question rather than a product
+# one until measured otherwise.

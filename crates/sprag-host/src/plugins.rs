@@ -72,6 +72,17 @@ const RUN_OPENED_BY_KEY: &str = "opened_by";
 /// Its vocabulary is [`sprag_plugin::Ceiling`]'s own words, so the host never spells a variant and
 /// a fourth ceiling reaches the wire by being added to that type.
 pub const RUN_CEILING_KEY: &str = "ceiling";
+/// The outcome key carrying WHAT THE PEER IS ASKING, present only on a run that ended `blocked`
+/// and only where this host could read the question — see [`outcome_question`].
+pub const RUN_ASKING_KEY: &str = "asking";
+/// The [`RUN_ASKING_KEY`] member holding the question's own lines, in reading order.
+pub const RUN_ASKED_KEY: &str = "asked";
+/// The [`RUN_ASKING_KEY`] member holding the options, in screen order — each `{number, label,
+/// selected}`.
+///
+/// ⚠ `selected` is where a bare Enter would land, which is the difference between confirming a
+/// tool call and declining it. Carried rather than left for a caller to infer.
+pub const RUN_CHOICES_KEY: &str = "choices";
 /// The answer key carrying WHAT EACH STEP DID — the last [`sprag_plugin::JOURNAL_LIMIT`] of them.
 ///
 /// A run reported its total and its terminal state and nothing about the steps between, so a loop
@@ -1009,6 +1020,9 @@ fn step_to_json(step: &sprag_plugin::StepRecord) -> Value {
 pub fn outcome_word(outcome: &Outcome) -> &'static str {
     match outcome.state {
         OutcomeState::Converged => "converged",
+        // ⚠⚠ A WORD OF ITS OWN, not a flavour of `failed`. A blocked run wants an ANSWER and a
+        // failed one wants a FIX — R357's rule for `interrupted`, and the same honesty test.
+        OutcomeState::Blocked(_) => "blocked",
         // ⚠ THE STATE WORD IS UNCHANGED by the ceiling, deliberately: folding the ceiling into the
         // word (`exhausted_duration`) would change the value space of a key old readers decode
         // whole, which is a wire break no address or shape pin can see (R342).
@@ -1021,10 +1035,43 @@ pub fn outcome_word(outcome: &Outcome) -> &'static str {
 /// Which ceiling stopped it, or [`None`] when no ceiling did — [`outcome_word`]'s companion.
 #[must_use]
 pub fn outcome_ceiling(outcome: &Outcome) -> Option<&'static str> {
-    match outcome.state {
+    match &outcome.state {
         OutcomeState::Exhausted(ceiling) => Some(ceiling.wire_str()),
         _ => None,
     }
+}
+
+/// WHAT THE PEER IS ASKING, for a run that ended [`OutcomeState::Blocked`] — the question's own
+/// text and its options, or [`None`] when there is no question to publish.
+///
+/// # ⚠⚠ Why the OPTIONS and not just the sentence
+///
+/// A caller reading this has to answer it, and the answer is a NUMBER. Publishing only the prose
+/// would leave them to parse the choices back off a screen this host has already parsed — and to
+/// guess which one a bare Enter would take, which is the difference between confirming a tool call
+/// and declining it. `selected` is that fact, carried rather than inferred.
+///
+/// ⚠ `None` for a blocked run is a real answer and not a gap: an agent can block on something that
+/// is not a numbered list. Its remedy is the one
+/// [`AgentObservation::asking`](sprag_plugin::AgentObservation::asking) states — hand the pane to a
+/// person — and a caller can tell the two apart because the key is ABSENT rather than empty.
+#[must_use]
+pub fn outcome_question(outcome: &Outcome) -> Option<Value> {
+    let OutcomeState::Blocked(Some(question)) = &outcome.state else {
+        return None;
+    };
+    Some(json!({
+        RUN_ASKED_KEY: question.asked,
+        RUN_CHOICES_KEY: question
+            .choices
+            .iter()
+            .map(|choice| json!({
+                "number": choice.number,
+                "label": choice.label,
+                "selected": choice.selected,
+            }))
+            .collect::<Vec<_>>(),
+    }))
 }
 
 /// [`outcome_word`] / [`outcome_ceiling`] READ BACK — how a restored run recovers the state it was
@@ -1037,6 +1084,10 @@ pub fn outcome_from_words(word: Option<&str>, ceiling: Option<&str>) -> OutcomeS
     match word {
         Some("converged") => OutcomeState::Converged,
         Some("cancelled") => OutcomeState::Cancelled,
+        // ⚠ The QUESTION is not restored. It was read off a pane that a restart has outlived, and
+        // a question re-published from a durable record would be a claim about a screen nobody has
+        // looked at since. The WORD survives, which is what tells a reader the run wants an answer.
+        Some("blocked") => OutcomeState::Blocked(None),
         Some("exhausted") => OutcomeState::Exhausted(match ceiling {
             Some(word) if word == Ceiling::Cost.wire_str() => Ceiling::Cost,
             Some(word) if word == Ceiling::Duration.wire_str() => Ceiling::Duration,
@@ -1070,6 +1121,12 @@ fn outcome_to_json(outcome: &Outcome) -> Value {
     // remedies.
     if let Some(ceiling) = ceiling {
         answer[RUN_CEILING_KEY] = json!(ceiling);
+    }
+    // AND WHAT THE PEER IS ASKING, present only when there is a question to publish — the same
+    // presence-is-the-claim rule. A `blocked` run with no `asking` beside it is one whose peer
+    // stopped on something this host could not read, which is a different remedy: a person.
+    if let Some(asking) = outcome_question(outcome) {
+        answer[RUN_ASKING_KEY] = asking;
     }
     // AND WHAT BECAME OF THE WORK, present only for a run that was cut short — see
     // `RUN_STOPPED_KEY`. The SENTENCE and not the variant, for the reason `failure` above is one.
