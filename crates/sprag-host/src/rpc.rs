@@ -2760,6 +2760,102 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **`shows_prompt` DOES SOMETHING WHEN A CALLER SENDS IT** — the half a grammar cannot
+    /// assert, and the debt this round's own author created.
+    ///
+    /// The argument was declared, parsed and described at three surfaces, and the two derived
+    /// argument ratchets drove it — for its TYPE and for being declinable as `null`. **Neither of
+    /// them asks whether the daemon behaves differently**, which is R331's rule one door over: a
+    /// unit test on a row is not a test that the surface offers it, and an argument the parser
+    /// reads into a field nothing acts on is exactly the shape this workspace keeps finding.
+    ///
+    /// One pane, one script, two runs, and the argument is the only difference. The peer takes its
+    /// terminal raw with echo off — an interactive agent's shape — discards the first four bytes it
+    /// is given, and paints everything after them:
+    ///
+    /// * WITHOUT the key: one injection carries `ping` and its Enter, the peer eats the prompt, and
+    ///   the word never reaches the pane at all.
+    /// * WITH it: the swallowed injection is noticed and re-sent, so the peer ends up holding the
+    ///   question — over the wire, through the parser, with nothing in this test reaching into the
+    ///   plugin.
+    ///
+    /// ⚠ `eof: false` because `Ctrl-D` is end-of-input only in CANONICAL mode and this peer is raw;
+    /// the turn therefore ends on its own clock, and what is read here is what the PEER WAS GIVEN.
+    #[test]
+    fn an_agent_run_that_says_its_peer_shows_the_prompt_re_sends_a_swallowed_one() {
+        /// The pane's text once a run with `shows_prompt` = `asked` is over.
+        fn pane_after(asked: bool) -> String {
+            let state = host_with(
+                "stty raw -echo; printf 'UP\\r\\n'; \
+                 dd bs=1 count=4 of=/dev/null 2>/dev/null; exec cat",
+                40,
+                8,
+            );
+            // ⚠ THE PEER IS UP BEFORE THE RUN STARTS, and the run therefore carries no
+            // `ready_when`. A barrier inside the run spends the RUN's clock on a loaded box's
+            // process startup, which is a red about the machine; and `prints` asks for output
+            // AFTER it begins looking, so it would wait for a second announcement that never
+            // comes. One wait, on the observable fact, out here.
+            let text_of_pane0 = || {
+                serve_one(
+                    &state,
+                    r#"{"jsonrpc":"2.0","id":9,"method":"scene/query","params":{"path":"/pane_0/sprag_input/external/full_text"}}"#,
+                )["result"]
+                    .as_str()
+                    .expect("the pane answers its text")
+                    .to_owned()
+            };
+            let up = Instant::now();
+            while !text_of_pane0().contains("UP") {
+                assert!(
+                    up.elapsed() < Duration::from_secs(30),
+                    "the peer never came up"
+                );
+                sleep(Duration::from_millis(20));
+            }
+
+            let request = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "scene/invoke",
+                "params": {
+                    "path": "/sprag_plugins/external/run",
+                    "args": {
+                        "plugin": "agent",
+                        "pane": 0,
+                        "prompt": "ping",
+                        "eof": false,
+                        "shows_prompt": asked,
+                        "timeout_ms": 400,
+                    }
+                }
+            })
+            .to_string();
+            let started = serve_one(&state, &request);
+            assert_eq!(started["result"].as_i64(), Some(0), "run id: {started}");
+            assert!(
+                wait_for_run0_state(&state).is_some(),
+                "the run never reached done",
+            );
+            text_of_pane0()
+        }
+
+        // THE CONTROL. Without the key the daemon writes once, and the peer's swallow is final.
+        let written = pane_after(false);
+        assert!(
+            !written.contains("ping"),
+            "the control must really lose the prompt, or the subject below proves nothing about \
+             the argument: {written:?}",
+        );
+
+        // THE SUBJECT. The same call plus one boolean, and the question arrives.
+        let delivered = pane_after(true);
+        assert!(
+            delivered.contains("ping"),
+            "a caller who says their peer shows the prompt must get a DELIVERY — the argument is \
+             read into a field, and this is the only thing that says the field is acted on: \
+             {delivered:?}",
+        );
+    }
+
     #[test]
     fn runs_a_dialogue_plugin_to_done_with_a_transcript() {
         // Two count-fake endpoints: each replies with the newline-count of its
