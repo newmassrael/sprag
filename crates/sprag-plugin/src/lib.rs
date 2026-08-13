@@ -50,6 +50,8 @@ pub mod deliver;
 pub mod dialogue;
 pub mod driver;
 pub mod orchestrator;
+#[cfg(test)]
+pub mod outer;
 pub mod pipe;
 pub mod plugin;
 pub mod readiness;

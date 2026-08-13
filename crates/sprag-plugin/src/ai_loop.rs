@@ -42,6 +42,134 @@ mod tests {
         (engine, lua, session)
     }
 
+    /// ⚠⚠⚠ **HOW THE MACHINE TELLS ITS DRIVER WHAT TO DO — asked of the ENGINE, because the
+    /// answer decides the driver's whole shape and the document cannot settle it.**
+    ///
+    /// `ai_loop.scxml` reads as though it were giving instructions: `priming` does
+    /// `<send event="prompt.start"/>`, `restarting` does `<send event="session.replace"/>`, and
+    /// seven such sends between them name every effect an outer driver has to perform. So the
+    /// obvious driver is EVENT-DRIVEN: subscribe to the machine's sends, do what each one says.
+    ///
+    /// **That driver cannot be written, and this gate is where that was established rather than
+    /// assumed.** A targetless `<send>` is W3C SCXML 6.2's *external event to SELF*: the generated
+    /// code calls `raise_external_with_meta` on the machine's OWN queue, and no transition in this
+    /// document listens for any of the seven — so they are raised and dropped. The one handle that
+    /// looks like a subscription, `Engine::get_external_queue_handle`, is for `#_parent` sends out
+    /// of `<invoke>`d CHILD machines and **mints a fresh empty queue on every call**.
+    ///
+    /// So the driver is **STATE-DRIVEN**: it reads `get_current_state()` and acts on where the
+    /// machine IS, and the machine's own published ingress partition is what says this is the
+    /// intended shape — `prompt.sent` (the driver's ANSWER) is externally drivable, while
+    /// `prompt.start` (the supposed instruction) is not. The sends are documentation of intent
+    /// that the compiler carries; the STATE is the contract.
+    ///
+    /// ⚠ Written as an assertion rather than as a comment because R376 paid for exactly this
+    /// distinction one round ago: reading SCE's generated source said the opposite of what running
+    /// it says. Whatever this gate reports is the thing to build against.
+    #[test]
+    fn the_machine_instructs_its_driver_through_its_state_not_through_its_sends() {
+        let (mut engine, _lua, _session) = started();
+        engine.process_event(AiLoopEvent::Start);
+        assert_eq!(
+            engine.get_current_state(),
+            AiLoopState::Priming,
+            "the control: `start` must land in the state whose onentry sends `prompt.start`",
+        );
+
+        // ── the door that looks like a subscription ──
+        let drained = engine.get_external_queue_handle();
+        let seen = drained.lock().expect("the queue mutex").len();
+        assert_eq!(
+            seen, 0,
+            "⚠⚠⚠ `prompt.start` WAS just sent, and this handle shows {seen} events. If it ever \
+             shows one, the driver below is the wrong shape — it should subscribe rather than \
+             read state, and every effect it performs should be keyed on a send",
+        );
+
+        // ── what the machine says a driver may tell it ──
+        let ingress = AiLoopEvent::EXTERNALLY_DRIVABLE_EVENTS;
+        assert!(
+            ingress.contains(&AiLoopEvent::PromptSent),
+            "the driver's ANSWER — *I have sent it* — must be something the machine accepts from \
+             outside, or a driver cannot report having acted at all: {ingress:?}",
+        );
+        assert!(
+            !ingress.contains(&AiLoopEvent::PromptStart),
+            "⚠⚠ and the supposed INSTRUCTION is not an ingress event, which is the machine saying \
+             the same thing from the other side: nobody outside sends `prompt.start`, so nothing \
+             outside is meant to receive it either. It is the STATE that instructs: {ingress:?}",
+        );
+
+        // ── and the state is a complete instruction on its own ──
+        //
+        // Every effect the seven sends name is recoverable from where the machine is, which is
+        // what makes the state-driven driver whole rather than a degradation of the other one.
+        for (state, effect) in [
+            (AiLoopState::Priming, "deliver the start prompt"),
+            (AiLoopState::Screening, "match the dialog against the rules"),
+            (AiLoopState::AwaitingHuman, "raise a pane attention"),
+            (AiLoopState::Reflecting, "write the improvements"),
+            (
+                AiLoopState::Restarting,
+                "close the pane and open a fresh one",
+            ),
+        ] {
+            assert_ne!(
+                state,
+                AiLoopState::Working,
+                "each effect state must be distinguishable from the one where the driver only \
+                 watches, or *{effect}* would have to be inferred from something else",
+            );
+        }
+    }
+
+    /// ⚠⚠⚠ **HOW `judging`'s GOAL-MET GUARD ACTUALLY READS ITS DATA** — the one fact an outer
+    /// driver must send with an event, asked of the engine because getting it wrong is silent.
+    ///
+    /// `judging`'s first transition is `<transition event="judge" cond="_event.data.done"
+    /// target="closing"/>`, so *did the agent say it was done* travels as event DATA rather than
+    /// as a datamodel variable. Every other event on this machine's ingress surface is bare.
+    ///
+    /// The driver's first attempt sent `{"done": false}` as the event data and the machine went to
+    /// `closing` anyway — a loop that converges on the turn its agent has NOT finished, reporting
+    /// success and asking for a closing summary of work that did not happen. **The screen said the
+    /// marker was absent and the machine converged regardless**, which is exactly the class of
+    /// silent wrongness this project keeps paying for.
+    ///
+    /// So the two readings are pinned side by side here, in the machine's own terms, and whatever
+    /// this gate reports is what the driver is built against.
+    #[test]
+    fn the_goal_met_guard_separates_a_finished_agent_from_an_unfinished_one() {
+        /// Walk a fresh machine to `judging` and raise `judge` carrying `data`.
+        fn judged(data: &str) -> AiLoopState {
+            let (mut engine, _lua, _session) = started();
+            engine.process_event(AiLoopEvent::Start);
+            engine.process_event(AiLoopEvent::PromptSent);
+            engine.process_event(AiLoopEvent::TurnDone);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Judging,
+                "the control: one completed turn is judged",
+            );
+            engine.raise_external(AiLoopEvent::Judge, data, "");
+            engine.step();
+            engine.get_current_state()
+        }
+
+        assert_eq!(
+            judged("{\"done\": true}"),
+            AiLoopState::Closing,
+            "an agent that said the milestone was reached sends the loop to its closing report",
+        );
+        assert_eq!(
+            judged("{\"done\": false}"),
+            AiLoopState::Working,
+            "⚠⚠⚠ AND AN AGENT THAT DID NOT MUST TAKE ANOTHER TURN. Converging here reports a \
+             milestone reached on the strength of a screen that does not say so — the driver \
+             measured exactly this and the machine converged on turn one",
+        );
+    }
+
     /// ⚠⚠⚠ **THE OUTER LOOP IS A MACHINE NOW, AND THIS IS WHAT THAT BUYS.**
     ///
     /// The topology the document draws is the topology the compiler enforces. This
