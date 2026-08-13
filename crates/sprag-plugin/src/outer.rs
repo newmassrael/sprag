@@ -25,7 +25,7 @@
 //! `prompt.sent` (the driver's ANSWER) is externally drivable and `prompt.start` (the supposed
 //! instruction) is not. **Nobody outside sends it, so nobody outside is meant to receive it.**
 //!
-//! # ⚠⚠ Which leaves ONE thing the state cannot say, and it is why [`Owed`] exists
+//! # ⚠⚠ Which leaves ONE thing the state cannot say, and it is why `Owed` exists
 //!
 //! Four different transitions arrive at `working`, and they do not agree about whether a prompt
 //! goes with them: `judging --judge-->`, `awaiting_human --resume-->` and
@@ -48,6 +48,24 @@
 //! day a mouth constructs an [`OuterLoop`] in the daemon, that decision has to be retaken — and
 //! this is the constructor that will force whoever does it to notice.
 //!
+//! # ⚠⚠ Why this module COMPILES, where R378 left it `#[cfg(test)]`
+//!
+//! It was gated to tests so the daemon would not link mlua. That reason does not hold, and reading
+//! the paragraph above is what says so: the engine is a PARAMETER, so nothing here names a concrete
+//! [`IScriptEngine`] and nothing here pulls `sce-rust-lua` in. The gate was buying a guarantee the
+//! signature already gave.
+//!
+//! What it COST is what made the difference worth undoing. The one real supervisor in this
+//! workspace — `sprag-detect` behind the daemon's per-pane tracker, hysteresis, settle window and
+//! all — lives in `sprag-host`, which depends on this crate and could therefore not see a driver
+//! compiled only for this crate's own tests. So every measurement of the outer loop had to invent
+//! its own supervisor out of a fixture, **which is exactly the thing debt 64c says has never been
+//! measured**. A module private to its own tests cannot be driven by the crate that owns the
+//! evidence.
+//!
+//! ⚠ The other two decisions R378 named are untouched and still owed: nothing in the daemon
+//! CONSTRUCTS one of these, and no surface starts a loop.
+//!
 //! [`ai_loop.scxml`]: ../../ai_loop.scxml
 //! [`IScriptEngine`]: sce_rust_runtime::IScriptEngine
 
@@ -62,7 +80,14 @@ use crate::completion::{Completion, DoneWhen, Over, Turn};
 use crate::deliver::{Delivered, Delivery, deliver};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::RunContext;
-use crate::sm::ai_loop::{AiLoopEvent, AiLoopPolicy, AiLoopState};
+use crate::sm::ai_loop::AiLoopPolicy;
+
+/// The machine's own vocabulary, re-exported because [`Pumped`] is made of it.
+///
+/// ⚠ `sm` is `pub(crate)` — generated code, and not a module anyone outside should reach into — so
+/// without this a caller could receive a [`Pumped::Moved`] and have no way to NAME what it holds.
+/// A public answer a consumer cannot spell is not a public answer.
+pub use crate::sm::ai_loop::{AiLoopEvent, AiLoopState};
 
 /// How much of a long prompt has to be read back off the pane before it counts as delivered.
 ///
@@ -234,6 +259,18 @@ pub enum Pumped {
     /// registered debt with named prerequisites, and a run that silently spun in one of them would
     /// report the same thing as a run that never got there.
     Unbuilt(AiLoopState),
+    /// **THE PANE IS NOT THE LOOP'S TO TYPE INTO YET**, and why — see
+    /// `OuterLoop::start_ready`.
+    ///
+    /// Only ever answered from `idle`, before a byte has been sent: a pane that is showing somebody
+    /// a question the loop did not provoke, or that a person is typing in. Both are states a pump
+    /// later may resolve, which is why this is not an error — a pane that never came up at all is,
+    /// and it is the barrier's own [`PaneError::NeverReady`].
+    ///
+    /// ⚠ Advisory, exactly as [`Unbuilt`](Self::Unbuilt) is: a caller that ignores it pumps again.
+    /// What it must not do is what this driver did before R379 measured it, which is type the first
+    /// prompt into a pane whose agent had not started.
+    NotReady(Reached),
     /// The loop reached one of the document's five final states.
     Ended(AiLoopState),
 }
@@ -270,6 +307,13 @@ pub struct OuterLoop {
     shows_the_prompt: bool,
     /// This turn's evaluator, armed before the prompt goes in.
     done: Completion,
+    /// **WHAT THE PANE HELD BEFORE THIS TURN'S PROMPT WENT IN** — [`said_done`](Self::said_done)'s
+    /// arming, and [`Completion::begin`]'s discipline applied to TEXT rather than to a supervisor's
+    /// verdict.
+    ///
+    /// Marked at the same moment the contract is, for the same reason: a marker that was on the
+    /// screen before this turn started is not this turn's answer.
+    judged: crate::access::RowTrail,
 }
 
 impl OuterLoop {
@@ -277,7 +321,7 @@ impl OuterLoop {
     /// agent's turns and holding the pane to `ready_when` before typing anything.
     ///
     /// [`None`] when the machine's datamodel does not carry the four authored strings — see
-    /// [`Authored::read`].
+    /// `Authored::read`.
     ///
     /// ⚠ The engine is the CALLER's — see the module doc. Constructing one in the daemon is the
     /// decision that makes `sce-rust-lua` a real dependency, and it has not been taken.
@@ -295,6 +339,7 @@ impl OuterLoop {
         let authored = Authored::read(&script, &session)?;
         Some(Self {
             done: Completion::new(turn.when()),
+            judged: crate::access::RowTrail::default(),
             // ⚠ NO CONSENTS AND NOBODY WATCHING, and both are the machine's job rather than the
             // barrier's. `screening` is where this document answers a dialog — from the person's
             // standing rules, as a state a reader can see happened — and `awaiting_human` is where
@@ -325,7 +370,7 @@ impl OuterLoop {
 
     /// How many turns the machine counts having taken — its own number, not one kept out here.
     ///
-    /// ⚠ Read from the interpreter for [`Authored::read`]'s reason: SCE emits no accessor for a
+    /// ⚠ Read from the interpreter for `Authored::read`'s reason: SCE emits no accessor for a
     /// lowered scalar `<data>`. A caller that kept its own tally would be a second authority on
     /// the one fact the document's budget guards compare against.
     #[must_use]
@@ -338,7 +383,7 @@ impl OuterLoop {
 
     /// **ONE PASS**: perform what the machine's current state asks for, then tell it what happened.
     ///
-    /// The whole driver is this function and the two tables it consults — [`Owed`] for what a
+    /// The whole driver is this function and the two tables it consults — `Owed` for what a
     /// transition says, and the match below for what a state asks.
     pub fn pump(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Pumped, PaneError> {
         let from = self.state();
@@ -346,9 +391,29 @@ impl OuterLoop {
             return Ok(Pumped::Ended(from));
         }
         let raised = match from {
-            // Nothing has happened yet. Starting the loop is the caller's act, and it is the one
-            // event with no pane behind it.
-            AiLoopState::Idle => AiLoopEvent::Start,
+            // Nothing has happened yet. Starting the loop is the caller's act — but the transition
+            // it causes DELIVERS THE START PROMPT, so the pane has to be ready first.
+            //
+            // ⚠⚠⚠ IT WAS NOT, AND R379 MEASURED WHAT THAT COSTS AGAINST A LIVE AGENT. This driver
+            // built a `Readiness` in `new` and consulted it only in `watch`, which runs in
+            // `working` — i.e. AFTER the start prompt had already gone in. The loop therefore typed
+            // its first prompt into a pane whose agent had existed for ten milliseconds: the
+            // pseudoterminal's own line discipline echoed the text, `deliver` read that echo back
+            // and called the delivery confirmed, Enter went to a program that was still booting,
+            // and the run then sat in `working` for as long as anyone let it. **Measured: the whole
+            // walk was `Idle -> Priming -> Working` in 0.01s and then `Working --Null--> Working`
+            // forever.**
+            //
+            // It was invisible to every stand-in because the fixtures wait for a readiness marker
+            // themselves before the run begins — `testing::started`, whose own doc says it takes
+            // startup out of the run's budget. The harness was clearing the barrier the product
+            // was not.
+            //
+            // ⚠ `Readiness` LATCHES, so this costs one look per pump after the first.
+            AiLoopState::Idle => match self.start_ready(panes, run)? {
+                None => AiLoopEvent::Start,
+                Some(seen) => return Ok(Pumped::NotReady(seen)),
+            },
 
             // A session exists and has not been prompted. The prompt itself was already delivered
             // by whichever transition brought us here — see `advance`.
@@ -394,6 +459,46 @@ impl OuterLoop {
             to,
             spent,
         })
+    }
+
+    /// **THE PANE MUST BE READY BEFORE THE FIRST PROMPT** — see the `Idle` arm of [`pump`](Self::pump).
+    ///
+    /// # ⚠⚠ Why every answer but `Yes` ends the run here, where `watch` turns three of them into
+    /// events
+    ///
+    /// `watch` is asking about a pane the loop is already driving, and the machine has a
+    /// transition for each thing that can happen to one: a person took it, it stopped to ask, the
+    /// run ended. From `idle` the document has exactly ONE edge, `start`, so there is nowhere for
+    /// any of those answers to go — and each of them says the pane is not the loop's to type into:
+    ///
+    /// * a pane already ASKING is showing somebody a question the loop did not provoke (a fresh
+    ///   agent's *"do you trust this folder?"* is exactly this, measured), and the run has said
+    ///   nothing it could be an answer to;
+    /// * a pane a PERSON is typing in is theirs;
+    /// * and a pane that never came up is the barrier's own [`PaneError::NeverReady`], which says
+    ///   which of the four questions was asked and what the pane was doing instead.
+    ///
+    /// Not starting is the honest answer to both, and it is the direction that does not type into
+    /// somebody else's screen. A pane that simply never came up is already the barrier's own
+    /// [`PaneError::NeverReady`], which says which of the four questions was asked and what the
+    /// pane was doing instead — this function does not re-spell that.
+    ///
+    /// [`None`] means *go ahead*.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError`] when the pane cannot be read, when the barrier's own bound expires, or when
+    /// the run ended underneath.
+    fn start_ready(
+        &mut self,
+        panes: &dyn PaneAccess,
+        run: &RunContext,
+    ) -> Result<Option<Reached>, PaneError> {
+        match self.ready.reached(panes, self.pane, run)? {
+            Reached::Yes => Ok(None),
+            Reached::RunEnded(why) => Err(why),
+            other => Ok(Some(other)),
+        }
     }
 
     /// **WATCH THE INNER AGENT'S TURN, AND SAY HOW IT ENDED** — the translation debt 74 named.
@@ -499,6 +604,11 @@ impl OuterLoop {
     ) -> Result<u64, PaneError> {
         self.done = Completion::new(self.turn.when());
         self.done.begin(panes, self.pane);
+        // ⚠⚠ THE SAME MOMENT, AND FOR THE SAME REASON — see `judged` and `said_done`. Marked
+        // BEFORE the injection so the pane's echo of this prompt counts as fresh output: it has to
+        // be REJECTED on what it says rather than hidden by where the baseline was taken, or the
+        // rule would depend on a race between the terminal and this line.
+        self.judged = crate::access::RowTrail::mark(panes, self.pane);
         if !self.shows_the_prompt {
             // The WRITE, not the delivery — see [`shows_the_prompt`](Self::shows_the_prompt). A
             // peer that paints nothing until it is submitted cannot be confirmed before the submit.
@@ -531,16 +641,62 @@ impl OuterLoop {
         Ok(delivered.written().bytes())
     }
 
-    /// Whether the pane is showing what the document calls done — the one fact `judging` needs
-    /// from out here.
+    /// Whether **THE AGENT SAID, IN THIS TURN,** what the document calls done — the one fact
+    /// `judging` needs from out here.
     ///
-    /// ⚠ Read off the COLLAPSED screen, so a marker the agent wrapped across rows is still found.
+    /// # ⚠⚠⚠ Two ways this can be answered by the loop's own words, and both were live
+    ///
+    /// It used to be `pane_collapsed().contains(marker)`, and R379 made that wrong twice over in
+    /// one change. Once the document started ASKING the agent for the marker — which it must, or
+    /// nothing ever says it — the marker is in the PROMPT, the agent's terminal paints the prompt,
+    /// and a whole-screen `contains` reads the loop's own instruction as the agent's answer. The
+    /// driver's own gate said so in its own words: `Judging -> Judge -> Closing` on the FIRST
+    /// judge, `turns() == 1` where the peer had been prompted once and had answered nothing.
+    ///
+    /// So two independent things are required, and each closes a hole the other cannot:
+    ///
+    /// * **FRESH** — the row changed since this turn's prompt was delivered (`Self::judged`).
+    ///   What this closes is a marker left on the screen by an EARLIER turn, or by whoever had the
+    ///   pane before this run: `Completion::begin`'s discipline, applied to text. It does NOT
+    ///   close the echo, because the echo is fresh output too.
+    /// * **STANDING ALONE** — the marker is the whole row, save for decoration. What this closes is
+    ///   the echo, and it is not a trick: it is exactly what `done_instruction` ASKS FOR (*"make
+    ///   the last line of your reply exactly …"*), so the check enforces the contract the prompt
+    ///   states rather than a second, weaker one. It does not close a stale marker, which stands
+    ///   alone perfectly well.
+    ///
+    /// ⚠ The alternative considered first was this crate's existing echo rule —
+    /// [`Orchestrator`](crate::orchestrator)'s *"a changed row is the ECHO when what it holds is a
+    /// piece of what was just typed"*. It is the right rule for the peers that plugin drives and
+    /// the wrong one here: an agent CLI decorates its echo (`❯ ` before it, a box around it), so
+    /// the typed text does not `contains` the row it produced, and the discount silently stops
+    /// discounting. Reused where it fits; not reused where the fixture would have been the only
+    /// thing it worked against.
+    ///
+    /// ⚠ **IT FAILS SAFE.** A marker the agent decorated past recognising costs one more turn; the
+    /// direction this rule refuses to fail in is converging a run that proved nothing, which is
+    /// this crate's most expensive failure class and is what it did before.
     #[must_use]
     pub fn said_done(&self, panes: &dyn PaneAccess) -> bool {
-        panes
-            .pane_collapsed(self.pane)
-            .is_some_and(|seen| seen.contains(&self.authored.done_marker))
+        self.judged
+            .fresh(panes, self.pane)
+            .iter()
+            .any(|row| stands_alone(row, &self.authored.done_marker))
     }
+}
+
+/// Whether `row` is `marker` and nothing else a reader would call words.
+///
+/// Leading decoration is allowed and anything alphanumeric is not: an agent prints its own replies
+/// behind a bullet (`● MILESTONE REACHED`), and the row that has to be rejected is the one where
+/// the marker sits at the end of a SENTENCE — the loop's own instruction, read back. See
+/// [`OuterLoop::said_done`].
+fn stands_alone(row: &str, marker: &str) -> bool {
+    !marker.is_empty()
+        && row
+            .trim()
+            .strip_suffix(marker)
+            .is_some_and(|before| !before.chars().any(char::is_alphanumeric))
 }
 
 #[cfg(test)]
@@ -573,6 +729,11 @@ mod tests {
     /// INSIDE an authored prompt does to a peer that submits on Enter is a live question about
     /// delivery, and this fixture is not the place to answer it.
     ///
+    /// ⚠⚠ **AND IT KEYS ON `exactly:` BECAUSE THE DOCUMENT'S LAST CLAUSE MOVED THERE** (R379): the
+    /// working prompts now end with `done_instruction`, so a peer keying on the OLD last clause
+    /// (*"Report what you did"*) would count a turn one clause early and answer into the middle of
+    /// a delivery.
+    ///
     /// ⚠⚠⚠ **IT PAINTS WHAT IT READS, AND THE SECOND RUN OF THIS GATE IS WHY.** With echo off and
     /// nothing painted, [`deliver`] can never confirm the prompt arrived, so it RETYPES it — and a
     /// peer counting prompts saw two where the driver sent one, converging a turn early. A real
@@ -585,7 +746,7 @@ mod tests {
              while read line; do \
                printf '%s\\n' \"$line\"; \
                case \"$line\" in \
-                 *eport*|*Summarise*) ;; \
+                 *exactly:*|*Summarise*) ;; \
                  *) continue;; \
                esac; \
                n=$((n+1)); \
@@ -657,6 +818,263 @@ mod tests {
             })
         };
         WorkspacePaneAccess::new(Arc::clone(workspace)).with_agent_state(Some(source))
+    }
+
+    /// ⚠⚠⚠ **THE LOOP STOPS ON A WORD, AND SOMETHING HAS TO ASK THE AGENT FOR IT.**
+    ///
+    /// `judging`'s first guard is `_event.data.done`, which the driver answers by looking for
+    /// [`Authored::done_marker`] on the pane. Everything downstream of that — `closing`, the report,
+    /// `converged` — happens only if the agent says it.
+    ///
+    /// **Nothing in the shipped document ever told the agent to.** `start_prompt` and `turn_prompt`
+    /// compose the north star, the milestone, the reference and *"report what you did"*; the marker
+    /// appears in the datamodel and in the driver's `contains`, and in no sentence any agent reads.
+    /// So the only ways a live run could converge were coincidence and R358's rule about a fixture
+    /// that manufactures the answer it is testing for: the stand-in below says `MILESTONE REACHED`
+    /// because it was written to, and it is the ONLY reason the loop gate above ever finished.
+    ///
+    /// ⚠ A run against a real agent therefore could not converge at all. It would take all forty of
+    /// the document's turns — real minutes of a real agent each — and end `exhausted`, which is the
+    /// word for *the budget ran out* rather than for *nobody ever asked*.
+    ///
+    /// # ⚠⚠ Why the claim is `contains`, and made of the document's OWN marker
+    ///
+    /// Not a fixed sentence: an author is free to write the instruction however they like, in any
+    /// language, and this is the one thing that must survive their editing. Reading the marker out
+    /// of the datamodel and asking whether the prompt names it keeps ONE definition — change the
+    /// marker and the prompt that carries it is the thing that has to change with it.
+    #[test]
+    fn the_document_asks_the_agent_for_the_word_the_loop_stops_on() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let loops = OuterLoop::new(
+            lua,
+            pane,
+            None,
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_secs(1)))
+                .expect("a non-zero bound"),
+            false,
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        let authored = loops.authored();
+
+        assert!(
+            !authored.done_marker.is_empty(),
+            "⚠ THE CONTROL: an empty marker makes every assertion below trivially true, and makes \
+             `said_done`'s `contains` answer yes to every screen ever painted: {authored:?}",
+        );
+        // ⚠ THE PROMPTS THAT CAN BE THE LAST THING THE AGENT SEES BEFORE `judging` READS THE
+        // SCREEN, and only those. `end_prompt` is the closing report, asked once the loop has
+        // already decided it is done, so it owes nothing here.
+        for (which, prompt) in [("start", &authored.start), ("turn", &authored.turn)] {
+            assert!(
+                prompt.contains(&authored.done_marker),
+                "⚠⚠⚠ the `{which}_prompt` never names {:?}, so an agent reading it is never told \
+                 what to say when it is finished — and `judging` waits for exactly that word. A \
+                 live run cannot converge; it can only spend the whole `max_turns` budget and end \
+                 `exhausted`. The prompt was: {prompt:?}",
+                authored.done_marker,
+            );
+        }
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **THE FIRST PROMPT WAITS FOR THE PANE** — the defect R379 found by driving a live agent,
+    /// reproduced here where it costs no agent turns.
+    ///
+    /// The driver built a barrier in `new` and consulted it only in `watch`, which runs once the
+    /// machine is in `working` — **after** the transition that delivers the start prompt. So the
+    /// loop typed into whatever was in the pane at the instant it was asked to start.
+    ///
+    /// # ⚠⚠ Why no stand-in had ever shown it, and what makes this one able to
+    ///
+    /// Every fixture in this module calls [`started`] before the run, which is right — it takes
+    /// process startup out of the measurement — and it means **the HARNESS was clearing the barrier
+    /// the PRODUCT was not.** This peer is deliberately slow to come up and the gate does NOT
+    /// pre-wait for it, so the barrier is the only thing that can.
+    ///
+    /// ⚠ The claim is a DISTANCE, not an ordering: the peer cannot announce itself for a second, so
+    /// a driver that skips the barrier returns in milliseconds and one that honours it cannot. A
+    /// gate asserting only *"it was delivered eventually"* would pass either way.
+    #[test]
+    fn the_loop_does_not_type_its_first_prompt_before_the_pane_is_ready() {
+        /// How long the peer takes to come up. Far outside the poll interval, far inside the
+        /// gate's own patience.
+        const SLOW: Duration = Duration::from_millis(1_000);
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("sleep 1; stty -echo; printf 'PEER-READY\\n'; exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        // ⚠ NO `started` HERE. That is the whole point — see the doc above.
+
+        let mut loops = OuterLoop::new(
+            lua,
+            pane,
+            Some(ReadyWhen::Prints("PEER-READY".to_string())),
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_millis(200)))
+                .expect("a non-zero bound"),
+            false,
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+
+        let began = std::time::Instant::now();
+        let pumped = loops
+            .pump(&access, &RunContext::uncancellable())
+            .expect("the pane must stay readable");
+        let waited = began.elapsed();
+
+        assert!(
+            matches!(
+                pumped,
+                Pumped::Moved {
+                    to: AiLoopState::Priming,
+                    ..
+                },
+            ),
+            "the loop starts by priming: {pumped:?}",
+        );
+        assert!(
+            waited >= SLOW - Duration::from_millis(100),
+            "⚠⚠⚠ the start prompt went in after {waited:?}, and this peer cannot read a byte for \
+             {SLOW:?}. A driver that does not clear its own barrier types into a program that is \
+             still starting — measured against a live agent as a whole run that delivered in 10 ms \
+             and then sat in `working` until somebody stopped it.",
+        );
+        assert!(
+            access
+                .pane_collapsed(pane)
+                .is_some_and(|seen| seen.contains("PEER-READY")),
+            "⚠ THE CONTROL: the peer really did announce itself, so the wait above was the barrier \
+             doing its job rather than the fixture being slow for some other reason",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **THE LOOP MUST NOT CONVERGE ON ITS OWN INSTRUCTION, NOR ON AN OLD TURN'S MARKER.**
+    ///
+    /// The two halves of [`OuterLoop::said_done`]'s rule, each driven by the case the OTHER half
+    /// cannot answer — which is what stops one of them being quietly deleted later:
+    ///
+    /// * a pane showing the loop's own prompt, marker and all, is **not** an agent that finished;
+    /// * a pane showing a marker from BEFORE this turn is not this turn's answer either;
+    /// * and a pane where the agent really did end its reply with the marker **is**.
+    ///
+    /// ⚠ Driven through `say`, not by hand, because arming is the whole mechanism: the baseline
+    /// and the delivery have to happen in that order, and a gate that marked its own baseline would
+    /// be testing its own arrangement.
+    #[test]
+    fn a_marker_the_loop_typed_or_that_predates_the_turn_is_not_the_agent_saying_it() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        // A peer that PAINTS BACK EVERY LINE IT READS and says nothing of its own — the echo, with
+        // no answer behind it. Exactly what an agent's composer does to a prompt.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(
+                "stty -echo; printf 'PARROT-READY\\n'; while read line; do \
+                 printf '%s\\n' \"$line\"; done",
+            );
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 80, 24)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        started(&access, pane, "PARROT-READY");
+
+        let mut loops = OuterLoop::new(
+            lua,
+            pane,
+            None,
+            Turn::lasting(INNER_SESSION_ENDS, Some(Duration::from_millis(200)))
+                .expect("a non-zero bound"),
+            false,
+        )
+        .expect("the document's datamodel must carry its four authored strings");
+        let marker = loops.authored().done_marker.clone();
+        let run = RunContext::uncancellable();
+
+        // ── THE ECHO ── the whole start prompt, which now NAMES the marker, painted straight back.
+        loops
+            .say(&access, &run, &loops.authored().start.clone())
+            .expect("the parrot takes the prompt");
+        started(&access, pane, &marker);
+        assert!(
+            !loops.said_done(&access),
+            "⚠⚠⚠ the marker on that screen is the LOOP'S OWN INSTRUCTION read back — the peer has \
+             said nothing. A judge satisfied here converges a run in which no agent ever did \
+             anything, which is what this driver did the moment the document started asking for \
+             the marker at all. Screen: {:?}",
+            access.pane_collapsed(pane),
+        );
+
+        // ── THE ANSWER ── the same peer, now ending a reply with the marker and nothing else.
+        // ⚠ The answer is ASSERTED rather than dropped — R378 paid for exactly this `#[must_use]`
+        // one round ago, and a write of nothing would leave the wait below spinning to its deadline
+        // with no clue why.
+        let typed = access
+            .inject(pane, &{
+                let mut keys = crate::access::KeyStroke::text(&marker);
+                keys.push(crate::access::KeyStroke::named("Enter"));
+                keys
+            })
+            .expect("the parrot takes a line");
+        assert!(
+            typed.bytes() > 0,
+            "a marker that reached no pane cannot be read back off one",
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !loops.said_done(&access) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            loops.said_done(&access),
+            "⚠⚠ and a row that IS the marker must be read as one, or the rule above is satisfied \
+             by a judge that never says yes to anything. Screen: {:?}",
+            access.pane_collapsed(pane),
+        );
+
+        // ── THE STALE MARKER ── a NEW turn begins on a screen that already shows it. This is the
+        //    half `stands_alone` cannot answer: that row stands alone perfectly well, and it
+        //    belongs to a turn that is over.
+        loops
+            .say(&access, &run, &loops.authored().turn.clone())
+            .expect("the parrot takes the next prompt");
+        assert!(
+            !loops.said_done(&access),
+            "⚠⚠⚠ that marker was on the screen BEFORE this turn's prompt went in, so it is the \
+             previous turn's answer being counted twice — the arming discipline `Completion::begin` \
+             exists for, applied to text. Screen: {:?}",
+            access.pane_collapsed(pane),
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
     }
 
     /// ⚠⚠⚠ **THE OUTER LOOP DRIVES A REAL PANE — debt 74's driver, end to end.**
@@ -751,6 +1169,14 @@ mod tests {
                     "⚠⚠ this run reached {state:?}, which no driver serves yet — so the \
                      convergence below would be a claim about a path the author did not write. \
                      Walked: {walked:?}",
+                ),
+                // ⚠ The barrier the loop now clears BEFORE its first prompt (R379). This fixture's
+                // peer is up and supervised as `claude` at rest, so `Yes` is the only honest
+                // answer here; anything else means the fixture stopped standing in for a started
+                // agent and the walk below would be about a pane nobody had spoken to.
+                Pumped::NotReady(seen) => panic!(
+                    "the stand-in agent must be ready — it printed its marker before this run \
+                     began. Got {seen:?}, walked: {walked:?}",
                 ),
                 Pumped::Ended(state) => break state,
             }

@@ -86,22 +86,57 @@
     -->
     <data id="model" expr="'claude'"/>
 
+    <!--
+      Termination: the loop converges when the agent says this.
+
+      ⚠⚠⚠ DECLARED BEFORE THE PROMPTS, and that is load-bearing rather than
+      tidy: `<data>` is evaluated in document order, and every working prompt
+      below COMPOSES this string. Move it back down and the prompts initialise
+      against a marker that does not exist yet.
+
+      ⚠⚠⚠ AND THE PROMPTS COMPOSE IT RATHER THAN REPEATING IT. R379 measured
+      what the alternative costs. The marker existed here, `judging` waited for
+      it, the driver looked for it on the screen — and NO PROMPT EVER ASKED THE
+      AGENT FOR IT. Nothing in the loop was wrong except that the one word the
+      whole termination rests on was never said to the only party who could say
+      it back. A run against a real agent could not converge; it could only
+      spend all `max_turns` and report `exhausted`, which is the word for *the
+      budget ran out* and not for *nobody ever asked*. It went unnoticed for
+      eleven rounds because the stand-in agent in the driver's gate was written
+      to say the marker, which is a fixture manufacturing the answer it tests
+      for.
+
+      Composing means an author who edits the marker edits the instruction with
+      it. Retyping the word into each prompt would be three places to keep in
+      step, and the failure of doing that badly is silent.
+    -->
+    <data id="done_marker" expr="'MILESTONE REACHED'"/>
+
+    <!--
+      How the agent is told to end a turn it believes finished the milestone.
+      Authored HERE, beside the marker, because it is prose a person may want
+      in their own language — and because the driver must not be the thing that
+      appends instructions to an authored prompt (that is a second author).
+    -->
+    <data id="done_instruction"
+          expr="'When the milestone is fully reached AND verified, make the last line of your ' +
+                'reply exactly: ' + done_marker"/>
+
     <!-- Sent once, into a freshly opened session. -->
     <data id="start_prompt"
           expr="'North star: ' + north_star + '\n' +
                 'Milestone: ' + milestone + '\n' +
                 'Reference: ' + reference + '\n' +
-                'Report what you did and what is left.'"/>
+                'Report what you did and what is left.' + '\n' +
+                done_instruction"/>
     <!-- Sent on every turn after the first. -->
     <data id="turn_prompt"
           expr="'Continue toward: ' + milestone + '\n' +
-                'Do the next smallest thing that is verifiable, then report.'"/>
+                'Do the next smallest thing that is verifiable, then report.' + '\n' +
+                done_instruction"/>
     <!-- Sent once before the loop reports converged. -->
     <data id="end_prompt"
           expr="'Summarise what changed, what was verified, and what is left open.'"/>
-
-    <!-- Termination: the loop converges when the agent says this. -->
-    <data id="done_marker" expr="'MILESTONE REACHED'"/>
 
     <!--
       Standing instructions for dialogs the person has already decided about.
