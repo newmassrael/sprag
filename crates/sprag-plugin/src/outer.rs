@@ -71,6 +71,17 @@ use crate::sm::ai_loop::{AiLoopEvent, AiLoopPolicy, AiLoopState};
 /// findable. This is the point at which a leading fragment stops being a coincidence.
 const CONFIRM_WHOLE_UP_TO: usize = 40;
 
+/// The contract `DoneWhen` a loop drives its inner session with, named once.
+///
+/// An agent CLI answers and goes on waiting, which is [`DoneWhen::Settles`] exactly — and it is
+/// the arm the outer loop makes load-bearing, where every gate before R377 drove
+/// [`DoneWhen::Exits`] because `Settles` needed a supervisor.
+///
+/// ⚠ ITS ONLY READER IS A TEST, which R355's rule calls a comment rather than a constant. It stays
+/// because the reader it is waiting for is the construction site in the daemon — see the module
+/// doc — and it is registered as owed rather than left to look settled.
+pub const INNER_SESSION_ENDS: DoneWhen = DoneWhen::Settles;
+
 /// **WHAT THE DOCUMENT AUTHORS**, read out of the machine's own datamodel rather than retyped.
 ///
 /// ⚠ Read through the SCRIPT SESSION and not off the policy, and not by choice: SCE lowers every
@@ -141,7 +152,7 @@ impl Owed {
     /// ⚠ EXHAUSTIVE over the machine's whole event vocabulary in that arm on purpose: an edge
     /// added into `working` lands here as a variant that no longer compiles, which is the only
     /// mechanism that stops a driver silently not saying something the author wrote.
-    const fn owed(raised: AiLoopEvent, landed: AiLoopState) -> Self {
+    const fn on(raised: AiLoopEvent, landed: AiLoopState) -> Self {
         match landed {
             AiLoopState::Priming => Self::Start,
             AiLoopState::Closing => Self::End,
@@ -203,6 +214,17 @@ pub enum Pumped {
         raised: AiLoopEvent,
         /// Where it is now.
         to: AiLoopState,
+        /// **HOW MANY BYTES THIS PASS PUT INTO THE PANE** — nought for a pass that only watched.
+        ///
+        /// ⚠⚠ Reported because the alternative is dropping it, and the one thing every bounded run
+        /// in this crate can say is what it spent. The compiler said so first: `inject` answers a
+        /// `#[must_use]` [`Written`](crate::access::Written) and the first draft threw it away —
+        /// R316's rule, which this workspace has paid for at eight call sites before.
+        ///
+        /// ⚠ Nothing CONSUMES it yet: the outer loop has no [`Guardrails`](crate::driver::Guardrails)
+        /// equivalent, which is registered debt. This is the fact a ceiling would be built on, and
+        /// it is carried from the round that could first produce it rather than added later.
+        spent: u64,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -365,8 +387,13 @@ impl OuterLoop {
             | AiLoopState::Cancelled
             | AiLoopState::Blocked) => return Ok(Pumped::Ended(state)),
         };
-        let to = self.advance(panes, run, raised)?;
-        Ok(Pumped::Moved { from, raised, to })
+        let (to, spent) = self.advance(panes, run, raised)?;
+        Ok(Pumped::Moved {
+            from,
+            raised,
+            to,
+            spent,
+        })
     }
 
     /// **WATCH THE INNER AGENT'S TURN, AND SAY HOW IT ENDED** — the translation debt 74 named.
@@ -429,11 +456,11 @@ impl OuterLoop {
         panes: &dyn PaneAccess,
         run: &RunContext,
         raised: AiLoopEvent,
-    ) -> Result<AiLoopState, PaneError> {
+    ) -> Result<(AiLoopState, u64), PaneError> {
         // ⚠ `Null` is W3C SCXML 3.13's eventless sentinel and must never be injected: it is what
         // `watch` answers when nothing happened, and the machine stays put.
         if raised == AiLoopEvent::Null {
-            return Ok(self.state());
+            return Ok((self.state(), 0));
         }
         // ⚠⚠ `judge` IS THE ONE EVENT THAT CARRIES DATA, and `process_event` cannot send any — it
         // is `raise_external(event, "", "")` followed by a macrostep. So the goal-met guard is
@@ -448,14 +475,14 @@ impl OuterLoop {
             self.machine.process_event(raised);
         }
         let landed = self.state();
-        let text = match Owed::owed(raised, landed) {
-            Owed::Nothing => return Ok(landed),
+        let text = match Owed::on(raised, landed) {
+            Owed::Nothing => return Ok((landed, 0)),
             Owed::Start => &self.authored.start,
             Owed::Turn => &self.authored.turn,
             Owed::End => &self.authored.end,
         };
-        self.say(panes, run, &text.clone())?;
-        Ok(landed)
+        let spent = self.say(panes, run, &text.clone())?;
+        Ok((landed, spent))
     }
 
     /// Put `text` in the pane and arm this turn's completion contract.
@@ -469,7 +496,7 @@ impl OuterLoop {
         panes: &dyn PaneAccess,
         run: &RunContext,
         text: &str,
-    ) -> Result<(), PaneError> {
+    ) -> Result<u64, PaneError> {
         self.done = Completion::new(self.turn.when());
         self.done.begin(panes, self.pane);
         if !self.shows_the_prompt {
@@ -477,8 +504,7 @@ impl OuterLoop {
             // peer that paints nothing until it is submitted cannot be confirmed before the submit.
             let mut keys = crate::access::KeyStroke::text(text);
             keys.push(crate::access::KeyStroke::named("Enter"));
-            panes.inject(self.pane, &keys)?;
-            return Ok(());
+            return Ok(panes.inject(self.pane, &keys)?.bytes());
         }
         let delivered = deliver(
             panes,
@@ -502,7 +528,7 @@ impl OuterLoop {
                 written: written.bytes(),
             });
         }
-        Ok(())
+        Ok(delivered.written().bytes())
     }
 
     /// Whether the pane is showing what the document calls done — the one fact `judging` needs
@@ -699,6 +725,7 @@ mod tests {
 
         let run = RunContext::uncancellable();
         let mut walked: Vec<(AiLoopState, AiLoopEvent, AiLoopState)> = Vec::new();
+        let mut spent_total = 0_u64;
         let ended = loop {
             // ⚠ Well above the five passes the authored happy path takes and well below the
             // document's own 40-turn ceiling, so a stall is caught by THIS bound and a run that
@@ -711,7 +738,15 @@ mod tests {
                 .pump(&access, &run)
                 .expect("the pane must stay readable")
             {
-                Pumped::Moved { from, raised, to } => walked.push((from, raised, to)),
+                Pumped::Moved {
+                    from,
+                    raised,
+                    to,
+                    spent,
+                } => {
+                    spent_total += spent;
+                    walked.push((from, raised, to));
+                }
                 Pumped::Unbuilt(state) => panic!(
                     "⚠⚠ this run reached {state:?}, which no driver serves yet — so the \
                      convergence below would be a claim about a path the author did not write. \
@@ -746,13 +781,19 @@ mod tests {
              the pane — a driver that sent one prompt for every state would pass every assertion \
              above. Typed: {typed:?}",
         );
+        // ⚠⚠ AND THE RUN SAYS WHAT IT SPENT. Every bounded run in this crate can, and the outer
+        // loop could not until the compiler objected to the dropped `Written`. The claim is the
+        // RELATION, not a byte count: what reached the pane is what the three authored prompts
+        // weigh, so a driver that silently sent nothing — or sent something else — cannot pass.
+        let authored_weight = (loops.authored().start.len()
+            + loops.authored().turn.len()
+            + loops.authored().end.len()) as u64;
+        assert!(
+            spent_total >= authored_weight,
+            "⚠⚠ the three prompts weigh {authored_weight} bytes and the run reports spending \
+             {spent_total}. A loop whose spend is less than what it typed is not reporting its \
+             own cost, which is the one thing a bounded run always owes. Walked: {walked:?}",
+        );
         access.lifecycle().expect("lifecycle").close(pane);
     }
 }
-
-/// The contract `DoneWhen` a loop drives its inner session with, named once.
-///
-/// An agent CLI answers and goes on waiting, which is [`DoneWhen::Settles`] exactly — and it is
-/// the arm the outer loop makes load-bearing, where every gate before this round drove
-/// [`DoneWhen::Exits`] because `Settles` needed a supervisor.
-pub const INNER_SESSION_ENDS: DoneWhen = DoneWhen::Settles;
