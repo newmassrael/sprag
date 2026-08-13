@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The AI loop: an OUTER machine that drives an INNER agent session.
+
+  The inner session is a pane sprag opened (`open_pane`) running an agent CLI.
+  This machine never talks to that agent; it decides WHEN the driver should
+  prompt it, when to stop, and when the session itself has to be replaced. The
+  driver (sprag-plugin) owns every effect — assembling prompt text, reading the
+  pane, editing files, closing and reopening the pane.
+
+  Why an inner session is REPLACED rather than reconfigured: the things a loop
+  wants to improve about itself — the agent's base context, which MCP servers
+  are loaded, CLAUDE.md, the memory index — are all read when a session starts.
+  A live session cannot be asked to re-read them. So `reflecting` writes the
+  improvements to disk and `restarting` closes the pane and opens a fresh one,
+  which reads them on the way up. That is the whole reason this machine has a
+  restart state instead of a "reconfigure" event.
+
+  The terminal outcomes are the Driver's (`orchestration.scxml`) on purpose: a
+  loop that ends reports the same shapes any plugin run reports, so one reader
+  understands both.
+
+  Where this machine DIFFERS from the Driver is `blocked`, and the difference is
+  the whole reason a person can supervise a run. In the Driver a blocked peer
+  ends the run, because nobody is watching. Here the inner session is a pane on
+  a person's screen: they can read every turn as it happens and type into it
+  directly. So an agent that stops to ASK sends this machine to `awaiting_human`
+  — it stops prompting and waits. If the person answers the dialog, the agent
+  goes back to work and the loop resumes where it was. `blocked` stays as the
+  terminal for the case that actually ends a run: nobody came.
+
+  The loop still never answers a dialog itself. That was never about whether a
+  human is present — it is about whose decision a tool permission is. Waiting is
+  what changes; answering is still not this machine's to do.
+
+  datamodel="ecmascript" (not the `null` its two siblings use) because a loop's
+  prompts and goals ARE its definition: the whole point is that a person edits
+  them. Its siblings hold pure topology and keep their data in Rust beside the
+  engine; here the data is the part being authored, so it lives in the document
+  the author edits.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="ai_loop"
+       datamodel="ecmascript"
+       initial="idle">
+
+  <!--
+    Everything above the line is the template's editable surface. A GUI fills
+    these in; nothing below the line changes per loop.
+  -->
+  <datamodel>
+    <!-- Where this loop is ultimately going. Never rewritten by reflection. -->
+    <data id="north_star" expr="'(edit me) the outcome this loop exists to reach'"/>
+    <!-- The step being worked on now. Reflection may rewrite this. -->
+    <data id="milestone" expr="'(edit me) the next checkpoint on the way there'"/>
+    <!-- Prior art the agent should read before deciding anything. -->
+    <data id="reference" expr="'(edit me) paths, URLs or repos to consult'"/>
+    <!--
+      The agent the driver launches in the inner pane. INTERACTIVE, never
+      `-p`/print mode: sprag reads an agent's state from its TUI — the title's
+      leading glyph separates working from idle, and a blocked agent is
+      recognised by the shape of its dialog. Print mode renders none of that,
+      so a `-p` inner session is one this loop cannot observe and a person
+      cannot answer.
+    -->
+    <data id="model" expr="'claude'"/>
+
+    <!-- Sent once, into a freshly opened session. -->
+    <data id="start_prompt"
+          expr="'North star: ' + north_star + '\n' +
+                'Milestone: ' + milestone + '\n' +
+                'Reference: ' + reference + '\n' +
+                'Report what you did and what is left.'"/>
+    <!-- Sent on every turn after the first. -->
+    <data id="turn_prompt"
+          expr="'Continue toward: ' + milestone + '\n' +
+                'Do the next smallest thing that is verifiable, then report.'"/>
+    <!-- Sent once before the loop reports converged. -->
+    <data id="end_prompt"
+          expr="'Summarise what changed, what was verified, and what is left open.'"/>
+
+    <!-- Termination: the loop converges when the agent says this. -->
+    <data id="done_marker" expr="'MILESTONE REACHED'"/>
+
+    <!--
+      Standing instructions for dialogs the person has already decided about.
+      When the inner agent raises a question, `screening` matches it against
+      these before anybody is woken; a match is answered with the reply written
+      here and the run carries on.
+
+      This is not the loop deciding. It is the loop CARRYING OUT a decision the
+      person made in advance and wrote down — which is why the rules live in the
+      authored half of this document and not in the driver. A rule with no match
+      wakes the person, exactly as before.
+
+      Each rule is `when` (what shape of dialog it claims) and `reply` (the keys
+      and text to send). `keys` is sent first, then `text`.
+    -->
+    <data id="screen_rules"
+          expr="[
+            { when: 'design-decision',
+              keys: 'Escape',
+              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' },
+            { when: 'design-proposal',
+              keys: 'Escape',
+              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' },
+            { when: 'multiple-choice',
+              keys: 'Escape',
+              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' }
+          ]"/>
+
+    <!--
+      ⚠ Tool-permission dialogs are NOT screened by default, and the flag is
+      separate from the rules on purpose.
+
+      Redirecting a design question costs a turn. Approving a permission grants
+      an agent the ability to act — delete files, push, spend money — and a
+      standing "yes" to that is a different kind of promise than a standing
+      "think about it again". Someone who wants it can turn it on knowingly;
+      nobody gets it by writing a rule that happened to match.
+    -->
+    <data id="screen_permissions" expr="false"/>
+
+    <!-- Budgets. `max_turns` bounds the run; `reflect_every` sets how often
+         the loop stops to improve itself. -->
+    <data id="max_turns" expr="40"/>
+    <data id="reflect_every" expr="8"/>
+
+    <!-- ── below the line: loop bookkeeping, not authored ── -->
+    <data id="turns" expr="0"/>
+    <data id="turns_since_reflect" expr="0"/>
+    <!-- How many dialogs a standing instruction answered. Counted so an
+         auto-answered run does not read like a hand-answered one. -->
+    <data id="screened" expr="0"/>
+  </datamodel>
+
+  <state id="idle">
+    <transition event="start" target="priming"/>
+  </state>
+
+  <!--
+    A session exists and has not been prompted yet. Entered at the very
+    beginning and again after every restart, which is what makes a restarted
+    loop resume with the CURRENT prompts rather than the ones it started with.
+  -->
+  <state id="priming">
+    <onentry>
+      <send event="prompt.start"/>
+    </onentry>
+    <transition event="prompt.sent" target="working"/>
+    <transition event="fail" target="failed"/>
+  </state>
+
+  <!-- The inner agent is running. The driver watches its pane. -->
+  <state id="working">
+    <transition event="turn.done" target="judging">
+      <assign location="turns" expr="turns + 1"/>
+      <assign location="turns_since_reflect" expr="turns_since_reflect + 1"/>
+    </transition>
+    <!--
+      The agent asked. Try the person's standing instructions before waking
+      them; `screening` is what decides whether this is a question they already
+      answered.
+    -->
+    <transition event="turn.blocked" target="screening"/>
+    <!--
+      The person reached into the inner pane and interrupted the agent
+      themselves (Escape, Ctrl-C, or just typing). They are plainly here and
+      doing something, so the loop stops driving and waits — screening would be
+      answering a question the person is already handling.
+    -->
+    <transition event="turn.interrupted" target="awaiting_human"/>
+    <!-- A watching person can halt the loop between turns. -->
+    <transition event="hold" target="awaiting_human"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!--
+    A dialog is up. Does a standing instruction cover it?
+
+    A state rather than something the driver swallows, because a rule that fires
+    is a thing that happened to the run: it consumed a turn, it steered the
+    agent, and whoever reads the trace afterwards needs to see it. A screening
+    step hidden inside the driver would make an auto-answered run and a
+    hand-answered one look identical.
+  -->
+  <state id="screening">
+    <onentry>
+      <assign location="screened" expr="screened + 1"/>
+      <send event="screen.begin"/>
+    </onentry>
+    <!-- A rule claimed it; the driver sent the keys and the reply. -->
+    <transition event="screen.matched" target="working"/>
+    <!-- Nothing covers this one. The person decides. -->
+    <transition event="screen.none" target="awaiting_human"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!--
+    The run is paused and a person is expected. Two ways in: the agent raised a
+    dialog it cannot pass without an answer, or somebody watching asked the loop
+    to stop and let them look.
+
+    Nothing is sent from here. The pane stays exactly as the person found it,
+    which is what makes it readable — a loop that kept prompting while somebody
+    was reading would move the screen out from under them.
+  -->
+  <state id="awaiting_human">
+    <onentry>
+      <!--
+        The outer loop's own channel to the person. The driver raises a pane
+        attention notification, which sprag surfaces in `list_panes` — so a
+        waiting run is visible without anybody watching the screen for it.
+      -->
+      <send event="notify.human"/>
+    </onentry>
+    <!-- The person answered (or typed a turn themselves) and it completed. -->
+    <transition event="turn.done" target="judging">
+      <assign location="turns" expr="turns + 1"/>
+      <assign location="turns_since_reflect" expr="turns_since_reflect + 1"/>
+    </transition>
+    <!--
+      The person interrupted again while the loop was already waiting — they are
+      working in the pane by hand. Stay put; do not start prompting underneath
+      somebody who is typing.
+    -->
+    <transition event="turn.interrupted" target="awaiting_human"/>
+    <!-- The person looked and waved it on without touching anything. -->
+    <transition event="resume" target="working">
+      <send event="prompt.turn"/>
+    </transition>
+    <!-- Nobody came within the driver's patience. This is the run-ending one. -->
+    <transition event="unattended" target="blocked"/>
+    <transition event="cancel" target="cancelled"/>
+    <transition event="fail" target="failed"/>
+  </state>
+
+  <!--
+    One turn has landed. Decide in priority order: goal met, budget spent,
+    time to improve ourselves, otherwise take another turn.
+  -->
+  <state id="judging">
+    <transition event="judge" cond="_event.data.done" target="closing"/>
+    <transition event="judge" cond="turns &gt;= max_turns" target="exhausted"/>
+    <transition event="judge" cond="turns_since_reflect &gt;= reflect_every" target="reflecting"/>
+    <transition event="judge" target="working">
+      <send event="prompt.turn"/>
+    </transition>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!--
+    Improve the loop's own setup from the record so far: the prompts, the
+    agent's base context, which MCP servers are worth loading, CLAUDE.md, the
+    memory index. Every one of those is a FILE the driver writes; none of them
+    takes effect until a session reads it, which is why this state's only exit
+    is a restart.
+  -->
+  <state id="reflecting">
+    <onentry>
+      <assign location="turns_since_reflect" expr="0"/>
+      <send event="reflect.begin"/>
+    </onentry>
+    <!-- The driver rewrote prompts and/or environment; adopt the new text. -->
+    <transition event="reflect.applied" target="restarting">
+      <assign location="start_prompt" expr="_event.data.start_prompt"/>
+      <assign location="turn_prompt" expr="_event.data.turn_prompt"/>
+      <assign location="milestone" expr="_event.data.milestone"/>
+    </transition>
+    <!-- Nothing worth changing: carry on without paying for a restart. -->
+    <transition event="reflect.none" target="working">
+      <send event="prompt.turn"/>
+    </transition>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!--
+    Close the inner pane and open a fresh one. The new session reads whatever
+    `reflecting` wrote on its way up.
+  -->
+  <state id="restarting">
+    <onentry>
+      <send event="session.replace"/>
+    </onentry>
+    <transition event="session.ready" target="priming"/>
+    <!-- A session that will not come back is a failed run, not a stuck one. -->
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+  </state>
+
+  <!-- The goal was met; ask for the closing report before ending. -->
+  <state id="closing">
+    <onentry>
+      <send event="prompt.end"/>
+    </onentry>
+    <transition event="turn.done" target="converged"/>
+    <transition event="turn.blocked" target="screening"/>
+    <transition event="turn.interrupted" target="awaiting_human"/>
+    <transition event="fail" target="failed"/>
+  </state>
+
+  <final id="converged"/>
+  <final id="exhausted"/>
+  <final id="failed"/>
+  <final id="cancelled"/>
+  <final id="blocked"/>
+</scxml>
