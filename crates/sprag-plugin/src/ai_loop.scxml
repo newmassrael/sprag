@@ -38,6 +38,26 @@
   them. Its siblings hold pure topology and keep their data in Rust beside the
   engine; here the data is the part being authored, so it lives in the document
   the author edits.
+
+  ⚠⚠⚠ WHAT "ecmascript" IS EVALUATED BY, MEASURED. At the pinned SCE rev there
+  is exactly one IScriptEngine — LuaEngine; sce-rust-runtime's own manifest
+  calls QuickJS "future". SCE's build special-cases only the datamodel string
+  "null" and routes every other value to whatever engine the consumer supplies,
+  with no diagnostic. So every expression below is evaluated as LUA, and the
+  generated init strings show the codegen rewriting some of the syntax on the
+  way in (`[...]` -> `{...}`, `key:` -> `key =`) and not other parts of it
+  (`'a' + b` is passed through, where Lua `+` is arithmetic).
+
+  Reading that, this round predicted the composed prompts would fail to
+  initialise. THEY DO NOT: `ai_loop.rs`'s gate drives a real LuaEngine and every
+  shape here crosses whole — the bare literal, the `+`-composed prompt, the list
+  of objects, the scalar. The prediction was wrong and the gate is what said so.
+
+  What that measurement does NOT license is assuming ECMAScript semantics.
+  Nothing here has been shown to work beyond the four shapes the gate drives, so
+  before writing `===`, `JSON.stringify`, `Array.prototype.map`, `undefined` or a
+  template literal into this file, ADD IT TO THAT GATE FIRST. The engine will
+  answer; the name at the top of this document will not.
 -->
 <scxml xmlns="http://www.w3.org/2005/07/scxml"
        version="1.0"

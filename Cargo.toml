@@ -216,6 +216,23 @@ vello = "0.9"
 # generated state machine. default-features off keeps http-send out.
 sce-build = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "615cb3f6f8cfa74aec4a3ec6954076d8bc8516cf" }
 sce-rust-runtime = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "615cb3f6f8cfa74aec4a3ec6954076d8bc8516cf", default-features = false }
+# The ONE IScriptEngine implementation SCE ships at this rev. A statechart whose
+# datamodel is anything but `null` is generated against a script engine the
+# CONSUMER supplies (`Policy::new(Arc<dyn IScriptEngine>)`), and Lua is the only
+# thing there is to supply — `sce-rust-runtime`'s own manifest calls QuickJS
+# "future". Held here as a MEASUREMENT dependency (sprag-plugin takes it as a
+# dev-dependency only) until something in the product needs to CONSTRUCT the
+# machine: see `sprag_plugin::ai_loop`'s gates and PR-86's item 5.
+sce-rust-lua = { git = "https://github.com/newmassrael/scxml-core-engine.git", rev = "615cb3f6f8cfa74aec4a3ec6954076d8bc8516cf" }
+# ⚠⚠⚠ INTERIM, AND IT COMES OUT WHEN PR-86 IS DELIVERED — NOT A DEPENDENCY sprag
+# CHOSE OR CALLS. SCE's Rust codegen emits bare `log::error!` on every datamodel
+# error path, so a machine with a script datamodel does not COMPILE in a crate
+# without `log` (42 unresolved-crate errors for `ai_loop.scxml`); the two `null`
+# machines emit zero, which is why sprag met this only at its third statechart.
+# FILED, NOT ABSORBED: claudedocs/PINION-PR86-*.md asks the runtime to re-export
+# `log` so generated code names only the crate a consumer already has. sprag calls
+# `log` from nowhere — grep says zero — so delivery deletes these two lines.
+log = "0.4"
 
 # Internal crates.
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }

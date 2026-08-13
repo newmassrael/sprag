@@ -33,10 +33,16 @@ pub(crate) mod sm {
         #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
         include!(concat!(env!("OUT_DIR"), "/session_sm.rs"));
     }
+
+    pub(crate) mod ai_loop {
+        #![allow(warnings, clippy::all, clippy::pedantic, clippy::nursery)]
+        include!(concat!(env!("OUT_DIR"), "/ai_loop_sm.rs"));
+    }
 }
 
 pub mod access;
 pub mod agent;
+pub(crate) mod ai_loop;
 pub mod answer;
 pub mod completion;
 pub mod consent;
