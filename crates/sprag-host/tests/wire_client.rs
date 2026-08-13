@@ -3670,6 +3670,16 @@ fn the_events_family_reads_a_change_by_cursor_and_reading_does_not_bump() {
     // A malformed member of an ADVERTISED family is present-but-empty, never absent: `None` becomes
     // `UnknownIntrospectPath`, meaning "not in its schema", and `events.zzz` IS in the schema. The
     // taxonomy `cells.<offset>` was corrected into by R155's review.
+    //
+    // ⚠⚠⚠ **AND `Null` IS NOW KNOWN TO BE THE WRONG THIRD ANSWER, MEASURED (R371d).** At every
+    // parametric family on this wire the SAME `Null` is also what a serialisation failure degrades
+    // to (`encoded_answer(..).unwrap_or(IntrospectValue::Null)`), so ONE answer carries two facts
+    // with opposite remedies — *fix your argument* and *this daemon could not encode its own
+    // reading* — and nothing lets a client tell which it was told. R155 reached for `Null` because
+    // `query` answered an `Option` and there was no third thing to say; pinion R1667/R1674 built
+    // it, and `QueryTypeMismatch` is this case by definition. **Driven live before this note was
+    // written: the daemon answers `Null`.** Adopting it is registered as owed — it is a per-path
+    // decision across TEN families and two `Option`-shaped surfaces, and it moves the wire.
     let malformed: Value = conn
         .call(
             "scene/query",
