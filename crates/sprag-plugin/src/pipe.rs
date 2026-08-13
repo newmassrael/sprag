@@ -195,10 +195,7 @@ impl Plugin for Pipe {
             // the likeliest of the three to be pointed at an agent that pops a dialog — and a
             // relayed line ends in a newline, which a menu reads as the Enter that confirms.
             Reached::Asking(asking) => {
-                let note = format!(
-                    "the destination stopped to ASK: {}",
-                    asking.why().describe(),
-                );
+                let note = format!("the destination stopped to ASK: {}", asking.explain());
                 return Ok(
                     Step::new(Cost::Bytes(asking.bytes()), Verdict::Blocked(asking)).noting(note),
                 );

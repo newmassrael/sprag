@@ -160,7 +160,7 @@ impl Plugin for Orchestrator {
             // The peer is showing a question. Typing the stimulus here would SELECT rather than
             // say anything — see [`Verdict::Blocked`].
             Reached::Asking(asking) => {
-                let note = format!("the peer stopped to ASK: {}", asking.why().describe());
+                let note = format!("the peer stopped to ASK: {}", asking.explain());
                 return Ok(
                     Step::new(Cost::Bytes(asking.bytes()), Verdict::Blocked(asking)).noting(note),
                 );

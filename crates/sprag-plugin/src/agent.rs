@@ -634,7 +634,7 @@ impl Plugin for Agent {
             Reached::Asking(asking) => {
                 let note = format!(
                     "the peer stopped to ASK, so the prompt was not sent: {}",
-                    asking.why().describe(),
+                    asking.explain(),
                 );
                 return Ok(
                     Step::new(Cost::Bytes(asking.bytes()), Verdict::Blocked(asking)).noting(note),

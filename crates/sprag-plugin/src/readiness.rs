@@ -603,6 +603,17 @@ impl Readiness {
         };
         let chose = match consent.covers(&question) {
             Ok(choice) => choice.clone(),
+            // ⚠⚠ THE ONE ARM THAT OWES MORE THAN ITS WORD. Every other refusal is about ONE thing
+            // the caller wrote and its standing sentence names the fix; `contradicted` is about
+            // several, and a caller holding ten clauses would be sent to find two of them by hand
+            // against a dialog they are not looking at. The clauses are gathered from the same
+            // `covers` that decided, so the report cannot disagree with the verdict.
+            Err(Refusal::Contradicted) => {
+                let collided = consent.clauses_about(&question);
+                return Ok(Reached::Asking(Unanswered::contradicted(
+                    question, &collided,
+                )));
+            }
             Err(why) => return Ok(Reached::Asking(Unanswered::refused(question, why))),
         };
 
@@ -1939,6 +1950,19 @@ mod tests {
             "the remedy names whose decision it is: {}",
             unanswered.why().describe(),
         );
+        // ⚠⚠⚠ AND THE BARRIER MUST NAME THE CLAUSES, not merely reach the right arm. The
+        // constructor that carries them is gated over values in `consent`; this is the claim that
+        // THIS caller uses it — the recorded rule that a unit test on a method is not a test that
+        // anybody calls it. Built through `Unanswered::refused` instead, the arm and the remedy
+        // stay exactly right and only the caller's own words go missing.
+        let said = unanswered.explain();
+        for needle in ["proceed", "Bash command", "No, and tell"] {
+            assert!(
+                said.contains(needle),
+                "⚠⚠⚠ the report must quote {needle:?} — the caller wrote it, and with several \
+                 clauses in hand `contradicted` alone sends them hunting: {said}",
+            );
+        }
         std::thread::sleep(Duration::from_millis(80));
         let screen = access.pane_collapsed(pane).unwrap_or_default();
         assert!(

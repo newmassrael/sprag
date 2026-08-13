@@ -229,8 +229,30 @@ impl Consents {
     // R357's rule: build the consumer before the surface. A gate that wants to check what the
     // parser built compares whole values, which is a stronger claim than a field-by-field read.
     //
-    // ⚠ The day a `contradicted` run wants to name WHICH clauses collided, that reader arrives with
-    // its answer key — and it is registered as owed rather than half-built here.
+    /// The clauses that are ABOUT `question` — for a REPORT that has to name which of the caller's
+    /// own rules met the dialog. **It decides nothing**; [`covers`](Self::covers) does.
+    ///
+    /// # ⚠⚠ Why this exists, and why it is not the accessor that was deleted
+    ///
+    /// R370 wrote a `clauses()` returning the whole list, found only tests read it, and took it
+    /// out — R357's rule, build the consumer before the surface. This is that rule met the other
+    /// way round: [`Refusal::Contradicted`] tells a caller their own rules disagree and, with ten
+    /// clauses in hand, not WHICH two, so the consumer arrived first and the reader follows it.
+    ///
+    /// ⚠ It is DERIVED from `covers` rather than re-matching the needles, so it cannot come to
+    /// disagree with the decision it describes — the second-authority shape R347 names, refused
+    /// at the one place where a description of a verdict could drift from the verdict.
+    ///
+    /// ⚠ It answers the applicable clauses for ANY question, not only a contradicted one: *"which
+    /// of my rules were even about this dialog?"* is the same question whichever way it ended, and
+    /// a method that only worked for one arm would be the arm's implementation wearing a name.
+    #[must_use]
+    pub fn clauses_about(&self, question: &Question) -> Vec<&Consent> {
+        self.clauses
+            .iter()
+            .filter(|clause| !matches!(clause.covers(question), Err(Refusal::OtherQuestion)))
+            .collect()
+    }
 
     /// The ONE option of `question` these consents authorise, or why they authorise none.
     ///
@@ -454,6 +476,22 @@ pub struct Unanswered {
     question: Option<Question>,
     why: Refusal,
     bytes: u64,
+    /// WHAT THIS PARTICULAR REFUSAL HAD TO SAY beyond its arm's standing sentence — the clauses
+    /// that collided, today, and nothing else.
+    ///
+    /// # ⚠⚠ Why a string here and not a key on the wire
+    ///
+    /// [`Refusal::describe`] is a `const fn` over a closed set: it can say *"more than one consent
+    /// is about this question"* and can never say WHICH, because the arms carry no data and must
+    /// not (the set is projected into a published vocabulary). The clauses are runtime facts about
+    /// one dialog, so they travel beside the arm.
+    ///
+    /// It reaches a caller through a step's NOTE, which is free text BY DESIGN — R364 settled that
+    /// shape for `key`'s unconfirmed-delivery diagnosis: a fact a caller READS rather than BRANCHES
+    /// on has no value space to widen, so it costs the protocol number nothing. A `collided` answer
+    /// key would have been an added key whose absence an older reader takes as a claim, which is
+    /// this wire's version-24 bump shape — and it would buy an agent nothing it cannot read here.
+    detail: Option<String>,
 }
 
 impl Unanswered {
@@ -464,6 +502,7 @@ impl Unanswered {
             question: None,
             why: Refusal::Unreadable,
             bytes: 0,
+            detail: None,
         }
     }
 
@@ -482,7 +521,36 @@ impl Unanswered {
                 question: Some(question),
                 why,
                 bytes: 0,
+                detail: None,
             },
+        }
+    }
+
+    /// The caller's own consents disagreeing about `question`, NAMING the ones that met it.
+    ///
+    /// # ⚠⚠⚠ Why this arm gets a constructor of its own
+    ///
+    /// [`Refusal::Contradicted`]'s standing sentence can say that more than one consent is about
+    /// this question and can never say WHICH — its arms carry no data, and must not, because the
+    /// set is projected into a published vocabulary. A caller holding ten clauses is then told to
+    /// go and find two of them by hand, against a dialog they are not looking at.
+    ///
+    /// So the clauses travel inside the refusal, in the caller's own words, and reach them through
+    /// the step note — [`explain`](Self::explain) is what reads them back. ⚠ Both needles of each
+    /// clause, because `asked` alone would not identify a clause among several about one question,
+    /// which is the exact case this reports.
+    #[must_use]
+    pub fn contradicted(question: Question, clauses: &[&Consent]) -> Self {
+        let named = clauses
+            .iter()
+            .map(|clause| format!("{:?} -> {:?}", clause.asked(), clause.answer()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self {
+            question: Some(question),
+            why: Refusal::Contradicted,
+            bytes: 0,
+            detail: Some(format!("the consents about it are {named}")),
         }
     }
 
@@ -501,6 +569,7 @@ impl Unanswered {
             question: Some(question),
             why: Refusal::NotTaken,
             bytes,
+            detail: None,
         }
     }
 
@@ -520,6 +589,26 @@ impl Unanswered {
     #[must_use]
     pub const fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// THE WHOLE SENTENCE a step's note owes about this refusal — the arm's standing remedy, and
+    /// whatever this particular one had to add.
+    ///
+    /// # ⚠⚠ One reader, because four plugins write this note
+    ///
+    /// `Orchestrator`, `Pipe`, `Agent` and `Answer` each turn a refusal into a note, and each was
+    /// calling `why().describe()` directly. A detail added to one arm would have reached whichever
+    /// of the four somebody remembered — the shape R355b measured going wrong on `render_events`,
+    /// where a hand-written match over subject keys dropped a run id for one kind of event.
+    ///
+    /// ⚠ It is not `Display`: this is the note's sentence, not the type's, and the four callers
+    /// each wrap it in their own lead ("the peer stopped to ASK: …").
+    #[must_use]
+    pub fn explain(&self) -> String {
+        match &self.detail {
+            Some(detail) => format!("{} — {detail}", self.why.describe()),
+            None => self.why.describe().to_owned(),
+        }
     }
 }
 
@@ -1017,6 +1106,74 @@ mod tests {
             "⚠⚠ one clause IS about it and the option it names is not on offer — a different \
              remedy, and the reason both arms survived the widening",
         );
+    }
+
+    /// ⚠⚠⚠ **A CONTRADICTED RUN NAMES THE CLAUSES THAT COLLIDED, IN THE CALLER'S OWN WORDS.**
+    ///
+    /// The arm's standing sentence can say that more than one consent is about the question and can
+    /// never say WHICH — the arms carry no data, because the set is projected into a published
+    /// vocabulary. A caller holding ten clauses is then sent to find two of them by hand, against a
+    /// dialog they are no longer looking at.
+    ///
+    /// ⚠ BOTH NEEDLES of each clause. Two clauses about one question is exactly the case here, so
+    /// `asked` alone would not tell them apart — which is the whole thing this reports.
+    ///
+    /// ⚠ And the clauses come from [`Consents::clauses_about`], which is derived from `covers`, so
+    /// what the report names cannot drift from what the verdict decided.
+    ///
+    /// ⚠ REVERT-PROOF: build it through [`Unanswered::refused`] instead and the sentence loses the
+    /// clauses while the arm and the remedy stay exactly right — which is a gate asserting the
+    /// diagnosis and not the content, the shape R369 paid for at the shell mouth.
+    #[test]
+    fn a_contradicted_refusal_names_the_rules_that_disagreed() {
+        let question = permission();
+        let consents = consents(&[
+            ("delete the database?", "Yes"),
+            ("proceed", "Yes"),
+            ("rm -rf", "No, and tell"),
+        ]);
+        assert_eq!(consents.covers(&question), Err(Refusal::Contradicted));
+
+        let collided = consents.clauses_about(&question);
+        assert_eq!(
+            collided.len(),
+            2,
+            "⚠⚠ the clause about ANOTHER question is not among them — a report that named every \
+             rule the caller wrote would be as useless as one that named none: {collided:?}",
+        );
+        let said = Unanswered::contradicted(question, &collided).explain();
+        assert!(
+            said.contains("different options"),
+            "the arm's own remedy survives: {said}",
+        );
+        for needle in ["proceed", "rm -rf", "No, and tell"] {
+            assert!(
+                said.contains(needle),
+                "⚠⚠⚠ {needle:?} is one of the words the caller wrote and the report must quote \
+                 it: {said}",
+            );
+        }
+        assert!(
+            !said.contains("delete the database"),
+            "and the clause that was about a different dialog must NOT be quoted: {said}",
+        );
+    }
+
+    /// ⚠⚠ **EVERY OTHER ARM SAYS EXACTLY ITS REMEDY AND NOTHING MORE** — the control, without which
+    /// the gate above passes for a build that staples a detail onto every refusal.
+    #[test]
+    fn a_refusal_with_nothing_to_add_says_only_its_remedy() {
+        for why in Refusal::ALL {
+            if why == Refusal::Contradicted {
+                continue;
+            }
+            let built = Unanswered::refused(permission(), why);
+            assert_eq!(
+                built.explain(),
+                why.describe(),
+                "{why:?} has no per-run detail, so its note is its arm's sentence",
+            );
+        }
     }
 
     /// ⚠⚠ **AN EMPTY LIST IS NOT A CONSENT**, held at construction like an empty needle.

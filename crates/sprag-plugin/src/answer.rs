@@ -132,7 +132,7 @@ impl Plugin for Answer {
             // question and the reason — which for this plugin is the whole answer the caller
             // wanted, since the reason is what they can act on.
             Reached::Asking(asking) => {
-                let note = format!("nothing was answered: {}", asking.why().describe());
+                let note = format!("nothing was answered: {}", asking.explain());
                 Ok(Step::new(Cost::Bytes(asking.bytes()), Verdict::Blocked(asking)).noting(note))
             }
             Reached::Answered(answered) => {
