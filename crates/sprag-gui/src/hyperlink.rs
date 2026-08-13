@@ -1366,6 +1366,21 @@ mod tests {
                 2,
                 "two calls for `activate`, whose subject is the link `hover_index` names",
             );
+
+            // ⚠⚠⚠ AND THE SHAPES, against the protocol number — the pin the daemon has and cannot
+            // point at this window. See `wire_claim::grammar::shapes_are_pinned_to_the_protocol`.
+            let served = surface
+                .query(sprag_host::wire::ACTION_GRAMMAR_SLOT)
+                .expect("the oracle serves its grammar");
+            let pinion_core::external::IntrospectValue::Json(served) = served else {
+                panic!("the grammar slot answers JSON: {served:?}");
+            };
+            crate::wire_claim::grammar::shapes_are_pinned_to_the_protocol(
+                &served,
+                "a pane's hyperlink oracle",
+                29,
+                &["activate[nullary]:", "send[scalar]:event:string"],
+            );
         });
     }
 

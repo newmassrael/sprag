@@ -973,6 +973,14 @@ mod tests {
             &[
                 ArgGrammar::open("asked", "string"),
                 ArgGrammar::open("answer", "string"),
+                // ⚠⚠ NOT A SHAPE THE WIRE SERVES, and deliberately here anyway. This whole table is
+                // a MINIATURE — its job is to exercise this module, not to mirror a run form — and
+                // without a non-string field inside a list element, `PublishedArg::element`'s type
+                // check had exactly ONE of its arms driven. An `int` and a closed VOCABULARY are
+                // the two other shapes a nested field can be, and both are optional so the
+                // required-field claims above are unchanged.
+                ArgGrammar::open("within_ms", "int").optional(),
+                ArgGrammar::one_of("mood", "string", &["strict", "loose"]).optional(),
             ],
         )
         .optional(),
@@ -1126,8 +1134,8 @@ mod tests {
             (
                 "a key the element does not have",
                 r#"{"askd": "proceed", "answer": "Yes"}"#,
-                "each --may_answer is an object taking asked and answer, and \"askd\" is not one \
-                 of them",
+                "each --may_answer is an object taking asked, answer, within_ms and mood, and \
+                 \"askd\" is not one of them",
             ),
             (
                 "a required field left out",
@@ -1138,6 +1146,22 @@ mod tests {
                 "a field of the wrong type",
                 r#"{"asked": 4, "answer": "Yes"}"#,
                 "--asked takes a string, and \"4\" is not one",
+            ),
+            // ⚠ The OTHER direction of the same arm: an int field given a string. Without it the
+            // type check is driven only where the declaration says `string`, which is the arm a
+            // wrong `match` on `ty` would still get right.
+            (
+                "an int field given a string",
+                r#"{"asked": "p", "answer": "Yes", "within_ms": "soon"}"#,
+                "--within_ms takes an int, and \"\\\"soon\\\"\" is not one",
+            ),
+            // ⚠⚠ AND A CLOSED VOCABULARY INSIDE AN ELEMENT. Nothing on this wire has one yet, so
+            // the branch was reachable and undriven — the shape R353 keeps finding: a rule that
+            // exists and that no call exercises.
+            (
+                "a word outside a field's vocabulary",
+                r#"{"asked": "p", "answer": "Yes", "mood": "furious"}"#,
+                "--mood does not take \"furious\". It takes: strict and loose",
             ),
             (
                 "an element that is not an object",
@@ -1189,8 +1213,10 @@ mod tests {
             .expect("the list argument");
         assert_eq!(
             listed.usage(),
-            "[--may_answer <{asked,answer}> …]",
-            "the flag, the shape of ONE entry, and the ellipsis that says it repeats",
+            "[--may_answer <{asked,answer,within_ms,mood}> …]",
+            "the flag, EVERY key of one entry, and the ellipsis that says it repeats — a usage \
+             line that named only the required fields would hide the optional ones behind a shape \
+             a caller cannot see",
         );
         let nested = published()
             .into_iter()

@@ -1332,6 +1332,29 @@ mod tests {
                 "two calls each for `open` and `execute`: the bare call, and one carrying \
                  an argument no declaration mentions",
             );
+
+            // ⚠⚠⚠ AND THE SHAPES, against the protocol number — the pin the daemon has and cannot
+            // point at this window. See `wire_claim::grammar::shapes_are_pinned_to_the_protocol`.
+            let served = surface
+                .query(sprag_host::wire::ACTION_GRAMMAR_SLOT)
+                .expect("the palette serves its grammar");
+            let pinion_core::external::IntrospectValue::Json(served) = served else {
+                panic!("the grammar slot answers JSON: {served:?}");
+            };
+            crate::wire_claim::grammar::shapes_are_pinned_to_the_protocol(
+                &served,
+                "the command palette",
+                29,
+                &[
+                    // ⚠ MEASURED, not guessed: it is `select` that carries the row, and `execute`
+                    // acts on the palette's own armed request — which is exactly why five of these
+                    // eight verbs are nullary and why a pin over the shapes is worth having.
+                    "open[nullary]:",
+                    "execute[nullary]:",
+                    "select[scalar]:row:int",
+                    "send[scalar]:event:string",
+                ],
+            );
         });
     }
 

@@ -7642,29 +7642,6 @@ mod tests {
             ],
         );
 
-        /// One argument as `name:type`, `?` for one a well-formed call may omit, and its nested
-        /// fields in braces — recursive, so a nest of nests needs nothing further.
-        fn shape(arg: &Value) -> String {
-            let name = arg[ArgGrammar::NAME_KEY].as_str().unwrap_or("<unnamed>");
-            let ty = arg[ArgGrammar::TYPE_KEY].as_str().unwrap_or("<untyped>");
-            let optional = if arg[ArgGrammar::OPTIONAL_KEY] == Value::Bool(true) {
-                "?"
-            } else {
-                ""
-            };
-            let fields = arg
-                .get(ArgGrammar::FIELDS_KEY)
-                .and_then(Value::as_array)
-                .map(|fields| {
-                    format!(
-                        "{{{}}}",
-                        fields.iter().map(shape).collect::<Vec<_>>().join(","),
-                    )
-                })
-                .unwrap_or_default();
-            format!("{name}:{ty}{optional}{fields}")
-        }
-
         let serving: Vec<String> = served_fields()
             .into_iter()
             .filter(|field| field.path == ACTION_GRAMMAR_SLOT && field.answers)
@@ -7677,24 +7654,23 @@ mod tests {
         let mut served: Vec<String> = Vec::new();
         for under in &serving {
             let published = query_served_on(under, ACTION_GRAMMAR_SLOT).expect("the slot answers");
-            let verbs = published.as_object().expect("the slot answers an object");
             // A pane's ID folded to the schema's own placeholder, so this pin is about the WIRE
             // and not about the fixture's pane numbering — [`PINNED_WORDS`]'s reason exactly.
             let surface = under.replace(&pane_container_tag(0), "pane_<id>");
-            for (action, forms) in verbs {
-                for form in forms.as_array().expect("a verb answers its forms") {
-                    let kind = form[CallForm::FORM_KEY].as_str().unwrap_or("<unshaped>");
-                    let args = form
-                        .get(CallForm::ARGS_KEY)
-                        .and_then(Value::as_array)
-                        .expect("a form answers its arguments");
-                    served.push(format!(
-                        "{surface}/{action}[{kind}]:{}",
-                        args.iter().map(shape).collect::<Vec<_>>().join(" "),
-                    ));
-                }
-            }
+            // ⚠⚠ THE RENDERER IS `sprag_conformance`'s, not a copy here. The GUI's three surfaces
+            // serve this same slot and this crate's audit structurally cannot reach them, so the
+            // one place both can call is where the shape spelling belongs.
+            served.extend(
+                sprag_conformance::published_shapes(&published)
+                    .into_iter()
+                    .map(|form| format!("{surface}/{form}")),
+            );
         }
+        assert!(
+            !served.is_empty(),
+            "the renderer answered nothing about a slot that plainly serves — a pin over an empty \
+             list passes about nothing",
+        );
         // A pane's surface is served once per pane, so a two-pane fixture publishes it twice —
         // identical, and this pin is about the SHAPES.
         served.sort_unstable();

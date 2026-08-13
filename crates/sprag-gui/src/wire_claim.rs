@@ -301,6 +301,59 @@ pub(crate) mod grammar {
         upstream("the kill-session cancel button", "sprag_gui.skillno"),
     ];
 
+    /// **THE FOURTH PIN, for the surfaces the daemon's audit cannot reach** — what one of these
+    /// windows publishes as its argument SHAPES, held against the protocol number.
+    ///
+    /// # ⚠⚠⚠ Why these three need their own copy of a pin the daemon already has
+    ///
+    /// `sprag_host::wire`'s `a_published_argument_shape_cannot_move_under_the_protocol_number`
+    /// walks the DAEMON's scene, and this module's own doc says at length why that scene
+    /// structurally cannot contain these: they hang in this window's, and a client driving this
+    /// window addresses them directly. So the claim comes here, exactly as the other five did.
+    ///
+    /// The RENDERER is `sprag_conformance::published_shapes` — one spelling, two callers, which is
+    /// the reason that function is in that crate rather than inside the daemon's test.
+    ///
+    /// ⚠ R370b registered this gap with a GUESS attached — *"those three are `Nullary` today, so
+    /// the pin may be empty"* — and measuring refuted it in one read: `palette.execute` takes a
+    /// scalar `row:int` and every surface here takes the composite `send` payload. **A registration
+    /// whose reason is a guess is unmeasured**, which this project has now recorded four times.
+    ///
+    /// # Errors
+    ///
+    /// Panics — it is a test helper, and the caller reads the finding.
+    #[cfg(test)]
+    pub(crate) fn shapes_are_pinned_to_the_protocol(
+        served: &serde_json::Value,
+        surface: &str,
+        at: u32,
+        pinned: &[&str],
+    ) {
+        let mut shapes = sprag_conformance::published_shapes(served);
+        shapes.sort_unstable();
+        let mut want: Vec<String> = pinned.iter().map(|s| (*s).to_owned()).collect();
+        want.sort_unstable();
+        assert!(
+            !shapes.is_empty(),
+            "{surface} serves the grammar slot and the renderer answered nothing — a pin over an \
+             empty list passes about nothing",
+        );
+        assert_eq!(
+            shapes, want,
+            "{surface}'s PUBLISHED ARGUMENT SHAPES MOVED. A client builds its call from these, so \
+             a TYPE that changed breaks every caller of the old one IN BOTH DIRECTIONS and an \
+             optionality that changed breaks one of them SILENTLY. Update this pin, and raise \
+             sprag_rpc::WIRE_PROTOCOL unless you can say why an older client is unaffected.",
+        );
+        assert_eq!(
+            at,
+            sprag_rpc::WIRE_PROTOCOL,
+            "THE PROTOCOL NUMBER MOVED WITH {surface}'s ARGUMENT SHAPES UNCHANGED — legitimate \
+             when some other part of the wire moved, and a mistake when this pin was simply not \
+             re-stamped.",
+        );
+    }
+
     /// A surface sprag REGISTERS and pinion WROTE — listed, never described.
     ///
     /// A helper rather than fourteen literal structs, because every field but the name and the tag is

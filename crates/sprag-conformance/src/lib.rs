@@ -98,6 +98,78 @@ pub fn as_the_wire_delivers_it(value: &Value) -> IntrospectValue {
     }
 }
 
+/// EVERY FORM OF A SERVED GRAMMAR, rendered as the SHAPES it publishes — one entry per form,
+/// `<action>[<form-kind>]:<name>:<type>[?]{<fields>} …`.
+///
+/// # ⚠⚠⚠ Why a shape needs a pin of its own, and why the renderer lives here
+///
+/// The three ratchets a surface already has each admit, in their own docs, that they cannot see an
+/// argument's TYPE: the surface pin holds ADDRESSES, one value pin holds the words a client picks a
+/// value FROM, the other holds the ANSWER enums. Between them the type of a REQUEST argument was
+/// held by nothing — and R370 changed one from `object` to `array` on five forms with every one of
+/// them green, the only reds being two hand-written counts.
+///
+/// A re-typed argument breaks every client of the old shape in BOTH directions, and an optionality
+/// that flips breaks one of them SILENTLY, so the shapes belong beside the protocol number.
+///
+/// It is a function of this crate rather than of either caller because **two surfaces families
+/// serve this slot and the daemon's audit structurally cannot reach one of them**: the GUI's
+/// palette, confirmation and hyperlink surfaces hang in that window's scene
+/// (`sprag_gui::wire_claim` says so at length). A renderer written twice is two spellings of one
+/// fact, which is the defect this whole crate exists to refuse.
+///
+/// ⚠ It takes what a surface ANSWERED, never a table — R320's rule: a ratchet over a declaration is
+/// not a ratchet over the product.
+///
+/// ⚠ NO `one_of` here, deliberately. A vocabulary and a shape fail differently — a widened
+/// vocabulary usually leaves the protocol number standing (R342) and a changed shape never does —
+/// and one pin arguing both cases would have to make both arguments in one message.
+#[must_use]
+pub fn published_shapes(served: &Value) -> Vec<String> {
+    /// One argument as `name:type`, `?` when a well-formed call may omit it, and its nested fields
+    /// in braces — recursive, so a nest of nests needs nothing further.
+    fn shape(arg: &Value) -> String {
+        let name = arg[ArgGrammar::NAME_KEY].as_str().unwrap_or("<unnamed>");
+        let ty = arg[ArgGrammar::TYPE_KEY].as_str().unwrap_or("<untyped>");
+        let optional = if arg[ArgGrammar::OPTIONAL_KEY] == Value::Bool(true) {
+            "?"
+        } else {
+            ""
+        };
+        let fields = arg
+            .get(ArgGrammar::FIELDS_KEY)
+            .and_then(Value::as_array)
+            .map(|fields| {
+                format!(
+                    "{{{}}}",
+                    fields.iter().map(shape).collect::<Vec<_>>().join(","),
+                )
+            })
+            .unwrap_or_default();
+        format!("{name}:{ty}{optional}{fields}")
+    }
+
+    let mut out = Vec::new();
+    let Some(verbs) = served.as_object() else {
+        return out;
+    };
+    for (action, forms) in verbs {
+        let Some(forms) = forms.as_array() else {
+            continue;
+        };
+        for form in forms {
+            let kind = form[CallForm::FORM_KEY].as_str().unwrap_or("<unshaped>");
+            let args: Vec<String> = form
+                .get(CallForm::ARGS_KEY)
+                .and_then(Value::as_array)
+                .map(|args| args.iter().map(shape).collect())
+                .unwrap_or_default();
+            out.push(format!("{action}[{kind}]:{}", args.join(" ")));
+        }
+    }
+    out
+}
+
 /// ONE ARGUMENT A FORM DECLARES, and the argument it lives inside when it is a nested field.
 ///
 /// # Why every claim walks this instead of `form.args`
