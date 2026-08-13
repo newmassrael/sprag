@@ -483,16 +483,26 @@ mod freshness_tests {
     /// ⚠ SKIPPED, loudly, when the daemon has not been built in this profile: this crate takes no
     /// dependency on the product and must not require it to be built. The skip prints, so it cannot
     /// be a silent green.
+    ///
+    /// ⚠⚠ AND THE SKIP IS DECIDED BY THE RECORD, NOT BY THE BINARY — they are two artefacts and
+    /// they come and go SEPARATELY. `cargo test --workspace` in a fresh target dir uplifts
+    /// `sprag-term` without writing `sprag-term.d` beside it, so a guard that asked
+    /// `bin.is_file()` said *"built, assert away"* and the read then failed with a bare
+    /// `NotFound` — a red about a missing depfile, in a gate whose whole subject is what that
+    /// depfile CONTAINS. Measured on a fresh worktree: binary present at 96 MB, no record, and
+    /// `cargo build -p sprag-host --bins` turned the same run green.
+    ///
+    /// The fix keeps the claim rather than skipping the case: the guard now names the artefact the
+    /// assertion actually reads. A record that IS there is still asserted on, exactly as before.
     #[test]
     fn cargos_own_record_for_this_workspaces_daemon_spans_the_whole_closure() {
-        let Some(bin) = built_daemon() else {
+        let Some(record) = built_daemon_record() else {
             eprintln!(
-                "skipped: no sprag-term in target/debug — run `cargo build -p sprag-host --bins`",
+                "skipped: no sprag-term depfile in target/debug — run `cargo build -p sprag-host \
+                 --bins` (`cargo test` alone uplifts the binary without writing one)",
             );
             return;
         };
-        let record =
-            std::fs::read_to_string(bin.with_extension("d")).expect("cargo wrote a record");
         let mut crates: Vec<&str> = record
             .split_whitespace()
             .filter_map(|path| path.split("crates/").nth(1))
@@ -517,6 +527,15 @@ mod freshness_tests {
             .parent()?
             .join("target/debug/sprag-term");
         bin.is_file().then_some(bin)
+    }
+
+    /// What cargo recorded beside that daemon, or `None` when there is no record to read.
+    ///
+    /// Separate from [`built_daemon`] because the binary and its depfile are separate artefacts
+    /// with separate lifetimes — see the caller. Anything asking *"can I assert on the record?"*
+    /// must ask THIS.
+    fn built_daemon_record() -> Option<String> {
+        std::fs::read_to_string(built_daemon()?.with_extension("d")).ok()
     }
 }
 
