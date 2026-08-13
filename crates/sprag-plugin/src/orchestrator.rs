@@ -1259,6 +1259,7 @@ mod tests {
         let never_ready = PaneError::NeverReady {
             wanted: ReadyWhen::Runs("claude".to_string()),
             instead: PaneDoing::Job(JobLeader::known_as("sh".to_string())),
+            already_showing: false,
         }
         .to_string();
         assert!(
@@ -1305,6 +1306,7 @@ mod tests {
             let whole = PaneError::NeverReady {
                 wanted: ReadyWhen::Runs("claude".to_string()),
                 instead: doing.clone(),
+                already_showing: false,
             }
             .to_string();
             assert!(

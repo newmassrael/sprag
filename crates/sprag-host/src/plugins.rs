@@ -2693,6 +2693,79 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **AND THE COMMONEST READINESS MISTAKE IS NAMED ON THE WIRE: THE MARKER WAS ALREADY
+    /// THERE.**
+    ///
+    /// The sibling of the gate above, and the one that matters to a caller who did nothing wrong on
+    /// purpose. `prints` means *more occurrences than when this run started watching*, so a pane
+    /// that announced itself on the way up can never satisfy it — and **opening a pane and asking
+    /// for a run are two separate calls**, which is the normal order and the whole window.
+    ///
+    /// What came back named the JOB (*"its terminal belonged to `cat`"*): true, about a question
+    /// the caller had not asked, and silent on the one fact that corrects the call.
+    ///
+    /// ⚠⚠⚠ **AND IT IS DRIVEN THROUGH THE WIRE'S OWN DOOR RATHER THAN THE BARRIER'S.** The plugin
+    /// crate gates the sentence where it is built; this asks whether it SURVIVES to the `failure`
+    /// key a client reads, which is a different question and the one R373 paid for learning to ask
+    /// separately.
+    #[test]
+    fn a_readiness_marker_the_pane_had_already_printed_is_named_as_such_on_the_wire() {
+        let (workspace, pane) = pane_painting("BANNER\\r\\n");
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+        );
+        // ⚠ THE WINDOW EVERY REAL CALLER HAS, OPENED ON PURPOSE. Waiting for the announcement here
+        // is what makes this deterministic rather than a race the fast machine happens to win.
+        wait_for_screen(
+            &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            pane,
+            "BANNER",
+        );
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(json!({
+                    "plugin": "orchestrator",
+                    "pane": pane.0,
+                    "stimulus": "x",
+                    "ready_when": { "match": "prints", "marker": "BANNER" },
+                    "ready_timeout_ms": 300,
+                    // Both ceilings out of reach, so the readiness bound is provably what ended it.
+                    "guardrails": { "max_iterations": 100_000, "max_seconds": 60 },
+                })),
+            )
+            .expect("a run that names a readiness barrier is a well-formed run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let entry = ended(
+            &registry,
+            u64::try_from(id).expect("a run id is not negative"),
+            Duration::from_secs(20),
+        );
+        let said = entry["state"]["outcome"]["failure"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a failed run publishes its cause as text: {entry:?}"))
+            .to_string();
+        assert!(
+            said.contains("already on its screen"),
+            "⚠⚠⚠ the client must be told the marker IS THERE. Without it they are told what owns \
+             the terminal — true, and about a question they did not ask — and the fact that \
+             corrects their call never leaves the daemon: {said:?}",
+        );
+        assert!(
+            said.contains("\"shows\""),
+            "⚠⚠ and the question that WOULD have read it, in the same wire word they would have to \
+             send: {said:?}",
+        );
+    }
+
     /// ⚠⚠ **A RUN ASKED TO STOP AFTER A SECOND STOPS AFTER A SECOND** — the wire half of the
     /// duration ceiling, end to end through the verb a client actually calls.
     ///

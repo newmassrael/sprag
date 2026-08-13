@@ -204,9 +204,28 @@ pub enum PaneError {
         /// kind, because *what was actually running* diagnoses a marker that never printed just as
         /// well as a name that never matched.
         instead: PaneDoing,
+        /// ⚠⚠⚠ WHETHER WHAT THE CALLER NAMED IS ALREADY ON THE PANE'S SCREEN — the correction
+        /// [`instead`](Self::NeverReady::instead) structurally cannot carry.
+        ///
+        /// [`ReadyWhen::Prints`] means *more occurrences than when this run started watching*, so a
+        /// pane that printed the marker BEFORE the run was asked for can never satisfy it. That is
+        /// not an exotic case: opening a pane and asking for a run are separate calls, and a
+        /// program announces itself once, on the way up. The barrier is right to refuse and
+        /// `instead` then reports the JOB — true, and about a question the caller did not ask.
+        ///
+        /// ⚠ It states the FACT and not the INTENT. A peer that re-announces every turn is a caller
+        /// who meant `prints` exactly, and whose real finding is that their peer went quiet.
+        ///
+        /// ⚠ `false` for the other three kinds rather than *unknown*: [`Shows`](ReadyWhen::Shows)
+        /// failing already means the text is not there, and the markers of
+        /// [`Runs`](ReadyWhen::Runs) and [`Settles`](ReadyWhen::Settles) name a program and an
+        /// agent — neither is screen text, so a screen answer about them would be a coincidence
+        /// reported as a diagnosis.
+        already_showing: bool,
     } = {
         wanted: ReadyWhen::Shows(String::new()),
         instead: PaneDoing::Unknown,
+        already_showing: false,
     },
     /// ⚠ A PROMPT WAS WRITTEN INTO A READY PANE AND THE PANE NEVER SHOWED IT, so nothing was
     /// submitted and the peer was never asked.
@@ -404,14 +423,33 @@ impl std::fmt::Display for PaneError {
             Self::Encode(key) => write!(f, "the key {key:?} has no bytes to send to a terminal"),
             Self::Write(why) => write!(f, "writing to the pane failed: {why}"),
             Self::Spawn(why) => write!(f, "the pane could not be started: {why}"),
-            Self::NeverReady { wanted, instead } => {
+            Self::NeverReady {
+                wanted,
+                instead,
+                already_showing,
+            } => {
                 write!(
                     f,
                     "the pane never {}, which this run was told to wait for before driving it, so \
                      nothing was injected",
                     wanted.describe(),
                 )?;
-                write!(f, "{instead}")
+                write!(f, "{instead}")?;
+                // ⚠⚠⚠ LAST, AND ONLY WHEN IT IS TRUE. This is the clause that ends the caller's
+                // search, so it goes where a sentence puts its point — and a `prints` that failed
+                // for any other reason must not be handed a correction that does not apply to it.
+                if *already_showing {
+                    write!(
+                        f,
+                        "; but {:?} is already on its screen — {:?} counts only what a pane prints \
+                         AFTER a run starts watching it, so a caller who meant the text that is \
+                         there wants {:?}",
+                        wanted.marker(),
+                        wanted.word(),
+                        ReadyWhen::Shows(String::new()).word(),
+                    )?;
+                }
+                Ok(())
             }
             Self::NeverTook { attempts, written } => {
                 write!(

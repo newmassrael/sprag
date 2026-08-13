@@ -125,6 +125,7 @@ pub(crate) fn refused_naming(
     let Some(crate::access::PaneError::NeverReady {
         wanted: asked,
         instead,
+        ..
     }) = failure
     else {
         panic!(
@@ -679,6 +680,7 @@ mod tests {
             Some(&PaneError::NeverReady {
                 wanted: ReadyWhen::Runs("claude".to_string()),
                 instead: PaneDoing::Unknown,
+                already_showing: false,
             }),
             &ReadyWhen::Runs("claude".to_string()),
             "claude",
@@ -694,6 +696,7 @@ mod tests {
             Some(&PaneError::NeverReady {
                 wanted: ReadyWhen::Runs("claude".to_string()),
                 instead: PaneDoing::Job(JobLeader::known_as("sh".to_string())),
+                already_showing: false,
             }),
             &ReadyWhen::Runs("claude".to_string()),
             "sh",

@@ -1438,6 +1438,13 @@ impl Readiness {
             // caller needs is what the pane was doing when the wait gave up. One read, on the way
             // out of a run that is already over.
             Waited::TimedOut => Err(PaneError::NeverReady {
+                // ⚠⚠⚠ READ HERE, WHERE THE MARKER IS STILL IN HAND. `wanted` is moved into the
+                // error on the next line, and this is the only fact of the three that has to be
+                // asked of the SCREEN rather than of the process table — see `already_showing`.
+                already_showing: matches!(when, ReadyWhen::Prints(_))
+                    && panes
+                        .pane_collapsed(pane)
+                        .is_some_and(|text| text.contains(when.marker())),
                 wanted: when,
                 // ⚠ THE ABSENCE OF THE CAPABILITY AND THE ABSENCE OF A JOB ARE DIFFERENT ANSWERS —
                 // one is about this build, the other about this pane. See [`PaneDoing`].
@@ -1749,6 +1756,82 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **AND THE REFUSAL SAYS THE ONE THING THAT FIXES IT: THE MARKER IS ALREADY THERE.**
+    ///
+    /// The gate above proves the barrier is RIGHT to refuse. This one is about whether the caller
+    /// can act on the refusal, and until it existed they could not. What they were handed was:
+    ///
+    /// > *the pane never printed `"BANNER"`, which this run was told to wait for before driving
+    /// > it, so nothing was injected; its terminal belonged to `"cat"` instead*
+    ///
+    /// — every word of it true, and the correction is not in it. [`PaneDoing`] answers *what owns
+    /// the terminal*, which diagnoses [`ReadyWhen::Runs`] and [`ReadyWhen::Settles`] precisely and
+    /// says nothing at all about a MARKER. So the commonest readiness mistake there is — naming
+    /// `prints` for a banner the pane had already printed — reports a job name the caller never
+    /// asked about and stays invisible.
+    ///
+    /// # ⚠⚠⚠ Why this is the mistake that had to be named
+    ///
+    /// A caller opens a pane, the program in it announces itself once, and some time later they ask
+    /// for a run. **Every one of those is a separate call**, so by the time the barrier arms the
+    /// announcement is long past — and `prints`, whose whole contract is *more occurrences than
+    /// when I armed*, can then never clear. It is not an exotic case: it is what happens whenever
+    /// the pane was opened before the run was asked for, which is the normal order.
+    ///
+    /// ⚠⚠ It is also this workspace's own recorded flake. A suite running at thirty threads
+    /// deschedules the gap between a fixture's `spawn` and the driver's first look for longer than
+    /// the peer takes to print its banner, and the run then waits out its whole clock having typed
+    /// nothing (`Exhausted(Duration)`, `Bytes(0)`). That signature has been in
+    /// `.claude/remote-build.toml` for rounds as a HYPOTHESIS nobody had instrumented. This is the
+    /// instrument, and the product is where the answer belongs.
+    ///
+    /// ⚠ **THE FACT, NOT THE INTENT.** It says the marker is on the screen and which question would
+    /// have read it; it does not say the caller meant that one. A peer that re-announces every turn
+    /// is a caller who meant `prints` exactly, and whose real finding is that the peer went quiet.
+    #[test]
+    fn a_marker_that_is_already_on_the_screen_is_named_as_such_by_the_refusal() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let pane = {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg("printf 'BANNER\\n'; exec cat");
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .unwrap()
+                .spawn(command, "sh".to_string(), 40, 8)
+                .expect("spawn pane")
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        // The window a loaded machine opens by accident, opened deliberately: the marker is on the
+        // screen BEFORE the barrier's first look, which is the only state this gate is about.
+        crate::testing::screen_showing(&access, pane, "BANNER");
+
+        let failed = Readiness::new(
+            Some(ReadyWhen::Prints("BANNER".to_string())),
+            Some(Duration::from_millis(200)),
+            None,
+            Attended::NoOne,
+        )
+        .reached(&access, pane, &RunContext::uncancellable())
+        .expect_err("a marker that was on screen at arming can never be exceeded");
+
+        let said = failed.to_string();
+        assert!(
+            said.contains("already on its screen"),
+            "⚠⚠⚠ the refusal must say the marker IS THERE. Without it the caller is told what owns \
+             the terminal — true, and about a question they did not ask — and the one fact that \
+             corrects their call is the one the barrier had in its hand and did not pass on: \
+             {said}",
+        );
+        assert!(
+            said.contains("shows"),
+            "⚠⚠ and it names the question that WOULD have read it, in the caller's own wire word, \
+             or the correction is one they have to already know to act on: {said}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠ **A PANE WHOSE CHILD HAS GONE SAYS SO, RATHER THAN BLAMING THE BUILD** — the third
     /// [`PaneDoing`] arm, and the reason that field stopped being an `Option`.
     ///
@@ -1793,6 +1876,9 @@ mod tests {
             PaneError::NeverReady {
                 wanted: ReadyWhen::Runs("claude".to_string()),
                 instead: PaneDoing::Nothing,
+                // ⚠ A PROGRAM NAME IS NOT SCREEN TEXT. `Runs` fails about the process table, so the
+                // screen answer is not asked for — see `already_showing`.
+                already_showing: false,
             },
             "the host CAN see the process table and there is no job — that is a fact about the \
              PANE, and it must not read as a blind build",
@@ -2155,6 +2241,7 @@ mod tests {
             PaneError::NeverReady {
                 wanted: ReadyWhen::Runs("claude".to_string()),
                 instead: PaneDoing::Unknown,
+                already_showing: false,
             },
             "and it says so by having NO answer for what ran instead, rather than inventing one",
         );
