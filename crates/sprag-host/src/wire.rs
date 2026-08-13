@@ -7190,7 +7190,21 @@ mod tests {
             // for a word rather than a sentence. ⚠ The clause-level reason it would otherwise have
             // reported is NOT lost and does NOT widen anything: it rides in the free-text detail,
             // R364's shape.
-            30,
+            // ⚠⚠⚠ R372 IS THE SIXTH, AND THE FIRST TO MOVE **TWO** OF THESE VOCABULARIES AT ONCE:
+            // a run's OUTCOME gains a sixth word and a step's VERDICT a fifth, both `taken_over`.
+            // They move together because they are one fact reported at two altitudes — the step
+            // that stopped, and the run that ended because of it — which is the shape `blocked`
+            // has had since R365/R366.
+            // ⚠⚠ WHAT IS NEW IS NOT A WIDER SPACE BUT A FACT THE PRODUCT COULD NOT SEE: a PERSON
+            // typing into a pane a run is driving. `send_key` is one encoder shared by a display
+            // client's keyboard and this wire — deliberately, so the two encode identically — and
+            // nothing recorded WHICH had written, so a run typed over its supervisor and reported
+            // `exhausted`. The hand is recorded at the write now (`sprag_terminal::Hand`).
+            // ⚠ It is a WORD and not a sentence by this pin's own test: the remedy differs from
+            // every other outcome's. `blocked` says answer the question, `failed` says fix
+            // something, `exhausted` says raise a budget — and this one says do NOTHING, because
+            // the pane already belongs to somebody who is using it.
+            31,
             &[
                 "check:pane-isolation",
                 "check:pane-admission",
@@ -7225,12 +7239,16 @@ mod tests {
                 "outcome:failed",
                 "outcome:cancelled",
                 "outcome:blocked",
+                // ⚠⚠ R372: the sixth outcome — a person took the pane.
+                "outcome:taken_over",
                 // ⚠⚠ R366: a STEP's verdict, which this pin could not see until now — the fifth
                 // word is the one that cost the number.
                 "verdict:continue",
                 "verdict:converged",
                 "verdict:blocked",
                 "verdict:answered",
+                // ⚠⚠ R372: the fifth verdict — the step that stopped because a person took over.
+                "verdict:taken_over",
                 // ⚠⚠ R366: WHY a blocked run did not answer. A caller branches on these — fix a
                 // needle, write a consent, or fetch a person — so they are words and not prose.
                 "refusal:unreadable",
@@ -7430,7 +7448,12 @@ mod tests {
             // `may_answer`'s two needles have, and invisible here for the same reason. ⚠ THIS TIME
             // THE BLIND SPOT WAS COVERED: the shape pin beside this one went red, which is exactly
             // what R370 built it for.
-            30,
+            // ⚠ R372: re-stamped with EVERY published REQUEST vocabulary unchanged. What moved is
+            // an ANSWER's value space (`taken_over`, on two enums at once), and this pin walks the
+            // words a CALLER may send — a run's outcome is not one of them. The pin that owns that
+            // half went red first and named both arms, which is the division of labour these four
+            // pins exist for.
+            31,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -7639,7 +7662,11 @@ mod tests {
             // been caught by nothing but two hand-written counts, which is what the pin exists to
             // replace. The number rises for the ADDED ARGUMENT on version 25's grounds — an older
             // daemon swallows an undeclared key and reports success for a run that will never wait.
-            30,
+            // ⚠ R372: re-stamped with every argument shape unchanged. `taken_over` is something a
+            // run is TOLD, not something a caller asks for — it took no argument on any form,
+            // deliberately: typing over somebody was never a behaviour a caller chose, so there was
+            // nothing to opt into.
+            31,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -8130,7 +8157,11 @@ mod tests {
         // this pin walks ADDRESSES — the blind spot named above. ⚠ And it is now a NAMED blind spot
         // rather than an admitted one: the argument was caught by the shape pin and the word by the
         // answer-vocabulary pin, which is the arrangement R370 left behind.
-        30,
+        // ⚠ R372: re-stamped with the SURFACE unchanged. `taken_over` added no address and no
+        // action — a run reports it through the outcome key it already had, on the forms it
+        // already served. This pin walking addresses is why it is silent, and the
+        // answer-vocabulary pin going red is why the number moved.
+        31,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

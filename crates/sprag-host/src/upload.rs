@@ -81,7 +81,9 @@ pub(crate) fn deliver(
     let Some(remote) = remote else {
         // An ordinary pane: the file is already reachable here, so the drop IS the paste.
         let path = shell_quote(local_path);
-        if !paste(&handle, &format!("{path} ")) {
+        // ⚠ A PERSON DROPPED A FILE ON THIS PANE. That is somebody at the pane doing something with
+        // their own hands, exactly as typing is — see [`sprag_terminal::Hand`].
+        if !paste(&handle, &format!("{path} "), sprag_terminal::Hand::APerson) {
             tracing::debug!(target: "sprag_host", %path, "a dropped path could not be written to the pane");
             return None;
         }
@@ -119,7 +121,11 @@ fn spawn_upload(handle: PanePtyHandle, argv: Vec<String>, remote_path: String) {
             .output();
         match outcome {
             Ok(output) if output.status.success() => {
-                if !paste(&handle, &format!("{remote_path} ")) {
+                if !paste(
+                    &handle,
+                    &format!("{remote_path} "),
+                    sprag_terminal::Hand::APerson,
+                ) {
                     tracing::debug!(target: "sprag_host", %remote_path, "uploaded, but the pane closed before its path could be pasted");
                 }
             }

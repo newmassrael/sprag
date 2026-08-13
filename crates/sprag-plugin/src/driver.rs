@@ -159,6 +159,24 @@ pub enum OutcomeState {
     /// shape for `interrupted`: reporting a run that did not finish as though it had would have
     /// been a lie, and *"the honest word is what costs the number"*.
     Blocked(Option<crate::consent::Unanswered>),
+    /// **A PERSON TOOK THE PANE**, and the run stopped driving rather than typing over them.
+    ///
+    /// Carries how much they typed when this record holds the detail — see
+    /// [`Verdict::TakenOver`] for why this is not a flavour of
+    /// [`Blocked`](Self::Blocked), and [`Interruption`](crate::readiness::Interruption) for what it
+    /// counts.
+    ///
+    /// ⚠ The [`Option`] is [`Blocked`](Self::Blocked)'s exactly: a run RESTORED from a previous
+    /// daemon's log has only its word, and a re-published count would be a claim about writes
+    /// nobody has watched since.
+    ///
+    /// # ⚠⚠ What this outcome does NOT say
+    ///
+    /// It does not say the run may resume, and nothing here decides when a person is finished.
+    /// `ai_loop.scxml` has an edge back (`awaiting_human` → `resume`) that a supervisor takes by
+    /// hand; automating it would need a measured answer to *"when has somebody stopped typing"*,
+    /// which this round does not have and did not guess.
+    TakenOver(Option<crate::readiness::Interruption>),
 }
 
 impl OutcomeState {
@@ -187,6 +205,9 @@ impl OutcomeState {
             // ⚠⚠ A WORD OF ITS OWN, not a flavour of `failed`. A blocked run wants an ANSWER and a
             // failed one wants a FIX — R357's rule for `interrupted`, and the same honesty test.
             Self::Blocked(_) => "blocked",
+            // ⚠⚠ AND A SIXTH, on the same test: a taken-over run wants NOTHING done, where a
+            // blocked one wants an answer and a failed one wants a fix.
+            Self::TakenOver(_) => "taken_over",
         }
     }
 
@@ -198,8 +219,14 @@ impl OutcomeState {
     /// the gate beside this type constructs every variant and holds the list to
     /// [`wire_str`](Self::wire_str), so a sixth outcome cannot be published without a word or
     /// spelled without being published.
-    pub const WIRE_WORDS: &'static [&'static str] =
-        &["converged", "exhausted", "failed", "cancelled", "blocked"];
+    pub const WIRE_WORDS: &'static [&'static str] = &[
+        "converged",
+        "exhausted",
+        "failed",
+        "cancelled",
+        "blocked",
+        "taken_over",
+    ];
 }
 
 sprag_vt::closed_set! {
@@ -336,6 +363,10 @@ pub struct Driver {
     /// is [`Unanswered`](crate::consent::Unanswered)'s own business, and it carries the reason
     /// beside it — which is a real answer with its own remedy rather than a second `Option`.
     asking: Option<crate::consent::Unanswered>,
+    /// WHAT A PERSON DID TO THE PANE, when a step reported they had taken it — recorded at the
+    /// verdict for [`asking`](Self::asking)'s reason exactly: the count is a delta against a
+    /// watermark this run armed, and nothing at the end of the run can re-derive it.
+    taken_over: Option<crate::readiness::Interruption>,
     /// HOW MANY OF ITS PEER'S QUESTIONS THIS RUN ANSWERED, on the caller's consent.
     ///
     /// # ⚠⚠ Why a run that answered has to say so in its OUTCOME and not only in its journal
@@ -439,6 +470,7 @@ impl Driver {
             stopped: None,
             exhausted_by: None,
             asking: None,
+            taken_over: None,
             answered: 0,
         }
     }
@@ -594,6 +626,14 @@ impl Driver {
                             self.asking = Some(asking.clone());
                             OrchestrationEvent::Block
                         }
+                        // ⚠⚠⚠ AND A PERSON AT THE PANE OUTRANKS EVERYTHING BELOW TOO, for the arm
+                        // above's reason turned around: a cancel or a spent budget arriving in the
+                        // same instant does not un-take the pane, and the run must not be recorded
+                        // as having merely run out while somebody was typing into it.
+                        Verdict::TakenOver(interruption) => {
+                            self.taken_over = Some(*interruption);
+                            OrchestrationEvent::Taken
+                        }
                         // ⚠⚠ THE RUN'S OWN END OUTRANKS THE TALLY, and asking in the other order
                         // was two defects: a person's stop mid-turn reported as `exhausted —
                         // iterations`, and a deadline that curtailed the last permitted turn
@@ -732,6 +772,9 @@ impl Driver {
             // always records — the same construction `exhausted` uses one arm up, for the same
             // reason: an outcome that cannot say what it is blocked on is not worth reaching.
             OrchestrationState::Blocked => OutcomeState::Blocked(self.asking),
+            // `Verdict::TakenOver` is the only producer of the event that reaches this state, and
+            // it always records — `blocked`'s construction one arm up, for its reason.
+            OrchestrationState::TakenOver => OutcomeState::TakenOver(self.taken_over),
             // Failed, or any state the loop left unexpectedly.
             _ => OutcomeState::Failed,
         };
@@ -768,6 +811,7 @@ mod tests {
             OutcomeState::Failed,
             OutcomeState::Cancelled,
             OutcomeState::Blocked(None),
+            OutcomeState::TakenOver(None),
         ]
         .iter()
         .map(OutcomeState::wire_str)

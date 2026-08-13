@@ -508,7 +508,7 @@ mod tests {
             .pane(pane)
             .expect("the pane is still pooled")
             .pty()
-            .write(b"sleep 300\n")
+            .write(b"sleep 300\n", crate::pane_pty::Hand::APerson)
             .expect("type a command into the pane");
         let running = settle(&sampler, &registry, |row| {
             row.foreground
@@ -612,7 +612,10 @@ mod tests {
             .pane(pane)
             .expect("the pane is still pooled")
             .pty()
-            .write(b"sh -c 'sh -c \"sleep 300 &\"; exec sleep 400'\n")
+            .write(
+                b"sh -c 'sh -c \"sleep 300 &\"; exec sleep 400'\n",
+                crate::pane_pty::Hand::APerson,
+            )
             .expect("type the job into the pane");
 
         let reading = settle(&sampler, &registry, |row| {

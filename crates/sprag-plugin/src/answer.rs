@@ -145,6 +145,16 @@ impl Plugin for Answer {
                 Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
                     .noting(attention.describe()))
             }
+            // ⚠⚠ REACHABLE HERE, unlike the arm above it. This plugin passes `Attended::NoOne`, so
+            // no wait can produce `Attended` — but the interruption check is not a wait: it reads a
+            // fact about the pane on every step, and this tool's caller is a person who may well be
+            // typing into that pane with their other hand. Terminal, for the same reason as
+            // everywhere else: the answer this run was about to send is exactly what must not land
+            // underneath somebody choosing an option by hand.
+            Reached::Interrupted(interruption) => {
+                let note = interruption.describe();
+                Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note))
+            }
             // Asking, and the consent did not name one option on it. Terminal, carrying the
             // question and the reason — which for this plugin is the whole answer the caller
             // wanted, since the reason is what they can act on.

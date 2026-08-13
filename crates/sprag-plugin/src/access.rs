@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use sprag_detect::{AgentState, Question};
 use sprag_input::{Modifiers, encode};
 use sprag_terminal::{
-    Attention, CommandBuilder, JobProcess, Pane, PaneBirthHooks, PaneEcho, PaneEndOfInput, PaneId,
-    PanePtyHandle, RawOutput, Reach, Stop, StoppedJob, Unstopped, Workspace, foreground_leader_of,
+    Attention, CommandBuilder, Hands, JobProcess, Pane, PaneBirthHooks, PaneEcho, PaneEndOfInput,
+    PaneId, PanePtyHandle, RawOutput, Reach, Stop, StoppedJob, Unstopped, Workspace,
+    foreground_leader_of,
 };
 use sprag_vt::LinesSince;
 use sprag_vt::Screen;
@@ -556,6 +557,17 @@ pub trait PaneAccess {
         None
     }
 
+    /// The pane's *hands* — WHO has written into it, and how often — if this host records them.
+    /// `None` by default, on the same terms as the other sub-surfaces.
+    ///
+    /// ⚠ A `None` here is *"this build cannot say whose keystrokes these were"*, and a consumer
+    /// must degrade in the SAFE direction — which for this surface means **carrying on**, not
+    /// stopping. An absence is not evidence that somebody is present, and a run that read it as one
+    /// would refuse to drive any pane on a host without the capability.
+    fn hands(&self) -> Option<&dyn PaneHands> {
+        None
+    }
+
     /// The pane's *job control* — the ability to STOP what its terminal belongs to. `None` by
     /// default, on the same terms as the other six sub-surfaces.
     ///
@@ -737,6 +749,31 @@ pub trait PaneInputEcho {
     /// Bounded and lossy-UTF-8 by construction — it is compared against SCREEN TEXT, and the
     /// screen is text.
     fn pane_recent_input(&self, id: PaneId) -> Option<String>;
+}
+
+/// Pane *hands*: WHO has written into a pane and how many times each. Reached via
+/// [`PaneAccess::hands`].
+///
+/// # ⚠⚠⚠ The question the echo trail beside it cannot answer
+///
+/// [`PaneInputEcho`] records WHAT was written and is deliberately one stream, because its consumers
+/// are matching text against a screen. That made it useless for a different question the product
+/// could not otherwise ask: **has a PERSON reached into this pane?**
+///
+/// The two hands are indistinguishable in the trail by construction — `sprag_host::pane::send_key`
+/// is one encoder shared by a display client's keyboard and the `scene/invoke` wire, on purpose. So
+/// the fact had to be recorded at the write rather than recovered afterwards, which is what
+/// [`Hands`] is.
+///
+/// # ⚠⚠ Why a caller keeps its own watermark instead of asking *"since when"*
+///
+/// The counts are monotonic and the pane holds no reader state, so several readers can each ask
+/// their own *"since I last looked"* without coordinating — and a reader that never looks costs
+/// nothing. A `since(instant)` API would have made the pane remember on everyone's behalf and
+/// answer a different question depending on how many were asking.
+pub trait PaneHands {
+    /// How many times each hand has written into `id`, or `None` for a pane nobody knows.
+    fn pane_hands(&self, id: PaneId) -> Option<Hands>;
 }
 
 /// What a pane's TERMINAL does with what is written into it — the kernel's answers, not guesses.
@@ -1010,7 +1047,12 @@ impl WorkspacePaneAccess {
     /// Clone the pane's I/O handle under the workspace lock (released before
     /// the handle is used), so screen reads / writes never hold the workspace
     /// lock.
-    fn handle(&self, id: PaneId) -> Option<PanePtyHandle> {
+    ///
+    /// ⚠ `pub(crate)` for the fixtures' sake: a gate about a PERSON typing into a pane has to
+    /// reach the door a display client writes through ([`PanePtyHandle::write`]), because the
+    /// injection API above is the door the RUN writes through and a fixture that uses it is
+    /// staging the person out of the very distinction under test.
+    pub(crate) fn handle(&self, id: PaneId) -> Option<PanePtyHandle> {
         lock(&self.workspace).pane(id).map(Pane::handle)
     }
 }
@@ -1053,8 +1095,12 @@ impl PaneAccess for WorkspacePaneAccess {
                 .ok_or_else(|| PaneError::Encode(stroke.key.clone()))?;
             bytes.extend_from_slice(&encoded);
         }
+        // ⚠⚠ A PROGRAM, always — this is the door a PLUGIN types through, and every caller of it is
+        // a run driving a pane rather than somebody at a keyboard. The distinction is what lets a
+        // run ask whether a PERSON has reached in ([`sprag_terminal::Hand`]); a plugin that stamped
+        // its own injections as a person's would trip its own interruption check on the next step.
         handle
-            .write(&bytes)
+            .write(&bytes, sprag_terminal::Hand::AProgram)
             .map_err(|e| PaneError::Write(e.to_string()))?;
         Ok(Written::of(bytes.len() as u64))
     }
@@ -1068,6 +1114,10 @@ impl PaneAccess for WorkspacePaneAccess {
     }
 
     fn input_echo(&self) -> Option<&dyn PaneInputEcho> {
+        Some(self)
+    }
+
+    fn hands(&self) -> Option<&dyn PaneHands> {
         Some(self)
     }
 
@@ -1105,6 +1155,12 @@ impl PaneSupervision for WorkspacePaneAccess {
 impl PaneInputEcho for WorkspacePaneAccess {
     fn pane_recent_input(&self, id: PaneId) -> Option<String> {
         Some(self.handle(id)?.echo_trail())
+    }
+}
+
+impl PaneHands for WorkspacePaneAccess {
+    fn pane_hands(&self, id: PaneId) -> Option<Hands> {
+        Some(self.handle(id)?.hands())
     }
 }
 

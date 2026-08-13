@@ -45,7 +45,7 @@ use pinion_core::external::{
 };
 use serde_json::{Value, json};
 use sprag_input::{KeyEdge, Modifiers, MouseButton, MouseEventKind, MouseInput};
-use sprag_terminal::{PanePtyHandle, SignalKey};
+use sprag_terminal::{Hand, PanePtyHandle, SignalKey};
 use sprag_vt::{ClipboardTarget, Screen, osc52_reply};
 
 use crate::external::{declined, refused, rpc_external_impl};
@@ -146,9 +146,23 @@ impl std::error::Error for KeyUnsent {}
 /// that must say what the write MEANT cannot re-derive them: a W3C key plus modifiers becomes PTY
 /// bytes through the pane's live input modes, so `Ctrl-C` is `0x03` only because this encoder said
 /// so — which is what the caveat below is computed from.
-pub fn send_key(pty: &PanePtyHandle, key: &str, mods: Modifiers) -> Result<Vec<u8>, KeyUnsent> {
+///
+/// # ⚠⚠⚠ `by` is the one thing the two paths must NOT share
+///
+/// The sentence above — *the human keyboard path and the AI `scene/invoke` path encode
+/// IDENTICALLY* — is right about the BYTES and was wrong as a whole story, because it left the two
+/// indistinguishable once written. That cost the product an entire question: *has a person taken
+/// this pane?* ([`sprag_terminal::Hand`], measured). So the encoding stays shared and the HAND is
+/// the caller's to declare: the display client says [`Hand::APerson`], the wire says
+/// [`Hand::AProgram`].
+pub fn send_key(
+    pty: &PanePtyHandle,
+    key: &str,
+    mods: Modifiers,
+    by: Hand,
+) -> Result<Vec<u8>, KeyUnsent> {
     let bytes = sprag_input::encode(key, mods, pty.input_modes()).ok_or(KeyUnsent::Unencodable)?;
-    pty.write(&bytes)
+    pty.write(&bytes, by)
         .map(|_| bytes)
         .map_err(|_| KeyUnsent::NotWritten)
 }
@@ -209,13 +223,13 @@ fn injected(pty: &PanePtyHandle, written: &[u8]) -> IntrospectValue {
 /// Write literal UTF-8 `text` to `pty` (no key-encoding) — the IME-commit /
 /// paste seam. Empty text is a no-op success. `true` on success; `false` on a
 /// write failure. The text->PTY SSOT shared by [`SpragPaneExternal`]'s `text`
-/// action and the in-process client.
+/// action and the in-process client. `by` is the caller's to declare — see [`send_key`].
 #[must_use]
-pub fn send_text(pty: &PanePtyHandle, text: &str) -> bool {
+pub fn send_text(pty: &PanePtyHandle, text: &str, by: Hand) -> bool {
     if text.is_empty() {
         return true;
     }
-    pty.write(text.as_bytes()).is_ok()
+    pty.write(text.as_bytes(), by).is_ok()
 }
 
 /// The bracketed-paste START marker (`ESC [ 200 ~`) — written before pasted text when the pane's
@@ -239,14 +253,14 @@ const PASTE_BRACKET_END: &str = "\x1b[201~";
 /// interpreted as typed commands (the paste-injection guard xterm applies). Empty text is a
 /// no-op success. `true` on success; `false` on a write failure.
 #[must_use]
-pub fn paste(pty: &PanePtyHandle, text: &str) -> bool {
+pub fn paste(pty: &PanePtyHandle, text: &str, by: Hand) -> bool {
     if text.is_empty() {
         return true;
     }
     if !pty.input_modes().bracketed_paste {
-        return pty.write(text.as_bytes()).is_ok();
+        return pty.write(text.as_bytes(), by).is_ok();
     }
-    pty.write(&frame_bracketed_paste(text)).is_ok()
+    pty.write(&frame_bracketed_paste(text), by).is_ok()
 }
 
 /// REPORT a mouse event to `pty`'s child — the mouse-tracking seam, distinct from [`send_key`] /
@@ -260,10 +274,17 @@ pub fn paste(pty: &PanePtyHandle, text: &str) -> bool {
 /// drag outside button/any-event tracking) is a no-op SUCCESS — it is silently dropped, not a
 /// failure, exactly as an empty [`send_text`] is. `true` on a successful write or a legitimate drop;
 /// `false` only on a write failure.
+///
+/// ⚠⚠ Written as [`Hand::AProgram`] EVEN WHEN A PERSON MOVED THE MOUSE, and this is a decision
+/// rather than an oversight. A mouse report is not somebody's input travelling to the child — it is
+/// SPRAG describing the environment to a program that asked to be told, and the person did not type
+/// it. Counting it as a person's hand would fire *"somebody has taken this pane"* on a stray hover
+/// across a pane a run is driving, which is the false positive that would make the whole signal
+/// unusable.
 #[must_use]
 pub fn mouse(pty: &PanePtyHandle, event: MouseInput) -> bool {
     match sprag_input::encode_mouse(event, pty.input_modes()) {
-        Some(bytes) => pty.write(&bytes).is_ok(),
+        Some(bytes) => pty.write(&bytes, Hand::AProgram).is_ok(),
         None => true, // the mode did not want this event — a no-op, not a rejection
     }
 }
@@ -274,10 +295,14 @@ pub fn mouse(pty: &PanePtyHandle, event: MouseInput) -> bool {
 /// boundary (like [`mouse`] / key encoding); a display client reports only the edge. A change the
 /// mode does not want (1004 off) is a no-op SUCCESS, not a failure. `true` on a successful write or
 /// a legitimate drop; `false` only on a write failure.
+///
+/// ⚠⚠ [`Hand::AProgram`], for [`mouse`]'s reason and more plainly still: a focus edge is raised by
+/// the WINDOW SYSTEM, so there is no hand at all. A run whose pane merely gained focus has not been
+/// taken by anybody.
 #[must_use]
 pub fn focus(pty: &PanePtyHandle, focused: bool) -> bool {
     match sprag_input::encode_focus(focused, pty.input_modes()) {
-        Some(bytes) => pty.write(&bytes).is_ok(),
+        Some(bytes) => pty.write(&bytes, Hand::AProgram).is_ok(),
         None => true, // focus reporting is off — a no-op, not a rejection
     }
 }
@@ -322,7 +347,12 @@ impl SpragPaneExternal {
         let Some((key, mods)) = parse_key_args(args)? else {
             return Ok(IntrospectValue::Null); // suppressed key-up edge
         };
-        send_key(&self.pty, &key, mods)
+        // ⚠⚠ THE WIRE IS A PROGRAM. A caller reaching this surface is driving the pane through an
+        // API — a plugin, `sprag send-keys`, an MCP tool — and even when a person set that call in
+        // motion, they are not AT this pane the way a display client's keyboard is. Stamping the
+        // wire as a person would make every scripted keystroke read as *"somebody has taken this
+        // pane"*, which is the reading that would stop every supervised run the moment it worked.
+        send_key(&self.pty, &key, mods, Hand::AProgram)
             .map(|written| injected(&self.pty, &written))
             .map_err(refused)
     }
@@ -335,7 +365,7 @@ impl SpragPaneExternal {
     /// [`InvokeError::Rejected`].
     fn inject_text(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
-        if send_text(&self.pty, &text) {
+        if send_text(&self.pty, &text, Hand::AProgram) {
             Ok(injected(&self.pty, text.as_bytes()))
         } else {
             Err(refused(NOT_WRITTEN))
@@ -348,7 +378,7 @@ impl SpragPaneExternal {
     /// a no-op success. A write failure is an [`InvokeError::Rejected`].
     fn inject_paste(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let text = parse_text_args(args)?;
-        if paste(&self.pty, &text) {
+        if paste(&self.pty, &text, Hand::AProgram) {
             // The BRACKETS are not consulted: they wrap the text, they do not shield it. The line
             // discipline sits below this device and raises its signals from the bytes whatever
             // markers surround them, which is exactly why a pasted `0x03` surprises people.
@@ -1294,7 +1324,7 @@ mod tests {
             wait_until(|| handle.input_modes().bracketed_paste),
             "the child's DECSET 2004 was never emulated",
         );
-        assert!(paste(&handle, "a\nb"));
+        assert!(paste(&handle, "a\nb", Hand::APerson));
         // The raw `cat` echoes the bytes the host wrote, so the bracket wrap rides the capture.
         assert!(
             wait_until(|| contains(&pty.raw_output().bytes, b"\x1b[200~a\nb\x1b[201~")),
@@ -1307,7 +1337,7 @@ mod tests {
         let pty = raw_cat(false);
         let handle = pty.handle();
         assert!(!handle.input_modes().bracketed_paste);
-        assert!(paste(&handle, "a\nb"));
+        assert!(paste(&handle, "a\nb", Hand::APerson));
         // The literal text echoes back with NO bracket markers (legacy, == send_text).
         assert!(
             wait_until(|| contains(&pty.raw_output().bytes, b"a\nb")),
@@ -1463,7 +1493,7 @@ mod tests {
         // The seam accepts the edge as a no-op success — the mode wanted nothing.
         assert!(focus(&handle, true));
         // Prove nothing was written by ordering a sentinel after it.
-        assert!(send_text(&handle, "SENTINEL"));
+        assert!(send_text(&handle, "SENTINEL", Hand::APerson));
         assert!(
             wait_until(|| contains(&pty.raw_output().bytes, b"SENTINEL")),
             "the sentinel never echoed",
@@ -1487,7 +1517,7 @@ mod tests {
         assert!(mouse(&handle, press(MouseButton::Left, 4, 2)));
         // Prove NOTHING was written by ordering a sentinel after it: if a report had been written it
         // would echo before the sentinel does.
-        assert!(send_text(&handle, "SENTINEL"));
+        assert!(send_text(&handle, "SENTINEL", Hand::APerson));
         assert!(
             wait_until(|| contains(&pty.raw_output().bytes, b"SENTINEL")),
             "the sentinel never echoed",

@@ -50,7 +50,7 @@ use pinion_core::GridBuffer;
 use sprag_grid::{ProjectionToken, RowShares};
 use sprag_input::{Modifiers, MouseInput};
 use sprag_terminal::{
-    ActivityReading, Attention, CommandBuilder, DividerStep, Ended, HistoryLimitSource,
+    ActivityReading, Attention, CommandBuilder, DividerStep, Ended, Hand, HistoryLimitSource,
     LayoutSnapshot, LayoutWire, OrderStep, Pane, PaneArgsSource, PaneBirthHooks, PaneDir,
     PaneEnvSource, PaneHomes, PaneId, PanePtyError, PanePtyHandle, PaneRebirth, PaneStep, PlaceHow,
     Projection, Rect, SessionId, SessionInfo, SessionRegistry, Snapshot, SnapshotError, SplitDir,
@@ -2955,9 +2955,17 @@ impl HostClient for Host {
 
     /// Encodes to PTY bytes and writes via the shared [`crate::send_key`] SSOT (the
     /// same encoder the RPC `scene/invoke` path uses); `false` for an absent id.
+    ///
+    /// # ⚠⚠⚠ THIS IS THE DOOR A PERSON'S HANDS COME THROUGH
+    ///
+    /// A [`HostClient`] IS a display client — the TUI and the GUI reach a pane's child here and
+    /// nowhere else, and what arrives has been typed on a keyboard by somebody sitting in front of
+    /// it. That is why [`Hand::APerson`] is stamped here and [`Hand::AProgram`] on the wire: the
+    /// encoder below is deliberately the same for both, and the hand is the only thing that
+    /// distinguishes them afterwards. See [`sprag_terminal::Hand`] for what it cost not to.
     fn send_key(&self, id: PaneId, key: &str, mods: Modifiers) -> bool {
         self.with_pane_id(id, Pane::handle)
-            .is_some_and(|handle| crate::send_key(&handle, key, mods).is_ok())
+            .is_some_and(|handle| crate::send_key(&handle, key, mods, Hand::APerson).is_ok())
     }
 
     /// Gates + encodes the mouse report at the PTY boundary via the shared [`crate::mouse`] SSOT
@@ -2974,17 +2982,20 @@ impl HostClient for Host {
             .is_some_and(|handle| crate::focus(&handle, focused))
     }
 
+    /// [`Hand::APerson`], for [`send_key`](Self::send_key)'s reason: this is an IME commit or typed
+    /// text from a display client, which is a person composing at a keyboard.
     fn send_text(&self, id: PaneId, text: &str) -> bool {
         self.with_pane_id(id, Pane::handle)
-            .is_some_and(|handle| crate::send_text(&handle, text))
+            .is_some_and(|handle| crate::send_text(&handle, text, Hand::APerson))
     }
 
     /// Brackets the paste (and filters an embedded end marker) at the PTY boundary when the pane's
     /// child enabled DEC private mode 2004 — the mode is read live from the emulator here, so the
     /// bracketing cannot disagree with what the child asked for. `false` for an absent id.
+    /// [`Hand::APerson`], for [`send_key`](Self::send_key)'s reason: somebody pressed paste.
     fn paste(&self, id: PaneId, text: &str) -> bool {
         self.with_pane_id(id, Pane::handle)
-            .is_some_and(|handle| crate::paste(&handle, text))
+            .is_some_and(|handle| crate::paste(&handle, text, Hand::APerson))
     }
 
     fn pane_full_text(&self, id: PaneId) -> String {

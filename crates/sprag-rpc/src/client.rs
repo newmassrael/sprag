@@ -736,7 +736,43 @@ impl ScopeAsk {
 ///   own: `may_answer` remains the only thing that can put a byte into a dialog, and this argument
 ///   only widens what a run may WAIT for. Zero is malformed rather than a second spelling of
 ///   *"nobody"*, for the empty list's reason one version above.
-pub const WIRE_PROTOCOL: u32 = 30;
+/// * **31 — A SIXTH OUTCOME AND A FIFTH VERDICT: `taken_over`, because A PERSON CAN TAKE A PANE A
+///   RUN IS DRIVING.** A run that finds somebody typing into its pane stops driving and reports
+///   that, where before it could not find out at all.
+///
+///   ⚠⚠ **A WIDENED ANSWER VALUE SPACE — this wire's first bump cause, and the pin that guards it
+///   said so before the number moved** (`an_answers_value_space_cannot_widen_under_the_protocol_
+///   number`, which named `outcome:taken_over` and `verdict:taken_over`). A peer decodes these
+///   enums WHOLE, and serde fails the entire document rather than the field, so a version-30 client
+///   reading a version-31 run's outcome does not get an unknown word — it gets nothing. The
+///   handshake is what turns that into a refusal it can read.
+///
+///   ⚠⚠⚠ **WHAT EARNED IT, MEASURED BEFORE ANY OF IT EXISTED.** A person reached into a pane an
+///   orchestrator was driving and typed one key. The run typed its stimulus at them **twice more**
+///   and reported `exhausted — iterations`, which tells whoever reads it to raise a budget. It
+///   could not have done better: `sprag_host::pane::send_key` is one encoder shared by a display
+///   client's keyboard and the `scene/invoke` wire — *deliberately*, so the two encode identically
+///   — and nothing downstream recorded WHICH had written. The fix is at that door
+///   (`sprag_terminal::Hand`): the bytes are still encoded identically and the HAND is now
+///   recorded, so the barrier every injecting plugin passes through can ask.
+///
+///   ⚠ **A WORD OF ITS OWN RATHER THAN A FLAVOUR OF `blocked`**, which is version 26's argument
+///   applied to the opposite fact. `blocked` is *the PEER stopped to ask and nobody answered*; this
+///   is *a PERSON is here and already acting*. A reader told the first goes looking for a question
+///   to answer; a reader told the second must do nothing at all. Folding them would make the report
+///   false in the direction that matters — `blocked` says nobody came, and somebody did.
+///
+///   ⚠ **THE DEFAULT DOES NOT MOVE, AND NEITHER DOES WHAT A RUN MAY DECIDE.** No argument was
+///   added: every run gets this, because typing over somebody was never a behaviour a caller chose.
+///   A host that cannot name the hand (`PaneAccess::hands` absent) drives exactly as 26 through
+///   30 do — an absence of evidence that a person is present is never read as evidence that one is,
+///   which is gated (`a_host_that_cannot_name_the_hand_keeps_driving`).
+///
+///   ⚠ **WHAT IT DOES NOT DO: RESUME.** `ai_loop.scxml` has an edge back from `awaiting_human`, and
+///   taking it automatically needs a measured answer to *when has somebody stopped typing*. This
+///   version does not have one and did not guess: the run reports and ends, and a supervisor starts
+///   the next one, exactly as they do for `blocked`.
+pub const WIRE_PROTOCOL: u32 = 31;
 
 /// The JSON-RPC `params` key carrying [`WIRE_PROTOCOL`] — merged into EVERY request by
 /// [`HostConn::call`], beside [`SESSION_PARAM`] and for the same reason: a fact every request

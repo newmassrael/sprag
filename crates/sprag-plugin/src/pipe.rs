@@ -226,6 +226,13 @@ impl Plugin for Pipe {
                 return Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
                     .noting(attention.describe()));
             }
+            // A PERSON TOOK THE DESTINATION. A relay is the case where typing over somebody is
+            // worst: what this plugin would write is not its own text but ANOTHER pane's output,
+            // arriving in whatever the person is part-way through composing.
+            Reached::Interrupted(interruption) => {
+                let note = interruption.describe();
+                return Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note));
+            }
         }
 
         // ⚠⚠ WHAT THE SOURCE PRODUCED, BY LINE NUMBER — not what its grid looks like. A row is

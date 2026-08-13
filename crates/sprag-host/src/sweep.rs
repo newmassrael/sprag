@@ -987,7 +987,7 @@ mod tests {
             .pane(id)
             .expect("the pane")
             .pty()
-            .write(bytes)
+            .write(bytes, sprag_terminal::Hand::AProgram)
             .expect("write to the pty");
     }
 

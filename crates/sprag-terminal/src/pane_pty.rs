@@ -41,6 +41,82 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// See [`ECHO_TRAIL_CAP`] for why a pane keeps this at all.
 type SharedEchoTrail = Arc<Mutex<Vec<u8>>>;
 
+/// How many times each hand has written into a pane, shared by every writer — see [`Hands`].
+type SharedHands = Arc<Mutex<Hands>>;
+
+/// **WHOSE HAND PUT BYTES INTO A PANE.**
+///
+/// # ⚠⚠⚠ Why the one door had to start asking who was at it
+///
+/// A pane's input has exactly one door (`write_input`), and that is deliberate — a second write
+/// path would be a second answer that can drift. But until this existed the door recorded only
+/// THAT bytes arrived, never from WHOM, and the host's own encoder says why that matters:
+/// `sprag_host::pane::send_key` is *"the key→PTY SSOT shared by the RPC input surface and the
+/// in-process display client, so the human keyboard path and the AI `scene/invoke` path encode
+/// IDENTICALLY"*.
+///
+/// **Encoding identically is right. Being indistinguishable afterwards is a defect**, and it made
+/// one whole question unanswerable: *has a person taken this pane?* Measured before this existed —
+/// a run driving a pane typed its stimulus at a person who had reached in and typed, twice more,
+/// and reported `Exhausted(Iterations)` as though it had been alone at the keyboard.
+///
+/// # ⚠⚠ Why it is a PARAMETER and cannot be inferred
+///
+/// Nothing at this layer can see who is at the other end. The RPC surface carries a person's
+/// keystrokes as faithfully as a program's, and the in-process display client is a person's
+/// keyboard by construction — so the fact is the CALLER's, in exactly the way
+/// `sprag_plugin::Attended`'s patience is, and for the same reason: a default here would be a
+/// guess wearing the shape of an answer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hand {
+    /// **A PERSON AT A KEYBOARD** — a display client's key path. Somebody is at this pane, now.
+    APerson,
+    /// **A PROGRAM** — a plugin's injection, an RPC caller, a device or clipboard reply. The
+    /// default a caller should reach for when it is driving rather than being driven.
+    AProgram,
+}
+
+/// How many writes each hand has made into a pane, since it was spawned.
+///
+/// # ⚠⚠ Why COUNTS and not a flag, and why both hands are counted
+///
+/// A flag (*"a person has touched this"*) latches, and the question consumers actually ask is a
+/// DELTA: *has anybody written here since I last looked?* Only a monotonic count answers that
+/// without the pane having to know who is asking or when they last asked — the reader keeps its own
+/// watermark, which is the one arrangement that stays correct with several readers.
+///
+/// ⚠ [`AProgram`](Hand::AProgram) is counted too, though nothing reads it yet, because the
+/// interesting question one step out is *"has a program OTHER THAN ME written here"* — answerable
+/// only by a caller that can compare this count against its own injections. Counting one hand and
+/// not the other would make that question need a second round of plumbing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Hands {
+    by_a_person: u64,
+    by_a_program: u64,
+}
+
+impl Hands {
+    /// How many times a person has written into this pane with their own hands.
+    #[must_use]
+    pub const fn by_a_person(self) -> u64 {
+        self.by_a_person
+    }
+
+    /// How many times a program has written into this pane.
+    #[must_use]
+    pub const fn by_a_program(self) -> u64 {
+        self.by_a_program
+    }
+
+    /// Count one write by `hand`.
+    fn counting(&mut self, hand: Hand) {
+        match hand {
+            Hand::APerson => self.by_a_person = self.by_a_person.saturating_add(1),
+            Hand::AProgram => self.by_a_program = self.by_a_program.saturating_add(1),
+        }
+    }
+}
+
 /// A pane's ask-only handle on its own device, shared with every [`PanePtyHandle`].
 ///
 /// No `Mutex`: every operation on it is an `ioctl` that reads, so there is nothing to serialise —
@@ -318,6 +394,8 @@ pub struct PanePty {
     query: SharedQuery,
     /// What has recently been written INTO this pane — see [`ECHO_TRAIL_CAP`].
     echo_trail: SharedEchoTrail,
+    /// WHO has written into this pane, and how often — see [`Hands`].
+    hands: SharedHands,
     emulator: Arc<Mutex<Emulator>>,
     raw_output: SharedRawCapture,
     eof: Arc<AtomicBool>,
@@ -624,6 +702,7 @@ impl PanePty {
             writer,
             query,
             echo_trail: Arc::new(Mutex::new(Vec::new())),
+            hands: Arc::new(Mutex::new(Hands::default())),
             emulator,
             raw_output,
             eof,
@@ -913,14 +992,24 @@ impl PanePty {
         lock(&self.raw_output).snapshot()
     }
 
-    /// Write input bytes to the child. Keys are encoded to PTY bytes by the
+    /// Write input bytes to the child, from `by`. Keys are encoded to PTY bytes by the
     /// caller (encoding ownership is sprag's, per PINION-REQUIREMENTS R2.6).
+    ///
+    /// ⚠ `by` is not inferable here — see [`Hand`]. A caller that is driving says
+    /// [`Hand::AProgram`]; a caller carrying a person's own keystrokes says [`Hand::APerson`].
     ///
     /// # Errors
     ///
     /// Returns an IO error if the write to the master fails.
-    pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        write_input(&self.emulator, &self.writer, &self.echo_trail, bytes)
+    pub fn write(&self, bytes: &[u8], by: Hand) -> io::Result<()> {
+        write_input(
+            &self.emulator,
+            &self.writer,
+            &self.echo_trail,
+            &self.hands,
+            bytes,
+            by,
+        )
     }
 
     /// What has recently been written INTO this pane — the trail that lets a reader tell the
@@ -930,6 +1019,12 @@ impl PanePty {
     #[must_use]
     pub fn echo_trail(&self) -> String {
         String::from_utf8_lossy(&lock(&self.echo_trail)).into_owned()
+    }
+
+    /// WHO has written into this pane, and how many times each — see [`Hands`].
+    #[must_use]
+    pub fn hands(&self) -> Hands {
+        *lock(&self.hands)
     }
 
     /// A cloneable [`PanePtyHandle`] sharing this pty's emulator and
@@ -943,6 +1038,7 @@ impl PanePty {
             writer: Arc::clone(&self.writer),
             query: Arc::clone(&self.query),
             echo_trail: Arc::clone(&self.echo_trail),
+            hands: Arc::clone(&self.hands),
             raw_output: Arc::clone(&self.raw_output),
             clipboard_answered: Arc::clone(&self.clipboard_answered),
         }
@@ -1041,6 +1137,8 @@ pub struct PanePtyHandle {
     query: SharedQuery,
     /// Shared with the owning [`PanePty`] — see [`ECHO_TRAIL_CAP`].
     echo_trail: SharedEchoTrail,
+    /// Shared with the owning [`PanePty`] — see [`Hands`].
+    hands: SharedHands,
     raw_output: SharedRawCapture,
     /// Shared OSC 52 answered-query high-water mark — see [`PanePty::clipboard_answered`]. The
     /// host answers a read query through this handle, so the exactly-once arbitration lives here.
@@ -1125,20 +1223,33 @@ impl PanePtyHandle {
         (emu.clipboard_write().cloned(), emu.clipboard_write_seq())
     }
 
-    /// Write already-encoded input bytes to the child (R2.6: the caller
-    /// owns key→byte encoding).
+    /// Write already-encoded input bytes to the child, from `by` (R2.6: the caller
+    /// owns key→byte encoding). See [`PanePty::write`] for why `by` is a parameter.
     ///
     /// # Errors
     ///
     /// Returns an IO error if the write to the master fails.
-    pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        write_input(&self.emulator, &self.writer, &self.echo_trail, bytes)
+    pub fn write(&self, bytes: &[u8], by: Hand) -> io::Result<()> {
+        write_input(
+            &self.emulator,
+            &self.writer,
+            &self.echo_trail,
+            &self.hands,
+            bytes,
+            by,
+        )
     }
 
     /// What has recently been written INTO this pane — see [`PanePty::echo_trail`].
     #[must_use]
     pub fn echo_trail(&self) -> String {
         String::from_utf8_lossy(&lock(&self.echo_trail)).into_owned()
+    }
+
+    /// WHO has written into this pane, and how many times each — see [`Hands`].
+    #[must_use]
+    pub fn hands(&self) -> Hands {
+        *lock(&self.hands)
     }
 
     /// Admit ONE client's answer to OSC 52 read query `seq`, writing `reply` to the PTY only if
@@ -1343,7 +1454,9 @@ fn write_input(
     emulator: &Arc<Mutex<Emulator>>,
     writer: &SharedWriter,
     trail: &SharedEchoTrail,
+    hands: &SharedHands,
     bytes: &[u8],
+    by: Hand,
 ) -> io::Result<()> {
     lock(emulator).note_input();
     // ⚠ RECORDED BEFORE THE WRITE, so the trail can never be behind an echo that has already come
@@ -1357,6 +1470,11 @@ fn write_input(
             trail.drain(..over);
         }
     }
+    // ⚠⚠ COUNTED BESIDE THE TRAIL AND BEFORE THE WRITE, for the trail's own reason: a consumer
+    // that sees the echo on the grid must already be able to see whose it was. Counted even if the
+    // write below FAILS, deliberately — the bytes were offered to this pane by that hand, and a
+    // person whose keystroke was refused by a dying device is still a person who reached in.
+    lock(hands).counting(by);
     write_shared(writer, bytes)
 }
 
@@ -1814,7 +1932,8 @@ mod tests {
             "at a prompt the foreground job IS the child"
         );
 
-        pty.write(b"sleep 300\n").expect("write to the pty");
+        pty.write(b"sleep 300\n", Hand::APerson)
+            .expect("write to the pty");
         let running = wait_for(&pty, |pgid| pgid.is_some_and(|pgid| pgid != child))
             .expect("a foreground job takes the terminal");
         assert_ne!(
@@ -2066,7 +2185,8 @@ mod tests {
     fn a_reaped_childs_pid_is_withheld_so_no_proc_walk_can_stray() {
         let pty = sh("read line");
         assert!(pty.pid().is_some(), "a live child has a usable pid");
-        pty.write(b"\n").expect("end the child's read");
+        pty.write(b"\n", Hand::APerson)
+            .expect("end the child's read");
         wait_exit(&pty);
         assert_eq!(pty.pid(), None, "a reaped one does not");
         assert_eq!(pty.cwd(), None, "and neither does anything derived from it");
@@ -2255,7 +2375,8 @@ mod tests {
             "a pane nobody wrote to has an empty trail"
         );
 
-        pty.write(b"TYPED-AT-THE-OWNER\r").expect("write");
+        pty.write(b"TYPED-AT-THE-OWNER\r", Hand::APerson)
+            .expect("write");
         assert!(
             pty.echo_trail().contains("TYPED-AT-THE-OWNER"),
             "the owner records what is written through it: {:?}",
@@ -2267,7 +2388,9 @@ mod tests {
             "and a handle reads the SAME trail, not one of its own",
         );
 
-        pty.handle().write(b"TYPED-AT-A-HANDLE\r").expect("write");
+        pty.handle()
+            .write(b"TYPED-AT-A-HANDLE\r", Hand::APerson)
+            .expect("write");
         let trail = pty.echo_trail();
         assert!(
             trail.contains("TYPED-AT-THE-OWNER") && trail.contains("TYPED-AT-A-HANDLE"),

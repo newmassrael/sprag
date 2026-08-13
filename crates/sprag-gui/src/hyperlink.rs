@@ -1380,7 +1380,8 @@ mod tests {
                 "a pane's hyperlink oracle",
                 // R371: re-stamped for a bump this surface's own shapes had no part in — see the
                 // command palette's copy of this note for the cost three call sites carry.
-                30,
+                // R372: and again, one round later, for the same reason. See that note.
+                31,
                 &["activate[nullary]:", "send[scalar]:event:string"],
             );
         });

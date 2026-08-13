@@ -4130,7 +4130,7 @@ mod tests {
                 .pane(PaneId(0))
                 .expect("the pane")
                 .handle()
-                .write(b"the-build-is-done\n")
+                .write(b"the-build-is-done\n", sprag_terminal::Hand::AProgram)
                 .expect("write into the pane");
             settle("the pane to show it", || {
                 lock(&state.host.workspace())

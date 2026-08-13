@@ -669,6 +669,14 @@ impl Plugin for Agent {
                 return Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
                     .noting(attention.describe()));
             }
+            // A PERSON TOOK THE PANE — and for THIS plugin the prompt must not go in for a second
+            // reason on top of the general one: whatever the pane produced next would be captured
+            // and PUBLISHED AS THE MODEL'S REPLY, so a run that typed over somebody would attribute
+            // their typing to the agent.
+            Reached::Interrupted(interruption) => {
+                let note = interruption.describe();
+                return Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note));
+            }
         }
 
         // Baseline before acting, so `capture` isolates this prompt's reply (and its cooked-mode

@@ -189,6 +189,12 @@ impl Plugin for Orchestrator {
                 return Ok(Step::new(Cost::Bytes(attention.bytes()), Verdict::Continue)
                     .noting(attention.describe()));
             }
+            // A PERSON TOOK THE PANE. Nothing is injected and nothing is charged — the whole point
+            // is that this run stopped typing — and the verdict is terminal: the pane is theirs now.
+            Reached::Interrupted(interruption) => {
+                let note = interruption.describe();
+                return Ok(Step::new(Cost::Bytes(0), Verdict::TakenOver(interruption)).noting(note));
+            }
         }
 
         // Baseline before acting, so observe() waits for this step's reply.
@@ -316,6 +322,15 @@ mod tests {
 
     fn run(
         access: &WorkspacePaneAccess,
+        plugin: &mut Orchestrator,
+        guardrails: Guardrails,
+    ) -> crate::driver::Outcome {
+        run_any(access, plugin, guardrails)
+    }
+
+    /// [`run`] over ANY access, for the gates that drive a host with a capability withheld.
+    fn run_any(
+        access: &dyn PaneAccess,
         plugin: &mut Orchestrator,
         guardrails: Guardrails,
     ) -> crate::driver::Outcome {
@@ -1531,6 +1546,163 @@ mod tests {
                 .question()
                 .is_some_and(|asked| asked.asked.join(" ").contains("make this edit")),
             "and the question that stopped it comes back, in the agent's own words: {unanswered:?}",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **A HOST THAT CANNOT SAY WHOSE KEYSTROKES THESE WERE GOES ON DRIVING — THE ABSENCE IS
+    /// NOT READ AS A PERSON.**
+    ///
+    /// # ⚠⚠ What this test WAS, and why it is worth more as a control
+    ///
+    /// It was the measurement taken before any of this existed, and its number is the round's
+    /// headline: **with a person's key in the pane, the run typed its stimulus at them twice more
+    /// and reported `Exhausted(Iterations)` as though it were alone at the keyboard.** Once the
+    /// barrier could ask, that gate could only assert a defect that was gone.
+    ///
+    /// So it drives the same person and the same peer against a host with
+    /// [`PaneAccess::hands`](crate::access::PaneAccess::hands) withheld
+    /// ([`HandlessAccess`](crate::testing::HandlessAccess)) — which is every host that has not
+    /// implemented the capability, and the exact condition whose SAFE direction the contract claims
+    /// in prose. **The old behaviour is the required one here**: an absence of evidence that
+    /// somebody is present must never become evidence that they are, or the first host without the
+    /// capability stops driving every pane it has.
+    ///
+    /// ⚠ The person still types through the pane's own door — see
+    /// [`crate::testing::person_types`]. A gate whose person used the RUN's door would have assumed
+    /// the answer, since those are the same call.
+    #[test]
+    fn a_host_that_cannot_name_the_hand_keeps_driving() {
+        let (workspace, pane) = crate::testing::silent_peer();
+        let access = crate::testing::HandlessAccess(workspace);
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: None,
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: None,
+                attended: Attended::NoOne,
+            },
+        );
+
+        // The person waits until the run has plainly started (its first stimulus has been seen by
+        // the peer, byte by byte), then types one key of their own: `X`, byte 88. Through the
+        // pane's own door, which this host simply has no way to distinguish.
+        let outcome = std::thread::scope(|watching| {
+            let watcher = watching.spawn(|| {
+                crate::testing::screen_showing(&access.0, pane, "SAW 112");
+                crate::testing::person_types(&access.0, pane, b"X");
+            });
+            let outcome = run_any(
+                &access,
+                &mut orch,
+                Guardrails {
+                    max_iterations: 4,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+            );
+            watcher.join().expect("the person's thread");
+            outcome
+        });
+
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            "⚠⚠⚠ a host with no way to name the hand must DRIVE, exactly as it did before this \
+             contract existed. Reporting `taken_over` here would mean the absence of the \
+             capability had been read as a person being present, which would stop every run on \
+             every host that has not implemented it: {outcome:?}",
+        );
+        assert_eq!(
+            outcome.iterations, 4,
+            "⚠⚠ and it drove all four, so the claim above is about driving rather than about \
+             which word a stopped run chose: {outcome:?}",
+        );
+        access.0.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⚠⚠⚠ **AND THE FIX: A RUN STOPS DRIVING A PANE A PERSON HAS TAKEN, AND SAYS SO IN A WORD OF
+    /// ITS OWN.**
+    ///
+    /// The sibling of the measurement above, against the same peer and the same person. What
+    /// changed is that the pane now records WHOSE hand each write came from
+    /// ([`sprag_terminal::Hand`]), so the barrier every injecting plugin passes through can ask.
+    ///
+    /// ⚠⚠ It asserts the WORD and not only the stopping. A run that stopped and reported
+    /// `exhausted` would pass a weaker gate while telling its reader to raise a budget — about a
+    /// pane somebody else is typing into, which is advice that would make things worse.
+    #[test]
+    fn a_run_stops_driving_a_pane_a_person_has_taken() {
+        let (access, pane) = crate::testing::silent_peer();
+        let mut orch = Orchestrator::new(
+            pane,
+            OrchestrationSpec {
+                stimulus: "ping".to_string(),
+                sentinel: None,
+                ready_when: None,
+                ready_within: Some(Duration::from_secs(15)),
+                may_answer: None,
+                attended: Attended::NoOne,
+            },
+        );
+
+        let outcome = std::thread::scope(|watching| {
+            let watcher = watching.spawn(|| {
+                crate::testing::screen_showing(&access, pane, "SAW 112");
+                crate::testing::person_types(&access, pane, b"X");
+            });
+            let outcome = run(
+                &access,
+                &mut orch,
+                Guardrails {
+                    max_iterations: 4,
+                    max_cost: None,
+                    max_duration: Some(Duration::from_secs(60)),
+                },
+            );
+            watcher.join().expect("the person's thread");
+            outcome
+        });
+
+        let Some(interruption) = (match &outcome.state {
+            OutcomeState::TakenOver(interruption) => *interruption,
+            other => panic!(
+                "⚠⚠⚠ a person typed into this pane and the run must report THAT, not {other:?} — \
+                 `exhausted` tells its reader to raise a budget and `blocked` tells them to answer \
+                 a question, and here they must do neither: {outcome:?}",
+            ),
+        }) else {
+            panic!(
+                "⚠⚠ and the outcome carries what they did, or nobody can tell one keystroke \
+                    from a person taking over the session: {outcome:?}"
+            );
+        };
+        assert!(
+            interruption.writes() >= 1,
+            "⚠ at least the one key they typed: {interruption:?}",
+        );
+
+        // ⚠⚠⚠ THE CONTROL THAT MAKES THE ASSERTION ABOVE MEAN SOMETHING: the run STOPPED EARLY. A
+        // run that reached its ceiling and merely relabelled the outcome would satisfy everything
+        // above it, and would still have typed over the person four times.
+        assert!(
+            outcome.iterations < 4,
+            "⚠⚠⚠ the run must have stopped BEFORE its ceiling — it ran {} of 4 iterations, which \
+             means it went on typing and only the word changed: {outcome:?}",
+            outcome.iterations,
+        );
+        let witness = access.pane_full_text(pane).unwrap_or_default();
+        let after = witness
+            .split_once("SAW 88")
+            .map(|(_, rest)| rest.matches("SAW 112").count());
+        assert_eq!(
+            after,
+            Some(0),
+            "⚠⚠⚠ AND THE PANE IS THE WITNESS: not one stimulus reached it after the person's key. \
+             The outcome word is a claim; this is the evidence: {witness:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
     }

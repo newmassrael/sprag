@@ -1350,7 +1350,12 @@ mod tests {
                 // this pin became three call sites: the daemon DERIVES its surfaces from the
                 // served scene and cannot be left out of a re-stamp; these hang in a window and
                 // are pinned by whoever remembers all three.
-                30,
+                // ⚠⚠⚠ R372: AND AGAIN, THE VERY NEXT BUMP — three hand-edits for a widened ANSWER
+                // vocabulary (`taken_over`) that no GUI surface publishes, serves or reads. Twice
+                // in consecutive rounds is no longer a prediction: the price is being paid every
+                // time the wire moves for ANY reason, which is the argument for the driver that
+                // builds all three externals in one test rather than three copies of this number.
+                31,
                 &[
                     // ⚠ MEASURED, not guessed: it is `select` that carries the row, and `execute`
                     // acts on the palette's own armed request — which is exactly why five of these

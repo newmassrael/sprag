@@ -55,9 +55,9 @@ pub(crate) mod testing;
 
 pub use access::{
     AgentObservation, AgentStateSource, Authority, JobLeader, KeyStroke, PaneAccess, PaneDoing,
-    PaneError, PaneForegroundJob, PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOutputLines,
-    PaneRawCapture, PaneRow, PaneSupervision, PaneTerminalModes, RowTrail, Signalled,
-    WorkspacePaneAccess, Written,
+    PaneError, PaneForegroundJob, PaneHands, PaneInputEcho, PaneJobControl, PaneLifecycle,
+    PaneOutputLines, PaneRawCapture, PaneRow, PaneSupervision, PaneTerminalModes, RowTrail,
+    Signalled, WorkspacePaneAccess, Written,
 };
 pub use agent::{Agent, AgentSpec};
 pub use answer::Answer;
@@ -72,6 +72,8 @@ pub use driver::{
 pub use orchestrator::{OrchestrationSpec, Orchestrator};
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{Cost, Plugin, Step, Verdict};
-pub use readiness::{Attended, Attention, DEFAULT_READY_TIMEOUT, Reached, Readiness, ReadyWhen};
+pub use readiness::{
+    Attended, Attention, DEFAULT_READY_TIMEOUT, Interruption, Reached, Readiness, ReadyWhen,
+};
 pub use reply::{AgentReply, parse_claude_json};
 pub use run::{RunContext, Waited, poll_until};

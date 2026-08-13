@@ -366,6 +366,58 @@ impl Attention {
     }
 }
 
+/// **SOMEBODY REACHED INTO THIS PANE WITH THEIR OWN HANDS** — what [`Reached::Interrupted`]
+/// carries.
+///
+/// # ⚠⚠⚠ Why this is not a kind of [`Attention`]
+///
+/// [`Attention`] is a person answering a question THE RUN STOPPED ON: the run asked for help and
+/// help came, so the pane is handed back and the loop goes on. This is the opposite direction —
+/// **nothing was asking**, and a person started typing into a pane a run was driving. The run was
+/// not waiting for them and has no idea what they are doing.
+///
+/// `ai_loop.scxml` names them as two different events for that reason: a dialog sends the loop to
+/// `screening`, and `turn.interrupted` goes straight to `awaiting_human` — *"they are plainly here
+/// and doing something, so the loop stops driving; screening would be answering a question the
+/// person is already handling"*.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Interruption {
+    /// How many times a person wrote into this pane after this barrier armed.
+    writes: u64,
+}
+
+impl Interruption {
+    /// An interruption of `writes` — for the gates that must construct one without a pane.
+    ///
+    /// ⚠ Not `pub(crate)`: the vocabulary gate in [`Verdict`](crate::plugin::Verdict) builds every
+    /// variant it can spell, and a variant whose payload no caller outside this module can make is
+    /// one that gate cannot walk.
+    #[must_use]
+    pub const fn of(writes: u64) -> Self {
+        Self { writes }
+    }
+
+    /// How many separate times a person put input into this pane while the run was driving it.
+    ///
+    /// ⚠ WRITES, not keystrokes and not bytes. One write is one act at the door — a keystroke, an
+    /// IME commit, a paste of eighty lines — and the pane counts acts because that is what it can
+    /// honestly see. A report that said *"eighty keystrokes"* for one paste would be inventing
+    /// detail the device never had.
+    #[must_use]
+    pub const fn writes(self) -> u64 {
+        self.writes
+    }
+
+    /// The line a run's journal carries for the turn a person took the pane.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "a person typed into this pane {} time(s) while the run was driving it",
+            self.writes,
+        )
+    }
+}
+
 /// How a [`Readiness`] wait ended, for the endings that are not an error.
 /// ⚠ NOT `Copy` since two arms carry the peer's question — [`Verdict`]'s reason, and the same one:
 /// an answer that cannot say WHAT the peer is asking is not worth returning.
@@ -419,6 +471,21 @@ pub enum Reached {
     /// run never learns what they chose and has no business knowing: it asks the barrier again and
     /// meets whatever the pane became.
     Attended(Attention),
+    /// **A PERSON HAS TAKEN THIS PANE** — they typed into it themselves while the run was driving,
+    /// and the run stops rather than typing over them. See [`Interruption`].
+    ///
+    /// # ⚠⚠⚠ Why this outranks the question below it
+    ///
+    /// It is asked BEFORE *is the peer waiting on a dialog*, which inverts the order every other
+    /// answer here follows. `ai_loop.scxml` is explicit about why: a person who is typing is
+    /// already dealing with whatever is on that screen, so consulting a run's standing consents
+    /// would be *"answering a question the person is already handling"* — and the run would type a
+    /// stored reply into a dialog somebody was mid-way through answering by hand.
+    ///
+    /// ⚠ It is also the safer order under the one thing this cannot see. A pane whose person is
+    /// typing is a pane whose screen is changing under the dialog parser, so the question read
+    /// there is the least trustworthy reading this barrier ever takes.
+    Interrupted(Interruption),
 }
 
 /// WHICH QUESTION a readiness marker is asking — the distinction the argument used to hide.
@@ -695,6 +762,18 @@ pub struct Readiness {
     /// of one question. Split across two places, a plugin could be written that consults one of
     /// them.
     attended: Attended,
+    /// How many times a PERSON had written into this pane when this barrier first looked — the
+    /// watermark [`Reached::Interrupted`] is measured against. `None` until the first look, for
+    /// [`armed_at`](Self::armed_at)'s reason exactly: it is the first moment a pane is in hand.
+    ///
+    /// ⚠ `None` ALSO after a first look at a host with no [`PaneHands`] capability, and the two are
+    /// deliberately the same value: both mean *this run has no watermark to compare against*, and
+    /// the consequence — carry on driving — is the same and is the safe one. See
+    /// [`PaneAccess::hands`].
+    ///
+    /// [`PaneHands`]: crate::access::PaneHands
+    /// [`PaneAccess::hands`]: crate::access::PaneAccess::hands
+    hands_at: Option<u64>,
 }
 
 impl Readiness {
@@ -724,7 +803,35 @@ impl Readiness {
             armed_at: None,
             consent,
             attended,
+            hands_at: None,
         }
+    }
+
+    /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**
+    ///
+    /// Arms on the first look and compares on every one after — the watermark discipline
+    /// [`PaneHands`] is built for, so the pane holds no state on this run's behalf.
+    ///
+    /// # ⚠⚠ Why the first look can never report an interruption
+    ///
+    /// A pane a run is handed has usually been typed into already: somebody launched the program in
+    /// it. Reading the count as a delta from the first look is what separates *"a person is typing
+    /// at this run"* from *"a person once typed here"*, and it is why a watermark exists at all
+    /// rather than a flag.
+    ///
+    /// ⚠ A host with no [`PaneHands`] answers `None` and this returns `None` — *carry on*. An
+    /// absence of the capability is not evidence that somebody is present, and reading it as one
+    /// would stop every run on every host that has not implemented it.
+    ///
+    /// [`PaneHands`]: crate::access::PaneHands
+    fn interrupted(&mut self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Interruption> {
+        let now = panes.hands()?.pane_hands(pane)?.by_a_person();
+        let Some(armed) = self.hands_at else {
+            self.hands_at = Some(now);
+            return None;
+        };
+        let writes = now.checked_sub(armed).filter(|writes| *writes > 0)?;
+        Some(Interruption { writes })
     }
 
     /// **HAND THE PANE TO THE PERSON WHO IS WATCHING IT, AND WAIT** — what an
@@ -1041,6 +1148,14 @@ impl Readiness {
         pane: PaneId,
         run: &RunContext,
     ) -> Result<Reached, PaneError> {
+        // ⚠⚠⚠ FIRST, AND AHEAD OF THE QUESTION BELOW. A person typing into this pane is already
+        // dealing with whatever is on it, so a run that consulted its consents here would answer a
+        // dialog somebody is part-way through answering by hand — see [`Reached::Interrupted`].
+        // Asked every time and before the latch, for the question below's reason: *has somebody
+        // reached in* is not answered once and for all, it is answered again on every step.
+        if let Some(interruption) = self.interrupted(panes, pane) {
+            return Ok(Reached::Interrupted(interruption));
+        }
         // ⚠⚠⚠ ASKED EVERY TIME, BEFORE THE LATCH AND BEFORE THE CONDITION. *Has it started* is
         // answered once; *is it waiting on a question of its own* is not, and this is the only
         // place all three injecting plugins pass through on their way to a keystroke. Put after

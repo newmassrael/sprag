@@ -245,7 +245,9 @@ fn drag_sweep(
         session.with_screen(|s| s.full_text())
     );
     if !input.is_empty() {
-        session.write(input).expect("type input into the session");
+        session
+            .write(input, sprag_terminal::Hand::APerson)
+            .expect("type input into the session");
         settle(session, Duration::from_millis(250), Duration::from_secs(3));
     }
     // ⚠⚠ THE LAST QUIET MOMENT BEFORE THE STORM. Taken here rather than at the top because typing
@@ -339,7 +341,9 @@ fn prompts_a_session_printed_before_the_storm_are_not_charged_to_it() {
     let session = bash_session(80, 24);
     settle(&session, Duration::from_millis(250), Duration::from_secs(3));
     for _ in 0..12 {
-        session.write(b"\n").expect("press Enter into the session");
+        session
+            .write(b"\n", sprag_terminal::Hand::APerson)
+            .expect("press Enter into the session");
         settle(
             &session,
             Duration::from_millis(60),

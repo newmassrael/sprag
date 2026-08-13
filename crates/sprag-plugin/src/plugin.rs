@@ -60,6 +60,23 @@ pub enum Verdict {
     /// with consequences outside the loop must be reportable in the loop's own vocabulary, or the
     /// only record of it is prose.
     Answered(crate::consent::Answered),
+    /// **A PERSON TOOK THIS PANE**, so the run stopped driving it. See
+    /// [`Reached::Interrupted`](crate::readiness::Reached::Interrupted).
+    ///
+    /// # ⚠⚠⚠ Why not a flavour of [`Blocked`](Self::Blocked)
+    ///
+    /// They are opposite facts wearing a similar shape. `Blocked` is *the PEER stopped and wants an
+    /// answer nobody has given*; this is *a PERSON is here and already acting*. A reader told the
+    /// first goes looking for a dialog to answer; a reader told the second must do nothing at all,
+    /// because the one thing the pane does not need is another party typing into it.
+    ///
+    /// Collapsing them would also make the run's own report false in the direction that matters:
+    /// `blocked` says nobody came, and somebody did.
+    ///
+    /// ⚠ It is a verdict rather than a note on a `Continue` for [`Answered`](Self::Answered)'s
+    /// reason — something happened to this run that its journal has to be askable about — and a
+    /// TERMINAL one for [`Blocked`](Self::Blocked)'s: the pane now belongs to somebody else.
+    TakenOver(crate::readiness::Interruption),
 }
 
 impl Verdict {
@@ -74,6 +91,7 @@ impl Verdict {
             Self::Converged => "converged",
             Self::Blocked(_) => "blocked",
             Self::Answered(_) => "answered",
+            Self::TakenOver(_) => "taken_over",
         }
     }
 
@@ -84,7 +102,7 @@ impl Verdict {
     /// [`OutcomeState`](crate::driver::OutcomeState) states for the same reason, and the gate below
     /// this holds the list to [`wire_str`](Self::wire_str) rather than trusting it.
     pub const WIRE_WORDS: &'static [&'static str] =
-        &["continue", "converged", "blocked", "answered"];
+        &["continue", "converged", "blocked", "answered", "taken_over"];
 }
 
 /// A typed cost quantity — what a [`Step`] spent, with its UNIT in the type.
@@ -327,6 +345,7 @@ mod tests {
                 how: crate::consent::Taken::Selected,
                 bytes: 1,
             }),
+            Verdict::TakenOver(crate::readiness::Interruption::of(1)),
         ]
         .iter()
         .map(Verdict::wire_str)

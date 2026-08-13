@@ -1257,7 +1257,7 @@ mod tests {
             .pane(ids[0])
             .unwrap()
             .pty()
-            .write(b"marker\n")
+            .write(b"marker\n", crate::pane_pty::Hand::APerson)
             .expect("write to the pane's pty");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -1316,7 +1316,7 @@ mod tests {
             .pane(id)
             .unwrap()
             .pty()
-            .write(b"on the screen\n")
+            .write(b"on the screen\n", crate::pane_pty::Hand::APerson)
             .expect("write to the pane's pty");
 
         // Wait on the CONDITION the assertion reads — the text reaching the capture.

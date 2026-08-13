@@ -29,6 +29,7 @@
     <transition event="fail"     target="failed"/>      <!-- step: Err -->
     <transition event="cancel"   target="cancelled"/>   <!-- Driver: cancel signal raised -->
     <transition event="block"    target="blocked"/>     <!-- step: Verdict::Blocked -->
+    <transition event="taken"    target="taken_over"/>  <!-- step: Verdict::TakenOver -->
   </state>
 
   <final id="converged"/>
@@ -46,4 +47,18 @@
     and ends; whoever may answer it does so and starts the next run.
   -->
   <final id="blocked"/>
+  <!--
+    A PERSON REACHED INTO THE PANE AND TYPED, so the run stopped driving it. A SIXTH terminal
+    outcome and not a flavour of `blocked`, because the two are opposite facts: `blocked` is the
+    PEER stopping to ask with nobody answering, and this is a PERSON already here and acting. A
+    reader told `blocked` goes looking for a question to answer; a reader told this one must do
+    nothing, since another party typing is the one thing that pane does not need.
+
+    ⚠ Terminal, like its neighbour, and for a reason this round did not have an answer to rather
+    than a reason of principle: `ai_loop.scxml` has an edge back from `awaiting_human` (`resume`),
+    but taking it automatically needs a measured answer to *when has somebody stopped typing*, and
+    guessing a settle here would be a constant nobody chose. A supervisor resumes by starting the
+    next run, exactly as they do for `blocked`.
+  -->
+  <final id="taken_over"/>
 </scxml>

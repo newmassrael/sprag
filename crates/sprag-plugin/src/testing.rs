@@ -425,6 +425,102 @@ pub(crate) fn two_question_peer() -> (WorkspacePaneAccess, PaneId) {
     (access, pane)
 }
 
+/// **A PERSON, AT THE KEYBOARD OF THE PANE THEY ARE WATCHING** — bytes put in through the door a
+/// display client writes through, which is not the door a run writes through.
+///
+/// # ⚠⚠⚠ Why a fixture may not spell this `access.inject(…)`
+///
+/// It did, and every gate that used it was staging the person out of the distinction it claimed to
+/// be about. [`PaneAccess::inject`] is what the RUN types with; a person at a pane goes through
+/// `HostClient::send_key` → [`PanePtyHandle::write`], and the host's own encoder documents the two
+/// as deliberately identical *on the wire* (`sprag_host::pane::send_key`: *"the human keyboard path
+/// and the AI `scene/invoke` path encode IDENTICALLY"*). Encoding identically is right. Being
+/// INDISTINGUISHABLE AFTERWARDS is the defect, and a fixture that reaches for the run's own door
+/// cannot see it.
+///
+/// ⚠ Bytes rather than a [`KeyStroke`](crate::access::KeyStroke): the encoder is `sprag-input`'s and
+/// lives above this crate, so a fixture that took keys here would be re-implementing it. What a
+/// person's hand produces is bytes at a device, which is exactly what this writes.
+pub(crate) fn person_types(access: &WorkspacePaneAccess, pane: PaneId, bytes: &[u8]) {
+    access
+        .handle(pane)
+        .expect("the pane a person is typing into")
+        .write(bytes, sprag_terminal::Hand::APerson)
+        .expect("the person's keystroke reaches the device");
+}
+
+/// **A HOST THAT CANNOT SAY WHOSE KEYSTROKES THESE WERE** — every surface of the access it wraps,
+/// minus [`PaneAccess::hands`].
+///
+/// # ⚠⚠⚠ Why the absence needs a fixture of its own
+///
+/// [`PaneAccess::hands`] is `None` by default, and its documentation makes a SAFETY claim about
+/// that: an absence must be read as *carry on*, never as *somebody is present*, because the second
+/// reading would stop every run on every host that has not implemented the capability. That is a
+/// claim about what the product does, and until this existed it was only a sentence.
+///
+/// ⚠ It delegates rather than reimplementing, so what it measures is the REAL barrier meeting a
+/// real pane with one capability withheld — the same construction the supervision fixtures use, and
+/// the reason a double is not good enough here: the interruption check is the only thing that may
+/// differ.
+pub(crate) struct HandlessAccess(pub(crate) WorkspacePaneAccess);
+
+impl PaneAccess for HandlessAccess {
+    fn pane_ids(&self) -> Vec<PaneId> {
+        self.0.pane_ids()
+    }
+    fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+        self.0.pane_collapsed(id)
+    }
+    fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+        self.0.pane_rows(id)
+    }
+    fn pane_eof(&self, id: PaneId) -> Option<bool> {
+        self.0.pane_eof(id)
+    }
+    fn pane_full_text(&self, id: PaneId) -> Option<String> {
+        self.0.pane_full_text(id)
+    }
+    fn pane_full_lines(&self, id: PaneId) -> Option<Vec<String>> {
+        self.0.pane_full_lines(id)
+    }
+    fn inject(
+        &self,
+        id: PaneId,
+        keys: &[crate::access::KeyStroke],
+    ) -> Result<crate::access::Written, crate::access::PaneError> {
+        self.0.inject(id, keys)
+    }
+    fn lifecycle(&self) -> Option<&dyn crate::access::PaneLifecycle> {
+        self.0.lifecycle()
+    }
+    fn raw_capture(&self) -> Option<&dyn crate::access::PaneRawCapture> {
+        self.0.raw_capture()
+    }
+    fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+        self.0.supervision()
+    }
+    fn input_echo(&self) -> Option<&dyn crate::access::PaneInputEcho> {
+        self.0.input_echo()
+    }
+    fn terminal_modes(&self) -> Option<&dyn crate::access::PaneTerminalModes> {
+        self.0.terminal_modes()
+    }
+    fn foreground_job(&self) -> Option<&dyn crate::access::PaneForegroundJob> {
+        self.0.foreground_job()
+    }
+    fn output_lines(&self) -> Option<&dyn crate::access::PaneOutputLines> {
+        self.0.output_lines()
+    }
+    fn job_control(&self) -> Option<&dyn crate::access::PaneJobControl> {
+        self.0.job_control()
+    }
+    /// ⚠ THE ONE WITHHELD SURFACE — the whole point of this wrapper.
+    fn hands(&self) -> Option<&dyn crate::access::PaneHands> {
+        None
+    }
+}
+
 /// Wait (bounded) for `pane` to show `needle`, then hand back the whole collapsed screen —
 /// which is what every assertion below reads, including the ones about what is NOT there.
 pub(crate) fn screen_showing(access: &WorkspacePaneAccess, pane: PaneId, needle: &str) -> String {

@@ -760,7 +760,8 @@ mod tests {
             "the fixture never reached its job, so nothing below measures anything",
         );
 
-        pty.write(&[0x03]).expect("write the interrupt byte");
+        pty.write(&[0x03], crate::pane_pty::Hand::APerson)
+            .expect("write the interrupt byte");
         assert!(
             until(
                 Duration::from_secs(10),
@@ -852,7 +853,8 @@ mod tests {
         );
 
         // The head of the pipeline leads the job and finishes first; the tail keeps the group.
-        pty.write(b"sleep 0.2 | sleep 300\n").expect("write");
+        pty.write(b"sleep 0.2 | sleep 300\n", crate::pane_pty::Hand::APerson)
+            .expect("write");
         assert!(
             until(
                 Duration::from_secs(15),
