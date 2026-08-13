@@ -578,7 +578,52 @@ pub fn spinner_pattern() -> Regex {
 
 /// The glyph the agent shows when it is NOT working — measured identical in the idle and blocked
 /// states, which is why it cannot be the whole answer.
+///
+/// ⚠⚠⚠ **AND IT IS ALSO ONE FRAME OF THE WORKING ANIMATION, MEASURED** (R379, `claude` 2.1.231):
+/// a live turn's title was sampled every 5 ms and cycled `✳` U+2733 → `◑` U+25D1 → `◐` U+25D0 →
+/// `✳` … while the agent was plainly working. So *"the title starts with the resting glyph"* is
+/// not evidence of rest, and [`IDLE_FOOTER`]'s rule is what has to outrank it.
 const RESTING_GLYPH: &str = "✳";
+
+/// The footer affordance an agent shows when there is **nothing to interrupt**.
+///
+/// One definition, two readers — a fingerprint and a rule — which is [`DIALOG_WINDOW`]'s reason:
+/// a claim and the verdict that rests on it must be looking at the same string.
+const IDLE_FOOTER: &str = "? for shortcuts";
+
+/// The footer affordance an agent shows when there **is** something to interrupt.
+///
+/// # ⚠⚠⚠ Why WORKING is read from a footer and not from the spinner
+///
+/// [`spinner_pattern`] is a BRAILLE range, written from R249's measurements of the `claude` of the
+/// day. R379 drove `claude` 2.1.231 for four real turns, sampling the title every 5 ms, and the
+/// braille rule **never fired once**: the animation is `◑` U+25D1 / `◐` U+25D0 / `✳` U+2733 now.
+/// The consequences were not "a missing row" — they were the two worst answers a detector can give:
+///
+/// * the pane read **`Idle` while the agent was working**, because one frame of that animation is
+///   [`RESTING_GLYPH`] and the idle rule matched it;
+/// * and for the rest of the animation NO fingerprint claimed the pane at all, so a working agent
+///   read as **not an agent**.
+///
+/// A glyph alphabet is DECORATION and it is re-themed whenever somebody feels like it. *"Press this
+/// to stop the thing that is running"* is a **functional affordance**: an interactive agent cannot
+/// stop showing it while there is something to stop, because a user who could not interrupt would
+/// file a bug. That is the same class of evidence [`IDLE_FOOTER`] already is, and the same reasoning
+/// `codex_footer_pattern` gives for matching a shape rather than any of its words.
+///
+/// ⚠ The spinner rule STAYS. This is additive: an agent that does animate braille is still read,
+/// and removing a rule because a newer version stopped needing it would date this manifest the other
+/// way round.
+const WORKING_FOOTER: &str = "esc to interrupt";
+
+/// How many non-empty rows up from the bottom a footer affordance may sit.
+///
+/// Four, which is what the idle footer was measured at and what this manifest has always used —
+/// named now that a second string is read in the same window, so a widening cannot move one and
+/// leave the other behind. ⚠ Deliberately NARROWER than [`DIALOG_WINDOW`]: a dialog pushes the
+/// footer off the bottom of its own window, and a footer rule that reached as far as a dialog does
+/// would read the footer BEHIND one.
+const FOOTER_WINDOW: u16 = 4;
 
 /// How many non-empty rows up from the bottom a dialog's selection marker may sit.
 ///
@@ -623,8 +668,18 @@ pub fn claude() -> Manifest {
             // Each of these is one condition, which is what an agent with a constant string in a
             // fixed footer affords -- see `codex` for the case that does not.
             Fingerprint::one(Match::new(
-                Region::BottomLines(4),
-                Test::Contains("? for shortcuts".to_owned()),
+                Region::BottomLines(FOOTER_WINDOW),
+                Test::Contains(IDLE_FOOTER.to_owned()),
+            )),
+            // ⚠⚠⚠ AND THE OTHER HALF OF THAT FOOTER, which is the half a WORKING agent shows. It
+            // is a fingerprint as well as a rule because R379 measured what its absence costs: for
+            // most of a live turn the title matched neither glyph fingerprint and the idle footer
+            // was gone, so nothing claimed the pane and a working agent read as NOT AN AGENT.
+            // Claiming a pane and having no rule fire is `AgentState::Unknown`, which is a poor
+            // answer; not claiming it at all is a wrong one.
+            Fingerprint::one(Match::new(
+                Region::BottomLines(FOOTER_WINDOW),
+                Test::Contains(WORKING_FOOTER.to_owned()),
             )),
             // ONBOARDING, where neither of the two above exists: the trust dialog arrives before
             // the agent has set a title and with the footer replaced by the dialog itself. This is
@@ -653,6 +708,21 @@ pub fn claude() -> Manifest {
                 // Above `idle-glyph` because BOTH match on a blocked pane -- the measured fact
                 // this whole ordering exists for.
                 priority: 30,
+            },
+            // ⚠⚠⚠ ABOVE `idle-glyph` AND THAT IS THE WHOLE POINT. The resting glyph is one frame
+            // of the working animation (see `RESTING_GLYPH`), so on a working pane BOTH of these
+            // match about a third of the time and the verdict is decided by priority alone --
+            // exactly the relationship `dialog-choice-list` has with `idle-glyph`, for exactly the
+            // same measured reason. BELOW the dialog rule, because an agent that has stopped to
+            // ask is not working however its footer reads.
+            Rule {
+                id: "working-footer".to_owned(),
+                state: AgentState::Working,
+                all: vec![Match::new(
+                    Region::BottomLines(FOOTER_WINDOW),
+                    Test::Contains(WORKING_FOOTER.to_owned()),
+                )],
+                priority: 25,
             },
             Rule {
                 id: "spinner-glyph".to_owned(),
@@ -995,6 +1065,101 @@ mod tests {
         let v = verdict(IDLE, Some("⠂ Run sleep command for 25 seconds"));
         assert_eq!(v.state, AgentState::Working);
         assert_eq!(v.rule.as_deref(), Some("spinner-glyph"));
+    }
+
+    /// A WORKING screen captured from `claude` 2.1.231 during a live turn (R379).
+    ///
+    /// The footer is the whole difference from [`IDLE`]: `esc to interrupt` where the resting one
+    /// says `? for shortcuts`. Everything else about the two screens is the same furniture.
+    const WORKING_2_1: &[&str] = &[
+        "❯ Reply with exactly the word ORTHOGONAL-07 and nothing else.",
+        "✢ Kneading…",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "❯",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "  ⏸ manual mode on · esc to interrupt · ← 8 agents",
+    ];
+
+    /// ⚠⚠⚠ **THE DEFECT R379 MEASURED AGAINST A LIVE AGENT, PINNED WHERE IT COSTS NO AGENT TURNS.**
+    ///
+    /// `claude` 2.1.231 animates its title with `◑` U+25D1 / `◐` U+25D0 / `✳` U+2733. Sampled every
+    /// 5 ms across four real turns, [`spinner_pattern`]'s BRAILLE range never matched once — so
+    /// before this rule existed, the three readings below were:
+    ///
+    /// | title mid-turn | what the manifest said | why |
+    /// |---|---|---|
+    /// | `✳ …` | **`Idle`** | the resting glyph is a frame of the animation |
+    /// | `◑ …` / `◐ …` | **not an agent at all** | no fingerprint claimed the pane |
+    ///
+    /// Both are confident wrong answers about a program that was demonstrably working, and the
+    /// second one is worse than `Unknown` — it makes the pane vanish from every agent-aware
+    /// surface mid-turn.
+    ///
+    /// ⚠ The three cases are asserted in the order that makes each fail for its own reason: the
+    /// frame that used to read `Idle`, the frames that used to read as nothing, and then the
+    /// control that says rest is still rest.
+    #[test]
+    fn a_working_pane_reads_working_whatever_frame_its_title_animation_is_on() {
+        for (glyph, why) in [
+            (
+                "✳",
+                "the RESTING glyph is one frame of the working animation, so this used to read \
+                 `Idle` — a wrong answer, not a missing one",
+            ),
+            (
+                "◑",
+                "and on this frame nothing claimed the pane at all, so a working agent read as \
+                 NOT AN AGENT",
+            ),
+            ("◐", "the other half of the same animation"),
+        ] {
+            let title = format!("{glyph} Reply with orthogonal identifier");
+            let v = verdict(WORKING_2_1, Some(&title));
+            assert_eq!(
+                v.agent.as_deref(),
+                Some("claude"),
+                "a working pane must still be CLAIMED: {why} (title {title:?})",
+            );
+            assert_eq!(
+                v.state,
+                AgentState::Working,
+                "{why} (title {title:?}, rule {:?})",
+                v.rule,
+            );
+            assert_eq!(
+                v.rule.as_deref(),
+                Some("working-footer"),
+                "and it is the footer that says so, not the glyph — the glyph is decoration and \
+                 was re-themed between two versions of one agent (title {title:?})",
+            );
+        }
+
+        // ⚠ THE CONTROL: the same furniture with the RESTING footer is still rest. Without it the
+        // rule above could be one that answers `Working` for every `claude` pane ever seen.
+        let resting = verdict(IDLE, Some("✳ Reply with orthogonal identifier"));
+        assert_eq!(
+            resting.state,
+            AgentState::Idle,
+            "a pane whose footer offers `? for shortcuts` has nothing to interrupt: {resting:?}",
+        );
+    }
+
+    /// ⚠⚠ **AND A PANE THAT HAS STOPPED TO ASK IS NOT WORKING**, however its footer reads.
+    ///
+    /// The priority relationship the new rule had to be given, driven rather than reasoned: a
+    /// dialog can appear while the agent still considers itself mid-task, and *"answer my
+    /// question"* and *"I am busy, wait"* are opposite instructions to a loop.
+    #[test]
+    fn a_dialog_outranks_the_working_footer() {
+        let mut lines = PERMISSION_DIALOG.to_vec();
+        lines.push("  ⏸ manual mode on · esc to interrupt · ← 8 agents");
+        let v = verdict(&lines, Some("◐ Fetch the page"));
+        assert_eq!(
+            v.state,
+            AgentState::Blocked,
+            "a pane showing a choice list is blocked whatever else is on it: {v:?}",
+        );
+        assert_eq!(v.rule.as_deref(), Some("dialog-choice-list"));
     }
 
     /// THE test this slice was blocked on, and the one the whole priority scheme exists for.
